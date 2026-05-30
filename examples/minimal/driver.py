@@ -1,97 +1,68 @@
-"""Minimal driver example.
+"""Minimal driver (v0.2).
 
-Launches the worker via plain subprocess.Popen, opens a runstate Channel
-to observe it, prints progress, and sends StopNow if loss diverges.
+Launches the worker as a subprocess via LocalLauncher, subscribes to its ``loss``
+each step, streams the value events as they arrive, and would send a cooperative
+stop if loss diverged (it doesn't, in this example). Then it waits for the
+terminal RunResult.
 
-Note: runstate does NOT ship an Orchestrator class. This driver script
-is application code that uses the protocol. You can adapt it freely.
+runstate ships NO Orchestrator class -- this is application code composing the
+substrate (open_channel / control.* sends) with the reference orchestration
+helpers (LocalLauncher, Watcher). Adapt it freely.
 """
 
-import os
-import subprocess
 import sys
 import tempfile
 import uuid
 from pathlib import Path
 
 import runstate
-from runstate import control, events
 
 
 def main():
-    # Each run gets its own run_id + run_dir. The Channel is at <root>/<run_id>/.
     root = tempfile.mkdtemp(prefix="runstate-minimal-")
     run_id = f"run-{uuid.uuid4().hex[:8]}"
+    worker = Path(__file__).parent / "worker.py"
+    print(f"[driver] run_id={run_id} root={root}")
 
-    print(f"[driver] root={root}")
-    print(f"[driver] run_id={run_id}")
+    with runstate.LocalLauncher(root=root) as launcher:
+        # Subscribe BEFORE launch so the worker picks it up on its first tick:
+        # report `loss` every step, correlated by request_id "driver".
+        ch = launcher.open_channel(run_id)
+        ch.send(
+            {"every": {"step": 1}},
+            topic="control.subscribe",
+            name="loss",
+            request_id="driver",
+        )
 
-    # Spawn the worker. RUNSTATE_* env vars tell it where the Channel lives.
-    worker_path = Path(__file__).parent / "worker.py"
-    env = {
-        **os.environ,
-        "RUNSTATE_RUN_ID": run_id,
-        "RUNSTATE_CHANNEL_ROOT": root,
-        "RUNSTATE_CHANNEL_BACKEND": "sqlite",  # sqlite preserves history
-    }
-    proc = subprocess.Popen([sys.executable, str(worker_path)], env=env)
-    print(f"[driver] launched worker pid={proc.pid}")
+        handle = launcher.launch(run_id, [sys.executable, str(worker)])
+        print(f"[driver] launched {handle.handle}")
 
-    # Open the orchestrator-role Channel to observe.
-    ch = runstate.open_channel(run_id, role="orchestrator", root=root, backend="sqlite")
+        watcher = runstate.Watcher(poll_interval=0.02)
+        watcher.add(handle)
 
-    # Track our side of the protocol (what we sent, what got ack'd).
-    commands_sent: list[str] = []  # command_ids
-    commands_acked: set[str] = set()
-    stop_sent = False
+        stop_sent = False
 
-    def handle_message(msg: dict) -> None:
-        nonlocal stop_sent
-        event = events.parse(msg)
-        match event:
-            case events.Progress(step=s, metrics=m):
-                loss = m.get("loss", float("nan"))
-                print(f"[driver] step {s} loss {loss:.4f}")
-                # Divergence preempt: if loss spikes, stop.
-                if loss > 100 and not stop_sent:
-                    cmd_id = control.send_stop(ch)
-                    commands_sent.append(cmd_id)
+        def on_event(rid, e):
+            nonlocal stop_sent
+            if e.topic == "value" and e.request_id == "driver":
+                loss = e.body["value"]
+                print(f"[driver] step {e.body['step']:>2} loss {loss:.4f}")
+                if loss > 100 and not stop_sent:  # divergence preempt
+                    ch.send(
+                        {"from": {"step": 0}},
+                        topic="control.stop",
+                        request_id="driver-stop",
+                    )
                     stop_sent = True
-                    print(f"[driver] divergence detected; sent StopNow id={cmd_id}")
+                    print("[driver] divergence detected -> sent control.stop")
 
-            case events.Stopped(reason=r, metadata=md):
-                print(f"[driver] worker reported Stopped: reason={r!r} metadata={md}")
-
-            case events.Ack(of=of, command_id=cid):
-                commands_acked.add(cid)
-                print(f"[driver] ack received for {of} id={cid}")
-
-            case None:
-                # Non-protocol dict; print verbatim.
-                print(f"[driver] non-protocol message: {msg}")
-
-    # Loop: read worker messages until the worker exits.
-    while proc.poll() is None:
-        msg = ch.recv(timeout=0.5)
-        if msg is not None:
-            handle_message(msg)
-
-    # Worker exited. Drain any final messages still in the channel
-    # (e.g., the Stopped event sent right before exit).
-    while True:
-        msg = ch.recv(timeout=0)
-        if msg is None:
-            break
-        handle_message(msg)
-
-    exit_code = proc.wait()
-    ch.close()
-
-    print(f"[driver] worker exited with code {exit_code}")
-    print(f"[driver] commands sent: {len(commands_sent)}, acked: {len(commands_acked)}")
-    unacked = [c for c in commands_sent if c not in commands_acked]
-    if unacked:
-        print(f"[driver] unacknowledged: {unacked}")
+        # Block until the run is terminal, streaming events to on_event meanwhile.
+        result = watcher.wait(run_id, on_event=on_event)
+        print(
+            f"[driver] terminal: outcome={result.outcome} reason={result.reason!r} "
+            f"final_step={result.final_step}"
+        )
 
 
 if __name__ == "__main__":

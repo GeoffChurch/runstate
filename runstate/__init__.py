@@ -1,12 +1,21 @@
 """runstate — cooperative control protocol for long-running scientific workers.
 
-v0.2 (in progress): a per-run topic-log **substrate** with opt-in **conventions**
-(cooperative-control, subscription, lifecycle, launcher). See docs/design-v0.2.md.
+v0.2: a per-run topic-log **substrate** with opt-in **conventions** (cooperative-
+control, subscription, lifecycle, launcher) and reference **orchestration**
+helpers (launchers, Watcher, sweep). See docs/design-v0.2.md.
+
+The names re-exported here are the public surface; everything else lives under
+the submodules (runstate.channel, runstate.schedule, ...).
 """
 
 import os
 
 from .channel import Envelope, open_channel
+from .launcher import Launcher, LaunchHandle, LocalLauncher, ThreadLauncher
+from .liveness import RunResult, peek_terminal
+from .sweep import Variant, sweep
+from .watcher import Running, RunStatus, Watcher
+from .worker import Worker
 
 __version__ = "0.2.0.dev0"
 
@@ -28,4 +37,25 @@ def attach(run_id=None, *, root=None, backend=None):
     return open_channel(run_id, root=root, backend=backend)
 
 
-__all__ = ["__version__", "attach", "open_channel", "Envelope"]
+__all__ = [
+    "__version__",
+    # substrate
+    "open_channel",
+    "attach",
+    "Envelope",
+    # worker
+    "Worker",
+    # launchers
+    "Launcher",
+    "LaunchHandle",
+    "ThreadLauncher",
+    "LocalLauncher",
+    # orchestration / liveness
+    "Watcher",
+    "RunStatus",
+    "Running",
+    "RunResult",
+    "peek_terminal",
+    "sweep",
+    "Variant",
+]
