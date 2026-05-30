@@ -30,7 +30,7 @@ def test_subscription_serviced_end_to_end(tmp_path):
         request_id="obs-1",
     )
 
-    launcher.launch("run", _train).join()
+    launcher.launch("run", _train).wait()
 
     vals = obs.read(topics=["value"], name="loss", request_ids=["obs-1"])
     assert len(vals) >= 1
@@ -50,7 +50,7 @@ def test_commanded_stop_end_to_end(tmp_path):
     obs = launcher.open_channel("run2")
     obs.send({"from": {"step": 2}}, topic="control.stop", request_id="obs-1")
 
-    launcher.launch("run2", _train).join()
+    launcher.launch("run2", _train).wait()
 
     stopped = obs.latest("lifecycle.stopped")
     assert stopped.body["reason"] == "commanded"

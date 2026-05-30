@@ -21,7 +21,7 @@ def test_launch_runs_target_and_brackets_with_launcher_lifecycle(tmp_path):
         channel.send({"value": 1}, topic="value", name="loss")
 
     h = launcher.launch("run-1", target)
-    h.join()
+    h.wait()
 
     assert len(seen) == 1
     ch = launcher.open_channel("run-1")
@@ -52,7 +52,7 @@ def test_handle_fields_and_liveness(tmp_path):
     assert h.handle.startswith("local://")
     assert h.is_alive() is True  # blocked on the gate
     gate.set()
-    h.join()
+    h.wait()
     assert h.is_alive() is False
 
 
@@ -63,7 +63,7 @@ def test_errored_target_records_nonzero_exit(tmp_path):
         raise RuntimeError("boom")
 
     h = launcher.launch("run-3", target)
-    h.join()
+    h.wait()
 
     assert isinstance(h.exception, RuntimeError)
     ch = launcher.open_channel("run-3")
@@ -82,5 +82,5 @@ def test_target_receives_args(tmp_path):
         got.append((a, b, c))
 
     h = launcher.launch("run-4", target, args=(1, 2), kwargs={"c": 3})
-    h.join()
+    h.wait()
     assert got == [(1, 2, 3)]

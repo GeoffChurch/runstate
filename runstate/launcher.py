@@ -23,10 +23,41 @@ import socket
 import subprocess
 import threading
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Protocol
 
 from .channel import open_channel
 from .handle import local_handle
+
+
+class LaunchHandle(Protocol):
+    """The observable surface of a launched worker, common to every launcher.
+
+    ``run_id``/``channel`` locate the run's log; ``handle`` is the portable
+    liveness token (§8). ``is_alive`` answers liveness, ``wait`` blocks until the
+    worker finishes (and reaps it), ``terminate`` force-kills where the substrate
+    allows (ThreadLauncher cannot, and raises). Launcher-specific extras live on
+    the concrete handle (e.g. ThreadLauncher's ``.exception``).
+    """
+
+    run_id: str
+    channel: object
+    handle: str
+
+    def is_alive(self) -> bool: ...
+    def wait(self, timeout=None) -> Optional[int]: ...
+    def terminate(self) -> None: ...
+
+
+class Launcher(Protocol):
+    """Spawn a worker into a run and bracket it with launcher.launched /
+    launcher.terminated. ``open_channel`` is uniform; ``launch``'s *target* is
+    launcher-specific by nature — an in-process callable for ThreadLauncher, a
+    subprocess command for LocalLauncher — since how the worker receives its
+    channel (passed directly vs re-derived via ``attach``) differs in kind.
+    """
+
+    def open_channel(self, run_id) -> object: ...
+    def launch(self, run_id, target, **kwargs) -> LaunchHandle: ...
 
 
 @dataclass
@@ -49,8 +80,12 @@ class _ThreadHandle:
     def is_alive(self) -> bool:
         return self._thread.is_alive()
 
-    def join(self, timeout=None) -> None:
+    def wait(self, timeout=None) -> Optional[int]:
+        """Block until the worker thread finishes. Returns None — a thread has no
+        exit code; the manner of death is on the log (launcher.terminated) and
+        the raised exception, if any, is on ``.exception``."""
         self._thread.join(timeout)
+        return None
 
     def terminate(self) -> None:
         raise NotImplementedError(
