@@ -44,9 +44,12 @@ def test_poll_none_while_running_then_terminal(tmp_path):
     w = Watcher()
     w.observe("r", ch)
     ch.send({"step": 0, "consumed_seq": 0}, topic="lifecycle.heartbeat")
-    assert w.poll("r") is None
+    s = w.poll("r")
+    assert s.done is False  # the Running arm of RunStatus
+    assert s.step == 0  # carries the live snapshot from the heartbeat fold
     ch.send({"reason": "completed", "final_step": 5}, topic="lifecycle.stopped")
     r = w.poll("r")
+    assert r.done is True
     assert r.outcome == "completed"
     assert r.run_id == "r"  # the Watcher stamps the run it knows
     assert r.final_step == 5
@@ -84,11 +87,12 @@ def test_presumed_dead_via_heartbeat_staleness():
     w = Watcher(now=lambda: clock[0], heartbeat_timeout=30)
     w.observe("r", ch)  # last_heartbeat_at initialized to 1000
     ch.send({"step": 0}, topic="lifecycle.heartbeat")
-    assert w.poll("r") is None  # fresh beacon
+    assert w.poll("r").done is False  # fresh beacon
     clock[0] = 1020
-    assert w.poll("r") is None  # 20s < 30s, still alive
+    assert w.poll("r").done is False  # 20s < 30s, still alive
     clock[0] = 1041
     r = w.poll("r")  # 41s since last beacon -> stale
+    assert r.done is True
     assert r.outcome == "presumed_dead"
     assert r.reason == "heartbeat_stale"
 
@@ -99,7 +103,7 @@ def test_staleness_tier_off_by_default():
     w = Watcher(now=lambda: clock[0])  # no heartbeat_timeout
     w.observe("r2", ch)
     clock[0] = 1_000_000
-    assert w.poll("r2") is None  # never presumed dead on staleness alone
+    assert w.poll("r2").done is False  # never presumed dead on staleness alone
 
 
 # ----- wait(): loop poll() until terminal -----
@@ -182,3 +186,56 @@ def test_wait_streams_events_via_on_event(tmp_path):
     topics = [t for _, t in seen]
     assert "lifecycle.started" in topics
     assert "lifecycle.stopped" in topics
+
+
+# ----- wait_all(): total dict of RunStatus across runs -----
+
+
+def test_wait_all_returns_all_terminal(tmp_path):
+    launcher = ThreadLauncher(root=tmp_path)
+
+    def _ok(channel):
+        with Worker(channel) as worker:
+            for _ in worker.steps(total=1):
+                pass
+
+    w = Watcher(poll_interval=0.005)
+    w.add(launcher.launch("a", _ok))
+    w.add(launcher.launch("b", _ok))
+    res = w.wait_all()
+    assert set(res) == {"a", "b"}
+    assert all(s.done and s.outcome == "completed" for s in res.values())
+
+
+def test_wait_all_capped_reports_pending_as_running():
+    clock = [0.0]
+    a = open_channel("a", root=None, backend="memory")
+    w = Watcher(
+        now=lambda: clock[0],
+        sleep=lambda s: clock.__setitem__(0, clock[0] + s),
+        poll_interval=1.0,
+    )
+    w.observe("a", a)
+    a.send({"step": 7}, topic="lifecycle.heartbeat")  # alive, never terminal
+    res = w.wait_all(timeout=5.0)
+    assert set(res) == {"a"}  # total over tracked runs
+    s = res["a"]
+    assert s.done is False  # pending == the Running arm, not absence/None
+    assert s.step == 7  # tells you where the slow run is
+
+
+# ----- broadcast(): fan one subscription across runs with a shared request_id -----
+
+
+def test_broadcast_fans_subscription_with_shared_request_id():
+    a = open_channel("a", root=None, backend="memory")
+    b = open_channel("b", root=None, backend="memory")
+    w = Watcher()
+    w.observe("a", a)
+    w.observe("b", b)
+    rid = w.broadcast("loss", {"from": {"step": 100}})
+    for ch in (a, b):
+        sub = ch.latest("control.subscribe")
+        assert sub.name == "loss"
+        assert sub.request_id == rid  # the shared correlation id
+        assert sub.body == {"from": {"step": 100}}

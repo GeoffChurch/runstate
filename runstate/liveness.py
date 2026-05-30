@@ -31,6 +31,11 @@ class RunResult:
     final_step: Optional[int] = None
     elapsed: Optional[float] = None
 
+    @property
+    def done(self) -> bool:
+        """A RunResult is the terminal arm of RunStatus (see watcher.Running)."""
+        return True
+
 
 def peek_terminal(channel) -> Optional[RunResult]:
     """Return a terminal RunResult if the run has left a terminal *record*, else

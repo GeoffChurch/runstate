@@ -19,10 +19,30 @@ loops it until terminal. ``now``/``sleep`` are injectable for deterministic test
 from __future__ import annotations
 
 import time
+import uuid
 from dataclasses import dataclass, field, replace
-from typing import Optional
+from typing import Optional, Union
 
 from .liveness import RunResult, peek_terminal
+
+
+@dataclass(frozen=True)
+class Running:
+    """The non-terminal arm of RunStatus: a run that's still in flight, with the
+    Watcher's live snapshot — ``step`` from the latest heartbeat, and
+    ``beacon_age`` (seconds since that heartbeat *arrived*, the gradient toward
+    presumed-dead) which is watcher-computed and not on the raw event stream."""
+
+    step: Optional[int] = None
+    beacon_age: Optional[float] = None
+
+    @property
+    def done(self) -> bool:
+        return False
+
+
+# A run's current status is either still-running or a terminal verdict.
+RunStatus = Union[Running, RunResult]
 
 
 @dataclass
@@ -32,6 +52,7 @@ class _RunState:
     handle: Optional[object]
     last_heartbeat_at: float
     last_hb_seq: int = field(default=0)
+    last_step: Optional[int] = field(default=None)
 
 
 class Watcher:
@@ -67,9 +88,11 @@ class Watcher:
             last_heartbeat_at=self._now(),
         )
 
-    def poll(self, run_id: str) -> Optional[RunResult]:
-        """One non-blocking verdict for ``run_id`` across all tiers, or None if it
-        still looks alive."""
+    def poll(self, run_id: str) -> RunStatus:
+        """One non-blocking status for ``run_id`` across all tiers: a terminal
+        RunResult, or the Running snapshot if it still looks alive. (Never None —
+        the running case is the Running arm, carrying the gradient poll already
+        computed for the staleness check, rather than discarding it.)"""
         st = self._runs[run_id]
         self._note_heartbeat(st)
 
@@ -87,15 +110,13 @@ class Watcher:
             return RunResult(outcome="presumed_dead", reason="probed_dead", run_id=run_id)
 
         # tier 4: heartbeat staleness.
-        if (
-            self._hb_timeout is not None
-            and (self._now() - st.last_heartbeat_at) > self._hb_timeout
-        ):
+        beacon_age = self._now() - st.last_heartbeat_at
+        if self._hb_timeout is not None and beacon_age > self._hb_timeout:
             return RunResult(
                 outcome="presumed_dead", reason="heartbeat_stale", run_id=run_id
             )
 
-        return None
+        return Running(step=st.last_step, beacon_age=beacon_age)
 
     def wait(
         self, run_id: str, *, on_event=None, timeout: Optional[float] = None
@@ -111,12 +132,52 @@ class Watcher:
             if on_event is not None:
                 for rid, e in self._drain():
                     on_event(rid, e)
-            r = self.poll(run_id)
-            if r is not None:
-                return r
+            s = self.poll(run_id)
+            if s.done:
+                return s
             if deadline is not None and self._now() >= deadline:
                 raise TimeoutError(f"run {run_id!r} not terminal within {timeout}s")
             self._sleep(self._poll_interval)
+
+    def wait_all(self, *, on_event=None, timeout: Optional[float] = None) -> dict:
+        """Block until every tracked run is terminal, returning ``{run_id:
+        RunStatus}`` total over the tracked set. Uncapped this is a pure
+        synchronization (a slow-but-healthy run delays it, by design). With
+        ``timeout`` it returns at the deadline with the still-running runs as
+        their Running status — so pending is explicit (which runs, and how stale),
+        not absence."""
+        deadline = None if timeout is None else self._now() + timeout
+        results: dict = {}
+        pending = set(self._runs)
+        while pending:
+            if on_event is not None:
+                for rid, e in self._drain():
+                    on_event(rid, e)
+            for run_id in list(pending):
+                s = self.poll(run_id)
+                if s.done:
+                    results[run_id] = s
+                    pending.discard(run_id)
+            if not pending:
+                break
+            if deadline is not None and self._now() >= deadline:
+                for run_id in pending:  # report the laggards as Running
+                    results[run_id] = self.poll(run_id)
+                break
+            self._sleep(self._poll_interval)
+        return results
+
+    def broadcast(self, name: str, schedule: dict, *, request_id=None) -> str:
+        """Fan one ``control.subscribe`` across every tracked run under a single
+        shared ``request_id`` (returned). The run_id disambiguates the responses;
+        this is the cross-run barrier primitive — no Experiment class. The caller
+        then collects responses via iter_events / wait_all filtered on the id."""
+        rid = request_id if request_id is not None else f"broadcast-{uuid.uuid4().hex}"
+        for st in self._runs.values():
+            st.channel.send(
+                dict(schedule), topic="control.subscribe", name=name, request_id=rid
+            )
+        return rid
 
     def iter_events(self, timeout: Optional[float] = None):
         """Yield ``(run_id, Envelope)`` for new envelopes across all tracked runs
@@ -152,3 +213,4 @@ class Watcher:
         if hb is not None and hb.seq > st.last_hb_seq:
             st.last_hb_seq = hb.seq
             st.last_heartbeat_at = self._now()
+            st.last_step = hb.body.get("step")

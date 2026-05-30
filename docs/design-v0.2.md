@@ -187,26 +187,37 @@ Three reference configurations: **(a)** floor only · **(b)** + handle (observer
 Reference tooling; assumes the conventions (a worker that opts out composes its own loop from `send`/`read`/`latest` + the liveness tiers).
 
 ```python
-class Launcher(Protocol):
-    def launch(self, run_id, target, *, args=(), kwargs=None, env=None) -> LaunchHandle: ...
+class Launcher(Protocol):                                    # target is launcher-specific (callable vs argv)
+    def launch(self, run_id, target, **kwargs) -> LaunchHandle: ...
     def open_channel(self, run_id) -> Channel: ...           # first control.* lazily launches (§12)
 
-@dataclass class LaunchHandle:
+class LaunchHandle(Protocol):                                # concrete per launcher (thread / subprocess)
     run_id: str; channel: Channel
     handle: str                                              # portable liveness/terminate token (§8)
-    def is_alive(self) -> bool: ...                          # resolve handle
-    def terminate(self) -> None: ...                         # resolve handle and kill
+    def is_alive(self) -> bool: ...
+    def wait(self, timeout=None) -> int | None: ...          # block until done (+reap); None for a thread
+    def terminate(self) -> None: ...                         # force-kill where the substrate allows
 
 class Watcher:
     def add(self, handle: LaunchHandle) -> None: ...
     def observe(self, run_id: str, channel: Channel) -> None: ...   # handle-free: late-attach / observe-only (§12)
-    def iter_events(self, timeout=None) -> Iterator[tuple[str, Envelope]]: ...
-    def wait(self, run_id, *, timeout=None) -> RunResult: ...
-    def wait_all(self, *, timeout=None) -> list[RunResult]: ...
-    def broadcast(self, subscribe) -> str: ...              # returns the shared request_id (§12)
+    def iter_events(self, timeout=None) -> Iterator[tuple[str, Envelope]]: ...   # the stream (deltas)
+    def poll(self, run_id) -> RunStatus: ...                 # the fold (Running | RunResult), non-blocking
+    def wait(self, run_id, *, on_event=None, timeout=None) -> RunResult: ...
+    def wait_all(self, *, on_event=None, timeout=None) -> dict[str, RunStatus]: ...   # total over tracked runs
+    def broadcast(self, name, schedule, *, request_id=None) -> str: ...   # shared request_id; the cross-run barrier
 
-@dataclass class RunResult:
-    run_id: str
+# A run's current status: still-running (a live snapshot) or a terminal verdict.
+# The Running arm carries watcher-unique state (beacon_age = the gradient toward
+# presumed-dead) not on the raw event stream, so poll is lossless rather than
+# returning Optional[RunResult] (None-as-pending). peek_terminal stays Optional —
+# the record plane is stateless and can't populate Running.
+RunStatus = Running | RunResult
+@dataclass class Running:
+    step: int | None; beacon_age: float | None              # done == False
+
+@dataclass class RunResult:                                  # done == True
+    run_id: str | None
     outcome: str   # CLOSED: "completed" | "stopped" | "errored" | "killed" | "presumed_dead"
     reason: str    # verbatim per-tier label (the raw "why", finer than the bucket)
     error: str | None; final_step: int | None; elapsed: float
@@ -216,9 +227,9 @@ class Watcher:
     # are orthogonal; a clean non-completion is outcome="stopped", reason="commanded".
 
 # peek_terminal is the RECORD-based verdict (a terminal envelope exists); the
-# Watcher adds the INFERENCE-based tier (heartbeat staleness → presumed_dead).
+# Watcher adds the INFERENCE-based tiers (probe + heartbeat staleness → presumed_dead).
 def peek_terminal(channel) -> RunResult | None:            # clean stop OR reaped launcher.terminated; else None
-def sweep(variants, launcher, *, on_event=None, resume=True, stop_on_failure=False) -> list[RunResult]:
+def sweep(variants, launcher, *, on_event=None, resume=True, stop_on_failure=False, watcher=None) -> list[RunResult]:
     # sequential; watches each until terminal (clean stop OR detected-dead → presumed_dead)
 ```
 
