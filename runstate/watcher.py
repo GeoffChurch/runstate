@@ -48,6 +48,7 @@ class Watcher:
         self._poll_interval = poll_interval
         self._hb_timeout = heartbeat_timeout
         self._runs: dict[str, _RunState] = {}
+        self._event_cursors: dict[str, int] = {}
 
     def add(self, handle) -> None:
         """Track a launched run by its handle (enables the probe tier)."""
@@ -109,6 +110,27 @@ class Watcher:
             if deadline is not None and self._now() >= deadline:
                 raise TimeoutError(f"run {run_id!r} not terminal within {timeout}s")
             self._sleep(self._poll_interval)
+
+    def iter_events(self, timeout: Optional[float] = None):
+        """Yield ``(run_id, Envelope)`` for new envelopes across all tracked runs
+        as they arrive, advancing a per-run cursor independent of the verdict
+        polling. Without ``timeout`` this is an endless stream (the caller breaks
+        out, e.g. on a terminal envelope); with ``timeout`` it returns once the
+        wall-clock deadline passes with nothing new left to drain.
+        """
+        deadline = None if timeout is None else self._now() + timeout
+        while True:
+            any_new = False
+            for run_id, st in list(self._runs.items()):
+                cur = self._event_cursors.get(run_id, 0)
+                for e in st.channel.read(after=cur):
+                    self._event_cursors[run_id] = e.seq
+                    any_new = True
+                    yield (run_id, e)
+            if deadline is not None and self._now() >= deadline:
+                return
+            if not any_new:
+                self._sleep(self._poll_interval)
 
     def _note_heartbeat(self, st: _RunState) -> None:
         hb = st.channel.latest("lifecycle.heartbeat")

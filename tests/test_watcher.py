@@ -132,3 +132,35 @@ def test_wait_timeout_raises():
     w.observe("slow", ch)  # never reaches a terminal record
     with pytest.raises(TimeoutError):
         w.wait("slow", timeout=5.0)
+
+
+# ----- iter_events(): stream new envelopes across tracked runs -----
+
+
+def test_iter_events_streams_then_continues_from_cursor():
+    ch = open_channel("r", root=None, backend="memory")
+    w = Watcher()
+    w.observe("r", ch)
+    ch.send({"a": 1}, topic="value", name="x")
+    ch.send({"reason": "completed"}, topic="lifecycle.stopped")
+    first = list(w.iter_events(timeout=0))
+    assert [(rid, e.topic) for rid, e in first] == [
+        ("r", "value"),
+        ("r", "lifecycle.stopped"),
+    ]
+    # a second drain starts where the first left off (per-run cursor)
+    ch.send({"b": 2}, topic="value", name="y")
+    second = list(w.iter_events(timeout=0))
+    assert [(rid, e.topic) for rid, e in second] == [("r", "value")]
+
+
+def test_iter_events_spans_multiple_runs():
+    a = open_channel("a", root=None, backend="memory")
+    b = open_channel("b", root=None, backend="memory")
+    w = Watcher()
+    w.observe("a", a)
+    w.observe("b", b)
+    a.send({}, topic="value", name="x")
+    b.send({}, topic="value", name="y")
+    run_ids = {rid for rid, _ in w.iter_events(timeout=0)}
+    assert run_ids == {"a", "b"}
