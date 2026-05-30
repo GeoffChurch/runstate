@@ -24,6 +24,9 @@ class RunResult:
     # the producer; consumers apply their own (e.g. sweep fails on the bottom three).
     outcome: str  # "completed" | "stopped" | "errored" | "killed" | "presumed_dead"
     reason: str
+    # run_id is stamped by the Watcher (which knows the run); peek_terminal works
+    # from a bare channel and leaves it None.
+    run_id: Optional[str] = None
     error: Optional[str] = None
     final_step: Optional[int] = None
     elapsed: Optional[float] = None
