@@ -11,70 +11,101 @@ between an orchestrator and a long-running scientific worker, plus a
 
 The protocol's value is what's unique; the Python library is one
 implementation. Other-language implementations (Rust, Go, TS) are
-welcome and out-of-scope for v0.1 to ship.
+welcome and out of scope for the current release.
+
+v0.2 reworked the protocol from the original pull-first command/event
+model into a **two-layer model**: an opinion-free **topic-log substrate**
+with opt-in **conventions** on top. The design rationale lives in
+`docs/design-v0.2.md` (converged) and `docs/design-v0.2-exploration.md`
+(the decision trail).
 
 ## Two source-of-truth artifacts
 
-1. **`protocol/messages-v0.1.schema.json`** — the JSON Schema. Defines
-   the wire format. Authoritative for what valid messages look like.
-2. **`protocol/spec.md`** — prose. Defines semantics: on-disk layout,
-   ack rules, cooperative-preempt discipline, role conventions.
+1. **The JSON Schema stack in `protocol/`** — `envelope-v0.2.schema.json`
+   (the substrate record: structure only, opaque body) plus the
+   per-convention schemas (`subscription` / `lifecycle` / `launcher` /
+   `value`-`v0.2`), each `additionalProperties: false` and independently
+   versioned. Authoritative for the wire format.
+   (`messages-v0.1.schema.json` is the superseded single-schema.)
+2. **`docs/design-v0.2.md`** — prose. Defines the two-layer model and
+   semantics: the topic-log substrate, the conventions, the liveness
+   tiers, the subscription condition-algebra, the three clocks.
+   (`protocol/spec.md` is the superseded v0.1 prose.)
 
 When in doubt about "is this protocol-conformant?", check both. The
-Python library MUST produce messages that pass the schema validator;
+Python library MUST produce messages that pass the schema validators;
 this is verified in `tests/test_schema.py`.
 
 ## Architecture
 
-Four modules in `runstate/`:
+The substrate + opt-in conventions + reference orchestration, in
+`runstate/`:
 
-- **`channel/`** — Channel Protocol + FileChannel + SqliteChannel. The
-  substrate: durable per-run bidirectional dict transport.
-- **`control.py`** — typed orchestrator→worker commands. StopNow,
-  StopAtStep, parse(), send_*, Checker (worker-side deferred-preempt
-  state holder), check() (functional convenience).
-- **`events.py`** — typed worker→orchestrator events. Progress,
-  Stopped, Ack, parse(), send, progress(), stopped().
-- **`__init__.py`** — re-exports + `attach()` (worker-side Channel
-  factory that reads RUNSTATE_RUN_ID / RUNSTATE_CHANNEL_ROOT /
-  RUNSTATE_CHANNEL_BACKEND from env).
+- **`channel/`** — the substrate. `Envelope` (the log record, in
+  `channel/envelope.py`), `MemoryChannel` + `SqliteChannel` (the two
+  backends), `open_channel` (locate/open a run's channel). A per-run
+  append-only **topic log** of envelopes `{seq, topic, name?,
+  request_id?, body}`; the substrate routes/indexes on the envelope and
+  never parses `body`.
+- **`schedule.py`** — the subscription **condition-algebra**
+  (`Threshold`/`Condition`, `satisfied()`, `Subscription`,
+  `is_unsatisfiable()`): `from`/`every`/`until` over `step`/time/count.
+- **`worker.py`** — the reference `Worker` loop (context manager +
+  `steps()`): drains `control.*`, services subscriptions into `value`
+  events, emits `lifecycle.*` (started / heartbeat / stopped / nak).
+- **`handle.py`** — portable liveness handles (`local://host/pid`).
+- **`liveness.py`** — `RunResult` (the terminal verdict; closed
+  `outcome`, verbatim `reason`, no `success`) + `peek_terminal` (the
+  record-based verdict).
+- **`launcher.py`** — `Launcher` / `LaunchHandle` Protocols +
+  `ThreadLauncher` (in-process) + `LocalLauncher` (subprocess + `attach`).
+- **`watcher.py`** — `Watcher`, the stateful failure detector
+  (`poll`/`wait`/`wait_all`/`iter_events`/`broadcast`) + `RunStatus`
+  (`Running | RunResult`).
+- **`sweep.py`** — sequential multi-run helper (`sweep` + `Variant`).
+- **`__init__.py`** — `attach()` (worker-side Channel factory reading
+  `RUNSTATE_RUN_ID` / `RUNSTATE_CHANNEL_ROOT` / `RUNSTATE_CHANNEL_BACKEND`
+  from env) + the public re-exports.
 
-No `Orchestrator` class. No `Launcher` Protocol. Users spawn worker
-processes however they want (subprocess, ray, submitit, hydra) and use
-the protocol to talk to them. See `examples/minimal/driver.py`.
+No `Orchestrator` class. There **is** a reference `Launcher` Protocol +
+launchers, but they're opt-in helpers — users can spawn however they want
+(subprocess, ray, submitit, hydra) and talk via the protocol. See
+`examples/minimal/`.
 
 ## Style guidance
 
-**The protocol stays opinion-free.** Anything that's workload-specific
-("step", "loss", "phase", "experiment") belongs in user code or in
-opt-in helpers that document themselves as "one recipe; you can build
-your own." The Channel substrate never imposes message shapes;
-`control.py` and `events.py` provide typed shapes but they're opt-in
-(users can always `channel.send(arbitrary_dict)`).
+**The protocol stays opinion-free.** Anything workload-specific ("step",
+"loss", "phase", "experiment") belongs in user code or in opt-in helpers
+that document themselves as "one recipe; you can build your own." The
+substrate never imposes message shapes — `channel.send` takes an arbitrary
+`body` dict. The conventions (`control.*`, `lifecycle.*`, `launcher.*`,
+`value`) are opt-in typed shapes pinned by the schemas; a worker that opts
+out composes its own loop from `send`/`read`/`latest` + the liveness tiers.
 
-**Helpers earn their place.** If you're adding a new typed command or
-event to `control.py` / `events.py`, ask: does this need to be
-recognized by the orchestrator's protocol-level inference (like
-`Stopped` and `Ack` are)? If not, it's a user-defined dict — keep it
-out of the helpers.
+**Helpers earn their place.** Before adding a new typed convention message,
+ask: does the protocol itself need to recognize it (the way
+`lifecycle.stopped` / `launcher.terminated` drive `peek_terminal`, or
+`control.*` drives the worker loop)? If not, it's a user-defined dict under
+`topic="value"` — keep it out of the conventions.
 
-**The `additionalProperties: false` in the JSON Schema is load-bearing.**
-It means future protocol versions can't silently add fields. When
-adding a field, you're proposing a protocol version bump.
+**The `additionalProperties: false` in the schemas is load-bearing.** It
+means a future protocol version can't silently add fields; adding a field
+to a well-known body is a deliberate convention-version bump. Each
+convention schema is versioned on its own timeline.
 
 ## Test commands
 
 ```bash
 pip install -e .                    # install editable
-pip install -e .[test]              # + jsonschema for schema tests
-pytest tests/                       # run all tests (~80, sub-1s)
+pip install -e .[test]              # + jsonschema for the schema tests
+pytest tests/                       # run all tests (~130, sub-1s)
 pytest tests/test_channel.py -v     # one module
-pytest tests/test_schema.py -v      # verifies dataclass output conforms to schema
+pytest tests/test_schema.py -v      # emitted messages conform to the schema stack
 ```
 
-The test suite is parametrized over both Channel backends (file +
-sqlite) for the Channel and control/events conformance tests; both
-must pass independently.
+The Channel conformance tests and the substrate-level convention tests are
+parametrized over **both** backends (`memory` + `sqlite`); both must pass
+independently. `tests/test_schema.py` is skipped if `jsonschema` is absent.
 
 ## Common operations
 
@@ -82,21 +113,24 @@ must pass independently.
 ```bash
 python examples/minimal/driver.py
 ```
-Spawns the worker, prints its progress events, sends a StopNow if loss
-diverges (it doesn't in this example), drains the final Stopped event.
-Demonstrates the full protocol surface.
+Spawns the worker as a subprocess via `LocalLauncher`, subscribes to its
+`loss` each step, streams the `value` events through `Watcher.wait(on_event=…)`,
+would send a cooperative `control.stop` if loss diverged (it doesn't here),
+and prints the terminal `RunResult`. Demonstrates the full surface.
 
-**Validate that a new typed dataclass conforms to the schema:**
-Add a test in `tests/test_schema.py` calling
-`event_validator.validate(asdict(new_event_instance))` or
-`command_validator.validate(asdict(new_command_instance))`.
+**Validate that emitted messages stay schema-conformant:**
+`tests/test_schema.py` drives a scenario that emits every reserved topic,
+harvests the log, and validates each envelope against the envelope schema +
+its convention schema. Extend the scenario (or the negative cases) when you
+add or change a convention body.
 
 **Add a new Channel backend:**
-1. Implement the Channel Protocol in `runstate/channel/<name>.py`
-2. Add a `"<name>"` literal in `runstate/channel/__init__.py:open_channel`
-3. Parametrize tests over the new backend in `tests/conftest.py`
-4. Update the test suite — all existing Channel conformance tests must
-   pass against the new backend with no changes.
+1. Implement the Channel surface in `runstate/channel/<name>.py`
+   (import `Envelope` from `.envelope`, not the package `__init__`).
+2. Add a `"<name>"` branch in `runstate/channel/__init__.py:open_channel`.
+3. Parametrize the conformance tests over the new backend in
+   `tests/conftest.py`.
+4. All existing Channel conformance tests must pass against it unchanged.
 
 ## Where to put new ideas
 
@@ -107,42 +141,48 @@ as the idea is investigated, accumulating alternatives, prerequisites,
 and open questions. Refuted ideas with diagnosis move to `docs/dead_ends/`
 (parallel structure).
 
-## v0.1 vs v0.2 scope snapshot
+## Scope snapshot
 
-**v0.1 (this release):**
-- Channel Protocol + FileChannel + SqliteChannel
-- control + events typed helpers (StopNow, StopAtStep, Progress,
-  Stopped, Ack)
-- `attach()` worker-side convenience
-- JSON Schema + prose spec
+**Shipped in v0.2 (this effort):**
+- Topic-log substrate: Channel surface + `MemoryChannel` + `SqliteChannel`
+  + `Envelope` + `open_channel`; thread-safe in-process sharing.
+- The conventions: cooperative-control (`control.subscribe`/`unsubscribe`/
+  `stop` + the condition-algebra), lifecycle (started/heartbeat/stopped/
+  nak), launcher (launched/terminated), `value`.
+- The reference `Worker` loop + `attach()`.
+- Orchestration (Layer 3): `Launcher`/`LaunchHandle` Protocols,
+  `ThreadLauncher`, `LocalLauncher`, `Watcher` (4 liveness tiers,
+  `RunStatus`), `peek_terminal`/`RunResult`, `sweep`.
+- The JSON Schema stack + conformance tests.
 
-**Deferred to v0.2** (see `docs/backlog/index.md`):
+**Deferred (v0.3+)** (see `docs/backlog/index.md`):
 - Store Protocol + backends (relational metadata; many-to-many
-  Run × Experiment membership)
+  Run × Experiment membership).
 - Hasher Protocol + DefaultHasher (content-addressable input
-  fingerprinting)
-- Reuse-by-hash via Store
-- Multi-run sweep helpers
-- Launcher Protocol + LocalLauncher / ThreadLauncher
-- Pause / Resume / Snapshot / Reconfigure commands
-- The webapp viewer (`docs/backlog/webapp-viewer.md`)
+  fingerprinting); reuse-by-hash via Store.
+- Pause / Resume / Snapshot / Reconfigure commands.
+- The webapp viewer (`docs/backlog/webapp-viewer.md`).
+- Open §12 implementation items still on the design's list (lazy-launch
+  double-spawn race, cursor-persistence mechanics, multi-orchestrator vs
+  `latest(control.*)`, author/provenance).
 
 **Likely never in the core library:**
-- Process spawning (users use subprocess.Popen, ray, submitit, etc.;
-  the library transports messages, not processes)
-- Run config management (use Hydra / OmegaConf / argparse)
+- *Full* process management. The reference launchers are deliberately
+  thin (a thread; a `subprocess.Popen` + `attach`) — users with ray /
+  submitit / hydra use those and talk via the protocol. The library
+  transports messages, not processes.
+- Run config management (use Hydra / OmegaConf / argparse).
 
-**Long-term ambition (NOT v0.1, NOT v0.2, but on the horizon):**
-- **Visualization protocols.** runstate already ships a control-plane
-  protocol; a data-plane protocol (richer Progress events: histograms,
-  images, audio, tensors) plus a viewer-side protocol (how a UI
-  discovers runs, subscribes to updates, renders artifacts) would let
-  runstate be a one-stop shop instead of always shipping alongside
-  wandb / MLflow / TensorBoard. See `docs/backlog/visualization-story.md`.
-  The bar is: only ship this if we can do it as a coherent protocol
-  story, not just "another tracking tool."
-- **Companion webapp / TUI** built on top of those protocols.
+**Long-term ambition (on the horizon, not yet):**
+- **Visualization protocols.** runstate ships a control-plane protocol; a
+  data-plane protocol (richer `value` events: histograms, images, audio,
+  tensors) plus a viewer-side protocol (how a UI discovers runs,
+  subscribes, renders) would let runstate be a one-stop shop instead of
+  shipping alongside wandb / MLflow / TensorBoard. (`Watcher`'s
+  `RunStatus`/`Running` already gestures at the viewer-side fold.) See
+  `docs/backlog/visualization-story.md`. The bar: only ship this as a
+  coherent protocol story, not "another tracking tool."
+- **Companion webapp / TUI** built on those protocols.
 
 The discipline: visualization gets its OWN protocol (in `protocol/`),
-distinct from the cooperative-control protocol. Compose, don't
-conflate.
+distinct from the cooperative-control protocol. Compose, don't conflate.

@@ -57,26 +57,30 @@ v0.1. Five revisions preserved as separate files:
 **The design docs are historical, not authoritative.** The authoritative
 sources for what the library currently is are:
 
-1. `../protocol/messages-v0.1.schema.json` — wire format
-2. `../protocol/spec.md` — semantics
-3. The code in `../runstate/` and the tests in `../tests/`
-
-The design docs are kept because the rationale for each cut is sometimes
-useful when revisiting decisions. They are not maintained as the design
-evolves — they're a record of how we got here.
+The v0.1 pull-first command/event model these docs describe was **superseded by
+the v0.2 redesign** (see below). They're kept because the rationale for each cut
+is sometimes useful when revisiting decisions — not because they describe the
+current library.
 
 ## `design-v0.2*.md`
 
-The v0.2 redesign — **forward-looking, not yet implemented** (the library in
-`../runstate/` is still v0.1). v0.2 is a full redesign: a topic-log substrate
-with opt-in conventions (cooperative-control, subscription, lifecycle,
-launcher).
+The v0.2 redesign — **the current model, implemented** in `../runstate/`. A
+topic-log substrate with opt-in conventions (cooperative-control, subscription,
+lifecycle, launcher) plus reference orchestration (launchers, Watcher, sweep).
 
-- `design-v0.2.md` — the **converged design**. Has open questions; not yet
-  schema-frozen. The destination.
+- `design-v0.2.md` — the **converged design**: the authoritative prose for the
+  v0.2 semantics.
 - `design-v0.2-exploration.md` — the full decision trail (an 11-revision
   dialectic) and rejected-alternative diagnoses that produced it. The journey,
   kept for rationale.
 
-Same caveat as v0.1: the design docs are the *direction*, not authoritative for
-what the library currently *is* (that's the code + schema + spec).
+**The authoritative sources for what the library currently is:**
+
+1. The JSON Schema stack in `../protocol/` (`envelope-v0.2.schema.json` + the
+   per-convention schemas) — the wire format.
+2. `design-v0.2.md` — the semantics.
+3. The code in `../runstate/` and the tests in `../tests/`.
+
+(`../protocol/messages-v0.1.schema.json` and `../protocol/spec.md` are the
+superseded v0.1 artifacts.) As with v0.1, the design docs capture *direction*
+and rationale; the code + schema are what's binding.

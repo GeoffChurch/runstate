@@ -41,24 +41,22 @@ parallel to this directory.
 - [channel-redis](backends/channel-redis.md) — Redis backend; alternative
   to Postgres for cross-host scenarios. Lighter daemon but weaker
   durability story.
-- **Launcher Protocol** — currently only Channel has a backend protocol.
-  Add Launcher + LocalLauncher / ThreadLauncher / SubmititLauncher etc.
-  for users who want library-managed process spawning. v0.2 once we have
-  the Store and want a more featureful orchestration layer.
-- **FileChannel: inotify polling** — sub-50ms recv latency on Linux.
-  Currently we poll every 50ms. Worth doing if tight inner loops appear.
+
+(Shipped in v0.2: the `Launcher` Protocol + `ThreadLauncher` / `LocalLauncher`.
+`SubmititLauncher` / `RayLauncher` / `K8sLauncher` remain — see ecosystem
+adapters below. The substrate has only `MemoryChannel` + `SqliteChannel`; a
+push-based backend is the channel-postgres LISTEN/NOTIFY idea above.)
 
 ## Derived tools
 
 - [webapp-viewer](webapp-viewer.md) — fancy webapp: lists active runs,
-  tails their progress, has a per-run stop button. SqliteChannel-only
-  (FileChannel deletes consumed messages and can't be tailed by a
-  read-only viewer). FastAPI + WebSockets or SSE. ~300-500 LOC.
-- [cli-status](cli-status.md) — terminal status table (like
-  `mycooc/run_experiment.py --status`) reading directly from
-  SqliteChannel `messages` table. Maybe `runstate status <root>`.
+  tails their progress, has a per-run stop button. The topic log is
+  non-destructive, so any backend can be tailed by a read-only viewer.
+  FastAPI + WebSockets or SSE. ~300-500 LOC.
+- [cli-status](cli-status.md) — terminal status table reading directly
+  from the SqliteChannel `log` table. Maybe `runstate status <root>`.
 - [cli-stop](cli-stop.md) — one-shot CLI: `runstate stop <run_id>`
-  opens an orchestrator-role Channel and sends StopNow. ~30 LOC.
+  opens the run's channel and sends a `control.stop`. ~30 LOC.
 
 ## v0.2 — relational layer
 
@@ -69,8 +67,9 @@ parallel to this directory.
   fingerprinting (config + git + code files + seed).
 - **Reuse-by-hash** — orchestrator (or any helper) consults Store
   before launching; if matching run exists and is DONE, reuse instead.
-- **Sweep helper** — produces a Cartesian sweep of configs and
-  dispatches via the orchestrator pattern of the user's choice.
+
+(Shipped in v0.2: the sequential `sweep` helper + `Variant`. A *Cartesian*
+config sweep on top of it, and reuse-by-hash skipping via Store, remain.)
 
 ## Ecosystem adapters (separate packages)
 
@@ -93,13 +92,12 @@ parallel to this directory.
 - **Schema codegen for other languages** — Rust types via
   `quicktype` / `datamodel-code-generator` analogs. Test that
   generated types round-trip through the schema.
-- **Protocol versioning** — currently v0.1 hardcoded in `$id`. When
-  v0.2 ships, decide on coexistence semantics (separate Channels per
-  version vs version field in envelope).
-- **Test that schema and dataclasses stay in sync** — a single test
-  that auto-generates instances of every Command/Event dataclass and
-  validates each against the schema. Catches drift between the two
-  source-of-truth artifacts.
+- **Protocol versioning** — v0.2 versions each convention schema on its
+  own timeline (version-suffixed `$id`). Still open: v0.1↔v0.2
+  coexistence semantics on one channel, and how a reader negotiates the
+  convention version. (Schema/impl drift is now guarded: `test_schema.py`
+  validates the messages the implementation actually emits against the
+  schema stack.)
 
 ## Documentation
 
