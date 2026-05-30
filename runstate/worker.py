@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import time
 
-from .schedule import Subscription
+from .handle import local_handle
+from .schedule import Subscription, is_unsatisfiable
 
 
 class Worker:
@@ -23,6 +24,11 @@ class Worker:
         self._subs: dict = {}  # request_id -> (name, Subscription)
         self._stop = None  # a pending commanded-stop Subscription, or None
         self._cursor = 0
+        # Attaching announces the worker and self-reports its liveness handle.
+        self._ch.send(
+            {"handle": local_handle(), "attached_at": self._now()},
+            topic="lifecycle.started",
+        )
 
     def set(self, name: str, value) -> None:
         """Update the worker's current value for ``name``."""
@@ -36,7 +42,7 @@ class Worker:
         reasons (intrinsic completion, data-dependent) are separate — it simply
         leaves its loop and calls a stopped-emitting helper.
         """
-        self._drain_control()
+        self._drain_control(step)
         self._service(step)
         # Tick-driven liveness beacon: step (progress) + consumed_seq (the
         # registration watermark, published only after draining/registering).
@@ -62,18 +68,28 @@ class Worker:
 
     # ----- internals -----
 
-    def _drain_control(self) -> None:
+    def _drain_control(self, step) -> None:
         for e in self._ch.read(after=self._cursor, topics=["control.>"]):
             self._cursor = e.seq
             if e.topic == "control.subscribe":
-                self._subs[e.request_id] = (
-                    e.name,
-                    Subscription(e.body, registered_at=self._now()),
-                )
+                if is_unsatisfiable(e.body, step=step):
+                    self._nak(e.request_id, "unsatisfiable", "schedule can produce no fires")
+                else:
+                    self._subs[e.request_id] = (
+                        e.name,
+                        Subscription(e.body, registered_at=self._now()),
+                    )
             elif e.topic == "control.unsubscribe":
                 self._subs.pop(e.request_id, None)
             elif e.topic == "control.stop":
                 self._stop = Subscription(e.body, registered_at=self._now())
+
+    def _nak(self, request_id, status: str, message: str) -> None:
+        self._ch.send(
+            {"status": status, "message": message},
+            topic="lifecycle.nak",
+            request_id=request_id,
+        )
 
     def _service(self, step) -> None:
         now = self._now()

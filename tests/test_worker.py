@@ -96,3 +96,52 @@ def test_consumed_seq_advances_only_after_draining(open_channel):
     w = Worker(open_channel(), now=lambda: 0.0)
     w.tick(step=0)  # nothing to drain yet
     assert open_channel().latest("lifecycle.heartbeat").body["consumed_seq"] == 0
+
+
+def test_nak_when_until_already_satisfied(open_channel):
+    orch = open_channel()
+    orch.send({"until": {"step": 50}}, topic="control.subscribe", name="loss", request_id="r1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.set("loss", 1.0)
+    w.tick(step=100)  # already past `until` step 50 -> window closed, zero fires
+    nak = open_channel().latest("lifecycle.nak")
+    assert nak.request_id == "r1"
+    assert nak.body["status"] == "unsatisfiable"
+    assert open_channel().read(topics=["value"]) == []  # no value emitted
+
+
+def test_nak_step_condition_on_stepless_worker(open_channel):
+    orch = open_channel()
+    orch.send({"from": {"step": 100}}, topic="control.subscribe", name="loss", request_id="r1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.tick(step=None)  # stepless: a step threshold can never be satisfied
+    assert open_channel().latest("lifecycle.nak").request_id == "r1"
+
+
+def test_no_nak_for_a_future_step_on_a_stepped_worker(open_channel):
+    orch = open_channel()
+    orch.send({"from": {"step": 100}}, topic="control.subscribe", name="loss", request_id="r1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.tick(step=50)  # not there yet — must NOT nak; it just waits
+    assert open_channel().latest("lifecycle.nak") is None
+
+
+def test_already_past_step_fires_at_current_step(open_channel):
+    # the agreed clean >= semantics: subscribing past the threshold fires now,
+    # at the current step (not a nak).
+    orch = open_channel()
+    orch.send({"from": {"step": 100}}, topic="control.subscribe", name="loss", request_id="r1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.set("loss", 0.5)
+    w.tick(step=150)
+    assert open_channel().latest("value", "loss").body == {"value": 0.5, "step": 150}
+    assert open_channel().latest("lifecycle.nak") is None
+
+
+def test_constructing_a_worker_emits_started_with_a_handle(open_channel):
+    w = Worker(open_channel(), now=lambda: 0.0)
+    e = open_channel().latest("lifecycle.started")
+    assert e is not None
+    assert e.body["handle"].startswith("local://")  # self-reported liveness handle
+    assert e.body["attached_at"] == 0.0
+    assert e.request_id is None

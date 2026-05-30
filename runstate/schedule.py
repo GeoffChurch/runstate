@@ -102,3 +102,33 @@ class Subscription:
         ):
             return True
         return self.every is None and self.count >= 1
+
+
+def is_unsatisfiable(schedule: dict, *, step) -> bool:
+    """Can this schedule produce *zero* fires, determinable at registration?
+
+    Two clean static cases (docs/design-v0.2.md §6): ``until`` already satisfied
+    (the window is closed before any fire), or a step-keyed ``from`` on a
+    *stepless* worker (it can never open). A merely-future or already-crossed
+    step threshold is NOT unsatisfiable — by the clean ``>=`` semantics it fires
+    at the next safe point where the threshold holds.
+    """
+    until = schedule.get("until")
+    if until is not None and satisfied(until, step=step, time_seconds=0.0, count=0):
+        return True
+    if step is None:
+        from_ = schedule.get("from")
+        if from_ is not None and not _satisfiable_stepless(from_):
+            return True
+    return False
+
+
+def _satisfiable_stepless(cond: dict) -> bool:
+    """Could ``cond`` ever be satisfied when the worker has no step?"""
+    if "any" in cond:
+        return any(_satisfiable_stepless(c) for c in cond["any"])
+    if "all" in cond:
+        return all(_satisfiable_stepless(c) for c in cond["all"])
+    if "step" in cond:
+        return False
+    return True  # time_seconds / count become satisfiable as they grow
