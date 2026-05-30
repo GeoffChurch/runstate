@@ -206,10 +206,18 @@ class Watcher:
     def broadcast(self, subscribe) -> str: ...              # returns the shared request_id (§12)
 
 @dataclass class RunResult:
-    run_id: str; outcome: str   # "completed" | "errored" | "killed" | "presumed_dead"
-    success: bool; reason: str; error: str | None; final_step: int | None; elapsed: float
+    run_id: str
+    outcome: str   # CLOSED: "completed" | "stopped" | "errored" | "killed" | "presumed_dead"
+    reason: str    # verbatim per-tier label (the raw "why", finer than the bucket)
+    error: str | None; final_step: int | None; elapsed: float
+    # No `success`: a pure projection of `outcome` that would bake one contested
+    # policy into the producer. Consumers apply their own (sweep fails on the
+    # bottom three). `outcome` (normalized, cross-tier) and `reason` (raw, per-tier)
+    # are orthogonal; a clean non-completion is outcome="stopped", reason="commanded".
 
-def peek_terminal(run_id, root) -> RunResult | None:        # existence of lifecycle.stopped (degenerate RunResult)
+# peek_terminal is the RECORD-based verdict (a terminal envelope exists); the
+# Watcher adds the INFERENCE-based tier (heartbeat staleness → presumed_dead).
+def peek_terminal(channel) -> RunResult | None:            # clean stop OR reaped launcher.terminated; else None
 def sweep(variants, launcher, *, on_event=None, resume=True, stop_on_failure=False) -> list[RunResult]:
     # sequential; watches each until terminal (clean stop OR detected-dead → presumed_dead)
 ```

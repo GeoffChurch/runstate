@@ -21,7 +21,7 @@ def test_completed(open_channel):
     r = peek_terminal(open_channel())
     assert isinstance(r, RunResult)
     assert r.outcome == "completed"
-    assert r.success is True
+    assert r.reason == "completed"
     assert r.final_step == 500
 
 
@@ -31,8 +31,20 @@ def test_errored(open_channel):
     )
     r = peek_terminal(open_channel())
     assert r.outcome == "errored"
-    assert r.success is False
+    assert r.reason == "errored"
     assert r.error == "boom"
+
+
+def test_commanded_is_stopped(open_channel):
+    # a clean stop that isn't self-completion: normalized outcome "stopped",
+    # but the verbatim worker reason is preserved
+    open_channel().send(
+        {"reason": "commanded", "final_step": 7}, topic="lifecycle.stopped"
+    )
+    r = peek_terminal(open_channel())
+    assert r.outcome == "stopped"
+    assert r.reason == "commanded"
+    assert r.final_step == 7
 
 
 def test_killed_from_launcher_terminated(open_channel):
@@ -42,7 +54,7 @@ def test_killed_from_launcher_terminated(open_channel):
     )
     r = peek_terminal(open_channel())
     assert r.outcome == "killed"
-    assert r.success is False
+    assert r.reason == "killed"
 
 
 def test_clean_stop_takes_precedence_over_terminated(open_channel):
