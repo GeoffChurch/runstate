@@ -24,11 +24,40 @@ class Worker:
         self._subs: dict = {}  # request_id -> (name, Subscription)
         self._stop = None  # a pending commanded-stop Subscription, or None
         self._cursor = 0
+        self._stopped = False
+        self._stop_reason = None
+        self._last_step = None
         # Attaching announces the worker and self-reports its liveness handle.
         self._ch.send(
             {"handle": local_handle(), "attached_at": self._now()},
             topic="lifecycle.started",
         )
+
+    def __enter__(self) -> "Worker":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        if exc_type is not None:
+            self.stopped(reason="errored", error=str(exc), final_step=self._last_step)
+        else:
+            self.stopped(reason=self._stop_reason or "completed", final_step=self._last_step)
+        return False  # never suppress exceptions
+
+    def steps(self, total=None):
+        """Drive the worker over a loop. Yields each step; after the body it
+        ``tick``s (servicing the values set this iteration) and stops on a
+        commanded stop. Pair with ``with Worker(...) as w`` so the dying breath
+        (completed / commanded / errored) is emitted on exit.
+        """
+        step = 0
+        while total is None or step < total:
+            self._last_step = step
+            yield step
+            reason = self.tick(step)
+            if reason is not None:
+                self._stop_reason = reason
+                return
+            step += 1
 
     def set(self, name: str, value) -> None:
         """Update the worker's current value for ``name``."""
@@ -57,8 +86,12 @@ class Worker:
         """Emit the cooperative dying breath (``lifecycle.stopped``).
 
         Its *existence* on the log = the run cleanly finished (§7). Broadcast
-        (``request_id=None``) so every observer sees it.
+        (``request_id=None``) so every observer sees it. Idempotent: a second
+        call (e.g. an explicit one plus the context-manager exit) is a no-op.
         """
+        if self._stopped:
+            return
+        self._stopped = True
         body = {"reason": reason}
         if error is not None:
             body["error"] = error

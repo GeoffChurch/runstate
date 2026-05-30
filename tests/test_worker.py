@@ -6,6 +6,8 @@ current values. Tests run against both backends (the ``open_channel`` factory
 shares one run across handles).
 """
 
+import pytest
+
 from runstate.worker import Worker
 
 
@@ -145,3 +147,50 @@ def test_constructing_a_worker_emits_started_with_a_handle(open_channel):
     assert e.body["handle"].startswith("local://")  # self-reported liveness handle
     assert e.body["attached_at"] == 0.0
     assert e.request_id is None
+
+
+def test_steps_drives_ticks_and_stops_completed(open_channel):
+    orch = open_channel()
+    orch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r1")
+    with Worker(open_channel(), now=lambda: 0.0) as w:
+        for step in w.steps(3):
+            w.set("loss", float(step))
+    obs = open_channel()
+    assert [v.body for v in obs.read(topics=["value"])] == [
+        {"value": 0.0, "step": 0},
+        {"value": 1.0, "step": 1},
+        {"value": 2.0, "step": 2},
+    ]
+    assert obs.latest("lifecycle.stopped").body == {"reason": "completed", "final_step": 2}
+
+
+def test_steps_breaks_on_commanded_stop(open_channel):
+    orch = open_channel()
+    orch.send({"from": {"step": 2}}, topic="control.stop", request_id="s1")
+    seen = []
+    with Worker(open_channel(), now=lambda: 0.0) as w:
+        for step in w.steps(10):
+            seen.append(step)
+    assert seen == [0, 1, 2]  # stops at the commanded step, never reaches 3..9
+    assert open_channel().latest("lifecycle.stopped").body == {
+        "reason": "commanded",
+        "final_step": 2,
+    }
+
+
+def test_context_manager_reports_errored_on_exception(open_channel):
+    with pytest.raises(ValueError):
+        with Worker(open_channel(), now=lambda: 0.0) as w:
+            for step in w.steps(10):
+                if step == 1:
+                    raise ValueError("boom")
+    e = open_channel().latest("lifecycle.stopped")
+    assert e.body == {"reason": "errored", "error": "boom", "final_step": 1}
+
+
+def test_stopped_is_idempotent(open_channel):
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.stopped(reason="completed")
+    w.stopped(reason="errored")  # second call is a no-op
+    stops = open_channel().read(topics=["lifecycle.stopped"])
+    assert len(stops) == 1 and stops[0].body == {"reason": "completed"}
