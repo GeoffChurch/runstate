@@ -1,138 +1,101 @@
-"""Channel conformance tests — parametrized over both backends."""
+"""The v0.2 substrate: a per-run, append-only topic log (SqliteChannel)."""
 
-import os
-import time
-from pathlib import Path
-
-import pytest
-
-from runstate import open_channel
+from runstate.channel.sqlite import SqliteChannel
 
 
-def _pair(tmp_path, backend, run_id="r1"):
-    """Open both ends of a Channel for one run."""
-    w = open_channel(run_id, role="worker", root=str(tmp_path), backend=backend)
-    o = open_channel(run_id, role="orchestrator", root=str(tmp_path), backend=backend)
-    return w, o
+def test_send_returns_monotonically_increasing_seq(tmp_path):
+    ch = SqliteChannel(tmp_path / "run.db")
+    s1 = ch.send({"v": 1}, topic="value", name="loss")
+    s2 = ch.send({"v": 2}, topic="value", name="loss")
+    assert isinstance(s1, int)
+    assert s2 > s1
 
 
-def test_send_recv_roundtrip(backend, tmp_path):
-    w, o = _pair(tmp_path, backend)
-    w.send({"a": 1})
-    assert o.recv() == {"a": 1}
-    o.send({"b": 2})
-    assert w.recv() == {"b": 2}
-    w.close()
-    o.close()
+def test_read_returns_envelopes_after_cursor(tmp_path):
+    ch = SqliteChannel(tmp_path / "run.db")
+    s1 = ch.send({"v": 1}, topic="value", name="loss")
+    ch.send({"v": 2}, topic="value", name="loss")
+
+    envs = ch.read(after=0)
+    assert [e.body for e in envs] == [{"v": 1}, {"v": 2}]
+    assert envs[0].seq == s1
+    assert envs[0].topic == "value"
+    assert envs[0].name == "loss"
+    assert envs[0].request_id is None
+
+    # caller-owned cursor: read strictly after the first envelope
+    rest = ch.read(after=s1)
+    assert [e.body for e in rest] == [{"v": 2}]
 
 
-def test_recv_timeout_zero_returns_none_when_empty(backend, tmp_path):
-    w, o = _pair(tmp_path, backend)
-    assert o.recv(timeout=0) is None
-    assert w.recv(timeout=0) is None
-    w.close()
-    o.close()
+def test_read_default_cursor_is_zero(tmp_path):
+    ch = SqliteChannel(tmp_path / "run.db")
+    ch.send({"v": 1}, topic="value", name="loss")
+    assert [e.body for e in ch.read()] == [{"v": 1}]
 
 
-def test_recv_timeout_finite_returns_none_after_deadline(backend, tmp_path):
-    w, o = _pair(tmp_path, backend)
-    start = time.monotonic()
-    result = o.recv(timeout=0.2)
-    elapsed = time.monotonic() - start
-    assert result is None
-    assert 0.15 <= elapsed <= 0.5  # generous bounds for the 50ms poll
-    w.close()
-    o.close()
+def test_latest_returns_most_recent_for_topic_and_name(tmp_path):
+    ch = SqliteChannel(tmp_path / "run.db")
+    ch.send({"v": 1}, topic="value", name="loss")
+    ch.send({"v": 2}, topic="value", name="loss")
+    ch.send({"v": 9}, topic="value", name="acc")
+    assert ch.latest("value", "loss").body == {"v": 2}
+    assert ch.latest("value", "acc").body == {"v": 9}
+    assert ch.latest("value", "missing") is None
 
 
-def test_direction_safety_worker_does_not_read_own_sends(backend, tmp_path):
-    """A worker-role Channel must never return its own sent messages."""
-    w, o = _pair(tmp_path, backend)
-    w.send({"x": 1})
-    # Worker reads from to_worker; nothing was sent to worker.
-    assert w.recv(timeout=0) is None
-    # Orchestrator should still see it.
-    assert o.recv() == {"x": 1}
-    w.close()
-    o.close()
+def test_latest_by_topic_only(tmp_path):
+    ch = SqliteChannel(tmp_path / "run.db")
+    ch.send({"reason": "completed"}, topic="lifecycle.stopped")
+    assert ch.latest("lifecycle.stopped").body == {"reason": "completed"}
+    assert ch.latest("lifecycle.started") is None
 
 
-def test_ordering_per_direction_preserved(backend, tmp_path):
-    w, o = _pair(tmp_path, backend)
-    for i in range(10):
-        w.send({"i": i})
-    received = []
-    while True:
-        msg = o.recv(timeout=0)
-        if msg is None:
-            break
-        received.append(msg["i"])
-    assert received == list(range(10))
-    w.close()
-    o.close()
+def test_read_filters_by_exact_topics(tmp_path):
+    ch = SqliteChannel(tmp_path / "run.db")
+    ch.send({}, topic="control.stop")
+    ch.send({}, topic="control.subscribe", name="loss")
+    ch.send({"v": 1}, topic="value", name="loss")
+    got = [e.topic for e in ch.read(topics=["control.stop", "control.subscribe"])]
+    assert got == ["control.stop", "control.subscribe"]
 
 
-def test_crash_recovery_reopen_sees_pending_messages(backend, tmp_path):
-    """Messages sent before close+reopen are still readable after."""
-    w, o = _pair(tmp_path, backend, run_id="recovery_run")
-    w.send({"persistent": True})
-    o.close()
-    w.close()
-
-    # Reopen orchestrator side; should still see the pending message.
-    o2 = open_channel("recovery_run", role="orchestrator",
-                     root=str(tmp_path), backend=backend)
-    assert o2.recv(timeout=0) == {"persistent": True}
-    o2.close()
+def test_read_filters_by_topic_prefix_wildcard(tmp_path):
+    ch = SqliteChannel(tmp_path / "run.db")
+    ch.send({}, topic="control.stop")
+    ch.send({}, topic="control.subscribe", name="loss")
+    ch.send({"v": 1}, topic="value", name="loss")
+    got = [e.topic for e in ch.read(topics=["control.>"])]
+    assert got == ["control.stop", "control.subscribe"]
 
 
-def test_bidirectional_independent_streams(backend, tmp_path):
-    """Worker sends and orchestrator sends don't interfere."""
-    w, o = _pair(tmp_path, backend)
-    w.send({"from": "worker", "n": 1})
-    o.send({"from": "orch", "n": 2})
-    w.send({"from": "worker", "n": 3})
-
-    # Orchestrator receives only worker's sends.
-    assert o.recv() == {"from": "worker", "n": 1}
-    assert o.recv() == {"from": "worker", "n": 3}
-    assert o.recv(timeout=0) is None
-
-    # Worker receives only orchestrator's send.
-    assert w.recv() == {"from": "orch", "n": 2}
-    assert w.recv(timeout=0) is None
-
-    w.close()
-    o.close()
+def test_read_filters_by_name(tmp_path):
+    ch = SqliteChannel(tmp_path / "run.db")
+    ch.send({"v": 1}, topic="value", name="loss")
+    ch.send({"v": 2}, topic="value", name="acc")
+    assert [e.body for e in ch.read(name="loss")] == [{"v": 1}]
 
 
-def test_recv_blocks_until_message_arrives(backend, tmp_path):
-    """recv(timeout=None) blocks until a message arrives."""
-    import threading
-    w, o = _pair(tmp_path, backend)
-
-    received = []
-
-    def reader():
-        msg = o.recv(timeout=2.0)
-        received.append(msg)
-
-    t = threading.Thread(target=reader)
-    t.start()
-    time.sleep(0.1)  # let reader enter recv
-    w.send({"awaited": True})
-    t.join(timeout=2.0)
-    assert received == [{"awaited": True}]
-
-    w.close()
-    o.close()
+def test_read_request_ids_filter_includes_unaddressed_broadcasts(tmp_path):
+    # visibility: an observer sees its own request_ids PLUS broadcasts (request_id None)
+    ch = SqliteChannel(tmp_path / "run.db")
+    ch.send({"v": 1}, topic="value", name="loss", request_id="r1")
+    ch.send({"v": 2}, topic="value", name="loss", request_id="r2")
+    ch.send({"v": 3}, topic="value", name="loss")  # broadcast
+    bodies = [e.body for e in ch.read(name="loss", request_ids=["r1"])]
+    assert bodies == [{"v": 1}, {"v": 3}]
 
 
-def test_open_channel_rejects_unknown_backend(tmp_path):
-    with pytest.raises(ValueError, match="Unknown backend"):
-        open_channel("x", role="worker", root=str(tmp_path), backend="redis")  # type: ignore[arg-type]
+def test_read_limit(tmp_path):
+    ch = SqliteChannel(tmp_path / "run.db")
+    for i in range(5):
+        ch.send({"i": i}, topic="value", name="loss")
+    assert len(ch.read(limit=2)) == 2
 
 
-def test_open_channel_rejects_unknown_role(backend, tmp_path):
-    with pytest.raises(ValueError, match="role must be"):
-        open_channel("x", role="invalid", root=str(tmp_path), backend=backend)  # type: ignore[arg-type]
+def test_reads_are_non_destructive(tmp_path):
+    ch = SqliteChannel(tmp_path / "run.db")
+    ch.send({"v": 1}, topic="value", name="loss")
+    first = [e.body for e in ch.read()]
+    second = [e.body for e in ch.read()]
+    assert first == second == [{"v": 1}]
