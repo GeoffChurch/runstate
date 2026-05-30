@@ -164,3 +164,21 @@ def test_iter_events_spans_multiple_runs():
     b.send({}, topic="value", name="y")
     run_ids = {rid for rid, _ in w.iter_events(timeout=0)}
     assert run_ids == {"a", "b"}
+
+
+def test_wait_streams_events_via_on_event(tmp_path):
+    launcher = ThreadLauncher(root=tmp_path)
+
+    def _train(channel):
+        with Worker(channel) as worker:
+            for _ in worker.steps(total=2):
+                pass
+
+    w = Watcher(poll_interval=0.005)
+    w.add(launcher.launch("run", _train))
+    seen = []
+    r = w.wait("run", on_event=lambda rid, e: seen.append((rid, e.topic)))
+    assert r.outcome == "completed"
+    topics = [t for _, t in seen]
+    assert "lifecycle.started" in topics
+    assert "lifecycle.stopped" in topics

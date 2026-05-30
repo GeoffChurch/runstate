@@ -97,13 +97,20 @@ class Watcher:
 
         return None
 
-    def wait(self, run_id: str, *, timeout: Optional[float] = None) -> RunResult:
+    def wait(
+        self, run_id: str, *, on_event=None, timeout: Optional[float] = None
+    ) -> RunResult:
         """Block until ``run_id`` is terminal (any tier), polling at
-        ``poll_interval``. Raises TimeoutError if ``timeout`` elapses first — the
-        caller's patience running out is not a death verdict (the run may be a
-        healthy slow one)."""
+        ``poll_interval``. If ``on_event`` is given, drain new envelopes across
+        all tracked runs to it as ``(run_id, Envelope)`` while waiting (the same
+        stream ``iter_events`` exposes). Raises TimeoutError if ``timeout``
+        elapses first — the caller's patience running out is not a death verdict
+        (the run may be a healthy slow one)."""
         deadline = None if timeout is None else self._now() + timeout
         while True:
+            if on_event is not None:
+                for rid, e in self._drain():
+                    on_event(rid, e)
             r = self.poll(run_id)
             if r is not None:
                 return r
@@ -120,17 +127,25 @@ class Watcher:
         """
         deadline = None if timeout is None else self._now() + timeout
         while True:
-            any_new = False
-            for run_id, st in list(self._runs.items()):
-                cur = self._event_cursors.get(run_id, 0)
-                for e in st.channel.read(after=cur):
-                    self._event_cursors[run_id] = e.seq
-                    any_new = True
-                    yield (run_id, e)
+            batch = self._drain()
+            for item in batch:
+                yield item
             if deadline is not None and self._now() >= deadline:
                 return
-            if not any_new:
+            if not batch:
                 self._sleep(self._poll_interval)
+
+    def _drain(self) -> list:
+        """Pull all envelopes new since the last drain across every tracked run,
+        advancing the per-run event cursor. Shared by iter_events and wait's
+        on_event streaming."""
+        out = []
+        for run_id, st in list(self._runs.items()):
+            cur = self._event_cursors.get(run_id, 0)
+            for e in st.channel.read(after=cur):
+                self._event_cursors[run_id] = e.seq
+                out.append((run_id, e))
+        return out
 
     def _note_heartbeat(self, st: _RunState) -> None:
         hb = st.channel.latest("lifecycle.heartbeat")
