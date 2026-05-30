@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://runstate.dev/protocol/v0.1/messages.json",
+  "title": "runstate v0.1 wire-format messages",
+  "description": "Canonical schema for runstate v0.1 messages. Defines the wire format for cooperative bidirectional control between an orchestrator and a long-running worker. Other-language implementations validate against this schema.",
+
+  "$defs": {
+    "command_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{12}$",
+      "description": "48-bit random hex; uuid4().hex[:12]. Collision probability negligible below ~1M commands per run."
+    },
+
+    "Command": {
+      "description": "Orchestrator → worker. Discriminated by 'type'. Carries a command_id for ack tracking.",
+      "oneOf": [
+        {"$ref": "#/$defs/StopNow"},
+        {"$ref": "#/$defs/StopAtStep"}
+      ]
+    },
+
+    "StopNow": {
+      "type": "object",
+      "description": "Ask the worker to stop ASAP at its next safe point.",
+      "required": ["type", "command_id"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {"const": "StopNow"},
+        "command_id": {"$ref": "#/$defs/command_id"}
+      }
+    },
+
+    "StopAtStep": {
+      "type": "object",
+      "description": "Ask the worker to stop when its current step reaches `at`. Deferred preempt: the worker decides when based on its own step counter.",
+      "required": ["type", "command_id", "at"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {"const": "StopAtStep"},
+        "command_id": {"$ref": "#/$defs/command_id"},
+        "at": {"type": "integer", "minimum": 0}
+      }
+    },
+
+    "Event": {
+      "description": "Worker → orchestrator. Discriminated by 'type'.",
+      "oneOf": [
+        {"$ref": "#/$defs/Progress"},
+        {"$ref": "#/$defs/Stopped"},
+        {"$ref": "#/$defs/Ack"}
+      ]
+    },
+
+    "Progress": {
+      "type": "object",
+      "description": "Periodic report of training state. Send as often as orchestrator visibility requires. step is optional for workers without a step concept.",
+      "required": ["type", "metrics"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {"const": "Progress"},
+        "step": {"type": ["integer", "null"], "minimum": 0},
+        "metrics": {
+          "type": "object",
+          "additionalProperties": {"type": "number"},
+          "description": "Numeric values keyed by metric name. Non-numeric values are not protocol-conformant; users wanting richer payloads should send a custom message via raw Channel."
+        }
+      }
+    },
+
+    "Stopped": {
+      "type": "object",
+      "description": "Worker's self-described exit notification. Send immediately before exiting. reason is free-form string; common values: 'natural', 'preempted', 'diverged', 'nan_detected', 'patience_triggered', 'oom'.",
+      "required": ["type", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {"const": "Stopped"},
+        "reason": {"type": "string"},
+        "metadata": {"type": ["object", "null"]}
+      }
+    },
+
+    "Ack": {
+      "type": "object",
+      "description": "Worker acknowledgment that a command was received and acted on. Auto-sent by the worker's check helper when it returns a non-None command. Carries the original command's command_id so the orchestrator can match acks to sent commands.",
+      "required": ["type", "of", "command_id"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {"const": "Ack"},
+        "of": {
+          "type": "string",
+          "enum": ["StopNow", "StopAtStep"],
+          "description": "The type field of the acknowledged command. Redundant with command_id but convenient for pattern-matching by command type."
+        },
+        "command_id": {"$ref": "#/$defs/command_id"}
+      }
+    }
+  }
+}

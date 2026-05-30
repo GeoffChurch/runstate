@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "runstate"
+version = "0.1.0"
+description = "Cooperative bidirectional control protocol for long-running scientific workers"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.11"
+authors = [
+  {name = "Geoffrey Churchill"},
+]
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest", "jsonschema"]
+
+[tool.setuptools.packages.find]
+include = ["runstate*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
