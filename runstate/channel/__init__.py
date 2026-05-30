@@ -3,29 +3,40 @@
 A channel is one ordered, retained, multi-reader log of *envelopes*
 ``{seq, topic, name?, request_id?, body}``. The substrate routes/indexes on the
 envelope and never parses ``body``. See docs/design-v0.2.md §4.
+
+This module is the package *facade*: it imports the core record, the backends,
+and the locator, and re-exports them. It is the top of the package's import DAG
+— siblings import from ``.envelope`` (a leaf), never from here.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Optional
+from pathlib import Path
+
+from .envelope import Envelope
+from .memory import MemoryChannel
+from .sqlite import SqliteChannel
+
+# In-process registry of MemoryChannel logs, keyed by (root, run_id). Lets
+# several open_channel(..., backend="memory") calls in one process act as
+# multiple readers/writers of the *same* run (the analogue of several
+# SqliteChannels on one file). Distinct (root, run_id) keys stay isolated.
+_MEMORY_LOGS: dict = {}
 
 
-@dataclass(frozen=True)
-class Envelope:
-    """One record in a channel's log.
+def open_channel(run_id: str, *, root=None, backend: str = "sqlite"):
+    """Locate and open a run's channel.
 
-    ``topic`` is the closed, protocol-owned routing key; ``name`` is the open,
-    application-owned identifier (e.g. a metric name); ``request_id`` correlates
-    a response to its request and scopes visibility; ``body`` is opaque to the
-    substrate.
+    ``root`` is the directory (sqlite) or namespace (memory) holding runs;
+    ``run_id`` selects one. Repeated calls on the same ``(root, run_id)`` share
+    the run's log, so an orchestrator and a worker name the run the same way.
     """
+    if backend == "sqlite":
+        return SqliteChannel(Path(root) / f"{run_id}.db")
+    if backend == "memory":
+        log = _MEMORY_LOGS.setdefault((str(root), run_id), [])
+        return MemoryChannel(log)
+    raise ValueError(f"unknown backend: {backend!r} (expected 'sqlite' or 'memory')")
 
-    seq: int
-    topic: str
-    name: Optional[str]
-    request_id: Optional[str]
-    body: dict
 
-
-__all__ = ["Envelope"]
+__all__ = ["Envelope", "MemoryChannel", "SqliteChannel", "open_channel"]

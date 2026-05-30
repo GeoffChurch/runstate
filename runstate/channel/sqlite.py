@@ -11,7 +11,7 @@ import json
 import sqlite3
 import time
 
-from . import Envelope
+from .envelope import Envelope
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS log (

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 
-from . import Envelope
+from .envelope import Envelope
 
 
 class MemoryChannel:
