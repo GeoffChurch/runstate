@@ -38,9 +38,27 @@ class Worker:
         """
         self._drain_control()
         self._service(step)
+        # Tick-driven liveness beacon: step (progress) + consumed_seq (the
+        # registration watermark, published only after draining/registering).
+        self._ch.send(
+            {"step": step, "consumed_seq": self._cursor}, topic="lifecycle.heartbeat"
+        )
         if self._stop is not None and self._stop.tick(step=step, now=self._now()).fire:
             return "commanded"
         return None
+
+    def stopped(self, reason: str = "completed", *, error=None, final_step=None) -> None:
+        """Emit the cooperative dying breath (``lifecycle.stopped``).
+
+        Its *existence* on the log = the run cleanly finished (§7). Broadcast
+        (``request_id=None``) so every observer sees it.
+        """
+        body = {"reason": reason}
+        if error is not None:
+            body["error"] = error
+        if final_step is not None:
+            body["final_step"] = final_step
+        self._ch.send(body, topic="lifecycle.stopped")
 
     # ----- internals -----
 

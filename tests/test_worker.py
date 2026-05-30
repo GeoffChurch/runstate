@@ -61,3 +61,38 @@ def test_control_stop_at_step(open_channel):
     w = Worker(open_channel(), now=lambda: 0.0)
     assert w.tick(step=50) is None
     assert w.tick(step=100) == "commanded"
+
+
+def test_stopped_emits_dying_breath(open_channel):
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.stopped(reason="completed", final_step=500)
+    e = open_channel().latest("lifecycle.stopped")
+    assert e.body == {"reason": "completed", "final_step": 500}
+    assert e.request_id is None  # broadcast — every observer sees it
+
+
+def test_stopped_with_error(open_channel):
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.stopped(reason="errored", error="boom")
+    assert open_channel().latest("lifecycle.stopped").body == {
+        "reason": "errored",
+        "error": "boom",
+    }
+
+
+def test_tick_emits_heartbeat_with_step_and_consumed_seq(open_channel):
+    orch = open_channel()
+    sub_seq = orch.send({}, topic="control.subscribe", name="loss", request_id="r1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.tick(step=7)
+    hb = open_channel().latest("lifecycle.heartbeat")
+    # consumed_seq is the worker's read position in the inbound control order:
+    # after draining, it has processed the subscribe at sub_seq.
+    assert hb.body == {"step": 7, "consumed_seq": sub_seq}
+    assert hb.request_id is None
+
+
+def test_consumed_seq_advances_only_after_draining(open_channel):
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.tick(step=0)  # nothing to drain yet
+    assert open_channel().latest("lifecycle.heartbeat").body["consumed_seq"] == 0
