@@ -18,8 +18,11 @@ the thread object and ``terminate`` is unavailable.
 
 from __future__ import annotations
 
+import os
+import socket
+import subprocess
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from .channel import open_channel
@@ -96,3 +99,94 @@ class ThreadLauncher:
         )
         thread.start()
         return h
+
+
+@dataclass
+class _LocalHandle:
+    """The handle LocalLauncher returns. Holds the child's Popen, so liveness is
+    read from it directly (reliable, no PID-reuse window); the portable handle
+    string is for *other* observers that resolve it without the Popen (§8)."""
+
+    run_id: str
+    channel: object
+    handle: str
+    _proc: subprocess.Popen
+    _reaped: bool = field(default=False)
+
+    def is_alive(self) -> bool:
+        return self._proc.poll() is None
+
+    def wait(self, timeout=None) -> int:
+        """Block until the child exits, reap it (emit launcher.terminated once),
+        and return its exit code."""
+        rc = self._proc.wait(timeout)
+        self._reap()
+        return rc
+
+    def poll(self) -> Optional[int]:
+        """Reap if the child has exited; non-blocking. Returns the exit code or
+        None if still running."""
+        rc = self._proc.poll()
+        if rc is not None:
+            self._reap()
+        return rc
+
+    def terminate(self) -> None:
+        """Send SIGTERM. Reaping (and launcher.terminated) follows on wait/poll."""
+        self._proc.terminate()
+
+    def _reap(self) -> None:
+        rc = self._proc.returncode
+        if self._reaped or rc is None:
+            return
+        self._reaped = True
+        if rc < 0:  # died from signal -rc
+            body = {"signal": -rc, "reason": "killed"}
+        else:
+            body = {"exit_code": rc, "reason": "exited"}
+        self.channel.send(body, topic="launcher.terminated")
+
+
+class LocalLauncher:
+    """Spawn workers as local subprocesses (the full handle story, §8).
+
+    ``launch`` runs a command with ``RUNSTATE_*`` injected; the child calls
+    ``runstate.attach()`` to re-derive the same run's channel — so the backend
+    must be cross-process durable (sqlite, the default; memory would not be
+    shared across processes). As a context manager, best-effort reaps any
+    finished children on exit (it does not block on or kill stragglers — that
+    stays the caller's choice via ``wait`` / ``terminate``, honoring §8's
+    fire-and-forget split).
+    """
+
+    def __init__(self, *, root, backend: str = "sqlite"):
+        self._root = root
+        self._backend = backend
+        self._handles: list[_LocalHandle] = []
+
+    def open_channel(self, run_id):
+        return open_channel(run_id, root=self._root, backend=self._backend)
+
+    def launch(self, run_id, cmd, *, env=None) -> _LocalHandle:
+        channel = self.open_channel(run_id)
+        child_env = {
+            **os.environ,
+            **(env or {}),
+            "RUNSTATE_RUN_ID": run_id,
+            "RUNSTATE_CHANNEL_ROOT": str(self._root),
+            "RUNSTATE_CHANNEL_BACKEND": self._backend,
+        }
+        proc = subprocess.Popen(cmd, env=child_env)
+        handle = f"local://{socket.gethostname()}/{proc.pid}"
+        channel.send({"handle": handle, "status": "running"}, topic="launcher.launched")
+        h = _LocalHandle(run_id=run_id, channel=channel, handle=handle, _proc=proc)
+        self._handles.append(h)
+        return h
+
+    def __enter__(self) -> "LocalLauncher":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        for h in self._handles:
+            h.poll()  # reap whatever has finished; don't block or kill stragglers
+        return False
