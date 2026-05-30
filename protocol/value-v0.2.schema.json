@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://runstate.dev/protocol/value-v0.2.json",
+  "title": "runstate v0.2 value convention",
+  "description": "Pins only the WRAPPER of the `value` topic -- the data plane. The worker emits a current value in response to a subscription, correlated by request_id and identified by `name`. The `value` payload itself is arbitrary (Any); only the wrapper {value, step?} is fixed. Applied on top of the envelope schema.",
+
+  "allOf": [
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "value"}}},
+      "then": {"properties": {"body": {"$ref": "#/$defs/Value"}}}
+    }
+  ],
+
+  "$defs": {
+    "Value": {
+      "type": "object", "required": ["value"], "additionalProperties": false,
+      "properties": {
+        "value": true,
+        "step": {"type": ["integer", "null"], "minimum": 0}
+      }
+    }
+  }
+}

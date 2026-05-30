@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://runstate.dev/protocol/envelope-v0.2.json",
+  "title": "runstate v0.2 envelope",
+  "description": "The substrate record: one entry in a per-run append-only topic log. Structural only -- the substrate routes/indexes on the envelope and never interprets `body`, and does not constrain which topics may appear (so the log can be backed by NATS JetStream / Kafka / Redis Streams). Topic *semantics* and well-known body shapes are pinned by the separately-versioned convention schemas (subscription / lifecycle / launcher / value).",
+  "type": "object",
+  "required": ["seq", "topic", "body"],
+  "additionalProperties": false,
+  "properties": {
+    "seq": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The substrate clock: a per-log monotonic total order assigned on append."
+    },
+    "topic": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The protocol-owned routing key (closed vocabulary at the convention layer); opaque non-empty string at the substrate layer."
+    },
+    "name": {
+      "type": ["string", "null"],
+      "description": "Open, application-owned identifier (e.g. a metric name, or a subscription target). Null when unused."
+    },
+    "request_id": {
+      "type": ["string", "null"],
+      "description": "Correlates a response to its request and scopes visibility. Null for broadcasts (visible to every reader)."
+    },
+    "body": {
+      "type": "object",
+      "description": "Opaque to the substrate. Well-known shapes are pinned per-topic by the convention schemas; user `value` payloads are arbitrary."
+    }
+  }
+}

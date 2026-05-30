@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://runstate.dev/protocol/subscription-v0.2.json",
+  "title": "runstate v0.2 subscription convention",
+  "description": "Pins the bodies of the control.* topics an orchestrator produces. control.subscribe / control.stop carry a Schedule (the condition-algebra of §6); control.unsubscribe carries an empty body (it cancels by request_id). Applied on top of the envelope schema, which validates structure. Independently versioned from the other conventions.",
+
+  "allOf": [
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"pattern": "^control\\."}}},
+      "then": {"properties": {"topic": {"enum": ["control.subscribe", "control.unsubscribe", "control.stop"]}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "control.subscribe"}}},
+      "then": {"properties": {"body": {"$ref": "#/$defs/Schedule"}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "control.stop"}}},
+      "then": {"properties": {"body": {"$ref": "#/$defs/Schedule"}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "control.unsubscribe"}}},
+      "then": {"properties": {"body": {"$ref": "#/$defs/Empty"}}}
+    }
+  ],
+
+  "$defs": {
+    "Empty": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "control.unsubscribe cancels by request_id; the body carries nothing."
+    },
+
+    "Schedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "from/every/until, each a Condition. Absent `every` => one-shot. `count` thresholds are valid only in `until` (a fire budget), so from/every use the count-free Condition.",
+      "properties": {
+        "from": {"$ref": "#/$defs/Condition"},
+        "every": {"$ref": "#/$defs/Condition"},
+        "until": {"$ref": "#/$defs/ConditionWithCount"}
+      }
+    },
+
+    "StepThreshold": {
+      "type": "object", "required": ["step"], "additionalProperties": false,
+      "properties": {"step": {"type": "integer", "minimum": 0}}
+    },
+    "TimeThreshold": {
+      "type": "object", "required": ["time_seconds"], "additionalProperties": false,
+      "properties": {"time_seconds": {"type": "number", "minimum": 0}}
+    },
+    "CountThreshold": {
+      "type": "object", "required": ["count"], "additionalProperties": false,
+      "properties": {"count": {"type": "integer", "minimum": 0}}
+    },
+
+    "Condition": {
+      "description": "Threshold over (step, time) or any/all of Conditions. No `count` here.",
+      "oneOf": [
+        {"$ref": "#/$defs/StepThreshold"},
+        {"$ref": "#/$defs/TimeThreshold"},
+        {"type": "object", "required": ["any"], "additionalProperties": false,
+         "properties": {"any": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/Condition"}}}},
+        {"type": "object", "required": ["all"], "additionalProperties": false,
+         "properties": {"all": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/Condition"}}}}
+      ]
+    },
+
+    "ConditionWithCount": {
+      "description": "As Condition, plus `count` thresholds (until-only).",
+      "oneOf": [
+        {"$ref": "#/$defs/StepThreshold"},
+        {"$ref": "#/$defs/TimeThreshold"},
+        {"$ref": "#/$defs/CountThreshold"},
+        {"type": "object", "required": ["any"], "additionalProperties": false,
+         "properties": {"any": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/ConditionWithCount"}}}},
+        {"type": "object", "required": ["all"], "additionalProperties": false,
+         "properties": {"all": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/ConditionWithCount"}}}}
+      ]
+    }
+  }
+}

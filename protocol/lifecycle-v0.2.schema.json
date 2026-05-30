@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://runstate.dev/protocol/lifecycle-v0.2.json",
+  "title": "runstate v0.2 lifecycle convention",
+  "description": "Pins the bodies of the lifecycle.* topics the worker produces: started (attach + self-reported liveness handle), heartbeat (tick beacon), stopped (cooperative dying breath), nak (a refused control request). Applied on top of the envelope schema.",
+
+  "allOf": [
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"pattern": "^lifecycle\\."}}},
+      "then": {"properties": {"topic": {"enum": ["lifecycle.started", "lifecycle.heartbeat", "lifecycle.stopped", "lifecycle.nak"]}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "lifecycle.started"}}},
+      "then": {"properties": {"body": {"$ref": "#/$defs/Started"}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "lifecycle.heartbeat"}}},
+      "then": {"properties": {"body": {"$ref": "#/$defs/Heartbeat"}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "lifecycle.stopped"}}},
+      "then": {"properties": {"body": {"$ref": "#/$defs/Stopped"}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "lifecycle.nak"}}},
+      "then": {"properties": {"body": {"$ref": "#/$defs/Nak"}}}
+    }
+  ],
+
+  "$defs": {
+    "Started": {
+      "type": "object", "required": ["handle"], "additionalProperties": false,
+      "description": "Pushed on attach; the worker self-reports its liveness handle (§8).",
+      "properties": {
+        "handle": {"type": "string"},
+        "hostname": {"type": ["string", "null"]},
+        "attached_at": {"type": ["number", "null"]}
+      }
+    },
+    "Heartbeat": {
+      "type": "object", "required": ["step", "consumed_seq"], "additionalProperties": false,
+      "description": "Tick-driven liveness beacon. consumed_seq is the worker's read position in its inbound `control` order (§11-12), published after durable registration.",
+      "properties": {
+        "step": {"type": ["integer", "null"], "minimum": 0},
+        "consumed_seq": {"type": "integer", "minimum": 0}
+      }
+    },
+    "Stopped": {
+      "type": "object", "required": ["reason"], "additionalProperties": false,
+      "description": "The cooperative dying breath; its existence on the log = the run cleanly finished (§7). reason is a verbatim worker label; error accompanies reason=='errored'.",
+      "properties": {
+        "reason": {"type": "string"},
+        "error": {"type": ["string", "null"]},
+        "final_step": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
+    "Nak": {
+      "type": "object", "required": ["status", "message"], "additionalProperties": false,
+      "description": "A refused control request (e.g. a statically-unsatisfiable subscription), correlated by request_id.",
+      "properties": {
+        "status": {"type": "string"},
+        "message": {"type": "string"}
+      }
+    }
+  }
+}

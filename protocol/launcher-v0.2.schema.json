@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://runstate.dev/protocol/launcher-v0.2.json",
+  "title": "runstate v0.2 launcher convention",
+  "description": "Pins the bodies of the launcher.* topics the spawner/reaper produces: launched (spawn-intent + liveness handle) and terminated (the manner of death; only a wait()ing parent can produce it). Applied on top of the envelope schema.",
+
+  "allOf": [
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"pattern": "^launcher\\."}}},
+      "then": {"properties": {"topic": {"enum": ["launcher.launched", "launcher.terminated"]}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "launcher.launched"}}},
+      "then": {"properties": {"body": {"$ref": "#/$defs/Launched"}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "launcher.terminated"}}},
+      "then": {"properties": {"body": {"$ref": "#/$defs/Terminated"}}}
+    }
+  ],
+
+  "$defs": {
+    "Launched": {
+      "type": "object", "required": ["handle", "status"], "additionalProperties": false,
+      "description": "Spawn-intent plus the worker's liveness handle. status is 'running' for the reference launchers; the domain may widen (e.g. intended/failed) via a convention-version bump.",
+      "properties": {
+        "handle": {"type": "string"},
+        "status": {"type": "string", "enum": ["running"]}
+      }
+    },
+    "Terminated": {
+      "type": "object", "required": ["reason"], "additionalProperties": false,
+      "description": "The manner of death. reason 'exited' carries exit_code; 'killed' carries the signal.",
+      "properties": {
+        "reason": {"type": "string", "enum": ["exited", "killed"]},
+        "exit_code": {"type": "integer"},
+        "signal": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}
