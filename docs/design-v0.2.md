@@ -1,6 +1,6 @@
 # runstate v0.2 — Design
 
-**Status:** converged design; six convention decisions resolved + a three-agent review folded (rev 3). **Envelope freezable; `lifecycle.heartbeat` body held pending §12.6 (`consumed_seq` scoping); implementation-plan items in §12.**
+**Status:** converged design, **implemented in v0.2** (rev 4 — implementation pass). Substrate + the four conventions + orchestration helpers + the JSON Schema stack are built and tested. The schemas are written and frozen; the two previously-held bodies are pinned — `lifecycle.heartbeat` = `{step, consumed_seq}` and `launcher.launched.status` = `running`. Remaining §12 items are consciously **deferred** (annotated there), not blocking.
 **Date:** 2026-05-29.
 **Supersedes:** v0.1 (`design-v0.1.md`). Full redesign.
 **Decision trail:** the dialectic and rejected alternatives that produced this live in `design-v0.2-exploration.md`. This doc is the destination.
@@ -36,7 +36,7 @@ orchestration    — reference helpers (Launcher, Watcher, sweep)               
 
 ## 3. Backend
 
-The substrate's storage. v0.2 ships **SQLite only** (stdlib, embedded, zero-dependency; a single-file `messages` table with an autoincrement `seq` is already a retained, sequenced log). Multi-host backends are backlog (§14); **NATS JetStream is preferred** — subjects map to `topic.name`, stream sequence to `seq`, durable/ephemeral consumers to caller-owned cursors, `last_per_subject` to the `latest` projection.
+The substrate's storage. v0.2 ships **two backends**: a durable **SQLite** one (stdlib, embedded, zero-dependency; a single-file `log` table with an autoincrement `seq` is already a retained, sequenced log) and an in-process **Memory** one (a shared list, for in-proc orchestration and tests). Both pass the same conformance suite. Multi-host backends are backlog (§14); **NATS JetStream is preferred** — subjects map to `topic.name`, stream sequence to `seq`, durable/ephemeral consumers to caller-owned cursors, `last_per_subject` to the `latest` projection.
 
 ## 4. Substrate: a per-run topic log
 
@@ -189,7 +189,7 @@ Reference tooling; assumes the conventions (a worker that opts out composes its 
 ```python
 class Launcher(Protocol):                                    # target is launcher-specific (callable vs argv)
     def launch(self, run_id, target, **kwargs) -> LaunchHandle: ...
-    def open_channel(self, run_id) -> Channel: ...           # first control.* lazily launches (§12)
+    def open_channel(self, run_id) -> Channel: ...           # locate/open the run (lazy-launch-on-control deferred, §12)
 
 class LaunchHandle(Protocol):                                # concrete per launcher (thread / subprocess)
     run_id: str; channel: Channel
@@ -233,7 +233,7 @@ def sweep(variants, launcher, *, on_event=None, resume=True, stop_on_failure=Fal
     # sequential; watches each until terminal (clean stop OR detected-dead → presumed_dead)
 ```
 
-**Cross-run synchronization.** `Watcher.broadcast(subscribe(name="loss", from=at(step=100)))` fans one subscription across all active runs (one shared `request_id`; the `run_id` disambiguates responses). It's the primary cross-run mechanism — *no Experiment class*. It is a **pure synchronization**: it blocks until every *live* run reaches the point, so a slow-but-healthy run **legitimately delays it, unbounded by design** (that is what "synchronize" means). Each run resolves to exactly one of: **fires** (the value); **`nak`** (statically unsatisfiable — e.g. already past step 100); **`lifecycle.stopped`** (stopped before reaching it — excluded); **heartbeat-stale** (crashed/hung — excluded). A **bounded-latency** caller MUST additionally supply a **patience cap** — a wall-clock deadline after which the barrier returns *partial* results (still-running slow runs reported as pending). So the cap is *optional for a pure sync* but *required for a bounded wait*; "no separate timeout" holds only for the unbounded-sync reading. (Three distinct never-fire causes → three handlers: static-unsatisfiable → `nak`; stops-early → `stopped`; too-slow-for-my-patience → the cap.)
+**Cross-run synchronization.** `Watcher.broadcast("loss", {"from": {"step": 100}})` fans one subscription across all tracked runs (one shared `request_id`; the `run_id` disambiguates responses). It's the primary cross-run mechanism — *no Experiment class*. It is a **pure synchronization**: it blocks until every *live* run reaches the point, so a slow-but-healthy run **legitimately delays it, unbounded by design** (that is what "synchronize" means). Each run resolves to exactly one of: **fires** (the value); **`nak`** (statically unsatisfiable — e.g. already past step 100); **`lifecycle.stopped`** (stopped before reaching it — excluded); **heartbeat-stale** (crashed/hung — excluded). A **bounded-latency** caller MUST additionally supply a **patience cap** — a wall-clock deadline after which the barrier returns *partial* results (still-running slow runs reported as pending). So the cap is *optional for a pure sync* but *required for a bounded wait*; "no separate timeout" holds only for the unbounded-sync reading. (Three distinct never-fire causes → three handlers: static-unsatisfiable → `nak`; stops-early → `stopped`; too-slow-for-my-patience → the cap.)
 
 ## 10. The schema stack (freeze story)
 
@@ -241,7 +241,7 @@ No single schema:
 - **Envelope schema** — `{seq, topic, name?, request_id?, body}` with `body: object` (opaque). Close to freezable; constrains neither `topic` semantics nor body shapes.
 - **Convention schemas** — each strictly pins its own well-known bodies (`additionalProperties: false`), independently versioned. Adding a field to a well-known body is a deliberate convention-version bump. **User `value` bodies** pin only the *wrapper* (`{value, step?}`); the `value` payload is `Any`. Validation is opt-in/layered: the substrate never validates; "opt-in convention" means "you needn't emit `lifecycle.*`, but if you do, conform."
 
-This is the cut that dissolves "blocking for the schema": the convention decisions block specific *convention* schemas, downstream — not the envelope. **Freeze status:** the envelope is freezable now; the `lifecycle.heartbeat` body is *not* until `consumed_seq` is scoped, and `launcher.launched`'s `status` domain must be pinned first (both §12).
+This is the cut that dissolves "blocking for the schema": the convention decisions block specific *convention* schemas, downstream — not the envelope. **Freeze status (rev 4):** the stack is written and frozen in `protocol/` — `envelope-v0.2` plus `subscription` / `lifecycle` / `launcher` / `value`-`v0.2`, each `additionalProperties: false`. The two previously-held bodies are pinned: `lifecycle.heartbeat` = `{step, consumed_seq}` (`consumed_seq` = the inbound-`control` read position, §11) and `launcher.launched.status` = `enum ["running"]` (room to widen via a convention-version bump). `tests/test_schema.py` validates that the messages the implementation emits conform.
 
 ## 11. Three clocks
 
@@ -249,17 +249,17 @@ This is the cut that dissolves "blocking for the schema": the convention decisio
 
 ## 12. Open questions — implementation-plan items
 
-The six convention decisions are settled (see revision history). These remain; **none change the wire *envelope*** (freeze it now), but a few touch convention *bodies* or the seq contract (flagged ▸) and gate freezing those bodies:
+The six convention decisions are settled (see revision history). Status tags below are as of the rev-4 implementation pass. **None change the wire *envelope***; the items still open touch operational mechanics, not the frozen schemas.
 
-1. **Lazy-launch double-spawn race** — write `launcher.launched` spawn-intent inside the channel lock at/before exec. ▸ pins `launcher.launched`'s `status` domain (`intended | running | failed`?) — a body-shape question.
-2. **`send_request` ↔ `Channel` seam** — `open_channel` returns a launch-wrapping channel.
-3. **`Watcher.observe`** — the handle-free / late-attach / observe-only path (today's `add` is handle-only, excluding the pure-observer story the design centers on).
-4. **`broadcast` returns the assigned `request_id`** (else cancel-the-lot is unreachable).
-5. **Cursor-persistence mechanics** — where/how the worker persists its cursor, and the at-least-once / at-most-once boundary; it must advance `consumed_seq` only *after* durable registration (§6). At-least-once means a `value` or a `count`-`until` can over-fire on crash-replay — an observable semantic, so pin it.
-6. **▸ `consumed_seq` scoping** — `seq` is per-topic (global only on a single-sequencer backend, §4); a single scalar watermark over the worker's several `control.*` topics is well-defined only if **inbound `control` is single-ordered**. Scope `consumed_seq` to that inbound order (cheap on every backend; needs no global cross-everything order). **Gates freezing the `lifecycle.heartbeat` body.**
-7. **▸ Multi-orchestrator support** — v0.1 permitted several orchestrator-role channels. Under multiple `control.*` writers, `latest(control.*)` loses its single-writer precondition (§4) and is ill-defined for "was a stop requested?". Decide whether v0.2 keeps multi-orchestrator and what it does to `latest` on control topics. (Coupled to #8.)
-8. **Author / provenance (deferred, not blocking)** — nothing currently routes on author, so by the lift-rule it's not an envelope field. **Stopgap:** encode author as a `request_id` prefix — `request_id` is an opaque *string*, so `"webui:<unique>"` rides through the visibility filter (set-membership over opaque ids) and attributes exactly the addressed `control` messages where multi-orchestrator attribution matters (unaddressed pushes are the worker's anyway). It earns a real envelope field only if provenance/authz becomes load-bearing — coupled to #7.
-9. **Writer-serialization + GC/retention** — concurrent `seq` assignment across senders; the channel lock; the retention policy (completion / `peek_terminal` / resume guarantees hold only under full retention).
+1. **Lazy-launch double-spawn race** — *[deferred]* `launcher.launched.status` is pinned to `running`, but lazy-launch-on-first-`control` itself is **not** built: `launch()` is explicit (you spawn, then send control). The write-launched-inside-the-channel-lock race only exists once lazy launch does; revisit together.
+2. **`send_request` ↔ `Channel` seam** — *[deferred]* tied to #1; `open_channel` returns a plain channel, not a launch-wrapping one.
+3. **`Watcher.observe`** — *[done]* `observe(run_id, channel)` is the handle-free / late-attach / observe-only path; `add(handle)` is the handle path that also enables the probe tier.
+4. **`broadcast` returns the assigned `request_id`** — *[done]* `Watcher.broadcast(name, schedule)` returns the shared id; pass `request_id=` to reuse one (cancel-the-lot reachable).
+5. **Cursor-persistence mechanics** — *[deferred]* the worker's cursor is in-memory; there is no crash-replay/restart persistence yet, so the at-least-once / at-most-once boundary (a `value` or `count`-`until` over-firing on replay) is unaddressed. Within a process, registration is synchronous and precedes the tick's heartbeat, so `consumed_seq` already advances only after registration.
+6. **▸ `consumed_seq` scoping** — *[done for the shipped backends]* heartbeat = `{step, consumed_seq}` is implemented and frozen; `consumed_seq` is the worker's read position over `control.>`. On SQLite/Memory `seq` is globally ordered, so the scalar is well-defined. The per-subject-backend subtlety (a single watermark needs inbound-`control` single-ordering) re-surfaces only when a multi-subject backend (NATS) lands.
+7. **▸ Multi-orchestrator support** — *[handled by the drain model]* the worker **drains** `control.>` (processes every command after its cursor), so it never relies on `latest(control.*)` for "was a stop requested?" — multiple orchestrators' commands all take effect. The remaining piece is *attribution* under multiple writers, which is #8. (`peek_terminal`'s `latest` calls are on worker/launcher-written topics, each single-writer.)
+8. **Author / provenance** — *[deferred; stopgap available]* nothing routes on author, so by the lift-rule it's not an envelope field. `request_id` is an opaque string in the implementation, so the `"webui:<unique>"` prefix stopgap works today. A real field waits on provenance/authz becoming load-bearing.
+9. **Writer-serialization + GC/retention** — *[partial]* writer-serialization is handled (`MemoryChannel` takes a shared lock for concurrent in-process writers; `SqliteChannel` relies on autoincrement + SQLite's own locking). Retention is **full, no GC** — which is exactly the precondition `peek_terminal` / resume rely on; a retention/GC policy is future work.
 
 ## 13. Rejected alternatives
 
@@ -279,12 +279,13 @@ The six convention decisions are settled (see revision history). These remain; *
 
 ## 14. Scope: v0.2 vs later
 
-**v0.2 ships:** the substrate (SQLite topic log) + the four conventions + the orchestration helpers, once the per-convention schemas freeze and §12 is settled in implementation.
+**v0.2 ships (and now does):** the substrate (Memory + SQLite topic log) + the four conventions + the orchestration helpers (launchers, Watcher, sweep) + the frozen schema stack. The §12 items left open (lazy-launch, cursor-persistence/crash-replay, multi-orchestrator attribution, a GC/retention policy) are non-blocking operational refinements, not protocol gaps.
 **Layer 4 (later):** Store + Hasher (relational run/experiment metadata; content-addressable fingerprinting; reuse-by-hash).
 **Long-term:** richer data-plane Progress + a viewer-discovery protocol — its *own* protocol in `protocol/`, distinct from this control protocol. Compose, don't conflate.
 
 ## Revision history
 
+- 2026-05-30 (rev 4): **Implementation pass.** Built the substrate (Memory + SQLite, conformance-tested over both), the four conventions, the reference `Worker`, and the orchestration helpers (`ThreadLauncher` / `LocalLauncher` + Protocols, `Watcher`, `sweep`), and **wrote + froze the JSON Schema stack**. Reconciliations folded back here: the two held bodies are pinned (heartbeat `{step, consumed_seq}`, `launcher.launched.status` = `running`); §12 annotated with status — #3 (`observe`), #4 (`broadcast` returns id), #6 (`consumed_seq` for the shipped backends) **done**, #7 **handled by the drain model**, #9 **partial** (writer-serialization yes, GC no); #1/#2 (lazy-launch + its channel seam), #5 (cursor-persistence / crash-replay), #8 (author field) **deferred**, non-blocking. Two design refinements surfaced during build and were adopted: `RunResult` dropped `success` for a closed `outcome` + verbatim `reason`; `Watcher.poll`/`wait_all` return `RunStatus = Running | RunResult` (the `Running` arm carries the watcher-unique `beacon_age`), making the fold lossless instead of `Optional[RunResult]`.
 - 2026-05-29 (rev 3): **Folded a three-agent review** (calibrated red-team ×2 + an unprimed independent re-derivation that *converged* on the substrate, scheduling, liveness, and cross-run shape — validating the bones). Fixes: the cross-run barrier is a **pure synchronization** (a slow-but-healthy run legitimately delays it, unbounded; bounded-latency callers supply a **patience cap** returning partial results — corrected the "no timeout needed for correctness" overclaim); `nak`-on-unsatisfiable is **static-only** (dynamic never-fire → `stopped`, slow → patience cap; stepless workers `nak` step-conditions); `consumed_seq` scoped to the **inbound `control` order** (well-defined on per-topic-seq backends; gates freezing the heartbeat body) and published **after** durable registration; **register-before-reap** made a normative loop invariant; documented the tick-beacon vs legitimate-long-step tension; per-slot threshold types (`count` only in `until`, structurally); §13 ack relabelled **relocated, not eliminated**; new open items — multi-orchestrator vs `latest(control.*)`, and author/provenance (deferred, with a `request_id`-prefix stopgap). **Envelope freezable; heartbeat body held pending `consumed_seq` scoping.**
 - 2026-05-29 (rev 2): **Folded the six resolved convention decisions.** #6 split-field envelope `{seq, topic, name?, request_id?, body}` with a closed content-typed `topic` vocabulary and an open app `name` (dissolves the reserved-vs-user collision); #3 dissolved (`topic` discriminates — no `kind`); #5 the recursive `from`/`every`/`until` condition-algebra over (step, time, count) with `any`/`all`, no normal form (one-shot = omit `every`); #1 no registration ack / stop receipt (heartbeat `consumed_seq` watermark + `nak`-on-unsatisfiable; barrier backstop = heartbeat staleness, no separate timeout); #2 heartbeat = tick-driven push beacon `{step?, consumed_seq}`, lifelines = service-worker subscription ref-count (no reserved name); #4 opaque envelope body / strict-pinned convention bodies / `Any` user payload. Replaced the in/out binary with content-typed categories + the per-role subscription protocol. Remaining open items are implementation-plan only (§12).
 - 2026-05-29 (rev 1): Clean rewrite from the converged architecture (topic-log substrate + conventions). Supersedes `design-v0.2-exploration.md` (the full decision trail).
