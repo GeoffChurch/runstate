@@ -1,0 +1,63 @@
+"""The reference worker loop (docs/design-v0.2.md §6).
+
+The worker drains ``control.*``, registers/cancels subscriptions, and on each
+``tick(step)`` services due ones by emitting ``value`` envelopes carrying its
+current values. Tests run against both backends (the ``open_channel`` factory
+shares one run across handles).
+"""
+
+from runstate.worker import Worker
+
+
+def test_subscribe_then_tick_emits_current_value(open_channel):
+    # an orchestrator subscribes to "loss", fire once now ({} schedule)
+    orch = open_channel()
+    orch.send({}, topic="control.subscribe", name="loss", request_id="r1")
+
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.set("loss", 0.5)
+    w.tick(step=10)
+
+    vals = open_channel().read(topics=["value"])
+    assert [(v.name, v.request_id, v.body) for v in vals] == [
+        ("loss", "r1", {"value": 0.5, "step": 10})
+    ]
+
+
+def test_recurring_subscription_fires_each_due_tick(open_channel):
+    orch = open_channel()
+    orch.send({"every": {"step": 10}}, topic="control.subscribe", name="loss", request_id="r1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.set("loss", 1.0)
+    for s in (0, 5, 10):
+        w.tick(step=s)
+    steps = [v.body["step"] for v in open_channel().read(topics=["value"])]
+    assert steps == [0, 10]  # fires at registration and at +10, not at 5
+
+
+def test_unsubscribe_stops_emissions(open_channel):
+    orch = open_channel()
+    orch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.set("loss", 1.0)
+    w.tick(step=0)
+    orch.send({}, topic="control.unsubscribe", request_id="r1")
+    w.tick(step=1)
+    w.tick(step=2)
+    steps = [v.body["step"] for v in open_channel().read(topics=["value"])]
+    assert steps == [0]  # only the fire before the unsubscribe landed
+
+
+def test_control_stop_now(open_channel):
+    orch = open_channel()
+    orch.send({}, topic="control.stop", request_id="s1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    assert w.tick(step=5) == "commanded"
+
+
+def test_control_stop_at_step(open_channel):
+    orch = open_channel()
+    orch.send({"from": {"step": 100}}, topic="control.stop", request_id="s1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    assert w.tick(step=50) is None
+    assert w.tick(step=100) == "commanded"
