@@ -11,6 +11,7 @@ and the locator, and re-exports them. It is the top of the package's import DAG
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from .envelope import Envelope
@@ -20,7 +21,9 @@ from .sqlite import SqliteChannel
 # In-process registry of MemoryChannel logs, keyed by (root, run_id). Lets
 # several open_channel(..., backend="memory") calls in one process act as
 # multiple readers/writers of the *same* run (the analogue of several
-# SqliteChannels on one file). Distinct (root, run_id) keys stay isolated.
+# SqliteChannels on one file). Each entry is (log, lock): the shared lock keeps
+# the seq read-modify-write atomic across every instance on that log. Distinct
+# (root, run_id) keys stay isolated.
 _MEMORY_LOGS: dict = {}
 
 
@@ -34,8 +37,8 @@ def open_channel(run_id: str, *, root=None, backend: str = "sqlite"):
     if backend == "sqlite":
         return SqliteChannel(Path(root) / f"{run_id}.db")
     if backend == "memory":
-        log = _MEMORY_LOGS.setdefault((str(root), run_id), [])
-        return MemoryChannel(log)
+        log, lock = _MEMORY_LOGS.setdefault((str(root), run_id), ([], threading.Lock()))
+        return MemoryChannel(log, lock)
     raise ValueError(f"unknown backend: {backend!r} (expected 'sqlite' or 'memory')")
 
 

@@ -7,24 +7,30 @@ surface is backend-agnostic.
 
 A shared ``log`` list may be passed in so that several MemoryChannels act as
 multiple readers/writers of the *same* run (the in-memory analogue of several
-SqliteChannels on one file).
+SqliteChannels on one file). Instances that share a log MUST also share a
+``lock`` so the ``seq`` read-modify-write stays atomic across them — the
+registry in ``open_channel`` co-locates one lock per shared log; a standalone
+``MemoryChannel()`` gets its own.
 """
 
 from __future__ import annotations
 
 import json
+import threading
 
 from .envelope import Envelope
 
 
 class MemoryChannel:
-    def __init__(self, log: list | None = None):
+    def __init__(self, log: list | None = None, lock=None):
         self._log: list[Envelope] = log if log is not None else []
+        self._lock = lock if lock is not None else threading.Lock()
 
     def send(self, body: dict, *, topic: str, name=None, request_id=None) -> int:
         snapshot = json.loads(json.dumps(body))
-        seq = len(self._log) + 1
-        self._log.append(Envelope(seq, topic, name, request_id, snapshot))
+        with self._lock:
+            seq = len(self._log) + 1
+            self._log.append(Envelope(seq, topic, name, request_id, snapshot))
         return seq
 
     def read(
@@ -36,8 +42,10 @@ class MemoryChannel:
         request_ids=None,
         limit=None,
     ) -> list[Envelope]:
+        with self._lock:
+            log = list(self._log)
         out: list[Envelope] = []
-        for e in self._log:
+        for e in log:
             if e.seq <= after:
                 continue
             if topics is not None and not _topic_match(e.topic, topics):
@@ -54,7 +62,9 @@ class MemoryChannel:
         return out
 
     def latest(self, topic: str, name=None) -> Envelope | None:
-        for e in reversed(self._log):
+        with self._lock:
+            log = list(self._log)
+        for e in reversed(log):
             if e.topic == topic and (name is None or e.name == name):
                 return _snapshot(e)
         return None
