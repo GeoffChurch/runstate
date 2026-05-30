@@ -118,3 +118,11 @@ def test_subscription_rejects_count_outside_until():
 def test_lifecycle_rejects_unknown_subtopic():
     with pytest.raises(jsonschema.ValidationError):
         CONVENTIONS["lifecycle."].validate(_env("lifecycle.bogus", {}))
+
+
+def test_nak_reason_is_a_closed_enum():
+    ok = _env("lifecycle.nak", {"reason": "unsupported", "message": "x"})
+    CONVENTIONS["lifecycle."].validate(ok)
+    bad = _env("lifecycle.nak", {"reason": "whatever", "message": "x"})
+    with pytest.raises(jsonschema.ValidationError):
+        CONVENTIONS["lifecycle."].validate(bad)

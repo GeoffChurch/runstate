@@ -55,10 +55,10 @@
       }
     },
     "Nak": {
-      "type": "object", "required": ["status", "message"], "additionalProperties": false,
-      "description": "A refused control request (e.g. a statically-unsatisfiable subscription), correlated by request_id.",
+      "type": "object", "required": ["reason", "message"], "additionalProperties": false,
+      "description": "A refused control request, correlated by request_id. `reason` is a closed enum: malformed (body didn't conform -- a sender bug), unsatisfiable (well-formed but provably zero fires), unsupported (unknown control verb). `message` is free human detail.",
       "properties": {
-        "status": {"type": "string"},
+        "reason": {"type": "string", "enum": ["malformed", "unsatisfiable", "unsupported"]},
         "message": {"type": "string"}
       }
     }

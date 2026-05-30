@@ -108,8 +108,32 @@ def test_nak_when_until_already_satisfied(open_channel):
     w.tick(step=100)  # already past `until` step 50 -> window closed, zero fires
     nak = open_channel().latest("lifecycle.nak")
     assert nak.request_id == "r1"
-    assert nak.body["status"] == "unsatisfiable"
+    assert nak.body["reason"] == "unsatisfiable"
     assert open_channel().read(topics=["value"]) == []  # no value emitted
+
+
+def test_nak_malformed_schedule_does_not_kill_the_worker(open_channel):
+    # a schema-invalid body (unknown condition) must be refused, not fatal
+    orch = open_channel()
+    orch.send({"from": {}}, topic="control.subscribe", name="loss", request_id="bad")
+    orch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="ok")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.set("loss", 1.0)
+    w.tick(step=0)  # must not raise
+    naks = open_channel().read(topics=["lifecycle.nak"], request_ids=["bad"])
+    assert naks[0].body["reason"] == "malformed"
+    # the well-formed sibling still gets serviced -- one bad request isn't fatal
+    assert open_channel().latest("value", "loss").request_id == "ok"
+
+
+def test_nak_unsupported_control_verb(open_channel):
+    orch = open_channel()
+    orch.send({}, topic="control.frobnicate", request_id="r1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.tick(step=0)
+    nak = open_channel().latest("lifecycle.nak")
+    assert nak.request_id == "r1"
+    assert nak.body["reason"] == "unsupported"
 
 
 def test_nak_step_condition_on_stepless_worker(open_channel):

@@ -104,22 +104,34 @@ class Worker:
     def _drain_control(self, step) -> None:
         for e in self._ch.read(after=self._cursor, topics=["control.>"]):
             self._cursor = e.seq
-            if e.topic == "control.subscribe":
-                if is_unsatisfiable(e.body, step=step):
-                    self._nak(e.request_id, "unsatisfiable", "schedule can produce no fires")
-                else:
-                    self._subs[e.request_id] = (
-                        e.name,
-                        Subscription(e.body, registered_at=self._now()),
-                    )
-            elif e.topic == "control.unsubscribe":
-                self._subs.pop(e.request_id, None)
-            elif e.topic == "control.stop":
-                self._stop = Subscription(e.body, registered_at=self._now())
+            # One bad control request must never be fatal: refuse it with a nak
+            # and carry on. The reason distinguishes a structural problem
+            # (malformed -- couldn't interpret the body) from a clean semantic
+            # refusal (unsatisfiable) and an unknown verb (unsupported).
+            try:
+                self._handle_control(e, step)
+            except Exception as exc:
+                self._nak(e.request_id, "malformed", str(exc))
 
-    def _nak(self, request_id, status: str, message: str) -> None:
+    def _handle_control(self, e, step) -> None:
+        if e.topic == "control.subscribe":
+            if is_unsatisfiable(e.body, step=step):
+                self._nak(e.request_id, "unsatisfiable", "schedule can produce no fires")
+            else:
+                self._subs[e.request_id] = (
+                    e.name,
+                    Subscription(e.body, registered_at=self._now()),
+                )
+        elif e.topic == "control.unsubscribe":
+            self._subs.pop(e.request_id, None)
+        elif e.topic == "control.stop":
+            self._stop = Subscription(e.body, registered_at=self._now())
+        else:
+            self._nak(e.request_id, "unsupported", f"unknown control topic {e.topic!r}")
+
+    def _nak(self, request_id, reason: str, message: str) -> None:
         self._ch.send(
-            {"status": status, "message": message},
+            {"reason": reason, "message": message},
             topic="lifecycle.nak",
             request_id=request_id,
         )
@@ -127,7 +139,15 @@ class Worker:
     def _service(self, step) -> None:
         now = self._now()
         for request_id, (name, sub) in list(self._subs.items()):
-            decision = sub.tick(step=step, now=now)
+            # A schedule that's well-formed enough to register but blows up when
+            # evaluated (e.g. an unknown condition deeper in the tree) is naked
+            # and dropped here, not allowed to crash the loop.
+            try:
+                decision = sub.tick(step=step, now=now)
+            except Exception as exc:
+                self._nak(request_id, "malformed", str(exc))
+                del self._subs[request_id]
+                continue
             if decision.fire:
                 self._ch.send(
                     {"value": self._values.get(name), "step": step},
