@@ -19,11 +19,13 @@
     },
     "name": {
       "type": ["string", "null"],
-      "description": "Open, application-owned identifier (e.g. a metric name, or a subscription target). Null when unused."
+      "minLength": 1,
+      "description": "Open, application-owned identifier (e.g. a metric name, or a subscription target). Null when unused; never the empty string."
     },
     "request_id": {
       "type": ["string", "null"],
-      "description": "Correlates a response to its request and scopes visibility. Null for broadcasts (visible to every reader)."
+      "minLength": 1,
+      "description": "Correlates a response to its request and scopes visibility. Null for broadcasts (visible to every reader); never the empty string."
     },
     "body": {
       "type": "object",

@@ -33,7 +33,7 @@
       "description": "The manner of death. reason 'exited' carries exit_code; 'killed' carries the signal.",
       "properties": {
         "reason": {"type": "string", "enum": ["exited", "killed"]},
-        "exit_code": {"type": "integer"},
+        "exit_code": {"type": "integer", "minimum": 0},
         "signal": {"type": "integer", "minimum": 1}
       }
     }

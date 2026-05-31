@@ -20,6 +20,14 @@
     {
       "if": {"required": ["topic"], "properties": {"topic": {"const": "control.unsubscribe"}}},
       "then": {"properties": {"body": {"$ref": "#/$defs/Empty"}}}
+    },
+    {
+      "comment": "subscribe/unsubscribe are correlated operations -- responses route by request_id and unsubscribe cancels by it -- so it MUST be present (a non-null string). stop is fire-once; its request_id is optional traceability.",
+      "if": {
+        "required": ["topic"],
+        "properties": {"topic": {"enum": ["control.subscribe", "control.unsubscribe"]}}
+      },
+      "then": {"required": ["request_id"], "properties": {"request_id": {"type": "string"}}}
     }
   ],
 

@@ -115,7 +115,9 @@ class Worker:
 
     def _handle_control(self, e, step) -> None:
         if e.topic == "control.subscribe":
-            if is_unsatisfiable(e.body, step=step):
+            if e.request_id is None:
+                self._nak(None, "malformed", "subscribe requires a request_id")
+            elif is_unsatisfiable(e.body, step=step):
                 self._nak(e.request_id, "unsatisfiable", "schedule can produce no fires")
             else:
                 self._subs[e.request_id] = (
@@ -123,7 +125,10 @@ class Worker:
                     Subscription(e.body, registered_at=self._now()),
                 )
         elif e.topic == "control.unsubscribe":
-            self._subs.pop(e.request_id, None)
+            if e.request_id is None:
+                self._nak(None, "malformed", "unsubscribe requires a request_id")
+            else:
+                self._subs.pop(e.request_id, None)
         elif e.topic == "control.stop":
             self._stop = Subscription(e.body, registered_at=self._now())
         else:

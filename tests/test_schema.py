@@ -108,11 +108,13 @@ def test_launcher_launched_rejects_unknown_status():
 
 def test_subscription_rejects_count_outside_until():
     # `count` is a fire budget, valid only in `until` (§6) -- not in `from`
-    bad = _env("control.subscribe", {"from": {"count": 5}})
+    bad = _env("control.subscribe", {"from": {"count": 5}}, request_id="r")
     with pytest.raises(jsonschema.ValidationError):
         CONVENTIONS["control."].validate(bad)
     # but count IS allowed in until
-    CONVENTIONS["control."].validate(_env("control.subscribe", {"until": {"count": 5}}))
+    CONVENTIONS["control."].validate(
+        _env("control.subscribe", {"until": {"count": 5}}, request_id="r")
+    )
 
 
 def test_lifecycle_rejects_unknown_subtopic():
@@ -126,3 +128,35 @@ def test_nak_reason_is_a_closed_enum():
     bad = _env("lifecycle.nak", {"reason": "whatever", "message": "x"})
     with pytest.raises(jsonschema.ValidationError):
         CONVENTIONS["lifecycle."].validate(bad)
+
+
+def test_envelope_rejects_empty_string_ids():
+    for field in ("name", "request_id"):
+        with pytest.raises(jsonschema.ValidationError):
+            ENVELOPE.validate(_env("value", {"value": 1}, **{field: ""}))
+
+
+def test_terminated_rejects_negative_exit_code():
+    bad = _env("launcher.terminated", {"reason": "exited", "exit_code": -1})
+    with pytest.raises(jsonschema.ValidationError):
+        CONVENTIONS["launcher."].validate(bad)
+
+
+def test_subscribe_requires_request_id():
+    schedule = {"every": {"step": 1}}
+    # present -> ok
+    CONVENTIONS["control."].validate(
+        {"seq": 1, "topic": "control.subscribe", "name": "loss",
+         "request_id": "r", "body": schedule}
+    )
+    # missing/null -> rejected (subscribe/unsubscribe are correlated ops)
+    with pytest.raises(jsonschema.ValidationError):
+        CONVENTIONS["control."].validate(
+            {"seq": 1, "topic": "control.subscribe", "name": "loss",
+             "request_id": None, "body": schedule}
+        )
+    # stop does NOT require it
+    CONVENTIONS["control."].validate(
+        {"seq": 1, "topic": "control.stop", "name": None,
+         "request_id": None, "body": schedule}
+    )

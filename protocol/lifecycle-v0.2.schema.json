@@ -34,7 +34,7 @@
       "properties": {
         "handle": {"type": "string"},
         "hostname": {"type": ["string", "null"]},
-        "attached_at": {"type": ["number", "null"]}
+        "attached_at": {"type": ["number", "null"], "minimum": 0}
       }
     },
     "Heartbeat": {

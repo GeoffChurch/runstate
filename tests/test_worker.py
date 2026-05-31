@@ -136,6 +136,17 @@ def test_nak_unsupported_control_verb(open_channel):
     assert nak.body["reason"] == "unsupported"
 
 
+def test_nak_subscribe_without_request_id(open_channel):
+    orch = open_channel()
+    orch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss")  # no request_id
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.set("loss", 1.0)
+    w.tick(step=0)
+    nak = open_channel().latest("lifecycle.nak")
+    assert nak.body["reason"] == "malformed"
+    assert open_channel().read(topics=["value"]) == []  # nothing registered/emitted
+
+
 def test_nak_step_condition_on_stepless_worker(open_channel):
     orch = open_channel()
     orch.send({"from": {"step": 100}}, topic="control.subscribe", name="loss", request_id="r1")
