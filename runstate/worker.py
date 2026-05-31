@@ -13,7 +13,7 @@ from __future__ import annotations
 import time
 
 from .handle import local_handle
-from .schedule import Subscription, is_unsatisfiable
+from .schedule import Subscription, is_unsatisfiable, satisfied
 
 
 class Worker:
@@ -86,8 +86,12 @@ class Worker:
         """Emit the cooperative dying breath (``lifecycle.stopped``).
 
         Its *existence* on the log = the run cleanly finished (§7). Broadcast
-        (``request_id=None``) so every observer sees it. Idempotent: a second
-        call (e.g. an explicit one plus the context-manager exit) is a no-op.
+        (``request_id=None``) so every observer sees it. Idempotent — first
+        writer wins: a second call (e.g. an explicit one plus the context-manager
+        exit) is a no-op. So an explicit ``stopped()`` *commits* the terminal
+        reason; if the block then raises, the exception still propagates to the
+        caller but won't overwrite the logged reason (the log shows the committed
+        one, not ``errored``).
         """
         if self._stopped:
             return
@@ -136,6 +140,12 @@ class Worker:
             if "every" in e.body or "until" in e.body:
                 self._nak(e.request_id, "malformed", "control.stop takes only `from`")
             else:
+                # Validate the `from` here (inside the drain guard) so a malformed
+                # condition naks like a bad subscribe, instead of poisoning
+                # self._stop and crashing at the unguarded tick-time eval site.
+                from_ = e.body.get("from")
+                if from_ is not None:
+                    satisfied(from_, step=step, time_seconds=0.0, count=0)  # raises -> nak
                 self._stop = Subscription(e.body, registered_at=self._now())
         else:
             self._nak(e.request_id, "unsupported", f"unknown control topic {e.topic!r}")

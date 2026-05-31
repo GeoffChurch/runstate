@@ -126,6 +126,19 @@ def test_nak_malformed_schedule_does_not_kill_the_worker(open_channel):
     assert open_channel().latest("value", "loss").request_id == "ok"
 
 
+def test_nak_malformed_stop_from_does_not_crash(open_channel):
+    # a malformed `from` on a stop must nak (like a malformed subscribe), not
+    # crash the worker -- and must not poison self._stop and re-crash every tick.
+    orch = open_channel()
+    orch.send({"from": {"step": "oops"}}, topic="control.stop", request_id="s1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    assert w.tick(step=0) is None  # survives, does not stop
+    assert w.tick(step=1) is None  # not poisoned
+    nak = open_channel().latest("lifecycle.nak")
+    assert nak.request_id == "s1"
+    assert nak.body["reason"] == "malformed"
+
+
 def test_nak_stop_with_every_or_until(open_channel):
     orch = open_channel()
     # a stop is one-shot; every/until are rejected, not silently honored
