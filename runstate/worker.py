@@ -154,11 +154,24 @@ class Worker:
                 del self._subs[request_id]
                 continue
             if decision.fire:
-                self._ch.send(
-                    {"value": self._values.get(name), "step": step},
-                    topic="value",
-                    name=name,
-                    request_id=request_id,
-                )
+                value = self._values.get(name)
+                try:
+                    self._ch.send(
+                        {"value": value, "step": step},
+                        topic="value",
+                        name=name,
+                        request_id=request_id,
+                    )
+                except (TypeError, ValueError) as exc:
+                    # A user value that won't serialize is the user's own bug,
+                    # surfaced clearly at the point we try to report it (not the
+                    # opaque json error) -- and fatal: a broken reporting path
+                    # should stop the run, not silently drop the metric. The
+                    # escape hatch is json_default on attach()/open_channel().
+                    raise TypeError(
+                        f"value for {name!r} ({type(value).__name__}) is not "
+                        f"JSON-serializable; pass json_default to "
+                        f"attach()/open_channel() to coerce it"
+                    ) from exc
             if decision.expired:
                 del self._subs[request_id]

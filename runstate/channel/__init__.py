@@ -27,18 +27,20 @@ from .sqlite import SqliteChannel
 _MEMORY_LOGS: dict = {}
 
 
-def open_channel(run_id: str, *, root=None, backend: str = "sqlite"):
+def open_channel(run_id: str, *, root=None, backend: str = "sqlite", json_default=None):
     """Locate and open a run's channel.
 
     ``root`` is the directory (sqlite) or namespace (memory) holding runs;
     ``run_id`` selects one. Repeated calls on the same ``(root, run_id)`` share
     the run's log, so an orchestrator and a worker name the run the same way.
+    ``json_default`` is a sender-side ``json.dumps`` hook for coercing exotic
+    value payloads (e.g. numpy scalars -> float); readers are unaffected.
     """
     if backend == "sqlite":
-        return SqliteChannel(Path(root) / f"{run_id}.db")
+        return SqliteChannel(Path(root) / f"{run_id}.db", json_default=json_default)
     if backend == "memory":
         log, lock = _MEMORY_LOGS.setdefault((str(root), run_id), ([], threading.Lock()))
-        return MemoryChannel(log, lock)
+        return MemoryChannel(log, lock, json_default=json_default)
     raise ValueError(f"unknown backend: {backend!r} (expected 'sqlite' or 'memory')")
 
 

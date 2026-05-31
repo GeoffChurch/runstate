@@ -147,6 +147,29 @@ def test_nak_subscribe_without_request_id(open_channel):
     assert open_channel().read(topics=["value"]) == []  # nothing registered/emitted
 
 
+def test_unserializable_value_fails_clearly_naming_the_metric(tmp_path):
+    from runstate.channel import open_channel as oc
+
+    ch = oc("r", root=tmp_path, backend="sqlite")  # default json_default=None
+    ch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="o")
+    w = Worker(ch, now=lambda: 0.0)
+    w.set("loss", {1, 2})  # a set isn't JSON-serializable
+    with pytest.raises(TypeError, match="'loss'.*not.*JSON-serializable"):
+        w.tick(step=0)
+
+
+def test_json_default_hook_coerces_exotic_values(tmp_path):
+    from runstate.channel import open_channel as oc
+
+    # the sender-side hook coerces a set -> sorted list so it round-trips
+    ch = oc("r", root=tmp_path, backend="sqlite", json_default=sorted)
+    ch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="o")
+    w = Worker(ch, now=lambda: 0.0)
+    w.set("loss", {3, 1, 2})
+    w.tick(step=0)
+    assert ch.latest("value", "loss").body["value"] == [1, 2, 3]
+
+
 def test_nak_step_condition_on_stepless_worker(open_channel):
     orch = open_channel()
     orch.send({"from": {"step": 100}}, topic="control.subscribe", name="loss", request_id="r1")

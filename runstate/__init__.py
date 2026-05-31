@@ -20,13 +20,15 @@ from .worker import Worker
 __version__ = "0.2.0.dev0"
 
 
-def attach(run_id=None, *, root=None, backend=None):
+def attach(run_id=None, *, root=None, backend=None, json_default=None):
     """Worker-side: open the channel for the run this process was launched into.
 
     A Launcher sets ``RUNSTATE_RUN_ID`` / ``RUNSTATE_CHANNEL_ROOT`` /
     ``RUNSTATE_CHANNEL_BACKEND`` in the worker's environment; ``attach()`` reads
     them. Explicit arguments override the environment. Mirrors how the
-    orchestrator named the run, so both ends meet on the same log.
+    orchestrator named the run, so both ends meet on the same log. ``json_default``
+    is a sender-side ``json.dumps`` hook for coercing exotic value payloads
+    (e.g. numpy scalars / tensors) the worker reports.
     """
     if run_id is None:
         run_id = os.environ["RUNSTATE_RUN_ID"]
@@ -34,7 +36,7 @@ def attach(run_id=None, *, root=None, backend=None):
         root = os.environ.get("RUNSTATE_CHANNEL_ROOT")
     if backend is None:
         backend = os.environ.get("RUNSTATE_CHANNEL_BACKEND", "sqlite")
-    return open_channel(run_id, root=root, backend=backend)
+    return open_channel(run_id, root=root, backend=backend, json_default=json_default)
 
 
 __all__ = [

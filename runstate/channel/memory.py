@@ -22,12 +22,16 @@ from .envelope import Envelope
 
 
 class MemoryChannel:
-    def __init__(self, log: list | None = None, lock=None):
+    def __init__(self, log: list | None = None, lock=None, *, json_default=None):
         self._log: list[Envelope] = log if log is not None else []
         self._lock = lock if lock is not None else threading.Lock()
+        self._json_default = json_default
 
     def send(self, body: dict, *, topic: str, name=None, request_id=None) -> int:
-        snapshot = json.loads(json.dumps(body))
+        # The json round-trip both validates serializability and snapshots the
+        # body to an independent, JSON-safe copy (json_default coerces exotic
+        # types on the way out; the stored copy then needs no hook on read).
+        snapshot = json.loads(json.dumps(body, default=self._json_default))
         with self._lock:
             seq = len(self._log) + 1
             self._log.append(Envelope(seq, topic, name, request_id, snapshot))

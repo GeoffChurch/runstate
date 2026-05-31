@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS log (
 class SqliteChannel:
     """A per-run topic log backed by one SQLite file."""
 
-    def __init__(self, path):
+    def __init__(self, path, *, json_default=None):
+        self._json_default = json_default
         self._conn = sqlite3.connect(
             str(path), isolation_level=None, check_same_thread=False
         )
@@ -36,10 +37,13 @@ class SqliteChannel:
         self._conn.executescript(_SCHEMA)
 
     def send(self, body: dict, *, topic: str, name=None, request_id=None) -> int:
+        # json_default (sender-side) coerces exotic value payloads on the way out;
+        # the stored text is always standard JSON, so any reader uses plain loads.
+        body_json = json.dumps(body, default=self._json_default, separators=(",", ":"))
         cur = self._conn.execute(
             "INSERT INTO log (topic, name, request_id, body, created_at)"
             " VALUES (?, ?, ?, ?, ?)",
-            (topic, name, request_id, json.dumps(body, separators=(",", ":")), time.time()),
+            (topic, name, request_id, body_json, time.time()),
         )
         return cur.lastrowid
 
