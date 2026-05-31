@@ -139,6 +139,28 @@ def test_nak_malformed_stop_from_does_not_crash(open_channel):
     assert nak.body["reason"] == "malformed"
 
 
+def test_nak_stop_unsatisfiable_on_stepless_worker(open_channel):
+    # a step-from stop sent to a stepless worker can never fire -> nak (parity
+    # with subscribe), rather than silently never auto-stopping.
+    orch = open_channel()
+    orch.send({"from": {"step": 100}}, topic="control.stop", request_id="s1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.tick(step=None)  # stepless
+    nak = open_channel().latest("lifecycle.nak")
+    assert nak.request_id == "s1"
+    assert nak.body["reason"] == "unsatisfiable"
+
+
+def test_stepped_step_from_stop_still_fires(open_channel):
+    # the parity nak must not catch a legitimate stepped stop (clean >= fires)
+    orch = open_channel()
+    orch.send({"from": {"step": 2}}, topic="control.stop", request_id="s1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    assert w.tick(step=0) is None
+    assert w.tick(step=2) == "commanded"
+    assert open_channel().latest("lifecycle.nak") is None
+
+
 def test_nak_stop_with_every_or_until(open_channel):
     orch = open_channel()
     # a stop is one-shot; every/until are rejected, not silently honored

@@ -146,7 +146,13 @@ class Worker:
                 from_ = e.body.get("from")
                 if from_ is not None:
                     satisfied(from_, step=step, time_seconds=0.0, count=0)  # raises -> nak
-                self._stop = Subscription(e.body, registered_at=self._now())
+                if is_unsatisfiable(e.body, step=step):
+                    # e.g. a step-keyed stop on a stepless worker: it can never
+                    # fire, so nak (parity with subscribe) rather than silently
+                    # never auto-stopping.
+                    self._nak(e.request_id, "unsatisfiable", "stop trigger can never fire")
+                else:
+                    self._stop = Subscription(e.body, registered_at=self._now())
         else:
             self._nak(e.request_id, "unsupported", f"unknown control topic {e.topic!r}")
 
