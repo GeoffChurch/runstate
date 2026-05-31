@@ -22,6 +22,10 @@ CREATE TABLE IF NOT EXISTS log (
     body       TEXT NOT NULL,
     created_at REAL NOT NULL
 );
+-- latest(topic) is WHERE topic=? ORDER BY seq DESC LIMIT 1, called on every
+-- Watcher poll (twice, for stopped/terminated, which usually don't exist yet).
+-- Without this it's a full table scan per poll; the index makes it a seek.
+CREATE INDEX IF NOT EXISTS idx_log_topic_seq ON log (topic, seq);
 """
 
 

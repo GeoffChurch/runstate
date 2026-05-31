@@ -111,3 +111,19 @@ def test_channels_on_the_same_run_share_the_log(open_channel):
     worker.send({"reason": "completed"}, topic="lifecycle.stopped")
     assert observer.latest("lifecycle.stopped").body == {"reason": "completed"}
     assert [e.topic for e in observer.read()] == ["lifecycle.stopped"]
+
+
+def test_sqlite_latest_uses_the_topic_index_not_a_scan(tmp_path):
+    # latest(topic) runs on every Watcher poll; it must be an index seek, not a
+    # full table scan (regression guard for the (topic, seq) index).
+    from runstate.channel.sqlite import SqliteChannel
+
+    ch = SqliteChannel(tmp_path / "run.db")
+    plan = ch._conn.execute(
+        "EXPLAIN QUERY PLAN SELECT seq FROM log WHERE topic = ?"
+        " ORDER BY seq DESC LIMIT 1",
+        ("lifecycle.stopped",),
+    ).fetchall()
+    detail = " ".join(str(row[-1]) for row in plan)
+    assert "idx_log_topic_seq" in detail
+    assert "SCAN" not in detail.upper()
