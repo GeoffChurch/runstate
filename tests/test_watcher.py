@@ -244,19 +244,19 @@ def test_broadcast_fans_subscription_with_shared_request_id():
 # ----- round-2 review fixes -----
 
 
-def test_no_staleness_before_first_beacon():
-    # a slow-starting run (no beacon yet) must not be declared dead purely
-    # against its registration time; staleness arms only after the first beacon.
+def test_staleness_counts_from_when_watching_began():
+    # the floor detector catches a worker that never beacons (crashed/hung during
+    # startup), not just a mid-run hang -- the clock runs from when we began
+    # watching. Legit-slow startup is the caller's tuning concern (raise the
+    # timeout, or start watching after the first beacon).
     clock = [1000.0]
     ch = open_channel("boot", root=None, backend="memory")
     w = Watcher(now=lambda: clock[0], heartbeat_timeout=30)
-    w.observe("boot", ch)  # no beacon yet
+    w.observe("boot", ch)  # never beacons
+    clock[0] = 1010
+    assert w.poll("boot").done is False  # within the timeout
     clock[0] = 1031
-    assert w.poll("boot").done is False  # still booting, not dead
-    ch.send({"step": 0}, topic="lifecycle.heartbeat")
-    assert w.poll("boot").done is False  # fresh beacon noted
-    clock[0] = 1062
-    assert w.poll("boot").outcome == "presumed_dead"  # now genuinely stale
+    assert w.poll("boot").outcome == "presumed_dead"  # startup death is caught
 
 
 def test_watcher_reaps_dead_handle_for_a_precise_verdict(tmp_path):

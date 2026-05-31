@@ -113,18 +113,17 @@ class Watcher:
                 return replace(r, run_id=run_id)
             return RunResult(outcome="presumed_dead", reason="probed_dead", run_id=run_id)
 
-        # tier 4: heartbeat staleness — but only once a beacon has actually
-        # arrived. Before the first beacon there's nothing to be "stale" against,
-        # so a slow-starting run isn't declared dead against its registration time.
-        # NB this fires even for a handle that probed *alive* (tier 3 didn't
-        # return): that is the hang case (beaconing stopped though the process
-        # lives), which §8 wants caught — don't "fix" it into vetoing on alive.
+        # tier 4: heartbeat staleness. The clock runs from when we began watching
+        # (last_heartbeat_at seeds at registration, then tracks the latest beacon),
+        # so a worker that never beacons — crashed or hung during *startup* — is
+        # caught too, not just a mid-run hang. Legit-slow startup is the caller's
+        # policy: pick heartbeat_timeout >= worst-case startup, or start watching
+        # only after the first beacon. NB this fires even for a handle that probed
+        # *alive* (tier 3 didn't return): that's the hang case (beaconing stopped
+        # though the process lives), which §8 wants caught — don't "fix" it to
+        # veto on alive.
         beacon_age = self._now() - st.last_heartbeat_at
-        if (
-            self._hb_timeout is not None
-            and st.last_hb_seq > 0
-            and beacon_age > self._hb_timeout
-        ):
+        if self._hb_timeout is not None and beacon_age > self._hb_timeout:
             return RunResult(
                 outcome="presumed_dead", reason="heartbeat_stale", run_id=run_id
             )
