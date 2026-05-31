@@ -141,6 +141,11 @@ as the idea is investigated, accumulating alternatives, prerequisites,
 and open questions. Refuted ideas with diagnosis move to `docs/dead_ends/`
 (parallel structure).
 
+**To take on deferred/upcoming work, start at `docs/backlog/index.md`** — its
+"Start here" gives the reading order and the big-ticket threads (run-episodes,
+the Store/Hasher relational layer + `mycooc-adoption.md`, and the deferred
+design-§12 items mirrored there).
+
 ## Scope snapshot
 
 **Shipped in v0.2 (this effort):**

@@ -7,6 +7,21 @@ Convention: when an idea is executed, delete its file or remove its
 inline entry. Refuted ideas (with diagnosis) move to `docs/dead_ends/`
 parallel to this directory.
 
+## Start here (taking on the upcoming work)
+
+A fresh session should read, in order: **`../../CLAUDE.md`** (orientation + the
+shipped-vs-deferred scope snapshot) → **`../design-v0.2.md`** (the converged
+design; §12 = open implementation items, §14 = scope) → **this file** (the
+discoverable work list; the design's deferred §12 items are mirrored below under
+*Open implementation items*). The big-ticket threads:
+
+- **Run episodes** ([run-episodes](run-episodes.md)) — unifies lazy-launch, the
+  lifeline service-worker, and the completed-but-extendable gap.
+- **The relational layer** — Store + Hasher + reuse (below), driven by
+  [mycooc-adoption](mycooc-adoption.md), the validating use case.
+- **Visualization** ([visualization-story](visualization-story.md)) — the
+  long-horizon data-plane protocol; post-relational-layer.
+
 ## Long-term ambition
 
 - [visualization-story](visualization-story.md) — own the data-plane
@@ -23,6 +38,11 @@ parallel to this directory.
   service-worker, and the "completed-but-extendable" gap (mycooc), with a
   service (lifeline-driven) vs autonomous (target-driven) policy split.
   Requires episode-aware `peek_terminal`/liveness.
+- **`lifecycle.stopped.reason` vocabulary recipe** — an opt-in documented
+  vocabulary (e.g. `completed`/`preempted`/`converged`/`budget_exhausted`,
+  resumable-`timed_out` vs fatal-`crashed`) so consumers can branch on *why*
+  without expanding the closed `outcome` enum. Surfaced by
+  [mycooc-adoption](mycooc-adoption.md). Small.
 - [protocol-async-api](protocol-async-api.md) — wrap the JSON Schema in
   AsyncAPI for a richer spec format (multi-channel, lifecycle events).
   Defer until v0.2 protocol grows enough to justify the layer.
@@ -74,8 +94,28 @@ push-based backend is the channel-postgres LISTEN/NOTIFY idea above.)
 - **Reuse-by-hash** — orchestrator (or any helper) consults Store
   before launching; if matching run exists and is DONE, reuse instead.
 
+See [mycooc-adoption](mycooc-adoption.md) — mycooc is the validating use case for
+this whole layer, and its `_compute_config_hash` / `_find_reusable_run` are the
+reference design (Hasher + reuse query).
+
 (Shipped in v0.2: the sequential `sweep` helper + `Variant`. A *Cartesian*
 config sweep on top of it, and reuse-by-hash skipping via Store, remain.)
+
+## Open implementation items (mirrors design §12)
+
+The *deferred* items from `design-v0.2.md §12` — kept there with their full
+reasoning, listed here so they're discoverable as work (cross-ref, not moved):
+
+- **Lazy-launch double-spawn guard** (§12.1) — elaborated in
+  [run-episodes](run-episodes.md) (the guard *is* idempotent relaunch).
+- **Cursor persistence / crash-replay** (§12.5) — the worker's read cursor is
+  in-memory; no restart persistence, so the at-least-once / at-most-once boundary
+  (a `value` or `count`-`until` over-firing on replay) is unaddressed.
+- **Multi-orchestrator attribution** (§12.7–8) — the drain model already makes
+  every orchestrator's commands take effect; what's open is *attribution* (whose
+  command), today a `request_id`-prefix stopgap.
+- **GC / retention policy** (§12.9) — retention is full, no GC (the precondition
+  `peek_terminal` / resume rely on); a policy is future work.
 
 ## Ecosystem adapters (separate packages)
 

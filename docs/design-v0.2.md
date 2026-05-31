@@ -251,9 +251,9 @@ This is the cut that dissolves "blocking for the schema": the convention decisio
 
 ## 12. Open questions — implementation-plan items
 
-The six convention decisions are settled (see revision history). Status tags below are as of the rev-4 implementation pass. **None change the wire *envelope***; the items still open touch operational mechanics, not the frozen schemas.
+The six convention decisions are settled (see revision history). Status tags below are as of the rev-4 implementation pass. **None change the wire *envelope***; the items still open touch operational mechanics, not the frozen schemas. The *deferred* items below are mirrored as discoverable work in `docs/backlog/index.md`.
 
-1. **Lazy-launch double-spawn race** — *[deferred]* `launcher.launched.status` is pinned to `running`, but lazy-launch-on-first-`control` itself is **not** built: `launch()` is explicit (you spawn, then send control). The write-launched-inside-the-channel-lock race only exists once lazy launch does; revisit together.
+1. **Lazy-launch double-spawn race** — *[deferred]* `launcher.launched.status` is pinned to `running`, but lazy-launch-on-first-`control` itself is **not** built: `launch()` is explicit (you spawn, then send control). The write-launched-inside-the-channel-lock race only exists once lazy launch does; revisit together. **Elaborated in `docs/backlog/run-episodes.md`** — there the guard *is* idempotent relaunch.
 2. **`send_request` ↔ `Channel` seam** — *[deferred]* tied to #1; `open_channel` returns a plain channel, not a launch-wrapping one.
 3. **`Watcher.observe`** — *[done]* `observe(run_id, channel)` is the handle-free / late-attach / observe-only path; `add(handle)` is the handle path that also enables the probe tier.
 4. **`broadcast` returns the assigned `request_id`** — *[done]* `Watcher.broadcast(name, schedule)` returns the shared id; pass `request_id=` to reuse one (cancel-the-lot reachable).
