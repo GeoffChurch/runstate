@@ -107,20 +107,53 @@ class Subscription:
 def is_unsatisfiable(schedule: dict, *, step) -> bool:
     """Can this schedule produce *zero* fires, determinable at registration?
 
-    Two clean static cases (docs/design-v0.2.md §6): ``until`` already satisfied
-    (the window is closed before any fire), or a step-keyed ``from`` on a
-    *stepless* worker (it can never open). A merely-future or already-crossed
-    step threshold is NOT unsatisfiable — by the clean ``>=`` semantics it fires
-    at the next safe point where the threshold holds.
+    Static cases (docs/design-v0.2.md §6):
+    - ``until`` already satisfied at the current coordinates (window closed);
+    - a step-keyed ``from`` on a *stepless* worker (it can never open);
+    - an empty window — ``from`` ⟹ ``until`` (the gate opens no earlier than it
+      closes). Detected for a *conjunctive* ``from`` (its single minimal corner)
+      by checking whether ``until`` already holds there; a ``from`` containing an
+      ``any`` has many corners (a potential exponential), so we punt on it and it
+      degrades to a dynamic never-fire rather than reach for a normal form.
+
+    A merely-future or already-crossed step threshold is NOT unsatisfiable — by
+    the clean ``>=`` semantics it fires at the next safe point where it holds.
     """
     until = schedule.get("until")
     if until is not None and satisfied(until, step=step, time_seconds=0.0, count=0):
         return True
-    if step is None:
-        from_ = schedule.get("from")
-        if from_ is not None and not _satisfiable_stepless(from_):
+    from_ = schedule.get("from")
+    if step is None and from_ is not None and not _satisfiable_stepless(from_):
+        return True
+    if until is not None and from_ is not None:
+        corner = _conjunctive_corner(from_)
+        if corner is not None and satisfied(
+            until, step=corner[0], time_seconds=corner[1], count=0
+        ):
             return True
     return False
+
+
+def _conjunctive_corner(cond: dict):
+    """The single minimal ``(step, time)`` corner of a conjunctive condition, or
+    None if it contains an ``any`` (many corners) or isn't corner-representable.
+    Sound for the from ⟹ until check: ``until`` holding at this corner means it
+    holds on all of ``from``'s up-set (every condition is monotone)."""
+    if "any" in cond:
+        return None
+    if "all" in cond:
+        step, time = 0, 0.0
+        for c in cond["all"]:
+            sub = _conjunctive_corner(c)
+            if sub is None:
+                return None
+            step, time = max(step, sub[0]), max(time, sub[1])
+        return (step, time)
+    if "step" in cond:
+        return (cond["step"], 0.0)
+    if "time_seconds" in cond:
+        return (0, cond["time_seconds"])
+    return None  # count (not a `from` key) or unknown -> punt
 
 
 def _satisfiable_stepless(cond: dict) -> bool:

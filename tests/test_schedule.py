@@ -6,7 +6,7 @@ A Condition is a threshold over (step, time, count) or an any/all of Conditions:
 `any` = whichever crosses first (OR); `all` = whichever crosses last (AND).
 """
 
-from runstate.schedule import satisfied
+from runstate.schedule import is_unsatisfiable, satisfied
 
 
 def test_step_threshold():
@@ -46,3 +46,48 @@ def test_nested_any_all():
     assert satisfied(cond, step=100, time_seconds=0, count=5)
     assert not satisfied(cond, step=100, time_seconds=0, count=0)
     assert not satisfied(cond, step=99, time_seconds=60, count=5)
+
+
+# ----- is_unsatisfiable: static zero-fire detection -----
+
+
+def test_until_already_satisfied_is_unsatisfiable():
+    assert is_unsatisfiable({"until": {"step": 50}}, step=100)
+    assert is_unsatisfiable({"until": {"count": 0}}, step=0)  # 0-fire budget
+
+
+def test_future_threshold_is_satisfiable():
+    # clean >= semantics: a not-yet-reached `from` just waits, it's not zero-fire
+    assert not is_unsatisfiable({"from": {"step": 100}}, step=50)
+
+
+def test_step_from_on_stepless_worker_is_unsatisfiable():
+    assert is_unsatisfiable({"from": {"step": 100}}, step=None)
+
+
+def test_from_after_until_empty_window_is_unsatisfiable():
+    # the gate opens (step>=100) only after it has already closed (step>=50)
+    assert is_unsatisfiable({"from": {"step": 100}, "until": {"step": 50}}, step=0)
+
+
+def test_from_before_until_is_satisfiable():
+    assert not is_unsatisfiable({"from": {"step": 50}, "until": {"step": 100}}, step=0)
+
+
+def test_until_count_budget_with_step_from_is_not_empty_window():
+    # until = (step>=50 AND fired>=5): at from's corner count=0, so until is open
+    sched = {"from": {"step": 100}, "until": {"all": [{"step": 50}, {"count": 5}]}}
+    assert not is_unsatisfiable(sched, step=0)
+
+
+def test_from_after_until_across_dimensions_is_speed_contingent_not_empty():
+    # from on step, until on time -> a fast run fires; not a static contradiction
+    sched = {"from": {"step": 100}, "until": {"time_seconds": 60}}
+    assert not is_unsatisfiable(sched, step=0)
+
+
+def test_any_from_punts_rather_than_normalizing():
+    # from with an `any` has many corners; we don't flag it (degrades to dynamic)
+    # -- this from reduces to step>=5, so the window [5,50) is non-empty anyway
+    sched = {"from": {"any": [{"step": 100}, {"step": 5}]}, "until": {"step": 50}}
+    assert not is_unsatisfiable(sched, step=0)
