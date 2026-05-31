@@ -17,6 +17,12 @@ parallel to this directory.
 
 ## Protocol extensions (control plane)
 
+- [run-episodes](run-episodes.md) — a `run_id` is a durable log hosting
+  *multiple worker episodes*; relaunch reuses the `run_id` and the worker
+  resumes from run-keyed state. Unifies lazy-launch (§12.1), the lifeline
+  service-worker, and the "completed-but-extendable" gap (mycooc), with a
+  service (lifeline-driven) vs autonomous (target-driven) policy split.
+  Requires episode-aware `peek_terminal`/liveness.
 - [protocol-async-api](protocol-async-api.md) — wrap the JSON Schema in
   AsyncAPI for a richer spec format (multi-channel, lifecycle events).
   Defer until v0.2 protocol grows enough to justify the layer.
