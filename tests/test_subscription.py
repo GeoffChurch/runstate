@@ -49,3 +49,12 @@ def test_every_whichever_first_steps_or_seconds():
     assert not sub.tick(step=5, now=30.0).fire      # 5 steps, 30s since last
     assert sub.tick(step=5, now=60.0).fire          # 60s since last -> fire
     assert sub.tick(step=15, now=60.0).fire         # 10 steps since last -> fire
+
+
+def test_every_delta_is_measured_from_last_fire_not_registration():
+    # from step3 + every step10: the first fire is at `from` (step 3), then every
+    # 10 steps SINCE THAT FIRE -> step 13. A `from`-offset breaks the tie that a
+    # register-at-0 schedule hides (10-since-fire == 10-since-registration).
+    s = Subscription({"from": {"step": 3}, "every": {"step": 10}}, registered_at=0.0)
+    fires = [step for step in range(20) if s.tick(step=step, now=0.0).fire]
+    assert fires == [3, 13]

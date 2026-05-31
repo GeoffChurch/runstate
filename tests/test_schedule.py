@@ -104,3 +104,13 @@ def test_corner_check_still_catches_genuine_stepless_empty_window():
     # time-based empty window IS a contradiction even on a stepless worker
     sched = {"from": {"time_seconds": 100}, "until": {"time_seconds": 50}}
     assert is_unsatisfiable(sched, step=None)
+
+
+def test_empty_window_with_a_conjunctive_from():
+    # exercises _conjunctive_corner's `all` aggregation (per-dimension max): the
+    # window opens at (step>=100 AND time>=60); until step50 closes before that.
+    empty = {"from": {"all": [{"step": 100}, {"time_seconds": 60}]}, "until": {"step": 50}}
+    assert is_unsatisfiable(empty, step=0)
+    # ...but until step200 leaves the window open -> satisfiable
+    open_ = {"from": {"all": [{"step": 100}, {"time_seconds": 60}]}, "until": {"step": 200}}
+    assert not is_unsatisfiable(open_, step=0)

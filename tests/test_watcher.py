@@ -222,6 +222,7 @@ def test_wait_all_capped_reports_pending_as_running():
     s = res["a"]
     assert s.done is False  # pending == the Running arm, not absence/None
     assert s.step == 7  # tells you where the slow run is
+    assert s.beacon_age == 5.0  # ...and how stale (now 5.0 - last beacon at 0.0)
 
 
 # ----- broadcast(): fan one subscription across runs with a shared request_id -----
@@ -242,6 +243,37 @@ def test_broadcast_fans_subscription_with_shared_request_id():
 
 
 # ----- round-2 review fixes -----
+
+
+def test_staleness_clock_resets_on_each_new_beacon():
+    # the central property: a worker that keeps beaconing is NOT declared dead,
+    # however long since registration -- each new beacon restarts the clock.
+    clock = [1000.0]
+    ch = open_channel("alive", root=None, backend="memory")
+    w = Watcher(now=lambda: clock[0], heartbeat_timeout=30)
+    w.observe("alive", ch)
+    ch.send({"step": 0}, topic="lifecycle.heartbeat")
+    clock[0] = 1025
+    assert w.poll("alive").done is False  # notes beacon 1
+    ch.send({"step": 1}, topic="lifecycle.heartbeat")
+    clock[0] = 1050  # 50s since registration, but the clock reset on beacon 2
+    assert w.poll("alive").done is False  # would be presumed_dead if reset were dropped
+    clock[0] = 1081  # 31s since the last beacon, none newer
+    assert w.poll("alive").outcome == "presumed_dead"
+
+
+def test_staleness_boundary_is_strict():
+    # beacon_age == timeout is alive; just over is dead (the `>` not `>=`).
+    clock = [1000.0]
+    ch = open_channel("edge", root=None, backend="memory")
+    w = Watcher(now=lambda: clock[0], heartbeat_timeout=30)
+    w.observe("edge", ch)
+    ch.send({"step": 0}, topic="lifecycle.heartbeat")
+    w.poll("edge")  # note the beacon at t=1000
+    clock[0] = 1030  # exactly the timeout
+    assert w.poll("edge").done is False
+    clock[0] = 1031
+    assert w.poll("edge").outcome == "presumed_dead"
 
 
 def test_staleness_counts_from_when_watching_began():
