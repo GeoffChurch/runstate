@@ -101,17 +101,30 @@ class Watcher:
         if r is not None:
             return replace(r, run_id=run_id)
 
-        # tier 3: probe the handle (re-check the log first, to lose to a final
-        # write that raced our peek above).
+        # tier 3: probe the handle. If it's dead, reap it first (wait() returns
+        # at once for an already-exited handle and records launcher.terminated),
+        # so we report the precise manner of death rather than a bare
+        # presumed_dead that discards the exit code. presumed_dead remains only
+        # for a handle whose death leaves no record at all.
         if st.handle is not None and not st.handle.is_alive():
+            st.handle.wait()
             r = peek_terminal(st.channel)
             if r is not None:
                 return replace(r, run_id=run_id)
             return RunResult(outcome="presumed_dead", reason="probed_dead", run_id=run_id)
 
-        # tier 4: heartbeat staleness.
+        # tier 4: heartbeat staleness — but only once a beacon has actually
+        # arrived. Before the first beacon there's nothing to be "stale" against,
+        # so a slow-starting run isn't declared dead against its registration time.
+        # NB this fires even for a handle that probed *alive* (tier 3 didn't
+        # return): that is the hang case (beaconing stopped though the process
+        # lives), which §8 wants caught — don't "fix" it into vetoing on alive.
         beacon_age = self._now() - st.last_heartbeat_at
-        if self._hb_timeout is not None and beacon_age > self._hb_timeout:
+        if (
+            self._hb_timeout is not None
+            and st.last_hb_seq > 0
+            and beacon_age > self._hb_timeout
+        ):
             return RunResult(
                 outcome="presumed_dead", reason="heartbeat_stale", run_id=run_id
             )
@@ -134,6 +147,9 @@ class Watcher:
                     on_event(rid, e)
             s = self.poll(run_id)
             if s.done:
+                if on_event is not None:  # deliver any envelopes up to the verdict
+                    for rid, e in self._drain():
+                        on_event(rid, e)
                 return s
             if deadline is not None and self._now() >= deadline:
                 raise TimeoutError(f"run {run_id!r} not terminal within {timeout}s")
@@ -145,7 +161,12 @@ class Watcher:
         synchronization (a slow-but-healthy run delays it, by design). With
         ``timeout`` it returns at the deadline with the still-running runs as
         their Running status — so pending is explicit (which runs, and how stale),
-        not absence."""
+        not absence.
+
+        Caveat: a run that can reach *no* terminal tier — ``observe``-d (no
+        handle) with no ``heartbeat_timeout`` — can never resolve, so an uncapped
+        ``wait_all`` over such a run blocks forever. Give those a timeout, a
+        handle, or a heartbeat_timeout."""
         deadline = None if timeout is None else self._now() + timeout
         results: dict = {}
         pending = set(self._runs)
@@ -159,6 +180,9 @@ class Watcher:
                     results[run_id] = s
                     pending.discard(run_id)
             if not pending:
+                if on_event is not None:  # deliver envelopes up to the last verdict
+                    for rid, e in self._drain():
+                        on_event(rid, e)
                 break
             if deadline is not None and self._now() >= deadline:
                 for run_id in pending:  # report the laggards as Running

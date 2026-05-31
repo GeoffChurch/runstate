@@ -239,3 +239,57 @@ def test_broadcast_fans_subscription_with_shared_request_id():
         assert sub.name == "loss"
         assert sub.request_id == rid  # the shared correlation id
         assert sub.body == {"from": {"step": 100}}
+
+
+# ----- round-2 review fixes -----
+
+
+def test_no_staleness_before_first_beacon():
+    # a slow-starting run (no beacon yet) must not be declared dead purely
+    # against its registration time; staleness arms only after the first beacon.
+    clock = [1000.0]
+    ch = open_channel("boot", root=None, backend="memory")
+    w = Watcher(now=lambda: clock[0], heartbeat_timeout=30)
+    w.observe("boot", ch)  # no beacon yet
+    clock[0] = 1031
+    assert w.poll("boot").done is False  # still booting, not dead
+    ch.send({"step": 0}, topic="lifecycle.heartbeat")
+    assert w.poll("boot").done is False  # fresh beacon noted
+    clock[0] = 1062
+    assert w.poll("boot").outcome == "presumed_dead"  # now genuinely stale
+
+
+def test_watcher_reaps_dead_handle_for_a_precise_verdict(tmp_path):
+    # a crashed subprocess (no clean stop): the Watcher should reap it so the
+    # manner of death lands on the log and the verdict is precise (errored),
+    # not a bare presumed_dead that discards the exit code.
+    import sys
+
+    from runstate.launcher import LocalLauncher
+
+    launcher = LocalLauncher(root=tmp_path)
+    h = launcher.launch("crash", [sys.executable, "-c", "import os; os._exit(42)"])
+    w = Watcher(poll_interval=0.005)
+    w.add(h)
+    r = w.wait("crash")
+    assert r.outcome == "errored"
+    assert h.channel.latest("launcher.terminated").body["exit_code"] == 42
+
+
+def test_wait_does_a_final_drain_after_terminal():
+    # an envelope arriving right as the terminal verdict is reached must still
+    # reach on_event (a final drain after done), not be cut off.
+    ch = open_channel("r", root=None, backend="memory")
+    ch.send({"reason": "completed"}, topic="lifecycle.stopped")
+    w = Watcher()
+    w.observe("r", ch)
+    seen = []
+
+    def on_event(rid, e):
+        seen.append(e.topic)
+        if e.topic == "lifecycle.stopped" and len(seen) == 1:
+            # trailing envelope appears after the drain that delivered the stop
+            ch.send({"exit_code": 0, "reason": "exited"}, topic="launcher.terminated")
+
+    w.wait("r", on_event=on_event)
+    assert "launcher.terminated" in seen
