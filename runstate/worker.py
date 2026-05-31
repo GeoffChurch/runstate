@@ -130,7 +130,13 @@ class Worker:
             else:
                 self._subs.pop(e.request_id, None)
         elif e.topic == "control.stop":
-            self._stop = Subscription(e.body, registered_at=self._now())
+            # a stop is one-shot: at most a `from` (when to stop). `every` is
+            # inert and `until` could gate the stop from ever firing, so reject
+            # them rather than silently honor a self-defeating request.
+            if "every" in e.body or "until" in e.body:
+                self._nak(e.request_id, "malformed", "control.stop takes only `from`")
+            else:
+                self._stop = Subscription(e.body, registered_at=self._now())
         else:
             self._nak(e.request_id, "unsupported", f"unknown control topic {e.topic!r}")
 

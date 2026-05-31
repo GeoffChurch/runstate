@@ -126,6 +126,17 @@ def test_nak_malformed_schedule_does_not_kill_the_worker(open_channel):
     assert open_channel().latest("value", "loss").request_id == "ok"
 
 
+def test_nak_stop_with_every_or_until(open_channel):
+    orch = open_channel()
+    # a stop is one-shot; every/until are rejected, not silently honored
+    orch.send({"until": {"step": 999}}, topic="control.stop", request_id="s1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    reason = w.tick(step=0)  # must NOT stop on a malformed stop
+    assert reason is None
+    nak = open_channel().latest("lifecycle.nak")
+    assert nak.body["reason"] == "malformed"
+
+
 def test_nak_unsupported_control_verb(open_channel):
     orch = open_channel()
     orch.send({}, topic="control.frobnicate", request_id="r1")

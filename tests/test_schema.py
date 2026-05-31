@@ -122,6 +122,26 @@ def test_lifecycle_rejects_unknown_subtopic():
         CONVENTIONS["lifecycle."].validate(_env("lifecycle.bogus", {}))
 
 
+def test_control_stop_takes_only_from():
+    C = CONVENTIONS["control."]
+    C.validate(_env("control.stop", {}))  # stop now
+    C.validate(_env("control.stop", {"from": {"step": 100}}))  # stop at step 100
+    for bad in ({"every": {"step": 1}}, {"until": {"count": 5}}):
+        with pytest.raises(jsonschema.ValidationError):
+            C.validate(_env("control.stop", bad))
+
+
+def test_well_known_body_shapes_validate():
+    # positive coverage for shapes the emitted-bytes scenario doesn't reach
+    CONVENTIONS["launcher."].validate(
+        _env("launcher.terminated", {"reason": "killed", "signal": 9})
+    )
+    for reason in ("malformed", "unsatisfiable", "unsupported"):
+        CONVENTIONS["lifecycle."].validate(
+            _env("lifecycle.nak", {"reason": reason, "message": "x"}, request_id="r")
+        )
+
+
 def test_nak_reason_is_a_closed_enum():
     ok = _env("lifecycle.nak", {"reason": "unsupported", "message": "x"})
     CONVENTIONS["lifecycle."].validate(ok)
@@ -171,8 +191,8 @@ def test_subscribe_requires_request_id():
             {"seq": 1, "topic": "control.subscribe", "name": "loss",
              "request_id": None, "body": schedule}
         )
-    # stop does NOT require it
+    # stop does NOT require it (and takes only `from`)
     CONVENTIONS["control."].validate(
         {"seq": 1, "topic": "control.stop", "name": None,
-         "request_id": None, "body": schedule}
+         "request_id": None, "body": {"from": {"step": 1}}}
     )

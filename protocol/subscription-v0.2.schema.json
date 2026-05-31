@@ -15,7 +15,7 @@
     },
     {
       "if": {"required": ["topic"], "properties": {"topic": {"const": "control.stop"}}},
-      "then": {"properties": {"body": {"$ref": "#/$defs/Schedule"}}}
+      "then": {"properties": {"body": {"$ref": "#/$defs/StopTrigger"}}}
     },
     {
       "if": {"required": ["topic"], "properties": {"topic": {"const": "control.unsubscribe"}}},
@@ -36,6 +36,15 @@
       "type": "object",
       "additionalProperties": false,
       "description": "control.unsubscribe cancels by request_id; the body carries nothing."
+    },
+
+    "StopTrigger": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "control.stop is one-shot: it carries at most a `from` (when to stop; absent = stop now). No `every`/`until` -- a stop fires once, and an `until` could perversely gate it from ever firing.",
+      "properties": {
+        "from": {"$ref": "#/$defs/Condition"}
+      }
     },
 
     "Schedule": {

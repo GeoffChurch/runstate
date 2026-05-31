@@ -147,6 +147,8 @@ Helper sugar (Tenacity-style operators): `now()`, `at(step=N)`, `every(steps=K, 
 
 Well-known **outbound** events (`worker → observers`), reserved `lifecycle.*`.
 
+(Notation: in a **body**, `field?` means *present but nullable* — the worker always sends the key, possibly `null` (e.g. heartbeat `step?` for a stepless worker) — whereas at the **envelope** level `name?`/`request_id?` are genuinely *omittable-or-null*. The schemas pin this: nullable-present body fields are `required` with a `["…","null"]` type.)
+
 | Topic | Semantics |
 |---|---|
 | `lifecycle.started` | Pushed on attach. Body `{handle, hostname?, attached_at?}` — the worker self-reports its **liveness handle** (§8) when no launcher recorded one. |
