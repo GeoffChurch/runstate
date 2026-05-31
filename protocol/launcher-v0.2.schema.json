@@ -30,12 +30,22 @@
     },
     "Terminated": {
       "type": "object", "required": ["reason"], "additionalProperties": false,
-      "description": "The manner of death. reason 'exited' carries exit_code; 'killed' carries the signal.",
+      "description": "The manner of death. 'exited' carries exit_code (and no signal); 'killed' carries the signal (and no exit_code) -- the pairing is enforced, not just optional.",
       "properties": {
         "reason": {"type": "string", "enum": ["exited", "killed"]},
         "exit_code": {"type": "integer", "minimum": 0},
         "signal": {"type": "integer", "minimum": 1}
-      }
+      },
+      "allOf": [
+        {
+          "if": {"required": ["reason"], "properties": {"reason": {"const": "exited"}}},
+          "then": {"required": ["exit_code"], "properties": {"signal": false}}
+        },
+        {
+          "if": {"required": ["reason"], "properties": {"reason": {"const": "killed"}}},
+          "then": {"required": ["signal"], "properties": {"exit_code": false}}
+        }
+      ]
     }
   }
 }

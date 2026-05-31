@@ -142,6 +142,22 @@ def test_terminated_rejects_negative_exit_code():
         CONVENTIONS["launcher."].validate(bad)
 
 
+def test_terminated_enforces_reason_field_pairing():
+    L = CONVENTIONS["launcher."]
+    # the shapes the implementation actually emits validate
+    L.validate(_env("launcher.terminated", {"reason": "exited", "exit_code": 0}))
+    L.validate(_env("launcher.terminated", {"reason": "killed", "signal": 9}))
+    # cross-paired / unpaired bodies are rejected
+    for bad in (
+        {"reason": "killed", "exit_code": 5},  # killed must carry signal, not exit_code
+        {"reason": "exited", "signal": 9},  # exited must carry exit_code, not signal
+        {"reason": "exited"},  # exited needs an exit_code
+        {"reason": "killed"},  # killed needs a signal
+    ):
+        with pytest.raises(jsonschema.ValidationError):
+            L.validate(_env("launcher.terminated", bad))
+
+
 def test_subscribe_requires_request_id():
     schedule = {"every": {"step": 1}}
     # present -> ok
