@@ -127,10 +127,15 @@ def is_unsatisfiable(schedule: dict, *, step) -> bool:
         return True
     if until is not None and from_ is not None:
         corner = _conjunctive_corner(from_)
-        if corner is not None and satisfied(
-            until, step=corner[0], time_seconds=corner[1], count=0
-        ):
-            return True
+        if corner is not None:
+            # On a stepless worker, `from` provably has no step atom to reach
+            # here (else the stepless check above returned), so the step corner
+            # is meaningless -- pass step=None so a `step` atom in `until`
+            # evaluates as it does everywhere else (never satisfied), instead of
+            # spuriously matching at corner step 0.
+            corner_step = corner[0] if step is not None else None
+            if satisfied(until, step=corner_step, time_seconds=corner[1], count=0):
+                return True
     return False
 
 

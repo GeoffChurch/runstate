@@ -91,3 +91,16 @@ def test_any_from_punts_rather_than_normalizing():
     # -- this from reduces to step>=5, so the window [5,50) is non-empty anyway
     sched = {"from": {"any": [{"step": 100}, {"step": 5}]}, "until": {"step": 50}}
     assert not is_unsatisfiable(sched, step=0)
+
+
+def test_corner_check_respects_steplessness():
+    # on a stepless worker a `step` atom in `until` never closes the window, so
+    # the empty-window check must NOT inject a concrete step at from's corner.
+    sched = {"from": {"time_seconds": 5}, "until": {"step": 0}}
+    assert not is_unsatisfiable(sched, step=None)  # it fires at t>=5
+
+
+def test_corner_check_still_catches_genuine_stepless_empty_window():
+    # time-based empty window IS a contradiction even on a stepless worker
+    sched = {"from": {"time_seconds": 100}, "until": {"time_seconds": 50}}
+    assert is_unsatisfiable(sched, step=None)
