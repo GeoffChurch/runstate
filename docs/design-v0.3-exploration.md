@@ -224,8 +224,26 @@ extend (miss) **without** owning execution.
   for alignment/sparse/multi-writer.
 - **Naming** — "step cacher" (series) / "memoizer" / "materializer" (spans the
   produce-on-miss half). Bikeshed.
-- **Build the history/memoizer helper?** — depends on a launcher + the `run_id()`
-  recipe (addressing) + a resumption story.
+- **The history/memoizer helper = the active/passive unification** (the CHR
+  active/passive-constraint parallel, realized). One schedule-shaped helper with a
+  `produce_on_miss` policy: **passive** = read-only over the log (structurally
+  *invisible* to the worker), **active** = read + produce-on-miss (drives the
+  worker). Both share the `Subscription` evaluator (`vocabulary/schedule.py`),
+  driven *live* by the worker vs *replayed* over logged value points by the reader
+  — so observers get the same high-level vocabulary as orchestrators without
+  reading the log raw. Whole-run granularity works now (active-miss = `run_id` +
+  launch, ≡ `examples/reuse/`); the **fine-grained** version is *blocked on
+  run-episodes* — its move is *extending a prefix*, so without resume-from-
+  checkpoint a memoizer degrades to whole-run recompute. *Open:* one helper + the
+  policy flag (lean) vs two entry points (`history`/`stream`) over the evaluator.
+- **[backlog] Relative per-value timestamp** (`value.t`, worker-birth-relative) —
+  makes subscription replay *homogeneous*: the reader can replay time-based
+  schedules (`every`/`until: time_seconds`) over the log, like step-based ones.
+  Lives on the `value` body (a worker concept), not the envelope (opinion-free).
+  Non-reproducible (wall-clock elapsed) — correctly so: **step is the
+  reproducible/logical axis, time is the real-time axis**; `run_id` is untouched
+  (time is output metadata, never input). Add when a time-windowed-observation use
+  case appears — it resolves the step-vs-time replay caveat above, nothing else.
 - **Relation to neighbours:** *run-episodes* supplies resume/extend (and
   run-absolute steps); the *`run_id()` recipe* supplies addressing; the *Store*
   supplies cross-run enumeration/membership (the structure content-addressing
