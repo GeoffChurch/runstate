@@ -18,3 +18,22 @@ import socket
 
 def local_handle() -> str:
     return f"local://{socket.gethostname()}/{os.getpid()}"
+
+
+def resolve(handle: str) -> bool | None:
+    """Liveness of a handle token, actor-independently. True/False for a
+    ``local://host/pid`` (via ``os.kill(pid, 0)``); None if the scheme isn't
+    locally resolvable (caller falls back to heartbeat staleness)."""
+    if not handle.startswith("local://"):
+        return None
+    try:
+        pid = int(handle.rsplit("/", 1)[1])
+    except (ValueError, IndexError):
+        return None
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True   # exists, not ours
