@@ -24,7 +24,7 @@ from dataclasses import dataclass, field, replace
 from typing import Optional, Union
 
 from .liveness import RunResult, peek_terminal
-from .payloads import Heartbeat
+from .vocabulary.payloads import Heartbeat
 
 
 @dataclass(frozen=True)

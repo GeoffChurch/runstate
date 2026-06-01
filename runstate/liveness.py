@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from .payloads import Stopped, Terminated
+from .vocabulary.payloads import Stopped, Terminated
 
 
 @dataclass(frozen=True)

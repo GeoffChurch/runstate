@@ -6,7 +6,7 @@ A Condition is a threshold over (step, time, count) or an any/all of Conditions:
 `any` = whichever crosses first (OR); `all` = whichever crosses last (AND).
 """
 
-from runstate.schedule import is_unsatisfiable, satisfied
+from runstate.vocabulary.schedule import is_unsatisfiable, satisfied
 
 
 def test_step_threshold():

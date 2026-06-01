@@ -26,8 +26,8 @@ from dataclasses import asdict, dataclass, field
 from typing import Optional, Protocol
 
 from .channel import open_channel
-from .payloads import Launched, Terminated
-from .handle import local_handle
+from .vocabulary.payloads import Launched, Terminated
+from .vocabulary.handle import local_handle
 
 
 class LaunchHandle(Protocol):

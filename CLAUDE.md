@@ -47,13 +47,16 @@ The substrate + opt-in conventions + reference orchestration, in
   append-only **topic log** of envelopes `{seq, topic, name?,
   request_id?, body}`; the substrate routes/indexes on the envelope and
   never parses `body`.
-- **`schedule.py`** — the subscription **condition-algebra**
-  (`Threshold`/`Condition`, `satisfied()`, `Subscription`,
-  `is_unsatisfiable()`): `from`/`every`/`until` over `step`/time/count.
+- **`vocabulary/`** — the L2 **convention vocabulary** (the typed terms another
+  language reimplements to interop): `payloads.py` (frozen body dataclasses
+  mirroring the schemas — `Value`/`Started`/`Heartbeat`/`Stopped`/`Nak`/
+  `Launched`/`Terminated`; serialize via `asdict`, parse via `Cls(**body)`),
+  `schedule.py` (the subscription **condition-algebra**: `satisfied()`,
+  `Subscription`, `is_unsatisfiable()` — `from`/`every`/`until` over
+  `step`/time/count), `handle.py` (portable liveness handles `local://host/pid`).
 - **`worker.py`** — the reference `Worker` loop (context manager +
   `steps()`): drains `control.*`, services subscriptions into `value`
   events, emits `lifecycle.*` (started / heartbeat / stopped / nak).
-- **`handle.py`** — portable liveness handles (`local://host/pid`).
 - **`liveness.py`** — `RunResult` (the terminal verdict; closed
   `outcome`, verbatim `reason`, no `success`) + `peek_terminal` (the
   record-based verdict).

@@ -7,7 +7,7 @@ from dataclasses import asdict
 
 import pytest
 
-from runstate.payloads import (
+from runstate.vocabulary.payloads import (
     Heartbeat,
     Launched,
     Nak,

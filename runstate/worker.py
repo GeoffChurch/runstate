@@ -13,9 +13,9 @@ from __future__ import annotations
 import time
 from dataclasses import asdict
 
-from .payloads import Heartbeat, Nak, Started, Stopped, Value
-from .handle import local_handle
-from .schedule import Subscription, is_unsatisfiable, satisfied
+from .vocabulary.payloads import Heartbeat, Nak, Started, Stopped, Value
+from .vocabulary.handle import local_handle
+from .vocabulary.schedule import Subscription, is_unsatisfiable, satisfied
 
 
 class Worker:

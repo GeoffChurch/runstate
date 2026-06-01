@@ -5,7 +5,7 @@ A subscription fires at ``from`` (default: the next safe point), repeats every
 ``(fire, expired)``.
 """
 
-from runstate.schedule import Subscription
+from runstate.vocabulary.schedule import Subscription
 
 
 def test_empty_schedule_fires_once_now():

@@ -143,7 +143,7 @@ def test_convention_dataclasses_serialize_to_schema_valid_bodies():
     # asdict() must validate, so the two encodings can't drift.
     from dataclasses import asdict
 
-    from runstate import payloads
+    from runstate.vocabulary import payloads
 
     bodies = [
         payloads.Value(value=0.5, step=10),
