@@ -143,8 +143,8 @@ and open questions. Refuted ideas with diagnosis move to `docs/dead_ends/`
 
 **To take on deferred/upcoming work, start at `docs/backlog/index.md`** — its
 "Start here" gives the reading order and the big-ticket threads (run-episodes,
-the Store/Hasher relational layer + `mycooc-adoption.md`, and the deferred
-design-§12 items mirrored there).
+the Store relational layer + `mycooc-adoption.md` — the "Hasher" re-scoped to a
+`run_id()` recipe — and the deferred design-§12 items mirrored there).
 
 ## Scope snapshot
 
@@ -162,9 +162,10 @@ design-§12 items mirrored there).
 
 **Deferred (v0.3+)** (see `docs/backlog/index.md`):
 - Store Protocol + backends (relational metadata; many-to-many
-  Run × Experiment membership).
-- Hasher Protocol + DefaultHasher (content-addressable input
-  fingerprinting); reuse-by-hash via Store.
+  Run × Experiment membership; the cross-run reuse-by-hash query).
+- A `run_id()` recipe (the re-scoped "Hasher" — *not* a component):
+  content-addressable identity is already a substrate affordance via
+  caller-chosen `run_id`; the input-partition policy is workload-specific.
 - Pause / Resume / Snapshot / Reconfigure commands.
 - The webapp viewer (`docs/backlog/webapp-viewer.md`).
 - Open §12 implementation items still on the design's list (lazy-launch

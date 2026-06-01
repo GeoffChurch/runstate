@@ -13,7 +13,8 @@ mirrors the lifecycle convention; its `.preempt {"at_step": N}` is a
 one-condition prototype of `control.stop` + the `from`-algebra). **A full rebase
 isn't possible today** — the two pieces mycooc leans on hardest, **reuse-by-hash**
 and the **`scenario × variant × seed` relational identity/membership**, are
-exactly the Store + Hasher runstate deferred to Layer 4 (design §14). The
+both the **Store** runstate deferred to Layer 4 (design §14) — the "Hasher"
+turns out to be a `run_id()` recipe, not a component (see [index](index.md)). The
 **control/lifecycle/liveness plane maps cleanly and is an *upgrade*** (runstate's
 condition-algebra + handle-liveness > mycooc's `.preempt` file + PID file). So:
 rebase the control plane now, keep store/hasher/status app-side, migrate them
@@ -31,15 +32,20 @@ when Layer 4 lands — using mycooc's code as the reference.
 
 ## Upstream candidates (highest value first)
 
-1. **Hasher** — strongest fit; mycooc's `_compute_config_hash` +
-   `_compute_git_fingerprint` + `_fingerprints_compatible` is a ready reference
-   for the deferred `Hasher` Protocol. Opinion-free (content-addressing). Refine:
-   hash the *committed* blob, don't infer clean-vs-dirty.
-2. **Store + reuse-by-hash** — a **separate Layer-4 Protocol**, NOT a channel
-   convention: reuse is a cross-run relational query, which the per-run topic log
-   structurally can't answer. mycooc proves the many-to-many **Run × Experiment**
-   table is non-optional. Keep *artifact*-sharing (mycooc symlinks checkpoints)
-   out of scope — runstate transports messages, not files.
+1. **Store + reuse-by-hash** — *the real Layer-4 component.* A **separate
+   Protocol**, NOT a channel convention: reuse-by-hash and the
+   `scenario × variant × seed` identity are cross-run relational queries the
+   per-run topic log structurally can't answer. mycooc proves the many-to-many
+   **Run × Experiment** table is non-optional. Keep *artifact*-sharing (mycooc
+   symlinks checkpoints) out of scope — runstate transports messages, not files.
+2. **A `run_id()` recipe (the ex-"Hasher")** — *a recipe, not a Protocol.* A
+   hasher's only content is the choice of which inputs determine the run's
+   output (workload-specific → user code); and the substrate already affords
+   content-addressable identity (set `run_id = h(inputs)`; reuse-for-dedup =
+   `open_channel` + `peek_terminal`). Ship one reference `run_id()`: mycooc's
+   `_compute_config_hash` + `_compute_git_fingerprint` is the seed, refined to
+   hash git state **by content** (don't infer clean-vs-dirty), which drops the
+   `_fingerprints_compatible` repair predicate.
 3. **A `lifecycle.stopped.reason` vocabulary recipe** — mycooc distinguishes
    `patience` / `max_steps` / `preempted` and resumable-`timed_out` vs
    fatal-`crashed`. Don't expand the closed `outcome` enum (that bakes policy —
@@ -74,6 +80,6 @@ config, checkpoint mechanics.
 
 - [run-episodes](run-episodes.md) — the extendable-terminal + idempotent-relaunch
   half.
-- **Store + Hasher + reuse-by-hash** (index.md, "relational layer") — the dedup
-  half; mycooc is the reference design and the validating use case.
+- **The Store + a `run_id()` recipe** (index.md, "relational layer") — the dedup
+  + enumeration half; mycooc is the reference and the validating use case.
 - A `lifecycle.stopped.reason` vocabulary recipe (new; small).

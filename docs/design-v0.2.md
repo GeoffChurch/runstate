@@ -282,7 +282,7 @@ The six convention decisions are settled (see revision history). Status tags bel
 ## 14. Scope: v0.2 vs later
 
 **v0.2 ships (and now does):** the substrate (Memory + SQLite topic log) + the four conventions + the orchestration helpers (launchers, Watcher, sweep) + the frozen schema stack. The §12 items left open (lazy-launch, cursor-persistence/crash-replay, multi-orchestrator attribution, a GC/retention policy) are non-blocking operational refinements, not protocol gaps.
-**Layer 4 (later):** Store + Hasher (relational run/experiment metadata; content-addressable fingerprinting; reuse-by-hash).
+**Layer 4 (later):** the **Store** — relational run/experiment metadata; many-to-many membership; the cross-run reuse-by-hash query. (The once-planned "Hasher" re-scoped to a `run_id()` recipe: content-addressable identity is already a substrate affordance via caller-chosen `run_id` — see `docs/backlog/`.)
 **Long-term:** richer data-plane Progress + a viewer-discovery protocol — its *own* protocol in `protocol/`, distinct from this control protocol. Compose, don't conflate.
 
 ## Revision history

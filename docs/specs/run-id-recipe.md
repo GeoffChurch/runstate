@@ -1,0 +1,65 @@
+# Recipe: reuse by content-addressed `run_id`
+
+**A pattern, not a library function** (decided 2026-05-31; this supersedes the
+earlier `default_run_id`/`hash_files` spec). Run identity is opaque and
+caller-chosen, so make `run_id` a content hash of the inputs that determine your
+run's output; then "have I already run this?" is just "does that run's log exist
+and show a terminal result?" Canonicalizing your inputs is one line, and the
+choice of *what counts as an input* is yours — so runstate ships the **pattern
+and the lessons**, not code. (A shipped helper with default file-globs would only
+hide the partition choice and risk silently omitting an output-determining file.)
+
+## The pattern
+
+```python
+import json, hashlib
+from runstate import open_channel, peek_terminal
+
+def run_id(inputs: dict) -> str:                # inputs = everything that
+    canon = json.dumps(inputs, sort_keys=True, allow_nan=False)   # determines output
+    return hashlib.sha256(canon.encode()).hexdigest()[:32]
+
+def hash_code(paths) -> str:                    # your partition: which files count
+    h = hashlib.sha256()
+    for p in sorted(paths):                     # sorted → deterministic
+        h.update(p.encode()); h.update(b"\0")
+        h.update(hashlib.sha256(p_bytes(p)).digest())   # content, not git state
+    return h.hexdigest()
+
+rid = run_id({**config, "seed": seed, "code": hash_code(my_files)})
+prior = peek_terminal(open_channel(rid, root=ROOT))
+if prior is not None and prior.outcome == "completed":
+    ...   # reuse
+else:
+    ...   # launch into rid
+
+# Or for a sweep: key each Variant by run_id and call sweep(resume=True) — it
+# already skips any run with a terminal record, so that *is* reuse-by-hash.
+```
+
+## What to get right (the lessons — this is the real content)
+
+- **Hash code by *content*, not git's dirty/clean flag.** Two byte-identical
+  checkouts must hash the same regardless of commit or dirty state. (mycooc
+  shipped a bug here — a whole "are these fingerprints compatible?" predicate —
+  by comparing dirty-vs-clean instead of content.)
+- **Fold everything into one dict and hash it once.** Putting the code-hash in as
+  a dict value lets JSON provide the field framing for free — no manual
+  length-prefixing, no cross-field collisions.
+- **`sort_keys=True`, `allow_nan=False`, no `default=str`.** Key order must not
+  matter; `NaN`/`inf` and unserializable values should *raise*, not silently
+  collide. This canonical form **is** your equality contract.
+- **Own your partition — don't hide it.** Reuse only goes wrong via a *false hit*:
+  you left an output-determining input out (a data file, a lib version, a flag).
+  Seed, code, data are all just inputs — include exactly what determines your
+  result. Which outcomes count as reusable (and any min-steps floor) is likewise
+  your policy, applied via `peek_terminal`.
+
+## Why no shipped function
+
+Canonicalization is one line; content-hashing a file set is trivial *and*
+opinionated (which files count is yours). There's nothing here for runstate to
+own that wouldn't be either trivial or a partition opinion. `run_id = h(inputs)`
+is the "function C" point-memoization case from `design-v0.3-exploration.md` §6;
+the substrate already makes content-addressed identity free by letting you choose
+`run_id`.
