@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://runstate.dev/protocol/value-v0.2.json",
   "title": "runstate v0.2 value convention",
-  "description": "Pins only the WRAPPER of the `value` topic -- the data plane. The worker emits a current value in response to a subscription, correlated by request_id and identified by `name`. The `value` payload is arbitrary but must be JSON-serializable; a sender-side json_default hook (attach()/open_channel()) coerces exotic types (numpy scalars, tensors), and an unserializable value with no hook fails fast. Only the wrapper {value, step?} is fixed. Applied on top of the envelope schema.",
+  "description": "Pins only the WRAPPER of the `value` topic -- the data plane. The worker emits a current value in response to a subscription, correlated by request_id and identified by `name`. The `value` payload is arbitrary but must be JSON-serializable; a sender-side json_default hook (attach()/open_channel()) coerces exotic types (numpy scalars, tensors), and an unserializable value with no hook fails fast. Only the wrapper {value, step} is fixed (step present-but-nullable: null when stepless). Applied on top of the envelope schema.",
 
   "allOf": [
     {
@@ -13,7 +13,7 @@
 
   "$defs": {
     "Value": {
-      "type": "object", "required": ["value"], "additionalProperties": false,
+      "type": "object", "required": ["value", "step"], "additionalProperties": false,
       "properties": {
         "value": true,
         "step": {"type": ["integer", "null"], "minimum": 0}

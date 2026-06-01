@@ -29,7 +29,7 @@
 
   "$defs": {
     "Started": {
-      "type": "object", "required": ["handle"], "additionalProperties": false,
+      "type": "object", "required": ["handle", "hostname", "attached_at"], "additionalProperties": false,
       "description": "Pushed on attach; the worker self-reports its liveness handle (§8).",
       "properties": {
         "handle": {"type": "string"},
@@ -46,7 +46,7 @@
       }
     },
     "Stopped": {
-      "type": "object", "required": ["reason"], "additionalProperties": false,
+      "type": "object", "required": ["reason", "error", "final_step"], "additionalProperties": false,
       "description": "The cooperative dying breath; its existence on the log = the run cleanly finished (§7). reason is a verbatim worker label; error accompanies reason=='errored'.",
       "properties": {
         "reason": {"type": "string"},

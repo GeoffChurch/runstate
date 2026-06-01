@@ -29,7 +29,7 @@ class Worker:
         self._last_step = None
         # Attaching announces the worker and self-reports its liveness handle.
         self._ch.send(
-            {"handle": local_handle(), "attached_at": self._now()},
+            {"handle": local_handle(), "hostname": None, "attached_at": self._now()},
             topic="lifecycle.started",
         )
 
@@ -96,11 +96,9 @@ class Worker:
         if self._stopped:
             return
         self._stopped = True
-        body = {"reason": reason}
-        if error is not None:
-            body["error"] = error
-        if final_step is not None:
-            body["final_step"] = final_step
+        # present-nullable: always send error + final_step (null when N/A) so
+        # consumers get a uniform key set.
+        body = {"reason": reason, "error": error, "final_step": final_step}
         self._ch.send(body, topic="lifecycle.stopped")
 
     # ----- internals -----

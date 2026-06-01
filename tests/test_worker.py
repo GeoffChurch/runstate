@@ -69,7 +69,7 @@ def test_stopped_emits_dying_breath(open_channel):
     w = Worker(open_channel(), now=lambda: 0.0)
     w.stopped(reason="completed", final_step=500)
     e = open_channel().latest("lifecycle.stopped")
-    assert e.body == {"reason": "completed", "final_step": 500}
+    assert e.body == {"reason": "completed", "error": None, "final_step": 500}
     assert e.request_id is None  # broadcast — every observer sees it
 
 
@@ -79,6 +79,7 @@ def test_stopped_with_error(open_channel):
     assert open_channel().latest("lifecycle.stopped").body == {
         "reason": "errored",
         "error": "boom",
+        "final_step": None,
     }
 
 
@@ -265,7 +266,7 @@ def test_steps_drives_ticks_and_stops_completed(open_channel):
         {"value": 1.0, "step": 1},
         {"value": 2.0, "step": 2},
     ]
-    assert obs.latest("lifecycle.stopped").body == {"reason": "completed", "final_step": 2}
+    assert obs.latest("lifecycle.stopped").body == {"reason": "completed", "error": None, "final_step": 2}
 
 
 def test_steps_breaks_on_commanded_stop(open_channel):
@@ -278,6 +279,7 @@ def test_steps_breaks_on_commanded_stop(open_channel):
     assert seen == [0, 1, 2]  # stops at the commanded step, never reaches 3..9
     assert open_channel().latest("lifecycle.stopped").body == {
         "reason": "commanded",
+        "error": None,
         "final_step": 2,
     }
 
@@ -297,4 +299,4 @@ def test_stopped_is_idempotent(open_channel):
     w.stopped(reason="completed")
     w.stopped(reason="errored")  # second call is a no-op
     stops = open_channel().read(topics=["lifecycle.stopped"])
-    assert len(stops) == 1 and stops[0].body == {"reason": "completed"}
+    assert len(stops) == 1 and stops[0].body == {"reason": "completed", "error": None, "final_step": None}

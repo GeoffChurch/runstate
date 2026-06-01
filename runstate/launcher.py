@@ -121,11 +121,13 @@ class ThreadLauncher:
             except BaseException as exc:  # recorded on the log, not swallowed
                 state["exc"] = exc
                 channel.send(
-                    {"exit_code": 1, "reason": "exited"}, topic="launcher.terminated"
+                    {"exit_code": 1, "reason": "exited", "signal": None},
+                    topic="launcher.terminated",
                 )
             else:
                 channel.send(
-                    {"exit_code": 0, "reason": "exited"}, topic="launcher.terminated"
+                    {"exit_code": 0, "reason": "exited", "signal": None},
+                    topic="launcher.terminated",
                 )
 
         thread = threading.Thread(target=_run, daemon=True)
@@ -176,9 +178,9 @@ class _LocalHandle:
             return
         self._reaped = True
         if rc < 0:  # died from signal -rc
-            body = {"signal": -rc, "reason": "killed"}
+            body = {"signal": -rc, "reason": "killed", "exit_code": None}
         else:
-            body = {"exit_code": rc, "reason": "exited"}
+            body = {"exit_code": rc, "reason": "exited", "signal": None}
         self.channel.send(body, topic="launcher.terminated")
 
 

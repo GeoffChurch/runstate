@@ -100,6 +100,44 @@ def test_lifecycle_stopped_rejects_extra_body_field():
         CONVENTIONS["lifecycle."].validate(bad)
 
 
+# ----- present-nullable: incidentally-optional fields are required (nullable),
+# never omittable (a uniform key set for consumers) -----
+
+
+def test_value_step_is_present_nullable():
+    V = CONVENTIONS["value"]
+    V.validate(_env("value", {"value": 1, "step": 5}))
+    V.validate(_env("value", {"value": 1, "step": None}))  # null when stepless
+    with pytest.raises(jsonschema.ValidationError):
+        V.validate(_env("value", {"value": 1}))  # step omitted -> rejected
+
+
+def test_stopped_error_and_final_step_present_nullable():
+    L = CONVENTIONS["lifecycle."]
+    L.validate(_env("lifecycle.stopped",
+                    {"reason": "completed", "error": None, "final_step": None}))
+    L.validate(_env("lifecycle.stopped",
+                    {"reason": "errored", "error": "boom", "final_step": 5}))
+    for missing in ({"reason": "completed", "error": None},      # final_step omitted
+                    {"reason": "completed", "final_step": None},  # error omitted
+                    {"reason": "completed"}):                     # both omitted
+        with pytest.raises(jsonschema.ValidationError):
+            L.validate(_env("lifecycle.stopped", missing))
+
+
+def test_started_hostname_and_attached_at_present_nullable():
+    L = CONVENTIONS["lifecycle."]
+    L.validate(_env("lifecycle.started",
+                    {"handle": "local://h/1", "hostname": None, "attached_at": None}))
+    L.validate(_env("lifecycle.started",
+                    {"handle": "local://h/1", "hostname": "h", "attached_at": 1.5}))
+    for missing in ({"handle": "local://h/1", "hostname": None},     # attached_at omitted
+                    {"handle": "local://h/1", "attached_at": None},  # hostname omitted
+                    {"handle": "local://h/1"}):                      # both omitted
+        with pytest.raises(jsonschema.ValidationError):
+            L.validate(_env("lifecycle.started", missing))
+
+
 def test_launcher_launched_rejects_unknown_status():
     bad = _env("launcher.launched", {"handle": "local://h/1", "status": "intended"})
     with pytest.raises(jsonschema.ValidationError):
@@ -134,7 +172,7 @@ def test_control_stop_takes_only_from():
 def test_well_known_body_shapes_validate():
     # positive coverage for shapes the emitted-bytes scenario doesn't reach
     CONVENTIONS["launcher."].validate(
-        _env("launcher.terminated", {"reason": "killed", "signal": 9})
+        _env("launcher.terminated", {"reason": "killed", "signal": 9, "exit_code": None})
     )
     for reason in ("malformed", "unsatisfiable", "unsupported"):
         CONVENTIONS["lifecycle."].validate(
@@ -157,22 +195,23 @@ def test_envelope_rejects_empty_string_ids():
 
 
 def test_terminated_rejects_negative_exit_code():
-    bad = _env("launcher.terminated", {"reason": "exited", "exit_code": -1})
+    bad = _env("launcher.terminated", {"reason": "exited", "exit_code": -1, "signal": None})
     with pytest.raises(jsonschema.ValidationError):
         CONVENTIONS["launcher."].validate(bad)
 
 
 def test_terminated_enforces_reason_field_pairing():
     L = CONVENTIONS["launcher."]
-    # the shapes the implementation actually emits validate
-    L.validate(_env("launcher.terminated", {"reason": "exited", "exit_code": 0}))
-    L.validate(_env("launcher.terminated", {"reason": "killed", "signal": 9}))
-    # cross-paired / unpaired bodies are rejected
+    # present-nullable + reason-coupled: every key present; the inapplicable one null
+    L.validate(_env("launcher.terminated", {"reason": "exited", "exit_code": 0, "signal": None}))
+    L.validate(_env("launcher.terminated", {"reason": "killed", "signal": 9, "exit_code": None}))
     for bad in (
-        {"reason": "killed", "exit_code": 5},  # killed must carry signal, not exit_code
-        {"reason": "exited", "signal": 9},  # exited must carry exit_code, not signal
-        {"reason": "exited"},  # exited needs an exit_code
-        {"reason": "killed"},  # killed needs a signal
+        {"reason": "exited", "exit_code": 0, "signal": 9},        # exited: signal must be null
+        {"reason": "killed", "signal": 9, "exit_code": 5},        # killed: exit_code must be null
+        {"reason": "exited", "exit_code": None, "signal": None},  # exited needs a non-null exit_code
+        {"reason": "killed", "exit_code": None, "signal": None},  # killed needs a non-null signal
+        {"reason": "exited", "exit_code": 0},                     # signal key missing (not omittable)
+        {"reason": "killed", "signal": 9},                        # exit_code key missing
     ):
         with pytest.raises(jsonschema.ValidationError):
             L.validate(_env("launcher.terminated", bad))
