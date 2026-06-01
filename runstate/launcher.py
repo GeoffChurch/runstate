@@ -22,10 +22,11 @@ import os
 import socket
 import subprocess
 import threading
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Optional, Protocol
 
 from .channel import open_channel
+from .payloads import Launched, Terminated
 from .handle import local_handle
 
 
@@ -112,7 +113,7 @@ class ThreadLauncher:
         kwargs = kwargs or {}
         channel = self.open_channel(run_id)
         handle = local_handle()
-        channel.send({"handle": handle, "status": "running"}, topic="launcher.launched")
+        channel.send(asdict(Launched(handle=handle)), topic="launcher.launched")
         state: dict = {"exc": None}
 
         def _run():
@@ -121,12 +122,12 @@ class ThreadLauncher:
             except BaseException as exc:  # recorded on the log, not swallowed
                 state["exc"] = exc
                 channel.send(
-                    {"exit_code": 1, "reason": "exited", "signal": None},
+                    asdict(Terminated(reason="exited", exit_code=1, signal=None)),
                     topic="launcher.terminated",
                 )
             else:
                 channel.send(
-                    {"exit_code": 0, "reason": "exited", "signal": None},
+                    asdict(Terminated(reason="exited", exit_code=0, signal=None)),
                     topic="launcher.terminated",
                 )
 
@@ -178,9 +179,9 @@ class _LocalHandle:
             return
         self._reaped = True
         if rc < 0:  # died from signal -rc
-            body = {"signal": -rc, "reason": "killed", "exit_code": None}
+            body = asdict(Terminated(reason="killed", signal=-rc, exit_code=None))
         else:
-            body = {"exit_code": rc, "reason": "exited", "signal": None}
+            body = asdict(Terminated(reason="exited", exit_code=rc, signal=None))
         self.channel.send(body, topic="launcher.terminated")
 
 
@@ -215,7 +216,7 @@ class LocalLauncher:
         }
         proc = subprocess.Popen(cmd, env=child_env)
         handle = f"local://{socket.gethostname()}/{proc.pid}"
-        channel.send({"handle": handle, "status": "running"}, topic="launcher.launched")
+        channel.send(asdict(Launched(handle=handle)), topic="launcher.launched")
         h = _LocalHandle(run_id=run_id, channel=channel, handle=handle, _proc=proc)
         self._handles.append(h)
         return h

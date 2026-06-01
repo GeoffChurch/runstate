@@ -138,6 +138,28 @@ def test_started_hostname_and_attached_at_present_nullable():
             L.validate(_env("lifecycle.started", missing))
 
 
+def test_convention_dataclasses_serialize_to_schema_valid_bodies():
+    # the frozen body dataclasses are the Python mirror of the schemas; their
+    # asdict() must validate, so the two encodings can't drift.
+    from dataclasses import asdict
+
+    from runstate import payloads
+
+    bodies = [
+        payloads.Value(value=0.5, step=10),
+        payloads.Started(handle="local://h/1", hostname=None, attached_at=0.0),
+        payloads.Heartbeat(step=7, consumed_seq=3),
+        payloads.Stopped(reason="completed", error=None, final_step=9),
+        payloads.Nak(reason="malformed", message="x"),
+        payloads.Launched(handle="local://h/1"),
+        payloads.Terminated(reason="exited", exit_code=0, signal=None),
+        payloads.Terminated(reason="killed", signal=9, exit_code=None),
+    ]
+    for body in bodies:
+        topic = type(body).TOPIC
+        _convention_for(topic).validate(_env(topic, asdict(body)))
+
+
 def test_launcher_launched_rejects_unknown_status():
     bad = _env("launcher.launched", {"handle": "local://h/1", "status": "intended"})
     with pytest.raises(jsonschema.ValidationError):

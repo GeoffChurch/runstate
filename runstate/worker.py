@@ -11,7 +11,9 @@ The clock is injectable (``now``) for deterministic tests.
 from __future__ import annotations
 
 import time
+from dataclasses import asdict
 
+from .payloads import Heartbeat, Nak, Started, Stopped, Value
 from .handle import local_handle
 from .schedule import Subscription, is_unsatisfiable, satisfied
 
@@ -29,7 +31,7 @@ class Worker:
         self._last_step = None
         # Attaching announces the worker and self-reports its liveness handle.
         self._ch.send(
-            {"handle": local_handle(), "hostname": None, "attached_at": self._now()},
+            asdict(Started(handle=local_handle(), hostname=None, attached_at=self._now())),
             topic="lifecycle.started",
         )
 
@@ -76,7 +78,8 @@ class Worker:
         # Tick-driven liveness beacon: step (progress) + consumed_seq (the
         # registration watermark, published only after draining/registering).
         self._ch.send(
-            {"step": step, "consumed_seq": self._cursor}, topic="lifecycle.heartbeat"
+            asdict(Heartbeat(step=step, consumed_seq=self._cursor)),
+            topic="lifecycle.heartbeat",
         )
         if self._stop is not None and self._stop.tick(step=step, now=self._now()).fire:
             return "commanded"
@@ -96,9 +99,7 @@ class Worker:
         if self._stopped:
             return
         self._stopped = True
-        # present-nullable: always send error + final_step (null when N/A) so
-        # consumers get a uniform key set.
-        body = {"reason": reason, "error": error, "final_step": final_step}
+        body = asdict(Stopped(reason=reason, error=error, final_step=final_step))
         self._ch.send(body, topic="lifecycle.stopped")
 
     # ----- internals -----
@@ -156,7 +157,7 @@ class Worker:
 
     def _nak(self, request_id, reason: str, message: str) -> None:
         self._ch.send(
-            {"reason": reason, "message": message},
+            asdict(Nak(reason=reason, message=message)),
             topic="lifecycle.nak",
             request_id=request_id,
         )
@@ -177,7 +178,7 @@ class Worker:
                 value = self._values.get(name)
                 try:
                     self._ch.send(
-                        {"value": value, "step": step},
+                        asdict(Value(value=value, step=step)),
                         topic="value",
                         name=name,
                         request_id=request_id,

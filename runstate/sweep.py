@@ -22,7 +22,7 @@ from .watcher import Watcher
 _FAILURES = frozenset({"errored", "killed", "presumed_dead"})
 
 
-@dataclass
+@dataclass(frozen=True)
 class Variant:
     """One run's specification: a ``run_id``, the launcher's ``target`` (a
     callable for ThreadLauncher, a command for LocalLauncher), and any

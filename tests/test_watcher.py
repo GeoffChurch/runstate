@@ -47,7 +47,7 @@ def test_poll_none_while_running_then_terminal(tmp_path):
     s = w.poll("r")
     assert s.done is False  # the Running arm of RunStatus
     assert s.step == 0  # carries the live snapshot from the heartbeat fold
-    ch.send({"reason": "completed", "final_step": 5}, topic="lifecycle.stopped")
+    ch.send({"reason": "completed", "error": None, "final_step": 5}, topic="lifecycle.stopped")
     r = w.poll("r")
     assert r.done is True
     assert r.outcome == "completed"
@@ -72,7 +72,7 @@ def test_presumed_dead_via_probe(tmp_path):
 def test_clean_stop_beats_probe(tmp_path):
     # even if the handle says dead, a terminal record wins (it just exited)
     ch = open_channel("r", root=tmp_path, backend="sqlite")
-    ch.send({"reason": "completed"}, topic="lifecycle.stopped")
+    ch.send({"reason": "completed", "error": None, "final_step": None}, topic="lifecycle.stopped")
     w = Watcher()
     w.add(FakeHandle(run_id="r", channel=ch, alive=False))
     assert w.poll("r").outcome == "completed"
@@ -146,7 +146,7 @@ def test_iter_events_streams_then_continues_from_cursor():
     w = Watcher()
     w.observe("r", ch)
     ch.send({"a": 1}, topic="value", name="x")
-    ch.send({"reason": "completed"}, topic="lifecycle.stopped")
+    ch.send({"reason": "completed", "error": None, "final_step": None}, topic="lifecycle.stopped")
     first = list(w.iter_events(timeout=0))
     assert [(rid, e.topic) for rid, e in first] == [
         ("r", "value"),
@@ -312,7 +312,7 @@ def test_wait_does_a_final_drain_after_terminal():
     # an envelope arriving right as the terminal verdict is reached must still
     # reach on_event (a final drain after done), not be cut off.
     ch = open_channel("r", root=None, backend="memory")
-    ch.send({"reason": "completed"}, topic="lifecycle.stopped")
+    ch.send({"reason": "completed", "error": None, "final_step": None}, topic="lifecycle.stopped")
     w = Watcher()
     w.observe("r", ch)
     seen = []
@@ -321,7 +321,7 @@ def test_wait_does_a_final_drain_after_terminal():
         seen.append(e.topic)
         if e.topic == "lifecycle.stopped" and len(seen) == 1:
             # trailing envelope appears after the drain that delivered the stop
-            ch.send({"exit_code": 0, "reason": "exited"}, topic="launcher.terminated")
+            ch.send({"reason": "exited", "exit_code": 0, "signal": None}, topic="launcher.terminated")
 
     w.wait("r", on_event=on_event)
     assert "launcher.terminated" in seen

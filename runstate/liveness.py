@@ -12,6 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+from .payloads import Stopped, Terminated
+
 
 @dataclass(frozen=True)
 class RunResult:
@@ -48,29 +50,24 @@ def peek_terminal(channel) -> Optional[RunResult]:
     """
     stopped = channel.latest("lifecycle.stopped")
     if stopped is not None:
-        b = stopped.body
-        reason = b.get("reason", "completed")
-        if reason == "completed":
+        s = Stopped(**stopped.body)
+        if s.reason == "completed":
             outcome = "completed"
-        elif reason == "errored":
+        elif s.reason == "errored":
             outcome = "errored"
         else:
             outcome = "stopped"  # a clean stop that isn't self-completion
         return RunResult(
-            outcome=outcome,
-            reason=reason,
-            error=b.get("error"),
-            final_step=b.get("final_step"),
+            outcome=outcome, reason=s.reason, error=s.error, final_step=s.final_step
         )
     term = channel.latest("launcher.terminated")
     if term is not None:
-        b = term.body
-        reason = b.get("reason", "exited")
-        if reason == "killed":
+        t = Terminated(**term.body)
+        if t.reason == "killed":
             outcome = "killed"
-        elif b.get("exit_code", 0) == 0:
+        elif t.exit_code == 0:
             outcome = "completed"
         else:
             outcome = "errored"
-        return RunResult(outcome=outcome, reason=reason)
+        return RunResult(outcome=outcome, reason=t.reason)
     return None
