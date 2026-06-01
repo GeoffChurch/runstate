@@ -97,6 +97,19 @@ def test_body_is_an_immutable_snapshot(ch):
     assert ch.read()[0].body == {"v": 1}
 
 
+def test_send_expected_seq_appends_on_match_rejects_on_mismatch(ch):
+    s1 = ch.send({"value": 1, "step": 0, "t": 0.0}, topic="value", name="loss")
+    # CAS with the correct last seq -> appends, returns the new seq
+    s2 = ch.send({"value": 2, "step": 1, "t": 0.0}, topic="value", name="loss",
+                 expected_seq=s1)
+    assert s2 == s1 + 1
+    # CAS with a stale last seq -> rejected (no append), returns None
+    rejected = ch.send({"value": 3, "step": 2, "t": 0.0}, topic="value", name="loss",
+                       expected_seq=s1)
+    assert rejected is None
+    assert [e.body["value"] for e in ch.read(topics=["value"])] == [1, 2]
+
+
 def test_read_result_is_independent_of_storage(ch):
     ch.send({"v": 1}, topic="value", name="loss")
     got = ch.read()[0]

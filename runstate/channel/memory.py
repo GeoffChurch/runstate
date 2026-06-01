@@ -27,12 +27,17 @@ class MemoryChannel:
         self._lock = lock if lock is not None else threading.Lock()
         self._json_default = json_default
 
-    def send(self, body: dict, *, topic: str, name=None, request_id=None) -> int:
+    def send(self, body: dict, *, topic: str, name=None, request_id=None,
+             expected_seq=None) -> int | None:
         # The json round-trip both validates serializability and snapshots the
         # body to an independent, JSON-safe copy (json_default coerces exotic
         # types on the way out; the stored copy then needs no hook on read).
         snapshot = json.loads(json.dumps(body, default=self._json_default))
         with self._lock:
+            if expected_seq is not None:
+                last = self._log[-1].seq if self._log else 0
+                if last != expected_seq:
+                    return None
             seq = len(self._log) + 1
             self._log.append(Envelope(seq, topic, name, request_id, snapshot))
         return seq

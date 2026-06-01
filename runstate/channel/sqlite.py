@@ -40,15 +40,21 @@ class SqliteChannel:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
 
-    def send(self, body: dict, *, topic: str, name=None, request_id=None) -> int:
+    def send(self, body: dict, *, topic: str, name=None, request_id=None,
+             expected_seq=None) -> int | None:
         # json_default (sender-side) coerces exotic value payloads on the way out;
         # the stored text is always standard JSON, so any reader uses plain loads.
         body_json = json.dumps(body, default=self._json_default, separators=(",", ":"))
-        cur = self._conn.execute(
-            "INSERT INTO log (topic, name, request_id, body, created_at)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (topic, name, request_id, body_json, time.time()),
-        )
+        with self._conn:  # BEGIN/COMMIT — check + INSERT are one atomic transaction
+            if expected_seq is not None:
+                last = (self._conn.execute("SELECT MAX(seq) FROM log").fetchone()[0]) or 0
+                if last != expected_seq:
+                    return None
+            cur = self._conn.execute(
+                "INSERT INTO log (topic, name, request_id, body, created_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (topic, name, request_id, body_json, time.time()),
+            )
         return cur.lastrowid
 
     def read(
