@@ -9,6 +9,7 @@ shares one run across handles).
 import pytest
 
 from runstate.worker import Worker
+from runstate.vocabulary.handle import local_handle
 
 
 def test_subscribe_then_tick_emits_current_value(open_channel):
@@ -300,6 +301,19 @@ def test_stopped_is_idempotent(open_channel):
     w.stopped(reason="errored")  # second call is a no-op
     stops = open_channel().read(topics=["lifecycle.stopped"])
     assert len(stops) == 1 and stops[0].body == {"reason": "completed", "error": None, "final_step": None}
+
+
+def test_second_worker_loses_the_claim_and_does_no_work(open_channel):
+    ch = open_channel()
+    # a live episode already exists: a started by *our* pid (resolves alive), no stopped
+    ch.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+            topic="lifecycle.started")
+    with Worker(open_channel(), now=lambda: 0.0) as w:
+        assert w.claimed is False                            # lost: an episode is already live
+        for step in w.steps(total=3):
+            w.set("loss", float(step))                       # body must not run
+    assert open_channel().read(topics=["value"]) == []       # the loser emitted no values
+    assert len(open_channel().read(topics=["lifecycle.started"])) == 1  # no second started
 
 
 def test_steps_resumes_at_start_with_run_absolute_step(open_channel):

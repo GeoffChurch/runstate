@@ -16,6 +16,7 @@ from dataclasses import asdict
 from .vocabulary.payloads import Heartbeat, Nak, Started, Stopped, Value
 from .vocabulary.handle import local_handle
 from .vocabulary.schedule import Subscription, is_unsatisfiable, satisfied
+from .liveness import live_episode
 
 
 class Worker:
@@ -30,16 +31,33 @@ class Worker:
         self._stopped = False
         self._stop_reason = None
         self._last_step = None
-        # Attaching announces the worker and self-reports its liveness handle.
-        self._ch.send(
-            asdict(Started(handle=local_handle(), hostname=None, attached_at=self._now())),
-            topic="lifecycle.started",
-        )
+        # Attaching CAS-claims the episode: a worker that loses (a live episode
+        # already exists) sets _lost and exits without acting on the channel.
+        self._lost = False
+        while True:
+            envs = self._ch.read()
+            last = envs[-1].seq if envs else 0
+            if live_episode(self._ch) is not None:
+                self._lost = True
+                break
+            if self._ch.send(
+                asdict(Started(handle=local_handle(), hostname=None, attached_at=self._now())),
+                topic="lifecycle.started",
+                expected_seq=last,
+            ) is not None:
+                break  # won the claim
+
+    @property
+    def claimed(self) -> bool:
+        """True if this worker won the episode claim; False if it lost."""
+        return not self._lost
 
     def __enter__(self) -> "Worker":
         return self
 
     def __exit__(self, exc_type, exc, tb) -> bool:
+        if self._lost:
+            return False  # loser never claimed an episode; emit nothing
         if exc_type is not None:
             self.stopped(reason="errored", error=str(exc), final_step=self._last_step)
         else:
@@ -57,6 +75,8 @@ class Worker:
         (run-absolute), and ``lifecycle.stopped`` records the correct
         ``final_step``.
         """
+        if self._lost:
+            return
         step = start
         while total is None or step < total:
             self._last_step = step

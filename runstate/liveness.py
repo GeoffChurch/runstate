@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .vocabulary.payloads import Stopped, Terminated
+from .vocabulary.handle import resolve
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,21 @@ class RunResult:
     def done(self) -> bool:
         """A RunResult is the terminal arm of RunStatus (see watcher.Running)."""
         return True
+
+
+def live_episode(channel) -> Optional[str]:
+    """Handle of the currently-live episode, or None: the latest
+    ``lifecycle.started`` with no following ``stopped`` whose worker resolves
+    alive (a started-then-crashed episode resolves dead -> not live)."""
+    started = channel.latest("lifecycle.started")
+    if started is None:
+        return None
+    stopped = channel.latest("lifecycle.stopped")
+    if stopped is not None and stopped.seq > started.seq:
+        return None
+    if resolve(started.body["handle"]) is False:
+        return None
+    return started.body["handle"]
 
 
 def _terminal_unless_followed(channel, terminal_topic, opener_topic):

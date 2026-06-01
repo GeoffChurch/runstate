@@ -5,7 +5,8 @@ has finished — a clean lifecycle.stopped, or a reaped launcher.terminated — 
 None (still running / unknown). A single indexed existence lookup, no scan.
 """
 
-from runstate.liveness import RunResult, peek_terminal
+from runstate.liveness import RunResult, live_episode, peek_terminal
+from runstate.vocabulary.handle import local_handle
 
 
 def test_none_while_running(open_channel):
@@ -65,6 +66,16 @@ def test_clean_stop_takes_precedence_over_terminated(open_channel):
     ch.send({"reason": "completed", "error": None, "final_step": 9}, topic="lifecycle.stopped")
     ch.send({"reason": "exited", "exit_code": 0, "signal": None}, topic="launcher.terminated")
     assert peek_terminal(open_channel()).outcome == "completed"
+
+
+def test_live_episode_running_then_none_when_stopped(open_channel):
+    ch = open_channel()
+    assert live_episode(open_channel()) is None                      # nothing yet
+    ch.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+            topic="lifecycle.started")
+    assert live_episode(open_channel()) == local_handle()            # running (our pid alive)
+    ch.send({"reason": "completed", "error": None, "final_step": 1}, topic="lifecycle.stopped")
+    assert live_episode(open_channel()) is None                      # stopped -> not live
 
 
 def test_peek_terminal_is_episode_aware(open_channel):
