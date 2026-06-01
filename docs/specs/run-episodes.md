@@ -42,21 +42,46 @@ reads by run-absolute `step`, not by episode.)
   decision). Which one it is = the **caller's policy**. ("Never touched again" is a
   retention/GC question — §12.9, deferred.)
 
-### 3. Single-spawn guard (idempotent relaunch)
-Relaunch must spawn **iff no live episode**, atomically — double-spawn *corrupts*
-(two workers resuming the same checkpoint interleave a garbage series), so the
-guard must be correct, not best-effort.
-- **CAS primitive:** `send(..., expected_seq=S)` appends iff the log's last `seq`
-  is `S`, else rejects. Opinion-free (checks a `seq`, never the body); maps to NATS
+### 3. Single-spawn guard — the worker self-claims its episode
+Two workers for one `run_id` would corrupt the series (both resume the same
+checkpoint, interleave writes), so a relaunch must not start a second *live*
+episode. The guard lives in the **worker's attach**, not the launcher — because a
+launcher lacks the worker's liveness handle until *after* it spawns (a subprocess's
+child pid is post-spawn), whereas the worker always has its own handle at the moment
+it matters. Putting the guard in the launcher creates a chicken-and-egg (claim needs
+the handle, handle needs the spawn) and a new orphan class (claimed-but-not-yet-
+started, reapable only via the launcher's liveness — which breaks fire-and-forget).
+
+- **CAS primitive:** `send(..., expected_seq=S)` appends iff the log's last `seq` is
+  `S`, else rejects. Opinion-free (checks a `seq`, never the body); maps to NATS
   expected-last-seq / Kafka's idempotent producer. Memory: under its existing lock;
   SQLite: a transaction.
-- **Idempotent `launch`:** optimistic loop — read; if a live episode exists, return
-  its handle (no-op); else claim `launcher.launched` with `expected_seq=last`; if
-  rejected (someone appended), re-read + re-check.
-- **Orphans** (a `launched` with no `terminated` — a crash with no reaper):
-  **reap-before-relaunch** — probe the dangling handle; if dead, write
-  `launcher.terminated` (reuse the Watcher's probe/reap tier) so the "no live
-  episode" check is accurate. Flow: **reap-dead → CAS-claim → spawn.**
+- **Worker self-claim:** on attach the worker **CAS-claims its `lifecycle.started`**
+  (append iff no live episode). **Win →** proceed (load state, run). **Lose** (a live
+  episode already claimed) **→ exit immediately**, before loading state or emitting
+  anything. The optimistic loop is at the worker: read → check no-live → CAS-claim
+  `started` with `expected_seq=last`; if rejected, re-read + re-check (and if a live
+  episode is now present, lose).
+- **Why the worker, not the launcher:** the claim happens where the handle is
+  naturally available, so there is **no new orphan class** (a claim *is* a real
+  `started`; the only failure is started-then-crashed, which the existing liveness
+  tiers already cover); it's **symmetric** across Thread/Local launchers; and it's
+  **launcher-agnostic** — a worker spawned by ray / submitit / hydra / bare
+  `python` is guarded too. The guard is in the *protocol*, not our launcher.
+- **Launcher pre-check (best-effort, optional):** before spawning, a launcher may
+  read the log and skip the spawn if a live episode is already visible — an
+  optimization that avoids a wasted spawn in the common already-live case.
+  Correctness never depends on it; the worker's claim is the guarantee.
+- **Wasted spawn:** in the rare check-to-claim race the loser spawns, checks, exits —
+  doing no *work* (it claims before acting). Cheap in the common case (the pre-check
+  spawns nothing); instant even in the race if the worker claims *before* heavy
+  imports (a documented guard-prologue pattern).
+- **Live-episode test / orphans:** a live episode is the latest `lifecycle.started`
+  with no following `stopped` and the worker's handle resolving alive (or heartbeat
+  fresh); a started-then-crashed episode is reaped by the existing tiers (`resolve()`
+  on the worker handle / heartbeat staleness / `launcher.terminated`).
+  `launcher.launched` remains the launcher's external *observation* (the second
+  viewpoint), not the claim.
 
 ### 4. Autonomous-extend contract
 - **`run_id` excludes the step-target.** Hash the *trajectory-determining inputs

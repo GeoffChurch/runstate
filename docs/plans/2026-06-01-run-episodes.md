@@ -4,7 +4,7 @@
 
 **Goal:** Make a `run_id` host multiple resumable *episodes*, so a run can be relaunched-to-extend without double-spawning — the primitive the fine-grained memoizer needs.
 
-**Architecture:** Episodes are *implicit* (a `lifecycle.started…stopped` span by `seq`); no schema change. Adds: a CAS `send(expected_seq=)` substrate primitive; episode-aware `peek_terminal`; an idempotent `launch` (CAS-claim + reap-before-relaunch); `Worker.steps(start=)`. Autonomous-extend (relaunch with a higher target; the worker resumes from a `run_id`-keyed checkpoint and continues the run-absolute step) is a convention riding on those.
+**Architecture:** Episodes are *implicit* (a `lifecycle.started…stopped` span by `seq`); no schema change. Adds: a CAS `send(expected_seq=)` substrate primitive; episode-aware `peek_terminal`; `Worker.steps(start=)`; and the **worker self-claims its episode** (CAS `lifecycle.started`; a loser exits before acting) — so the single-spawn guard lives in the protocol, not the launcher. Autonomous-extend (relaunch with a higher target; the worker resumes from a `run_id`-keyed checkpoint and continues the run-absolute step) is a convention riding on those.
 
 **Tech stack:** Python 3.11+, stdlib only (`sqlite3`, `os`, `socket`, `dataclasses`); pytest. Tests run over both channel backends via the `ch`/`open_channel` fixtures in `tests/conftest.py`.
 
@@ -16,11 +16,11 @@
 
 - `runstate/channel/memory.py` — `MemoryChannel.send`: add `expected_seq` (CAS under the existing lock).
 - `runstate/channel/sqlite.py` — `SqliteChannel.send`: add `expected_seq` (CAS in a transaction).
-- `runstate/liveness.py` — `peek_terminal`: episode-aware (`stopped`/`terminated` terminal iff no `started`/`launched` follows by `seq`).
-- `runstate/worker.py` — `steps(start=0, total=None)`.
+- `runstate/liveness.py` — `peek_terminal`: episode-aware (`stopped`/`terminated` terminal iff no `started`/`launched` follows by `seq`); plus `live_episode(channel)` (latest `started` with no following `stopped`, worker resolves alive — the claim's live-check).
+- `runstate/worker.py` — `steps(start=0, total=None)`; and **self-claim the episode** at attach (CAS `lifecycle.started`; `self._lost` short-circuits `steps`/`__exit__` on a loss).
 - `runstate/vocabulary/handle.py` — `resolve(handle: str) -> bool | None` (probe a `local://host/pid` token via `os.kill(pid, 0)`; `None` if not locally resolvable).
-- `runstate/launcher.py` — idempotent `launch` (read→CAS-claim loop) + a `_reap_if_dead` helper (probe the latest `launched` handle, write `terminated` if dead). Applies to `LocalLauncher`; `ThreadLauncher` already always emits `terminated`, so it needs only the CAS-claim.
-- Tests: `tests/test_channel.py`, `tests/test_liveness.py`, `tests/test_worker.py`, `tests/test_handle.py` (new), `tests/test_local_launcher.py`, `tests/test_run_episodes.py` (new, integration).
+- `runstate/launcher.py` — **unchanged this pass.** The guard is the worker's self-claim, so the launcher just spawns. A best-effort launch pre-check (skip the spawn if a live episode is visible) and `LocalLauncher` idempotent relaunch are **deferred** (spec §3 / non-goals); `ThreadLauncher` losers are cheap threads, so the memoizer doesn't need the pre-check.
+- Tests: `tests/test_channel.py`, `tests/test_liveness.py`, `tests/test_worker.py`, `tests/test_handle.py` (new), `tests/test_run_episodes.py` (new, integration).
 
 The Watcher needs **no** change: its terminal tiers call `peek_terminal`, so they inherit episode-awareness.
 
@@ -273,91 +273,109 @@ git commit -m "handle: resolve(token) -> liveness via os.kill (the probe tier, s
 
 ---
 
-## Task 5: Idempotent `launch` (CAS-claim + reap-before-relaunch)
+## Task 5: Worker self-claims its episode (CAS `lifecycle.started`)
 
 **Files:**
-- Modify: `runstate/launcher.py` (read it; both `ThreadLauncher.launch` and `LocalLauncher.launch`)
-- Test: `tests/test_local_launcher.py`
+- Modify: `runstate/liveness.py` (add a `live_episode` helper)
+- Modify: `runstate/worker.py` (claim at attach; short-circuit `steps`/`__exit__` on a loss)
+- Test: `tests/test_liveness.py`, `tests/test_worker.py`
 
-A live episode = a `launcher.launched` with no following `launcher.terminated` *and* the handle resolves alive. The claim is the CAS write of `launcher.launched`.
+The guard lives in the worker, not the launcher: the worker has its own handle at attach (a subprocess launcher doesn't until *after* it spawns). On attach the worker CAS-claims its `lifecycle.started`; if a live episode already exists it loses and does nothing. The launcher is unchanged (it just spawns); `ThreadLauncher` losers are cheap threads. Launcher pre-check + `LocalLauncher` idempotent relaunch are deferred (spec §3 / non-goals).
 
-- [ ] **Step 1: Write the failing test** (LocalLauncher; a fast child that exits, then relaunch reuses the run_id)
+- [ ] **Step 1: Add the `live_episode` helper to `runstate/liveness.py`.** First the failing test in `tests/test_liveness.py` (import `live_episode` from `runstate.liveness`, `local_handle` from `runstate.vocabulary.handle`):
 
 ```python
-import sys
-def test_launch_is_idempotent_and_reaps_dead_orphan(tmp_path):
-    launcher = runstate.LocalLauncher(root=tmp_path)
-    h1 = launcher.launch("run", [sys.executable, "-c", "pass"])  # exits immediately
-    h1.wait()                                                    # reaps -> terminated
-    # relaunch the same run_id: the prior episode is terminated -> a NEW episode spawns
-    h2 = launcher.launch("run", [sys.executable, "-c", "pass"])
-    h2.wait()
-    launched = h2.channel.read(topics=["launcher.launched"])
-    assert len(launched) == 2                                    # two episodes claimed
+def test_live_episode_running_then_none_when_stopped(open_channel):
+    ch = open_channel()
+    assert live_episode(open_channel()) is None                      # nothing yet
+    ch.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+            topic="lifecycle.started")
+    assert live_episode(open_channel()) == local_handle()            # running (our pid alive)
+    ch.send({"reason": "completed", "error": None, "final_step": 1}, topic="lifecycle.stopped")
+    assert live_episode(open_channel()) is None                      # stopped -> not live
 ```
 
-(A second test — concurrent claim — belongs here too; with Memory + threads: two `launch` calls racing one `run_id` yield exactly one `launcher.launched`. Write it analogously using `ThreadLauncher` + two threads.)
-
-- [ ] **Step 2: Run it, verify it fails**
-
-Run: `python -m pytest tests/test_local_launcher.py::test_launch_is_idempotent_and_reaps_dead_orphan -v`
-Expected: FAIL — today `launch` always spawns (no live-check), so the assertion about *episode count after a no-op-or-spawn* exposes the missing guard (and a live-run relaunch would double-spawn).
-
-- [ ] **Step 3: Add the guard helper + make `launch` claim via CAS**
+Run red (`python -m pytest "tests/test_liveness.py::test_live_episode_running_then_none_when_stopped" -q`), then implement in `liveness.py` (add `from .vocabulary.handle import resolve`):
 
 ```python
-def _live_episode(channel):
-    """The handle of a live episode, or None. A launched with no following
-    terminated whose handle resolves alive."""
-    launched = channel.latest("launcher.launched")
-    if launched is None:
+def live_episode(channel):
+    """Handle of the currently-live episode, or None: the latest
+    ``lifecycle.started`` with no following ``stopped`` whose worker resolves
+    alive (a started-then-crashed episode resolves dead -> not live)."""
+    started = channel.latest("lifecycle.started")
+    if started is None:
         return None
-    term = channel.latest("launcher.terminated")
-    if term is not None and term.seq > launched.seq:
-        return None                       # already terminated
-    if resolve(launched.body["handle"]) is False:
-        return None                       # orphan: launched, not terminated, but dead
-    return launched.body["handle"]
-
-def _reap_if_dead(channel):
-    launched = channel.latest("launcher.launched")
-    if launched is None:
-        return
-    term = channel.latest("launcher.terminated")
-    if (term is None or term.seq < launched.seq) and resolve(launched.body["handle"]) is False:
-        channel.send({"reason": "exited", "exit_code": 1, "signal": None},
-                     topic="launcher.terminated")
+    stopped = channel.latest("lifecycle.stopped")
+    if stopped is not None and stopped.seq > started.seq:
+        return None
+    if resolve(started.body["handle"]) is False:
+        return None
+    return started.body["handle"]
 ```
 
-Then in each `launch` (before spawning), an optimistic CAS-claim loop:
+- [ ] **Step 2: Write the failing worker test** in `tests/test_worker.py` (a second worker attaching to a channel that already has a live episode must lose — claim nothing, do nothing):
 
 ```python
-while True:
-    last = channel.latest_seq()                    # add: the channel's current last seq (0 if empty)
-    if _live_episode(channel) is not None:
-        return <existing handle>                    # no-op: an episode is already live
-    _reap_if_dead(channel)                           # turn a dead orphan into a terminated
-    handle = <build handle>
-    claimed = channel.send(asdict(Launched(handle=handle)),
-                           topic="launcher.launched", expected_seq=last)
-    if claimed is not None:
-        break                                        # we won the claim -> spawn
-    # else someone appended; re-loop and re-check
-<spawn as today, using `handle`>
+def test_second_worker_loses_the_claim_and_does_no_work(open_channel):
+    ch = open_channel()
+    # ep1 is live: a started by *our* pid (resolves alive), no stopped
+    ch.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+            topic="lifecycle.started")
+    with Worker(open_channel(), now=lambda: 0.0) as w:
+        assert w.claimed is False                       # lost: an episode is already live
+        for step in w.steps(total=3):
+            w.set("loss", float(step))                  # body must not run
+    assert open_channel().read(topics=["value"]) == []  # the loser emitted no values
+    assert len(open_channel().read(topics=["lifecycle.started"])) == 1   # no second started
 ```
 
-(Add a small `latest_seq()` to the channel surface, or reuse `read()[-1].seq`/0. For `ThreadLauncher`, returning the existing handle on no-op means tracking the live thread handle per `run_id`; simplest: store `self._handles[run_id]` and return it.)
+Run red (`python -m pytest "tests/test_worker.py::test_second_worker_loses_the_claim_and_does_no_work" -q`) — today the Worker emits a second `started` unconditionally and runs the loop.
 
-- [ ] **Step 4: Run the launcher suites, verify green**
+- [ ] **Step 3: Make the Worker CAS-claim its episode.** Read `runstate/worker.py` for where attach currently sends `lifecycle.started` (with its exact `Started(...)` fields) and replace the unconditional send with a claim loop; add `from .liveness import live_episode`:
 
-Run: `python -m pytest tests/test_local_launcher.py tests/test_thread_launcher.py -q`
-Expected: PASS.
+```python
+# at attach, replacing the unconditional started send:
+self._lost = False
+while True:
+    envs = self._ch.read()
+    last = envs[-1].seq if envs else 0
+    if live_episode(self._ch) is not None:
+        self._lost = True
+        break
+    if self._ch.send(asdict(Started(...)),           # reuse the existing Started(...) construction
+                     topic="lifecycle.started", expected_seq=last) is not None:
+        break                                          # won the claim
+    # CAS failed (someone appended) -> re-read and re-check
+```
+
+Then short-circuit work and the dying breath on a loss:
+
+```python
+@property
+def claimed(self) -> bool:
+    return not self._lost
+
+def steps(self, total=None, *, start=0):
+    if self._lost:
+        return                                         # benign no-op: another episode is live
+    step = start
+    # ... rest as in Task 3 ...
+
+# in __exit__, before emitting stopped:
+    if self._lost:
+        return False                                   # never claimed an episode -> emit nothing
+```
+
+- [ ] **Step 4: Run liveness + worker suites, verify green**
+
+Run: `python -m pytest tests/test_liveness.py tests/test_worker.py -q`
+Expected: PASS — existing single-worker tests still win the claim and emit `started`; the new tests pass. (If a prior test reuses one channel for two attaches and now expects two `started`, fix it to the episode model.)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add runstate/launcher.py runstate/channel/*.py tests/test_local_launcher.py
-git commit -m "launcher: idempotent launch — CAS-claim launched + reap-before-relaunch"
+git add runstate/liveness.py runstate/worker.py tests/test_liveness.py tests/test_worker.py
+git commit -m "worker: self-claim the episode via CAS lifecycle.started (loser exits before acting)"
 ```
 
 ---
@@ -449,8 +467,8 @@ git commit -m "docs(recipe): extendable runs exclude the step-target (+ target-i
 
 ## Self-review
 
-- **Spec coverage:** §1 implicit boundaries → no schema task (correct). §2 episode-aware liveness → Task 2 (+ Watcher inherits). §3 single-spawn guard → Task 1 (CAS) + Task 5 (idempotent launch + reap) + Task 4 (probe). §4 autonomous-extend → Task 3 (`steps(start=)`) + Task 6 (integration) + Task 7 (recipe rule). Deliverables all mapped.
-- **Placeholders:** the two `(refine in execution: …)` notes are *test-refinement* hints, not impl placeholders; the production code in every step is shown. `latest_seq()` is flagged as a small surface addition in Task 5 (reuse `read()[-1].seq or 0` if preferred).
-- **Type consistency:** `resolve(handle)` (Task 4) is used by `_live_episode`/`_reap_if_dead` (Task 5); `send(..., expected_seq=)` (Task 1) is used by the claim loop (Task 5); `steps(start=)` (Task 3) is used by the integration cell (Task 6). Consistent.
+- **Spec coverage:** §1 implicit boundaries → no schema task (correct). §2 episode-aware liveness → Task 2 (+ Watcher inherits). §3 single-spawn guard → Task 1 (CAS) + Task 5 (worker self-claims `lifecycle.started`; loser exits) + Task 4 (`resolve`, used by `live_episode`). §4 autonomous-extend → Task 3 (`steps(start=)`) + Task 6 (integration) + Task 7 (recipe rule). Deliverables all mapped.
+- **Placeholders:** the `(refine in execution: …)` note in Task 6 is a *test-refinement* hint, not an impl placeholder; the production code in every step is shown. The worker's claim reads the last seq via `read()[-1].seq` (0 if empty) — no new channel surface.
+- **Type consistency:** `resolve(handle)` (Task 4) is used by `live_episode` (Task 5); `send(..., expected_seq=)` (Task 1) is used by the worker's claim loop (Task 5); `live_episode` (Task 5) + `steps(start=)` (Task 3) feed the integration (Task 6). Consistent.
 
 One known integration nuance for the executor: the `control.subscribe` must be pre-staged before *each* episode's launch (a fresh episode re-drains control from its cursor) — the Task 6 test note calls this out.
