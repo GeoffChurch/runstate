@@ -65,3 +65,17 @@ def test_clean_stop_takes_precedence_over_terminated(open_channel):
     ch.send({"reason": "completed", "error": None, "final_step": 9}, topic="lifecycle.stopped")
     ch.send({"reason": "exited", "exit_code": 0, "signal": None}, topic="launcher.terminated")
     assert peek_terminal(open_channel()).outcome == "completed"
+
+
+def test_peek_terminal_is_episode_aware(open_channel):
+    ch = open_channel()
+    # episode 1: started ... stopped
+    ch.send({"handle": "local://h/1", "hostname": None, "attached_at": 0.0}, topic="lifecycle.started")
+    ch.send({"reason": "completed", "error": None, "final_step": 5}, topic="lifecycle.stopped")
+    assert peek_terminal(open_channel()).outcome == "completed"   # ep1 terminal
+    # episode 2 attaches -> the old stopped is no longer terminal (a started follows it)
+    ch.send({"handle": "local://h/2", "hostname": None, "attached_at": 1.0}, topic="lifecycle.started")
+    assert peek_terminal(open_channel()) is None                  # ep2 live
+    # episode 2 stops -> terminal again, with ep2's verdict
+    ch.send({"reason": "completed", "error": None, "final_step": 9}, topic="lifecycle.stopped")
+    assert peek_terminal(open_channel()).final_step == 9

@@ -39,6 +39,17 @@ class RunResult:
         return True
 
 
+def _terminal_unless_followed(channel, terminal_topic, opener_topic):
+    """The latest terminal record, unless a newer episode opened after it."""
+    term = channel.latest(terminal_topic)
+    if term is None:
+        return None
+    opener = channel.latest(opener_topic)
+    if opener is not None and opener.seq > term.seq:
+        return None  # a started/launched follows this terminal -> an episode is live
+    return term
+
+
 def peek_terminal(channel) -> Optional[RunResult]:
     """Return a terminal RunResult if the run has left a terminal *record*, else
     None. This is the record-based verdict (a clean ``lifecycle.stopped``, or a
@@ -47,8 +58,13 @@ def peek_terminal(channel) -> Optional[RunResult]:
 
     A clean ``lifecycle.stopped`` takes precedence (the worker's own report);
     otherwise a reaped ``launcher.terminated`` gives the manner of death.
+
+    Episode-aware: a ``lifecycle.stopped`` is only terminal if no
+    ``lifecycle.started`` follows it in the log (i.e. it is the latest
+    episode's stop, not an earlier episode's). Same guard applies to
+    ``launcher.terminated`` vs ``launcher.launched``.
     """
-    stopped = channel.latest("lifecycle.stopped")
+    stopped = _terminal_unless_followed(channel, "lifecycle.stopped", "lifecycle.started")
     if stopped is not None:
         s = Stopped(**stopped.body)
         if s.reason == "completed":
@@ -60,7 +76,7 @@ def peek_terminal(channel) -> Optional[RunResult]:
         return RunResult(
             outcome=outcome, reason=s.reason, error=s.error, final_step=s.final_step
         )
-    term = channel.latest("launcher.terminated")
+    term = _terminal_unless_followed(channel, "launcher.terminated", "launcher.launched")
     if term is not None:
         t = Terminated(**term.body)
         if t.reason == "killed":
