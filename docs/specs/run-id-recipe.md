@@ -55,6 +55,24 @@ else:
   result. Which outcomes count as reusable (and any min-steps floor) is likewise
   your policy, applied via `peek_terminal`.
 
+## Extendable runs: exclude the step-target
+
+For a run you intend to *extend* (run further later, reusing the prefix), the
+`run_id` must hash the trajectory-determining inputs **minus the step-target**
+(`max_steps`/`N`) — the target is the *extend axis*, not identity (else `steps=100`
+and `steps=500` are different runs and nothing extends). Relaunch the same `run_id`
+with a higher target; the worker resumes from its `run_id`-keyed checkpoint and
+continues the run-absolute `step`. The reuse check is then "did the prior run reach
+≥ N?" — the min-steps floor above. (Mechanics: `docs/specs/run-episodes.md`.)
+
+**Precondition (you own it): the trajectory must be *target-independent*** —
+`loss[42]` is the same whether you asked for 100 or 500 steps. A schedule keyed on
+the total (cosine-decay-over-`max_steps`) breaks this: a different target is then a
+*different run*, and reusing a shorter run's prefix is silently wrong. If your
+schedule depends on the total, either key it on the `run_id` (a fixed horizon) or
+don't treat the run as extendable. This is the one place extend can silently
+corrupt reuse.
+
 ## Why no shipped function
 
 Canonicalization is one line; content-hashing a file set is trivial *and*
