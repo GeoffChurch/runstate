@@ -8,6 +8,7 @@ EXPECTED = {
     "Launcher", "LaunchHandle", "ThreadLauncher", "LocalLauncher",
     "Watcher", "RunStatus", "Running", "RunResult", "peek_terminal",
     "sweep", "Variant",
+    "Value", "Started", "Heartbeat", "Stopped", "Nak", "Launched", "Terminated",
 }
 
 

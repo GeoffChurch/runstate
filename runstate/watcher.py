@@ -24,6 +24,7 @@ from dataclasses import dataclass, field, replace
 from typing import Optional, Union
 
 from .liveness import RunResult, peek_terminal
+from .payloads import Heartbeat
 
 
 @dataclass(frozen=True)
@@ -236,4 +237,4 @@ class Watcher:
         if hb is not None and hb.seq > st.last_hb_seq:
             st.last_hb_seq = hb.seq
             st.last_heartbeat_at = self._now()
-            st.last_step = hb.body.get("step")
+            st.last_step = Heartbeat(**hb.body).step

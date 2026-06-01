@@ -86,7 +86,7 @@ def test_presumed_dead_via_heartbeat_staleness():
     ch = open_channel("r", root=None, backend="memory")
     w = Watcher(now=lambda: clock[0], heartbeat_timeout=30)
     w.observe("r", ch)  # last_heartbeat_at initialized to 1000
-    ch.send({"step": 0}, topic="lifecycle.heartbeat")
+    ch.send({"step": 0, "consumed_seq": 0}, topic="lifecycle.heartbeat")
     assert w.poll("r").done is False  # fresh beacon
     clock[0] = 1020
     assert w.poll("r").done is False  # 20s < 30s, still alive
@@ -216,7 +216,7 @@ def test_wait_all_capped_reports_pending_as_running():
         poll_interval=1.0,
     )
     w.observe("a", a)
-    a.send({"step": 7}, topic="lifecycle.heartbeat")  # alive, never terminal
+    a.send({"step": 7, "consumed_seq": 0}, topic="lifecycle.heartbeat")  # alive, never terminal
     res = w.wait_all(timeout=5.0)
     assert set(res) == {"a"}  # total over tracked runs
     s = res["a"]
@@ -252,10 +252,10 @@ def test_staleness_clock_resets_on_each_new_beacon():
     ch = open_channel("alive", root=None, backend="memory")
     w = Watcher(now=lambda: clock[0], heartbeat_timeout=30)
     w.observe("alive", ch)
-    ch.send({"step": 0}, topic="lifecycle.heartbeat")
+    ch.send({"step": 0, "consumed_seq": 0}, topic="lifecycle.heartbeat")
     clock[0] = 1025
     assert w.poll("alive").done is False  # notes beacon 1
-    ch.send({"step": 1}, topic="lifecycle.heartbeat")
+    ch.send({"step": 1, "consumed_seq": 0}, topic="lifecycle.heartbeat")
     clock[0] = 1050  # 50s since registration, but the clock reset on beacon 2
     assert w.poll("alive").done is False  # would be presumed_dead if reset were dropped
     clock[0] = 1081  # 31s since the last beacon, none newer
@@ -268,7 +268,7 @@ def test_staleness_boundary_is_strict():
     ch = open_channel("edge", root=None, backend="memory")
     w = Watcher(now=lambda: clock[0], heartbeat_timeout=30)
     w.observe("edge", ch)
-    ch.send({"step": 0}, topic="lifecycle.heartbeat")
+    ch.send({"step": 0, "consumed_seq": 0}, topic="lifecycle.heartbeat")
     w.poll("edge")  # note the beacon at t=1000
     clock[0] = 1030  # exactly the timeout
     assert w.poll("edge").done is False

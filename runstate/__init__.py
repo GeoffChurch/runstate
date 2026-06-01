@@ -13,6 +13,15 @@ import os
 from .channel import Envelope, open_channel
 from .launcher import Launcher, LaunchHandle, LocalLauncher, ThreadLauncher
 from .liveness import RunResult, peek_terminal
+from .payloads import (
+    Heartbeat,
+    Launched,
+    Nak,
+    Started,
+    Stopped,
+    Terminated,
+    Value,
+)
 from .sweep import Variant, sweep
 from .watcher import Running, RunStatus, Watcher
 from .worker import Worker
@@ -60,4 +69,12 @@ __all__ = [
     "peek_terminal",
     "sweep",
     "Variant",
+    # convention bodies (typed; serialize via dataclasses.asdict, parse via Cls(**body))
+    "Value",
+    "Started",
+    "Heartbeat",
+    "Stopped",
+    "Nak",
+    "Launched",
+    "Terminated",
 ]
