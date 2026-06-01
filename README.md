@@ -6,7 +6,7 @@ A protocol + reference Python implementation for **cooperative bidirectional con
 
 `runstate` provides:
 
-1. **A protocol** — a per-run, append-only **topic log** of envelopes `{seq, topic, name?, request_id?, body}`, with opt-in **conventions** layered on top (cooperative-control, subscription, lifecycle, launcher). Wire format: the JSON Schema stack in `protocol/` (`envelope-v0.2.schema.json` + the per-convention schemas). Semantics: `docs/design-v0.2.md`.
+1. **A protocol** — a per-run, append-only **topic log** of envelopes `{seq, topic, name?, request_id?, body}`, with opt-in **conventions** layered on top (cooperative-control, subscription, lifecycle, launcher, value). Wire format: the JSON Schema stack in `protocol/` (`envelope-v0.2.schema.json` + the per-convention schemas). Semantics: `docs/design-v0.2.md`.
 
 2. **A reference Python implementation** — the `runstate.channel` substrate (`MemoryChannel` + `SqliteChannel`), the reference `Worker` loop, and opt-in orchestration helpers (`ThreadLauncher` / `LocalLauncher`, `Watcher`, `sweep`).
 
@@ -75,4 +75,6 @@ The substrate is the `Channel` (a durable per-run topic log). The protocol defin
 
 ## Status
 
-v0.2 is implemented in `runstate/` — the topic-log substrate, the conventions, the orchestration helpers, and the JSON Schema stack with conformance tests. See `docs/design-v0.2.md` for the design rationale and `docs/design-v0.2-exploration.md` for the full decision trail. (The earlier v0.1 pull-first command/event model was superseded by this redesign.)
+**v0.2 is implemented** in `runstate/` — the topic-log substrate, the conventions, the orchestration helpers, and the JSON Schema stack with conformance tests. See `docs/design-v0.2.md` for the rationale and `docs/design-v0.2-exploration.md` for the decision trail. (The earlier v0.1 pull-first command/event model was superseded by this redesign.)
+
+**v0.3 (in progress, on `master`):** the convention bodies are typed frozen dataclasses in `runstate/vocabulary/`; `value` events carry a worker-birth-relative `value.t`; a `run_id()` *recipe* documents reuse-by-content-hash (`docs/specs/run-id-recipe.md`); and the **run-episodes** scoped primitive landed — a `run_id` hosts multiple resumable episodes (relaunch-to-extend), with the single-spawn guard implemented as a worker self-claim (`docs/specs/run-episodes.md`). The next thread is the **memoizer** that consumes these — see `docs/backlog/index.md` "Start here". Full v0.3 trail: `docs/design-v0.3-exploration.md`.

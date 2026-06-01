@@ -12,21 +12,40 @@ parallel to this directory.
 A fresh session should read, in order: **`../../CLAUDE.md`** (orientation + the
 shipped-vs-deferred scope snapshot) → **`../design-v0.2.md`** (the converged
 design; §12 = open implementation items, §14 = scope) → **this file** (the
-discoverable work list; the design's deferred §12 items are mirrored below under
-*Open implementation items*). The big-ticket threads:
+discoverable work list). For the v0.3 thread, also read the shipped specs
+**`../specs/run-episodes.md`** and **`../specs/run-id-recipe.md`**, and the trail
+**`../design-v0.3-exploration.md`**.
 
-- **Run episodes** ([run-episodes](run-episodes.md)) — unifies lazy-launch, the
-  lifeline service-worker, and the completed-but-extendable gap.
-- **The relational layer** — the **Store** (the real component), plus a
-  `run_id()` *recipe* (the re-scoped "Hasher") and the dedup-vs-enumeration
-  split (below), driven by [mycooc-adoption](mycooc-adoption.md), the
-  validating use case.
+**Most recent — 2026-06-01: the run-episodes scoped primitive shipped** (on
+`master`): CAS `send(expected_seq=)`, episode-aware `peek_terminal` / `live_episode`,
+`Worker.steps(start=)`, `handle.resolve()`, and the **worker self-claims its
+episode** guard — plus an autonomous-extend integration test and the
+`run_id`-excludes-target recipe rule. (Spec: `../specs/run-episodes.md`; plan:
+`../plans/2026-06-01-run-episodes.md`.)
+
+**→ The next pickup is the memoizer** — the consumer run-episodes was built to
+unblock: reuse-by-`run_id` with a schedule-shaped read,
+`ensure(run_id, config, up_to=N)` → reuse if the prior run reached ≥ N, else
+relaunch-to-extend (run-episodes now provides that) and wait. Whole-run reuse is
+buildable now (package the `examples/reuse` pattern + add the passive
+schedule-read); fine-grained extend now has its substrate. Lighter than
+run-episodes — the shape is in `../design-v0.3-exploration.md` §6 and the spec's
+"memoizer composition". Run it as its own brainstorm→spec→plan→build.
+
+The other big-ticket threads:
+
+- **The relational layer** — the **Store** (the real component), plus the
+  `run_id()` *recipe* (shipped: `../specs/run-id-recipe.md`) and the
+  dedup-vs-enumeration split (below), driven by [mycooc-adoption](mycooc-adoption.md),
+  the validating use case.
 - **Visualization** ([visualization-story](visualization-story.md)) — the
   long-horizon data-plane protocol; post-relational-layer.
-- **v0.3 data-plane exploration** ([../design-v0.3-exploration.md](../design-v0.3-exploration.md))
-  — metric series as the log/cache, the history/memoizer helper, `value.step`
-  present-nullable, and the launcher-vs-worker = *viewpoint* realization.
-  Forward thinking; the v0.2 wire is unchanged.
+
+**Live deferred items off run-episodes:** the service/lifeline policy (the other
+half — lazy-launch-on-subscribe + reap-at-zero-subs); `LocalLauncher` idempotent
+relaunch + the best-effort launch pre-check; and the control-cursor
+*state-vs-event* refinement ([run-episodes](run-episodes.md) open questions).
+Consumer-side cursor persistence was **decided out of scope** (design §12.5).
 
 ## Long-term ambition
 
@@ -38,7 +57,9 @@ discoverable work list; the design's deferred §12 items are mirrored below unde
 
 ## Protocol extensions (control plane)
 
-- [run-episodes](run-episodes.md) — a `run_id` is a durable log hosting
+- [run-episodes](run-episodes.md) — **scoped primitive + autonomous-extend SHIPPED
+  2026-06-01** (`../specs/run-episodes.md`); *remaining:* the service/lifeline
+  policy + `LocalLauncher` idempotent relaunch. — a `run_id` is a durable log hosting
   *multiple worker episodes*; relaunch reuses the `run_id` and the worker
   resumes from run-keyed state. Unifies lazy-launch (§12.1), the lifeline
   service-worker, and the "completed-but-extendable" gap (mycooc), with a
