@@ -106,10 +106,18 @@ def test_lifecycle_stopped_rejects_extra_body_field():
 
 def test_value_step_is_present_nullable():
     V = CONVENTIONS["value"]
-    V.validate(_env("value", {"value": 1, "step": 5}))
-    V.validate(_env("value", {"value": 1, "step": None}))  # null when stepless
+    V.validate(_env("value", {"value": 1, "step": 5, "t": 0.0}))
+    V.validate(_env("value", {"value": 1, "step": None, "t": 0.0}))  # null when stepless
     with pytest.raises(jsonschema.ValidationError):
         V.validate(_env("value", {"value": 1}))  # step omitted -> rejected
+
+
+def test_value_t_is_present_nullable():
+    V = CONVENTIONS["value"]
+    V.validate(_env("value", {"value": 1, "step": 0, "t": 2.5}))   # elapsed since birth
+    V.validate(_env("value", {"value": 1, "step": 0, "t": None}))  # unstamped (real-time axis off)
+    with pytest.raises(jsonschema.ValidationError):
+        V.validate(_env("value", {"value": 1, "step": 0}))  # t omitted -> rejected
 
 
 def test_stopped_error_and_final_step_present_nullable():
@@ -146,7 +154,7 @@ def test_convention_dataclasses_serialize_to_schema_valid_bodies():
     from runstate.vocabulary import payloads
 
     bodies = [
-        payloads.Value(value=0.5, step=10),
+        payloads.Value(value=0.5, step=10, t=0.0),
         payloads.Started(handle="local://h/1", hostname=None, attached_at=0.0),
         payloads.Heartbeat(step=7, consumed_seq=3),
         payloads.Stopped(reason="completed", error=None, final_step=9),

@@ -22,7 +22,7 @@ def test_subscribe_then_tick_emits_current_value(open_channel):
 
     vals = open_channel().read(topics=["value"])
     assert [(v.name, v.request_id, v.body) for v in vals] == [
-        ("loss", "r1", {"value": 0.5, "step": 10})
+        ("loss", "r1", {"value": 0.5, "step": 10, "t": 0.0})
     ]
 
 
@@ -241,7 +241,7 @@ def test_already_past_step_fires_at_current_step(open_channel):
     w = Worker(open_channel(), now=lambda: 0.0)
     w.set("loss", 0.5)
     w.tick(step=150)
-    assert open_channel().latest("value", "loss").body == {"value": 0.5, "step": 150}
+    assert open_channel().latest("value", "loss").body == {"value": 0.5, "step": 150, "t": 0.0}
     assert open_channel().latest("lifecycle.nak") is None
 
 
@@ -262,9 +262,9 @@ def test_steps_drives_ticks_and_stops_completed(open_channel):
             w.set("loss", float(step))
     obs = open_channel()
     assert [v.body for v in obs.read(topics=["value"])] == [
-        {"value": 0.0, "step": 0},
-        {"value": 1.0, "step": 1},
-        {"value": 2.0, "step": 2},
+        {"value": 0.0, "step": 0, "t": 0.0},
+        {"value": 1.0, "step": 1, "t": 0.0},
+        {"value": 2.0, "step": 2, "t": 0.0},
     ]
     assert obs.latest("lifecycle.stopped").body == {"reason": "completed", "error": None, "final_step": 2}
 

@@ -195,9 +195,11 @@ extend (miss) **without** owning execution.
 
 ## 10. Impact on the wire conventions
 
-**Essentially none.**
-- `value.step`: tighten to present-but-nullable (a deliberate `value` convention
+**Minimal — two `value`-body refinements, the rest untouched.**
+- `value.step`: tightened to present-but-nullable (a deliberate `value` convention
   version bump; `additionalProperties:false`).
+- `value.t`: **added** — a present-nullable field (worker-birth-relative seconds, the
+  real-time axis); the one additive change. Enables time-based replay once a reader uses it.
 - `launcher.*` / `lifecycle.*`: **reaffirmed and re-grounded** (two viewpoints, not
   an artifact of process count). Must not be merged.
 - No new topics. The substrate is untouched. Eager logging, the history/memoizer
@@ -236,14 +238,13 @@ extend (miss) **without** owning execution.
   run-episodes* — its move is *extending a prefix*, so without resume-from-
   checkpoint a memoizer degrades to whole-run recompute. *Open:* one helper + the
   policy flag (lean) vs two entry points (`history`/`stream`) over the evaluator.
-- **[backlog] Relative per-value timestamp** (`value.t`, worker-birth-relative) —
-  makes subscription replay *homogeneous*: the reader can replay time-based
-  schedules (`every`/`until: time_seconds`) over the log, like step-based ones.
-  Lives on the `value` body (a worker concept), not the envelope (opinion-free).
-  Non-reproducible (wall-clock elapsed) — correctly so: **step is the
-  reproducible/logical axis, time is the real-time axis**; `run_id` is untouched
-  (time is output metadata, never input). Add when a time-windowed-observation use
-  case appears — it resolves the step-vs-time replay caveat above, nothing else.
+- **`value.t` (worker-birth-relative timestamp) — shipped.** Present-nullable on the
+  `value` body; the reference worker stamps `now()−birth` (deterministic under an
+  injected clock, real in prod). The real-time axis — non-reproducible by nature, so
+  **step stays the reproducible/logical axis**; `run_id` untouched (time is output
+  metadata). On the `value` body (a worker concept), not the envelope. The
+  *coordinate* is in place; the homogeneous time-based *replay* it enables lands with
+  the memoizer (the reader replaying the `Subscription` over it).
 - **Relation to neighbours:** *run-episodes* supplies resume/extend (and
   run-absolute steps); the *`run_id()` recipe* supplies addressing; the *Store*
   supplies cross-run enumeration/membership (the structure content-addressing

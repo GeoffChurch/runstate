@@ -18,8 +18,8 @@ from runstate.vocabulary.payloads import (
 )
 
 _SAMPLES = [
-    Value(value=0.5, step=10),
-    Value(value={"x": 1}, step=None),
+    Value(value=0.5, step=10, t=0.0),
+    Value(value={"x": 1}, step=None, t=1.5),
     Started(handle="local://h/1", hostname=None, attached_at=0.0),
     Heartbeat(step=7, consumed_seq=3),
     Heartbeat(step=None, consumed_seq=0),

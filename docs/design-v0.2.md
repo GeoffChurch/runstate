@@ -111,7 +111,7 @@ The pull/push vocabulary. Message kind is the `topic` itself — `control.subscr
 # control.stop        — body = { "from"?: Condition }  (a one-shot; default = stop now)
 
 # value (worker → observers) — name = which metric; request_id = the sub it answers (or None = broadcast)
-{ "value": Any, "step"?: int }      # `value` payload is Any (app data); `step` = the worker's clock
+{ "value": Any, "step"?: int, "t"?: float }  # value=app data; step=worker step-clock; t=secs since worker birth (real-time axis)
 ```
 
 ### The scheduling condition-algebra
