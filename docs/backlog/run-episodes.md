@@ -116,3 +116,13 @@ a real worker owns resume.
   `run_id`? (Stays app/convention-level; runstate transports messages, not files.)
 - mycooc is the validating use case for the autonomous-extend half; an on-demand
   metric/inference server is the validating use case for the service half.
+- **Control cursor across episodes (state vs event).** A fresh episode's worker
+  drains `control.*` from `seq` 0, which correctly *re-derives standing
+  subscriptions* but would also *replay one-shot commands* (a prior episode's
+  `control.stop` → the new episode stops immediately). The fix is to stop treating
+  control as one undifferentiated stream: reconstruct **standing state** (the
+  active-subscription set = a fold of subscribe/unsubscribe over the log) on attach
+  regardless of cursor, and only *react* to one-shot **events** (`stop`) after the
+  worker's cursor (episode-scoped). Ties to the §12 cursor-persistence item.
+  (Surfaced by the autonomous-extend integration; harmless there — no stale stop on
+  that path. Scoped impl shipped: `docs/specs/run-episodes.md`.)
