@@ -46,13 +46,18 @@ class Worker:
             self.stopped(reason=self._stop_reason or "completed", final_step=self._last_step)
         return False  # never suppress exceptions
 
-    def steps(self, total=None):
+    def steps(self, total=None, *, start=0):
         """Drive the worker over a loop. Yields each step; after the body it
         ``tick``s (servicing the values set this iteration) and stops on a
         commanded stop. Pair with ``with Worker(...) as w`` so the dying breath
         (completed / commanded / errored) is emitted on exit.
+
+        ``start`` is keyword-only (default 0). Pass ``start=k`` to resume a run
+        from checkpoint step ``k`` — steps are then emitted as ``k, k+1, …``
+        (run-absolute), and ``lifecycle.stopped`` records the correct
+        ``final_step``.
         """
-        step = 0
+        step = start
         while total is None or step < total:
             self._last_step = step
             yield step

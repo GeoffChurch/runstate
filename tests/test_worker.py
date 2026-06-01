@@ -300,3 +300,14 @@ def test_stopped_is_idempotent(open_channel):
     w.stopped(reason="errored")  # second call is a no-op
     stops = open_channel().read(topics=["lifecycle.stopped"])
     assert len(stops) == 1 and stops[0].body == {"reason": "completed", "error": None, "final_step": None}
+
+
+def test_steps_resumes_at_start_with_run_absolute_step(open_channel):
+    orch = open_channel()
+    orch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r")
+    with Worker(open_channel(), now=lambda: 0.0) as w:
+        for step in w.steps(start=5, total=8):
+            w.set("loss", float(step))
+    steps = [v.body["step"] for v in open_channel().read(topics=["value"])]
+    assert steps == [5, 6, 7]                                   # run-absolute, not 0,1,2
+    assert open_channel().latest("lifecycle.stopped").body["final_step"] == 7
