@@ -13,39 +13,54 @@ A fresh session should read, in order: **`../../CLAUDE.md`** (orientation + the
 shipped-vs-deferred scope snapshot) → **`../design-v0.2.md`** (the converged
 design; §12 = open implementation items, §14 = scope) → **this file** (the
 discoverable work list). For the v0.3 thread, also read the shipped specs
-**`../specs/run-episodes.md`** and **`../specs/run-id-recipe.md`**, and the trail
-**`../design-v0.3-exploration.md`**.
+**`../specs/run-episodes.md`**, **`../specs/run-id-recipe.md`**, and
+**`../specs/memoizer.md`**, and the trail **`../design-v0.3-exploration.md`**.
 
-**Most recent — 2026-06-01: the run-episodes scoped primitive shipped** (on
-`master`): CAS `send(expected_seq=)`, episode-aware `peek_terminal` / `live_episode`,
-`Worker.steps(start=)`, `handle.resolve()`, and the **worker self-claims its
-episode** guard — plus an autonomous-extend integration test and the
+**Most recent — 2026-06-02: the memoizer shipped** (on `master`): `history()`
+replays the subscription algebra over the logged `value` points (passive,
+channel-only, worker-invisible) and `ensure(producer, name, up_to=N)` serves the
+logged prefix on a hit or relaunches-to-extend and waits on a miss (progress from
+the dense heartbeat axis, content from the value series; race-free handle-based
+wait), plus `launch_producer` (the producer seam) and `relaunch_if_needed` (the
+live-check + launch helper). Also: `value.t` → absolute wall-clock (the reader
+projects run-relative). (Spec: `../specs/memoizer.md`; plan:
+`../plans/2026-06-02-memoizer.md`.) Two adversarial *orthonormal-basis* design
+reviews ran alongside — the rubric is now in `../../CLAUDE.md` ("Design rigor")
+and the residual convention findings are in
+[conventions-hygiene](conventions-hygiene.md).
+
+**Prior — 2026-06-01: the run-episodes scoped primitive shipped:** CAS
+`send(expected_seq=)`, episode-aware `peek_terminal` / `live_episode`,
+`Worker.steps(start=)`, `handle.resolve()`, the **worker self-claims its episode**
+guard — plus an autonomous-extend integration test and the
 `run_id`-excludes-target recipe rule. (Spec: `../specs/run-episodes.md`; plan:
 `../plans/2026-06-01-run-episodes.md`.)
 
-**→ The next pickup is the memoizer** — the consumer run-episodes was built to
-unblock: reuse-by-`run_id` with a schedule-shaped read,
-`ensure(run_id, config, up_to=N)` → reuse if the prior run reached ≥ N, else
-relaunch-to-extend (run-episodes now provides that) and wait. Whole-run reuse is
-buildable now (package the `examples/reuse` pattern + add the passive
-schedule-read); fine-grained extend now has its substrate. Lighter than
-run-episodes — the shape is in `../design-v0.3-exploration.md` §6 and the spec's
-"memoizer composition". Run it as its own brainstorm→spec→plan→build.
+**→ Next pickups:**
 
-The other big-ticket threads:
-
-- **The relational layer** — the **Store** (the real component), plus the
+- **The service/lifeline memoizer + a named `Producer` Protocol** — the deferred
+  *other half*: an on-demand worker that produces only while subscribed
+  (ref-counts subscriptions, dies at zero — lazy-launch-on-subscribe +
+  reap-at-zero-subs). It slots in as a second **producer** behind the same
+  `ensure`; the structural producer seam (`.channel`/`.run_id`/`.extend`) is
+  already in place, so this is the second implementer that triangulates the named
+  `Producer` Protocol (memoizer spec Decisions 5–6).
+- **The relational layer — the Store** (the real component), plus the
   `run_id()` *recipe* (shipped: `../specs/run-id-recipe.md`) and the
   dedup-vs-enumeration split (below), driven by [mycooc-adoption](mycooc-adoption.md),
   the validating use case.
+- **[conventions-hygiene](conventions-hygiene.md)** — the residual prose-vs-wire
+  drift + dead-field cleanups the basis audit surfaced (phantom `lifecycle.phase`,
+  dead `RunResult.elapsed`, unused `consumed_seq`, the pid disambiguator).
 - **Visualization** ([visualization-story](visualization-story.md)) — the
   long-horizon data-plane protocol; post-relational-layer.
 
-**Live deferred items off run-episodes:** the service/lifeline policy (the other
-half — lazy-launch-on-subscribe + reap-at-zero-subs); `LocalLauncher` idempotent
-relaunch + the best-effort launch pre-check; and the control-cursor
-*state-vs-event* refinement ([run-episodes](run-episodes.md) open questions).
-Consumer-side cursor persistence was **decided out of scope** (design §12.5).
+**Live deferred items off run-episodes:** the control-cursor *state-vs-event*
+refinement ([run-episodes](run-episodes.md) open questions). (The service/lifeline
+policy is a Next pickup above; the best-effort launch pre-check / idempotent
+relaunch shipped with the memoizer as the free `relaunch_if_needed` helper — a
+log-read + `launch`, deliberately **not** a `Launcher` Protocol method.
+Consumer-side cursor persistence was **decided out of scope**, design §12.5.)
 
 ## Long-term ambition
 
@@ -58,8 +73,9 @@ Consumer-side cursor persistence was **decided out of scope** (design §12.5).
 ## Protocol extensions (control plane)
 
 - [run-episodes](run-episodes.md) — **scoped primitive + autonomous-extend SHIPPED
-  2026-06-01** (`../specs/run-episodes.md`); *remaining:* the service/lifeline
-  policy + `LocalLauncher` idempotent relaunch. — a `run_id` is a durable log hosting
+  2026-06-01** (`../specs/run-episodes.md`); the idempotent-relaunch / launch
+  pre-check shipped 2026-06-02 as the memoizer's `relaunch_if_needed` helper;
+  *remaining:* the service/lifeline policy (a Next pickup above). — a `run_id` is a durable log hosting
   *multiple worker episodes*; relaunch reuses the `run_id` and the worker
   resumes from run-keyed state. Unifies lazy-launch (§12.1), the lifeline
   service-worker, and the "completed-but-extendable" gap (mycooc), with a
