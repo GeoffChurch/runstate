@@ -23,7 +23,6 @@ class Worker:
     def __init__(self, channel, *, now=time.time):
         self._ch = channel
         self._now = now
-        self._birth = self._now()  # origin for value.t (seconds since worker birth)
         self._values: dict = {}
         self._subs: dict = {}  # request_id -> (name, Subscription)
         self._stop = None  # a pending commanded-stop Subscription, or None
@@ -204,7 +203,7 @@ class Worker:
                 value = self._values.get(name)
                 try:
                     self._ch.send(
-                        asdict(Value(value=value, step=step, t=self._now() - self._birth)),
+                        asdict(Value(value=value, step=step, t=self._now())),
                         topic="value",
                         name=name,
                         request_id=request_id,

@@ -325,3 +325,13 @@ def test_steps_resumes_at_start_with_run_absolute_step(open_channel):
     steps = [v.body["step"] for v in open_channel().read(topics=["value"])]
     assert steps == [5, 6, 7]                                   # run-absolute, not 0,1,2
     assert open_channel().latest("lifecycle.stopped").body["final_step"] == 7
+
+
+def test_value_t_is_absolute_wall_clock_not_birth_relative(open_channel):
+    orch = open_channel()
+    orch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r")
+    with Worker(open_channel(), now=lambda: 1000.0) as w:
+        for step in w.steps(total=2):
+            w.set("loss", float(step))
+    ts = [v.body["t"] for v in open_channel().read(topics=["value"])]
+    assert ts == [1000.0, 1000.0]   # absolute clock; birth-relative would be 0.0

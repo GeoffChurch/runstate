@@ -25,7 +25,7 @@ class Value:
 
     value: Any
     step: Optional[int]  # present-nullable: null when the worker is stepless
-    t: Optional[float]  # seconds since worker birth (the real-time axis); null = unstamped
+    t: Optional[float]  # absolute wall-clock seconds (the real-time axis); null = unstamped
     TOPIC: ClassVar[str] = "value"
 
 

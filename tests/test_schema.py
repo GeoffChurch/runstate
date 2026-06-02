@@ -114,7 +114,7 @@ def test_value_step_is_present_nullable():
 
 def test_value_t_is_present_nullable():
     V = CONVENTIONS["value"]
-    V.validate(_env("value", {"value": 1, "step": 0, "t": 2.5}))   # elapsed since birth
+    V.validate(_env("value", {"value": 1, "step": 0, "t": 2.5}))   # a stamped wall-clock value
     V.validate(_env("value", {"value": 1, "step": 0, "t": None}))  # unstamped (real-time axis off)
     with pytest.raises(jsonschema.ValidationError):
         V.validate(_env("value", {"value": 1, "step": 0}))  # t omitted -> rejected
