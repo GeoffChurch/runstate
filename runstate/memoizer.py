@@ -8,8 +8,11 @@ needs a producer). The layers join *through the log*, never by piping values.
 
 from __future__ import annotations
 
+import time
+
 from .vocabulary.schedule import Subscription
 from .launcher import relaunch_if_needed
+from .liveness import peek_terminal
 
 
 class _LaunchProducer:
@@ -32,12 +35,17 @@ class _LaunchProducer:
         # access is fine (and is what `ensure` wants as the log grows).
         return self._launcher.open_channel(self._variant.run_id)
 
-    def extend(self, up_to) -> None:
+    def extend(self, up_to):
+        """Trigger production toward step ``up_to``: relaunch iff not already
+        live. Returns the new ``LaunchHandle`` if it launched an episode, or
+        ``None`` if it no-op'd (an episode was already live). ``ensure`` reads
+        this to know whether it actually *drove* new work (the seam contract:
+        a producer's ``extend`` returns truthy iff it triggered production)."""
         launch_kwargs = dict(self._variant.launch_kwargs)
         worker_kwargs = dict(launch_kwargs.get("kwargs") or {})
         worker_kwargs[self._target_key] = up_to
         launch_kwargs["kwargs"] = worker_kwargs
-        relaunch_if_needed(
+        return relaunch_if_needed(
             self._launcher, self._variant.run_id, self._variant.target, **launch_kwargs
         )
 
@@ -100,3 +108,78 @@ def history(channel, name, schedule: dict) -> list[dict]:
         if decision.expired:
             break
     return out
+
+
+# outcomes that mean the worker died, not finished -- stop re-driving and surface.
+# (presumed_dead is inert here: ensure's only verdict source is peek_terminal,
+# which never returns it -- it's the Watcher's inference tier. Kept for parity
+# with the closed RunResult.outcome vocabulary / sweep's _FAILURES.)
+_FAILURES = frozenset({"errored", "killed", "presumed_dead"})
+
+
+def _progress(channel) -> int:
+    """The max step the trajectory has reached, from the DENSE axis (the
+    heartbeat beats every tick regardless of emission): the latest
+    heartbeat.step and the latest stopped.final_step. -1 if none yet."""
+    steps = []
+    hb = channel.latest("lifecycle.heartbeat")
+    if hb is not None and hb.body.get("step") is not None:
+        steps.append(hb.body["step"])
+    stopped = channel.latest("lifecycle.stopped")
+    if stopped is not None and stopped.body.get("final_step") is not None:
+        steps.append(stopped.body["final_step"])
+    return max(steps) if steps else -1
+
+
+def ensure(producer, name, *, up_to, poll_interval=0.01, sleep=time.sleep) -> list[dict]:
+    """Return ``name``'s series through step ``up_to`` (steps ``0..up_to-1``),
+    producing the missing suffix on a miss. Hit (progress >= up_to-1) -> a pure
+    log read. Miss -> ``producer.extend(up_to)``, wait until the trajectory
+    reaches the target or the episode we're tracking ends; re-drive a short
+    clean stop (resume converges); raise on a failure outcome or no progress.
+    Reads progress from the dense axis and content from the value series, so it
+    works for sparse emitters too (you get the sparse series, not N points).
+
+    No hang timeout: ``ensure`` trusts the episode to terminate, so a
+    wedged-but-live worker (or a foreign live episode that never reaches the
+    target) blocks. Wrap with a ``Watcher``/``heartbeat_timeout`` out of band if
+    you need death-by-staleness."""
+    channel = producer.channel
+    dense = {"every": {"step": 1}, "until": {"step": up_to}}
+    if _progress(channel) >= up_to - 1:
+        return history(channel, name, dense)
+
+    while _progress(channel) < up_to - 1:
+        before = _progress(channel)
+        handle = producer.extend(up_to)   # LaunchHandle if it launched, else None (no-op)
+        # Wait until the target is reached, or the episode we're tracking ends.
+        # When we launched, ``handle.is_alive()`` is the exact, race-free signal
+        # that *our* episode finished -- unlike log-seq heuristics, which trip
+        # over a prior episode's trailing `stopped`/`terminated` records. When
+        # extend no-op'd (a foreign episode was already live), wait for that
+        # episode to go terminal on the log instead.
+        while _progress(channel) < up_to - 1:
+            if handle is not None:
+                if not handle.is_alive():
+                    handle.wait()         # reap (writes launcher.terminated); returns at once
+                    break
+            elif peek_terminal(channel) is not None:
+                break
+            sleep(poll_interval)
+        else:
+            return history(channel, name, dense)        # loop exited because target reached
+        result = peek_terminal(channel)
+        if result is not None and result.outcome in _FAILURES:
+            raise RuntimeError(
+                f"run {producer.run_id!r} failed: {result.outcome}/{result.reason}"
+            )
+        # No-progress is *our* failure only when we drove an episode that then
+        # didn't advance. A no-op extend (onto a foreign episode that stopped
+        # short) drove nothing -> loop and re-drive (the next extend spawns,
+        # since that episode is now terminal), which converges.
+        if handle is not None and _progress(channel) <= before:
+            raise RuntimeError(
+                f"run {producer.run_id!r} made no progress toward step {up_to} "
+                f"(stuck at {_progress(channel)}); cannot extend"
+            )
+    return history(channel, name, dense)

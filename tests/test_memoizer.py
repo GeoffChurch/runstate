@@ -1,6 +1,8 @@
+import json
 import pytest
+from pathlib import Path
 import runstate
-from runstate.memoizer import history, launch_producer
+from runstate.memoizer import history, launch_producer, ensure
 from runstate.launcher import relaunch_if_needed
 from runstate.vocabulary.handle import local_handle
 
@@ -92,3 +94,156 @@ def test_relaunch_if_needed_noops_when_a_live_episode_exists():
     h = relaunch_if_needed(launcher, "r", lambda channel, **_: None, kwargs={})
     assert h is None
     assert launcher.open_channel("r").read(topics=["launcher.launched"]) == []  # no spawn
+
+
+def _cell(channel, *, run_id, up_to, ckpt_dir):
+    """A resumable worker: reads its run_id-keyed checkpoint, continues the
+    run-absolute step, checkpoints the new frontier. Subscription-gated."""
+    ckpt = Path(ckpt_dir) / f"{run_id}.json"
+    start = json.loads(ckpt.read_text())["next"] if ckpt.exists() else 0
+    with runstate.Worker(channel, now=lambda: 0.0) as w:
+        for step in w.steps(start=start, total=up_to):
+            w.set("loss", float(step))
+    ckpt.write_text(json.dumps({"next": up_to}))
+
+
+def _producer(launcher, tmp_path, run_id="exp"):
+    variant = runstate.Variant(
+        run_id, _cell, {"kwargs": {"run_id": run_id, "ckpt_dir": str(tmp_path)}}
+    )
+    # pre-stage the loss subscription on the shared log; each episode drains it
+    launcher.open_channel(run_id).send(
+        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="obs"
+    )
+    return launch_producer(launcher, variant)   # target_key="up_to"
+
+
+def test_ensure_cold_miss_then_hit(tmp_path):
+    launcher = runstate.ThreadLauncher()
+    producer = _producer(launcher, tmp_path)
+    series = ensure(producer, "loss", up_to=5)
+    assert [b["step"] for b in series] == [0, 1, 2, 3, 4]
+    launched = len(launcher.open_channel("exp").read(topics=["launcher.launched"]))
+    series2 = ensure(producer, "loss", up_to=5)               # hit: no relaunch
+    assert [b["step"] for b in series2] == [0, 1, 2, 3, 4]
+    assert len(launcher.open_channel("exp").read(topics=["launcher.launched"])) == launched
+
+
+def test_ensure_extends_partial_prefix_into_one_series(tmp_path):
+    launcher = runstate.ThreadLauncher()
+    producer = _producer(launcher, tmp_path)
+    ensure(producer, "loss", up_to=3)                         # ep1: 0,1,2
+    series = ensure(producer, "loss", up_to=6)                # ep2 resumes: 3,4,5
+    assert [b["step"] for b in series] == [0, 1, 2, 3, 4, 5]  # one continuous series
+
+
+def test_ensure_surfaces_a_failure_outcome(tmp_path):
+    launcher = runstate.ThreadLauncher()
+
+    def crash(channel, *, up_to):
+        with runstate.Worker(channel, now=lambda: 0.0) as w:
+            for step in w.steps(total=up_to):
+                raise RuntimeError("boom")
+
+    variant = runstate.Variant("exp", crash, {"kwargs": {}})
+    producer = launch_producer(launcher, variant)
+    with pytest.raises(RuntimeError, match="failed"):
+        ensure(producer, "loss", up_to=5)
+
+
+def test_ensure_raises_when_run_makes_no_progress(tmp_path):
+    launcher = runstate.ThreadLauncher()
+
+    def stuck(channel, *, up_to):                  # ignores up_to; always 2 steps, no ckpt
+        with runstate.Worker(channel, now=lambda: 0.0) as w:
+            for step in w.steps(total=2):
+                w.set("loss", float(step))
+
+    variant = runstate.Variant("exp", stuck, {"kwargs": {}})
+    launcher.open_channel("exp").send(
+        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="obs"
+    )
+    producer = launch_producer(launcher, variant)
+    with pytest.raises(RuntimeError, match="progress"):
+        ensure(producer, "loss", up_to=5)
+
+
+def test_ensure_redrives_within_one_call_to_reach_target(tmp_path):
+    # A worker that advances at most 3 steps per episode: one ensure() call must
+    # re-drive across several episodes (each drove=True, progress advancing) to
+    # reach the target -- exercising the clean-stop-below-target re-drive path.
+    launcher = runstate.ThreadLauncher()
+
+    def chunked(channel, *, run_id, up_to, ckpt_dir):
+        ckpt = Path(ckpt_dir) / f"{run_id}.json"
+        start = json.loads(ckpt.read_text())["next"] if ckpt.exists() else 0
+        stop = min(up_to, start + 3)
+        with runstate.Worker(channel, now=lambda: 0.0) as w:
+            for step in w.steps(start=start, total=stop):
+                w.set("loss", float(step))
+        ckpt.write_text(json.dumps({"next": stop}))
+
+    variant = runstate.Variant(
+        "exp", chunked, {"kwargs": {"run_id": "exp", "ckpt_dir": str(tmp_path)}}
+    )
+    launcher.open_channel("exp").send(
+        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="obs"
+    )
+    producer = launch_producer(launcher, variant)
+    series = ensure(producer, "loss", up_to=7)            # 0..2, re-drive 3..5, re-drive 6
+    assert [b["step"] for b in series] == [0, 1, 2, 3, 4, 5, 6]
+    assert len(launcher.open_channel("exp").read(topics=["launcher.launched"])) >= 3
+
+
+def test_ensure_surfaces_a_die_before_attach_without_hanging():
+    # The worker raises BEFORE constructing Worker -> no lifecycle.started, only
+    # the launcher's terminated. ensure must surface it (via the new-terminated
+    # gate), not hang waiting for a started that never comes.
+    launcher = runstate.ThreadLauncher()
+
+    def die_early(channel, *, up_to):
+        raise RuntimeError("died before attaching")
+
+    variant = runstate.Variant("exp", die_early, {"kwargs": {}})
+    producer = launch_producer(launcher, variant)
+    with pytest.raises(RuntimeError, match="failed"):
+        ensure(producer, "loss", up_to=5)
+
+
+def test_ensure_redrives_when_extend_noops_onto_a_live_episode(tmp_path):
+    # A foreign episode is already LIVE when ensure runs, so extend no-ops
+    # (drove=False). When that episode then stops BELOW target, ensure must
+    # re-drive -- NOT raise "no progress" (the bug the drove-gate fixes).
+    launcher = runstate.ThreadLauncher()
+    rid = "exp"
+    seed = launcher.open_channel(rid)
+    # a live foreign episode (started by our pid -> resolve() alive, no stopped),
+    # having emitted loss 0,1 and beaconed step 1
+    seed.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+              topic="lifecycle.started")
+    seed.send({"value": 0.0, "step": 0, "t": 0.0}, topic="value", name="loss", request_id="obs")
+    seed.send({"value": 1.0, "step": 1, "t": 0.0}, topic="value", name="loss", request_id="obs")
+    seed.send({"step": 1, "consumed_seq": 0}, topic="lifecycle.heartbeat")
+    # pre-stage the subscription so the re-drive episode emits; the checkpoint
+    # says the foreign episode reached step 2 (the re-drive resumes there)
+    seed.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="obs")
+    (tmp_path / f"{rid}.json").write_text(json.dumps({"next": 2}))
+
+    variant = runstate.Variant(
+        rid, _cell, {"kwargs": {"run_id": rid, "ckpt_dir": str(tmp_path)}}
+    )
+    producer = launch_producer(launcher, variant)
+
+    # deterministically end the foreign episode BELOW target on the first sleep
+    ended = {"done": False}
+
+    def driver_sleep(_):
+        if not ended["done"]:
+            ended["done"] = True
+            launcher.open_channel(rid).send(
+                {"reason": "completed", "error": None, "final_step": 1},
+                topic="lifecycle.stopped",
+            )
+
+    series = ensure(producer, "loss", up_to=4, sleep=driver_sleep)
+    assert [b["step"] for b in series] == [0, 1, 2, 3]   # foreign 0,1 + re-driven 2,3 = one series
