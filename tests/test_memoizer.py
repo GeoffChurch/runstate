@@ -1,6 +1,8 @@
 import pytest
 import runstate
 from runstate.memoizer import history
+from runstate.launcher import relaunch_if_needed
+from runstate.vocabulary.handle import local_handle
 
 
 def test_history_replays_schedule_over_logged_points(open_channel):
@@ -47,3 +49,23 @@ def test_history_time_schedule_is_run_relative_to_the_run_epoch(open_channel):
     # "every 2 seconds" run-relative: t-epoch in {0,2,4} -> steps 0,2,4
     got = history(open_channel(), "loss", {"every": {"time_seconds": 2}})
     assert [b["step"] for b in got] == [0, 2, 4]
+
+
+def test_relaunch_if_needed_launches_when_not_live():
+    launcher = runstate.ThreadLauncher()           # memory backend, in-process
+    ran = []
+    h = relaunch_if_needed(launcher, "r", lambda channel, **_: ran.append(1), kwargs={})
+    assert h is not None
+    h.wait()
+    assert ran == [1]
+
+
+def test_relaunch_if_needed_noops_when_a_live_episode_exists():
+    launcher = runstate.ThreadLauncher()
+    ch = launcher.open_channel("r")
+    # fake a live episode: a started by OUR pid (resolve() -> alive), no stopped
+    ch.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+            topic="lifecycle.started")
+    h = relaunch_if_needed(launcher, "r", lambda channel, **_: None, kwargs={})
+    assert h is None
+    assert launcher.open_channel("r").read(topics=["launcher.launched"]) == []  # no spawn

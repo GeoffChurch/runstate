@@ -28,6 +28,7 @@ from typing import Optional, Protocol
 from .channel import open_channel
 from .vocabulary.payloads import Launched, Terminated
 from .vocabulary.handle import local_handle
+from .liveness import live_episode
 
 
 class LaunchHandle(Protocol):
@@ -228,3 +229,19 @@ class LocalLauncher:
         for h in self._handles:
             h.poll()  # reap whatever has finished; don't block or kill stragglers
         return False
+
+
+def relaunch_if_needed(launcher, run_id, target, **launch_kwargs):
+    """Launch ``target`` into ``run_id`` only if no episode is currently live --
+    a launcher-agnostic, best-effort single-spawn guard composed over a log read
+    (``live_episode``) + ``launch``. Returns the new LaunchHandle, or None if a
+    live episode already exists (no spawn). Correctness rests on the worker's
+    self-claim (a check-to-spawn race just wastes a spawn that exits before
+    acting); this only avoids that wasted spawn in the common already-live case.
+    ``launch_kwargs`` is splatted into ``launch`` (launcher-specific, as sweep
+    does): e.g. ``kwargs={...}`` for ThreadLauncher, ``env={...}`` for
+    LocalLauncher."""
+    channel = launcher.open_channel(run_id)
+    if live_episode(channel) is not None:
+        return None
+    return launcher.launch(run_id, target, **launch_kwargs)
