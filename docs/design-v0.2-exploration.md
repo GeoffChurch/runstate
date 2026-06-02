@@ -494,7 +494,7 @@ Polling implementation:
     reason: str                     # from lifecycle.stopped, launcher.terminated, or the detector tier
     error: str | None
     final_step: int | None
-    elapsed: float                  # started → stopped/terminated (or detection time, under the floor)
+    elapsed: float                  # started → stopped/terminated [SUPERSEDED 2026-06-02: dropped, never populated — see conventions-hygiene F8]
 ```
 
 The reachable outcomes depend on the **liveness tier** in play (above): under the

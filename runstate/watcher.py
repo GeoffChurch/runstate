@@ -24,7 +24,7 @@ from dataclasses import dataclass, field, replace
 from typing import Optional, Union
 
 from .liveness import RunResult, peek_terminal
-from .vocabulary.payloads import Heartbeat
+from .vocabulary.payloads import Heartbeat, Nak
 
 
 @dataclass(frozen=True)
@@ -238,3 +238,32 @@ class Watcher:
             st.last_hb_seq = hb.seq
             st.last_heartbeat_at = self._now()
             st.last_step = Heartbeat(**hb.body).step
+
+
+def await_consumed(channel, seq, *, request_id=None, timeout=None,
+                   poll_interval=0.05, now=time.time, sleep=time.sleep):
+    """Block until the worker has drained inbound control up to ``seq`` — i.e.
+    the latest ``lifecycle.heartbeat``'s ``consumed_seq >= seq`` (the
+    registration watermark, §6). ``seq`` is what ``channel.send`` returned for
+    the control request. Returns the ``Nak`` for ``request_id`` if the request
+    was refused (it is already on the log once the watermark passes ``seq`` — the
+    worker advances ``consumed_seq`` only after registering/naking), else
+    ``None`` (landed and accepted). Raises ``TimeoutError`` if ``timeout``
+    elapses first — not-yet-drained is not a refusal. This is the blessed
+    'did my control land?' read, so callers don't hand-roll the watermark +
+    nak check against raw heartbeat bodies. With ``request_id=None``, nak
+    detection is skipped — it returns ``None`` once the request is drained,
+    without checking acceptance."""
+    deadline = None if timeout is None else now() + timeout
+    while True:
+        hb = channel.latest("lifecycle.heartbeat")
+        if hb is not None and Heartbeat(**hb.body).consumed_seq >= seq:
+            if request_id is not None:
+                naks = [e for e in channel.read(topics=["lifecycle.nak"])
+                        if e.request_id == request_id]
+                if naks:
+                    return Nak(**naks[-1].body)
+            return None
+        if deadline is not None and now() >= deadline:
+            raise TimeoutError(f"control seq {seq} not consumed within {timeout}s")
+        sleep(poll_interval)

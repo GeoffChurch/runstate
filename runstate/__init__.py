@@ -24,7 +24,7 @@ from .vocabulary.payloads import (
     Value,
 )
 from .sweep import Variant, sweep
-from .watcher import Running, RunStatus, Watcher
+from .watcher import Running, RunStatus, Watcher, await_consumed
 from .worker import Worker
 
 __version__ = "0.2.0.dev0"
@@ -64,6 +64,7 @@ __all__ = [
     "LocalLauncher",
     # orchestration / liveness
     "Watcher",
+    "await_consumed",
     "RunStatus",
     "Running",
     "RunResult",

@@ -17,36 +17,42 @@ algebra, not a normal form, since conditions are never compared/hashed.)
 
 ## F1 (high) — `lifecycle.phase` is a phantom basis vector
 
+**Resolved 2026-06-02 (Thread A): cut.**
+
 Documented in `docs/design-v0.2.md` §5 (table) and §7 ("Body `{phase}`;
 `latest` queries the current phase") but **absent** from the lifecycle schema
 enum (`protocol/lifecycle-v0.2.schema.json`), from `runstate/vocabulary/payloads.py`,
 and from all code/tests. It is redundant with the `value` + `name="phase"` +
 `latest` projection, and the protocol recognizes it for nothing (unlike
-`lifecycle.stopped` / `launcher.terminated` driving `peek_terminal`). **Cut it
-from the §5/§7 prose** — it is a user `value` register, not a reserved lifecycle
-topic. (Counter: a reserved topic gives a closed-vocabulary enumeration
-guarantee a user `name` can't — but nothing consumes it, so that buys nothing.)
+`lifecycle.stopped` / `launcher.terminated` driving `peek_terminal`). Cut from
+the §5/§7 prose — it is a user `value` register, not a reserved lifecycle topic.
+(Counter: a reserved topic gives a closed-vocabulary enumeration guarantee a
+user `name` can't — but nothing consumes it, so that buys nothing.)
 
 ## F3 (med) — produced-but-unconsumed fields
+
+**Resolved 2026-06-02 (Thread A): shipped `await_consumed` (watcher.py) as the
+blessed consumer of `heartbeat.consumed_seq`.**
 
 `heartbeat.consumed_seq` (the subscribe-ack watermark, §6/§13 "it *is* the ack")
 and `started.hostname` / `started.attached_at` are written but **read by nothing
 shipped** (the Watcher reads only `heartbeat.step`). Legitimate forward-design
 for an orchestrator ack-check (`latest("lifecycle.heartbeat").consumed_seq >=
-my_seq`) — but until a consumer exists (and `test_schema`/an example exercises
-it), the prose should stop calling `consumed_seq` load-bearing, or the consumer
-should be added. This is what makes the heartbeat non-terminal — the cost it
-pays for an ack nobody yet collects.
+my_seq`) — now addressed by `await_consumed` in `runstate/watcher.py`, the
+canonical "did my control land?" read. `started.hostname` / `started.attached_at`
+remain unconsumed (forward-design for a viewer; not actioned here).
 
 ## F8 (low-med) — `RunResult.elapsed` is a dead field
 
+**Resolved 2026-06-02 (Thread A): dropped.**
+
 Declared (`runstate/liveness.py`) and documented (§9 "spans started→stopped")
 but **never populated** — `peek_terminal` and the Watcher `presumed_dead` paths
-all omit it, so it is always `None`. Either populate it (`peek_terminal` has the
-`started`/`stopped` seqs; the Watcher tracks `last_heartbeat_at`) or drop it
-from the dataclass + §9. A dead field on the canonical verdict object weakens
-the minimal-`RunResult` story. (A real `elapsed` needs a time axis — see the
-`value.t` → absolute-wall-clock decision in `docs/specs/memoizer.md`.)
+all omit it, so it is always `None`. Dropped from the dataclass and from the §9
+sketch. A dead field on the canonical verdict object weakens the
+minimal-`RunResult` story. (Note: if duration-on-the-verdict is wanted later, a
+deliberate `stopped.t` field could carry the stopped timestamp as a separate
+convention decision — that would require a lifecycle schema version bump.)
 
 ## F9 (low-med) — `local://host/pid` lacks the PID-reuse disambiguator
 
@@ -55,6 +61,19 @@ Design §8 specifies `local://host/pid?start=T`; the code emits bare
 read as falsely alive. Already self-documented as deferred in
 `runstate/vocabulary/handle.py`. Backstop: heartbeat-staleness (tier 4). Add the
 start-time disambiguator when hardening liveness resolution.
+
+**Rationale for deferring (captured 2026-06-02 Thread A):** liveness has three
+mechanisms on a provability/portability/latency tradeoff. (1) A **held OS
+handle** (`Popen.poll()` / `pidfd`) is provably correct but local and
+non-serializable — used by the spawner; the memoizer's `ensure` rides it via
+`LaunchHandle.is_alive()`, so it is pid-reuse-immune there. (2) **Heartbeat
+staleness** is sound and portable but latent — the universal backstop. (3) The
+**bare-string `os.kill` probe** is portable and immediate but heuristic (pid
+reuse), and `?start=T` only *sharpens* it (a coarse or slow clock can still
+collide). Provable + portable + immediate is impossible simultaneously; the
+string probe is never the sole tier, so its non-provability is acceptable.
+**Conclusion:** add `?start=T` when hardening liveness resolution; it is not
+needed for correctness.
 
 ---
 

@@ -49,9 +49,10 @@ guard — plus an autonomous-extend integration test and the
   `run_id()` *recipe* (shipped: `../specs/run-id-recipe.md`) and the
   dedup-vs-enumeration split (below), driven by [mycooc-adoption](mycooc-adoption.md),
   the validating use case.
-- **[conventions-hygiene](conventions-hygiene.md)** — the residual prose-vs-wire
-  drift + dead-field cleanups the basis audit surfaced (phantom `lifecycle.phase`,
-  dead `RunResult.elapsed`, unused `consumed_seq`, the pid disambiguator).
+- **[conventions-hygiene](conventions-hygiene.md)** — *mostly resolved 2026-06-02
+  (Thread A):* cut phantom `lifecycle.phase` (F1), dropped dead `RunResult.elapsed`
+  (F8), gave `consumed_seq` the `await_consumed` consumer (F3). Only the pid
+  `?start=` disambiguator (F9) remains — deferred (rationale in the file).
 - **Visualization** ([visualization-story](visualization-story.md)) — the
   long-horizon data-plane protocol; post-relational-layer.
 
@@ -193,12 +194,12 @@ reasoning, listed here so they're discoverable as work (cross-ref, not moved):
 
 ## Conventions hygiene (2026-06 basis audit)
 
-- [conventions-hygiene](conventions-hygiene.md) — residual defects from the
-  adversarial orthonormal-basis audit of the L2 conventions: phantom
-  `lifecycle.phase` in the prose (F1), produced-but-unconsumed `consumed_seq` /
-  `hostname` / `attached_at` (F3), dead `RunResult.elapsed` (F8), missing pid
-  `?start=` disambiguator (F9). Prose-vs-wire drift + dead fields; none
-  wire-breaking. The basis itself audited as largely tight.
+- [conventions-hygiene](conventions-hygiene.md) — findings from the adversarial
+  orthonormal-basis audit of the L2 conventions. **F1/F8/F3 resolved 2026-06-02
+  (Thread A):** phantom `lifecycle.phase` cut, dead `RunResult.elapsed` dropped,
+  `consumed_seq` given the `await_consumed` consumer. **F9 deferred:** the pid
+  `?start=` disambiguator (rationale in the file). The basis itself audited as
+  largely tight.
 
 ## Ecosystem adapters (separate packages)
 

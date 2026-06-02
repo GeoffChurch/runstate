@@ -172,9 +172,7 @@ without the user touching absolute time or piercing the abstraction. Semantic
 revision only (worker impl + §10/§11 prose + `payloads.py` docstring + a
 *supersede* note on the §11 "shipped" entry); the JSON schema is `number|null`
 already → no `additionalProperties` bump. Assumes episodes share a comparable
-wall-clock (true same-host; cross-host clock skew is a caveat). Bonus: an
-absolute `value.t` makes the dead `RunResult.elapsed` (conventions-hygiene F8)
-computable.
+wall-clock (true same-host; cross-host clock skew is a caveat).
 
 ## Relationship to `sweep`
 `sweep(resume=True)` is **set-level** run-or-skip over independent runs and never

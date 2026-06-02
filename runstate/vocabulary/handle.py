@@ -23,7 +23,12 @@ def local_handle() -> str:
 def resolve(handle: str) -> bool | None:
     """Liveness of a handle token, actor-independently. True/False for a
     ``local://host/pid`` (via ``os.kill(pid, 0)``); None if the scheme isn't
-    locally resolvable (caller falls back to heartbeat staleness)."""
+    locally resolvable (caller falls back to heartbeat staleness).
+
+    Best-effort: the bare-string probe is heuristic (PID reuse; ``?start=T``
+    disambiguator deferred — see docs/backlog/conventions-hygiene.md F9).
+    Provable liveness comes from a held OS handle (spawner, via
+    ``LaunchHandle.is_alive()``) or heartbeat-staleness (observer tier 4)."""
     if not handle.startswith("local://"):
         return None
     try:

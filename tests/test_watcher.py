@@ -13,7 +13,7 @@ import pytest
 
 from runstate.channel import open_channel
 from runstate.launcher import ThreadLauncher
-from runstate.watcher import Watcher
+from runstate.watcher import Watcher, await_consumed
 from runstate.worker import Worker
 
 
@@ -325,3 +325,46 @@ def test_wait_does_a_final_drain_after_terminal():
 
     w.wait("r", on_event=on_event)
     assert "launcher.terminated" in seen
+
+
+# ----- await_consumed(): control-ack helper -----
+
+
+def test_await_consumed_returns_none_when_accepted(open_channel):
+    ch = open_channel()
+    s = ch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r")
+    ch.send({"step": 0, "consumed_seq": s}, topic="lifecycle.heartbeat")
+    assert await_consumed(open_channel(), s, request_id="r") is None
+
+
+def test_await_consumed_returns_the_nak_when_refused(open_channel):
+    ch = open_channel()
+    s = ch.send({"until": {"step": 0}}, topic="control.subscribe", name="loss", request_id="r")
+    ch.send({"reason": "unsatisfiable", "message": "no fires"}, topic="lifecycle.nak", request_id="r")
+    ch.send({"step": 0, "consumed_seq": s}, topic="lifecycle.heartbeat")
+    nak = await_consumed(open_channel(), s, request_id="r")
+    assert nak is not None and nak.reason == "unsatisfiable"
+
+
+def test_await_consumed_times_out_if_not_consumed(open_channel):
+    import pytest
+    ch = open_channel()
+    s = ch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r")
+    with pytest.raises(TimeoutError):
+        await_consumed(open_channel(), s, request_id="r", timeout=0.0, now=lambda: 0.0)
+
+
+def test_await_consumed_blocks_below_watermark_then_returns_when_it_advances(open_channel):
+    # a heartbeat exists but BELOW the watermark -> must keep waiting, not return early
+    ch = open_channel()
+    s = ch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r")
+    ch.send({"step": 0, "consumed_seq": s - 1}, topic="lifecycle.heartbeat")
+    advanced = {"done": False}
+
+    def driver_sleep(_):  # on the first poll, advance consumed_seq to s
+        if not advanced["done"]:
+            advanced["done"] = True
+            ch.send({"step": 1, "consumed_seq": s}, topic="lifecycle.heartbeat")
+
+    assert await_consumed(open_channel(), s, request_id="r", sleep=driver_sleep) is None
+    assert advanced["done"]  # it actually blocked until the watermark advanced (not a premature return)

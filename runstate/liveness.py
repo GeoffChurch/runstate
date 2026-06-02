@@ -32,7 +32,6 @@ class RunResult:
     run_id: Optional[str] = None
     error: Optional[str] = None
     final_step: Optional[int] = None
-    elapsed: Optional[float] = None
 
     @property
     def done(self) -> bool:
