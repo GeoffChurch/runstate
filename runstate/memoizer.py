@@ -9,6 +9,49 @@ needs a producer). The layers join *through the log*, never by piping values.
 from __future__ import annotations
 
 from .vocabulary.schedule import Subscription
+from .launcher import relaunch_if_needed
+
+
+class _LaunchProducer:
+    """The default producer: wraps a launcher + a Variant so the memoizer can
+    treat one run as an extendable, worker-shaped thing. ``extend(N)`` injects
+    the target into the worker kwargs and relaunches iff not already live. Only
+    the common in-process callable-worker case (target via a kwarg); a
+    subprocess / ray / service producer is the user's own object with the same
+    ``.channel`` / ``.run_id`` / ``.extend`` shape (the seam)."""
+
+    def __init__(self, launcher, variant, target_key="up_to"):
+        self._launcher = launcher
+        self._variant = variant
+        self._target_key = target_key
+        self.run_id = variant.run_id
+
+    @property
+    def channel(self):
+        # cheap: both backends share the backing store, so a fresh read view per
+        # access is fine (and is what `ensure` wants as the log grows).
+        return self._launcher.open_channel(self._variant.run_id)
+
+    def extend(self, up_to) -> None:
+        launch_kwargs = dict(self._variant.launch_kwargs)
+        worker_kwargs = dict(launch_kwargs.get("kwargs") or {})
+        worker_kwargs[self._target_key] = up_to
+        launch_kwargs["kwargs"] = worker_kwargs
+        relaunch_if_needed(
+            self._launcher, self._variant.run_id, self._variant.target, **launch_kwargs
+        )
+
+
+def launch_producer(launcher, variant, *, target_key="up_to"):
+    """A producer backed by ``launcher`` relaunching ``variant``, injecting the
+    target into the worker kwargs under ``target_key`` (the loop bound).
+
+    For a **callable-worker** launcher (e.g. ``ThreadLauncher``) whose worker
+    receives its config -- and the injected target -- as ``kwargs``. A
+    subprocess (``LocalLauncher``), ray, or service worker plumbs the target
+    differently (env / CLI), so it gets its **own** producer implementing
+    ``.channel`` / ``.run_id`` / ``.extend`` (the seam), not this factory."""
+    return _LaunchProducer(launcher, variant, target_key)
 
 
 def history(channel, name, schedule: dict) -> list[dict]:

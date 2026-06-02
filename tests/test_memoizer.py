@@ -1,6 +1,6 @@
 import pytest
 import runstate
-from runstate.memoizer import history
+from runstate.memoizer import history, launch_producer
 from runstate.launcher import relaunch_if_needed
 from runstate.vocabulary.handle import local_handle
 
@@ -58,6 +58,29 @@ def test_relaunch_if_needed_launches_when_not_live():
     assert h is not None
     h.wait()
     assert ran == [1]
+
+
+def test_launch_producer_extend_injects_target_and_runs():
+    import time as _t
+    launcher = runstate.ThreadLauncher()
+    seen = {}
+
+    def worker(channel, *, up_to):
+        seen["up_to"] = up_to
+        with runstate.Worker(channel, now=lambda: 0.0) as w:
+            for step in w.steps(total=up_to):
+                w.set("loss", float(step))
+
+    variant = runstate.Variant("exp", worker, {"kwargs": {}})
+    producer = launch_producer(launcher, variant)           # default target_key="up_to"
+    assert producer.run_id == "exp"
+    assert producer.channel is not None                     # .channel opens without error
+    producer.extend(3)                                      # launches; injects up_to=3
+    for _ in range(400):                                    # wait for the episode to finish
+        if launcher.open_channel("exp").latest("lifecycle.stopped") is not None:
+            break
+        _t.sleep(0.005)
+    assert seen["up_to"] == 3                                # target injected into worker kwargs
 
 
 def test_relaunch_if_needed_noops_when_a_live_episode_exists():
