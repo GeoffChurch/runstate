@@ -200,6 +200,13 @@ extend (miss) **without** owning execution.
   version bump; `additionalProperties:false`).
 - `value.t`: **added** — a present-nullable field (worker-birth-relative seconds, the
   real-time axis); the one additive change. Enables time-based replay once a reader uses it.
+
+> **Superseded 2026-06-02 (the memoizer thread):** `value.t` is now **absolute
+> wall-clock**, not worker-birth-relative — the canonical, episode-independent
+> raw fact. Run-relative time is a *reader* projection (`history` subtracts the
+> run epoch = earliest `lifecycle.started`). Per-episode origins reset on
+> relaunch and would corrupt cross-episode time-replay. See
+> `docs/specs/memoizer.md` Decision 7.
 - `launcher.*` / `lifecycle.*`: **reaffirmed and re-grounded** (two viewpoints, not
   an artifact of process count). Must not be merged.
 - No new topics. The substrate is untouched. Eager logging, the history/memoizer
@@ -245,6 +252,13 @@ extend (miss) **without** owning execution.
   metadata). On the `value` body (a worker concept), not the envelope. The
   *coordinate* is in place; the homogeneous time-based *replay* it enables lands with
   the memoizer (the reader replaying the `Subscription` over it).
+
+> **Superseded 2026-06-02 (the memoizer thread):** `value.t` is now **absolute
+> wall-clock**, not worker-birth-relative — the canonical, episode-independent
+> raw fact. Run-relative time is a *reader* projection (`history` subtracts the
+> run epoch = earliest `lifecycle.started`). Per-episode origins reset on
+> relaunch and would corrupt cross-episode time-replay. See
+> `docs/specs/memoizer.md` Decision 7.
 - **Relation to neighbours:** *run-episodes* supplies resume/extend (and
   run-absolute steps); the *`run_id()` recipe* supplies addressing; the *Store*
   supplies cross-run enumeration/membership (the structure content-addressing

@@ -1,7 +1,6 @@
 # Spec: memoizer (reuse-by-`run_id` with a schedule-shaped read)
 
-**Status:** brainstorm + two adversarial design reviews converged 2026-06-02;
-ready for the user spec review, then plan → build. Distilled from
+**Status:** implemented 2026-06-02 (plan: `docs/plans/2026-06-02-memoizer.md`). Distilled from
 `docs/design-v0.3-exploration.md` §5–9/§11 and the run-episodes spec's
 "memoizer composition", refined by the orthonormal-basis reviews (Review A on
 the shipped conventions, Review B on this design). Builds on shipped
@@ -90,8 +89,12 @@ single-metric-pin smell from Review B.)
 2. **Miss:** `producer.extend(up_to=N)` (Decision 5) — trigger production toward
    N. The worker resumes from its `run_id`-keyed checkpoint via
    `steps(start=k, total=N)` and emits `k+1…N` (run-absolute) into the same log.
-3. **Wait via the log:** `Watcher.observe(run_id, channel)` + poll until
-   *progress ≥ N* **or** the episode goes terminal (`poll().done`).
+3. **Wait until reached or our episode ends:** track the launched episode's
+   `LaunchHandle` (`extend` returns it) — `handle.is_alive()` is the exact,
+   race-free signal that *our* episode finished (a log-seq heuristic trips over
+   a prior episode's trailing `stopped`/`terminated` records). On a no-op extend
+   (a foreign episode was already live) wait for that episode to go terminal
+   (`peek_terminal`). The outcome is read from `peek_terminal`.
 4. **Re-drive if short:** a clean stop *below* N → loop to step 2 (relaunch
    resumes from the higher checkpoint → converges). A **failure** outcome
    (`errored`/`killed`/`presumed_dead`) → stop and surface it (no relaunch storm).
@@ -112,9 +115,13 @@ into a loud diagnostic. (Review B's sharpest catch.)
 `ensure`'s second dependency is a **producer**: a structural, duck-typed handle
 to one run that can be extended —
 - `producer.channel` — the run's channel (to read progress + content);
-- `producer.run_id` — for `Watcher.observe`;
+- `producer.run_id` — for diagnostics (and an optional out-of-band `Watcher.observe`);
 - `producer.extend(up_to)` — trigger production toward step `up_to` (idempotent;
   launch / relaunch-resume as needed; non-blocking — `ensure` owns the wait).
+  **Returns** the launched episode's `LaunchHandle`, or `None` if it no-op'd (an
+  episode was already live) — `ensure` tracks that handle's liveness and uses
+  truthiness to tell whether it actually drove new work (the seam contract:
+  `extend` returns truthy iff it triggered production).
 
 Ship one factory, **`launch_producer(launcher, variant, *, target_key="up_to")`**,
 for the common callable-worker case: its `extend(N)` injects the target into the
