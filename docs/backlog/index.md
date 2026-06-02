@@ -175,6 +175,15 @@ reasoning, listed here so they're discoverable as work (cross-ref, not moved):
 - **GC / retention policy** (§12.9) — retention is full, no GC (the precondition
   `peek_terminal` / resume rely on); a policy is future work.
 
+## Conventions hygiene (2026-06 basis audit)
+
+- [conventions-hygiene](conventions-hygiene.md) — residual defects from the
+  adversarial orthonormal-basis audit of the L2 conventions: phantom
+  `lifecycle.phase` in the prose (F1), produced-but-unconsumed `consumed_seq` /
+  `hostname` / `attached_at` (F3), dead `RunResult.elapsed` (F8), missing pid
+  `?start=` disambiguator (F9). Prose-vs-wire drift + dead fields; none
+  wire-breaking. The basis itself audited as largely tight.
+
 ## Ecosystem adapters (separate packages)
 
 - **runstate-submitit** — `SubmititLauncher` for SLURM/AWS Batch/local.

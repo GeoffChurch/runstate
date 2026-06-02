@@ -96,6 +96,46 @@ means a future protocol version can't silently add fields; adding a field
 to a well-known body is a deliberate convention-version bump. Each
 convention schema is versioned on its own timeline.
 
+## Design rigor — the orthonormal-basis rubric
+
+Every layer's primitives should be a **minimal, canonical, orthogonal basis**
+for the feature space they serve — chosen with the same care the substrate
+was. (Properties that hold under audit: the append-only log is **initial**
+among communication views, under full retention; the closed `RunResult.outcome`
+enum is the **canonical projection** of the liveness tiers — which is why there
+is no `success` bool; heartbeat-staleness **subsumes** a substrate liveness
+lease. Two tempting claims that do *not* hold of the *shipped* design, kept as
+cautionary examples: the heartbeat is **not** Unit/terminal — it is deliberately
+*enriched* to `{step, consumed_seq}` to amortize the subscribe-ack; and the
+condition-algebra is the **free** term algebra, deliberately *not* a normal
+form, since conditions are never compared or hashed.) The payoff of getting the
+basis right is *serendipity* — features that compose for free. When proposing or
+reviewing any primitive (a convention message, a typed body, an operation),
+test it against:
+
+1. **Independence (necessity).** Could it be derived by composing the
+   others? If so it's redundant — name what subsumes it. (Watch for one
+   primitive silently doing another's job — e.g. heartbeat-staleness
+   obviating a separate liveness signal.)
+2. **Spanning (sufficiency).** Name an in-scope feature the set *cannot*
+   express by composition (a missing basis vector) — and any feature it
+   expresses that's *out of scope* (opinion creep).
+3. **Canonical form.** Among equivalent ways to provide it, is this the one
+   with a universal property / normal form / least arbitrary content? Flag
+   arbitrary, over-specified, or coordinate-dependent choices.
+4. **Orthogonality.** Does any pair overlap in the concern it encodes? Each
+   should carry exactly one. (Model: the launcher-vs-lifecycle "two
+   viewpoints" split keeps self-report and external-report orthogonal.)
+5. **Serendipity (payoff, and its absence as a smell).** Where does the
+   basis make a feature fall out *for free* (run-absolute step from one log;
+   log-as-cache)? Where you'd expect synergy and don't see it, suspect the
+   basis is off.
+
+Meta-constraint (overrides 1–5): the substrate stays **opinion-free** and
+conventions are **opt-in** typed shapes pinned by `additionalProperties:false`.
+A primitive that bakes a workload opinion fails regardless of how well it
+scores above.
+
 ## Test commands
 
 ```bash
