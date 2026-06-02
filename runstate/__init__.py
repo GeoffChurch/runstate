@@ -11,7 +11,8 @@ the submodules (runstate.channel, runstate.schedule, ...).
 import os
 
 from .channel import Envelope, open_channel
-from .launcher import Launcher, LaunchHandle, LocalLauncher, ThreadLauncher
+from .launcher import Launcher, LaunchHandle, LocalLauncher, ThreadLauncher, relaunch_if_needed
+from .memoizer import ensure, history, launch_producer
 from .liveness import RunResult, peek_terminal
 from .vocabulary.payloads import (
     Heartbeat,
@@ -69,6 +70,10 @@ __all__ = [
     "peek_terminal",
     "sweep",
     "Variant",
+    "history",
+    "ensure",
+    "launch_producer",
+    "relaunch_if_needed",
     # convention bodies (typed; serialize via dataclasses.asdict, parse via Cls(**body))
     "Value",
     "Started",

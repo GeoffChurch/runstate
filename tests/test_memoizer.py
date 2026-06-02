@@ -247,3 +247,9 @@ def test_ensure_redrives_when_extend_noops_onto_a_live_episode(tmp_path):
 
     series = ensure(producer, "loss", up_to=4, sleep=driver_sleep)
     assert [b["step"] for b in series] == [0, 1, 2, 3]   # foreign 0,1 + re-driven 2,3 = one series
+
+
+def test_public_exports_present():
+    assert {"history", "ensure", "launch_producer", "relaunch_if_needed"} <= set(runstate.__all__)
+    assert all(hasattr(runstate, n)
+               for n in ("history", "ensure", "launch_producer", "relaunch_if_needed"))
