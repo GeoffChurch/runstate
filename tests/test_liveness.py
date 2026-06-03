@@ -39,14 +39,14 @@ def test_errored(open_channel):
 
 
 def test_commanded_is_stopped(open_channel):
-    # a clean stop that isn't self-completion: normalized outcome "stopped",
+    # a clean stop that isn't self-completion: normalized outcome "preempted",
     # but the verbatim worker reason is preserved
     open_channel().send(
         {"reason": "commanded", "error": None, "final_step": 7},
         topic="lifecycle.stopped",
     )
     r = peek_terminal(open_channel())
-    assert r.outcome == "stopped"
+    assert r.outcome == "preempted"
     assert r.reason == "commanded"
     assert r.final_step == 7
 

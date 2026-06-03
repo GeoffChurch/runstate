@@ -152,7 +152,7 @@ Well-known **outbound** events (`worker → observers`), reserved `lifecycle.*`.
 | Topic | Semantics |
 |---|---|
 | `lifecycle.started` | Pushed on attach. Body `{handle, hostname?, attached_at?}` — the worker self-reports its **liveness handle** (§8) when no launcher recorded one. |
-| `lifecycle.stopped` | The cooperative dying breath; body `{reason, error?, final_step?}`. **Existence = the run cleanly finished** (a retained log fact). A crashed worker emits nothing — absence ≠ alive (§8). |
+| `lifecycle.stopped` | The cooperative dying breath; body `{reason, error?, final_step?}`. **Existence = the run cleanly finished** (a retained log fact) — either completed or preempted (resumable); `reason` distinguishes. A crashed worker emits nothing — absence ≠ alive (§8). |
 | `lifecycle.heartbeat` | **Pushed beacon** (`request_id=None`), **tick-driven** (a hung loop stops it), periodic. Body `{step?, consumed_seq}` — serves **liveness** (staleness), **progress** (step advancing), and the **registration watermark** (§6; `consumed_seq` = the worker's read position in its inbound `control` order). `step` is null for a service worker with no step. No embedded timestamp (staleness uses the reader's arrival clock). |
 | `lifecycle.nak` | Negative ack (§6); body `{reason, message}`, `reason ∈ {malformed, unsatisfiable, unsupported}` (syntactic / semantic / unknown-verb), envelope `request_id` = the offending request. |
 
@@ -219,13 +219,13 @@ RunStatus = Running | RunResult
 
 @dataclass class RunResult:                                  # done == True
     run_id: str | None
-    outcome: str   # CLOSED: "completed" | "stopped" | "errored" | "killed" | "presumed_dead"
+    outcome: str   # CLOSED: "completed" | "preempted" | "errored" | "killed" | "presumed_dead"
     reason: str    # verbatim per-tier label (the raw "why", finer than the bucket)
     error: str | None; final_step: int | None
     # No `success`: a pure projection of `outcome` that would bake one contested
     # policy into the producer. Consumers apply their own (sweep fails on the
     # bottom three). `outcome` (normalized, cross-tier) and `reason` (raw, per-tier)
-    # are orthogonal; a clean non-completion is outcome="stopped", reason="commanded".
+    # are orthogonal; a clean non-completion is outcome="preempted", reason="commanded".
 
 # peek_terminal is the RECORD-based verdict (a terminal envelope exists); the
 # Watcher adds the INFERENCE-based tiers (probe + heartbeat staleness → presumed_dead).

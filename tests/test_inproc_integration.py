@@ -57,7 +57,7 @@ def test_commanded_stop_end_to_end(tmp_path):
     assert stopped.body["final_step"] == 2
     # clean thread exit despite the early stop
     assert obs.latest("launcher.terminated").body["exit_code"] == 0
-    # observer verdict: a clean non-completion normalizes to "stopped"
+    # observer verdict: a clean non-completion normalizes to "preempted"
     r = peek_terminal(obs)
-    assert r.outcome == "stopped"
+    assert r.outcome == "preempted"
     assert r.reason == "commanded"

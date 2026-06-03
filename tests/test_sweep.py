@@ -79,7 +79,7 @@ def test_sweep_stop_on_failure_halts(tmp_path):
 
 
 def test_sweep_does_not_halt_on_clean_commanded_stop(tmp_path):
-    # a "stopped" (clean, commanded) outcome is NOT a failure
+    # a "preempted" (clean, commanded) outcome is NOT a failure
     launcher = ThreadLauncher(root=tmp_path)
 
     def commanded(channel):
@@ -90,5 +90,5 @@ def test_sweep_does_not_halt_on_clean_commanded_stop(tmp_path):
 
     variants = [Variant("a", commanded), Variant("b", _ok)]
     results = sweep(variants, launcher, stop_on_failure=True, watcher=_fast_watcher())
-    assert results[0].outcome == "stopped"
+    assert results[0].outcome == "preempted"
     assert [r.run_id for r in results] == ["a", "b"]  # did not halt

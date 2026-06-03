@@ -21,11 +21,11 @@ class RunResult:
     # ``outcome`` is the CLOSED, normalized verdict consumers branch/aggregate on
     # (it unifies the worker-stop, reaped-death, and inferred-death tiers into one
     # vocabulary). ``reason`` is the verbatim per-tier label — the raw "why",
-    # finer than the bucket (e.g. outcome "stopped", reason "commanded"). There is
+    # finer than the bucket (e.g. outcome "preempted", reason "commanded"). There is
     # deliberately no ``success`` bool: it is a pure projection of ``outcome`` that
     # would bake one contested policy ("is a clean non-completion a success?") into
     # the producer; consumers apply their own (e.g. sweep fails on the bottom three).
-    outcome: str  # "completed" | "stopped" | "errored" | "killed" | "presumed_dead"
+    outcome: str  # "completed" | "preempted" | "errored" | "killed" | "presumed_dead"
     reason: str
     # run_id is stamped by the Watcher (which knows the run); peek_terminal works
     # from a bare channel and leaves it None.
@@ -87,7 +87,7 @@ def peek_terminal(channel) -> Optional[RunResult]:
         elif s.reason == "errored":
             outcome = "errored"
         else:
-            outcome = "stopped"  # a clean stop that isn't self-completion
+            outcome = "preempted"  # a clean, resumable stop that isn't self-completion (preempted)
         return RunResult(
             outcome=outcome, reason=s.reason, error=s.error, final_step=s.final_step
         )
