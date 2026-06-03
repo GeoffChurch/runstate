@@ -111,6 +111,13 @@ source-side fix is to checkpoint at the emission cadence (no overlap to
 collapse); the divergence check is the safety net that turns a silent wrong-reuse
 into a loud diagnostic. (Review B's sharpest catch.)
 
+Crucially, **re-emission is never forced**: a worker is free to resume at
+`last-logged + 1` and skip the overlap entirely (the clean path), in which case
+the collapse/check do nothing. They are a *defensive free-rider* on whatever
+overlap a lagging-checkpoint worker happens to produce — never a mandated
+re-emission (which would be wasted recompute). So `history` polices nothing it
+isn't handed; it imposes no cost on a worker that skips.
+
 ### Decision 5 — the producer seam (defer the named Protocol)
 `ensure`'s second dependency is a **producer**: a structural, duck-typed handle
 to one run that can be extended —
