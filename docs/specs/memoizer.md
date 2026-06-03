@@ -183,6 +183,36 @@ read-first idea but differ on granularity (set vs run) and the reuse predicate
 (terminal-record vs progress ≥ N). No merge; a future Cartesian / extend-aware
 sweep could compose `ensure` per cell.
 
+## Design note: the memoizer is thin; the worker owns the structure
+
+A recurring confusion, headed off here. The memoizer holds **no** knowledge of
+the sequence/recurrence structure. Its irreducible job is: read the log to see
+what's present, compute the missing indices, ask the worker to produce them,
+wait, read back. **The worker owns all structure-exploitation** — resume, the
+recurrence, checkpointing — which is why runstate "transports messages, not
+processes." The only thing the worker *can't* own is *what's already cached* (it
+doesn't read the log — it produces; the memoizer reads). Clean division:
+**memoizer owns cache + miss-detection; worker owns production + structure.**
+
+- **The trap:** "a value-cache reuses values, not work" holds only for a
+  *pure/stateless* worker. A real sequence worker is *stateful-resumable* (keeps
+  / checkpoints `state[k]`), so it reuses its **own** work — producing step 100
+  after 99 resumes from kept state (O(1)), not O(100). So we must not re-derive
+  the structure on the memoizer side; the worker already exploits it.
+- **`ensure(up_to=N)` is sugar.** The general request is "ensure the log holds
+  the indices `I`." For a *sequence* worker, `I` is a contiguous prefix that
+  compresses to one number `N`, and the worker self-advances (it needs only
+  `max(I)`) — hence `up_to=N`. For a *function* worker (inference / on-demand
+  eval), `I` is an arbitrary, externally-supplied key-set the worker can't
+  self-enumerate, so the sugar doesn't apply — but the same `ensure(I)` does. The
+  sequence-vs-function (and autonomous-vs-service) distinction lives **entirely in
+  the worker's production strategy** (advance-a-loop vs evaluate-a-key;
+  launch-with-target vs subscribe-and-serve) — *invisible to the memoizer*. There
+  is **one** thin memoizer, not two; the deferred function/service case is the
+  same memoizer pointed at a different-strategy worker, not parallel machinery.
+  (Generalizing the index spec from `N` to a small term-algebra is a forward
+  idea: `docs/backlog/memoizer-index-algebra.md`.)
+
 ## Deliverables
 - **`runstate/memoizer.py`** — `history`, `ensure`, the producer seam
   (duck-typed) + `launch_producer`.

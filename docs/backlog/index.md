@@ -44,7 +44,10 @@ guard — plus an autonomous-extend integration test and the
   reap-at-zero-subs). It slots in as a second **producer** behind the same
   `ensure`; the structural producer seam (`.channel`/`.run_id`/`.extend`) is
   already in place, so this is the second implementer that triangulates the named
-  `Producer` Protocol (memoizer spec Decisions 5–6).
+  `Producer` Protocol (memoizer spec Decisions 5–6). Lands together with
+  [memoizer-index-algebra](memoizer-index-algebra.md) — generalizing
+  `ensure(up_to=N)` to a (subscription-shaped) index term-algebra `ensure(I)`,
+  forwarded to the worker for structure-aware interpretation.
 - **The relational layer — the Store** (the real component), plus the
   `run_id()` *recipe* (shipped: `../specs/run-id-recipe.md`) and the
   dedup-vs-enumeration split (below), driven by [mycooc-adoption](mycooc-adoption.md),

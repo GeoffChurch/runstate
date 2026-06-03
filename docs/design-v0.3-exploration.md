@@ -127,6 +127,14 @@ that wraps user code C and a cache. Crucially it wraps **computation** and is th
   keyed by `run_id = h(x)`. → a **point** memoizer = the `run_id()` recipe's
   reuse-by-id.
 
+> **Resolved (2026-06-02):** the iterator/function split is *not* two memoizers —
+> it lives entirely in the **worker's production strategy** (advance-a-recurrence
+> vs evaluate-a-key), invisible to a single thin memoizer that only owns the
+> cache + miss-detection. `ensure(up_to=N)` is sugar over "ensure indices `I`".
+> The full anti-confusion write-up (incl. the *stateful-resumable worker reuses
+> its own work* trap) is `docs/specs/memoizer.md` → "Design note"; the index
+> term-algebra generalization is `docs/backlog/memoizer-index-algebra.md`.
+
 ## 7. Launcher vs worker = *viewpoint*, not entity
 
 The realization: the launcher/worker split was never about separate processes.
