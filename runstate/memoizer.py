@@ -146,7 +146,8 @@ def ensure(producer, name, *, up_to, poll_interval=0.01, sleep=time.sleep) -> li
     you need death-by-staleness."""
     channel = producer.channel
     dense = {"every": {"step": 1}, "until": {"step": up_to}}
-    if _progress(channel) >= up_to - 1:
+    result = peek_terminal(channel)
+    if _progress(channel) >= up_to - 1 or (result is not None and result.outcome == "completed"):
         return history(channel, name, dense)
 
     while _progress(channel) < up_to - 1:
@@ -173,6 +174,8 @@ def ensure(producer, name, *, up_to, poll_interval=0.01, sleep=time.sleep) -> li
             raise RuntimeError(
                 f"run {producer.run_id!r} failed: {result.outcome}/{result.reason}"
             )
+        if result is not None and result.outcome == "completed":
+            return history(channel, name, dense)   # producer declared done before up_to
         # No-progress is *our* failure only when we drove an episode that then
         # didn't advance. A no-op extend (onto a foreign episode that stopped
         # short) drove nothing -> loop and re-drive (the next extend spawns,

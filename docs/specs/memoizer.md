@@ -84,8 +84,12 @@ single-metric-pin smell from Review B.)
   N but last *emitted* earlier.
 
 ### Decision 3 — `ensure` is read-first / produce-on-miss, waiting via the log
-1. **Hit:** progress ≥ N → return
+1. **Hit:** progress ≥ N **or** the latest terminal has `outcome == "completed"`
+   (worker self-declared done) → return
    `history(name, {"every":{"step":1},"until":{"step":N}})`. No worker touched.
+   When (2) fires short of N, `ensure` returns the available (shorter) trajectory —
+   the honest answer: the producer declared it will not yield more. See
+   `docs/specs/preempted-vs-completed.md` for the worker contract.
 2. **Miss:** `producer.extend(up_to=N)` (Decision 5) — trigger production toward
    N. The worker resumes from its `run_id`-keyed checkpoint via
    `steps(start=k, total=N)` and emits `k+1…N` (run-absolute) into the same log.
@@ -95,9 +99,11 @@ single-metric-pin smell from Review B.)
    a prior episode's trailing `stopped`/`terminated` records). On a no-op extend
    (a foreign episode was already live) wait for that episode to go terminal
    (`peek_terminal`). The outcome is read from `peek_terminal`.
-4. **Re-drive if short:** a clean stop *below* N → loop to step 2 (relaunch
-   resumes from the higher checkpoint → converges). A **failure** outcome
-   (`errored`/`killed`/`presumed_dead`) → stop and surface it (no relaunch storm).
+4. **Re-drive if preempted:** a `preempted` stop *below* N → loop to step 2
+   (relaunch resumes from the higher checkpoint → converges). A `completed` stop
+   *below* N → return the available trajectory (producer is done). A **failure**
+   outcome (`errored`/`killed`/`presumed_dead`) → stop and surface it (no
+   relaunch storm).
 5. Return the series.
 
 ### Decision 4 — `history` collapses by step but SURFACES divergent re-emission
@@ -264,7 +270,9 @@ doesn't read the log — it produces; the memoizer reads). Clean division:
   backends.
 - `ensure`: full hit (progress ≥ N, no launch); cold miss (extend → reach N);
   partial hit + extend (0..k logged → resume → one 0..N series, run-absolute);
-  clean-stop-below-N → re-drive; failure outcome → surfaced, no relaunch storm.
+  `preempted`-stop-below-N → re-drive; `completed`-short-of-N → return available
+  trajectory without re-driving (read-first and post-drive paths); failure outcome
+  → surfaced, no relaunch storm.
 - `relaunch_if_needed`: live episode → no spawn; not-live → launch; concurrent →
   exactly one live episode (leans on the self-claim).
 - `value.t` absolute: monotone wall-clock under an injected clock; the

@@ -98,12 +98,17 @@ def test_relaunch_if_needed_noops_when_a_live_episode_exists():
 
 def _cell(channel, *, run_id, up_to, ckpt_dir):
     """A resumable worker: reads its run_id-keyed checkpoint, continues the
-    run-absolute step, checkpoints the new frontier. Subscription-gated."""
+    run-absolute step, checkpoints the new frontier. Subscription-gated.
+
+    Emits ``preempted`` (not ``completed``) so that ensure can re-drive it
+    with a higher target — this worker is resumable-by-design and must not
+    self-declare convergence with ``completed``."""
     ckpt = Path(ckpt_dir) / f"{run_id}.json"
     start = json.loads(ckpt.read_text())["next"] if ckpt.exists() else 0
     with runstate.Worker(channel, now=lambda: 0.0) as w:
         for step in w.steps(start=start, total=up_to):
             w.set("loss", float(step))
+        w.stopped(reason="preempted")   # resumable: a higher up_to may be requested
     ckpt.write_text(json.dumps({"next": up_to}))
 
 
@@ -154,10 +159,14 @@ def test_ensure_surfaces_a_failure_outcome(tmp_path):
 def test_ensure_raises_when_run_makes_no_progress(tmp_path):
     launcher = runstate.ThreadLauncher()
 
-    def stuck(channel, *, up_to):                  # ignores up_to; always 2 steps, no ckpt
+    def stuck(channel, *, up_to):          # ignores up_to; always 2 steps, no ckpt
         with runstate.Worker(channel, now=lambda: 0.0) as w:
             for step in w.steps(total=2):
                 w.set("loss", float(step))
+            # Emits ``preempted`` (not ``completed``) so ensure re-drives it.
+            # A ``completed`` stop would cause ensure to return early (new semantics);
+            # ``preempted`` keeps ensure looping so the no-progress guard fires.
+            w.stopped(reason="preempted")
 
     variant = runstate.Variant("exp", stuck, {"kwargs": {}})
     launcher.open_channel("exp").send(
@@ -181,6 +190,10 @@ def test_ensure_redrives_within_one_call_to_reach_target(tmp_path):
         with runstate.Worker(channel, now=lambda: 0.0) as w:
             for step in w.steps(start=start, total=stop):
                 w.set("loss", float(step))
+            # Emit ``preempted`` when stopping short (more steps may be requested),
+            # let the Worker default ``completed`` only when reaching the full target.
+            if stop < up_to:
+                w.stopped(reason="preempted")
         ckpt.write_text(json.dumps({"next": stop}))
 
     variant = runstate.Variant(
@@ -234,14 +247,16 @@ def test_ensure_redrives_when_extend_noops_onto_a_live_episode(tmp_path):
     )
     producer = launch_producer(launcher, variant)
 
-    # deterministically end the foreign episode BELOW target on the first sleep
+    # deterministically end the foreign episode BELOW target on the first sleep.
+    # Use ``preempted`` (not ``completed``) so ensure re-drives it -- a
+    # ``completed`` stop would cause ensure to return early under the new semantics.
     ended = {"done": False}
 
     def driver_sleep(_):
         if not ended["done"]:
             ended["done"] = True
             launcher.open_channel(rid).send(
-                {"reason": "completed", "error": None, "final_step": 1},
+                {"reason": "preempted", "error": None, "final_step": 1},
                 topic="lifecycle.stopped",
             )
 
@@ -253,3 +268,120 @@ def test_public_exports_present():
     assert {"history", "ensure", "launch_producer", "relaunch_if_needed"} <= set(runstate.__all__)
     assert all(hasattr(runstate, n)
                for n in ("history", "ensure", "launch_producer", "relaunch_if_needed"))
+
+
+# ---------------------------------------------------------------------------
+# Synthetic-channel tests for the completed-short-of-up_to behaviour
+# ---------------------------------------------------------------------------
+
+class _FakeProducer:
+    """A minimal duck-typed producer backed by a pre-seeded MemoryChannel.
+
+    `extend` is a no-op (returns None, simulating a foreign episode) and
+    counts how many times it was called.  The channel is shared so the caller
+    can inspect / mutate it after construction.
+    """
+
+    def __init__(self, channel, extend_side_effect=None):
+        self._channel = channel
+        self._extend_side_effect = extend_side_effect
+        self.run_id = "fake-run"
+        self.extend_calls = 0
+
+    @property
+    def channel(self):
+        return self._channel
+
+    def extend(self, up_to):
+        self.extend_calls += 1
+        if self._extend_side_effect is not None:
+            self._extend_side_effect(self._channel, up_to)
+        return None   # no handle: simulates a foreign/no-op extend
+
+
+def _seed_episode(ch, *, heartbeat_step, stopped_reason, value_steps=None):
+    """Write a completed single-episode lifecycle into *ch* (no live episode after)."""
+    from runstate.vocabulary.handle import local_handle
+    ch.send(
+        {"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+        topic="lifecycle.started",
+    )
+    ch.send({"step": heartbeat_step, "consumed_seq": 0}, topic="lifecycle.heartbeat")
+    if value_steps is not None:
+        for s in value_steps:
+            ch.send({"value": float(s), "step": s, "t": 0.0},
+                    topic="value", name="loss")
+    ch.send(
+        {"reason": stopped_reason, "error": None, "final_step": heartbeat_step},
+        topic="lifecycle.stopped",
+    )
+
+
+def test_ensure_completed_short_of_up_to_returns_without_redriving():
+    """Test 1: a channel with completed short of up_to -> ensure returns; extend NOT called."""
+    from runstate.channel.memory import MemoryChannel
+
+    ch = MemoryChannel()
+    K = 3
+    _seed_episode(ch, heartbeat_step=K, stopped_reason="completed",
+                  value_steps=list(range(K + 1)))
+
+    producer = _FakeProducer(ch)
+    # up_to=K+5 means the target is far beyond what the worker produced
+    series = ensure(producer, "loss", up_to=K + 5)
+
+    # ensure returns the available trajectory (steps 0..K)
+    assert [b["step"] for b in series] == list(range(K + 1))
+    # extend was NEVER called — the read-first completed-check fired
+    assert producer.extend_calls == 0
+
+
+def test_ensure_preempted_redrives_then_stops_on_completion():
+    """Test 2: preempted short -> ensure re-drives once; on completion it stops (extend called 1x)."""
+    from runstate.channel.memory import MemoryChannel
+
+    ch = MemoryChannel()
+    K = 2    # first episode stops preempted at step K
+    M = 4    # second episode stops completed at step M (still < up_to-1)
+    up_to = 20
+
+    # Seed the first (preempted) episode
+    _seed_episode(ch, heartbeat_step=K, stopped_reason="preempted",
+                  value_steps=list(range(K + 1)))
+
+    def _extend_side_effect(channel, target):
+        """On the producer's first extend call, append a second episode that completes."""
+        from runstate.vocabulary.handle import local_handle
+        channel.send(
+            {"handle": local_handle(), "hostname": None, "attached_at": 1.0},
+            topic="lifecycle.started",
+        )
+        channel.send({"step": M, "consumed_seq": 0}, topic="lifecycle.heartbeat")
+        for s in range(K + 1, M + 1):
+            channel.send({"value": float(s), "step": s, "t": 1.0},
+                         topic="value", name="loss")
+        channel.send(
+            {"reason": "completed", "error": None, "final_step": M},
+            topic="lifecycle.stopped",
+        )
+
+    producer = _FakeProducer(ch, extend_side_effect=_extend_side_effect)
+    series = ensure(producer, "loss", up_to=up_to)
+
+    # ensure returns steps 0..M (both episodes combined)
+    assert [b["step"] for b in series] == list(range(M + 1))
+    # extend was called EXACTLY ONCE (re-drove the preempted, then saw completed)
+    assert producer.extend_calls == 1
+
+
+def test_ensure_preempted_that_reaches_up_to_uses_progress_hit(tmp_path):
+    """Test 3 (sanity): preempted that reaches up_to -> normal progress hit; ensure returns."""
+    launcher = runstate.ThreadLauncher()
+    producer = _producer(launcher, tmp_path)
+    series = ensure(producer, "loss", up_to=5)
+    # The worker stops preempted (no self-completion claim) but reaches step 4 (up_to-1)
+    assert [b["step"] for b in series] == [0, 1, 2, 3, 4]
+    # The channel has a stopped record
+    stopped = launcher.open_channel("exp").latest("lifecycle.stopped")
+    assert stopped is not None
+    # ensure returned via the progress hit (existing behavior unbroken)
