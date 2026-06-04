@@ -187,6 +187,8 @@ def _satisfied(channel, until, *, clock) -> bool:
                      time_seconds=_elapsed(channel, clock), count=0)
 
 
+# `until` is the run *bound*; the emission *filter* (`from`/`every`, the
+# ensure(I) strided case) is deferred -- docs/backlog/memoizer-index-algebra.md.
 def ensure(producer, name, *, until, poll_interval=0.01, sleep=time.sleep,
            clock=time.time) -> list[dict]:
     """Return ``name``'s series for the window ``until`` (a Condition from the

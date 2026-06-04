@@ -59,8 +59,11 @@ its second implementer.
   `Subscription` (`schedule.py`) over the logged `value` points for `name`,
   returning the bodies it fires on, in step order. The read-side dual of the
   worker's live `_service`.
-- **`ensure(producer, name, *, up_to) -> list[dict]`** — read-first /
-  produce-on-miss. Depends on a **producer** (Decision 5).
+- **`ensure(producer, name, *, until) -> list[dict]`** — read-first /
+  produce-on-miss. `until` is a Condition from the subscription algebra
+  (`{"step":N} | {"time_seconds":S} | any/all`); `up_to=N` is `until={"step":N}`
+  (the half-open window `[0,N)`). Depends on a **producer** (Decision 5).
+  See `docs/specs/ensure-until-condition.md` for the full rationale.
 
 ### Decision 1 — `name` is a per-query argument
 Not pinned at construction: the *extend* is run-level (one trajectory to step
@@ -75,35 +78,41 @@ single-metric-pin smell from Review B.)
   emission, so progress is always known densely.
 - **Content** ("what values exist for `name`") is the **value series**, at
   whatever density the worker emitted.
-- `ensure(up_to=N)` relaunches-to-extend **iff progress < N**, then returns the
-  series. Dense emitter → the two coincide. Sparse emitter → still correct:
-  extend only if the trajectory truly hasn't reached N; return the sparse series.
-  `ensure` guarantees "the trajectory reached N," **not** "N points exist" (you
-  can't memoize a value the worker never computed). Reading progress off the
-  `value` max-step instead would falsely relaunch a sparse run that finished past
-  N but last *emitted* earlier.
+- `ensure(until={"step":N})` relaunches-to-extend **iff the window is not closed**
+  (for a step condition: progress < N), then returns the series. Dense emitter →
+  the two coincide. Sparse emitter → still correct: extend only if the trajectory
+  truly hasn't reached the condition; return the sparse series. `ensure` guarantees
+  "the trajectory closed the window," **not** "N points exist" (you can't memoize
+  a value the worker never computed). Reading progress off the `value` max-step
+  instead would falsely relaunch a sparse run that finished past N but last *emitted*
+  earlier.
 
 ### Decision 3 — `ensure` is read-first / produce-on-miss, waiting via the log
-1. **Hit:** progress ≥ N **or** the latest terminal has `outcome == "completed"`
-   (worker self-declared done) → return
-   `history(name, {"every":{"step":1},"until":{"step":N}})`. No worker touched.
-   When (2) fires short of N, `ensure` returns the available (shorter) trajectory —
+1. **Hit:** window closed (`_satisfied(until)` — `satisfied()` over the condition-algebra,
+   with `step = _progress+1` for the half-open `[0,N)` convention and time from the
+   **consumer's own poll-clock**, injectable; see `docs/specs/ensure-until-condition.md`) **or**
+   the latest terminal has `outcome == "completed"` (worker self-declared done) → return
+   `history(name, {"every":{"step":1},"until":until})`. No worker touched.
+   When (2) fires short of the target, `ensure` returns the available (shorter) trajectory —
    the honest answer: the producer declared it will not yield more. See
    `docs/specs/preempted-vs-completed.md` for the worker contract.
-2. **Miss:** `producer.extend(up_to=N)` (Decision 5) — trigger production toward
-   N. The worker resumes from its `run_id`-keyed checkpoint via
-   `steps(start=k, total=N)` and emits `k+1…N` (run-absolute) into the same log.
+2. **Miss:** `producer.extend(until)` (Decision 5) — trigger production toward the
+   condition. The worker resumes from its `run_id`-keyed checkpoint via
+   `steps(start=k, total=N)` (self-bound, translating the condition to its own
+   stop-bound) and emits (run-absolute) into the same log.
 3. **Wait until reached or our episode ends:** track the launched episode's
    `LaunchHandle` (`extend` returns it) — `handle.is_alive()` is the exact,
    race-free signal that *our* episode finished (a log-seq heuristic trips over
    a prior episode's trailing `stopped`/`terminated` records). On a no-op extend
    (a foreign episode was already live) wait for that episode to go terminal
    (`peek_terminal`). The outcome is read from `peek_terminal`.
-4. **Re-drive if preempted:** a `preempted` stop *below* N → loop to step 2
-   (relaunch resumes from the higher checkpoint → converges). A `completed` stop
-   *below* N → return the available trajectory (producer is done). A **failure**
-   outcome (`errored`/`killed`/`presumed_dead`) → stop and surface it (no
-   relaunch storm).
+4. **Re-drive if preempted:** a `preempted` stop with the window still open → loop to
+   step 2 (relaunch resumes from the higher checkpoint → converges). A `completed` stop
+   short of the target → return the available trajectory (producer is done). A **failure**
+   outcome (`errored`/`killed`/`presumed_dead`) → stop and surface it (no relaunch storm).
+   The **no-progress guard** is axis-aware: raises only when step stalled AND
+   `satisfied(until, step=progress+1, time_seconds=∞)` is False — a pure time
+   condition never trips it; a step-stalled step condition always does.
 5. Return the series.
 
 ### Decision 4 — `history` collapses by step but SURFACES divergent re-emission
@@ -129,7 +138,7 @@ isn't handed; it imposes no cost on a worker that skips.
 to one run that can be extended —
 - `producer.channel` — the run's channel (to read progress + content);
 - `producer.run_id` — for diagnostics (and an optional out-of-band `Watcher.observe`);
-- `producer.extend(up_to)` — trigger production toward step `up_to` (idempotent;
+- `producer.extend(until)` — trigger production toward the condition `until` (idempotent;
   launch / relaunch-resume as needed; non-blocking — `ensure` owns the wait).
   **Returns** the launched episode's `LaunchHandle`, or `None` if it no-op'd (an
   episode was already live) — `ensure` tracks that handle's liveness and uses
@@ -137,8 +146,9 @@ to one run that can be extended —
   `extend` returns truthy iff it triggered production).
 
 Ship one factory, **`launch_producer(launcher, variant, *, target_key="up_to")`**,
-for the common callable-worker case: its `extend(N)` injects the target into the
-launch spec (`{**variant.launch_kwargs, target_key: N}`) and calls
+for the common callable-worker case: its `extend({"step":N})` extracts the scalar
+`N` and injects it into the launch spec under `target_key`; any other condition shape
+(`time_seconds`, `any`/`all`) raises — bring your own producer for those. Calls
 `relaunch_if_needed` (Decision 6); its `channel` is
 `launcher.open_channel(variant.run_id)`. **How the target reaches the worker is
 launcher/workload-specific** — a kwarg for an in-process `ThreadLauncher`
@@ -159,8 +169,8 @@ not by a class holding it.
 launcher-agnostic: read `live_episode(channel)`; if a live episode exists, no-op
 (don't double-spawn); else `launcher.launch(run_id, target, **launch_kwargs)`
 (splatting the launcher-specific spec, exactly as `sweep` calls `launch`). It
-knows nothing about `up_to` — the *producer* builds the target-N spec (Decision
-5). Correctness rests on the **worker self-claim** (a check-to-spawn race just
+knows nothing about `until` — the *producer* translates the condition to a target
+spec (Decision 5). Correctness rests on the **worker self-claim** (a check-to-spawn race just
 wastes a spawn that exits before acting); this helper is the optimization (no-op
 when already live). It is **not** a `Launcher` Protocol method — that would force
 every downstream launcher (submitit / ray / k8s) to implement a second verb for
@@ -190,11 +200,11 @@ wall-clock (true same-host; cross-host clock skew is a caveat).
 ## Relationship to `sweep`
 `sweep(resume=True)` is **set-level** run-or-skip over independent runs and never
 *extends* (it skips any run with a terminal record, else launches whole). `ensure`
-is **single-run extend-to-N** over one log. Whole-run-no-extend (a dense emitter,
-`up_to` = the run's natural length) is the degenerate overlap; the two share the
-read-first idea but differ on granularity (set vs run) and the reuse predicate
-(terminal-record vs progress ≥ N). No merge; a future Cartesian / extend-aware
-sweep could compose `ensure` per cell.
+is **single-run extend-to-condition** over one log. Whole-run-no-extend (a dense
+emitter, `until` matching the run's natural length) is the degenerate overlap; the
+two share the read-first idea but differ on granularity (set vs run) and the reuse
+predicate (terminal-record vs window-closed). No merge; a future Cartesian /
+extend-aware sweep could compose `ensure` per cell.
 
 ## Design note: the memoizer is thin; the worker owns the structure
 
@@ -212,19 +222,21 @@ doesn't read the log — it produces; the memoizer reads). Clean division:
   / checkpoints `state[k]`), so it reuses its **own** work — producing step 100
   after 99 resumes from kept state (O(1)), not O(100). So we must not re-derive
   the structure on the memoizer side; the worker already exploits it.
-- **`ensure(up_to=N)` is sugar.** The general request is "ensure the log holds
-  the indices `I`." For a *sequence* worker, `I` is a contiguous prefix that
-  compresses to one number `N`, and the worker self-advances (it needs only
-  `max(I)`) — hence `up_to=N`. For a *function* worker (inference / on-demand
-  eval), `I` is an arbitrary, externally-supplied key-set the worker can't
+- **`ensure(until={"step":N})` is sugar.** The general request is "ensure the log
+  holds the indices `I`." For a *sequence* worker, `I` is a contiguous prefix that
+  compresses to one condition `{"step":N}`, and the worker self-advances — hence
+  `until={"step":N}`. A time condition `{"time_seconds":S}` drives the worker for a
+  wall-clock budget (the worker self-bounds and emits `preempted`; `ensure` re-drives
+  until `_elapsed >= S` on the consumer poll-clock). For a *function* worker (inference
+  / on-demand eval), `I` is an arbitrary, externally-supplied key-set the worker can't
   self-enumerate, so the sugar doesn't apply — but the same `ensure(I)` does. The
   sequence-vs-function (and autonomous-vs-service) distinction lives **entirely in
   the worker's production strategy** (advance-a-loop vs evaluate-a-key;
   launch-with-target vs subscribe-and-serve) — *invisible to the memoizer*. There
   is **one** thin memoizer, not two; the deferred function/service case is the
   same memoizer pointed at a different-strategy worker, not parallel machinery.
-  (Generalizing the index spec from `N` to a small term-algebra is a forward
-  idea: `docs/backlog/memoizer-index-algebra.md`.)
+  (The `from`/`every` emission filter is the next layer of the index algebra:
+  `docs/backlog/memoizer-index-algebra.md`.)
 
 ## Deliverables
 - **`runstate/memoizer.py`** — `history`, `ensure`, the producer seam
@@ -268,11 +280,12 @@ doesn't read the log — it produces; the memoizer reads). Clean division:
   re-emission → collapses silently; empty/short series; a `time_seconds` schedule
   replayed run-relative across two episodes (after the `value.t` fix). Both
   backends.
-- `ensure`: full hit (progress ≥ N, no launch); cold miss (extend → reach N);
-  partial hit + extend (0..k logged → resume → one 0..N series, run-absolute);
-  `preempted`-stop-below-N → re-drive; `completed`-short-of-N → return available
-  trajectory without re-driving (read-first and post-drive paths); failure outcome
-  → surfaced, no relaunch storm.
+- `ensure`: full hit (window closed, no launch); cold miss (extend → window closes);
+  partial hit + extend (0..k logged → resume → one continuous series, run-absolute);
+  `preempted`-stop below target → re-drive; `completed`-short-of-target → return
+  available trajectory without re-driving (read-first and post-drive paths); failure
+  outcome → surfaced, no relaunch storm; time milestone satisfies via poll-clock
+  (not `value.t`); axis-aware no-progress guard; count condition rejected at entry.
 - `relaunch_if_needed`: live episode → no spawn; not-live → launch; concurrent →
   exactly one live episode (leans on the self-claim).
 - `value.t` absolute: monotone wall-clock under an injected clock; the

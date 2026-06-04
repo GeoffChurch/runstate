@@ -1,7 +1,7 @@
 """Reuse + extend via the memoizer (v0.3, docs/specs/memoizer.md).
 
-`ensure(producer, "loss", up_to=N)` serves the logged prefix when the run
-already reached N (cache hit, no worker), else relaunches-to-extend and waits.
+`ensure(producer, "loss", until={"step": N})` serves the logged prefix when the
+run already reached N (cache hit, no worker), else relaunches-to-extend and waits.
 A content-addressed run_id is the cache key (the run_id recipe). In-process via
 ThreadLauncher + the memory backend, so the whole demo is self-contained.
 """
@@ -30,7 +30,7 @@ def train(channel, *, run_id, up_to, ckpt_dir, lr):
 
 
 def producer_for(launcher, ckpt_dir, *, lr):
-    rid = run_id({"lr": lr})                       # excludes up_to: the extend axis
+    rid = run_id({"lr": lr})                       # excludes step target: the extend axis
     launcher.open_channel(rid).send(
         {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="obs"
     )
@@ -47,13 +47,13 @@ def main():
     with tempfile.TemporaryDirectory() as ckpt_dir:
         p = producer_for(launcher, ckpt_dir, lr=0.3)
 
-        s = runstate.ensure(p, "loss", up_to=8)
+        s = runstate.ensure(p, "loss", until={"step": 8})
         print(f"cold:   asked 8, got {len(s)}; loss[0]={s[0]['value']:.3f}")
 
-        s = runstate.ensure(p, "loss", up_to=8)         # hit -- no relaunch
+        s = runstate.ensure(p, "loss", until={"step": 8})   # hit -- no relaunch
         print(f"warm:   asked 8, got {len(s)} (served from the log)")
 
-        s = runstate.ensure(p, "loss", up_to=20)        # extend: resume 8..19
+        s = runstate.ensure(p, "loss", until={"step": 20})  # extend: resume 8..19
         print(f"extend: asked 20, got {len(s)}; one series 0..{s[-1]['step']}")
 
 
