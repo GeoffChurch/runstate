@@ -23,8 +23,8 @@ _SAMPLES = [
     Started(handle="local://h/1", hostname=None, attached_at=0.0),
     Heartbeat(step=7, consumed_seq=3),
     Heartbeat(step=None, consumed_seq=0),
-    Stopped(reason="completed", error=None, final_step=9),
-    Stopped(reason="errored", error="boom", final_step=1),
+    Stopped(completed=True, error=None, final_step=9),
+    Stopped(completed=False, error="boom", final_step=1),
     Nak(reason="malformed", message="bad request"),
     Launched(handle="local://h/1", status="running"),
     Terminated(reason="exited", exit_code=0, signal=None),
@@ -51,3 +51,9 @@ def test_terminated_coupling_rejects_illegal_states():
     ):
         with pytest.raises(ValueError):
             Terminated(**kwargs)
+
+
+def test_completed_with_error_rejected():
+    # completed=True ⟹ error is None: the invariant is enforced in __post_init__
+    with pytest.raises(ValueError):
+        Stopped(completed=True, error="x", final_step=None)

@@ -55,30 +55,30 @@ def test_control_stop_now(open_channel):
     orch = open_channel()
     orch.send({}, topic="control.stop", request_id="s1")
     w = Worker(open_channel(), now=lambda: 0.0)
-    assert w.tick(step=5) == "commanded"
+    assert w.tick(step=5) is True
 
 
 def test_control_stop_at_step(open_channel):
     orch = open_channel()
     orch.send({"from": {"step": 100}}, topic="control.stop", request_id="s1")
     w = Worker(open_channel(), now=lambda: 0.0)
-    assert w.tick(step=50) is None
-    assert w.tick(step=100) == "commanded"
+    assert w.tick(step=50) is False
+    assert w.tick(step=100) is True
 
 
 def test_stopped_emits_dying_breath(open_channel):
     w = Worker(open_channel(), now=lambda: 0.0)
-    w.stopped(reason="completed", final_step=500)
+    w.stopped(completed=True, final_step=500)
     e = open_channel().latest("lifecycle.stopped")
-    assert e.body == {"reason": "completed", "error": None, "final_step": 500}
+    assert e.body == {"completed": True, "error": None, "final_step": 500}
     assert e.request_id is None  # broadcast — every observer sees it
 
 
 def test_stopped_with_error(open_channel):
     w = Worker(open_channel(), now=lambda: 0.0)
-    w.stopped(reason="errored", error="boom")
+    w.stopped(error="boom")
     assert open_channel().latest("lifecycle.stopped").body == {
-        "reason": "errored",
+        "completed": False,
         "error": "boom",
         "final_step": None,
     }
@@ -134,8 +134,8 @@ def test_nak_malformed_stop_from_does_not_crash(open_channel):
     orch = open_channel()
     orch.send({"from": {"step": "oops"}}, topic="control.stop", request_id="s1")
     w = Worker(open_channel(), now=lambda: 0.0)
-    assert w.tick(step=0) is None  # survives, does not stop
-    assert w.tick(step=1) is None  # not poisoned
+    assert w.tick(step=0) is False  # survives, does not stop
+    assert w.tick(step=1) is False  # not poisoned
     nak = open_channel().latest("lifecycle.nak")
     assert nak.request_id == "s1"
     assert nak.body["reason"] == "malformed"
@@ -158,8 +158,8 @@ def test_stepped_step_from_stop_still_fires(open_channel):
     orch = open_channel()
     orch.send({"from": {"step": 2}}, topic="control.stop", request_id="s1")
     w = Worker(open_channel(), now=lambda: 0.0)
-    assert w.tick(step=0) is None
-    assert w.tick(step=2) == "commanded"
+    assert w.tick(step=0) is False
+    assert w.tick(step=2) is True
     assert open_channel().latest("lifecycle.nak") is None
 
 
@@ -168,8 +168,8 @@ def test_nak_stop_with_every_or_until(open_channel):
     # a stop is one-shot; every/until are rejected, not silently honored
     orch.send({"until": {"step": 999}}, topic="control.stop", request_id="s1")
     w = Worker(open_channel(), now=lambda: 0.0)
-    reason = w.tick(step=0)  # must NOT stop on a malformed stop
-    assert reason is None
+    result = w.tick(step=0)  # must NOT stop on a malformed stop
+    assert result is False
     nak = open_channel().latest("lifecycle.nak")
     assert nak.body["reason"] == "malformed"
 
@@ -255,7 +255,8 @@ def test_constructing_a_worker_emits_started_with_a_handle(open_channel):
     assert e.request_id is None
 
 
-def test_steps_drives_ticks_and_stops_completed(open_channel):
+def test_steps_drives_ticks_default_preempted(open_channel):
+    # falling off the loop with no explicit claim -> default preempted
     orch = open_channel()
     orch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r1")
     with Worker(open_channel(), now=lambda: 0.0) as w:
@@ -267,7 +268,24 @@ def test_steps_drives_ticks_and_stops_completed(open_channel):
         {"value": 1.0, "step": 1, "t": 0.0},
         {"value": 2.0, "step": 2, "t": 0.0},
     ]
-    assert obs.latest("lifecycle.stopped").body == {"reason": "completed", "error": None, "final_step": 2}
+    assert obs.latest("lifecycle.stopped").body == {"completed": False, "error": None, "final_step": 2}
+
+
+def test_steps_drives_ticks_explicit_completed_claim(open_channel):
+    # worker explicitly claims completed=True before exiting its with block;
+    # the __exit__ idempotency means the explicit stopped() wins (first writer).
+    orch = open_channel()
+    orch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r1")
+    with Worker(open_channel(), now=lambda: 0.0) as w:
+        for step in w.steps(3):
+            w.set("loss", float(step))
+        w.stopped(completed=True)
+    obs = open_channel()
+    body = obs.latest("lifecycle.stopped").body
+    assert body["completed"] is True
+    assert body["error"] is None
+    # only one stopped record: first writer wins
+    assert len(obs.read(topics=["lifecycle.stopped"])) == 1
 
 
 def test_steps_breaks_on_commanded_stop(open_channel):
@@ -279,7 +297,7 @@ def test_steps_breaks_on_commanded_stop(open_channel):
             seen.append(step)
     assert seen == [0, 1, 2]  # stops at the commanded step, never reaches 3..9
     assert open_channel().latest("lifecycle.stopped").body == {
-        "reason": "commanded",
+        "completed": False,
         "error": None,
         "final_step": 2,
     }
@@ -292,15 +310,15 @@ def test_context_manager_reports_errored_on_exception(open_channel):
                 if step == 1:
                     raise ValueError("boom")
     e = open_channel().latest("lifecycle.stopped")
-    assert e.body == {"reason": "errored", "error": "boom", "final_step": 1}
+    assert e.body == {"completed": False, "error": "boom", "final_step": 1}
 
 
 def test_stopped_is_idempotent(open_channel):
     w = Worker(open_channel(), now=lambda: 0.0)
-    w.stopped(reason="completed")
-    w.stopped(reason="errored")  # second call is a no-op
+    w.stopped(completed=True)
+    w.stopped(error="x")  # second call is a no-op
     stops = open_channel().read(topics=["lifecycle.stopped"])
-    assert len(stops) == 1 and stops[0].body == {"reason": "completed", "error": None, "final_step": None}
+    assert len(stops) == 1 and stops[0].body == {"completed": True, "error": None, "final_step": None}
 
 
 def test_second_worker_loses_the_claim_and_does_no_work(open_channel):

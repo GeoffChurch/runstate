@@ -50,12 +50,21 @@ class Heartbeat:
 
 @dataclass(frozen=True)
 class Stopped:
-    """The cooperative dying breath; its existence on the log = clean finish (§7)."""
+    """The cooperative dying breath; its existence on the log = a clean, *resumable*
+    halt (§7). ``completed=True`` is the worker's opt-in claim of intrinsic, permanent
+    completion; otherwise the stop projects to ``preempted``. ``error`` is the failure
+    diagnostic; a completed stop carries no error (enforced)."""
 
-    reason: str
+    completed: bool
     error: Optional[str]
     final_step: Optional[int]
     TOPIC: ClassVar[str] = "lifecycle.stopped"
+
+    def __post_init__(self):
+        # completed ⟹ error is None: keeps the two content fields non-overlapping, so
+        # `error is not None` ⟺ errored holds globally (mirrors Terminated's exited-XOR-killed).
+        if self.completed and self.error is not None:
+            raise ValueError("a completed stop cannot carry an error (completed ⟹ error is None)")
 
 
 @dataclass(frozen=True)

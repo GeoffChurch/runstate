@@ -20,8 +20,10 @@ from .vocabulary.handle import resolve
 class RunResult:
     # ``outcome`` is the CLOSED, normalized verdict consumers branch/aggregate on
     # (it unifies the worker-stop, reaped-death, and inferred-death tiers into one
-    # vocabulary). ``reason`` is the verbatim per-tier label — the raw "why",
-    # finer than the bucket (e.g. outcome "preempted", reason "commanded"). There is
+    # vocabulary). ``reason`` is the verbatim per-tier label — the raw "why". For the
+    # lifecycle tier, reason == outcome (the verbatim worker reason is gone; B′ removes
+    # Stopped.reason, and commandedness is recoverable from the control.stop on the
+    # log). The launcher tier keeps its finer labels ("exited" / "killed"). There is
     # deliberately no ``success`` bool: it is a pure projection of ``outcome`` that
     # would bake one contested policy ("is a clean non-completion a success?") into
     # the producer; consumers apply their own (e.g. sweep fails on the bottom three).
@@ -82,15 +84,13 @@ def peek_terminal(channel) -> Optional[RunResult]:
     stopped = _terminal_unless_followed(channel, "lifecycle.stopped", "lifecycle.started")
     if stopped is not None:
         s = Stopped(**stopped.body)
-        if s.reason == "completed":
-            outcome = "completed"
-        elif s.reason == "errored":
+        if s.error is not None:          # NB: `is not None`, not truthiness — "" still errors
             outcome = "errored"
+        elif s.completed:
+            outcome = "completed"
         else:
-            outcome = "preempted"  # a clean, resumable stop that isn't self-completion (preempted)
-        return RunResult(
-            outcome=outcome, reason=s.reason, error=s.error, final_step=s.final_step
-        )
+            outcome = "preempted"
+        return RunResult(outcome=outcome, reason=outcome, error=s.error, final_step=s.final_step)
     term = _terminal_unless_followed(channel, "launcher.terminated", "launcher.launched")
     if term is not None:
         t = Terminated(**term.body)

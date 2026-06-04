@@ -46,13 +46,17 @@
       }
     },
     "Stopped": {
-      "type": "object", "required": ["reason", "error", "final_step"], "additionalProperties": false,
-      "description": "The cooperative dying breath; its existence on the log = the run cleanly finished (§7). reason is a verbatim worker label; error accompanies reason=='errored'.",
+      "type": "object", "required": ["completed", "error", "final_step"], "additionalProperties": false,
+      "description": "The cooperative dying breath; its existence on the log = a clean, resumable halt (§7). completed=true is the worker's opt-in claim of intrinsic completion; otherwise the stop projects to preempted. error is the failure diagnostic; a completed stop carries no error.",
       "properties": {
-        "reason": {"type": "string"},
+        "completed": {"type": "boolean"},
         "error": {"type": ["string", "null"]},
         "final_step": {"type": ["integer", "null"], "minimum": 0}
-      }
+      },
+      "allOf": [
+        {"if": {"required": ["completed"], "properties": {"completed": {"const": true}}},
+         "then": {"properties": {"error": {"const": null}}}}
+      ]
     },
     "Nak": {
       "type": "object", "required": ["reason", "message"], "additionalProperties": false,

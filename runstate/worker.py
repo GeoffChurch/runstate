@@ -28,7 +28,6 @@ class Worker:
         self._stop = None  # a pending commanded-stop Subscription, or None
         self._cursor = 0
         self._stopped = False
-        self._stop_reason = None
         self._last_step = None
         # Attaching CAS-claims the episode: a worker that loses (a live episode
         # already exists) sets _lost and exits without acting on the channel.
@@ -56,12 +55,12 @@ class Worker:
 
     def __exit__(self, exc_type, exc, tb) -> bool:
         if self._lost:
-            return False  # loser never claimed an episode; emit nothing
+            return False
         if exc_type is not None:
-            self.stopped(reason="errored", error=str(exc), final_step=self._last_step)
+            self.stopped(error=str(exc), final_step=self._last_step)
         else:
-            self.stopped(reason=self._stop_reason or "completed", final_step=self._last_step)
-        return False  # never suppress exceptions
+            self.stopped(final_step=self._last_step)   # default: no claim -> preempted
+        return False
 
     def steps(self, total=None, *, start=0):
         """Drive the worker over a loop. Yields each step; after the body it
@@ -80,9 +79,7 @@ class Worker:
         while total is None or step < total:
             self._last_step = step
             yield step
-            reason = self.tick(step)
-            if reason is not None:
-                self._stop_reason = reason
+            if self.tick(step):    # truthy -> a control.stop fired; stop at this safe point
                 return
             step += 1
 
@@ -90,41 +87,27 @@ class Worker:
         """Update the worker's current value for ``name``."""
         self._values[name] = value
 
-    def tick(self, step):
-        """Drain control, service due subscriptions, evaluate the stop decision.
-
-        Returns ``"commanded"`` if a ``control.stop`` fired this tick (the worker
-        should stop at this safe point), else ``None``. The worker's *own* stop
-        reasons (intrinsic completion, data-dependent) are separate — it simply
-        leaves its loop and calls a stopped-emitting helper.
-        """
+    def tick(self, step) -> bool:
+        """Drain control, service due subscriptions, beacon a heartbeat. Returns
+        True iff a control.stop fired this tick (stop at this safe point), else
+        False. The worker's own *completion* is a separate opt-in claim
+        (``w.stopped(completed=True)``); a commanded stop carries no reason —
+        commandedness is recoverable from the control.stop on the log."""
         self._drain_control(step)
         self._service(step)
-        # Tick-driven liveness beacon: step (progress) + consumed_seq (the
-        # registration watermark, published only after draining/registering).
-        self._ch.send(
-            asdict(Heartbeat(step=step, consumed_seq=self._cursor)),
-            topic="lifecycle.heartbeat",
-        )
-        if self._stop is not None and self._stop.tick(step=step, now=self._now()).fire:
-            return "commanded"
-        return None
+        self._ch.send(asdict(Heartbeat(step=step, consumed_seq=self._cursor)),
+                      topic="lifecycle.heartbeat")
+        return self._stop is not None and self._stop.tick(step=step, now=self._now()).fire
 
-    def stopped(self, reason: str = "completed", *, error=None, final_step=None) -> None:
-        """Emit the cooperative dying breath (``lifecycle.stopped``).
-
-        Its *existence* on the log = the run cleanly finished (§7). Broadcast
-        (``request_id=None``) so every observer sees it. Idempotent — first
-        writer wins: a second call (e.g. an explicit one plus the context-manager
-        exit) is a no-op. So an explicit ``stopped()`` *commits* the terminal
-        reason; if the block then raises, the exception still propagates to the
-        caller but won't overwrite the logged reason (the log shows the committed
-        one, not ``errored``).
-        """
+    def stopped(self, *, completed: bool = False, error=None, final_step=None) -> None:
+        """Emit the cooperative dying breath (lifecycle.stopped). Its existence = a
+        clean, resumable halt. ``completed=True`` is the opt-in completion claim; the
+        default (completed=False, no error) projects to ``preempted``; an ``error``
+        projects to ``errored``. Idempotent — first writer wins."""
         if self._stopped:
             return
         self._stopped = True
-        body = asdict(Stopped(reason=reason, error=error, final_step=final_step))
+        body = asdict(Stopped(completed=completed, error=error, final_step=final_step))
         self._ch.send(body, topic="lifecycle.stopped")
 
     # ----- internals -----

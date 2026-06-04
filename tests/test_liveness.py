@@ -17,7 +17,7 @@ def test_none_while_running(open_channel):
 
 def test_completed(open_channel):
     open_channel().send(
-        {"reason": "completed", "error": None, "final_step": 500},
+        {"completed": True, "error": None, "final_step": 500},
         topic="lifecycle.stopped",
     )
     r = peek_terminal(open_channel())
@@ -29,7 +29,7 @@ def test_completed(open_channel):
 
 def test_errored(open_channel):
     open_channel().send(
-        {"reason": "errored", "error": "boom", "final_step": None},
+        {"completed": False, "error": "boom", "final_step": None},
         topic="lifecycle.stopped",
     )
     r = peek_terminal(open_channel())
@@ -38,16 +38,15 @@ def test_errored(open_channel):
     assert r.error == "boom"
 
 
-def test_commanded_is_stopped(open_channel):
-    # a clean stop that isn't self-completion: normalized outcome "preempted",
-    # but the verbatim worker reason is preserved
+def test_default_stop_is_preempted(open_channel):
+    # a clean stop with no completed claim -> preempted (the unmarked default)
     open_channel().send(
-        {"reason": "commanded", "error": None, "final_step": 7},
+        {"completed": False, "error": None, "final_step": 7},
         topic="lifecycle.stopped",
     )
     r = peek_terminal(open_channel())
     assert r.outcome == "preempted"
-    assert r.reason == "commanded"
+    assert r.reason == "preempted"
     assert r.final_step == 7
 
 
@@ -63,7 +62,7 @@ def test_killed_from_launcher_terminated(open_channel):
 
 def test_clean_stop_takes_precedence_over_terminated(open_channel):
     ch = open_channel()
-    ch.send({"reason": "completed", "error": None, "final_step": 9}, topic="lifecycle.stopped")
+    ch.send({"completed": True, "error": None, "final_step": 9}, topic="lifecycle.stopped")
     ch.send({"reason": "exited", "exit_code": 0, "signal": None}, topic="launcher.terminated")
     assert peek_terminal(open_channel()).outcome == "completed"
 
@@ -74,7 +73,7 @@ def test_live_episode_running_then_none_when_stopped(open_channel):
     ch.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
             topic="lifecycle.started")
     assert live_episode(open_channel()) == local_handle()            # running (our pid alive)
-    ch.send({"reason": "completed", "error": None, "final_step": 1}, topic="lifecycle.stopped")
+    ch.send({"completed": True, "error": None, "final_step": 1}, topic="lifecycle.stopped")
     assert live_episode(open_channel()) is None                      # stopped -> not live
 
 
@@ -82,11 +81,11 @@ def test_peek_terminal_is_episode_aware(open_channel):
     ch = open_channel()
     # episode 1: started ... stopped
     ch.send({"handle": "local://h/1", "hostname": None, "attached_at": 0.0}, topic="lifecycle.started")
-    ch.send({"reason": "completed", "error": None, "final_step": 5}, topic="lifecycle.stopped")
+    ch.send({"completed": True, "error": None, "final_step": 5}, topic="lifecycle.stopped")
     assert peek_terminal(open_channel()).outcome == "completed"   # ep1 terminal
     # episode 2 attaches -> the old stopped is no longer terminal (a started follows it)
     ch.send({"handle": "local://h/2", "hostname": None, "attached_at": 1.0}, topic="lifecycle.started")
     assert peek_terminal(open_channel()) is None                  # ep2 live
     # episode 2 stops -> terminal again, with ep2's verdict
-    ch.send({"reason": "completed", "error": None, "final_step": 9}, topic="lifecycle.stopped")
+    ch.send({"completed": True, "error": None, "final_step": 9}, topic="lifecycle.stopped")
     assert peek_terminal(open_channel()).final_step == 9

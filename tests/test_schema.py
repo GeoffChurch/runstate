@@ -95,7 +95,7 @@ def test_envelope_rejects_unknown_top_level_field():
 
 
 def test_lifecycle_stopped_rejects_extra_body_field():
-    bad = _env("lifecycle.stopped", {"reason": "completed", "oops": 1})
+    bad = _env("lifecycle.stopped", {"completed": True, "error": None, "final_step": None, "oops": 1})
     with pytest.raises(jsonschema.ValidationError):
         CONVENTIONS["lifecycle."].validate(bad)
 
@@ -123,14 +123,22 @@ def test_value_t_is_present_nullable():
 def test_stopped_error_and_final_step_present_nullable():
     L = CONVENTIONS["lifecycle."]
     L.validate(_env("lifecycle.stopped",
-                    {"reason": "completed", "error": None, "final_step": None}))
+                    {"completed": True, "error": None, "final_step": None}))
     L.validate(_env("lifecycle.stopped",
-                    {"reason": "errored", "error": "boom", "final_step": 5}))
-    for missing in ({"reason": "completed", "error": None},      # final_step omitted
-                    {"reason": "completed", "final_step": None},  # error omitted
-                    {"reason": "completed"}):                     # both omitted
+                    {"completed": False, "error": "boom", "final_step": 5}))
+    for missing in ({"completed": True, "error": None},      # final_step omitted
+                    {"completed": True, "final_step": None},  # error omitted
+                    {"completed": True}):                     # both omitted
         with pytest.raises(jsonschema.ValidationError):
             L.validate(_env("lifecycle.stopped", missing))
+
+
+def test_stopped_rejects_completed_with_error():
+    # The if-then schema constraint: completed=true => error must be null
+    L = CONVENTIONS["lifecycle."]
+    with pytest.raises(jsonschema.ValidationError):
+        L.validate(_env("lifecycle.stopped",
+                        {"completed": True, "error": "x", "final_step": None}))
 
 
 def test_started_hostname_and_attached_at_present_nullable():
@@ -157,7 +165,7 @@ def test_convention_dataclasses_serialize_to_schema_valid_bodies():
         payloads.Value(value=0.5, step=10, t=0.0),
         payloads.Started(handle="local://h/1", hostname=None, attached_at=0.0),
         payloads.Heartbeat(step=7, consumed_seq=3),
-        payloads.Stopped(reason="completed", error=None, final_step=9),
+        payloads.Stopped(completed=True, error=None, final_step=9),
         payloads.Nak(reason="malformed", message="x"),
         payloads.Launched(handle="local://h/1"),
         payloads.Terminated(reason="exited", exit_code=0, signal=None),
