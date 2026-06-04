@@ -168,21 +168,30 @@ The core is coupled — the `Stopped` shape ripples through construction (`worke
 
 ## Task 2: Consumer + integration test fallout
 
-**Files (test-only):** `tests/test_watcher.py`, `tests/test_inproc_integration.py`, `tests/test_sweep.py`, `tests/test_run_episodes.py`, `tests/test_local_launcher.py`, `tests/test_channel.py`.
+**Files (test-only, EDITED):** `tests/test_watcher.py`, `tests/test_inproc_integration.py`, `tests/test_sweep.py`, `tests/test_run_episodes.py`, `tests/test_channel.py`. **NOT edited:** `tests/test_local_launcher.py` — its `:43` `completed` verdict comes from the **launcher.terminated tier** (`exit_code==0`), which B′ does **not** touch; its worker (`:17-21`) is a raw `attach()`+`ch.send`, no `Worker`, no `lifecycle.stopped`. It must stay green unchanged (verified in the run below); do **not** add a claim to it.
 
-Apply the migration rule. The **judgment** part: any worker whose run is asserted `outcome=="completed"` must now **claim** `completed=True` (the default flipped to `preempted`).
+Apply the migration rule. The **judgment** part: a worker whose run is asserted `outcome=="completed"` AND that emits its own `lifecycle.stopped` (a `Worker`+`steps` worker) must now **claim** `completed=True` (the default flipped to `preempted`); launcher-tier `completed` verdicts are unaffected.
 
 - [ ] **Step 1: raw stopped bodies → new shape.** `test_watcher.py:50/75/149/315`, `test_inproc_integration.py:42/45`, and `test_channel.py:44-45/124-125` (the latter use the body as an *opaque* substrate payload — migrate for consistency to `{"completed": True, "error": None, "final_step": None}`; the substrate doesn't validate, so correctness doesn't require it, but keep it honest).
 
-- [ ] **Step 2: workers that complete by falling off → claim `completed=True`.** Audit `test_sweep.py` (the workers behind the `outcome=="completed"` asserts at `:36/66/75`), `test_run_episodes.py` (`:46`), `test_local_launcher.py` (`:43`), `test_inproc_integration.py` (`:45`). Each such worker that currently relies on the default `completed` must add `w.stopped(completed=True)` before leaving its `with` block. `test_sweep.py:93` (the commanded → `preempted` case) is **unchanged** — that worker is correctly `preempted` by default.
+- [ ] **Step 2: `Worker`+`steps` workers that complete by falling off → claim `completed=True`.** Each genuine fixed-length completion below relies on the old default `completed`; add `w.stopped(completed=True)` before leaving its `with` block:
+  - **`test_watcher.py`** (was MISSED in the first draft): `_train` (`:115-118`, asserted `:124`), `_train` (`:176-179`, asserted `:185`), `_ok` (`:197-200`, asserted `:207`).
+  - **`test_sweep.py`**: the workers behind `:36/66/75`. (`:93`, the commanded → `preempted` case, is **unchanged** — correctly `preempted` by default.)
+  - **`test_inproc_integration.py`**: the worker behind `:45`.
+
+- [ ] **Step 2b: `test_run_episodes.py` — change the ASSERTION, not the worker.** `_cell` (`:14-22`) falls off `steps(target)` for *both* episodes and is **resumable-by-design** (the test relaunches to a higher target); it cannot honestly claim `completed` (it doesn't know its target is final). Under B′ its clean terminal is `preempted` — the honest reading. So **leave `_cell` unchanged** and change `:46` `peek_terminal(ch).outcome == "completed"` → `== "preempted"`, and retune the `:5` docstring ("the final peek_terminal should be `preempted` — an autonomous-extend run is resumable-by-design, never self-`completed`"). This is a clean B′ demonstration, not a regression.
 
 - [ ] **Step 3: assertion fixups.** `test_inproc_integration.py:56` `stopped.body["reason"] == "commanded"` → `stopped.body["completed"] == False` (and `:63` `r.reason == "commanded"` → `r.reason == "preempted"`). Any other `body["reason"]`/`r.reason` per the rule.
 
 - [ ] **Step 4: run green + commit.**
-  Run: `pytest tests/test_watcher.py tests/test_inproc_integration.py tests/test_sweep.py tests/test_run_episodes.py tests/test_local_launcher.py tests/test_channel.py -q` → PASS.
+  Run: `pytest tests/test_watcher.py tests/test_inproc_integration.py tests/test_sweep.py tests/test_run_episodes.py tests/test_local_launcher.py tests/test_channel.py -q` → PASS (incl. the *unedited* `test_local_launcher.py`, which must stay green).
   ```bash
-  git add tests/test_watcher.py tests/test_inproc_integration.py tests/test_sweep.py tests/test_run_episodes.py tests/test_local_launcher.py tests/test_channel.py
-  git commit -m "test(lifecycle): migrate consumer/integration tests to Stopped{completed,error}; claim completed where genuinely done
+  git add tests/test_watcher.py tests/test_inproc_integration.py tests/test_sweep.py tests/test_run_episodes.py tests/test_channel.py
+  git commit -m "test(lifecycle): migrate consumer/integration tests to Stopped{completed,error}
+
+  Claim completed where a Worker genuinely completes (watcher/sweep/inproc); the
+  autonomous-extend run reads as preempted (resumable-by-design). Launcher-tier
+  completed (test_local_launcher) is untouched.
 
   Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
   ```
@@ -221,13 +230,17 @@ The fixtures encode the resumable/chunked discipline; B′ *inverts* how they si
 
 ---
 
-## Task 4: Example verification + docs
+## Task 4: Example fix + verification + docs
 
-**Files:** `examples/reuse/driver.py` (verify, likely no change), `examples/minimal/driver.py` (verify), `docs/design-v0.2.md`, `docs/specs/preempted-vs-completed.md`.
+**Files:** `examples/reuse/driver.py` (verify, no change), `examples/minimal/worker.py` (claim `completed`), `examples/minimal/driver.py` (verify), `docs/design-v0.2.md`, `docs/specs/preempted-vs-completed.md`.
 
 - [ ] **Step 1: verify the reuse example now demonstrates the fix.** `examples/reuse/driver.py`'s `train` already falls off without claiming `completed`, so under B′ it defaults to `preempted` and `extend` resumes. Run `python examples/reuse/driver.py` and confirm the `extend` line now prints **`asked 20, got 20; one series 0..19`** (was `got 8`). No code change expected — if `train` somehow still truncates, that's a finding. The inline comment `# extend: resume 8..19` is now accurate.
-- [ ] **Step 2: verify the minimal example.** `examples/minimal/driver.py:63` prints `reason={result.reason!r}` — `RunResult.reason` still exists (= outcome for lifecycle), so it runs. Run `python examples/minimal/driver.py` to confirm.
-- [ ] **Step 3: docs prose.** `docs/design-v0.2.md` §7 (and the `Stopped` schema/prose references) "a clean stop = the run finished" → "a clean, resumable halt; `completed=True` is the worker's opt-in claim, else `preempted`." `docs/specs/preempted-vs-completed.md`: retune its "`preempted` is the worker's cooperative declaration" / "worker self-reports" lines to "the worker claims `completed` or stays unmarked (`completed=False`); `preempted` is the consumer-side projection; the worker emits no `reason`." Keep edits proportional.
+- [ ] **Step 2: fix the minimal-example worker (genuine completion).** `examples/minimal/worker.py` (`:18-22`) falls off `steps(total=50)` with no claim — a *fixed-length* job that genuinely finishes, so under B′ it must claim or it regresses the demo's headline output to `outcome=preempted`. Add `w.stopped(completed=True)` before leaving its `with` block, and update the `:23-24` comment ("emits `lifecycle.stopped` (`completed`, or `errored`/...)" → "claims `completed=True` on finishing its budget; a commanded/preempted stop is the default"). Then `python examples/minimal/driver.py` → confirm `:63` prints `outcome=completed`. (`RunResult.reason` still exists — `= outcome` for the lifecycle tier — so the print itself is fine.)
+- [ ] **Step 3: docs prose.** Retune (proportionally) every stale spot:
+  - `docs/design-v0.2.md` **§7** "a clean stop = the run finished" → "a clean, *resumable* halt; `completed=True` is the worker's opt-in claim, else `preempted`."
+  - `docs/design-v0.2.md` **`:155`** (the table row giving the stopped body as `{reason, error?, final_step?}` / "`reason` distinguishes") → `{completed, error, final_step}`; the distinction is the `completed` bit.
+  - `docs/design-v0.2.md` **`:222-228`** (`RunResult.reason` prose: "outcome=preempted, **reason=commanded**") → the lifecycle tier's `reason == outcome` now; `"commanded"` is gone (recoverable from the `control.stop`).
+  - `docs/specs/preempted-vs-completed.md`: retune its "`preempted` is the worker's cooperative declaration" / "worker self-reports" lines to "the worker claims `completed` or stays unmarked (`completed=False`); `preempted` is the consumer-side projection; the worker emits no `reason`."
 - [ ] **Step 4: full suite + commit.**
   Run: `pytest tests/ -q` → PASS (whole suite). `python examples/reuse/driver.py` and `python examples/minimal/driver.py` run clean.
   ```bash
