@@ -38,6 +38,7 @@ guard — plus an autonomous-extend integration test and the
 
 **→ Next pickups:**
 
+- **[ensure-redrive-recoverable-terminations](ensure-redrive-recoverable-terminations.md)** — let `ensure` re-drive killed/timed-out runs that made progress, instead of raising; subsumes the consumer's custom resume loop. Surfaced by mycooc Phase-4 dogfood (the `_SyncHandle` terminal-synthesis and `_run_one_chunk` resume loop are the dual of this missing feature). Not bit-exact-testable; needs a mock-producer approach.
 - **The service/lifeline memoizer + a named `Producer` Protocol** — the deferred
   *other half*: an on-demand worker that produces only while subscribed
   (ref-counts subscriptions, dies at zero — lazy-launch-on-subscribe +
