@@ -32,10 +32,10 @@ Each task ends green and is committed. The whole suite is ~130 tests, sub-1s.
 The correctness review verified `satisfied({"step":N}, step=_progress+1) ⇔ _progress >= N-1` on every edge case (`progress=-1`, `N=0/1`, past). This task is that substitution plus the producer extract/reject. Time/guard/count come in later tasks; here the clock is **wired but step-inert** (step conditions ignore `time_seconds`).
 
 - [ ] **Step 1: Migrate every test call site (RED — signature mismatch).** In `tests/test_memoizer.py`, replace:
-  - every `ensure(producer, "loss", up_to=N, ...)` → `ensure(producer, "loss", until={"step": N}, ...)` (keep any `sleep=`/other kwargs);
+  - every `ensure(producer, "loss", up_to=N, ...)` → `ensure(producer, "loss", until={"step": N}, ...)` (keep any `sleep=`/other kwargs). **Note the non-literal site** `test_ensure_preempted_redrives_then_stops_on_completion` (~`:369`): `up_to=up_to` (a local var) → `until={"step": up_to}`, not `until={"step": "up_to"}`.
   - `producer.extend(3)` (in `test_launch_producer_extend_injects_target_and_runs`) → `producer.extend({"step": 3})`;
-  - `_FakeProducer.extend(self, up_to)` → `def extend(self, until):` (body unchanged — it's a no-op counter; the local name is now `until`);
-  - leave every **worker**'s `*, up_to` kwarg and `w.steps(total=up_to)` **unchanged** (that kwarg is what the producer injects; the producer extracts the scalar — see Step 3).
+  - `_FakeProducer.extend(self, up_to)` → `def extend(self, until):` **and rename the body too** — its line ~`:298` `self._extend_side_effect(self._channel, up_to)` becomes `self._extend_side_effect(self._channel, until)` (else `NameError: up_to`). It is *not* a pure no-op counter; the param is passed through.
+  - leave every **worker**'s `*, up_to` kwarg and `w.steps(total=up_to)` **unchanged** (that kwarg is what the producer injects; the producer extracts the scalar — see Step 3). Likewise the `_extend_side_effect(channel, target)` helper already uses a generic `target` name — no change there.
 
 - [ ] **Step 2: Run the suite to confirm RED.**
   Run: `pytest tests/test_memoizer.py -x -q`
@@ -174,7 +174,7 @@ The correctness review verified `satisfied({"step":N}, step=_progress+1) ⇔ _pr
       producer = launch_producer(launcher, variant)
       for bad in ({"time_seconds": 5}, {"count": 3},
                   {"all": [{"step": 1}, {"time_seconds": 2}]}):
-          with pytest.raises(ValueError, match="bring your own producer|only"):
+          with pytest.raises(ValueError, match="translates only"):  # matches the real message
               producer.extend(bad)
   ```
 
@@ -258,35 +258,24 @@ The poll-clock is already wired (Task 1). Two things remain: a `{time_seconds}` 
   Run: `pytest tests/test_memoizer.py::test_ensure_time_milestone_does_not_false_raise_on_zero_step_progress -q`
   Expected: FAIL — `RuntimeError: ... made no progress` (the step-only guard false-fires on the first drive, before the ramp clock crosses 5).
 
-- [ ] **Step 3: Make the guard axis-aware in `runstate/memoizer.py`.** Add the helper:
+- [ ] **Step 3: Make the guard axis-aware in `runstate/memoizer.py`.** Replace the step-only guard line in `ensure` with the algebra-driven test — set time to infinity to ask "could time progress alone satisfy `until` from the current step?" (no separate helper):
 
   ```python
-  def _requires_step(cond: dict) -> bool:
-      """Does satisfying `cond` REQUIRE step progress (a stallable axis)? If not,
-      the poll-clock alone reaches it, so a step-stall is not a livelock and the
-      no-progress guard must not fire. `all` needs step iff ANY child does; `any`
-      iff ALL children do (one non-step child can satisfy it). time_seconds never
-      requires step; count is rejected before we get here."""
-      if "step" in cond:
-          return True
-      if "time_seconds" in cond:
-          return False
-      if "all" in cond:
-          return any(_requires_step(c) for c in cond["all"])
-      if "any" in cond:
-          return all(_requires_step(c) for c in cond["any"])
-      return False
-  ```
-
-  Change the guard line in `ensure`:
-
-  ```python
-          if handle is not None and _requires_step(until) and _progress(channel) <= before:
+          if (handle is not None and _progress(channel) <= before
+                  and not satisfied(until, step=_progress(channel) + 1,
+                                    time_seconds=float("inf"), count=0)):
               raise RuntimeError(
                   f"run {producer.run_id!r} made no progress toward {until} "
                   f"(stuck at {_progress(channel)}); cannot extend"
               )
   ```
+
+  Raises only when step is stalled AND no time progress could finish `until` from the current step:
+  pure-`{time_seconds}` and `{any:[…,{time}]}` never trip it; `{step:N}` stalled below target raises;
+  `{all:[{step:N},{time:S}]}` raises only while the **step part is unmet** — once step is met and only
+  time is pending, `satisfied(step≥N, time=∞)` is True, so no false raise. (A coarse "the condition
+  mentions step → guard on step-stall" rule would wrongly kill that last case; this formulation does
+  not.) No helper needed.
 
 - [ ] **Step 4: Add the time-satisfaction + sparse-no-livelock test.** Reuse `_ZeroStepTimeProducer` + `_RampClock` from Step 1. The point: `value.t` is frozen at 0 (only step 0 ever emitted) yet the ramp poll-clock crosses the budget, so satisfaction comes from the clock — no livelock.
 
@@ -316,10 +305,10 @@ The poll-clock is already wired (Task 1). Two things remain: a `{time_seconds}` 
   git add runstate/memoizer.py tests/test_memoizer.py
   git commit -m "feat(memoizer): axis-aware no-progress guard + poll-clock time satisfaction
 
-  The guard now fires only when `until` requires step progress AND step stalled, so
-  a {time_seconds} chunk advancing 0 steps no longer false-raises. Time satisfaction
-  reads the consumer poll-clock (dense, gap-inclusive), so a sparse value emitter
-  can't livelock a time milestone.
+  The guard now fires only when step stalled AND no time progress could satisfy until
+  from the current step (satisfied(..., time=inf)), so a {time_seconds} chunk advancing
+  0 steps no longer false-raises. Time satisfaction reads the consumer poll-clock
+  (dense, gap-inclusive), so a sparse value emitter can't livelock a time milestone.
 
   Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
   ```
@@ -380,19 +369,91 @@ An un-driven `count` atom would satisfy `satisfied(..., count=0)` never → live
 **Files:**
 - Test: `tests/test_memoizer.py` (compound-all; preempted-accumulates vs completed-truncates on time)
 
-These assert that existing mechanisms compose on the time axis; expect **no production code change** (if a test reveals one, that's a finding — report it).
+These assert that the Task-2 axis-aware guard + the `completed`/`preempted` discipline compose on the time axis. They need **no new production code** (Task 2's guard already handles them); if a test forces a code change, that's a finding — report it. All reuse `_DeadHandle`/`_RampClock` from Task 2.
 
-- [ ] **Step 1: Compound `all` (step ∧ time) drive + return.** A `_FakeProducer` whose `extend` appends a started/heartbeat/values episode; an injected clock that crosses the time bound only after the step bound is met. Assert `ensure(until={"all":[{"step":N},{"time_seconds":S}]})` returns once BOTH hold, and the guard does not false-raise (`_requires_step` is True, but step advances). Model it on `test_ensure_preempted_redrives_then_stops_on_completion`'s seeding.
+- [ ] **Step 1: Compound `all` — step met, time pending, must NOT false-raise (the guard regression).** Append:
 
-- [ ] **Step 2: `preempted` accumulates to the time budget.** A producer whose `extend` drives one timed chunk per call (each emits `preempted` below the budget, advancing the injected clock partway); assert `ensure(until={"time_seconds":S})` re-drives across chunks until `_elapsed ≥ S`, returning the accumulated series — and `extend_calls > 1`.
+  ```python
+  class _StepThenWaitProducer:
+      """First extend drives to step 2 (meets a {step:3} window); later extends make
+      NO new step progress. With the axis-aware guard the step-met/time-pending
+      compound must NOT false-raise -- time (the ramp clock) finishes it. (The old
+      step-only guard WOULD raise on the 2nd extend: progress 2 <= before 2.)"""
+      run_id = "fake"
+      def __init__(self, channel): self._c = channel; self.calls = 0
+      @property
+      def channel(self): return self._c
+      def extend(self, until):
+          from runstate.vocabulary.handle import local_handle
+          self.calls += 1
+          if self.calls == 1:
+              self._c.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+                           topic="lifecycle.started")
+              for s in range(3):
+                  self._c.send({"value": float(s), "step": s, "t": 0.0},
+                               topic="value", name="loss")
+              self._c.send({"step": 2, "consumed_seq": 0}, topic="lifecycle.heartbeat")
+          self._c.send({"reason": "preempted", "error": None, "final_step": 2},
+                       topic="lifecycle.stopped")
+          return _DeadHandle()
 
-- [ ] **Step 3: `completed` per chunk truncates (documents the discipline).** Same shape but the chunk emits `completed`; assert `ensure` returns after the FIRST chunk (does NOT accumulate). Add a comment in the test: this is why a time-budgeted resumable worker MUST emit `preempted`, never `completed`.
+  def test_ensure_compound_all_step_met_time_pending_does_not_false_raise():
+      from runstate.channel.memory import MemoryChannel
+      p = _StepThenWaitProducer(MemoryChannel())
+      series = ensure(p, "loss", until={"all": [{"step": 3}, {"time_seconds": 5}]},
+                      clock=_RampClock(), poll_interval=0)
+      assert [b["step"] for b in series] == [0, 1, 2]   # window [0,3); both bounds met by return
+      assert p.calls >= 2                               # re-drove after step met, on time -- no raise
+  ```
 
-- [ ] **Step 4: Run + commit.**
-  Run: `pytest tests/test_memoizer.py -q`  → PASS
+- [ ] **Step 2: `preempted` accumulates to the time budget; `completed` truncates.** One parameterized producer, asserted both ways:
+
+  ```python
+  class _TimeChunkProducer:
+      """Each extend drives a one-step chunk stopping with `reason` below the time
+      budget. preempted -> ensure re-drives until the ramp clock reaches the budget,
+      accumulating steps; completed -> ensure stops after the first chunk."""
+      run_id = "fake"
+      def __init__(self, channel, reason): self._c = channel; self._r = reason; self.calls = 0; self._s = 0
+      @property
+      def channel(self): return self._c
+      def extend(self, until):
+          from runstate.vocabulary.handle import local_handle
+          if self.calls == 0:
+              self._c.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+                           topic="lifecycle.started")
+          self.calls += 1
+          self._c.send({"value": float(self._s), "step": self._s, "t": 0.0}, topic="value", name="loss")
+          self._c.send({"step": self._s, "consumed_seq": 0}, topic="lifecycle.heartbeat")
+          self._c.send({"reason": self._r, "error": None, "final_step": self._s}, topic="lifecycle.stopped")
+          self._s += 1
+          return _DeadHandle()
+
+  def test_ensure_time_budget_preempted_accumulates_across_chunks():
+      from runstate.channel.memory import MemoryChannel
+      p = _TimeChunkProducer(MemoryChannel(), reason="preempted")
+      series = ensure(p, "loss", until={"time_seconds": 5}, clock=_RampClock(), poll_interval=0)
+      assert p.calls >= 2                                        # re-drove across timed chunks
+      assert [b["step"] for b in series] == list(range(p.calls)) # one continuous accumulated series
+
+  def test_ensure_time_budget_completed_truncates_after_first_chunk():
+      # DISCIPLINE: a time-budgeted RESUMABLE worker MUST emit `preempted`, never
+      # `completed` -- a per-chunk `completed` makes ensure stop after one chunk,
+      # silently truncating the wall-clock budget.
+      from runstate.channel.memory import MemoryChannel
+      p = _TimeChunkProducer(MemoryChannel(), reason="completed")
+      series = ensure(p, "loss", until={"time_seconds": 5}, clock=_RampClock(), poll_interval=0)
+      assert p.calls == 1 and [b["step"] for b in series] == [0]   # completed -> stopped at chunk 1
+  ```
+
+- [ ] **Step 3: Run to confirm GREEN (no production change).**
+  Run: `pytest tests/test_memoizer.py -q`
+  Expected: PASS. (If `test_ensure_compound_all_...` RAISES "no progress", Task 2's guard was implemented with a coarse `_requires_step`-style rule rather than the `satisfied(..., time=inf)` form — go back and fix Task 2 Step 3; do not weaken this test.)
+
+- [ ] **Step 4: Commit.**
   ```bash
   git add tests/test_memoizer.py
-  git commit -m "test(memoizer): compound-all drive + preempted-accumulates/completed-truncates on time
+  git commit -m "test(memoizer): compound-all guard regression + preempted-accumulates/completed-truncates on time
 
   Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
   ```
@@ -402,11 +463,13 @@ These assert that existing mechanisms compose on the time axis; expect **no prod
 ## Task 5: Migrate the example + docs; add the backlog pointer comment
 
 **Files:**
-- Modify: `examples/reuse/driver.py` (`ensure(... up_to=)` → `until={"step":…}` + any prose)
+- Modify: `examples/reuse/driver.py` (`ensure(... up_to=)` → `until={"step":…}` + prose)
 - Modify: `docs/specs/memoizer.md` (the `ensure` semantics)
 - Modify: `runstate/memoizer.py` (a one-line comment in `ensure`/near it pointing at the backlog residue)
 
-- [ ] **Step 1: Migrate `examples/reuse/driver.py`.** Replace each `ensure(..., up_to=N)` with `until={"step": N}`; update any prose/docstring that says "`up_to`". Run the example end-to-end:
+> The spec's `docs/backlog/memoizer-index-algebra.md` ripple (marking the `until` bound **done**) is **already committed** (`13ed6cb`) — not repeated as a step here.
+
+- [ ] **Step 1: Migrate `examples/reuse/driver.py`.** Replace each `ensure(..., up_to=N)` **call** (~`:50/53/56`) with `until={"step": N}`. Also migrate the **prose**: the module docstring at `:3` and the comment at `:33` that spell `ensure(... up_to=N)`. **Leave** the worker's own `up_to` kwarg (~`:22/27/29/33`) — it's the injected scalar the producer extracts. Run the example end-to-end:
   Run: `python examples/reuse/driver.py`
   Expected: runs to completion, same output shape as before (the example is step-based).
 

@@ -30,9 +30,9 @@ touch points:
    algebra's `satisfied`, evaluated over the run's coordinates:
 
    ```python
-   def _satisfied(channel, until, *, clock, epoch) -> bool:
+   def _satisfied(channel, until, *, clock) -> bool:
        return satisfied(until, step=_progress(channel) + 1,
-                        time_seconds=_elapsed(clock, epoch), count=0)
+                        time_seconds=_elapsed(channel, clock), count=0)
    ```
 
    (`step=_progress+1` is the half-open-window convention — see *The off-by-one*; `_elapsed` is the
@@ -88,11 +88,18 @@ emitters — you get the sparse series, not N points): `_progress` = latest `lif
 The **time** axis is the **consumer's own poll-clock**:
 
 ```python
-_elapsed(clock, epoch) = clock() - epoch          # clock=time.time (injectable), epoch = run epoch
+def _elapsed(channel, clock) -> float:
+    # epoch read FRESH each call (NOT cached at entry): before the run starts there
+    # is no epoch, so time conditions are inert (0.0) rather than `clock() - 0.0`.
+    started = channel.read(topics=["lifecycle.started"], limit=1)
+    if not started or started[0].body.get("attached_at") is None:
+        return 0.0
+    return clock() - started[0].body["attached_at"]   # epoch = earliest started.attached_at
 ```
 
-where `epoch` = earliest `lifecycle.started.attached_at` (the same epoch `history` uses). `clock`
-joins `poll_interval`/`sleep` as an injectable so tests drive it deterministically.
+`epoch` = earliest `lifecycle.started.attached_at` (the same epoch `history` uses), read fresh so a
+pre-start call yields `0.0` (not a spurious huge elapsed). `clock` joins `poll_interval`/`sleep` as
+an injectable so tests drive it deterministically.
 
 **Why the poll-clock and not a logged timestamp** (this was the sharpest review finding):
 
@@ -162,19 +169,30 @@ a **step** quantity. For a `{time_seconds:S}` milestone whose chunk legitimately
 while wall-clock advances (a slow step, a tiny residual timeout), this **false-positives and kills a
 healthy run.** Step-progress is the wrong liveness signal when the target is not the step axis.
 
-**Fix:** capture a **coordinate snapshot** `before = (_progress(channel), _elapsed(clock, epoch))`
-and raise only when re-driving cannot bring `until` closer to satisfied — i.e. when the
-**`until`-relevant *stallable* axis did not advance**:
+**Fix:** snapshot `before = _progress(channel)` and raise only when re-driving genuinely cannot
+make progress toward `until` — i.e. when **step stalled** AND **no amount of time could satisfy
+`until` from the current step** (step progress is required and missing). The clean test is the
+algebra itself with time set to infinity — no separate axis-classifier:
 
-- a **step**-bearing `until` (`{step}`, or an `all` containing one) raises on **step**-stall, as
-  today — re-driving a step-stalled producer is the genuine livelock the guard exists to catch;
-- a **pure-time** `until` **never** trips the guard: the poll-clock advances every poll, so the
-  milestone is reached in bounded real time regardless of step progress;
-- a compound `any` containing a time atom likewise cannot livelock (time alone satisfies it).
+```python
+if (handle is not None and _progress(channel) <= before
+        and not satisfied(until, step=_progress(channel) + 1,
+                          time_seconds=float("inf"), count=0)):
+    raise RuntimeError(...)            # step required, stalled, and time can't rescue it
+```
 
-The minimal sound form: *raise iff `handle` drove, `until` is still unsatisfied, and no stallable
-axis (`step`/`count`) that `until` depends on advanced.* (Time is never stallable under the
-poll-clock.) Implement and **test** this — it is the regression test for the critical fix.
+Correct across the lattice:
+- **`{step:N}`** stalled below target → `satisfied(step=progress+1<N, time=∞)` is False → raise (the
+  genuine livelock).
+- **`{time_seconds:S}`** → `satisfied(time=∞)` is True → never raises (the poll-clock always reaches it).
+- **`{all:[{step:N},{time:S}]}`** with the **step part still unmet** and stalled → False → raise; with
+  the **step part already met** (only time pending) → `satisfied(step≥N, time=∞)` True → does **not**
+  raise (time will finish it). A coarse "the `all` contains a step atom, so guard on step-stall" rule
+  gets *this* case wrong — false-killing a healthy run.
+- **`{any:[{step},{time}]}`** → time alone satisfies → True → never raises.
+
+Implement and **test** this — including the compound-`all` step-met/time-pending case, which is the
+one a naive classifier botches.
 
 ## The `completed`/`preempted` discipline extends to the time axis (review obj/important f)
 
