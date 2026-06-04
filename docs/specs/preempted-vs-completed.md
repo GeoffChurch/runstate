@@ -125,19 +125,23 @@ patch.
 
 ## Scope / ripple
 
-**Shipped in B′ (Tasks 1–4):** Python, tests, examples, docs. The wire schema *did* change
-(`Stopped.reason` removed; `completed` bit added — `protocol/lifecycle-v0.2.schema.json`
-updated; `additionalProperties: false` enforces the new shape):
+Python + docs + tests; **no wire-schema change for A+B** — `outcome` is the consumer verdict
+(`RunResult`), not a convention body, and at the time of A+B `Stopped.reason` was a free string
+that A (early-completion) and B (the rename) read but did not reshape. The `Stopped` body's *own*
+reshaping — dropping the free `reason` for a `completed` bit (and the wire bump that entails) — is a
+**separate, later** change with its own spec: **`completed-opt-in.md` (B′)**. Its file inventory
+lives there; don't duplicate it here.
 
-- `runstate/vocabulary/payloads.py` — `Stopped = {completed, error, final_step}` (no `reason`).
-- `runstate/liveness.py` — `peek_terminal` reads `completed` bit; lifecycle-tier `reason == outcome`.
-- `runstate/worker.py` — `stopped(completed=False, error=None, final_step=None)`; `tick` returns `bool`.
+A+B's ripple:
+- `runstate/liveness.py` — `peek_terminal` assignment `"stopped"`→`"preempted"`; the
+  `RunResult.outcome` enum comment + example.
 - `runstate/memoizer.py` — `ensure`'s outer loop: the early-completion check (Change A).
-- Tests — `test_liveness.py`, `test_worker.py`, `test_payloads.py`, `test_schema.py`,
-  `test_watcher.py`, `test_sweep.py`, `test_inproc_integration.py`, `test_run_episodes.py`,
-  `test_memoizer.py` — all migrated to B′ stop-signaling.
-- `examples/minimal/worker.py` — claims `completed=True` on finishing its 50-step budget.
-- `docs/design-v0.2.md` — §7 table, `RunResult` comment.
+- `runstate/sweep.py` — the comment referencing the `"stopped"` outcome.
+- Tests — `test_liveness.py` / `test_sweep.py` / `test_inproc_integration.py` assertions on the
+  renamed outcome; the `ensure` early-completion tests.
+- `docs/design-v0.2.md` — the `RunResult.outcome` enum; the §7 / `Stopped` prose.
+- `protocol/lifecycle-v0.2.schema.json` — **no change under A+B** (B′ is what later reshapes the
+  `Stopped` body).
 
 ## Non-goals
 
