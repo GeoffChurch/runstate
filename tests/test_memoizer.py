@@ -100,15 +100,14 @@ def _cell(channel, *, run_id, up_to, ckpt_dir):
     """A resumable worker: reads its run_id-keyed checkpoint, continues the
     run-absolute step, checkpoints the new frontier. Subscription-gated.
 
-    Emits ``preempted`` (not ``completed``) so that ensure can re-drive it
-    with a higher target — this worker is resumable-by-design and must not
-    self-declare convergence with ``completed``."""
+    Resumable by default — falls off the ``with`` without claiming ``completed``,
+    so the default ``preempted`` applies. This worker never self-declares
+    convergence; ensure can re-drive it with a higher target."""
     ckpt = Path(ckpt_dir) / f"{run_id}.json"
     start = json.loads(ckpt.read_text())["next"] if ckpt.exists() else 0
     with runstate.Worker(channel, now=lambda: 0.0) as w:
         for step in w.steps(start=start, total=up_to):
             w.set("loss", float(step))
-        w.stopped(reason="preempted")   # resumable: a higher up_to may be requested
     ckpt.write_text(json.dumps({"next": up_to}))
 
 
@@ -163,10 +162,8 @@ def test_ensure_raises_when_run_makes_no_progress(tmp_path):
         with runstate.Worker(channel, now=lambda: 0.0) as w:
             for step in w.steps(total=2):
                 w.set("loss", float(step))
-            # Emits ``preempted`` (not ``completed``) so ensure re-drives it.
-            # A ``completed`` stop would cause ensure to return early (new semantics);
-            # ``preempted`` keeps ensure looping so the no-progress guard fires.
-            w.stopped(reason="preempted")
+            # Falls off without claiming ``completed`` -> default ``preempted``.
+            # This keeps ensure looping so the no-progress guard fires.
 
     variant = runstate.Variant("exp", stuck, {"kwargs": {}})
     launcher.open_channel("exp").send(
@@ -190,10 +187,9 @@ def test_ensure_redrives_within_one_call_to_reach_target(tmp_path):
         with runstate.Worker(channel, now=lambda: 0.0) as w:
             for step in w.steps(start=start, total=stop):
                 w.set("loss", float(step))
-            # Emit ``preempted`` when stopping short (more steps may be requested),
-            # let the Worker default ``completed`` only when reaching the full target.
-            if stop < up_to:
-                w.stopped(reason="preempted")
+            if stop >= up_to:
+                w.stopped(completed=True)   # reached the full target -> intrinsic done
+            # else: fall off -> default preempted (more to do)
         ckpt.write_text(json.dumps({"next": stop}))
 
     variant = runstate.Variant(
@@ -256,7 +252,7 @@ def test_ensure_redrives_when_extend_noops_onto_a_live_episode(tmp_path):
         if not ended["done"]:
             ended["done"] = True
             launcher.open_channel(rid).send(
-                {"reason": "preempted", "error": None, "final_step": 1},
+                {"completed": False, "error": None, "final_step": 1},
                 topic="lifecycle.stopped",
             )
 
@@ -299,7 +295,7 @@ class _FakeProducer:
         return None   # no handle: simulates a foreign/no-op extend
 
 
-def _seed_episode(ch, *, heartbeat_step, stopped_reason, value_steps=None):
+def _seed_episode(ch, *, heartbeat_step, completed: bool, value_steps=None):
     """Write a completed single-episode lifecycle into *ch* (no live episode after)."""
     from runstate.vocabulary.handle import local_handle
     ch.send(
@@ -312,7 +308,7 @@ def _seed_episode(ch, *, heartbeat_step, stopped_reason, value_steps=None):
             ch.send({"value": float(s), "step": s, "t": 0.0},
                     topic="value", name="loss")
     ch.send(
-        {"reason": stopped_reason, "error": None, "final_step": heartbeat_step},
+        {"completed": completed, "error": None, "final_step": heartbeat_step},
         topic="lifecycle.stopped",
     )
 
@@ -323,7 +319,7 @@ def test_ensure_completed_short_of_up_to_returns_without_redriving():
 
     ch = MemoryChannel()
     K = 3
-    _seed_episode(ch, heartbeat_step=K, stopped_reason="completed",
+    _seed_episode(ch, heartbeat_step=K, completed=True,
                   value_steps=list(range(K + 1)))
 
     producer = _FakeProducer(ch)
@@ -346,7 +342,7 @@ def test_ensure_preempted_redrives_then_stops_on_completion():
     up_to = 20
 
     # Seed the first (preempted) episode
-    _seed_episode(ch, heartbeat_step=K, stopped_reason="preempted",
+    _seed_episode(ch, heartbeat_step=K, completed=False,
                   value_steps=list(range(K + 1)))
 
     def _extend_side_effect(channel, target):
@@ -361,7 +357,7 @@ def test_ensure_preempted_redrives_then_stops_on_completion():
             channel.send({"value": float(s), "step": s, "t": 1.0},
                          topic="value", name="loss")
         channel.send(
-            {"reason": "completed", "error": None, "final_step": M},
+            {"completed": True, "error": None, "final_step": M},
             topic="lifecycle.stopped",
         )
 
@@ -420,7 +416,7 @@ class _ZeroStepTimeProducer:
     def channel(self): return self._c
     def extend(self, until):
         self.calls += 1
-        self._c.send({"reason": "preempted", "error": None, "final_step": 0},
+        self._c.send({"completed": False, "error": None, "final_step": 0},
                      topic="lifecycle.stopped")
         return _DeadHandle()
 
@@ -495,7 +491,7 @@ class _StepThenWaitProducer:
                 self._c.send({"value": float(s), "step": s, "t": 0.0},
                              topic="value", name="loss")
             self._c.send({"step": 2, "consumed_seq": 0}, topic="lifecycle.heartbeat")
-        self._c.send({"reason": "preempted", "error": None, "final_step": 2},
+        self._c.send({"completed": False, "error": None, "final_step": 2},
                      topic="lifecycle.stopped")
         return _DeadHandle()
 
@@ -509,11 +505,12 @@ def test_ensure_compound_all_step_met_time_pending_does_not_false_raise():
 
 
 class _TimeChunkProducer:
-    """Each extend drives a one-step chunk stopping with `reason` below the time
-    budget. preempted -> ensure re-drives until the ramp clock reaches the budget,
-    accumulating steps; completed -> ensure stops after the first chunk."""
+    """Each extend drives a one-step chunk stopping with `completed` below the time
+    budget. preempted (completed=False) -> ensure re-drives until the ramp clock
+    reaches the budget, accumulating steps; completed (completed=True) -> ensure
+    stops after the first chunk."""
     run_id = "fake"
-    def __init__(self, channel, reason): self._c = channel; self._r = reason; self.calls = 0; self._s = 0
+    def __init__(self, channel, completed: bool): self._c = channel; self._completed = completed; self.calls = 0; self._s = 0
     @property
     def channel(self): return self._c
     def extend(self, until):
@@ -524,13 +521,13 @@ class _TimeChunkProducer:
         self.calls += 1
         self._c.send({"value": float(self._s), "step": self._s, "t": 0.0}, topic="value", name="loss")
         self._c.send({"step": self._s, "consumed_seq": 0}, topic="lifecycle.heartbeat")
-        self._c.send({"reason": self._r, "error": None, "final_step": self._s}, topic="lifecycle.stopped")
+        self._c.send({"completed": self._completed, "error": None, "final_step": self._s}, topic="lifecycle.stopped")
         self._s += 1
         return _DeadHandle()
 
 def test_ensure_time_budget_preempted_accumulates_across_chunks():
     from runstate.channel.memory import MemoryChannel
-    p = _TimeChunkProducer(MemoryChannel(), reason="preempted")
+    p = _TimeChunkProducer(MemoryChannel(), completed=False)
     series = ensure(p, "loss", until={"time_seconds": 5}, clock=_RampClock(), poll_interval=0)
     assert p.calls >= 2                                        # re-drove across timed chunks
     assert [b["step"] for b in series] == list(range(p.calls)) # one continuous accumulated series
@@ -540,6 +537,6 @@ def test_ensure_time_budget_completed_truncates_after_first_chunk():
     # `completed` -- a per-chunk `completed` makes ensure stop after one chunk,
     # silently truncating the wall-clock budget.
     from runstate.channel.memory import MemoryChannel
-    p = _TimeChunkProducer(MemoryChannel(), reason="completed")
+    p = _TimeChunkProducer(MemoryChannel(), completed=True)
     series = ensure(p, "loss", until={"time_seconds": 5}, clock=_RampClock(), poll_interval=0)
     assert p.calls == 1 and [b["step"] for b in series] == [0]   # completed -> stopped at chunk 1
