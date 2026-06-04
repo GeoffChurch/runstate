@@ -395,3 +395,66 @@ def test_launch_producer_rejects_non_step_condition():
                 {"all": [{"step": 1}, {"time_seconds": 2}]}):
         with pytest.raises(ValueError, match="translates only"):  # matches the real message
             producer.extend(bad)
+
+
+# ---------------------------------------------------------------------------
+# Task 2: Time axis — poll-clock satisfaction + axis-aware no-progress guard
+# ---------------------------------------------------------------------------
+
+class _DeadHandle:
+    """A LaunchHandle that reports its episode already finished."""
+    def is_alive(self): return False
+    def wait(self): pass
+
+class _RampClock:
+    """Monotone poll-clock: +`step` per call, so _elapsed crosses any budget."""
+    def __init__(self, step=1.0): self.t = -step; self.step = step
+    def __call__(self): self.t += self.step; return self.t
+
+class _ZeroStepTimeProducer:
+    """Each extend drives a chunk that makes NO step progress and ends
+    `preempted` (a live episode we drove -> handle is not None)."""
+    run_id = "fake"
+    def __init__(self, channel): self._c = channel; self.calls = 0
+    @property
+    def channel(self): return self._c
+    def extend(self, until):
+        self.calls += 1
+        self._c.send({"reason": "preempted", "error": None, "final_step": 0},
+                     topic="lifecycle.stopped")
+        return _DeadHandle()
+
+def test_ensure_time_milestone_does_not_false_raise_on_zero_step_progress():
+    """A {time_seconds} chunk that advances 0 steps while the clock advances must
+    NOT trip the no-progress guard (critical-c). With the OLD step-only guard the
+    first drive raises (progress 0 <= before 0); with the axis-aware guard the
+    ramp clock eventually satisfies and ensure returns."""
+    from runstate.channel.memory import MemoryChannel
+    from runstate.vocabulary.handle import local_handle
+
+    ch = MemoryChannel()
+    ch.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+            topic="lifecycle.started")            # epoch 0.0
+    ch.send({"step": 0, "consumed_seq": 0}, topic="lifecycle.heartbeat")  # 0 steps
+    ch.send({"value": 0.0, "step": 0, "t": 0.0}, topic="value", name="loss")
+
+    series = ensure(_ZeroStepTimeProducer(ch), "loss", until={"time_seconds": 5},
+                    clock=_RampClock(), poll_interval=0)
+    assert [b["step"] for b in series] == [0]      # returned, did not raise
+
+
+def test_ensure_time_milestone_satisfies_via_poll_clock_even_when_value_sparse():
+    """Sparse `value` (only step 0 emitted, value.t frozen at 0) must not livelock a
+    {time_seconds} milestone: satisfaction reads the poll-clock, not value.t."""
+    from runstate.channel.memory import MemoryChannel
+    from runstate.vocabulary.handle import local_handle
+
+    ch = MemoryChannel()
+    ch.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+            topic="lifecycle.started")
+    ch.send({"value": 0.0, "step": 0, "t": 0.0}, topic="value", name="loss")  # value.t frozen at 0
+    ch.send({"step": 0, "consumed_seq": 0}, topic="lifecycle.heartbeat")
+
+    series = ensure(_ZeroStepTimeProducer(ch), "loss", until={"time_seconds": 5},
+                    clock=_RampClock(), poll_interval=0)
+    assert [b["step"] for b in series] == [0]   # crossed the budget on the clock, not value.t

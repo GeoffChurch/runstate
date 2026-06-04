@@ -17,11 +17,12 @@ from .liveness import peek_terminal
 
 class _LaunchProducer:
     """The default producer: wraps a launcher + a Variant so the memoizer can
-    treat one run as an extendable, worker-shaped thing. ``extend(N)`` injects
-    the target into the worker kwargs and relaunches iff not already live. Only
-    the common in-process callable-worker case (target via a kwarg); a
-    subprocess / ray / service producer is the user's own object with the same
-    ``.channel`` / ``.run_id`` / ``.extend`` shape (the seam)."""
+    treat one run as an extendable, worker-shaped thing. ``extend(until)``
+    extracts the scalar step target from ``until`` and injects it into the
+    worker kwargs, then relaunches iff not already live. Only the common
+    in-process callable-worker case (target via a kwarg); a subprocess / ray /
+    service producer is the user's own object with the same ``.channel`` /
+    ``.run_id`` / ``.extend`` shape (the seam)."""
 
     def __init__(self, launcher, variant, target_key="up_to"):
         self._launcher = launcher
@@ -212,7 +213,9 @@ def ensure(producer, name, *, until, poll_interval=0.01, sleep=time.sleep,
             )
         if result is not None and result.outcome == "completed":
             return history(channel, name, dense)
-        if handle is not None and _progress(channel) <= before:
+        if (handle is not None and _progress(channel) <= before
+                and not satisfied(until, step=_progress(channel) + 1,
+                                  time_seconds=float("inf"), count=0)):
             raise RuntimeError(
                 f"run {producer.run_id!r} made no progress toward {until} "
                 f"(stuck at {_progress(channel)}); cannot extend"
