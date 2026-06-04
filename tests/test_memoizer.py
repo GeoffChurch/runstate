@@ -458,3 +458,15 @@ def test_ensure_time_milestone_satisfies_via_poll_clock_even_when_value_sparse()
     series = ensure(_ZeroStepTimeProducer(ch), "loss", until={"time_seconds": 5},
                     clock=_RampClock(), poll_interval=0)
     assert [b["step"] for b in series] == [0]   # crossed the budget on the clock, not value.t
+
+
+# ---------------------------------------------------------------------------
+# Task 3: Reject the `count` drive-axis at entry
+# ---------------------------------------------------------------------------
+
+def test_ensure_rejects_count_drive_condition():
+    from runstate.channel.memory import MemoryChannel
+    producer = _FakeProducer(MemoryChannel())
+    for bad in ({"count": 3}, {"any": [{"step": 5}, {"count": 3}]}):
+        with pytest.raises(ValueError, match="count"):
+            ensure(producer, "loss", until=bad)

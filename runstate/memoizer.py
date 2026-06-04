@@ -166,6 +166,19 @@ def _window_step(channel) -> int:
     return _progress(channel) + 1
 
 
+def _reject_count(cond: dict) -> None:
+    """ensure does not drive the count axis (no use case; an un-driven count atom
+    would never satisfy -> livelock). Reject at entry, walking any/all. (count
+    stays legal in a *subscription* until -- only the ensure drive-target rejects it.)"""
+    if "count" in cond:
+        raise ValueError(
+            "ensure(until=...) does not support a 'count' condition (no driven "
+            "count axis); use step / time_seconds")
+    for key in ("any", "all"):
+        for c in cond.get(key, ()):
+            _reject_count(c)
+
+
 def _satisfied(channel, until, *, clock) -> bool:
     """Has the run closed the `until` window? Coordinates read live: step from
     the dense axis (`_window_step`), time from the consumer's poll-clock
@@ -186,6 +199,7 @@ def ensure(producer, name, *, until, poll_interval=0.01, sleep=time.sleep,
     consumer's poll-clock; the generalization to the emission filter
     (`from`/`every`) is deferred -- see docs/backlog/memoizer-index-algebra.md.
     No hang timeout (unchanged)."""
+    _reject_count(until)
     channel = producer.channel
     dense = {"every": {"step": 1}, "until": until}
     result = peek_terminal(channel)
