@@ -1,11 +1,22 @@
 # Memoizer: generalize `ensure(up_to=N)` to an index term-algebra `ensure(I)`
 
 Forward-looking (surfaced 2026-06-02, from the sequence-vs-function thread).
-**Not needed until the function/service producer lands** — `ensure(up_to=N)` is
-the validated sequence case. Captured so we don't re-derive it. Background: the
-memoizer spec's "Design note" (`../specs/memoizer.md`) — the memoizer is thin,
-the worker owns structure, and `up_to=N` is already sugar for "ensure the log
-holds indices `I`."
+Background: the memoizer spec's "Design note" (`../specs/memoizer.md`) — the
+memoizer is thin, the worker owns structure, and `up_to=N` is already sugar for
+"ensure the log holds indices `I`."
+
+## Status: the *bound* half landed; the *filter* half is the residue
+
+`../specs/ensure-until-condition.md` (2026-06-04) generalized the **bound** —
+`ensure(up_to: int)` → `ensure(until: Condition)` over the full condition-algebra
+(`step`/`time_seconds`, `any`/`all`; `count` rejected as an un-driven axis). So the
+`until` lever of a `Subscription` is now exposed. What remains here is the
+**emission-filter** half — the `from`/`every` levers — i.e. *which* of the produced
+points a request selects (strided / windowed / random-access), as opposed to *how
+far* to drive. That is **still not needed until the function/service producer
+lands** (with one index shape — the contiguous prefix — `until` suffices), and
+when it does it is an **additive** change (optional `from=`/`every=` kwargs on the
+already-`until=` signature; no second breaking rename).
 
 ## The idea
 
@@ -38,9 +49,14 @@ run *target*, the selector is the emission *filter*.
 ## Open questions / prerequisites
 
 - Lands with the **function/service producer** (the second worker strategy);
-  until then there is only one index shape (the contiguous prefix), so `up_to=N`
-  suffices and `ensure(I)` is YAGNI.
-- Take a `Subscription`-shaped spec directly (reuse), or a narrower range type?
+  until then there is only one index shape (the contiguous prefix), so `until=`
+  suffices and the `from`/`every` filter is YAGNI.
+- ~~Take a `Subscription`-shaped spec directly (reuse), or a narrower range type?~~
+  **Resolved** (`../specs/ensure-until-condition.md`, *Scoping*): expose the
+  individual levers as typed kwargs (`until=` now; `from=`/`every=` additively
+  later), **not** a whole-`Subscription`/`schedule=` argument — keeping the run
+  *bound* un-conflated with the emission *filter*, and shipping no unexercised
+  surface.
 - **Caveat to document:** a sequence worker can't skip *running* steps for a
   strided request (the recurrence forces it), only skip *emitting* — so strided
   requests are not cheaper to *produce* on a sequence worker, only sparser to

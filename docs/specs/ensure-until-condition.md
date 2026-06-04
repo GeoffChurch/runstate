@@ -1,38 +1,43 @@
 # `ensure(until=<condition>)`: generalize the drive-target to the condition-algebra
 
-**Status:** design draft 2026-06-03 (dialogue converged on the shape; this is for review →
-implementation). Supersedes the scalar `up_to` form (clean break — **no** back-compat alias).
-**Origin:** the mycooc dogfood (runstate-adoption, Phase 4). Milestone-round-robin sweeps want
-to drive each variant to a *step* milestone **or** a *wall-clock* budget with one uniform loop;
-the scalar `up_to` only spans the step axis. Realizes the bulk of
-`../backlog/memoizer-index-algebra.md` (the `ensure(I)` index-algebra), with the time axis
-falling out of the *same* generalization.
+**Status:** converged 2026-06-04 (design dialogue + two adversarial reviews — orthonormality
+and correctness — folded in); ready for review → implementation. Supersedes the scalar `up_to`
+form (clean break — **no** back-compat alias).
+**Origin:** the mycooc dogfood (runstate-adoption, Phase 4). Milestone-round-robin sweeps want to
+drive each variant to a *step* milestone **or** a *wall-clock* budget with one uniform loop; the
+scalar `up_to` only spans the step axis. Realizes the **bound** half of
+`../backlog/memoizer-index-algebra.md` (the `ensure(schedule)` idea); the emission-*filter* half
+(`from`/`every`) stays deferred there (see *Scoping*).
 
 ## The gap
 
 `ensure(producer, name, *, up_to)` (`runstate/memoizer.py`) drives a producer until
 `_progress(channel) >= up_to - 1` and returns `history(channel, name, {every:{step:1},
 until:{step:up_to}})`. The drive-target is a **single scalar on the step axis**. But the library
-already owns a richer vocabulary for "a threshold over the worker's coordinates": the
-subscription **condition-algebra** (`runstate/vocabulary/schedule.py`) —
-`{"step":N} | {"time_seconds":S} | {"count":C}` plus `any`/`all`, evaluated by `satisfied(...)`.
-`history` *already* replays that algebra (including run-relative `time_seconds` `until`) over the
-log. Only `ensure`'s **target** is stuck on the step scalar, so it cannot express "drive this
-variant for `S` seconds" — the basis vector mycooc needs for timeout-balanced sweeps.
+already owns a richer vocabulary for "a threshold over the worker's coordinates": the subscription
+**condition-algebra** (`runstate/vocabulary/schedule.py`) — `{"step":N} | {"time_seconds":S} |
+{"count":C}` plus `any`/`all`, evaluated by `satisfied(...)`. `history` *already* replays that
+algebra (including run-relative `time_seconds` `until`) over the log. Only `ensure`'s **target** is
+stuck on the step scalar, so it cannot express "drive this variant for `S` seconds" — the basis
+vector mycooc needs for timeout-balanced sweeps.
 
 ## The change
 
-`ensure`'s keyword `up_to: int` becomes `until: dict` — a **Condition** from the algebra. The
-two touch points:
+`ensure`'s keyword `up_to: int` becomes `until: dict` — a **Condition** from the algebra. Three
+touch points:
 
 1. **Satisfaction (the drive loop).** Replace the hard-coded `_progress >= up_to - 1` with the
-   algebra's `satisfied`, evaluated over the run's coordinates read from the **dense axis**:
+   algebra's `satisfied`, evaluated over the run's coordinates:
 
    ```python
-   def _satisfied(channel, until) -> bool:
+   def _satisfied(channel, until, *, clock, epoch) -> bool:
        return satisfied(until, step=_progress(channel) + 1,
-                        time_seconds=_elapsed(channel), count=_count(channel))
+                        time_seconds=_elapsed(clock, epoch), count=0)
    ```
+
+   (`step=_progress+1` is the half-open-window convention — see *The off-by-one*; `_elapsed` is the
+   consumer's poll-clock — see *Reading the coordinates*; `count=0` because the count axis is
+   rejected up front, not driven — see *Non-goals*.)
 
 2. **Return (the read).** Unchanged in *shape*, now parameterized by the same condition:
 
@@ -41,17 +46,20 @@ two touch points:
    ```
 
    `history` already evaluates a `time_seconds` `until` run-relative (point `value.t` − run epoch),
-   so the return generalizes with **no** change to `history`.
+   so the return generalizes with **no** change to `history`. (Drive-side and read-side time are two
+   different but reconciled clocks — see *Reading the coordinates*.)
 
-`up_to=N` is exactly `until={"step": N}` (see *The off-by-one* below) — so the callable surface
-strictly subsumes the old one; we then **delete** the `up_to` spelling rather than keep an alias.
+3. **Enforcement (the producer seam).** `extend(up_to: int)` → `extend(until: dict)` — the one place
+   that translates a condition into the worker's own stop-bound (see *Enforcing the bound*).
 
-## The off-by-one (load-bearing; the one subtle part)
+`up_to=N` is exactly `until={"step": N}` (see *The off-by-one*) — so the callable surface strictly
+subsumes the old one; we then **delete** the `up_to` spelling rather than keep an alias.
+
+## The off-by-one (load-bearing; name it in code)
 
 Today `ensure(up_to=N)` is satisfied at `_progress >= N-1`, **not** `>= N`. That encodes the
 worker's *exclusive* target convention: a producer told "target `N`" emits steps `0..N-1` and
-reaches `progress = N-1` (the shipped `_LaunchProducer` injects the target as a worker kwarg; the
-worker loops `range(N)`). The return read `until={step:N}` likewise fires `0..N-1` (the
+reaches `progress = N-1`. The return read `until={step:N}` likewise fires `0..N-1` (the
 `Subscription` pre-fire expiry gate excludes the boundary point `N`). So `up_to=N` means the
 **half-open window `[0, N)`** — drive and read agree on it.
 
@@ -59,75 +67,124 @@ To preserve that under `satisfied`, the satisfaction check passes `step = _progr
 
 > `satisfied({"step":N}, step=_progress+1)` ⇔ `_progress+1 >= N` ⇔ `_progress >= N-1`. ✓
 
-The `+1` is the **discrete-axis exclusive-bound convention** (the same one Python's `range(N)` and
-the existing `up_to` use). The **continuous** time axis takes **no** offset:
-`satisfied({"time_seconds":S}, time_seconds=_elapsed)` ⇔ `_elapsed >= S` — the `[0, S)` window is
-complete once the run has run `S` seconds (the boundary `S` is generically not a grid point, so
-there is nothing to exclude). For a combined `all`/`any`, each atom evaluates on its own axis with
-its own convention — consistent.
+The `+1` is the **discrete-axis exclusive-bound convention** (the same one `range(N)` and the old
+`up_to` use); the **continuous** time axis takes **no** offset (`_elapsed >= S` closes `[0,S)`; the
+boundary `S` is generically not a grid point — nothing to exclude); `count` takes no offset
+(`count >= K` closes `[0,K)`). The offset is applied **once, in the argument to `satisfied`** — never
+by rewriting the condition (`{step:N}`→`{step:N-1}` would break `any`/`all` nesting, which evaluates
+every atom against the same passed coordinates).
 
-> **Review flag #1:** the per-axis offset (`step+1`, `time+0`, `count+?`) lives in *one*
-> `satisfied(...)` call. It is correct atom-by-atom, but it is the least-obvious line in the
-> change. Confirm `count` (fires consumed) wants `+0` (a count `until={count:K}` window `[0,K)`
-> closes when `K` values have been consumed, i.e. `count >= K`, no offset) — and that no axis
-> wants a different rule.
+> **Implementation requirement (review obj 4):** the `_progress + 1` lives behind a one-line helper
+> whose docstring states the load-bearing triple-agreement — `[0,N)` ↔ `range(N)`/`up_to` ↔ the
+> read-side `Subscription` expiry gate. That triple is the correctness argument and must be in the
+> *code*, not only here.
 
-## Reading the coordinates from the log
+## Reading the coordinates
 
-`ensure` reads the **dense** axis (so it works for sparse `value` emitters — you get the sparse
-series, not N points). Today only `_progress` (step) is needed. The generalization adds:
+`ensure` reads the **step** axis from the **dense** log axis (so it works for sparse `value`
+emitters — you get the sparse series, not N points): `_progress` = latest `lifecycle.heartbeat.step`
+/ `lifecycle.stopped.final_step` (unchanged).
 
-- `_elapsed(channel)` — **run-relative seconds**: the latest dense timestamp − the run epoch
-  (earliest `lifecycle.started.attached_at`, the same epoch `history` uses). Returns `0.0` before
-  the run has a clock.
-- `_count(channel)` — fires consumed; only needed if the `count` axis is in scope (see Non-goals).
+The **time** axis is the **consumer's own poll-clock**:
 
-> **Review flag #2 (the orthonormality-sensitive one):** *which dense timestamp?* `_progress`
-> reads `lifecycle.heartbeat.step`. For `_elapsed` we want a **dense** clock too, but the
-> `Heartbeat` body today carries `{step, consumed_seq}` — **no** wall-clock field. Three options,
-> in increasing cost:
->   1. **Read `value.t`** (the sparse value series' timestamp). Zero schema change, but a *sparse*
->      emitter's time-satisfaction lags reality between value points — wrong axis for a dense check.
->   2. **Read the envelope arrival time.** The substrate is opinion-free (`seq, topic, name,
->      request_id, body`) — timestamps live in bodies by design, so there is no envelope clock to
->      read. Rejected (would put a clock in the substrate).
->   3. **Enrich `Heartbeat` with `t` (or `elapsed`).** A *lifecycle* convention-version bump
->      (`additionalProperties:false` is load-bearing). This is the canonical home — the heartbeat
->      is the worker reporting its position on its clocks; it already carries the step clock, and
->      the design names *three clocks*. Adding the time clock is symmetric, not opinion creep.
->      But it is a wire change and deserves its own scrutiny.
->
-> Recommendation: **(1) for a first cut** (step milestones need no timestamp at all; time
-> milestones via `value.t` are correct for the common dense-`value` emitter, which mycooc is),
-> with **(3) flagged** as the principled fix if a sparse-`value` + time-budget worker ever needs it.
-> The review should decide whether to do (3) now (clean, symmetric) or stage it.
+```python
+_elapsed(clock, epoch) = clock() - epoch          # clock=time.time (injectable), epoch = run epoch
+```
 
-## The producer seam: `extend(until)`
+where `epoch` = earliest `lifecycle.started.attached_at` (the same epoch `history` uses). `clock`
+joins `poll_interval`/`sleep` as an injectable so tests drive it deterministically.
 
-The producer's `extend` goes from `extend(up_to: int)` to `extend(until: dict)` — it is the **one**
-place that knows how to translate a condition into a *launch bound*:
+**Why the poll-clock and not a logged timestamp** (this was the sharpest review finding):
 
-- `{"step": N}` → the worker's step budget (the shipped `_LaunchProducer` injects it under
-  `target_key`, today `"up_to"`).
-- `{"time_seconds": S}` → a wall-clock budget the launcher passes to the worker (e.g. mycooc's
-  per-dispatch `timeout`); for an absolute time milestone the producer subtracts elapsed:
-  `timeout = S − _elapsed`.
+- **`Heartbeat.t` is rejected, not staged.** `design-v0.2.md:156` is a converged decision: the
+  heartbeat carries **no embedded timestamp** *by design* — staleness uses the *reader's* arrival
+  clock — and that body `{step, consumed_seq}` is pinned (`additionalProperties:false` is
+  load-bearing). Adding `t` re-opens a frozen convention to duplicate a clock the reader already has.
+- **`value.t` is rejected** (the first draft's "first cut"). It is the **sparse** value-series
+  stamp (written only when a subscription fires, `worker.py`). Reading it as a "dense" clock is a
+  misnomer and a livelock: a worker that stops emitting while still alive freezes `_elapsed`, so a
+  `{time_seconds}` milestone **never satisfies** (and `ensure` has *no* hang timeout, by design).
+  It also splits a compound `all:[{step},{time}]` across two different clocks (dense step, sparse
+  time) — an orthogonality break.
+- **The poll-clock is dense, monotone, gap-inclusive, and needs no wire change.** `ensure` is a
+  *consumer*; reading its *own* wall-clock while polling is exactly what `:156` blesses (not a
+  worker stamping a body — that would be a substrate concern). It advances every poll regardless of
+  emission, so the livelock is structurally impossible.
 
-`ensure` stays **bound-agnostic**: it passes `until` to `extend`, then polls `satisfied`. This keeps
-the three concerns orthogonal — *condition* (when the window is closed, `ensure`) ⟂ *translation*
-(condition → launch arg, the producer) ⟂ *resume policy* (`completed`/`preempted`/`_FAILURES`
-re-drive, `ensure`, unchanged from the `preempted-vs-completed` spec).
+The **read-side** `history` keeps `value.t − epoch` (a *replay* needs the recorded stamp; the live
+drive does not). Drive-side and read-side time can differ by ≤ one poll interval at the boundary —
+bounded and acceptable, unlike the sparse lag of `value.t`.
 
-The shipped `_LaunchProducer` / `launch_producer` translate the **step** atom only (inject the
-scalar into a worker kwarg). A time (or compound) milestone needs a launcher whose worker accepts a
-timeout — i.e. the **user's own producer** implementing `.channel`/`.run_id`/`.extend(until)` (the
-documented seam). mycooc's Phase-4 producer is exactly this (translates `{step}`→`max_steps_per_run`,
-`{time_seconds}`→`timeout`).
+## Enforcing the bound (the producer seam, and how time stops)
 
-> **Review flag #3:** the shipped `_LaunchProducer.extend` should reject a condition it cannot
-> translate (e.g. a `time_seconds` atom, or an `any`/`all`) with a clear error, rather than
-> silently inject a dict into `target_key`. Decide: validate to *step-scalar-only* in the default
-> producer, and document compound/time as "bring your own producer."
+`ensure` stays **bound-agnostic**: it passes `until` to `extend`, then polls `_satisfied`. The
+producer is the **one** place that translates a condition into the worker's own stop-bound — and the
+worker **self-bounds** (symmetric with step), `ensure`'s poll-clock only *judges* satisfaction at
+episode-end:
+
+- `{"step": N}` → the worker's step budget. The default `_LaunchProducer` injects the **scalar**
+  `until["step"]` (not the dict!) under `target_key` (today `"up_to"`).
+- `{"time_seconds": S}` → the worker's own time budget (e.g. mycooc's per-dispatch `timeout`, or a
+  self-limit on persisted run-time). The producer computes the residual against elapsed for an
+  absolute milestone. The worker runs, self-preempts at its budget (checkpoints, emits
+  `preempted`), the episode ends; `ensure` then checks `_elapsed >= S` to decide return-vs-re-drive.
+
+This keeps the three concerns orthogonal — *condition* (when the window is closed, `ensure`) ⟂
+*translation/enforcement* (condition → the worker's bound, the producer/worker) ⟂ *resume policy*
+(`completed`/`preempted`/`_FAILURES`, `ensure`, per the `preempted-vs-completed` spec).
+
+**Why self-bound (model a), not consumer-commanded (model b).** An alternative is to launch the
+worker unbounded and have `ensure` send `control.stop` when `_elapsed >= S`. It is coherent and more
+"cooperative-control idiomatic," but: it makes step self-bounded and time consumer-commanded (an
+asymmetry with no payoff), it bolts a control-plane *write* onto the memoizer (breaking its
+drive+read orthogonality), and the unbounded run re-introduces the livelock surface. Model (a) reuses
+mycooc's existing self-timeout directly. Model (b) stays **available** to a producer that genuinely
+wants it (the seam permits `extend` to arm a cooperative stop) — it is just not the default.
+
+**Default-producer translation + validation (review obj/critical e — mandatory).**
+`_LaunchProducer.extend(until)` must:
+1. for `until == {"step": N}` — inject the **scalar `N`** under `target_key`;
+2. for **any other shape** (`time_seconds`, `count`, `any`/`all`) — **raise** a clear error
+   (`ValueError`/`NotImplementedError`): *"the default launch-producer translates only `{'step': N}`;
+   bring your own producer (`.channel`/`.run_id`/`.extend(until)`) for time/compound milestones."*
+
+Without this, today's `worker_kwargs[target_key] = up_to` would inject the **dict** verbatim →
+`TypeError` deep inside the launched episode → opaque `errored`. The canary is the existing
+`test_launch_producer_extend_injects_target_and_runs` (its `extend(3)` becomes `extend({"step":3})`
+and must still inject `3`). Rename the `extend` parameter and locals `up_to`→`until` so the
+verbatim-injection trap cannot survive review.
+
+## The no-progress guard must be axis-aware (review critical c — design hole in the first draft)
+
+The first draft wrongly said the re-drive path was "unchanged." It is not. Today
+`memoizer.py` raises "made no progress" when `handle is not None and _progress(channel) <= before` —
+a **step** quantity. For a `{time_seconds:S}` milestone whose chunk legitimately advances **0 steps**
+while wall-clock advances (a slow step, a tiny residual timeout), this **false-positives and kills a
+healthy run.** Step-progress is the wrong liveness signal when the target is not the step axis.
+
+**Fix:** capture a **coordinate snapshot** `before = (_progress(channel), _elapsed(clock, epoch))`
+and raise only when re-driving cannot bring `until` closer to satisfied — i.e. when the
+**`until`-relevant *stallable* axis did not advance**:
+
+- a **step**-bearing `until` (`{step}`, or an `all` containing one) raises on **step**-stall, as
+  today — re-driving a step-stalled producer is the genuine livelock the guard exists to catch;
+- a **pure-time** `until` **never** trips the guard: the poll-clock advances every poll, so the
+  milestone is reached in bounded real time regardless of step progress;
+- a compound `any` containing a time atom likewise cannot livelock (time alone satisfies it).
+
+The minimal sound form: *raise iff `handle` drove, `until` is still unsatisfied, and no stallable
+axis (`step`/`count`) that `until` depends on advanced.* (Time is never stallable under the
+poll-clock.) Implement and **test** this — it is the regression test for the critical fix.
+
+## The `completed`/`preempted` discipline extends to the time axis (review obj/important f)
+
+`ensure`'s early-`completed` short-circuit fires on *any* completion, regardless of which axis the
+milestone targets — correct for a *converged* worker. But a **time-budgeted** worker that mistakenly
+emits `reason="completed"` at each per-chunk stop would make the round-robin **stop after the first
+chunk** instead of accumulating to the wall-clock budget. The `preempted-vs-completed` discipline is
+therefore **load-bearing for time too**: a chunked/resumable time-budgeted producer's per-chunk stop
+is `preempted`, **never** `completed`. The shipped tests encode this for the step axis; **add** the
+time-axis analogue.
 
 ## The round-robin payoff (why mycooc wants this)
 
@@ -137,64 +194,105 @@ for milestone in milestones:            # [{step:100}, {step:200}, …]  OR  [{t
         ensure(variant_producer, name, until=milestone)
 ```
 
-One loop spans both axes. Step milestones give balanced partials by **progress**; time milestones
-give balanced partials by **wall-clock** (the timeout-balanced sweep that the scalar `up_to` could
-not express, and whose absence is the `--timeout`-mode regression noted in the Phase-4 plan).
+One loop spans both axes. Step milestones give balanced partials by **progress**; time milestones by
+**wall-clock** — the timeout-balanced sweep the scalar `up_to` could not express (the `--timeout`-mode
+regression noted in the Phase-4 plan).
+
+## Scoping: `until=` only, not the full `schedule=`
+
+A full subscription has three levers — `from` (window start), `every` (emission stride), `until`
+(the bound). `ensure` hard-codes `from`=start, `every`={step:1} (dense) and exposes only the bound.
+We keep it that way (`until=`), **not** a `schedule=`/`Subscription`-shaped argument, because:
+
+- **YAGNI / spanning.** The bound is the only lever any in-scope driver needs. `from`/`every` are the
+  emission *filter* (the strided/windowed `ensure(I)` case) and would ship as **unexercised,
+  untested surface** — the rubric's spanning-overreach.
+- **Orthogonality.** `until` is the *run bound* (how far to drive); `from`/`every` are *which logged
+  points to return* — a different concern. Keeping the argument to the bound stops `ensure`'s surface
+  conflating "how far to drive" with "how to slice the result."
+- **Cheap to extend.** Deferring costs ~nothing: `from=`/`every=` can be added later as **optional**
+  kwargs without breaking a single `until=` caller (additive — unlike the `up_to`→`until` rename). So
+  there is no "second breaking change later" argument against `until=`.
+
+The `from`/`every` generalization (and `ensure(I)` over a function/service producer) stays tracked in
+`../backlog/memoizer-index-algebra.md`, and the `ensure` implementation carries a comment pointing
+there (so the next reader sees the deliberate scoping, not an oversight).
 
 ## Orthonormal-basis check
 
-- **Independence (necessity):** not a new algebra — `ensure` adopts the *existing* subscription
-  condition-algebra that `history`/`Subscription` already use. The scalar `up_to` was a
-  **projection** of it onto one axis; we replace the projection with the basis. Removes a
+- **Independence:** not a new algebra — `ensure` adopts the *existing* condition-algebra that
+  `history`/`Subscription` already use; the scalar `up_to` was its step-axis projection. Removes a
   coordinate-restriction, adds no redundancy.
-- **Spanning (sufficiency):** supplies the missing basis vector (a *time*/compound drive-target)
-  without over-reach — `ensure` bakes no workload opinion; *which* launch arg a condition maps to is
-  the **producer's** call, and *which* stop is `completed` vs `preempted` remains the **worker's**
-  (the `preempted-vs-completed` invariant is untouched).
-- **Canonical form:** the condition-algebra is *the* threshold vocabulary in the design (§6); making
-  `ensure`'s target a Condition is the least-arbitrary choice (vs a new `Bound`/`Target` type, which
-  would duplicate it). `up_to=N ≡ until={step:N}` is the universal-property tell: the new form is
-  the free generalization, the old one its step-axis instance.
-- **Orthogonality:** condition (when, `ensure`) ⟂ translation (how to launch, producer) ⟂ resume
-  policy (`outcome`, `ensure`). Each pair carries one concern.
-- **Serendipity:** one selector vocabulary now spans `Subscription`, `history`, **and** `ensure`;
-  the time axis reuses the run epoch `history` already computes; the `ensure(I)` index-algebra
-  (backlog) and time-milestones fall out of the *same* change. The `completed`/`preempted` bit
-  (other spec) composes unchanged — `completed` short of *any* `until` still short-circuits.
+- **Spanning:** supplies the missing time/compound *drive-target* vector — and now actually *reaches*
+  it: the poll-clock is a real dense time source (the first draft's `value.t` did not span the sparse
+  case it claimed). Out-of-scope levers (`from`/`every`, the `count` *drive*) are deliberately
+  excluded, not smuggled in.
+- **Canonical form:** the condition-algebra is *the* threshold vocabulary (design §6); `until = a
+  Condition` is the least-arbitrary target (`up_to=N ≡ until={step:N}` is the universal-property
+  tell). The `step+1`/`time+0`/`count+0` offsets are the *one* half-open-window convention, named in
+  code.
+- **Orthogonality:** condition (`ensure`) ⟂ enforcement (producer/worker self-bound) ⟂ resume policy
+  (`outcome`). The clock fix closes the leak the first draft had (drive vs read on two clocks); the
+  axis-aware guard closes the step-axis hard-wiring.
+- **Serendipity:** one selector vocabulary now spans `Subscription`, `history`, **and** `ensure`; the
+  run epoch is reused; the `completed`/`preempted` bit composes unchanged; `ensure(I)` falls out of
+  the *same* generalization (now an additive kwarg away).
 
-## Scope / ripple
+## Scope / ripple — **no wire-schema change**
 
-Python + docs + tests. Wire change **only if** Review-flag-#2 chooses heartbeat-`t` (option 3):
-
-- `runstate/memoizer.py` — `ensure` signature `up_to`→`until`; `_satisfied` via `satisfied`;
-  add `_elapsed` (and `_count` iff the count axis is in scope); the `dense` read uses `until`;
-  `_LaunchProducer.extend(until)` + `launch_producer` translation + validation (flag #3).
+- `runstate/memoizer.py` — `ensure` signature `up_to`→`until`; add `clock=time.time` injectable;
+  `_satisfied` via `satisfied` (with the named `+1` helper); `_elapsed(clock, epoch)`;
+  the dense read uses `until`; the **axis-aware** no-progress guard; `_LaunchProducer.extend(until)` +
+  `launch_producer` extract-scalar-for-`{step}` / reject-otherwise; rename `up_to`→`until` throughout;
+  a comment pointing at `../backlog/memoizer-index-algebra.md` (the `from`/`every` residue).
 - `runstate/vocabulary/schedule.py` — no change (consumed as-is).
-- Tests — `test_memoizer.py`: migrate every `up_to=N` → `until={"step":N}` (RETURN assertions
-  unchanged — `[0, N)` is identical); **add** `until={"time_seconds":S}` cases (synthetic channel
-  with timed `value.t` + `started.attached_at`: returns the run-relative window; drives until
-  `_elapsed >= S`); **add** a compound `all` case; the existing `completed`-short-circuit and
-  `preempted`-re-drive cases re-expressed against `until`.
-- `examples/` — any `ensure(up_to=…)` caller → `until={"step":…}`.
-- `docs/specs/memoizer.md` — the `ensure` semantics (condition target; the `[·, until)` window;
-  the dense-axis satisfaction; the producer-translation seam).
-- `docs/backlog/memoizer-index-algebra.md` — mark the **scalar→condition** step **done** here;
-  leave any genuinely-further index-algebra (e.g. random-access `name`-set targets) as the residue.
-- `protocol/lifecycle-v0.2.schema.json` — **no change** unless flag-#2 option 3 (then a
-  `lifecycle` convention-version bump to add `Heartbeat.t`, with its own schema/conformance update).
+- `runstate/vocabulary/payloads.py`, `protocol/*.schema.json` — **no change** (`Heartbeat.t`
+  rejected).
+- Tests — `tests/test_memoizer.py`: migrate every `up_to=N`→`until={"step":N}` (RETURN assertions
+  unchanged); **add** the drive-loop tests below; `examples/reuse/driver.py` (calls + the line-3/line-22
+  docstring) → `until={"step":…}` (the worker's own `up_to` kwarg stays a scalar — the producer
+  extracts it).
+- `docs/specs/memoizer.md` — the `ensure` semantics (condition target; the `[·, until)` window; the
+  poll-clock; the producer-translation seam; the axis-aware guard).
+- `docs/backlog/memoizer-index-algebra.md` — mark the **scalar→condition (`until`)** step **done**
+  here; the residue is the `from`/`every` emission-filter + `ensure(I)` over a function/service
+  producer.
 
-## Non-goals / open for the review
+## Test plan (the drive-loop tests need a non-frozen clock)
 
-- **Count axis (`{count:C}`):** the algebra has it, but no in-scope driver needs "drive until `C`
-  values consumed." **Lean: out of scope now** — don't add `_count` until a use case exists (adding
-  it speculatively is spanning-overreach). Confirm.
-- **No new `Bound`/`Target` type** — reuse the Condition dict verbatim (canonical-form decision).
-- **Time = run-relative wall-clock, gaps included.** For a chunked/resumed run, `_elapsed`
-  (latest dense `t` − epoch) counts idle gaps between chunks, so `{time_seconds:S}` is a
-  *wall-clock-since-start* budget, **not** an accumulated-compute budget. For back-to-back chunks
-  (one orchestrator process) the gap is relaunch overhead — negligible. A true compute budget
-  (gaps excluded) would need the worker to report accumulated run-time — **out of scope**; document
-  the caveat. (This interacts with flag #2: a worker-reported `elapsed` on the heartbeat could be
-  *compute* time, sidestepping the gap issue — another reason the review may prefer option 3.)
-- **`extend` translation for compound conditions** in the *default* producer — out of scope;
-  bring-your-own-producer (flag #3).
+The suite's workers use `now=lambda:0.0`, so `value.t≡0` and any `{time_seconds:S>0}` is otherwise
+unsatisfiable — drive-loop time tests **must** inject `clock`:
+
+- **Step exact-preservation** (regression): `until={"step":N}` reproduces today's drive + RETURN on
+  the edge cases (`progress=-1`, `N=0/1`, `N` already past). (The correctness review verified the
+  arithmetic; lock it with a test.)
+- **Time satisfaction** (injected `clock`): a worker driven under `until={"time_seconds":S}` returns
+  when `_elapsed >= S`; with a *sparse* `value` emitter it still satisfies (poll-clock, not `value.t`)
+  — i.e. **no livelock** when emission stalls but the clock advances.
+- **No-progress guard, time axis** (the critical-c regression): a chunk that advances **0 steps**
+  while `clock` advances must **not** raise "no progress" for a `{time_seconds}` milestone; a
+  step-stalled `{step}` milestone **must** still raise.
+- **Default-producer rejection**: `extend({"time_seconds":S})` and `extend({"all":[…]})` raise a clear
+  error; `extend({"step":N})` injects the **scalar** `N`.
+- **`completed`/`preempted` on time**: a time-budgeted resumable worker emitting `preempted` per chunk
+  accumulates to the budget; one emitting `completed` per chunk truncates (documenting the discipline).
+- **Compound `all`** (return + drive): `until={"all":[{"step":N},{"time_seconds":S}]}` honors both
+  axes with the per-axis offset.
+- **`count` rejection**: a stray `{"count":K}` atom in `until` raises up front (no silent livelock).
+
+## Non-goals / out of scope
+
+- **The `count` *drive* axis.** The algebra has it, but no in-scope driver needs "drive until `C`
+  values consumed," and an un-driven `count` atom would silently never satisfy → livelock. So
+  `_count` is **not** implemented; a `count` atom in `until` is **rejected at `ensure` entry** — a
+  one-pass validation walk over the `until` tree, before any driving, raising loudly (so it fires
+  for *every* producer, not only the default one). (`count` remains legal in a *subscription*
+  `until` — only the `ensure` *drive-target* rejects it.)
+- **`{time_seconds:S}` is wall-clock-since-run-start** (the design's real-time axis, run-relative,
+  **gaps included**). An accumulated-*compute* budget (gaps excluded) is a *distinct primitive* this
+  axis does not provide and this spec does not add — it is **not** a reason to reach for `Heartbeat.t`.
+  For back-to-back chunks (one orchestrator process) the gap is relaunch overhead — negligible.
+- **No new `Bound`/`Target` type** — reuse the Condition dict verbatim.
+- **Compound/time translation in the *default* producer** — out of scope; bring-your-own-producer.
+- **The `from`/`every` emission filter (`ensure(schedule=)` / `ensure(I)`)** — deferred to the
+  backlog (additive when it lands).
