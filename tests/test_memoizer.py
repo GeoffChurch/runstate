@@ -470,3 +470,76 @@ def test_ensure_rejects_count_drive_condition():
     for bad in ({"count": 3}, {"any": [{"step": 5}, {"count": 3}]}):
         with pytest.raises(ValueError, match="count"):
             ensure(producer, "loss", until=bad)
+
+
+# ---------------------------------------------------------------------------
+# Task 4: Compound `all` + the `completed`/`preempted` discipline on the time axis
+# ---------------------------------------------------------------------------
+
+class _StepThenWaitProducer:
+    """First extend drives to step 2 (meets a {step:3} window); later extends make
+    NO new step progress. With the axis-aware guard the step-met/time-pending
+    compound must NOT false-raise -- time (the ramp clock) finishes it. (The old
+    step-only guard WOULD raise on the 2nd extend: progress 2 <= before 2.)"""
+    run_id = "fake"
+    def __init__(self, channel): self._c = channel; self.calls = 0
+    @property
+    def channel(self): return self._c
+    def extend(self, until):
+        from runstate.vocabulary.handle import local_handle
+        self.calls += 1
+        if self.calls == 1:
+            self._c.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+                         topic="lifecycle.started")
+            for s in range(3):
+                self._c.send({"value": float(s), "step": s, "t": 0.0},
+                             topic="value", name="loss")
+            self._c.send({"step": 2, "consumed_seq": 0}, topic="lifecycle.heartbeat")
+        self._c.send({"reason": "preempted", "error": None, "final_step": 2},
+                     topic="lifecycle.stopped")
+        return _DeadHandle()
+
+def test_ensure_compound_all_step_met_time_pending_does_not_false_raise():
+    from runstate.channel.memory import MemoryChannel
+    p = _StepThenWaitProducer(MemoryChannel())
+    series = ensure(p, "loss", until={"all": [{"step": 3}, {"time_seconds": 5}]},
+                    clock=_RampClock(), poll_interval=0)
+    assert [b["step"] for b in series] == [0, 1, 2]   # window [0,3); both bounds met by return
+    assert p.calls >= 2                               # re-drove after step met, on time -- no raise
+
+
+class _TimeChunkProducer:
+    """Each extend drives a one-step chunk stopping with `reason` below the time
+    budget. preempted -> ensure re-drives until the ramp clock reaches the budget,
+    accumulating steps; completed -> ensure stops after the first chunk."""
+    run_id = "fake"
+    def __init__(self, channel, reason): self._c = channel; self._r = reason; self.calls = 0; self._s = 0
+    @property
+    def channel(self): return self._c
+    def extend(self, until):
+        from runstate.vocabulary.handle import local_handle
+        if self.calls == 0:
+            self._c.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+                         topic="lifecycle.started")
+        self.calls += 1
+        self._c.send({"value": float(self._s), "step": self._s, "t": 0.0}, topic="value", name="loss")
+        self._c.send({"step": self._s, "consumed_seq": 0}, topic="lifecycle.heartbeat")
+        self._c.send({"reason": self._r, "error": None, "final_step": self._s}, topic="lifecycle.stopped")
+        self._s += 1
+        return _DeadHandle()
+
+def test_ensure_time_budget_preempted_accumulates_across_chunks():
+    from runstate.channel.memory import MemoryChannel
+    p = _TimeChunkProducer(MemoryChannel(), reason="preempted")
+    series = ensure(p, "loss", until={"time_seconds": 5}, clock=_RampClock(), poll_interval=0)
+    assert p.calls >= 2                                        # re-drove across timed chunks
+    assert [b["step"] for b in series] == list(range(p.calls)) # one continuous accumulated series
+
+def test_ensure_time_budget_completed_truncates_after_first_chunk():
+    # DISCIPLINE: a time-budgeted RESUMABLE worker MUST emit `preempted`, never
+    # `completed` -- a per-chunk `completed` makes ensure stop after one chunk,
+    # silently truncating the wall-clock budget.
+    from runstate.channel.memory import MemoryChannel
+    p = _TimeChunkProducer(MemoryChannel(), reason="completed")
+    series = ensure(p, "loss", until={"time_seconds": 5}, clock=_RampClock(), poll_interval=0)
+    assert p.calls == 1 and [b["step"] for b in series] == [0]   # completed -> stopped at chunk 1
