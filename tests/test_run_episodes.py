@@ -2,7 +2,8 @@
 
 The worker resumes from a checkpoint and continues from the run-absolute step
 where it left off. The log should read back as one continuous series with no
-gaps or duplicates, and the final peek_terminal should be "completed".
+gaps or duplicates, and the final peek_terminal should be "preempted" —
+an autonomous-extend run is resumable-by-design, never self-completed.
 """
 
 import json
@@ -43,4 +44,4 @@ def test_relaunch_extends_one_series(tmp_path):
     ch = launcher.open_channel(rid)
     steps = [v.body["step"] for v in ch.read(topics=["value"])]
     assert steps == list(range(10))         # one continuous run-absolute series, no gaps/dups
-    assert runstate.peek_terminal(ch).outcome == "completed"
+    assert runstate.peek_terminal(ch).outcome == "preempted"

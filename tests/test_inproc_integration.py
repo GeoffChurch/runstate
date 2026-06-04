@@ -12,6 +12,13 @@ from runstate.liveness import peek_terminal
 from runstate.worker import Worker
 
 
+def _train_complete(channel):
+    with Worker(channel) as w:
+        for step in w.steps(total=5):
+            w.set("loss", 1.0 / (step + 1))
+        w.stopped(completed=True)
+
+
 def _train(channel):
     with Worker(channel) as w:
         for step in w.steps(total=5):
@@ -30,7 +37,7 @@ def test_subscription_serviced_end_to_end(tmp_path):
         request_id="obs-1",
     )
 
-    launcher.launch("run", _train).wait()
+    launcher.launch("run", _train_complete).wait()
 
     vals = obs.read(topics=["value"], name="loss", request_ids=["obs-1"])
     assert len(vals) >= 1
@@ -39,7 +46,7 @@ def test_subscription_serviced_end_to_end(tmp_path):
         assert e.body["value"] == 1.0 / (e.body["step"] + 1)
 
     stopped = obs.latest("lifecycle.stopped")
-    assert stopped.body["reason"] == "completed"
+    assert stopped.body["completed"] == True
     assert stopped.body["final_step"] == 4
     assert obs.latest("launcher.terminated").body["exit_code"] == 0
     assert peek_terminal(obs).outcome == "completed"
@@ -53,11 +60,11 @@ def test_commanded_stop_end_to_end(tmp_path):
     launcher.launch("run2", _train).wait()
 
     stopped = obs.latest("lifecycle.stopped")
-    assert stopped.body["reason"] == "commanded"
+    assert stopped.body["completed"] == False
     assert stopped.body["final_step"] == 2
     # clean thread exit despite the early stop
     assert obs.latest("launcher.terminated").body["exit_code"] == 0
     # observer verdict: a clean non-completion normalizes to "preempted"
     r = peek_terminal(obs)
     assert r.outcome == "preempted"
-    assert r.reason == "commanded"
+    assert r.reason == "preempted"

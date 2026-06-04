@@ -41,8 +41,8 @@ def test_latest_returns_most_recent_for_topic_and_name(ch):
 
 
 def test_latest_by_topic_only(ch):
-    ch.send({"reason": "completed"}, topic="lifecycle.stopped")
-    assert ch.latest("lifecycle.stopped").body == {"reason": "completed"}
+    ch.send({"completed": True, "error": None, "final_step": None}, topic="lifecycle.stopped")
+    assert ch.latest("lifecycle.stopped").body == {"completed": True, "error": None, "final_step": None}
     assert ch.latest("lifecycle.started") is None
 
 
@@ -121,8 +121,8 @@ def test_read_result_is_independent_of_storage(ch):
 def test_channels_on_the_same_run_share_the_log(open_channel):
     worker = open_channel()
     observer = open_channel()
-    worker.send({"reason": "completed"}, topic="lifecycle.stopped")
-    assert observer.latest("lifecycle.stopped").body == {"reason": "completed"}
+    worker.send({"completed": True, "error": None, "final_step": None}, topic="lifecycle.stopped")
+    assert observer.latest("lifecycle.stopped").body == {"completed": True, "error": None, "final_step": None}
     assert [e.topic for e in observer.read()] == ["lifecycle.stopped"]
 
 

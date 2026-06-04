@@ -20,6 +20,7 @@ def _ok(channel):
     with Worker(channel) as w:
         for _ in w.steps(total=2):
             pass
+        w.stopped(completed=True)
 
 
 def _boom(channel):
