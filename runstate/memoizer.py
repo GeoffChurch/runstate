@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 
-from .vocabulary.schedule import Subscription
+from .vocabulary.schedule import Subscription, satisfied
 from .launcher import relaunch_if_needed
 from .liveness import peek_terminal
 
@@ -35,15 +35,23 @@ class _LaunchProducer:
         # access is fine (and is what `ensure` wants as the log grows).
         return self._launcher.open_channel(self._variant.run_id)
 
-    def extend(self, up_to):
-        """Trigger production toward step ``up_to``: relaunch iff not already
-        live. Returns the new ``LaunchHandle`` if it launched an episode, or
-        ``None`` if it no-op'd (an episode was already live). ``ensure`` reads
-        this to know whether it actually *drove* new work (the seam contract:
-        a producer's ``extend`` returns truthy iff it triggered production)."""
+    def extend(self, until):
+        """Trigger production toward `until`: relaunch iff not already live.
+        The default producer translates ONLY a step condition -- it injects the
+        scalar `until["step"]` under `target_key`. Any other shape (time_seconds,
+        count, any/all) needs a launcher whose worker accepts that bound, i.e. the
+        user's own producer (.channel/.run_id/.extend(until)); reject it loudly
+        rather than inject a dict the worker can't consume."""
+        if list(until.keys()) != ["step"]:
+            raise ValueError(
+                f"the default launch-producer translates only {{'step': N}}; got "
+                f"{until!r}. Bring your own producer (.channel/.run_id/.extend(until)) "
+                f"for time/compound milestones."
+            )
+        target = until["step"]
         launch_kwargs = dict(self._variant.launch_kwargs)
         worker_kwargs = dict(launch_kwargs.get("kwargs") or {})
-        worker_kwargs[self._target_key] = up_to
+        worker_kwargs[self._target_key] = target
         launch_kwargs["kwargs"] = worker_kwargs
         return relaunch_if_needed(
             self._launcher, self._variant.run_id, self._variant.target, **launch_kwargs
@@ -131,58 +139,82 @@ def _progress(channel) -> int:
     return max(steps) if steps else -1
 
 
-def ensure(producer, name, *, up_to, poll_interval=0.01, sleep=time.sleep) -> list[dict]:
-    """Return ``name``'s series through step ``up_to`` (steps ``0..up_to-1``),
-    producing the missing suffix on a miss. Hit (progress >= up_to-1) -> a pure
-    log read. Miss -> ``producer.extend(up_to)``, wait until the trajectory
-    reaches the target or the episode we're tracking ends; re-drive a short
-    clean stop (resume converges); raise on a failure outcome or no progress.
-    Reads progress from the dense axis and content from the value series, so it
-    works for sparse emitters too (you get the sparse series, not N points).
+def _elapsed(channel, clock) -> float:
+    """Run-relative seconds on the consumer's OWN poll-clock (dense, monotone,
+    gap-inclusive; no wire dependency -- see the spec's clock rationale).
+    Returns 0.0 before the run has started (no epoch yet -> time conditions
+    are inert until the run begins)."""
+    started = channel.read(topics=["lifecycle.started"], limit=1)
+    if not started or started[0].body.get("attached_at") is None:
+        return 0.0
+    return clock() - started[0].body["attached_at"]
 
-    No hang timeout: ``ensure`` trusts the episode to terminate, so a
-    wedged-but-live worker (or a foreign live episode that never reaches the
-    target) blocks. Wrap with a ``Watcher``/``heartbeat_timeout`` out of band if
-    you need death-by-staleness."""
+
+def _window_step(channel) -> int:
+    """The step coordinate for window-close satisfaction: `_progress + 1`.
+
+    `ensure(until={step:N})` drives the half-open window `[0, N)` -- the
+    worker's exclusive target (steps `0..N-1`, reaching `progress = N-1`).
+    `_progress + 1 >= N` <=> `_progress >= N-1` is exactly the old `up_to-1`
+    hit, and agrees with the read-side `Subscription` expiry gate (which
+    excludes the boundary point `N`). The `+1` is applied HERE, in the
+    coordinate -- never by rewriting the condition (`{step:N}`->`{step:N-1}`
+    would break `any`/`all`, which evaluates every atom against the same
+    passed coordinates). `[0,N)` <-> `range(N)`/`up_to` <-> read-side expiry
+    is the triple that makes this exact."""
+    return _progress(channel) + 1
+
+
+def _satisfied(channel, until, *, clock) -> bool:
+    """Has the run closed the `until` window? Coordinates read live: step from
+    the dense axis (`_window_step`), time from the consumer's poll-clock
+    (`_elapsed`). `count=0` -- the count drive-axis is rejected at entry."""
+    return satisfied(until, step=_window_step(channel),
+                     time_seconds=_elapsed(channel, clock), count=0)
+
+
+def ensure(producer, name, *, until, poll_interval=0.01, sleep=time.sleep,
+           clock=time.time) -> list[dict]:
+    """Return ``name``'s series for the window ``until`` (a Condition from the
+    subscription algebra: ``{"step":N} | {"time_seconds":S} | any/all``),
+    producing the missing suffix on a miss. Window-closed (or worker-declared
+    ``completed``) -> a pure log read; else ``producer.extend(until)`` and wait,
+    re-driving ``preempted`` and raising on a failure outcome or no progress.
+
+    `up_to=N` is `until={"step":N}` (the half-open window `[0, N)`). Time is the
+    consumer's poll-clock; the generalization to the emission filter
+    (`from`/`every`) is deferred -- see docs/backlog/memoizer-index-algebra.md.
+    No hang timeout (unchanged)."""
     channel = producer.channel
-    dense = {"every": {"step": 1}, "until": {"step": up_to}}
+    dense = {"every": {"step": 1}, "until": until}
     result = peek_terminal(channel)
-    if _progress(channel) >= up_to - 1 or (result is not None and result.outcome == "completed"):
+    if _satisfied(channel, until, clock=clock) or (
+        result is not None and result.outcome == "completed"):
         return history(channel, name, dense)
 
-    while _progress(channel) < up_to - 1:
+    while not _satisfied(channel, until, clock=clock):
         before = _progress(channel)
-        handle = producer.extend(up_to)   # LaunchHandle if it launched, else None (no-op)
-        # Wait until the target is reached, or the episode we're tracking ends.
-        # When we launched, ``handle.is_alive()`` is the exact, race-free signal
-        # that *our* episode finished -- unlike log-seq heuristics, which trip
-        # over a prior episode's trailing `stopped`/`terminated` records. When
-        # extend no-op'd (a foreign episode was already live), wait for that
-        # episode to go terminal on the log instead.
-        while _progress(channel) < up_to - 1:
+        handle = producer.extend(until)
+        while not _satisfied(channel, until, clock=clock):
             if handle is not None:
                 if not handle.is_alive():
-                    handle.wait()         # reap (writes launcher.terminated); returns at once
+                    handle.wait()
                     break
             elif peek_terminal(channel) is not None:
                 break
             sleep(poll_interval)
         else:
-            return history(channel, name, dense)        # loop exited because target reached
+            return history(channel, name, dense)
         result = peek_terminal(channel)
         if result is not None and result.outcome in _FAILURES:
             raise RuntimeError(
                 f"run {producer.run_id!r} failed: {result.outcome}/{result.reason}"
             )
         if result is not None and result.outcome == "completed":
-            return history(channel, name, dense)   # producer declared done before up_to
-        # No-progress is *our* failure only when we drove an episode that then
-        # didn't advance. A no-op extend (onto a foreign episode that stopped
-        # short) drove nothing -> loop and re-drive (the next extend spawns,
-        # since that episode is now terminal), which converges.
+            return history(channel, name, dense)
         if handle is not None and _progress(channel) <= before:
             raise RuntimeError(
-                f"run {producer.run_id!r} made no progress toward step {up_to} "
+                f"run {producer.run_id!r} made no progress toward {until} "
                 f"(stuck at {_progress(channel)}); cannot extend"
             )
     return history(channel, name, dense)

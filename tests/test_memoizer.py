@@ -77,7 +77,7 @@ def test_launch_producer_extend_injects_target_and_runs():
     producer = launch_producer(launcher, variant)           # default target_key="up_to"
     assert producer.run_id == "exp"
     assert producer.channel is not None                     # .channel opens without error
-    producer.extend(3)                                      # launches; injects up_to=3
+    producer.extend({"step": 3})                             # launches; injects up_to=3
     for _ in range(400):                                    # wait for the episode to finish
         if launcher.open_channel("exp").latest("lifecycle.stopped") is not None:
             break
@@ -126,10 +126,10 @@ def _producer(launcher, tmp_path, run_id="exp"):
 def test_ensure_cold_miss_then_hit(tmp_path):
     launcher = runstate.ThreadLauncher()
     producer = _producer(launcher, tmp_path)
-    series = ensure(producer, "loss", up_to=5)
+    series = ensure(producer, "loss", until={"step": 5})
     assert [b["step"] for b in series] == [0, 1, 2, 3, 4]
     launched = len(launcher.open_channel("exp").read(topics=["launcher.launched"]))
-    series2 = ensure(producer, "loss", up_to=5)               # hit: no relaunch
+    series2 = ensure(producer, "loss", until={"step": 5})     # hit: no relaunch
     assert [b["step"] for b in series2] == [0, 1, 2, 3, 4]
     assert len(launcher.open_channel("exp").read(topics=["launcher.launched"])) == launched
 
@@ -137,8 +137,8 @@ def test_ensure_cold_miss_then_hit(tmp_path):
 def test_ensure_extends_partial_prefix_into_one_series(tmp_path):
     launcher = runstate.ThreadLauncher()
     producer = _producer(launcher, tmp_path)
-    ensure(producer, "loss", up_to=3)                         # ep1: 0,1,2
-    series = ensure(producer, "loss", up_to=6)                # ep2 resumes: 3,4,5
+    ensure(producer, "loss", until={"step": 3})               # ep1: 0,1,2
+    series = ensure(producer, "loss", until={"step": 6})      # ep2 resumes: 3,4,5
     assert [b["step"] for b in series] == [0, 1, 2, 3, 4, 5]  # one continuous series
 
 
@@ -153,7 +153,7 @@ def test_ensure_surfaces_a_failure_outcome(tmp_path):
     variant = runstate.Variant("exp", crash, {"kwargs": {}})
     producer = launch_producer(launcher, variant)
     with pytest.raises(RuntimeError, match="failed"):
-        ensure(producer, "loss", up_to=5)
+        ensure(producer, "loss", until={"step": 5})
 
 
 def test_ensure_raises_when_run_makes_no_progress(tmp_path):
@@ -174,7 +174,7 @@ def test_ensure_raises_when_run_makes_no_progress(tmp_path):
     )
     producer = launch_producer(launcher, variant)
     with pytest.raises(RuntimeError, match="progress"):
-        ensure(producer, "loss", up_to=5)
+        ensure(producer, "loss", until={"step": 5})
 
 
 def test_ensure_redrives_within_one_call_to_reach_target(tmp_path):
@@ -203,7 +203,7 @@ def test_ensure_redrives_within_one_call_to_reach_target(tmp_path):
         {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="obs"
     )
     producer = launch_producer(launcher, variant)
-    series = ensure(producer, "loss", up_to=7)            # 0..2, re-drive 3..5, re-drive 6
+    series = ensure(producer, "loss", until={"step": 7})  # 0..2, re-drive 3..5, re-drive 6
     assert [b["step"] for b in series] == [0, 1, 2, 3, 4, 5, 6]
     assert len(launcher.open_channel("exp").read(topics=["launcher.launched"])) >= 3
 
@@ -220,7 +220,7 @@ def test_ensure_surfaces_a_die_before_attach_without_hanging():
     variant = runstate.Variant("exp", die_early, {"kwargs": {}})
     producer = launch_producer(launcher, variant)
     with pytest.raises(RuntimeError, match="failed"):
-        ensure(producer, "loss", up_to=5)
+        ensure(producer, "loss", until={"step": 5})
 
 
 def test_ensure_redrives_when_extend_noops_onto_a_live_episode(tmp_path):
@@ -260,7 +260,7 @@ def test_ensure_redrives_when_extend_noops_onto_a_live_episode(tmp_path):
                 topic="lifecycle.stopped",
             )
 
-    series = ensure(producer, "loss", up_to=4, sleep=driver_sleep)
+    series = ensure(producer, "loss", until={"step": 4}, sleep=driver_sleep)
     assert [b["step"] for b in series] == [0, 1, 2, 3]   # foreign 0,1 + re-driven 2,3 = one series
 
 
@@ -292,10 +292,10 @@ class _FakeProducer:
     def channel(self):
         return self._channel
 
-    def extend(self, up_to):
+    def extend(self, until):
         self.extend_calls += 1
         if self._extend_side_effect is not None:
-            self._extend_side_effect(self._channel, up_to)
+            self._extend_side_effect(self._channel, until)
         return None   # no handle: simulates a foreign/no-op extend
 
 
@@ -327,8 +327,8 @@ def test_ensure_completed_short_of_up_to_returns_without_redriving():
                   value_steps=list(range(K + 1)))
 
     producer = _FakeProducer(ch)
-    # up_to=K+5 means the target is far beyond what the worker produced
-    series = ensure(producer, "loss", up_to=K + 5)
+    # until={"step": K+5} means the target is far beyond what the worker produced
+    series = ensure(producer, "loss", until={"step": K + 5})
 
     # ensure returns the available trajectory (steps 0..K)
     assert [b["step"] for b in series] == list(range(K + 1))
@@ -366,7 +366,7 @@ def test_ensure_preempted_redrives_then_stops_on_completion():
         )
 
     producer = _FakeProducer(ch, extend_side_effect=_extend_side_effect)
-    series = ensure(producer, "loss", up_to=up_to)
+    series = ensure(producer, "loss", until={"step": up_to})
 
     # ensure returns steps 0..M (both episodes combined)
     assert [b["step"] for b in series] == list(range(M + 1))
@@ -378,10 +378,20 @@ def test_ensure_preempted_that_reaches_up_to_uses_progress_hit(tmp_path):
     """Test 3 (sanity): preempted that reaches up_to -> normal progress hit; ensure returns."""
     launcher = runstate.ThreadLauncher()
     producer = _producer(launcher, tmp_path)
-    series = ensure(producer, "loss", up_to=5)
+    series = ensure(producer, "loss", until={"step": 5})
     # The worker stops preempted (no self-completion claim) but reaches step 4 (up_to-1)
     assert [b["step"] for b in series] == [0, 1, 2, 3, 4]
     # The channel has a stopped record
     stopped = launcher.open_channel("exp").latest("lifecycle.stopped")
     assert stopped is not None
     # ensure returned via the progress hit (existing behavior unbroken)
+
+
+def test_launch_producer_rejects_non_step_condition():
+    launcher = runstate.ThreadLauncher()
+    variant = runstate.Variant("exp", lambda channel, *, up_to: None, {"kwargs": {}})
+    producer = launch_producer(launcher, variant)
+    for bad in ({"time_seconds": 5}, {"count": 3},
+                {"all": [{"step": 1}, {"time_seconds": 2}]}):
+        with pytest.raises(ValueError, match="translates only"):  # matches the real message
+            producer.extend(bad)
