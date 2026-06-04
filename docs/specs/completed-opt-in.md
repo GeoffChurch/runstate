@@ -1,11 +1,12 @@
-# `completed` is the worker's sole terminal claim; the default clean halt projects to `preempted` (B′)
+# `completed` is the worker's sole terminal claim; `Stopped.reason` is removed (B′)
 
-**Status:** converged 2026-06-04 (extended design dialectic); ready for review → implementation.
+**Status:** converged 2026-06-04 (extended design dialectic, including the `Stopped.reason`
+removal); ready for review → implementation.
 **Basis:** refines `preempted-vs-completed.md` (which introduced the `completed`/`preempted` outcome
-distinction and renamed the outcome value). This spec changes the *default* and the *worker-side
-vocabulary*. **Origin:** the `ensure(until)` final review caught this footgun in our *own* example —
-`examples/reuse/driver.py`'s `extend` case prints `got 8` instead of resuming `8..19`, because the
-worker inherits the default `completed` and `ensure` short-circuits.
+distinction). This spec changes the *default*, removes the free `reason` field, and reduces the
+worker's terminal vocabulary to a single bit. **Origin:** the `ensure(until)` final review caught
+this footgun in our *own* example — `examples/reuse/driver.py`'s `extend` case prints `got 8` instead
+of resuming `8..19`, because the worker inherits the default `completed` and `ensure` short-circuits.
 
 ## The footgun
 
@@ -15,127 +16,136 @@ its `total`, or fell off — **defaults to `completed`**. For a *resumable* work
 of a longer run) that is wrong, and it fails **silently**: a consumer (`ensure`'s read-first /
 cross-round completed-check) sees `completed`, returns the short series, and **truncates**.
 
-The Worker actually *knows* the reason in only two cases — exception → `errored`, `control.stop` →
-`commanded` — and **guesses `completed`** for every other clean exit. The guess is wrong precisely
-for the case the memoizer exists to serve (re-drivable chunks), and it's silent.
+The Worker actually *knows* the right answer in only two cases — exception → failure,
+`control.stop` → resumable — and **guesses `completed`** for every other clean exit. The guess is
+wrong precisely for the case the memoizer exists to serve (re-drivable chunks), and it's silent.
 
 ## The design (B′)
 
-Three moves, in the order the dialectic settled them:
+1. **`completed` is the worker's *sole* terminal claim** — an affirmative, opt-in **boolean**. It is
+   the one thing only the worker can know: intrinsic, permanent completion (convergence; a
+   fixed-length job genuinely finished). The worker sets it explicitly; **nothing defaults to it.**
 
-1. **`completed` is the worker's *sole* terminal claim** — affirmative, opt-in. It is the one thing
-   only the worker can know: intrinsic, permanent completion (convergence; a fixed-length job
-   genuinely finished). The worker declares it explicitly; **nothing defaults to it.**
-
-2. **The default clean halt carries *no* positive claim → projects to `preempted`.** A clean exit
-   the worker didn't tag emits `reason=null` ("nothing claimed"), which `peek_terminal` *already*
-   projects to `preempted` (its `else` branch). `preempted` becomes the *unmarked* default;
+2. **The default clean halt makes no claim → projects to `preempted`.** A clean exit the worker
+   didn't tag emits `completed=False` with no error; `preempted` is the *unmarked* default,
    `completed` the *marked* claim.
 
-3. **The worker never emits the literal `"preempted"`.** That word is exogenous — it is the
-   *consumer-side outcome*, apt there because the bound that cut the worker short (`ensure`'s
-   `max_steps`, a `control.stop`, a launch-configured budget) is *external*. The worker reports
-   endogenous *causes* (or withholds the claim); the consumer *classifies* resumability.
+3. **`Stopped.reason` is removed.** The stop body becomes
+   `{completed: bool, error: str|null, final_step: int|null}`. The worker has **no field in which to
+   type `"preempted"`** (B′ enforced structurally, not by convention), and the free-form "why" is
+   gone from the convention body — see *Where the "why" goes*.
 
 **The record is still emitted** (auto, via `__exit__`) even for the default. Its *presence* is the
-§7 clean-halt promise — "I halted at a clean, resumable checkpoint" — which is **stronger than
-exit-code-0** (a process can exit 0 mid-step without flushing a checkpoint) and is
-launcher-independent (the foreign-episode and no-launcher paths rely on it). Presence (clean halt) is
-**orthogonal** to content (done-or-not): B′ keeps the presence, defaults the content to `null`. This
-also realizes the "`completed` or nothing" intuition *at the content level* — `null` *is* "nothing
-said" — without losing the record.
+§7 clean-halt promise — "I halted at a clean, resumable checkpoint" — **stronger than exit-code-0** (a
+process can exit 0 mid-step without flushing a checkpoint) and launcher-independent (the
+foreign-episode and no-launcher paths rely on it). Presence (clean halt) is **orthogonal** to content
+(the `completed` bit): B′ keeps the presence, defaults the bit to `False`.
+
+### The guarantee: total reconstruction from `{completed, error}`
+
+The invariant **`completed=True ⟹ error is None`** is enforced in `Stopped.__post_init__` (mirroring
+`Terminated`'s existing `exited`-XOR-`killed` validation) and in the schema. The three terminal states
+are then mutually exclusive and exhaustive:
+
+| `completed` | `error` | outcome |
+|---|---|---|
+| `True` | `None` (enforced) | `completed` |
+| `False` | `not None` | `errored` |
+| `False` | `None` | `preempted` |
+
+Since `completed=True` forces `error=None`, `error is not None` can only co-occur with
+`completed=False` — so **`errored ⟺ error is not None` holds globally**, and the outcome is
+recoverable with no free `reason`. (Test `error is not None`, **not** truthiness: a bare
+`raise SomeError()` yields `str(exc) == ""`, which must still classify as `errored`.)
+
+### Where the "why" goes (and why this is sound)
+
+- **Domain-specific "why"** ("patience exhausted", "loss diverged", "NaN") → **user channels** (the
+  `value` topic or a user-defined topic/artifact). It is workload opinion and does not belong in an
+  opinion-free convention body; the substrate already gives workers arbitrary channels for it.
+- **The one domain-agnostic finer distinction, `commanded` vs self-budget** → **recoverable from the
+  log**, not duplicated. `commanded` ⟺ a `control.stop` preceded this stop; self-budget ⟺ a
+  non-`completed` stop with no preceding `control.stop`. The `control.stop` envelope is the
+  *canonical* record of commandedness (a self-label could lie), so removal here is de-duplication.
+- **`error` stays** because it is *scoped*: the domain-agnostic diagnostic for the one failure
+  outcome, surfaced by `RunResult.error`. It is not a general "why" — the general "why" is exactly
+  what moves to user-space.
 
 ### Why (the orthonormal core)
 
 - **Ask each party only what it uniquely knows.** *Intrinsic completion* — only the worker knows it
-  (→ `completed`). *Whether a bound is final or a chunk* — that is the **driver's** knowledge, which
-  the worker often lacks: the same `steps(total=N)` is a fixed length when run standalone and a chunk
-  when `ensure`-driven, and the bare worker can't tell which context it's in. So the bound-reaching
-  reason is **not the worker's to declare** — it must *default*, and the safe value is `preempted`
-  (resumable). Forcing the worker to declare it (Options A/C, considered and rejected) demands
-  knowledge it doesn't have, so a forced choice is no better than a wrong default.
+  (→ `completed`). *Whether a bound is final or a chunk* — the **driver's** knowledge, which the
+  worker often lacks (the same `steps(total=N)` is a fixed length standalone, a chunk under `ensure`).
+  So the bound-reaching reason must *default* (to `preempted`), not be demanded of the worker.
 - **Fail loud.** A forgotten `completed` → `preempted` → re-drive / loud no-progress, never silent
   truncation.
-- **`preempted` is exogenous → it belongs to the consumer.** The bound is externally sourced
-  (imposed by `ensure`, or configured at launch and merely polled internally). From the consumer's
-  vantage the worker *was* preempted, so the word fits *there*. As a worker self-report it is a
-  category error: the worker emits *causes*, the consumer names the *class*.
+- **`preempted` is exogenous → it's the consumer's projection.** The bound is externally sourced. The
+  worker reports its one endogenous fact (`completed` or not) + the failure diagnostic; the consumer
+  names the resumability class.
+- **Canonical form.** A free `reason` string is arbitrary, over-specified content in a convention
+  body; a single `completed` bit + a scoped `error` is the minimal, closed, non-arbitrary basis. The
+  terminal set is flat (3 states) — no term algebra needed.
 
 ## The change
 
-- **`Stopped.reason`: `str` → `Optional[str]`** (`payloads.py:55`), and the schema
-  `Stopped.reason` `{"type":"string"}` → `{"type":["string","null"]}`
-  (`protocol/lifecycle-v0.2.schema.json:52`). `null` = "clean halt, no positive claim." *This is the
-  one wire change — flagged in Open questions.*
-- **`Worker.stopped(reason=None, ...)`** (was `reason="completed"`, `worker.py:113`); **`__exit__`**
-  (`worker.py:63`) emits `stopped(reason=self._stop_reason, ...)` — drop the `or "completed"`. The
-  worker claims completion by calling `w.stopped(reason="completed")` (idempotent first-writer-wins,
-  unchanged) before/at exit.
-- **`peek_terminal` — no code change** (`liveness.py:82-93`): `s.reason == "completed"` is `False`
-  for `None` and for any descriptive cause, so it already falls to the `else` → `preempted`. The
-  **launcher tier is untouched** — it is the *no-clean-stop* backstop (hard crash / non-runstate
-  worker that left no `stopped`); B′ always emits a clean `stopped`, so the lifecycle tier fires
-  first and the launcher tier's `exit 0 → completed` does not apply to a B′ worker.
-- **Prose:** the §7 / `Stopped` description "its existence = the run cleanly finished" →
-  "its existence = a clean, *resumable* halt; *finished* (`completed`) is the worker's opt-in claim,
-  otherwise `preempted`."
-
-### Reason vocabulary under B′
-
-| `reason` | meaning | outcome |
-|---|---|---|
-| `null` (default) | clean halt, no positive claim | `preempted` |
-| `"completed"` | intrinsic permanent completion (the sole *claim*) | `completed` |
-| `"errored"` | exception (carries `error` message) | `errored` (auto) |
-| any other string (`"commanded"`, `"max_steps"`, …) | optional *descriptive cause* | `preempted` |
-
-B′ forbids only the worker **typing the outcome word `"preempted"`** — by convention + cleanup, not
-by validation. Descriptive causes stay legal (the field is free); they all project to `preempted`.
+- **`Stopped` body** (`payloads.py:52-58`, schema `lifecycle-v0.2.schema.json:48-56`): remove
+  `reason`; the body is `{completed: bool, error: str|null, final_step: int|null}`. Validate
+  `completed and error is not None` → `ValueError` (`__post_init__`); express the same in the schema
+  (`if completed const true then error const null`), keep `additionalProperties:false`.
+- **`Worker`** (`worker.py`): `stopped(*, completed=False, error=None, final_step=None)` (idempotent,
+  first-writer-wins). `__exit__`: on exception → `stopped(error=str(exc), final_step=…)`; on a clean
+  exit → `stopped(final_step=…)` (the default, `completed=False`). The worker claims completion with
+  `w.stopped(completed=True)`. Remove `_stop_reason`/`"commanded"`: `tick` returns a stop **signal**
+  (truthy ⇒ stop the loop) carrying no reason; `steps` breaks on it; `__exit__` emits the default.
+- **`peek_terminal`** (`liveness.py:82-93`): lifecycle tier becomes
+  `if s.error is not None: "errored"  elif s.completed: "completed"  else: "preempted"`. The launcher
+  tier is unchanged (the no-clean-stop backstop). `RunResult` for the lifecycle tier sets
+  `reason = outcome` (the lifecycle tier no longer has a finer-than-outcome label; the launcher tier
+  keeps its `exited`/`killed`).
+- **Prose:** §7 / `Stopped` "its existence = the run cleanly finished" →
+  "its existence = a clean, *resumable* halt; *finished* (`completed=True`) is the worker's opt-in
+  claim, otherwise `preempted`."
 
 ## Orthonormal-basis check
 
-- **Independence:** not a new primitive — re-defaults an existing one and widens `reason` to nullable.
-  Adds no redundancy; removes a wrong guess.
-- **Spanning:** supplies the missing "resumable by default" behavior the `completed` guess fouled,
-  without over-reach: the worker still only declares `completed` (what it alone knows).
-- **Canonical form:** `completed` is the one worker-knowable terminal claim; `null` is the
-  least-arbitrary representation of "no claim" (and matches the repo's present-nullable convention).
-  `preempted` lives where it's apt — the consumer projection.
-- **Orthogonality:** record *presence* (clean halt) ⟂ record *content* (the `completed` bit) ⟂
-  consumer *projection* (`preempted`). B′ touches only the content default; presence and projection
-  are unchanged.
-- **Serendipity:** `peek_terminal` needs *no* code change — `null` already projects to `preempted`;
-  the fix falls out of the existing `else`. The launcher/lifecycle "two viewpoints" split is
-  preserved (the worker still self-reports its clean halt in-band, independent of any exit code).
+- **Independence:** removes a free field and a guess; adds a single bit + a validation. No redundancy.
+- **Spanning:** the worker can still express everything it uniquely knows (done / failed-with-message
+  / neither); domain "why" is expressible in user-space; nothing in-scope is lost.
+- **Canonical form:** a closed `{completed: bool} + error` replaces an arbitrary free string; flat,
+  minimal, no term algebra.
+- **Orthogonality:** record *presence* (clean halt) ⟂ the `completed` *bit* (done) ⟂ `error` (failure
+  diagnostic) ⟂ consumer *projection* (`preempted`/`killed`). The `completed=True ⟹ error=None`
+  invariant keeps the two content fields non-overlapping.
+- **Serendipity:** the worker's terminal vocabulary collapses to one bit; `commanded` de-duplicates
+  into the `control.stop` it already implies; the launcher/lifecycle "two viewpoints" split is
+  preserved (in-band self-report, independent of exit code).
 
 ## Scope / ripple
 
-- `runstate/worker.py` — the default flip (`stopped` param + `__exit__`).
-- `runstate/vocabulary/payloads.py` — `Stopped.reason: Optional[str]`.
-- `protocol/lifecycle-v0.2.schema.json` — `Stopped.reason` nullable (+ `tests/test_schema.py`
-  conformance: assert a `null`-reason `stopped` validates).
-- `runstate/liveness.py` — **no code change**; prose only (the `else` comment + `RunResult` docs).
-- Tests — `tests/test_worker.py` (the default is now `null`/`preempted`, not `completed`);
-  `tests/test_liveness.py` (a `null`-reason stop → `preempted`); `tests/test_memoizer.py` fixtures
-  `_cell`/`chunked` and any worker emitting `reason="preempted"` → rely on the default (or claim
-  `completed` where genuinely final).
+- `runstate/vocabulary/payloads.py` — `Stopped`: drop `reason`, add `completed: bool`, add the
+  `__post_init__` invariant.
+- `protocol/lifecycle-v0.2.schema.json` — `Stopped`: `completed` (boolean, required) replaces
+  `reason`; the `completed⟹error null` constraint; `additionalProperties:false`. + `tests/test_schema.py`
+  conformance (a `completed=True` body validates; `completed=True`+`error` is rejected).
+- `runstate/worker.py` — the `stopped`/`__exit__`/`tick`/`steps` changes; drop `_stop_reason`.
+- `runstate/liveness.py` — `peek_terminal` lifecycle tier rewrite; `RunResult` docs/`reason` note.
+- Tests — `tests/test_worker.py` (default is `preempted`, not `completed`; claim via
+  `completed=True`; a `control.stop` now yields `preempted` with no `"commanded"` label),
+  `tests/test_liveness.py` (the `{completed,error}` projection; the invariant), `tests/test_memoizer.py`
+  fixtures (`_cell`/`chunked` etc. stop emitting `reason="preempted"`/`"completed"` → use
+  `w.stopped(completed=True)` only where genuinely final, else the default).
 - `examples/reuse/driver.py` — make `train` **genuinely resumable** (don't claim `completed`) so the
   `extend` case resumes `8..19`, fixing the misleading comment the `ensure(until)` review flagged.
-- `docs/design-v0.2.md` §7 + `docs/specs/preempted-vs-completed.md` — retune the
-  "worker self-reports preempted / clean stop = finished" prose to the B′ framing.
-- **Downstream (mycooc, separate repo — out of scope here):** its emitter stops typing `"preempted"`;
-  patience-convergence claims `completed`; chunk / `max_steps` stops rely on the default.
+- `docs/design-v0.2.md` §7 + `docs/specs/preempted-vs-completed.md` — retune the prose.
+- **Downstream (mycooc, separate repo — out of scope here):** emitter sets `completed=True` on
+  patience-convergence; chunk / `max_steps` stops use the default; it stops emitting any `reason`.
 
-## Non-goals / open for review
+## Non-goals
 
-- **Not Option A or C** (do *not* force a declaration on finite-`total` or on every clean exit) —
-  the bound-reaching reason isn't the worker's to know, so it must default, not be demanded.
-- **Don't forbid descriptive causes** — `"commanded"` etc. remain legal worker color (free string),
-  all projecting to `preempted`. Only the literal outcome word `"preempted"` is retired from
-  worker-side use.
-- **The one wire change** (nullable `reason`): the alternative is *B′-minimal* — keep `reason`
-  a required string and default to a neutral non-null word (no schema change). I recommend `null`:
-  it's the honest representation of "no claim," matches the present-nullable convention, and needs no
-  `peek_terminal` change. Decide at review.
-- **Claim API:** `w.stopped(reason="completed")` suffices; an optional `w.completed()` convenience is
-  possible (sugar for it). Decide at review.
+- **Not Option A or C** (do not force a declaration) — the bound-reaching reason isn't the worker's to
+  know, so it defaults rather than being demanded.
+- **No term algebra / closed reason enum** — the terminal set is flat (3 states), captured by one bit
+  + the scoped `error`. (Resolves the earlier flagged choice: *remove* `reason` rather than make it
+  nullable or close it to an enum.)
+- **Claim API:** `w.stopped(completed=True)` is the claim; no separate `w.completed()` sugar (don't add
+  surface for a one-liner).
