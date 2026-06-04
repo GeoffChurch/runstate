@@ -31,10 +31,10 @@ of **the stop**, not of the worker:
   boundary, a cooperative `control.stop`); a relaunch *resumes* and yields more trajectory.
 
 `RunResult.outcome` (the closed, normalized projection `peek_terminal` already computes)
-**already encodes this**: `reason=="completed"` → `outcome="completed"`; any other clean
-reason → the catch-all bucket (today named `"stopped"`). `ensure` simply was not consulting
-it — it treated `completed` and the catch-all identically (re-drive). The fix is to consult
-the distinction that already exists.
+**already encodes this**: `completed=True` in the stopped body → `outcome="completed"`; any
+unmarked clean stop → `outcome="preempted"` (the resumable bucket, renamed from `"stopped"`
+in this same change). `ensure` simply was not consulting the distinction that already
+existed — it treated the two identically (re-drive). The fix is to consult it.
 
 ## Change A — `ensure` is satisfied by worker-declared completion
 
@@ -54,13 +54,14 @@ if result is not None and result.outcome == "completed":
     return history(channel, name, dense)   # producer is done, even short of up_to
 ```
 
-**Worker contract (load-bearing):** the worker must *self-classify* its stop — emit
-`reason="completed"` only when it is intrinsically done, and a preemption reason otherwise.
-This is a property of the log the worker already owns; `ensure` does **not** take a
-caller-side "is it done?" predicate (that would move the judgment off the authoritative log
-and into a guess). A worker that lies (emits `completed` on a mere pause) under-produces;
-one that never emits `completed` and cannot reach `up_to` is the existing spin/no-progress
-case — unchanged.
+**Worker contract (load-bearing):** the worker claims `completed=True` only when it is
+intrinsically done, and leaves the bit unset (default `completed=False`) otherwise — the
+consumer-side projection then reads `preempted`. The worker emits no `reason` string; the
+`completed` bit *is* the self-classification. `ensure` does **not** take a caller-side
+"is it done?" predicate (that would move the judgment off the authoritative log and into a
+guess). A worker that lies (claims `completed` on a mere pause) under-produces; one that
+never claims `completed` and cannot reach `up_to` is the existing spin/no-progress case —
+unchanged.
 
 ## Change B — rename the outcome value `"stopped"` → `"preempted"`
 
@@ -72,18 +73,17 @@ weakest of the five and bleeds into `"completed"`. `"preempted"` names the resum
 semantics precisely and stays cleanly orthogonal to `"killed"` (preempted = a *clean*,
 checkpointed, resumable pause; killed = a *hard* termination with no clean-stop guarantee).
 
-This bucket is purely **worker-self-reported**: `peek_terminal`'s `launcher.terminated` tier
-only ever yields `killed`/`completed`(exit 0)/`errored`(exit≠0) — never this bucket. That is
-correct: only the *worker* can know "I paused, resumable" vs "I finished"; a launcher sees
-only an exit code. `"preempted"` is the worker's cooperative declaration of a resumable
-pause.
+This bucket is purely a **consumer-side projection** of the worker's `completed=False`
+(unmarked) stop: `peek_terminal`'s `launcher.terminated` tier only ever yields
+`killed`/`completed`(exit 0)/`errored`(exit≠0) — never this bucket. That is correct: only
+the *worker* can know "I paused, resumable" vs "I finished"; a launcher sees only an exit
+code. The worker claims `completed=True` or stays unmarked; `preempted` is what the
+consumer reads when the claim is absent.
 
-`commanded` is **one `reason` that projects into `preempted`**, not the bucket's name. The
-bucket also holds *consumer self-preemption* — a worker that pauses itself on its own budget
-(mycooc's chunk / `max_steps` / time budget, configured at launch and polled internally,
-with **no** `control.stop`). So `commanded` would be too narrow (it would mislabel
-self-budget stops). We keep **one** `preempted` outcome; we do **not** add a `commanded`
-outcome (that distinction lives in the verbatim `reason`, where it belongs).
+`commanded` stops (a `control.stop` fired at a safe point) and *self-preemption* (a worker
+that pauses on its own budget with no `control.stop`) both leave `completed` unset and
+therefore both project to `preempted`. Commandedness is recoverable from the `control.stop`
+on the log. We keep **one** `preempted` outcome — the worker emits no `reason` string.
 
 The *topic* `lifecycle.stopped` is **unchanged** — it remains the event topic for any
 cooperative stop (completed or preempted). Only the consumer-side `RunResult.outcome`
@@ -113,7 +113,7 @@ patch.
 - **Spanning (sufficiency):** supplies the missing basis vector — "the producer is done
   before the caller's bound" — without over-reaching: `ensure` reads the worker's own
   declaration, baking no workload opinion (which stops are "done" is the worker's call, via
-  `reason`).
+  the `completed` bit).
 - **Canonical form:** `outcome` is *the* canonical projection of the liveness tiers (per the
   repo rubric); using it is canonical, and `preempted` is the least-arbitrary name for the
   resumable bucket.
@@ -125,33 +125,26 @@ patch.
 
 ## Scope / ripple
 
-Python + docs + tests; **no wire-schema change** (`outcome` is the consumer verdict
-`RunResult`, not a convention body; `Stopped.reason` is a free string, unlike the
-closed-enum `Nak.reason`):
+**Shipped in B′ (Tasks 1–4):** Python, tests, examples, docs. The wire schema *did* change
+(`Stopped.reason` removed; `completed` bit added — `protocol/lifecycle-v0.2.schema.json`
+updated; `additionalProperties: false` enforces the new shape):
 
-- `runstate/liveness.py` — `peek_terminal` `:90` assignment `"stopped"`→`"preempted"`; the
-  `RunResult.outcome` enum comment `:28` and the `:24` example.
+- `runstate/vocabulary/payloads.py` — `Stopped = {completed, error, final_step}` (no `reason`).
+- `runstate/liveness.py` — `peek_terminal` reads `completed` bit; lifecycle-tier `reason == outcome`.
+- `runstate/worker.py` — `stopped(completed=False, error=None, final_step=None)`; `tick` returns `bool`.
 - `runstate/memoizer.py` — `ensure`'s outer loop: the early-completion check (Change A).
-- `runstate/sweep.py:18` — comment referencing the `"stopped"` outcome.
-- Tests — `test_liveness.py`, `test_sweep.py`, `test_inproc_integration.py` assertions on
-  `outcome == "stopped"`; **add** `ensure` tests (synthetic channels: `completed` short of
-  `up_to` ⟹ `ensure` returns without re-driving; `preempted` short ⟹ re-drives;
-  `completed` at/over `up_to` ⟹ returns).
-- `docs/design-v0.2.md` — the `RunResult.outcome` enum (`:222`, `:228`); and soften the
-  §7 / `Stopped`-schema prose "its existence on the log = the run cleanly finished" to "a
-  clean cooperative stop; *finished* (completed) vs *paused* (preempted) is carried by
-  `reason` → the `outcome` projection."
-- `docs/specs/memoizer.md` — the `ensure` semantics (the completion satisfaction condition).
-- `protocol/lifecycle-v0.2.schema.json` — **no change** (the `Stopped.reason` free string
-  already admits any worker label; only its prose description is clarified, optionally).
+- Tests — `test_liveness.py`, `test_worker.py`, `test_payloads.py`, `test_schema.py`,
+  `test_watcher.py`, `test_sweep.py`, `test_inproc_integration.py`, `test_run_episodes.py`,
+  `test_memoizer.py` — all migrated to B′ stop-signaling.
+- `examples/minimal/worker.py` — claims `completed=True` on finishing its 50-step budget.
+- `docs/design-v0.2.md` — §7 table, `RunResult` comment.
 
 ## Non-goals
 
-- **Do not** split `commanded` into its own outcome — it is one `reason` under `preempted`.
+- **Do not** split `commanded` into its own outcome — commandedness is recoverable from the
+  `control.stop` on the log; the clean-stop bucket stays `preempted`.
 - **Do not** rename the `lifecycle.stopped` *topic*.
-- **Consumer-side, out of scope here (mycooc Phase 4):** for a worker to *benefit*, it must
-  emit `reason="completed"` for true completion (mycooc: patience/convergence) and a
-  preemption reason otherwise (mycooc: chunk-preempt / `max_steps` / time budget — note
-  `max_steps` is *reaching the caller's bound*, i.e. `preempted`/resumable, **not**
-  `completed`). That re-mapping is schema-legal (`Stopped.reason` is free) and lands in
-  mycooc's emitter, not here.
+- **Consumer-side, mycooc Phase 4 (separate repo):** for a worker to *benefit*, it must
+  claim `completed=True` for true completion (patience/convergence) and leave the bit unset
+  otherwise (chunk-preempt / `max_steps` / time budget — `max_steps` is *reaching the
+  caller's bound*, i.e. resumable, **not** `completed`).

@@ -20,8 +20,10 @@ def main():
             # "training step" -- just simulate a decaying loss.
             loss = max(0.01, 5.0 * (0.97**step) + math.sin(step * 0.2) * 0.1)
             w.set("loss", loss)
-    # Leaving the `with` emits lifecycle.stopped (completed, or commanded if the
-    # orchestrator sent a control.stop that fired at a safe point).
+        w.stopped(completed=True)  # finished the full 50-step budget -> claim completion
+    # Leaving the `with` without a prior claim emits lifecycle.stopped with
+    # completed=False (default preempted). A commanded or budget-preempted stop
+    # lets the context-manager __exit__ handle it -- no explicit call needed.
 
 
 if __name__ == "__main__":
