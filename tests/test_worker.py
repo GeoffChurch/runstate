@@ -284,6 +284,7 @@ def test_steps_drives_ticks_explicit_completed_claim(open_channel):
     body = obs.latest("lifecycle.stopped").body
     assert body["completed"] is True
     assert body["error"] is None
+    assert body["final_step"] == 2   # stopped() auto-fills final_step from the last yielded step
     # only one stopped record: first writer wins
     assert len(obs.read(topics=["lifecycle.stopped"])) == 1
 

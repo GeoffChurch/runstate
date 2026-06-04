@@ -66,7 +66,7 @@ class Worker:
         """Drive the worker over a loop. Yields each step; after the body it
         ``tick``s (servicing the values set this iteration) and stops on a
         commanded stop. Pair with ``with Worker(...) as w`` so the dying breath
-        (completed / commanded / errored) is emitted on exit.
+        (completed / preempted / errored) is emitted on exit.
 
         ``start`` is keyword-only (default 0). Pass ``start=k`` to resume a run
         from checkpoint step ``k`` — steps are then emitted as ``k, k+1, …``
@@ -107,6 +107,8 @@ class Worker:
         if self._stopped:
             return
         self._stopped = True
+        if final_step is None:
+            final_step = self._last_step   # auto-fill from the last yielded step
         body = asdict(Stopped(completed=completed, error=error, final_step=final_step))
         self._ch.send(body, topic="lifecycle.stopped")
 
