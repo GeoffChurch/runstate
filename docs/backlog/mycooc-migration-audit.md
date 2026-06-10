@@ -153,6 +153,15 @@ the ownership/lifecycle contract (who closes what) — it's currently unstated.
 
 ## F5 (MED — missing primitive) — no first-class reader for the historical value series
 
+**Resolved 2026-06-10** (`../specs/observables.md`) — shipped as the
+zero-argument family fold `value_series(channel) -> {name: {step: value}}`.
+The spec supersedes the sketch below twice: no `name=`/`dedup_by_step` knobs —
+same-step last-wins is not an option but the fold's *semantics* (the
+substrate's register projection lifted to the (name, step) plane, which also
+resolves episode rewinds to the as-resumed trajectory), and a pushed-down
+`name=` filter is a compatible future refinement for a large-log consumer.
+mycooc's `channel_metrics` deletes with no call-site change.
+
 The `Worker` *emits* `value` events (subscription-serviced) and `memoizer.history`
 replays a *schedule* over them, but there is no plain reader for the dense value
 series. mycooc had to write the whole of `channel_read.py` —
@@ -164,6 +173,13 @@ gap. **Suggested:** ship `value_series(channel, name=None, *, dedup_by_step=True
 
 ## F6 (MED — promote to public) — the progress projection should be public API
 
+**Resolved 2026-06-10** (`../specs/observables.md`) — promoted as
+`progress(channel) -> int | None` (None for absence, not the sketch's bare
+`int`/-1: the in-band sentinel stays private to the memoizer's arithmetic
+adapter). The reuse predicate is deliberately NOT shipped — with
+`peek_terminal` and `progress` both public it is a one-line composition at
+the consumer (a library version fails Independence).
+
 `memoizer._progress(channel)` (max step from the dense heartbeat+stopped axis) is
 exactly the "how far has this run gotten?" projection an orchestrator needs, but
 it's private. mycooc copied it **verbatim** into `_channel_progress` (its
@@ -173,6 +189,16 @@ reuse predicate — mycooc's `_reusable_from_channel` is `peek_terminal is not N
 and progress >= min_steps`, a recurring shape.
 
 ## F7 (MED — missing primitive) — no "latest event of topic X in the current episode" reader
+
+**Resolved 2026-06-10** (`../specs/observables.md`) — shipped as
+`latest_episode(channel) -> Envelope | None`, superseding the sketch on three
+counts: renamed ("latest", not "current" — static over dynamic; an ended
+episode is still the one a status display shows), returns the raw envelope
+rather than a parsed `Started` (selection never parses; `.seq` is the
+episode-window watermark, `Started(**e.body)` the typing idiom), and
+`latest_in_episode` is deliberately not shipped (the idiom is
+`read(after=e.seq, …)`; a wrapper is the meta-layer smell). `live_episode`
+now routes through it.
 
 A cell's channel is reused across dispatches (many `started…stopped` episodes in
 one log). `live_episode`/`peek_terminal` are episode-aware internally, but there's
@@ -188,6 +214,12 @@ removes the most-copied consumer boilerplate and a whole class of episode-stalen
 bugs for the next consumer.
 
 ## F8 (MED — stable contract) — `started.handle` pid extraction is an unspecified hand-parsed string
+
+**Resolved 2026-06-10** (`../specs/observables.md`) —
+`vocabulary.handle_pid(handle) -> int | None` shipped, with `resolve()`
+routed through it: one parse site, landed ahead of the `?start=` format
+change. (`Started.pid` accessor not added — the payload dataclasses stay
+schema-mirrors; the function suffices.)
 
 `vocabulary/handle.py` emits `local://{host}/{pid}`; consumers recover the pid by
 `handle.rsplit("/", 1)[-1]` (mycooc `_channel_pid`, and runstate's own
@@ -230,8 +262,10 @@ not correctness.
    above): the re-typing fixes the lost-stop, the multi-orchestrator clobber,
    the cross-episode replay, and the all-or-nothing `tick()` coupling in one
    stroke — mycooc can drop its workaround. Item 3 is now the top pickup.
-3. **F5/F6/F7 — ship `value_series()` / `progress()` / `current_episode()`.**
-   Exactly the files mycooc was forced to write (`channel_read.py`,
-   `_channel_progress`, `_channel_live_status`/`_channel_pid`) — one around a
-   stale-read bug. Promoting them erases the most-duplicated consumer boilerplate
-   and removes the episode-staleness footgun for the next adopter.
+3. ~~**F5/F6/F7 — ship `value_series()` / `progress()` / `current_episode()`.**~~
+   **Done 2026-06-10** (with F8) as the observables batch (see the F5–F8
+   sections above; `current_episode` shipped renamed as `latest_episode`).
+   mycooc deletes `channel_read.py` + the `_channel_*` helpers in one sweep
+   (its checklist: `mycooc/docs/backlog/infrastructure/runstate-adoption-sweep.md`).
+   The remaining open findings here are F4 (channel lifecycle/close) and the
+   F9/F10 minors.

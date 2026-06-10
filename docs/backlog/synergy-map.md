@@ -78,9 +78,12 @@ Cartesian sweep + reuse-skipping sit on top.
 
 ### Cluster 3 — the read-projection basis → derived tools
 
-**State:** F2/F3 + the cross-episode replay **shipped 2026-06-09**
-([stop-discharge](../specs/stop-discharge.md)); the readers (F5–F8) unbuilt;
-fully mycooc-validated.
+**State:** ✅ **COMPLETE.** F2/F3 + the cross-episode replay shipped 2026-06-09
+([stop-discharge](../specs/stop-discharge.md)); the readers (F5–F8) shipped
+2026-06-10 ([observables](../specs/observables.md): `value_series` / public
+`progress` / `latest_episode` / `handle_pid`, with `liveness.py` absorbed into
+the new `observables.py`). mycooc deletes its workarounds in one sweep (its
+checklist: `mycooc/docs/backlog/infrastructure/runstate-adoption-sweep.md`).
 
 F5/F6/F7 are **catamorphisms the log already determines** — `value_series` folds
 `value` events, `progress` maxes the heartbeat/stopped axis, `current_episode` is
@@ -88,12 +91,14 @@ the latest `started`. Making consumers re-fold data the substrate already holds 
 the missing-basis-vector smell. Reframed: these *complete the read-projection
 basis*, they aren't ergonomic sugar.
 
-- **F5/F6/F7** ([mycooc-migration-audit](mycooc-migration-audit.md)) — ship
-  `value_series()` / public `progress()` / `current_episode()`; F7 wrapped a real
-  stale-pid bug.
-- **F8** — `handle_pid()` owns the handle format in *one* function *before* the
-  `?start=` disambiguator ([conventions-hygiene](conventions-hygiene.md) F9)
-  breaks every consumer's `rsplit`.
+- **F5/F6/F7** ([mycooc-migration-audit](mycooc-migration-audit.md)) — **shipped
+  2026-06-10**: `value_series()` / public `progress()` / `latest_episode()`
+  (the F7 sketch's `current_episode`, renamed — static over dynamic); F7 had
+  wrapped a real stale-pid bug.
+- **F8** — **shipped 2026-06-10**: `handle_pid()` owns the handle format in
+  *one* function (with `resolve()` routed through it), ahead of the `?start=`
+  disambiguator ([conventions-hygiene](conventions-hygiene.md) F9) that would
+  have broken every consumer's `rsplit`.
 - **F2 (+F3 + the cross-episode stale-stop replay)** — **shipped 2026-06-09 as
   one fix: [stop-discharge](../specs/stop-discharge.md)** (specced and
   implemented same day; the strict-xfail pin
@@ -140,10 +145,10 @@ than any inspection-only item.
    2026-06-07** (fix superseded 2026-06-09 by the atomic-by-construction form —
    mechanism in the audit's F1). Unblocked Cluster 1; the cheap Cluster 3 batch
    is next.
-2. **Cluster 3 batch** (F5/F6/F7/F8; the F2 half shipped 2026-06-09) — cheapest,
-   all mycooc-validated, all clean basis-completion; lets mycooc delete
-   workarounds.
-3. **Cluster 1** — the richest *design* payoff (keystone serendipity).
+2. ~~**Cluster 3 batch**~~ — **done** (F2 half 2026-06-09, readers 2026-06-10);
+   the mycooc deletion sweep validates it.
+3. **Cluster 1** — the richest *design* payoff (keystone serendipity). **Now
+   the top pickup.**
 4. **Cluster 2** — the Layer-4 backbone; larger relational build; recipe specced.
 
 **Least:**
@@ -160,9 +165,11 @@ than any inspection-only item.
 
 ## Sequencing
 
-`F1` ✅ (fixed 2026-06-07; unblocked all) → **Cluster 3 batch** (cheap, validated;
-F2/F3/stale-stop ✅ shipped 2026-06-09 as [stop-discharge](../specs/stop-discharge.md);
-the readers remain) → **Cluster 1** (keystone) → **Cluster 2** (Layer 4) → Cluster 4 stays frozen
+`F1` ✅ (fixed 2026-06-07; unblocked all) → **Cluster 3 batch** ✅ (complete:
+F2/F3/stale-stop 2026-06-09 as [stop-discharge](../specs/stop-discharge.md),
+the readers 2026-06-10 as [observables](../specs/observables.md); next mycooc
+sweep deletes the workarounds) → **Cluster 1** (keystone — NOW NEXT) →
+**Cluster 2** (Layer 4) → Cluster 4 stays frozen
 until the Store lands. channel-postgres slots in *with* Cluster 1
 (wake-on-subscribe); the CLI/webapp tools *after* Cluster 3's readers are public.
 
