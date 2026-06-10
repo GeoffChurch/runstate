@@ -15,7 +15,7 @@ from dataclasses import asdict
 
 from .vocabulary.payloads import Heartbeat, Nak, Started, Stopped, Value
 from .vocabulary.handle import local_handle
-from .vocabulary.schedule import Subscription, is_unsatisfiable, satisfied
+from .vocabulary.schedule import Subscription, contains_count, is_unsatisfiable, satisfied
 from .observables import live_episode
 
 
@@ -46,6 +46,17 @@ class Worker:
             self._discharge_floor = max(
                 (e.seq for e in envs if e.topic == "lifecycle.stopped"), default=0
             )
+            # The positional answer fold (specs/service-worker.md): a
+            # control.subscribe is live until an unsubscribe or nak bearing
+            # its request_id FOLLOWS it by seq. Same read as the claim; the
+            # drain skips answered subscribes (so a resumed episode neither
+            # resurrects an expired lease nor re-naks a refused request).
+            self._answers: dict = {}
+            for e in envs:
+                if e.request_id is not None and e.topic in (
+                    "control.unsubscribe", "lifecycle.nak"
+                ):
+                    self._answers.setdefault(e.request_id, []).append(e.seq)
             if live_episode(self._ch) is not None:
                 self._lost = True
                 break
@@ -94,6 +105,26 @@ class Worker:
                 return
             step += 1
 
+    def serve(self):
+        """Drive a service: yield (the body does its work — set values, pace
+        itself), then tick STEPLESS (``step=None``: the heartbeat carries a
+        null step and step-keyed conditions nak — design §7's service worker),
+        and exit on a commanded stop or, at zero demand, via the careful death
+        (``retire``). ``steps(total)`` runs on the launch contract's target;
+        ``serve()`` runs on the log's leased demand — the two protocol-visible
+        continuation policies (specs/service-worker.md). Pair with
+        ``with Worker(...) as w`` like ``steps``."""
+        if self._lost:
+            return
+        i = 0
+        while True:
+            yield i
+            if self.tick(step=None):     # commanded stop triggered
+                return
+            if not self._subs and self.retire():
+                return
+            i += 1
+
     def set(self, name: str, value) -> None:
         """Update the worker's current value for ``name``."""
         self._values[name] = value
@@ -121,6 +152,52 @@ class Worker:
         host loop cannot act on ``tick``'s return: poll this at your own safe
         point instead; reading it consumes nothing."""
         return self._stop_decision(self._last_step)
+
+    @property
+    def pinned(self) -> bool:
+        """Someone holds a live claim on my output (design §7: reads never
+        pin, subscribes do). Plain truth of the live registration set — it can
+        mislead before the first drain (a pre-staged subscribe sits undrained),
+        so consult it only after a tick; the blessed paths (``serve``,
+        ``retire``) do so structurally (specs/service-worker.md)."""
+        return bool(self._subs)
+
+    def retire(self) -> bool:
+        """The careful death (specs/service-worker.md): try to stop because
+        demand drained to zero. True = the dying breath is on the log (or this
+        worker already stopped / lost its claim — nothing left to do); False =
+        new control arrived and the worker should keep serving.
+
+        The death-CAS mirrors the birth claim — episodes are CAS-claimed at
+        both ends. Discipline: ``expected_seq`` comes only from a read, never
+        from an own append's returned seq (an own append can land on top of an
+        unseen racing subscribe); any record found — including the worker's
+        own naks/expiry unsubscribes — forces one more read, so the CAS fires
+        only against a tail this loop has fully seen and drained."""
+        if self._lost or self._stopped:
+            return True
+        observed = self._cursor
+        while True:
+            tail = self._ch.read(after=observed)
+            if tail:
+                for e in tail:
+                    if e.topic.startswith("control."):
+                        self._cursor = e.seq
+                        try:
+                            self._handle_control(e, self._last_step)
+                        except Exception as exc:
+                            self._nak(e.request_id, "malformed", str(exc))
+                observed = tail[-1].seq
+                continue   # re-read: the drain may have appended answers
+            if self._subs:
+                return False               # new mail — keep serving
+            body = asdict(Stopped(completed=False, error=None,
+                                  final_step=self._last_step))
+            if self._ch.send(body, topic="lifecycle.stopped",
+                             expected_seq=observed) is not None:
+                self._stopped = True       # the idempotent latch; __exit__ no-ops
+                return True
+            # CAS lost: something landed after `observed` — loop re-reads.
 
     def stopped(self, *, completed: bool = False, error=None, final_step=None) -> None:
         """Emit the cooperative dying breath (lifecycle.stopped). Its existence = a
@@ -153,6 +230,19 @@ class Worker:
         if e.topic == "control.subscribe":
             if e.request_id is None:
                 self._nak(None, "malformed", "subscribe requires a request_id")
+            elif any(a > e.seq for a in self._answers.get(e.request_id, ())):
+                # Already answered (unsubscribed or naked) later on the log --
+                # history, never again input (the positional answer fold).
+                return
+            elif any(
+                contains_count(c)
+                for c in (e.body.get("from"), e.body.get("every"))
+                if c is not None
+            ):
+                # A count atom outside `until` is a circular gate (the
+                # accidental pure pin); the schema already forbids it.
+                self._nak(e.request_id, "malformed",
+                          "count thresholds are valid only in `until`")
             elif is_unsatisfiable(e.body, step=step):
                 self._nak(e.request_id, "unsatisfiable", "schedule can produce no fires")
             else:
@@ -183,6 +273,10 @@ class Worker:
                 # condition naks like a bad subscribe, instead of poisoning the
                 # pending set and crashing at the unguarded tick-time eval site.
                 from_ = e.body.get("from")
+                if from_ is not None and contains_count(from_):
+                    self._nak(e.request_id, "malformed",
+                              "count thresholds are valid only in `until`")
+                    return
                 if from_ is not None:
                     satisfied(from_, step=step, time_seconds=0.0, count=0)  # raises -> nak
                 if is_unsatisfiable(e.body, step=step):
@@ -235,6 +329,12 @@ class Worker:
                         f"attach()/open_channel() to coerce it"
                     ) from exc
             if decision.expired:
+                # Emit-then-delete: the expiry counter-record -- the worker
+                # completing the subscribe/unsubscribe pair, the same shape as
+                # stopped completing stop -- lands on the log before memory
+                # changes, so a crash between the two re-derives correctly
+                # (specs/service-worker.md).
+                self._ch.send({}, topic="control.unsubscribe", request_id=request_id)
                 del self._subs[request_id]
 
     def _stop_decision(self, step) -> bool:

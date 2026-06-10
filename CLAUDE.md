@@ -55,15 +55,19 @@ The substrate + opt-in conventions + reference orchestration, in
   `Subscription`, `is_unsatisfiable()` — `from`/`every`/`until` over
   `step`/time/count), `handle.py` (portable liveness handles `local://host/pid`;
   `handle_pid` owns the parse, `resolve` the liveness probe).
-- **`worker.py`** — the reference `Worker` loop (context manager +
-  `steps()`): drains `control.*`, services subscriptions into `value`
-  events, emits `lifecycle.*` (started / heartbeat / stopped / nak).
+- **`worker.py`** — the reference `Worker` loop (context manager + the two
+  drivers: `steps(total)` runs on the launch contract's target, `serve()` on
+  leased demand): drains `control.*` (positional answer fold; expiry
+  counter-records), services subscriptions into `value` events, emits
+  `lifecycle.*`, exposes the levels (`stop_pending`, `pinned`), and dies
+  carefully (`retire()` — the death-CAS; specs/service-worker.md).
 - **`observables.py`** — the **stateless observer plane**: pure body-aware
   folds log → derived view (`docs/specs/observables.md`). `peek_terminal` →
   `RunResult` (the terminal verdict; closed `outcome`, verbatim `reason`, no
   `success`), `live_episode`, `latest_episode` (the episode-boundary rule),
   `progress` (the step frontier), `value_series` (the per-(name, step)
-  register projection). Membership test: needs a cursor or clock → it's the
+  register projection), `live_demand` (the positional answer fold —
+  unanswered subscribes). Membership test: needs a cursor or clock → it's the
   `Watcher`'s; parses a handle string → it's `vocabulary/`'s.
 - **`launcher.py`** — `Launcher` / `LaunchHandle` Protocols +
   `ThreadLauncher` (in-process) + `LocalLauncher` (subprocess + `attach`).
@@ -146,7 +150,7 @@ scores above.
 ```bash
 pip install -e .                    # install editable
 pip install -e .[test]              # + jsonschema for the schema tests
-pytest tests/                       # run all tests (~270, ~2s)
+pytest tests/                       # run all tests (~365, ~2s)
 pytest tests/test_channel.py -v     # one module
 pytest tests/test_schema.py -v      # emitted messages conform to the schema stack
 ```

@@ -1,0 +1,323 @@
+"""The service-worker spec (docs/specs/service-worker.md).
+
+Expiry counter-records + the positional answer fold (a subscribe is live
+until an unsubscribe/nak with its request_id FOLLOWS it by seq), the enforced
+registered<=>fire-possible invariant, the count-atom hygiene, pinned/retire/
+serve, and the death-CAS race discipline. Parametrized over both backends.
+"""
+
+import pytest
+
+from runstate.worker import Worker
+
+
+def _sub(ch, schedule, rid, name="loss"):
+    return ch.send(schedule, topic="control.subscribe", name=name, request_id=rid)
+
+
+# ----- expiry counter-records (piece 1) -----
+
+
+def test_until_expiry_writes_the_counter_record(open_channel):
+    orch = open_channel()
+    _sub(orch, {"every": {"step": 1}, "until": {"time_seconds": 10}}, "r1")
+    t = {"now": 0.0}
+    w = Worker(open_channel(), now=lambda: t["now"])
+    w.set("loss", 1.0)
+    w.tick(step=0)                              # registers + first fire
+    t["now"] = 11.0
+    w.tick(step=1)                              # until met -> expire
+    unsubs = open_channel().read(topics=["control.unsubscribe"])
+    assert [u.request_id for u in unsubs] == ["r1"]
+
+
+def test_one_shot_consumed_writes_the_counter_record(open_channel):
+    orch = open_channel()
+    _sub(orch, {}, "r1")                        # fire-once-now
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.set("loss", 0.5)
+    w.tick(step=0)                              # fires and is consumed
+    unsubs = open_channel().read(topics=["control.unsubscribe"])
+    assert [u.request_id for u in unsubs] == ["r1"]
+    # emit-then-delete lands the record before that tick's heartbeat beacon
+    hb = open_channel().latest("lifecycle.heartbeat")
+    assert unsubs[0].seq < hb.seq
+
+
+def test_naked_at_service_keeps_the_nak_as_the_answer(open_channel):
+    # a schedule that registers but blows up at eval (a bogus `every` is only
+    # evaluated at the SECOND fire attempt -- the first short-circuits at
+    # count==0): nak'd and dropped -- the nak IS the answer; no unsubscribe
+    # record on top of it.
+    orch = open_channel()
+    _sub(orch, {"every": {"bogus": 1}}, "bad")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.set("loss", 1.0)
+    w.tick(step=0)                              # first fire (legitimate)
+    w.tick(step=1)                              # every evaluates -> naked
+    assert open_channel().latest("lifecycle.nak").request_id == "bad"
+    assert open_channel().read(topics=["control.unsubscribe"]) == []
+
+
+def test_worker_redrains_its_own_expiry_record_silently(open_channel):
+    orch = open_channel()
+    _sub(orch, {}, "r1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.set("loss", 0.5)
+    w.tick(step=0)                              # expiry record written
+    w.tick(step=1)                              # drains its own unsubscribe
+    assert open_channel().read(topics=["lifecycle.nak"]) == []
+
+
+# ----- the positional answer fold across episodes -----
+
+
+def test_resumed_episode_does_not_resurrect_an_expired_lease(open_channel):
+    orch = open_channel()
+    _sub(orch, {"every": {"step": 1}, "until": {"time_seconds": 10}}, "r1")
+    t = {"now": 0.0}
+    with Worker(open_channel(), now=lambda: t["now"]) as w1:    # episode 1
+        w1.set("loss", 1.0)
+        w1.tick(step=0)
+        t["now"] = 11.0
+        w1.tick(step=1)                         # lease lapses; record written
+    n_values = len(open_channel().read(topics=["value"]))
+    with Worker(open_channel(), now=lambda: t["now"]) as w2:    # episode 2
+        w2.set("loss", 2.0)
+        w2.tick(step=2)                         # must NOT re-register r1
+    assert len(open_channel().read(topics=["value"])) == n_values
+
+
+def test_resumed_episode_skips_a_naked_subscribe(open_channel):
+    # nak is final: no duplicate nak per episode; refused stays refused.
+    orch = open_channel()
+    _sub(orch, {"until": {"step": 50}}, "r1")   # window already closed at 100
+    with Worker(open_channel(), now=lambda: 0.0) as w1:
+        w1.tick(step=100)                       # nak: unsatisfiable
+    assert len(open_channel().read(topics=["lifecycle.nak"])) == 1
+    with Worker(open_channel(), now=lambda: 0.0) as w2:
+        w2.tick(step=101)
+    assert len(open_channel().read(topics=["lifecycle.nak"])) == 1
+
+
+def test_same_id_resubscribe_after_answer_is_live(open_channel):
+    # positional, not id-set: a later subscribe reusing an answered id is a
+    # fresh, live request.
+    orch = open_channel()
+    _sub(orch, {"every": {"step": 1}}, "r1")
+    orch.send({}, topic="control.unsubscribe", request_id="r1")   # rescind
+    _sub(orch, {"every": {"step": 1}}, "r1")                      # again, later
+    with Worker(open_channel(), now=lambda: 0.0) as w:
+        w.set("loss", 1.0)
+        w.tick(step=0)
+    vals = open_channel().read(topics=["value"])
+    assert [v.request_id for v in vals] == ["r1"]   # served exactly once
+
+
+def test_unsubscribe_before_its_subscribe_answers_nothing(open_channel):
+    orch = open_channel()
+    orch.send({}, topic="control.unsubscribe", request_id="r1")   # too early
+    _sub(orch, {"every": {"step": 1}}, "r1")
+    with Worker(open_channel(), now=lambda: 0.0) as w:
+        w.set("loss", 1.0)
+        w.tick(step=0)
+    assert len(open_channel().read(topics=["value"])) == 1
+
+
+# ----- the enforced invariant: registered <=> a future fire is possible -----
+
+
+def test_stepless_step_only_every_fires_once_then_expires(open_channel):
+    # the most natural service subscription: {every: {step: 1}} on a stepless
+    # worker -- fires its legitimate once, then expires with its record,
+    # instead of pinning forever.
+    orch = open_channel()
+    _sub(orch, {"every": {"step": 1}}, "r1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.set("loss", 1.0)
+    w.tick(step=None)
+    w.tick(step=None)
+    assert len(open_channel().read(topics=["value"])) == 1
+    assert [u.request_id for u in open_channel().read(topics=["control.unsubscribe"])] == ["r1"]
+
+
+def test_stepless_every_with_a_time_arm_recurs(open_channel):
+    orch = open_channel()
+    _sub(orch, {"every": {"any": [{"step": 1}, {"time_seconds": 5}]}}, "r1")
+    t = {"now": 0.0}
+    w = Worker(open_channel(), now=lambda: t["now"])
+    w.set("loss", 1.0)
+    w.tick(step=None)                           # first fire
+    t["now"] = 6.0
+    w.tick(step=None)                           # recurs on the time arm
+    assert len(open_channel().read(topics=["value"])) == 2
+    assert open_channel().read(topics=["control.unsubscribe"]) == []
+
+
+# ----- count-atom hygiene (the accidental pure pin, closed) -----
+
+
+@pytest.mark.parametrize("schedule", [
+    {"from": {"count": 1}},
+    {"every": {"count": 2}},
+    {"from": {"any": [{"count": 1}, {"step": 5}]}},
+])
+def test_count_atoms_outside_until_nak_malformed(open_channel, schedule):
+    orch = open_channel()
+    _sub(orch, schedule, "r1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.tick(step=0)
+    nak = open_channel().latest("lifecycle.nak")
+    assert nak.request_id == "r1"
+    assert nak.body["reason"] == "malformed"
+
+
+def test_count_in_until_still_registers(open_channel):
+    orch = open_channel()
+    _sub(orch, {"every": {"step": 1}, "until": {"count": 2}}, "r1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.set("loss", 1.0)
+    w.tick(step=0)
+    assert open_channel().latest("lifecycle.nak") is None
+    assert len(open_channel().read(topics=["value"])) == 1
+
+
+def test_count_in_stop_from_naks_malformed(open_channel):
+    orch = open_channel()
+    orch.send({"from": {"count": 1}}, topic="control.stop", request_id="s1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    assert w.tick(step=0) is False
+    assert open_channel().latest("lifecycle.nak").body["reason"] == "malformed"
+
+
+# ----- pinned / retire / serve (the careful death) -----
+
+
+class _InjectOnFirstStopped:
+    """Channel wrapper: just before the worker's first lifecycle.stopped send
+    (the death-CAS), append a subscribe through a second handle -- the
+    deterministic form of the subscribe-races-the-dying-breath interleaving."""
+
+    def __init__(self, inner, orch):
+        self._inner, self._orch, self._fired = inner, orch, False
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def send(self, body, **kw):
+        if kw.get("topic") == "lifecycle.stopped" and not self._fired:
+            self._fired = True
+            self._orch.send({"every": {"time_seconds": 1}},
+                            topic="control.subscribe", name="loss", request_id="raced")
+        return self._inner.send(body, **kw)
+
+
+def test_pinned_states(open_channel):
+    orch = open_channel()
+    w = Worker(open_channel(), now=lambda: 0.0)
+    assert w.pinned is False
+    _sub(orch, {"every": {"time_seconds": 1}}, "r1")
+    w.tick(step=None)
+    assert w.pinned is True
+    orch.send({}, topic="control.unsubscribe", request_id="r1")
+    w.tick(step=None)
+    assert w.pinned is False
+
+
+def test_pinned_false_after_lease_lapse_within_the_tick(open_channel):
+    orch = open_channel()
+    _sub(orch, {"every": {"time_seconds": 1}, "until": {"time_seconds": 10}}, "r1")
+    t = {"now": 0.0}
+    w = Worker(open_channel(), now=lambda: t["now"])
+    w.set("loss", 1.0)
+    w.tick(step=None)
+    assert w.pinned is True
+    t["now"] = 11.0
+    w.tick(step=None)                            # lease lapses inside this tick
+    assert w.pinned is False
+
+
+def test_retire_wins_on_a_quiet_log(open_channel):
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.tick(step=None)
+    assert w.retire() is True
+    e = open_channel().latest("lifecycle.stopped")
+    assert e.body == {"completed": False, "error": None, "final_step": None}
+    w.stopped()                                  # __exit__ path: idempotent
+    assert len(open_channel().read(topics=["lifecycle.stopped"])) == 1
+
+
+def test_retire_returns_false_when_the_tail_holds_demand(open_channel):
+    orch = open_channel()
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.tick(step=None)
+    _sub(orch, {"every": {"time_seconds": 1}}, "r1")   # after the last tick
+    assert w.retire() is False                   # the fused read drains it
+    assert w.pinned is True
+    assert open_channel().latest("lifecycle.stopped") is None
+
+
+def test_retire_loses_the_cas_to_a_raced_subscribe(open_channel):
+    # the A1 interleaving: the subscribe lands BETWEEN retire's read and its
+    # CAS -- the CAS must lose, the next read must register the subscriber.
+    orch = open_channel()
+    w = Worker(_InjectOnFirstStopped(open_channel(), orch), now=lambda: 0.0)
+    w.tick(step=None)
+    assert w.retire() is False
+    assert w.pinned is True
+    assert open_channel().latest("lifecycle.stopped") is None  # nobody died
+
+
+def test_retire_own_append_then_wins(open_channel):
+    # a malformed subscribe in the tail: retire's drain naks it (an own
+    # append), which forces one more read; the CAS then wins cleanly.
+    orch = open_channel()
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.tick(step=None)
+    _sub(orch, {"from": {"count": 1}}, "bad")    # will nak malformed
+    assert w.retire() is True
+    log = open_channel().read()
+    assert log[-1].topic == "lifecycle.stopped"  # the stopped is last
+    assert any(e.topic == "lifecycle.nak" and e.request_id == "bad" for e in log)
+
+
+def test_serve_full_lifecycle(open_channel):
+    # pre-staged lease -> serve from tick 0 -> lease lapses -> careful death.
+    orch = open_channel()
+    _sub(orch, {"every": {"time_seconds": 1}, "until": {"time_seconds": 10}}, "r1")
+    t = {"now": 0.0}
+    served = []
+    with Worker(open_channel(), now=lambda: t["now"]) as w:
+        for i in w.serve():
+            w.set("cpu", float(i))
+            served.append(i)
+            t["now"] += 6.0                      # two body cycles outlive the lease
+    assert served and served[0] == 0             # served from the first tick
+    assert len(open_channel().read(topics=["value"])) >= 1
+    stops = open_channel().read(topics=["lifecycle.stopped"])
+    assert len(stops) == 1                       # retire's breath; __exit__ no-ops
+    assert [u.request_id for u in open_channel().read(topics=["control.unsubscribe"])] == ["r1"]
+
+
+def test_serve_exits_on_commanded_stop(open_channel):
+    orch = open_channel()
+    _sub(orch, {"every": {"time_seconds": 1}}, "r1")   # open lease: stays pinned
+    seen = []
+    with Worker(open_channel(), now=lambda: 0.0) as w:
+        for i in w.serve():
+            w.set("cpu", 0.0)
+            seen.append(i)
+            if i == 1:
+                orch.send({}, topic="control.stop", request_id="s1")
+    assert seen == [0, 1]                        # the stop drains at i==1's own tick
+    assert len(open_channel().read(topics=["lifecycle.stopped"])) == 1
+
+
+def test_serve_lost_claim_does_nothing(open_channel):
+    from runstate.vocabulary.handle import local_handle
+    ch = open_channel()
+    ch.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+            topic="lifecycle.started")           # a live episode already exists
+    with Worker(open_channel(), now=lambda: 0.0) as w:
+        assert list(w.serve()) == []
+    assert open_channel().read(topics=["value", "lifecycle.stopped"]) == []

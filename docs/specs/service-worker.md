@@ -1,6 +1,10 @@
 # Spec: the service worker (leased demand, the careful death, `serve`)
 
-**Status:** converged 2026-06-10; ready to implement. Produced by a five-agent
+**Status:** SHIPPED 2026-06-10 (converged and implemented the same day; kept
+as the record of what was built — `runstate/worker.py` (`serve`/`retire`/
+`pinned`, the expiry records, the answer-fold refold), `schedule.py`,
+`observables.live_demand`, `watcher.await_consumed`,
+`tests/test_service_worker.py`, `examples/monitor/`). Produced by a five-agent
 design review (clean-room enumeration, unification adversary, prior-art
 survey, ownership audit, and an adversarial attack on the then-leading
 proposal) plus dialectic. Two candidate framings were refuted on the way and

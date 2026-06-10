@@ -16,6 +16,7 @@ from .memoizer import ensure, history, launch_producer
 from .observables import (
     RunResult,
     latest_episode,
+    live_demand,
     live_episode,
     peek_terminal,
     progress,
@@ -78,6 +79,7 @@ __all__ = [
     "RunResult",
     "peek_terminal",
     "latest_episode",
+    "live_demand",
     "live_episode",
     "progress",
     "value_series",

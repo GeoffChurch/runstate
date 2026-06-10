@@ -133,6 +133,27 @@ def peek_terminal(channel) -> Optional[RunResult]:
     return None
 
 
+def live_demand(channel) -> list:
+    """The live leased demand: every ``control.subscribe`` envelope with no
+    **answer** — a ``control.unsubscribe`` or a ``lifecycle.nak`` bearing its
+    ``request_id`` — *following it by seq* (specs/service-worker.md: the
+    positional answer fold, the discharge floor's third instance; naks with a
+    null ``request_id`` answer nothing, and an answer never reaches a *later*
+    same-id subscribe, so resubscribe-after-answer is live). The one public
+    home of the rule the worker's refold and the relaunch decider both
+    consume; an envelope-level fold — ``topic``/``request_id``/``seq`` only,
+    body untouched."""
+    pending: dict = {}      # request_id -> the latest unanswered subscribe
+    for e in channel.read():
+        if e.request_id is None:
+            continue
+        if e.topic == "control.subscribe":
+            pending[e.request_id] = e
+        elif e.topic in ("control.unsubscribe", "lifecycle.nak"):
+            pending.pop(e.request_id, None)
+    return sorted(pending.values(), key=lambda e: e.seq)
+
+
 def progress(channel) -> Optional[int]:
     """Max step the trajectory reached, from the DENSE axis (the heartbeat
     beats every tick regardless of emission): the latest

@@ -101,7 +101,18 @@ class Subscription:
             self.until, step=step, time_seconds=elapsed, count=self.count
         ):
             return True
-        return self.every is None and self.count >= 1
+        if self.every is None and self.count >= 1:
+            return True
+        # The enforced invariant (specs/service-worker.md): registered iff a
+        # future fire is possible. After a fire, an `every` that can never be
+        # satisfied again on this worker's coordinates -- a step-only `every`
+        # on a stepless worker -- expires instead of pinning forever.
+        return (
+            self.every is not None
+            and self.count >= 1
+            and step is None
+            and not _satisfiable_stepless(self.every)
+        )
 
 
 def is_unsatisfiable(schedule: dict, *, step) -> bool:
@@ -159,6 +170,19 @@ def _conjunctive_corner(cond: dict):
     if "time_seconds" in cond:
         return (0, cond["time_seconds"])
     return None  # count (not a `from` key) or unknown -> punt
+
+
+def contains_count(cond: dict) -> bool:
+    """Does ``cond`` contain a ``count`` atom anywhere? The schema already
+    forbids count outside ``until`` (it is grammatical only in ``UntilTerm``);
+    the worker enforces the same rule as defense-in-depth, because a count
+    atom inside ``from``/``every`` is a circular gate (count advances only on
+    fires) -- the accidental pure pin (specs/service-worker.md)."""
+    if "any" in cond:
+        return any(contains_count(c) for c in cond["any"])
+    if "all" in cond:
+        return any(contains_count(c) for c in cond["all"])
+    return "count" in cond
 
 
 def _satisfiable_stepless(cond: dict) -> bool:

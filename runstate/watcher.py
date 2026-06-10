@@ -242,28 +242,55 @@ class Watcher:
 
 def await_consumed(channel, seq, *, request_id=None, timeout=None,
                    poll_interval=0.05, now=time.time, sleep=time.sleep):
-    """Block until the worker has drained inbound control up to ``seq`` — i.e.
-    the latest ``lifecycle.heartbeat``'s ``consumed_seq >= seq`` (the
-    registration watermark, §6). ``seq`` is what ``channel.send`` returned for
-    the control request. Returns the ``Nak`` for ``request_id`` if the request
-    was refused (it is already on the log once the watermark passes ``seq`` — the
-    worker advances ``consumed_seq`` only after registering/naking), else
-    ``None`` (landed and accepted). Raises ``TimeoutError`` if ``timeout``
-    elapses first — not-yet-drained is not a refusal. This is the blessed
-    'did my control land?' read, so callers don't hand-roll the watermark +
-    nak check against raw heartbeat bodies. With ``request_id=None``, nak
-    detection is skipped — it returns ``None`` once the request is drained,
-    without checking acceptance."""
+    """Block until the control request at ``seq`` is ANSWERED or drained.
+    Answer-first (specs/service-worker.md): a ``lifecycle.nak`` bearing
+    ``request_id`` that *follows* ``seq`` resolves immediately (returns the
+    ``Nak``) — the watermark (the latest heartbeat's ``consumed_seq >= seq``,
+    §6) is only the no-answer-yet probe for acceptance (returns ``None``). If
+    a terminal record *follows* the request with no later episode, no worker
+    will ever drain it: returns the terminal ``RunResult`` (refused-by-death)
+    instead of blocking — while a request sent *after* a death correctly waits
+    for the next episode. Raises ``TimeoutError`` if ``timeout`` elapses —
+    not-yet-drained is not a refusal. With ``request_id=None``, nak detection
+    is skipped. So the full codomain is the answer space: ``Nak`` (refused) |
+    ``RunResult`` (the run died under the request) | ``None`` (accepted)."""
     deadline = None if timeout is None else now() + timeout
+
+    def _answer():
+        # Positional: only a nak FOLLOWING the request answers it.
+        if request_id is None:
+            return None
+        naks = [e for e in channel.read(after=seq, topics=["lifecycle.nak"])
+                if e.request_id == request_id]
+        return Nak(**naks[-1].body) if naks else None
+
     while True:
+        # Answer-first (specs/service-worker.md): a nak IS the answer; the
+        # watermark is only the no-answer-yet probe. A request answered inside
+        # a winning retire() drain gets its nak but never a later heartbeat —
+        # watermark-first would deadlock its waiter.
+        nak = _answer()
+        if nak is not None:
+            return nak
         hb = channel.latest("lifecycle.heartbeat")
         if hb is not None and Heartbeat(**hb.body).consumed_seq >= seq:
-            if request_id is not None:
-                naks = [e for e in channel.read(topics=["lifecycle.nak"])
-                        if e.request_id == request_id]
-                if naks:
-                    return Nak(**naks[-1].body)
-            return None
+            # Re-check once: the nak and its heartbeat may both have landed
+            # between this iteration's two reads.
+            return _answer()
+        # Refused-by-death: a terminal record FOLLOWING the request, with no
+        # later episode (peek_terminal is episode-aware), means no worker will
+        # ever drain it — return the terminal verdict. A terminal that
+        # PRECEDES the request leaves it waiting for the next episode.
+        term = peek_terminal(channel)
+        if term is not None:
+            last_terminal = max(
+                (e.seq for e in (channel.latest("lifecycle.stopped"),
+                                 channel.latest("launcher.terminated"))
+                 if e is not None),
+                default=0,
+            )
+            if last_terminal > seq:
+                return term
         if deadline is not None and now() >= deadline:
             raise TimeoutError(f"control seq {seq} not consumed within {timeout}s")
         sleep(poll_interval)

@@ -371,3 +371,46 @@ def test_await_consumed_blocks_below_watermark_then_returns_when_it_advances(ope
 
     assert await_consumed(open_channel(), s, request_id="r", sleep=driver_sleep) is None
     assert advanced["done"]  # it actually blocked until the watermark advanced (not a premature return)
+
+
+def test_await_consumed_resolves_a_nak_before_the_watermark(open_channel):
+    # answer-first (specs/service-worker.md): the retire-win path -- the nak
+    # lands, the worker dies, no heartbeat ever carries the watermark; the
+    # waiter must not deadlock on a question the log already answers.
+    ch = open_channel()
+    s = ch.send({"until": {"step": 0}}, topic="control.subscribe", name="loss", request_id="r")
+    ch.send({"reason": "unsatisfiable", "message": "no fires"}, topic="lifecycle.nak",
+            request_id="r")
+    nak = await_consumed(open_channel(), s, request_id="r", timeout=1.0)
+    assert nak is not None and nak.reason == "unsatisfiable"
+
+
+def test_await_consumed_ignores_an_earlier_nak_for_the_same_id(open_channel):
+    # positional: a nak that PRECEDES the request answers nothing.
+    ch = open_channel()
+    ch.send({"reason": "malformed", "message": "old"}, topic="lifecycle.nak", request_id="r")
+    s = ch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r")
+    ch.send({"step": 0, "consumed_seq": s}, topic="lifecycle.heartbeat")
+    assert await_consumed(open_channel(), s, request_id="r") is None
+
+
+def test_await_consumed_resolves_refused_by_death(open_channel):
+    # a terminal stopped FOLLOWS the request with no later episode: no worker
+    # will ever drain it -- return the terminal RunResult instead of blocking.
+    from runstate import RunResult
+    ch = open_channel()
+    s = ch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r")
+    ch.send({"completed": False, "error": None, "final_step": 3}, topic="lifecycle.stopped")
+    r = await_consumed(open_channel(), s, request_id="r", timeout=1.0)
+    assert isinstance(r, RunResult) and r.outcome == "preempted"
+
+
+def test_await_consumed_keeps_waiting_when_death_precedes_the_request(open_channel):
+    # the request landed AFTER the death: it correctly awaits the next episode
+    # (lazy-launch's case) -- a timeout, never refused-by-death.
+    import pytest
+    ch = open_channel()
+    ch.send({"completed": False, "error": None, "final_step": 3}, topic="lifecycle.stopped")
+    s = ch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r")
+    with pytest.raises(TimeoutError):
+        await_consumed(open_channel(), s, request_id="r", timeout=0.0, now=lambda: 0.0)

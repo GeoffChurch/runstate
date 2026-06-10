@@ -64,12 +64,17 @@ def test_every_emitted_envelope_conforms(tmp_path):
     # pre-stage control so the worker drains it on its first tick:
     obs.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="ok")
     obs.send({"until": {"count": 0}}, topic="control.subscribe", name="loss", request_id="bad")  # -> nak
+    obs.send({}, topic="control.subscribe", name="loss", request_id="once")  # one-shot ->
+    # the worker writes its expiry counter-record (a WORKER-authored
+    # control.unsubscribe -- specs/service-worker.md), validated like any other
     obs.send({}, topic="control.unsubscribe", request_id="gone")
     obs.send({"from": {"step": 2}}, topic="control.stop", request_id="stop")
 
     launcher.launch("run", _worker_main).wait()
 
     envelopes = obs.read()
+    assert any(e.topic == "control.unsubscribe" and e.request_id == "once"
+               for e in envelopes)   # the worker-written expiry record is on the log
     seen = set()
     for e in envelopes:
         record = asdict(e)

@@ -9,6 +9,7 @@ projection (value_series).
 from runstate.observables import (
     RunResult,
     latest_episode,
+    live_demand,
     live_episode,
     peek_terminal,
     progress,
@@ -231,3 +232,52 @@ def test_value_series_skips_records_outside_the_domain(open_channel):
 
 def test_value_series_empty_channel(open_channel):
     assert value_series(open_channel()) == {}
+
+
+# ----- live_demand: the positional answer fold's public home -----
+
+
+def test_live_demand_empty(open_channel):
+    assert live_demand(open_channel()) == []
+
+
+def test_live_demand_subscribe_then_answers(open_channel):
+    ch = open_channel()
+    ch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r1")
+    assert [e.request_id for e in live_demand(open_channel())] == ["r1"]
+    ch.send({}, topic="control.unsubscribe", request_id="r1")
+    assert live_demand(open_channel()) == []
+
+
+def test_live_demand_nak_answers(open_channel):
+    ch = open_channel()
+    ch.send({"from": {"step": 5}}, topic="control.subscribe", name="loss", request_id="r1")
+    ch.send({"reason": "unsatisfiable", "message": "x"}, topic="lifecycle.nak",
+            request_id="r1")
+    assert live_demand(open_channel()) == []
+
+
+def test_live_demand_is_positional_not_an_id_set(open_channel):
+    ch = open_channel()
+    ch.send({}, topic="control.unsubscribe", request_id="r1")   # answers nothing
+    ch.send({"every": {"step": 1}}, topic="control.subscribe", name="a", request_id="r1")
+    ch.send({}, topic="control.unsubscribe", request_id="r1")   # answers the above
+    ch.send({"every": {"step": 1}}, topic="control.subscribe", name="b", request_id="r1")
+    live = live_demand(open_channel())
+    assert [e.name for e in live] == ["b"]      # the later same-id subscribe is fresh
+
+
+def test_live_demand_agrees_with_the_worker(open_channel):
+    from runstate.worker import Worker
+    ch = open_channel()
+    ch.send({"every": {"step": 1}, "until": {"time_seconds": 10}},
+            topic="control.subscribe", name="loss", request_id="r1")
+    t = {"now": 0.0}
+    w = Worker(open_channel(), now=lambda: t["now"])
+    w.set("loss", 1.0)
+    w.tick(step=0)
+    assert w.pinned is bool(live_demand(open_channel()))
+    t["now"] = 11.0
+    w.tick(step=1)                               # lease lapses; record written
+    assert w.pinned is False
+    assert live_demand(open_channel()) == []     # the fold sees the expiry record
