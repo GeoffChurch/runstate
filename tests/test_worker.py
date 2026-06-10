@@ -66,12 +66,59 @@ def test_control_stop_at_step(open_channel):
     assert w.tick(step=100) is True
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="specs/stop-discharge.md: the discharge fold is not implemented yet --"
-    " the worker re-drains control from seq 0 on attach and re-arms a stop that"
-    " episode 1's lifecycle.stopped already discharged",
-)
+def test_commanded_stop_latches_until_honored(open_channel):
+    # The stop decision is a monotone level, not a consumed-once pulse
+    # (specs/stop-discharge.md S1): a host loop that cannot act on one True --
+    # a callback-guest whose loop ignores tick's return -- recovers it at the
+    # next safe point instead of losing the stop forever.
+    orch = open_channel()
+    orch.send({"from": {"step": 5}}, topic="control.stop", request_id="s1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    assert w.tick(step=5) is True
+    assert w.tick(step=6) is True   # the missed True is still there
+    assert w.tick(step=7) is True
+
+
+def test_stop_pending_is_a_side_effect_free_poll(open_channel):
+    # A callback-guest polls the same decision at its own safe point
+    # (specs/stop-discharge.md): reading the level consumes nothing, and the
+    # tick return is undented by any number of polls.
+    orch = open_channel()
+    orch.send({}, topic="control.stop", request_id="s1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    assert w.stop_pending is False   # nothing drained yet -- no pending stop
+    assert w.tick(step=0) is True
+    assert w.stop_pending is True
+    assert w.stop_pending is True    # polling consumed nothing...
+    assert w.tick(step=1) is True    # ...and neither did it dent the decision
+
+
+def test_stop_pending_tracks_the_last_safe_point(open_channel):
+    # The property is the SAME predicate tick returns, evaluated at the
+    # worker's last safe point -- a step-keyed stop reads False before its
+    # step and True from it on, in agreement with the tick that just ran.
+    orch = open_channel()
+    orch.send({"from": {"step": 5}}, topic="control.stop", request_id="s1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    assert w.tick(step=3) is False
+    assert w.stop_pending is False
+    assert w.tick(step=5) is True
+    assert w.stop_pending is True
+
+
+def test_two_pending_stops_or_join(open_channel):
+    # Pending stops are a set, not a slot (specs/stop-discharge.md S4): a
+    # later stop must not clobber an earlier still-pending one (audit F3).
+    # The combined decision is the condition-algebra's own any-join -- the
+    # first satisfied condition stops the run.
+    orch = open_channel()
+    orch.send({"from": {"step": 5}}, topic="control.stop", request_id="s1")
+    orch.send({"from": {"step": 10}}, topic="control.stop", request_id="s2")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    assert w.tick(step=3) is False
+    assert w.tick(step=5) is True   # s1 fires; s2's later arrival didn't erase it
+
+
 def test_resumed_episode_ignores_prior_episodes_stop(open_channel):
     """Every control fact is live until its counter-record (the discharge rule,
     specs/stop-discharge.md), and a ``control.stop``'s counter-record is the
@@ -93,6 +140,56 @@ def test_resumed_episode_ignores_prior_episodes_stop(open_channel):
         resumed = list(w2.steps(start=5, total=10))
 
     assert resumed == [5, 6, 7, 8, 9]   # a re-armed stop would leave just [5]
+
+
+def test_stop_between_episodes_honored_exactly_once(open_channel):
+    # specs/stop-discharge.md S2, "the blip": a stop sent while the run is down
+    # is NOT dropped -- the next episode answers it at its first safe point --
+    # and answered exactly once: the blip's own stopped discharges it, so the
+    # episode after runs free. Loud and once; neither silent nor forever.
+    orch = open_channel()
+    with Worker(open_channel(), now=lambda: 0.0) as w1:      # episode 1
+        list(w1.steps(total=3))
+    orch.send({}, topic="control.stop", request_id="s1")     # the run is down
+    with Worker(open_channel(), now=lambda: 0.0) as w2:      # episode 2: the blip
+        blip = list(w2.steps(start=3, total=10))
+    assert blip == [3]                                       # answered immediately...
+    with Worker(open_channel(), now=lambda: 0.0) as w3:      # episode 3
+        resumed = list(w3.steps(start=4, total=8))
+    assert resumed == [4, 5, 6, 7]                           # ...and exactly once
+
+
+def test_one_stopped_discharges_every_pending_stop(open_channel):
+    # specs/stop-discharge.md S4, second half: the discharge is a broadcast
+    # answer (matching the stopped record's own broadcast nature) -- the stop
+    # that never fired must not survive its episode's stopped and haunt the
+    # resume (per-id discharge was refuted A3).
+    orch = open_channel()
+    orch.send({"from": {"step": 5}}, topic="control.stop", request_id="s1")
+    orch.send({"from": {"step": 10}}, topic="control.stop", request_id="s2")
+    with Worker(open_channel(), now=lambda: 0.0) as w1:
+        halted = list(w1.steps(total=20))
+    assert halted == [0, 1, 2, 3, 4, 5]                      # the any-join fired at 5
+    with Worker(open_channel(), now=lambda: 0.0) as w2:
+        resumed = list(w2.steps(start=6, total=10))
+    assert resumed == [6, 7, 8, 9]                           # s2 didn't haunt the resume
+
+
+def test_crashed_episodes_undischarged_stop_rearms_on_resume(open_channel):
+    # specs/stop-discharge.md crash edge: a stop arrived during an episode that
+    # then crashed (no lifecycle.stopped) before the trigger. No counter-record
+    # followed, so the stop is still pending -- the resumed episode re-arms and
+    # honors it. (Green before and after the discharge fold: it pins that the
+    # discharge boundary is the last *stopped*, not a registered-watermark --
+    # the refuted A5 -- which would silently drop the unanswered command.)
+    orch = open_channel()
+    orch.send({"handle": "local://anyhost/2147483646", "hostname": None,
+               "attached_at": 0.0}, topic="lifecycle.started")   # crashed: dead pid, no stopped
+    orch.send({"from": {"step": 8}}, topic="control.stop", request_id="s1")
+    with Worker(open_channel(), now=lambda: 0.0) as w:
+        assert w.claimed is True                             # dead episode -> the claim is free
+        resumed = list(w.steps(start=5, total=20))
+    assert resumed == [5, 6, 7, 8]                           # re-armed; honored at its step
 
 
 def test_stopped_emits_dying_breath(open_channel):
@@ -159,7 +256,7 @@ def test_nak_malformed_schedule_does_not_kill_the_worker(open_channel):
 
 def test_nak_malformed_stop_from_does_not_crash(open_channel):
     # a malformed `from` on a stop must nak (like a malformed subscribe), not
-    # crash the worker -- and must not poison self._stop and re-crash every tick.
+    # crash the worker -- and must not poison the pending set and re-crash every tick.
     orch = open_channel()
     orch.send({"from": {"step": "oops"}}, topic="control.stop", request_id="s1")
     w = Worker(open_channel(), now=lambda: 0.0)

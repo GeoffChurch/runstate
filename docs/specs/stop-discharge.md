@@ -1,6 +1,9 @@
 # Spec: stop-discharge (`control.stop` is a request/outcome pair)
 
-**Status:** converged, ready to implement (2026-06-09). Surfaced by
+**Status:** SHIPPED 2026-06-09 (specced and implemented the same day; kept as
+the record of what was built — see `runstate/worker.py` and the S1–S4 /
+crash-edge / pre-staged tests in `tests/test_worker.py`; prose folded into
+design §6/§7 rev 6). Surfaced by
 `tests/test_worker.py::test_resumed_episode_ignores_prior_episodes_stop`
 (committed RED) plus the mycooc audit's F2/F3
 (`../backlog/mycooc-migration-audit.md`). Converged via three independent design

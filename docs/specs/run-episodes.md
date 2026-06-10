@@ -41,6 +41,12 @@ reads by run-absolute `step`, not by episode.)
   episode" are *identical on the log*, inherently (doneness is a future relaunch
   decision). Which one it is = the **caller's policy**. ("Never touched again" is a
   retention/GC question — §12.9, deferred.)
+- **Addendum (2026-06-09) — the drain-side mirror.** Cross-episode *control*
+  follows the same follow-by-`seq` fold in the opposite direction: every control
+  fact is live until its counter-record (`unsubscribe` rescinds a subscribe; the
+  next `lifecycle.stopped` *discharges* a `control.stop`), so a resumed episode
+  re-derives standing subscriptions but never replays an answered stop. Specced
+  and shipped as [stop-discharge](stop-discharge.md); folded into design §6/§7.
 
 ### 3. Single-spawn guard — the worker self-claims its episode
 Two workers for one `run_id` would corrupt the series (both resume the same

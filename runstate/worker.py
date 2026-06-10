@@ -25,7 +25,10 @@ class Worker:
         self._now = now
         self._values: dict = {}
         self._subs: dict = {}  # request_id -> (name, Subscription)
-        self._stop = None  # a pending commanded-stop Subscription, or None
+        # Drained, undischarged commanded stops: (request_id, from_, registered_at).
+        # A stop is the request half of a request/outcome pair -- live until the
+        # next lifecycle.stopped discharges it (specs/stop-discharge.md).
+        self._pending_stops: list = []
         self._cursor = 0
         self._stopped = False
         self._last_step = None
@@ -35,6 +38,14 @@ class Worker:
         while True:
             envs = self._ch.read()
             last = envs[-1].seq if envs else 0
+            # The discharge floor: the latest lifecycle.stopped already on the
+            # log. Every control.stop below it is answered (discharged) by that
+            # stopped -- its designated counter-record -- so the drain skips it
+            # (specs/stop-discharge.md). From the same read as the claim, so it
+            # is exact: the CAS serializes the claim against concurrent appends.
+            self._discharge_floor = max(
+                (e.seq for e in envs if e.topic == "lifecycle.stopped"), default=0
+            )
             if live_episode(self._ch) is not None:
                 self._lost = True
                 break
@@ -79,7 +90,7 @@ class Worker:
         while total is None or step < total:
             self._last_step = step
             yield step
-            if self.tick(step):    # truthy -> a control.stop fired; stop at this safe point
+            if self.tick(step):    # truthy -> a commanded stop triggered; stop at this safe point
                 return
             step += 1
 
@@ -89,15 +100,27 @@ class Worker:
 
     def tick(self, step) -> bool:
         """Drain control, service due subscriptions, beacon a heartbeat. Returns
-        True iff a control.stop fired this tick (stop at this safe point), else
-        False. The worker's own *completion* is a separate opt-in claim
+        True iff a pending commanded stop has triggered (stop at this safe
+        point). The decision is a monotone *level*, not a one-shot pulse: once
+        a stop's condition holds it holds at every later safe point until the
+        episode stops, so a caller that misses one True recovers it at the
+        next. The worker's own *completion* is a separate opt-in claim
         (``w.stopped(completed=True)``); a commanded stop carries no reason —
         commandedness is recoverable from the control.stop on the log."""
+        self._last_step = step
         self._drain_control(step)
         self._service(step)
         self._ch.send(asdict(Heartbeat(step=step, consumed_seq=self._cursor)),
                       topic="lifecycle.heartbeat")
-        return self._stop is not None and self._stop.tick(step=step, now=self._now()).fire
+        return self._stop_decision(step)
+
+    @property
+    def stop_pending(self) -> bool:
+        """The same decision ``tick`` returns, as a side-effect-free poll
+        evaluated at the worker's last safe point. For a callback-guest whose
+        host loop cannot act on ``tick``'s return: poll this at your own safe
+        point instead; reading it consumes nothing."""
+        return self._stop_decision(self._last_step)
 
     def stopped(self, *, completed: bool = False, error=None, final_step=None) -> None:
         """Emit the cooperative dying breath (lifecycle.stopped). Its existence = a
@@ -143,6 +166,13 @@ class Worker:
             else:
                 self._subs.pop(e.request_id, None)
         elif e.topic == "control.stop":
+            if e.seq < self._discharge_floor:
+                # Already answered: a lifecycle.stopped follows this stop on
+                # the log, discharging it. History, never again input -- and
+                # silently so: "already answered" is not a refusal (the nak
+                # reasons have no word for it), and a discharged-but-malformed
+                # stop was already naked by its own era's worker.
+                return
             # a stop is one-shot: at most a `from` (when to stop). `every` is
             # inert and `until` could gate the stop from ever firing, so reject
             # them rather than silently honor a self-defeating request.
@@ -150,8 +180,8 @@ class Worker:
                 self._nak(e.request_id, "malformed", "control.stop takes only `from`")
             else:
                 # Validate the `from` here (inside the drain guard) so a malformed
-                # condition naks like a bad subscribe, instead of poisoning
-                # self._stop and crashing at the unguarded tick-time eval site.
+                # condition naks like a bad subscribe, instead of poisoning the
+                # pending set and crashing at the unguarded tick-time eval site.
                 from_ = e.body.get("from")
                 if from_ is not None:
                     satisfied(from_, step=step, time_seconds=0.0, count=0)  # raises -> nak
@@ -161,7 +191,7 @@ class Worker:
                     # never auto-stopping.
                     self._nak(e.request_id, "unsatisfiable", "stop trigger can never fire")
                 else:
-                    self._stop = Subscription(e.body, registered_at=self._now())
+                    self._pending_stops.append((e.request_id, from_, self._now()))
         else:
             self._nak(e.request_id, "unsupported", f"unknown control topic {e.topic!r}")
 
@@ -206,3 +236,16 @@ class Worker:
                     ) from exc
             if decision.expired:
                 del self._subs[request_id]
+
+    def _stop_decision(self, step) -> bool:
+        """Does any pending stop's condition hold at (step, now)? Conditions
+        are monotone (schedule.py), so the decision latches by inheritance --
+        no fired flag, and evaluating it consumes nothing. Combination is the
+        condition-algebra's own any-join: the first satisfied condition stops
+        the run."""
+        now = self._now()
+        return any(
+            from_ is None
+            or satisfied(from_, step=step, time_seconds=now - registered_at, count=0)
+            for _request_id, from_, registered_at in self._pending_stops
+        )
