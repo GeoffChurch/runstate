@@ -1,6 +1,20 @@
 # docs/
 
-Project documentation lives here. Three categories:
+**Start here:** [`overview.md`](overview.md) — a guided tour of the whole system
+(what it does, the layers, every component justified). It is the reader's entry
+point, and it is **derived, not authoritative**: it restates the design for
+newcomers, and where it disagrees with the schemas or `design-v0.2.md`, those
+win (authority order at the bottom of this file).
+
+The map:
+
+- [`overview.md`](overview.md) — the guided tour (derived; maintained in sync).
+- `backlog/` — forward-looking ideas (living documents; index + standalone files).
+- `dead_ends/` — refuted ideas with diagnosis (doesn't exist yet).
+- `specs/` — converged, ready-to-implement feature designs.
+- `plans/` — dated execution artifacts for landed threads.
+- `design-v0.2*.md` — the authoritative prose, plus `design-v0.3-exploration.md`
+  (the in-progress v0.3 trail); `design-v0.1*.md` — historical.
 
 ## `backlog/`
 
@@ -37,6 +51,20 @@ ground."
 When `dead_ends/<topic>.md` is created, also drop the entry from
 `backlog/index.md` and add it to `dead_ends/index.md`.
 
+## `specs/`
+
+Converged, **ready-to-implement** feature designs — the contract a thread
+implements against (`run-episodes.md`, `memoizer.md`, `run-id-recipe.md`,
+`stop-discharge.md`, …). A spec typically graduates out of a backlog
+investigation. It is authoritative *for its scope* until the design doc and
+code absorb it; a shipped spec stays as the record of what was built.
+
+## `plans/`
+
+Dated implementation plans (`plans/2026-06-01-run-episodes.md`, …) — the
+execution artifact for a spec that landed. A historical record of *how*;
+useful archaeology, never authoritative.
+
 ## `design-v0.1*.md`
 
 Historical design documents from the brainstorming arc that produced
@@ -54,13 +82,11 @@ v0.1. Five revisions preserved as separate files:
   Reconfigure, drops CompletionReason in favor of primitive RunResult
   signals, adds Ack as first-class, etc.)
 
-**The design docs are historical, not authoritative.** The authoritative
-sources for what the library currently is are:
-
-The v0.1 pull-first command/event model these docs describe was **superseded by
-the v0.2 redesign** (see below). They're kept because the rationale for each cut
-is sometimes useful when revisiting decisions — not because they describe the
-current library.
+**The design docs are historical, not authoritative.** The v0.1 pull-first
+command/event model these docs describe was **superseded by the v0.2 redesign**
+(see below; the authoritative sources are listed there). They're kept because
+the rationale for each cut is sometimes useful when revisiting decisions — not
+because they describe the current library.
 
 ## `design-v0.2*.md`
 
@@ -73,14 +99,19 @@ lifecycle, launcher) plus reference orchestration (launchers, Watcher, sweep).
 - `design-v0.2-exploration.md` — the full decision trail (an 11-revision
   dialectic) and rejected-alternative diagnoses that produced it. The journey,
   kept for rationale.
+- `design-v0.3-exploration.md` — the in-progress v0.3 decision trail (the
+  run-episodes / memoizer / Store arc); its converged outputs land in `specs/`.
 
 **The authoritative sources for what the library currently is:**
 
 1. The JSON Schema stack in `../protocol/` (`envelope-v0.2.schema.json` + the
    per-convention schemas) — the wire format.
-2. `design-v0.2.md` — the semantics.
+2. `design-v0.2.md` — the semantics (plus the shipped `specs/` for the scopes
+   not yet folded back into it).
 3. The code in `../runstate/` and the tests in `../tests/`.
 
-(`../protocol/messages-v0.1.schema.json` and `../protocol/spec.md` are the
-superseded v0.1 artifacts.) As with v0.1, the design docs capture *direction*
-and rationale; the code + schema are what's binding.
+`overview.md` sits *below* all three — a derived restatement for reading order,
+never the tiebreaker. (`../protocol/messages-v0.1.schema.json` and
+`../protocol/spec.md` are the superseded v0.1 artifacts.) As with v0.1, the
+design docs capture *direction* and rationale; the code + schema are what's
+binding.

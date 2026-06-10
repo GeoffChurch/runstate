@@ -2,6 +2,8 @@
 
 A protocol + reference Python implementation for **cooperative bidirectional control** between an orchestrator and a long-running scientific worker.
 
+> **New here?** Read **[docs/overview.md](docs/overview.md)** — a guided tour of the whole system: what it does, how you interface with it, and why each layer and component exists.
+
 ## What it is
 
 `runstate` provides:
@@ -37,7 +39,7 @@ with runstate.LocalLauncher(root="/tmp/runs") as launcher:
 
     watcher = runstate.Watcher(); watcher.add(handle)
     result = watcher.wait("run-1", on_event=lambda rid, e: print(e.topic, e.body))
-    print(result.outcome)   # "completed" | "stopped" | "errored" | "killed" | "presumed_dead"
+    print(result.outcome)   # "completed" | "preempted" | "errored" | "killed" | "presumed_dead"
 ```
 
 A runnable version is in `examples/minimal/` (`python examples/minimal/driver.py`).
