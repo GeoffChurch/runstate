@@ -124,9 +124,11 @@ def test_resumed_episode_ignores_prior_episodes_stop(open_channel):
     specs/stop-discharge.md), and a ``control.stop``'s counter-record is the
     next ``lifecycle.stopped``. Episode 1 honored this stop, so its ``stopped``
     discharged it; episode 2 -- resumed on the SAME run -- must not re-honor it
-    and die at its first step. (A subscription follows the same rule with
-    ``unsubscribe`` as the counter-record: none arrived here, so it correctly
-    carries across episodes -- see test_run_episodes.test_relaunch_extends_one_series.)
+    and die at its first step. (A non-time subscription follows the same rule
+    with ``unsubscribe`` as the counter-record: none arrived here, so it
+    correctly carries across episodes -- see
+    test_run_episodes.test_relaunch_extends_one_series; a TIME-referencing
+    subscription is additionally episode-scoped, specs/time-lease-boundary.md.)
     """
     orch = open_channel()
     orch.send({}, topic="control.stop", request_id="s1")   # stop-now; lands at a low seq

@@ -172,6 +172,31 @@ def _conjunctive_corner(cond: dict):
     return None  # count (not a `from` key) or unknown -> punt
 
 
+def references_time(schedule) -> bool:
+    """Does the schedule contain a ``time_seconds`` atom anywhere in
+    ``from``/``every``/``until``? The episode-scoping predicate
+    (specs/time-lease-boundary.md): a time atom's meaning — seconds since
+    registration — is episode-local, so any schedule containing one is a
+    *lease*, scoped to a single episode (blunt-but-crisp: no per-atom
+    carve-outs). Tolerant: an unparseable schedule is NOT time-referencing
+    (the worker naks it, which answers it)."""
+    def has_time(cond):
+        if not isinstance(cond, dict):
+            return False
+        if "any" in cond and isinstance(cond["any"], list):
+            return any(has_time(c) for c in cond["any"])
+        if "all" in cond and isinstance(cond["all"], list):
+            return any(has_time(c) for c in cond["all"])
+        return "time_seconds" in cond
+    if not isinstance(schedule, dict):
+        return False
+    return any(
+        has_time(schedule.get(k))
+        for k in ("from", "every", "until")
+        if schedule.get(k) is not None
+    )
+
+
 def contains_count(cond: dict) -> bool:
     """Does ``cond`` contain a ``count`` atom anywhere? The schema already
     forbids count outside ``until`` (it is grammatical only in ``UntilTerm``);

@@ -44,13 +44,13 @@ guard — plus an autonomous-extend integration test and the
 - **[mycooc-migration-audit](mycooc-migration-audit.md)** — findings from the *completed* mycooc migration (first end-to-end consumer) + a follow-up audit. **✅ The VERIFIED P0 CAS-atomicity bug (F1) is fixed** (2026-06-07; fix superseded 2026-06-09 by the atomic-by-construction form — mechanism + corrected diagnosis live in the file's F1). **✅ The lost/clobbered `control.stop` (F2/F3) is fixed** (2026-06-09 — [stop-discharge](../specs/stop-discharge.md)). **✅ The reader gaps (F5–F8) are shipped** (2026-06-10 — [observables](../specs/observables.md): `value_series`/`progress`/`latest_episode`/`handle_pid`; mycooc deletes its hand-rolled files in one sweep). Remaining in the file: F4 (channel lifecycle/`close`) + the F9/F10 minors.
 - **[ensure-redrive-recoverable-terminations](ensure-redrive-recoverable-terminations.md)** — let `ensure` re-drive killed/timed-out runs that made progress, instead of raising; subsumes the consumer's custom resume loop. Surfaced by mycooc Phase-4 dogfood (the `_SyncHandle` terminal-synthesis and `_run_one_chunk` resume loop are the dual of this missing feature). Not bit-exact-testable; needs a mock-producer approach.
 - **Cluster 1, remaining halves** — the **service worker SHIPPED 2026-06-10**
-  (`../specs/service-worker.md`: `serve()`/`retire()`/`pinned`, the careful
-  death, expiry counter-records + the positional answer fold /
-  `live_demand`; dogfood `examples/monitor/`). Remaining: **lazy-launch / the
-  relaunch decider** (the follow-on spec — its demand fold now exists; its
-  two recorded constraints: bound the relaunch cadence against re-anchored
-  leases, and no `ensure` over stepless services), and the **function
-  producer + a named `Producer` Protocol** — the second `ensure` implementer
+  (`../specs/service-worker.md`) and **episode-scoped time-leases SHIPPED
+  2026-06-11** (`../specs/time-lease-boundary.md` — the boundary `started`
+  is the lease's counter-record; ghost relaunches bounded ≤2 by
+  construction). Remaining: **lazy-launch / the relaunch decider** (the
+  follow-on spec — its demand fold exists, it needs **no flap policy**; one
+  constraint survives: no `ensure` over stepless services), and the
+  **function producer + a named `Producer` Protocol** — the second `ensure` implementer
   must be the *stepped, memoizable* function worker (mycooc-analyze is the
   oracle), NOT the pure service (`ensure` over a service is a category
   error). Lands together with
@@ -99,6 +99,16 @@ Consumer-side cursor persistence was **decided out of scope**, design §12.5.)
   resumable-`timed_out` vs fatal-`crashed`) so consumers can branch on *why*
   without expanding the closed `outcome` enum. Surfaced by
   [mycooc-adoption](mycooc-adoption.md). Small.
+- **Watcher boundary-aware re-broadcast** — a time-keyed `broadcast` barrier
+  subscription on a run that *resumes* is boundary-voided with no record
+  (`../specs/time-lease-boundary.md`); today's steering is "spell barriers
+  step-keyed" (design §9). A Watcher that watches `started`s and re-issues
+  its broadcast across boundaries would lift the restriction. Small.
+- **Time-axis unification** — three time anchorings now coexist by design:
+  `history()` replays time atoms run-epoch-anchored; live subscriptions are
+  episode-scoped (`time-lease-boundary`); stops re-anchor per episode
+  (stop-discharge's note). Each is locally right; if a consumer ever needs
+  them to agree, unify deliberately rather than ad hoc.
 - **Discharge-by-id (merge-tolerant control folds)** — now TWO positional
   rules to generalize (design §7's pairing-by-`seq`: the stop discharge AND
   the subscribe answer fold — sharpened by the worker itself now writing

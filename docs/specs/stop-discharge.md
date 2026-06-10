@@ -226,6 +226,12 @@ Note on the time axis: a time-keyed `from` (`{time_seconds: 60}`) re-anchors
 `registered_at` at each episode's drain — the worker's time coordinate is
 seconds-since-registration and episodes re-register. Documented, accepted
 (step-keyed conditions, the common case, are run-absolute and unaffected).
+*(Forward note, 2026-06-11: this acceptance now applies to STOPS ONLY —
+time-referencing SUBSCRIBES no longer re-anchor indefinitely; they are
+episode-scoped, discharged by the next episode boundary
+(`specs/time-lease-boundary.md`). Stops deliberately keep the re-anchor:
+at-least-once toward an idempotent effect is their spec'd posture, and no
+relaunch flap is reachable through them.)*
 
 ## Deliverables
 

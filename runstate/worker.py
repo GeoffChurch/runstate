@@ -15,8 +15,14 @@ from dataclasses import asdict
 
 from .vocabulary.payloads import Heartbeat, Nak, Started, Stopped, Value
 from .vocabulary.handle import local_handle
-from .vocabulary.schedule import Subscription, contains_count, is_unsatisfiable, satisfied
-from .observables import live_episode
+from .vocabulary.schedule import (
+    Subscription,
+    contains_count,
+    is_unsatisfiable,
+    references_time,
+    satisfied,
+)
+from .observables import _boundary_voided, live_episode
 
 
 class Worker:
@@ -35,6 +41,7 @@ class Worker:
         # Attaching CAS-claims the episode: a worker that loses (a live episode
         # already exists) sets _lost and exits without acting on the channel.
         self._lost = False
+        self._started_seq = None       # this episode's own claim, once won
         while True:
             envs = self._ch.read()
             last = envs[-1].seq if envs else 0
@@ -57,14 +64,21 @@ class Worker:
                     "control.unsubscribe", "lifecycle.nak"
                 ):
                     self._answers.setdefault(e.request_id, []).append(e.seq)
+            # Prior episodes' boundaries, for the time-lease discharge
+            # (specs/time-lease-boundary.md) -- same read, zero extra I/O.
+            self._started_seqs = [
+                e.seq for e in envs if e.topic == "lifecycle.started"
+            ]
             if live_episode(self._ch) is not None:
                 self._lost = True
                 break
-            if self._ch.send(
+            claim = self._ch.send(
                 asdict(Started(handle=local_handle(), hostname=None, attached_at=self._now())),
                 topic="lifecycle.started",
                 expected_seq=last,
-            ) is not None:
+            )
+            if claim is not None:
+                self._started_seq = claim
                 break  # won the claim
 
     @property
@@ -233,6 +247,20 @@ class Worker:
             elif any(a > e.seq for a in self._answers.get(e.request_id, ())):
                 # Already answered (unsubscribed or naked) later on the log --
                 # history, never again input (the positional answer fold).
+                return
+            elif (
+                references_time(e.body)
+                and self._started_seq is not None
+                and _boundary_voided(e.seq, self._started_seqs, self._started_seq)
+            ):
+                # Episode-boundary discharge (specs/time-lease-boundary.md):
+                # a time-lease is a contract with one living episode, and a
+                # prior episode's started -- already on the log -- is its
+                # counter-record. Pop-then-skip: the void answers THIS
+                # subscribe, but its arrival still rescinds the same-id
+                # predecessor (registrations are slots, not a set -- a
+                # superseded immortal sub must not resurrect).
+                self._subs.pop(e.request_id, None)
                 return
             elif any(
                 contains_count(c)

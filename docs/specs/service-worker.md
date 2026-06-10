@@ -46,8 +46,11 @@ fire-possibility (`every` absent ⟹ one-shot; `until` bounds firing, not
 membership). Corollary: **pinned ⟺ someone holds an outstanding claim on your
 output** — design-v0.2.md §7's read-vs-subscribe line as a theorem. There is deliberately
 no pure pin (existence-demand decoupled from data-demand): durable existence
-lives in the launch contract; anticipatory warmth is honest periodic demand
-(`every: {time_seconds: …}`), not a new vocabulary.
+lives in the launch contract; anticipatory warmth is honest **renewed**
+periodic demand (`every: {time_seconds: …}`, refreshed — a time-referencing
+registration is episode-scoped per `specs/time-lease-boundary.md`, which is
+the right semantics: standing warmth nobody renews was the immortal-pin smell
+all along), not a new vocabulary.
 
 ## The four pieces
 
@@ -95,9 +98,13 @@ list[Envelope]`** — the subscribe envelopes with no following answer. The
 worker's refold and the relaunch decider consume the *same named rule*; two
 private copies of one boundary rule is the F7 failure class `latest_episode`
 exists to prevent, and a cli-status "pinned" column plus log-derivable
-idle-vs-dead fall out of the public form for free. (It is an envelope-level
-fold — `topic`/`request_id`/`seq` only, body-untouched — purer even than
-`value_series`.)
+idle-vs-dead fall out of the public form for free. (Value-blind: it reads
+schedule *shape* — the time-atom check of `specs/time-lease-boundary.md` —
+never payloads. *Amended 2026-06-11*: the original "body-untouched" purity
+claim was consumed by that spec, which also added a third answer kind —
+**a time-referencing subscribe can be discharged recordlessly by the next
+episode boundary**, so "answered by exactly one of the two" reads "…or by
+the boundary `started` already on the log.")
 
 Implementation shape: the refold's answer-awareness mirrors the discharge
 floor — `__init__` already reads the whole log for the CAS claim; the same
@@ -301,7 +308,7 @@ handled by the enforced invariant in piece 1: fire once, then expire.
 | refresh genuinely separated in time | retire, then relaunch on the new subscribe — correct service behavior, not a bug |
 | subscribe lands between final drain and dying breath | death-CAS loses → re-drain → `pinned` again → keep serving |
 | client dies; keepalive `until` lapses while the worker is live | expiry unsubscribe written; demand fold drops it; **episode N+1 does not resurrect it** |
-| client dies; the worker also dies (crash) before noticing the lapse | no expiry record exists yet; episode N+1's re-drain re-anchors the lease's time axis (stop-discharge's documented re-anchor) and serves **at most one extra lease period** before writing the expiry — bounded hysteresis the relaunch decider must expect |
+| client dies; the worker also dies (crash) before noticing the lapse | *(amended by `specs/time-lease-boundary.md`)* the lease re-anchors **at most once** (into its first possible drainer) and is recordlessly voided by the boundary after that — the relaunch decider expects nothing |
 | a subscribe nak'd in episode N re-encountered by episode N+1 | skipped — the nak is its answer (no duplicate nak per episode; resubscribe to be re-considered) |
 | one-shot served, nothing else | its expiry record lands; worker retires — a query-response service in one episode |
 | a subscribe raced into `retire()` | registered during the retire drain; `pinned` again → keep serving; first serviced at the next full tick (one body-cycle of latency, by design) |
@@ -368,13 +375,13 @@ README's "next up" line. CLAUDE.md architecture/test lines post-implementation.
 ## Non-goals
 
 - Lazy-launch / the relaunch decider (the follow-on spec; this spec's demand
-  fold is its input). Two inputs recorded for it now: the decider must bound
-  its own relaunch cadence — a crash before an unnoticed lease lapse
-  re-anchors the lease per episode, so *composed* hysteresis across
-  crash-relaunch cycles is unbounded unless the decider treats repeated
-  instant-retires as lapse evidence; and `ensure` over a *stepless* service
-  is unsupported (no step axis to fold progress on — its no-progress guard
-  is disarmed exactly when it would be needed).
+  fold is its input). One input recorded for it: `ensure` over a *stepless*
+  service is unsupported (no step axis to fold progress on — its no-progress
+  guard is disarmed exactly when it would be needed). *(The originally
+  recorded second constraint — bound the relaunch cadence against re-anchored
+  leases — was deleted by `specs/time-lease-boundary.md`: the boundary rule
+  bounds the ghost at ≤2 relaunches by construction; the waker needs no flap
+  policy.)*
 - The second `ensure` producer and the index algebra (after lazy-launch).
 - Prewarm helpers, grace windows, a time-indexed value series.
 - Any constructor flag, mode, or wire declaration of worker class.

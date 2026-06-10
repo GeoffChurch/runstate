@@ -97,10 +97,13 @@ causal asynchrony between homes) drops out as a corollary.
 ## L2 addendum (2026-06-10) — the pairing-by-`seq` rule, named
 
 The intro/elim pairs are *positionally* paired: a standing fact's eliminator
-must **follow it by `seq`** (design §7 now states it once; instances: stop ↔
-next `stopped`; subscribe ↔ next unsubscribe-or-nak bearing its `request_id` —
-the **answer fold**, public home `observables.live_demand`; episode
-terminality ↔ no opener following the terminal). The elimination is
+must **follow it by `seq`** (design §7 now states it once; instances, four:
+stop ↔ next `stopped`; subscribe ↔ next unsubscribe-or-nak bearing its
+`request_id` — the **answer fold**, public home `observables.live_demand`;
+time-referencing subscribe ↔ additionally the next episode boundary — a
+*second eliminator* for the time-leased case, so that affine resource is in
+fact always consumed (`specs/time-lease-boundary.md`); episode terminality ↔
+no opener following the terminal). The elimination is
 author-blind — the worker writing the expiry `control.unsubscribe` applies
 the same affine eliminator a client's rescind does (gc and `free` share an
 opcode), which is why no `lifecycle.expired` constructor exists: every

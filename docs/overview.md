@@ -190,8 +190,13 @@ discharged by the next `stopped` (so the decision is a latched *level* — a mis
 an answered stop). A **subscribe** is live until an unsubscribe-or-nak bearing
 its `request_id` follows it — the **answer fold** — and a registration *expires*
 the moment no future fire is possible (`until` met, one-shot consumed), with the
-worker writing the expiry record itself. So `observables.live_demand(channel)`
-reads "who still wants something" straight off the log.
+worker writing the expiry record itself. One more pairing, recordless: a
+**time-referencing** subscribe is a *lease on one living worker* — it is voided
+by the next worker's `started` (its countdown can't honestly survive the worker
+that was counting), so a dead client's lease can never haunt a run, and bounds
+meant to outlive workers are spelled in steps (`until: {step: N}`), not seconds.
+So `observables.live_demand(channel)` reads "who still wants something"
+straight off the log.
 
 *Did my command land?* There is no per-request ack — and the read is
 **answer-first**: a `nak` following your request resolves it immediately

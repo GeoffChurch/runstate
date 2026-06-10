@@ -23,7 +23,10 @@ justified only by design taste.
 **the service half SHIPPED 2026-06-10** (`../specs/service-worker.md` —
 `serve`/`retire`/`pinned`, the careful death, expiry counter-records, the
 positional answer fold / `live_demand`; dogfood `examples/monitor/`).
-Remaining: lazy-launch (the relaunch decider — its demand fold now exists) and
+Episode-scoped time-leases shipped 2026-06-11
+(`../specs/time-lease-boundary.md` — the ghost-lease flap deleted by
+construction; the waker needs no policy). Remaining: lazy-launch (the
+relaunch decider — its demand fold exists and its hardest input is gone) and
 the *function* producer (the second `ensure` implementer must be stepped and
 memoizable — mycooc-analyze, not the pure service).
 

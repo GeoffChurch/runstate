@@ -27,6 +27,7 @@ from typing import Optional
 
 from .vocabulary.payloads import Stopped, Terminated
 from .vocabulary.handle import resolve
+from .vocabulary.schedule import references_time
 
 
 @dataclass(frozen=True)
@@ -133,25 +134,48 @@ def peek_terminal(channel) -> Optional[RunResult]:
     return None
 
 
+def _boundary_voided(sub_seq, started_seqs, drainer_started_seq) -> bool:
+    """The episode-boundary discharge (specs/time-lease-boundary.md): a
+    time-referencing subscribe is voided iff a ``lifecycle.started`` other
+    than the draining episode's own follows it — equivalently, a ``started``
+    strictly between the subscribe and the drainer's own. ONE predicate,
+    shared by the worker (drain form: drainer = its own claim) and
+    ``live_demand`` (observer form: drainer = the latest ``started``)."""
+    return any(sub_seq < b < drainer_started_seq for b in started_seqs)
+
+
 def live_demand(channel) -> list:
     """The live leased demand: every ``control.subscribe`` envelope with no
-    **answer** — a ``control.unsubscribe`` or a ``lifecycle.nak`` bearing its
-    ``request_id`` — *following it by seq* (specs/service-worker.md: the
-    positional answer fold, the discharge floor's third instance; naks with a
-    null ``request_id`` answer nothing, and an answer never reaches a *later*
-    same-id subscribe, so resubscribe-after-answer is live). The one public
-    home of the rule the worker's refold and the relaunch decider both
-    consume; an envelope-level fold — ``topic``/``request_id``/``seq`` only,
-    body untouched."""
+    **answer** following it by seq (specs/service-worker.md: the positional
+    answer fold — an answer is a ``control.unsubscribe`` or ``lifecycle.nak``
+    bearing its ``request_id``; null-id naks answer nothing, and an answer
+    never reaches a *later* same-id subscribe, so resubscribe-after-answer is
+    live), and — for time-referencing schedules — no episode boundary between
+    it and the latest ``lifecycle.started`` (specs/time-lease-boundary.md:
+    a time-lease is live only while the latest episode is still its first
+    possible drainer; the boundary ``started`` is its counter-record). The
+    one public home of the rule the worker's refold and the relaunch decider
+    both consume. Value-blind: it reads schedule *shape* for the time-atom
+    check, never payloads."""
     pending: dict = {}      # request_id -> the latest unanswered subscribe
+    starteds: list = []
     for e in channel.read():
+        if e.topic == "lifecycle.started":
+            starteds.append(e.seq)
+            continue
         if e.request_id is None:
             continue
         if e.topic == "control.subscribe":
             pending[e.request_id] = e
         elif e.topic in ("control.unsubscribe", "lifecycle.nak"):
             pending.pop(e.request_id, None)
-    return sorted(pending.values(), key=lambda e: e.seq)
+    latest = starteds[-1] if starteds else 0
+    return sorted(
+        (e for e in pending.values()
+         if not (references_time(e.body)
+                 and _boundary_voided(e.seq, starteds, latest))),
+        key=lambda e: e.seq,
+    )
 
 
 def progress(channel) -> Optional[int]:

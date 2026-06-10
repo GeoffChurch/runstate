@@ -73,16 +73,17 @@ def test_worker_redrains_its_own_expiry_record_silently(open_channel):
 
 
 def test_resumed_episode_does_not_resurrect_an_expired_lease(open_channel):
+    # keyed by COUNT (not time) so this isolates the answer fold -- a time
+    # lease would also be boundary-voided (specs/time-lease-boundary.md),
+    # masking the expiry-record regression this test pins.
     orch = open_channel()
-    _sub(orch, {"every": {"step": 1}, "until": {"time_seconds": 10}}, "r1")
-    t = {"now": 0.0}
-    with Worker(open_channel(), now=lambda: t["now"]) as w1:    # episode 1
+    _sub(orch, {"every": {"step": 1}, "until": {"count": 1}}, "r1")
+    with Worker(open_channel(), now=lambda: 0.0) as w1:         # episode 1
         w1.set("loss", 1.0)
-        w1.tick(step=0)
-        t["now"] = 11.0
-        w1.tick(step=1)                         # lease lapses; record written
+        w1.tick(step=0)                         # fires; count-until met; record
     n_values = len(open_channel().read(topics=["value"]))
-    with Worker(open_channel(), now=lambda: t["now"]) as w2:    # episode 2
+    assert n_values == 1
+    with Worker(open_channel(), now=lambda: 0.0) as w2:         # episode 2
         w2.set("loss", 2.0)
         w2.tick(step=2)                         # must NOT re-register r1
     assert len(open_channel().read(topics=["value"])) == n_values
@@ -321,3 +322,129 @@ def test_serve_lost_claim_does_nothing(open_channel):
     with Worker(open_channel(), now=lambda: 0.0) as w:
         assert list(w.serve()) == []
     assert open_channel().read(topics=["value", "lifecycle.stopped"]) == []
+
+
+# ----- episode-scoped time-leases (specs/time-lease-boundary.md) -----
+
+
+_DEAD = "local://anyhost/2147483646"
+
+
+def _dead_started(ch):
+    return ch.send({"handle": _DEAD, "hostname": None, "attached_at": 0.0},
+                   topic="lifecycle.started")
+
+
+def test_founding_prestaged_time_lease_registers(open_channel):
+    # the drainer's own started is not a boundary: the founding idiom lives.
+    orch = open_channel()
+    _sub(orch, {"every": {"step": 1}, "until": {"time_seconds": 100}}, "r1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.set("loss", 1.0)
+    w.tick(step=0)
+    assert len(open_channel().read(topics=["value"])) == 1
+
+
+def test_boundary_voids_a_time_lease(open_channel):
+    # a started other than the drainer's own follows the lease -> voided:
+    # pop-then-skip, no nak, no record -- the boundary started IS the
+    # counter-record (pairing-by-seq's fourth instance).
+    orch = open_channel()
+    _sub(orch, {"every": {"step": 1}, "until": {"time_seconds": 100}}, "r1")
+    _dead_started(orch)                          # a prior episode's boundary
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.set("loss", 1.0)
+    w.tick(step=0)
+    assert open_channel().read(topics=["value"]) == []
+    assert open_channel().read(topics=["lifecycle.nak"]) == []
+    assert open_channel().read(topics=["control.unsubscribe"]) == []
+    assert w.pinned is False
+
+
+def test_voided_lease_pops_its_same_id_predecessor(open_channel):
+    # the A1 attack: a client tightened an unbounded step-sub into a
+    # time-leased replacement (same id); after a boundary the replacement is
+    # voided -- and must still rescind the predecessor (slots, not sets),
+    # else the superseded immortal sub resurrects while live_demand reads 0.
+    orch = open_channel()
+    _sub(orch, {"every": {"step": 1}}, "r1")                       # immortal
+    _sub(orch, {"every": {"step": 1}, "until": {"time_seconds": 100}}, "r1")
+    _dead_started(orch)
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.set("loss", 1.0)
+    w.tick(step=0)
+    assert open_channel().read(topics=["value"]) == []
+    assert w.pinned is False
+
+
+def test_reanchor_once_then_void(open_channel):
+    # a lease arriving DURING an episode is registered fresh by its first
+    # possible drainer (the one permitted re-anchor), then voided by the
+    # boundary after that.
+    orch = open_channel()
+    _dead_started(orch)                          # "ep1", already dead
+    _sub(orch, {"every": {"step": 1}, "until": {"time_seconds": 100}}, "r1")
+    with Worker(open_channel(), now=lambda: 0.0) as w2:   # first possible drainer
+        w2.set("loss", 1.0)
+        w2.tick(step=0)                          # the one re-anchor: serves
+    n = len(open_channel().read(topics=["value"]))
+    assert n == 1
+    with Worker(open_channel(), now=lambda: 0.0) as w3:   # next boundary: voids
+        w3.set("loss", 2.0)
+        w3.tick(step=1)
+    assert len(open_channel().read(topics=["value"])) == n
+
+
+def test_zero_fire_void(open_channel):
+    # consecutive crash-births around a pre-staged lease: voided, zero fires
+    # ever (documented: acceptance != will-serve; renewal is the client's
+    # detection mechanism).
+    orch = open_channel()
+    _sub(orch, {"every": {"step": 1}, "until": {"time_seconds": 100}}, "r1")
+    _dead_started(orch)
+    _dead_started(orch)
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.set("loss", 1.0)
+    w.tick(step=0)
+    assert open_channel().read(topics=["value"]) == []
+    assert w.pinned is False
+
+
+def test_step_keyed_lease_crosses_boundaries(open_channel):
+    # run-absolute schedules persist across episodes exactly as before.
+    orch = open_channel()
+    _sub(orch, {"every": {"step": 1}}, "r1")
+    _dead_started(orch)
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.set("loss", 1.0)
+    w.tick(step=0)
+    assert len(open_channel().read(topics=["value"])) == 1
+
+
+def test_mixed_schedule_is_episode_scoped(open_channel):
+    # any time atom anywhere makes the whole registration a lease.
+    orch = open_channel()
+    _sub(orch, {"every": {"step": 1},
+                "until": {"any": [{"step": 1000}, {"time_seconds": 100}]}}, "r1")
+    _dead_started(orch)
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.set("loss", 1.0)
+    w.tick(step=0)
+    assert open_channel().read(topics=["value"]) == []
+
+
+def test_ghost_relaunch_bound(open_channel):
+    # a dead lease with a boundary already after it costs exactly ONE
+    # relaunch; the waker needs no flap policy.
+    from runstate import live_demand
+    orch = open_channel()
+    _sub(orch, {"every": {"step": 1}, "until": {"time_seconds": 100}}, "ghost")
+    _dead_started(orch)
+    launches = 0
+    while live_demand(open_channel()) and launches < 5:
+        launches += 1
+        with Worker(open_channel(), now=lambda: 0.0) as w:
+            for _ in w.serve():
+                w.set("cpu", 0.0)
+    assert launches == 1
+    assert live_demand(open_channel()) == []

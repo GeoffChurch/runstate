@@ -281,3 +281,30 @@ def test_live_demand_agrees_with_the_worker(open_channel):
     w.tick(step=1)                               # lease lapses; record written
     assert w.pinned is False
     assert live_demand(open_channel()) == []     # the fold sees the expiry record
+
+
+def test_live_demand_excludes_boundary_voided_time_leases(open_channel):
+    # the observer form (specs/time-lease-boundary.md): a time-referencing
+    # subscribe is live only while the latest episode is still its first
+    # possible drainer.
+    ch = open_channel()
+    ch.send({"every": {"step": 1}, "until": {"time_seconds": 60}},
+            topic="control.subscribe", name="loss", request_id="r1")
+    assert len(live_demand(open_channel())) == 1     # no boundary yet
+    ch.send({"handle": "local://h/1", "hostname": None, "attached_at": 0.0},
+            topic="lifecycle.started")
+    assert len(live_demand(open_channel())) == 1     # its first possible drainer
+    ch.send({"handle": "local://h/2", "hostname": None, "attached_at": 1.0},
+            topic="lifecycle.started")
+    assert live_demand(open_channel()) == []         # a boundary intervenes
+
+
+def test_live_demand_keeps_step_keyed_subs_across_boundaries(open_channel):
+    ch = open_channel()
+    ch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss",
+            request_id="r1")
+    ch.send({"handle": "local://h/1", "hostname": None, "attached_at": 0.0},
+            topic="lifecycle.started")
+    ch.send({"handle": "local://h/2", "hostname": None, "attached_at": 1.0},
+            topic="lifecycle.started")
+    assert [e.request_id for e in live_demand(open_channel())] == ["r1"]
