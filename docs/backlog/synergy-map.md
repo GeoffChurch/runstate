@@ -20,8 +20,12 @@ justified only by design taste.
 ### Cluster 1 — the on-demand producer (the keystone)
 
 **State:** autonomous/sequence half shipped (memoizer + `ensure-until-condition`);
-service/function half unbuilt. The F1 prerequisite (atomic CAS) is **fixed
-2026-06-07**, so the §12.1 single-spawn guard can now be made race-free.
+**the service half SHIPPED 2026-06-10** (`../specs/service-worker.md` —
+`serve`/`retire`/`pinned`, the careful death, expiry counter-records, the
+positional answer fold / `live_demand`; dogfood `examples/monitor/`).
+Remaining: lazy-launch (the relaunch decider — its demand fold now exists) and
+the *function* producer (the second `ensure` implementer must be stepped and
+memoizable — mycooc-analyze, not the pure service).
 
 `ensure` today has exactly **one** producer (the autonomous/sequence worker), so
 the "Producer Protocol" is a *basis of one* — unfalsifiable. The keystone is the

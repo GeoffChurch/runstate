@@ -76,6 +76,11 @@ counter-record, and the worker folds the **whole** log applying
 counter-records.* Subscribe's counter-record is `unsubscribe` (an explicit
 rescind); stop's counter-record is the next `stopped` (a discharge). Both
 re-derive from `seq 0` across episodes; subscriptions persist because their
+*(forward note, 2026-06-10: this clause was incomplete until
+`specs/service-worker.md` — natural expiry left no rescission on the log, so
+expired leases resurrected per episode. The worker now writes expiry
+counter-records, the counter-record set is {unsubscribe, nak}, and the
+pairing is positional — design §7's pairing-by-`seq` rule.)*
 rescissions are on the log, and stops expire because their discharges are too.
 The subscribe/stop asymmetry (no `un-stop` verb) is principled: **a stop is
 self-clearing — its receipt is the very thing it requests.**

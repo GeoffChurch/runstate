@@ -57,25 +57,18 @@ machinery is identical.
 
 ## The lifeline reap needs no grace period
 
-Naively, "reap when `_subs` is empty" looks like it would reap a freshly-launched
-worker (empty `_subs` on tick 1). It doesn't, because launch is
-**subscription-triggered** and the channel is durable: the `control.subscribe`
-that caused the launch is already in the log, so the worker's first
-`_drain_control` (which runs *before* the reap check in the tick) registers it —
-the worker is never empty-at-startup. "No pending subscription" genuinely means
-"no reason to exist," so idling immediately is correct, not a bug to suppress.
-
-The only transient-zero is a **keepalive refresh** (unsub `s1` + sub `s2` meant
-to be atomic): the existing **register-before-reap** invariant (§6 — drain the
-whole tick's control before the reap check) means `_subs` is never observed empty
-mid-refresh. A refresh genuinely separated in time (demand really ended, then
-returned) reaps then relaunches — correct service behavior. So the reap is one
-clause evaluated once per tick after the full drain, like the commanded-stop
-check.
-
-**Precondition (documented, not enforced):** service-worker launch is
-subscription-driven (automatic under lazy-launch — the trigger sub *is* the
-pre-launch sub).
+**Superseded — and strengthened — 2026-06-10 by
+[service-worker](../specs/service-worker.md) (SHIPPED).** This section's
+argument (register-before-reap covers the transient zeros) was *incomplete*:
+it never covered the drain-to-death race (a subscribe landing between the
+final drain and the dying breath), which the spec's **careful death** closes —
+`retire()` compare-and-appends the `stopped` against the drained log, so
+episodes are CAS-claimed at both ends and the no-grace claim holds without
+this section's precondition (a worker launched into zero demand dies safely
+rather than depending on "launch is subscription-driven"; fail-safe by
+construction). The keepalive lapse across a worker crash is also now handled
+(expiry counter-records; at most one extra lease period). The kernel survives
+verbatim: ref-count-exact, stop at zero, no grace windows.
 
 ## Episode-aware liveness (the required refinement)
 
@@ -108,8 +101,12 @@ a real worker owns resume.
 
 - Episode boundaries in the schema/conventions: is "episode" implicit (a
   `started` after a `stopped`) or does it earn an explicit marker / id?
-- Does the lifeline ref-count live in the reference `Worker` as an opt-in *mode*,
-  or in a separate service-worker recipe? (Keep autonomous runs unaffected.)
+- ~~Does the lifeline ref-count live in the reference `Worker` as an opt-in *mode*,
+  or in a separate service-worker recipe? (Keep autonomous runs unaffected.)~~
+  **Answered 2026-06-10** ([service-worker](../specs/service-worker.md)):
+  neither — **opt-in by verb** (`serve()`/`retire()`/`pinned` in the reference
+  Worker; no flag, no second loop class); autonomous runs are unaffected *by
+  construction* (no term couples their life to observation).
 - How does episode-aware liveness interact with `RunResult` for a run that has
   finished its *last* episode vs. is between episodes (idle, may relaunch)?
 - Artifact/checkpoint location convention: a launcher-provided workdir keyed by

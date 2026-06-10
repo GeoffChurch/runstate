@@ -94,6 +94,20 @@ turns Γ into a join-semilattice — the CRDT / multi-writer / replicated-log
 direction. One lens, and the "galaxy-scale" analysis (run-local total order +
 causal asynchrony between homes) drops out as a corollary.
 
+## L2 addendum (2026-06-10) — the pairing-by-`seq` rule, named
+
+The intro/elim pairs are *positionally* paired: a standing fact's eliminator
+must **follow it by `seq`** (design §7 now states it once; instances: stop ↔
+next `stopped`; subscribe ↔ next unsubscribe-or-nak bearing its `request_id` —
+the **answer fold**, public home `observables.live_demand`; episode
+terminality ↔ no opener following the terminal). The elimination is
+author-blind — the worker writing the expiry `control.unsubscribe` applies
+the same affine eliminator a client's rescind does (gc and `free` share an
+opcode), which is why no `lifecycle.expired` constructor exists: every
+consumer would immediately quotient the two, so the minimal generator set is
+the initial vocabulary. Enforced worker-side as *registered ⟺ a future fire
+is possible* (`specs/service-worker.md`).
+
 ## L3 — fold observers separately; join only at the verdict
 
 `lifecycle.*` (self-report) and `launcher.*` (external report) are independent

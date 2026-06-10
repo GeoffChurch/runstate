@@ -43,16 +43,19 @@ guard — plus an autonomous-extend integration test and the
 
 - **[mycooc-migration-audit](mycooc-migration-audit.md)** — findings from the *completed* mycooc migration (first end-to-end consumer) + a follow-up audit. **✅ The VERIFIED P0 CAS-atomicity bug (F1) is fixed** (2026-06-07; fix superseded 2026-06-09 by the atomic-by-construction form — mechanism + corrected diagnosis live in the file's F1). **✅ The lost/clobbered `control.stop` (F2/F3) is fixed** (2026-06-09 — [stop-discharge](../specs/stop-discharge.md)). **✅ The reader gaps (F5–F8) are shipped** (2026-06-10 — [observables](../specs/observables.md): `value_series`/`progress`/`latest_episode`/`handle_pid`; mycooc deletes its hand-rolled files in one sweep). Remaining in the file: F4 (channel lifecycle/`close`) + the F9/F10 minors.
 - **[ensure-redrive-recoverable-terminations](ensure-redrive-recoverable-terminations.md)** — let `ensure` re-drive killed/timed-out runs that made progress, instead of raising; subsumes the consumer's custom resume loop. Surfaced by mycooc Phase-4 dogfood (the `_SyncHandle` terminal-synthesis and `_run_one_chunk` resume loop are the dual of this missing feature). Not bit-exact-testable; needs a mock-producer approach.
-- **The service/lifeline memoizer + a named `Producer` Protocol** — the deferred
-  *other half*: an on-demand worker that produces only while subscribed
-  (ref-counts subscriptions, dies at zero — lazy-launch-on-subscribe +
-  reap-at-zero-subs). It slots in as a second **producer** behind the same
-  `ensure`; the structural producer seam (`.channel`/`.run_id`/`.extend`) is
-  already in place, so this is the second implementer that triangulates the named
-  `Producer` Protocol (memoizer spec Decisions 5–6). Lands together with
+- **Cluster 1, remaining halves** — the **service worker SHIPPED 2026-06-10**
+  (`../specs/service-worker.md`: `serve()`/`retire()`/`pinned`, the careful
+  death, expiry counter-records + the positional answer fold /
+  `live_demand`; dogfood `examples/monitor/`). Remaining: **lazy-launch / the
+  relaunch decider** (the follow-on spec — its demand fold now exists; its
+  two recorded constraints: bound the relaunch cadence against re-anchored
+  leases, and no `ensure` over stepless services), and the **function
+  producer + a named `Producer` Protocol** — the second `ensure` implementer
+  must be the *stepped, memoizable* function worker (mycooc-analyze is the
+  oracle), NOT the pure service (`ensure` over a service is a category
+  error). Lands together with
   [memoizer-index-algebra](memoizer-index-algebra.md) — generalizing
-  `ensure(up_to=N)` to a (subscription-shaped) index term-algebra `ensure(I)`,
-  forwarded to the worker for structure-aware interpretation.
+  `ensure(up_to=N)` to a (subscription-shaped) index term-algebra `ensure(I)`.
 - **The relational layer — the Store** (the real component), plus the
   `run_id()` *recipe* (shipped: `../specs/run-id-recipe.md`) and the
   dedup-vs-enumeration split (below), driven by [mycooc-adoption](mycooc-adoption.md),
@@ -96,7 +99,10 @@ Consumer-side cursor persistence was **decided out of scope**, design §12.5.)
   resumable-`timed_out` vs fatal-`crashed`) so consumers can branch on *why*
   without expanding the closed `outcome` enum. Surfaced by
   [mycooc-adoption](mycooc-adoption.md). Small.
-- **Discharge-by-id (merge-tolerant control folds)** — generalize the
+- **Discharge-by-id (merge-tolerant control folds)** — now TWO positional
+  rules to generalize (design §7's pairing-by-`seq`: the stop discharge AND
+  the subscribe answer fold — sharpened by the worker itself now writing
+  `control.unsubscribe` expiry records) — generalize the
   stop-discharge fold's positional rule ("pending until the *next*
   `lifecycle.stopped`", `../specs/stop-discharge.md`) to explicit causal
   reference: a `stopped` names the `request_id`(s) it discharges. Makes the
