@@ -20,6 +20,20 @@ def local_handle() -> str:
     return f"local://{socket.gethostname()}/{os.getpid()}"
 
 
+def handle_pid(handle: str) -> int | None:
+    """The pid of a ``local://host/pid`` handle; None for a non-``local``
+    scheme or an unparseable token. The ONE place the local-handle grammar is
+    parsed — when the ``?start=T`` pid-reuse disambiguator lands
+    (docs/backlog/conventions-hygiene.md F9), it lands here instead of
+    breaking every consumer's rsplit."""
+    if not handle.startswith("local://"):
+        return None
+    try:
+        return int(handle.rsplit("/", 1)[1])
+    except (ValueError, IndexError):
+        return None
+
+
 def resolve(handle: str) -> bool | None:
     """Liveness of a handle token, actor-independently. True/False for a
     ``local://host/pid`` (via ``os.kill(pid, 0)``); None if the scheme isn't
@@ -29,11 +43,8 @@ def resolve(handle: str) -> bool | None:
     disambiguator deferred — see docs/backlog/conventions-hygiene.md F9).
     Provable liveness comes from a held OS handle (spawner, via
     ``LaunchHandle.is_alive()``) or heartbeat-staleness (observer tier 4)."""
-    if not handle.startswith("local://"):
-        return None
-    try:
-        pid = int(handle.rsplit("/", 1)[1])
-    except (ValueError, IndexError):
+    pid = handle_pid(handle)
+    if pid is None:
         return None
     try:
         os.kill(pid, 0)

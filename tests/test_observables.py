@@ -6,7 +6,14 @@ verdicts (peek_terminal -> RunResult, live_episode), the episode-boundary rule
 projection (value_series).
 """
 
-from runstate.observables import RunResult, live_episode, peek_terminal
+from runstate.observables import (
+    RunResult,
+    latest_episode,
+    live_episode,
+    peek_terminal,
+    progress,
+    value_series,
+)
 from runstate.vocabulary.handle import local_handle
 
 
@@ -90,3 +97,137 @@ def test_peek_terminal_is_episode_aware(open_channel):
     # episode 2 stops -> terminal again, with ep2's verdict
     ch.send({"completed": True, "error": None, "final_step": 9}, topic="lifecycle.stopped")
     assert peek_terminal(open_channel()).final_step == 9
+
+
+# ----- latest_episode: the episode-boundary rule, named once -----
+
+
+def test_latest_episode_none_when_no_worker_ever_attached(open_channel):
+    assert latest_episode(open_channel()) is None
+
+
+def test_latest_episode_returns_the_started_envelope(open_channel):
+    # the raw envelope: .seq is the episode-window watermark
+    # (read(after=e.seq, ...)), .body carries the handle. No Episode view type.
+    seq = open_channel().send(
+        {"handle": "local://h/1", "hostname": None, "attached_at": 0.0},
+        topic="lifecycle.started",
+    )
+    e = latest_episode(open_channel())
+    assert e.seq == seq
+    assert e.body["handle"] == "local://h/1"
+
+
+def test_latest_episode_survives_the_episodes_end(open_channel):
+    # *latest* means latest -- live, cleanly ended, or crashed alike (liveness
+    # is live_episode's composition). A stopped run's latest episode is what a
+    # status display shows: ended != absent.
+    ch = open_channel()
+    seq = ch.send({"handle": "local://h/1", "hostname": None, "attached_at": 0.0},
+                  topic="lifecycle.started")
+    ch.send({"completed": True, "error": None, "final_step": 5}, topic="lifecycle.stopped")
+    assert latest_episode(open_channel()).seq == seq
+
+
+def test_latest_episode_tracks_the_newest_started(open_channel):
+    # started...stopped...started -> the second episode's opener. The rule
+    # whose misapplication (oldest started) was audit F7's stale-pid bug.
+    ch = open_channel()
+    ch.send({"handle": "local://h/1", "hostname": None, "attached_at": 0.0},
+            topic="lifecycle.started")
+    ch.send({"completed": False, "error": None, "final_step": 5}, topic="lifecycle.stopped")
+    seq2 = ch.send({"handle": "local://h/2", "hostname": None, "attached_at": 1.0},
+                   topic="lifecycle.started")
+    e = latest_episode(open_channel())
+    assert e.seq == seq2
+    assert e.body["handle"] == "local://h/2"
+
+
+# ----- progress: the step frontier over the dense axis -----
+
+
+def test_progress_none_when_no_stepped_record(open_channel):
+    # None for absence (the repo's convention), not an in-band -1 sentinel --
+    # the memoizer keeps its private -1 adaptation locally.
+    assert progress(open_channel()) is None
+
+
+def test_progress_from_heartbeat(open_channel):
+    open_channel().send({"step": 7, "consumed_seq": 0}, topic="lifecycle.heartbeat")
+    assert progress(open_channel()) == 7
+
+
+def test_progress_from_stopped_final_step(open_channel):
+    open_channel().send({"completed": False, "error": None, "final_step": 12},
+                        topic="lifecycle.stopped")
+    assert progress(open_channel()) == 12
+
+
+def test_progress_is_the_max_of_both_axes(open_channel):
+    # frontier of the two registers: a prior episode's stopped may be ahead of
+    # the live episode's heartbeat (extend resumed earlier) -- max wins.
+    ch = open_channel()
+    ch.send({"completed": False, "error": None, "final_step": 50}, topic="lifecycle.stopped")
+    ch.send({"step": 30, "consumed_seq": 0}, topic="lifecycle.heartbeat")
+    assert progress(open_channel()) == 50
+
+
+def test_progress_ignores_stepless_heartbeats(open_channel):
+    open_channel().send({"step": None, "consumed_seq": 0}, topic="lifecycle.heartbeat")
+    assert progress(open_channel()) is None
+
+
+# ----- value_series: the register projection on the (name, step) plane -----
+
+
+def _value(ch, name, step, value, **env):
+    ch.send({"value": value, "step": step, "t": 0.0}, topic="value", name=name, **env)
+
+
+def test_value_series_groups_by_name_and_sorts_by_step(open_channel):
+    ch = open_channel()
+    _value(ch, "loss", 1, 0.9)
+    _value(ch, "acc", 0, 0.1)
+    _value(ch, "loss", 0, 1.0)   # arrives after step 1's sample
+    series = value_series(open_channel())
+    assert series == {"loss": {0: 1.0, 1: 0.9}, "acc": {0: 0.1}}
+    assert list(series["loss"]) == [0, 1]   # inner dicts step-sorted
+
+
+def test_value_series_last_wins_per_cell(open_channel):
+    # two subscriptions to one name fire at the same step: duplicate samples
+    # of one value, differing only in request_id -- the register projection
+    # keeps the latest by seq (request_id is dedup-irrelevant).
+    ch = open_channel()
+    _value(ch, "loss", 5, 0.5, request_id="a")
+    _value(ch, "loss", 5, 0.4, request_id="b")
+    assert value_series(open_channel()) == {"loss": {5: 0.4}}
+
+
+def test_value_series_rewind_resolves_to_the_resumed_branch(open_channel):
+    # ep1 reached step 6 then crashed before its checkpoint; ep2 resumed from
+    # 5 and re-emitted. Last-wins-by-seq returns the as-resumed trajectory --
+    # the orphaned branch drops out with zero episode-awareness code (the raw
+    # events stay on the log for forensics).
+    ch = open_channel()
+    _value(ch, "loss", 5, 0.50)
+    _value(ch, "loss", 6, 0.45)          # ep1's orphaned sample
+    _value(ch, "loss", 5, 0.52)          # ep2 re-emits step 5 (its branch)
+    _value(ch, "loss", 6, 0.44)          # ep2 reaches 6
+    assert value_series(open_channel())["loss"] == {5: 0.52, 6: 0.44}
+
+
+def test_value_series_skips_records_outside_the_domain(open_channel):
+    # tolerant reader: a stepless emission is outside the step-indexed
+    # observable's domain; a nameless value is not a series member; a foreign
+    # body on the value topic (the substrate allows any dict) must not raise.
+    ch = open_channel()
+    ch.send({"value": 1.0, "step": None, "t": 0.0}, topic="value", name="loss")
+    ch.send({"value": 2.0, "step": 3, "t": 0.0}, topic="value")
+    ch.send({"foo": "bar", "step": 3}, topic="value", name="loss")
+    _value(ch, "loss", 4, 0.7)
+    assert value_series(open_channel()) == {"loss": {4: 0.7}}
+
+
+def test_value_series_empty_channel(open_channel):
+    assert value_series(open_channel()) == {}

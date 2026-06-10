@@ -7,6 +7,7 @@ EXPECTED = {
     "Worker",
     "Launcher", "LaunchHandle", "ThreadLauncher", "LocalLauncher",
     "Watcher", "await_consumed", "RunStatus", "Running", "RunResult", "peek_terminal",
+    "latest_episode", "live_episode", "progress", "value_series", "handle_pid",
     "sweep", "Variant",
     "history", "ensure", "launch_producer", "relaunch_if_needed",
     "Value", "Started", "Heartbeat", "Stopped", "Nak", "Launched", "Terminated",

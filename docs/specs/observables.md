@@ -1,7 +1,9 @@
 # Spec: observables (the stateless observer plane)
 
-**Status:** converged 2026-06-10 (three-question deliberation, this session);
-implementing immediately. Completes the synergy-map **Cluster-3 read-projection
+**Status:** SHIPPED 2026-06-10 (converged via the three-question deliberation
+and implemented the same day; kept as the record of what was built — see
+`runstate/observables.py`, `vocabulary/handle.py`, and
+`tests/test_observables.py` / `tests/test_handle.py`). Completes the synergy-map **Cluster-3 read-projection
 batch** (mycooc audit F5–F8); the consumer call sites in
 `~/src/mycooc` (`channel_read.py`, `_channel_progress`,
 `_channel_live_status`, `_channel_pid`, `_channel_is_alive`) are the

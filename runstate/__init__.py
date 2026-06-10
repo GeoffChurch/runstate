@@ -13,7 +13,15 @@ import os
 from .channel import Envelope, open_channel
 from .launcher import Launcher, LaunchHandle, LocalLauncher, ThreadLauncher, relaunch_if_needed
 from .memoizer import ensure, history, launch_producer
-from .observables import RunResult, peek_terminal
+from .observables import (
+    RunResult,
+    latest_episode,
+    live_episode,
+    peek_terminal,
+    progress,
+    value_series,
+)
+from .vocabulary.handle import handle_pid
 from .vocabulary.payloads import (
     Heartbeat,
     Launched,
@@ -62,13 +70,18 @@ __all__ = [
     "LaunchHandle",
     "ThreadLauncher",
     "LocalLauncher",
-    # orchestration / liveness
+    # observables (the stateless observer plane) / orchestration
     "Watcher",
     "await_consumed",
     "RunStatus",
     "Running",
     "RunResult",
     "peek_terminal",
+    "latest_episode",
+    "live_episode",
+    "progress",
+    "value_series",
+    "handle_pid",
     "sweep",
     "Variant",
     "history",

@@ -53,13 +53,18 @@ The substrate + opt-in conventions + reference orchestration, in
   `Launched`/`Terminated`; serialize via `asdict`, parse via `Cls(**body)`),
   `schedule.py` (the subscription **condition-algebra**: `satisfied()`,
   `Subscription`, `is_unsatisfiable()` — `from`/`every`/`until` over
-  `step`/time/count), `handle.py` (portable liveness handles `local://host/pid`).
+  `step`/time/count), `handle.py` (portable liveness handles `local://host/pid`;
+  `handle_pid` owns the parse, `resolve` the liveness probe).
 - **`worker.py`** — the reference `Worker` loop (context manager +
   `steps()`): drains `control.*`, services subscriptions into `value`
   events, emits `lifecycle.*` (started / heartbeat / stopped / nak).
-- **`liveness.py`** — `RunResult` (the terminal verdict; closed
-  `outcome`, verbatim `reason`, no `success`) + `peek_terminal` (the
-  record-based verdict).
+- **`observables.py`** — the **stateless observer plane**: pure body-aware
+  folds log → derived view (`docs/specs/observables.md`). `peek_terminal` →
+  `RunResult` (the terminal verdict; closed `outcome`, verbatim `reason`, no
+  `success`), `live_episode`, `latest_episode` (the episode-boundary rule),
+  `progress` (the step frontier), `value_series` (the per-(name, step)
+  register projection). Membership test: needs a cursor or clock → it's the
+  `Watcher`'s; parses a handle string → it's `vocabulary/`'s.
 - **`launcher.py`** — `Launcher` / `LaunchHandle` Protocols +
   `ThreadLauncher` (in-process) + `LocalLauncher` (subprocess + `attach`).
 - **`watcher.py`** — `Watcher`, the stateful failure detector

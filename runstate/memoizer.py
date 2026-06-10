@@ -12,7 +12,7 @@ import time
 
 from .vocabulary.schedule import Subscription, satisfied
 from .launcher import relaunch_if_needed
-from .observables import peek_terminal
+from .observables import peek_terminal, progress
 
 
 class _LaunchProducer:
@@ -127,17 +127,12 @@ _FAILURES = frozenset({"errored", "killed", "presumed_dead"})
 
 
 def _progress(channel) -> int:
-    """The max step the trajectory has reached, from the DENSE axis (the
-    heartbeat beats every tick regardless of emission): the latest
-    heartbeat.step and the latest stopped.final_step. -1 if none yet."""
-    steps = []
-    hb = channel.latest("lifecycle.heartbeat")
-    if hb is not None and hb.body.get("step") is not None:
-        steps.append(hb.body["step"])
-    stopped = channel.latest("lifecycle.stopped")
-    if stopped is not None and stopped.body.get("final_step") is not None:
-        steps.append(stopped.body["final_step"])
-    return max(steps) if steps else -1
+    """The public ``observables.progress`` with None mapped to -1 — a local
+    arithmetic convenience so `_window_step = _progress + 1` starts at 0 on an
+    empty log (the in-band sentinel stays private; the public observable
+    returns None for absence)."""
+    p = progress(channel)
+    return -1 if p is None else p
 
 
 def _elapsed(channel, clock) -> float:

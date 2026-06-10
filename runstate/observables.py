@@ -54,11 +54,27 @@ class RunResult:
         return True
 
 
+def latest_episode(channel):
+    """The latest ``lifecycle.started`` envelope, or None if no worker ever
+    attached. *Latest* means latest — live, cleanly ended, or crashed alike
+    (liveness is ``live_episode``'s composition; None = the run was never
+    started, which is information, not a degenerate case). The envelope's
+    ``seq`` is the episode-window watermark (``channel.read(after=e.seq, …)``
+    reads this episode's events); its body parses via ``Started(**e.body)``.
+
+    The fold is one ``latest`` call; what this function owns is the
+    episode-boundary *rule* (specs/run-episodes.md Decision 1: an episode is a
+    read-side derivation, not a record) — named in the one place that changes
+    if explicit episode markers ever land, instead of being re-derived (and
+    misapplied — audit F7) by every consumer."""
+    return channel.latest("lifecycle.started")
+
+
 def live_episode(channel) -> Optional[str]:
-    """Handle of the currently-live episode, or None: the latest
-    ``lifecycle.started`` with no following ``stopped`` whose worker resolves
+    """Handle of the currently-live episode, or None: the latest episode
+    (``latest_episode``) with no following ``stopped`` whose worker resolves
     alive (a started-then-crashed episode resolves dead -> not live)."""
-    started = channel.latest("lifecycle.started")
+    started = latest_episode(channel)
     if started is None:
         return None
     stopped = channel.latest("lifecycle.stopped")
@@ -115,3 +131,57 @@ def peek_terminal(channel) -> Optional[RunResult]:
             outcome = "errored"
         return RunResult(outcome=outcome, reason=t.reason)
     return None
+
+
+def progress(channel) -> Optional[int]:
+    """Max step the trajectory reached, from the DENSE axis (the heartbeat
+    beats every tick regardless of emission): the latest
+    ``lifecycle.heartbeat.step`` and the latest ``lifecycle.stopped.final_step``,
+    whichever is greater; None if neither axis has a value yet. The frontier
+    of two registers — under an episode rewind the latest heartbeat already
+    reflects the resumed branch."""
+    steps = []
+    hb = channel.latest("lifecycle.heartbeat")
+    if hb is not None and hb.body.get("step") is not None:
+        steps.append(hb.body["step"])
+    stopped = channel.latest("lifecycle.stopped")
+    if stopped is not None and stopped.body.get("final_step") is not None:
+        steps.append(stopped.body["final_step"])
+    return max(steps) if steps else None
+
+
+def _value_points(channel):
+    """Decode ``value`` envelopes to ``(name, step, value)`` samples, lazily.
+    Applies the domain rules: skip records with no envelope ``name``, a null
+    ``step``, or no ``"value"`` key — a stepless emission is outside the
+    step-indexed observable's domain, and the substrate admits foreign bodies
+    on any topic. Private: the designated escape hatch if a custom-fold
+    consumer ever appears; until then the bring-your-own-fold seam is the
+    substrate itself (``read`` + a loop)."""
+    for e in channel.read(topics=["value"]):
+        if e.name is None or "value" not in e.body or e.body.get("step") is None:
+            continue
+        yield e.name, e.body["step"], e.body["value"]
+
+
+def value_series(channel) -> dict:
+    """``{name: {step: value}}`` — the run's reported values as functions of
+    step, in one log pass (per-name access = indexing; name enumeration =
+    ``.keys()``).
+
+    A ``value`` event is a *sample* of the worker's current-value function
+    (``set(name, value)`` + ``tick(step)``: one value per (name, step);
+    concurrent subscriptions duplicate samples differing only in
+    ``request_id``), so the fold is the substrate's register projection
+    (design §4 ``latest``) lifted pointwise: last-write-wins by ``seq`` per
+    (name, step) cell. Under an episode rewind the rewritten steps last-win
+    and the orphaned branch drops out — the as-resumed trajectory, with the
+    raw events still on the log for forensics. Inner dicts are step-sorted.
+
+    Pure and cache-free: the fold inherits the scope of the read view it is
+    given (visibility/enforcement compose upstream — design §6); ``request_id``
+    is a dedup concern only and is ignored."""
+    out: dict = {}
+    for name, step, value in _value_points(channel):
+        out.setdefault(name, {})[step] = value
+    return {name: dict(sorted(series.items())) for name, series in out.items()}
