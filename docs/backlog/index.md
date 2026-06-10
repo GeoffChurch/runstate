@@ -96,6 +96,16 @@ Consumer-side cursor persistence was **decided out of scope**, design §12.5.)
   resumable-`timed_out` vs fatal-`crashed`) so consumers can branch on *why*
   without expanding the closed `outcome` enum. Surfaced by
   [mycooc-adoption](mycooc-adoption.md). Small.
+- **Discharge-by-id (merge-tolerant control folds)** — generalize the
+  stop-discharge fold's positional rule ("pending until the *next*
+  `lifecycle.stopped`", `../specs/stop-discharge.md`) to explicit causal
+  reference: a `stopped` names the `request_id`(s) it discharges. Makes the
+  control fold commutative, so it survives multi-writer `control.*` (§12.7–8)
+  and replicated logs, where "next" is not well-defined — only the run-local
+  log has a total order; spacelike-separated writers have only the causal
+  partial order. Surfaced 2026-06-09 by stress-testing the global-seq design
+  against a galaxy-scale topology. No-op while every log has a single home;
+  revisit with the Postgres/Redis backends or any replication story.
 - [protocol-async-api](protocol-async-api.md) — wrap the JSON Schema in
   AsyncAPI for a richer spec format (multi-channel, lifecycle events).
   Defer until v0.2 protocol grows enough to justify the layer.
@@ -246,3 +256,10 @@ reasoning, listed here so they're discoverable as work (cross-ref, not moved):
 - **Protocol-implementer's guide** — a doc for someone writing a
   non-Python implementation (Rust, Go, TS). What conformance means;
   what tests to write; how to interop with the Python reference.
+- [protocol-algebra](protocol-algebra.md) — the principled constructions
+  behind the layer interfaces (L1 free-monoid initiality, L2 designated
+  intro/elim discipline + discharge folds = the context Γ, L3
+  observer-join), each yielding a **decision rule**, with retrodictions
+  (F2 as a type error; the refuted A2 as a category error) and the
+  rejected-formalisms negative space. **Placement open** — design appendix
+  vs `overview.md` incorporation; seeds the implementer's guide above.
