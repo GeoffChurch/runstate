@@ -78,7 +78,9 @@ Cartesian sweep + reuse-skipping sit on top.
 
 ### Cluster 3 — the read-projection basis → derived tools
 
-**State:** unbuilt; cheapest; fully mycooc-validated.
+**State:** F2/F3 + the cross-episode replay **shipped 2026-06-09**
+([stop-discharge](../specs/stop-discharge.md)); the readers (F5–F8) unbuilt;
+fully mycooc-validated.
 
 F5/F6/F7 are **catamorphisms the log already determines** — `value_series` folds
 `value` events, `progress` maxes the heartbeat/stopped axis, `current_episode` is
@@ -92,9 +94,10 @@ basis*, they aren't ergonomic sugar.
 - **F8** — `handle_pid()` owns the handle format in *one* function *before* the
   `?start=` disambiguator ([conventions-hygiene](conventions-hygiene.md) F9)
   breaks every consumer's `rsplit`.
-- **F2 (+F3 + the cross-episode stale-stop replay)** — **specced 2026-06-09 as
-  one fix: [stop-discharge](../specs/stop-discharge.md)**; pinned by a
-  strict-xfail test (`test_resumed_episode_ignores_prior_episodes_stop`).
+- **F2 (+F3 + the cross-episode stale-stop replay)** — **shipped 2026-06-09 as
+  one fix: [stop-discharge](../specs/stop-discharge.md)** (specced and
+  implemented same day; the strict-xfail pin
+  `test_resumed_episode_ignores_prior_episodes_stop` now passes).
 
 **Payoff falls out:** the cli-status / cli-stop one-liners and the
 [webapp-viewer](webapp-viewer.md) become trivial once these readers are public —
@@ -114,13 +117,13 @@ Highest opinion-creep risk — gate hard.
 
 ## Two cross-cutting insights
 
-**One drain rule unifies F2, F3, and the episode control-cursor** — specced
-2026-06-09 as [stop-discharge](../specs/stop-discharge.md), which carries the
-rule, the refutation trail of this paragraph's earlier "react-after-the-cursor"
-framing, and the strict-xfail pin. The synergy observation stands: correcting
-one type error (a command-fact implemented with the `Subscription` type) closes
-the lost-stop (F2), the clobber (F3), and the cross-episode replay in one
-stroke. (The generalizing lens — conventions as designated intro/elim pairs —
+**One drain rule unifies F2, F3, and the episode control-cursor** — specced and
+**shipped** 2026-06-09 as [stop-discharge](../specs/stop-discharge.md), which
+carries the rule and the refutation trail of this paragraph's earlier
+"react-after-the-cursor" framing (the strict-xfail pin flipped to a passing
+test). The synergy observation held in execution: correcting one type error (a
+command-fact implemented with the `Subscription` type) closed the lost-stop
+(F2), the clobber (F3), and the cross-episode replay in one stroke. (The generalizing lens — conventions as designated intro/elim pairs —
 is now [protocol-algebra](protocol-algebra.md).)
 
 **The mycooc audit is a basis-completeness oracle.** It is the rubric's
@@ -137,8 +140,9 @@ than any inspection-only item.
    2026-06-07** (fix superseded 2026-06-09 by the atomic-by-construction form —
    mechanism in the audit's F1). Unblocked Cluster 1; the cheap Cluster 3 batch
    is next.
-2. **Cluster 3 batch** (F5/F6/F7/F8 + F2) — cheapest, all mycooc-validated, all
-   clean basis-completion; lets mycooc delete workarounds.
+2. **Cluster 3 batch** (F5/F6/F7/F8; the F2 half shipped 2026-06-09) — cheapest,
+   all mycooc-validated, all clean basis-completion; lets mycooc delete
+   workarounds.
 3. **Cluster 1** — the richest *design* payoff (keystone serendipity).
 4. **Cluster 2** — the Layer-4 backbone; larger relational build; recipe specced.
 
@@ -157,8 +161,8 @@ than any inspection-only item.
 ## Sequencing
 
 `F1` ✅ (fixed 2026-06-07; unblocked all) → **Cluster 3 batch** (cheap, validated;
-F2/F3/stale-stop land as one specced fix — [stop-discharge](../specs/stop-discharge.md))
-→ **Cluster 1** (keystone) → **Cluster 2** (Layer 4) → Cluster 4 stays frozen
+F2/F3/stale-stop ✅ shipped 2026-06-09 as [stop-discharge](../specs/stop-discharge.md);
+the readers remain) → **Cluster 1** (keystone) → **Cluster 2** (Layer 4) → Cluster 4 stays frozen
 until the Store lands. channel-postgres slots in *with* Cluster 1
 (wake-on-subscribe); the CLI/webapp tools *after* Cluster 3's readers are public.
 

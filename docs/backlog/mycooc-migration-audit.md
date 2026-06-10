@@ -77,12 +77,16 @@ test is sequential, so the race is entirely unpinned.
 
 ## F2 (HIGH — design gap mycooc hit) — a fired `control.stop` is lost if the caller can't act on the single `True`
 
-**Fix specced 2026-06-09:** `../specs/stop-discharge.md` — the stop is re-typed
-as a *set of monotone pending predicates*, so the latch falls out with no flag
-(monotone conditions ⟹ the decision is a level, not a pulse) and `stop_pending`
-is the side-effect-free read. Note: the spec's model *supersedes* fix-sketch (1)
-below (a `_stop_fired` flag would patch the symptom while keeping the
-`Subscription` mis-typing — see the spec's A1).
+**Resolved 2026-06-09** (specced and implemented same day:
+`../specs/stop-discharge.md`) — the stop is re-typed as a *set of monotone
+pending predicates*, so the latch falls out with no flag (monotone conditions ⟹
+the decision is a level, not a pulse) and `Worker.stop_pending` is the
+side-effect-free read; mycooc can now delete its `stage >= 0` gate and recover
+bootstrap heartbeats. Note: the spec's model *supersedes* fix-sketch (1) below
+(a `_stop_fired` flag would patch the symptom while keeping the `Subscription`
+mis-typing — see the spec's A1). Pinned by
+`test_commanded_stop_latches_until_honored` and
+`test_stop_pending_is_a_side_effect_free_poll` (`tests/test_worker.py`).
 
 `worker.py` `Worker.tick` + `vocabulary/schedule.py` `Subscription.tick`. A stop is
 a one-shot `Subscription`: `tick()` returns `True` only on the *first* tick where
@@ -116,12 +120,15 @@ mycooc **delete its `stage >= 0` gate and restore bootstrap heartbeats**.
 
 ## F3 (HIGH) — a later `control.stop` clobbers an earlier still-pending one
 
-**Fix specced 2026-06-09:** `../specs/stop-discharge.md` — pending stops become
-a *set* combined by the condition-algebra's `any`-join. NB the spec corrects two
-claims below: "earliest commanded stop wins" is ill-posed on the condition
-algebra's partial order (OR is the canonical combination), and "the F2 latch
-subsumes this" is insufficient (a latch-on-fire over a single slot still loses
-an earlier *pending-unfired* stop — the set is required).
+**Resolved 2026-06-09** (specced and implemented same day:
+`../specs/stop-discharge.md`) — pending stops are a *set* combined by the
+condition-algebra's `any`-join, and one `lifecycle.stopped` discharges them all
+(broadcast answer). NB the spec corrects two claims below: "earliest commanded
+stop wins" is ill-posed on the condition algebra's partial order (OR is the
+canonical combination), and "the F2 latch subsumes this" is insufficient (a
+latch-on-fire over a single slot still loses an earlier *pending-unfired* stop —
+the set is required). Pinned by `test_two_pending_stops_or_join` and
+`test_one_stopped_discharges_every_pending_stop` (`tests/test_worker.py`).
 
 `worker.py` `_handle_control`: `self._stop = Subscription(e.body, …)` overwrites any
 prior pending stop (last-writer-wins). Verified: orchestrator A sends "stop at
@@ -218,11 +225,11 @@ not correctness.
 1. ~~**F1 — `BEGIN IMMEDIATE` on the CAS path** + a concurrent conformance test.~~
    **Done 2026-06-07** (see the F1 section above). Items 2 and 3 are now the top
    pickups.
-2. **F2 (+F3) — latch a fired `control.stop` and expose `stop_pending`.** The
-   one-shot edge silently loses stops; mycooc already paid with a gating
-   workaround that also suppressed heartbeats. Latch + poll-predicate fixes the
-   lost-stop, the multi-orchestrator clobber, and the all-or-nothing `tick()`
-   coupling in one stroke — and lets mycooc drop its workaround.
+2. ~~**F2 (+F3) — latch a fired `control.stop` and expose `stop_pending`.**~~
+   **Done 2026-06-09** as the stop-discharge fold (see the F2/F3 sections
+   above): the re-typing fixes the lost-stop, the multi-orchestrator clobber,
+   the cross-episode replay, and the all-or-nothing `tick()` coupling in one
+   stroke — mycooc can drop its workaround. Item 3 is now the top pickup.
 3. **F5/F6/F7 — ship `value_series()` / `progress()` / `current_episode()`.**
    Exactly the files mycooc was forced to write (`channel_read.py`,
    `_channel_progress`, `_channel_live_status`/`_channel_pid`) — one around a

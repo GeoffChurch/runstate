@@ -41,7 +41,7 @@ guard — plus an autonomous-extend integration test and the
 
 **→ Next pickups:**
 
-- **[mycooc-migration-audit](mycooc-migration-audit.md)** — findings from the *completed* mycooc migration (first end-to-end consumer) + a follow-up audit. **✅ The VERIFIED P0 CAS-atomicity bug (F1) is fixed** (2026-06-07; fix superseded 2026-06-09 by the atomic-by-construction form — mechanism + corrected diagnosis live in the file's F1). Remaining: a fired `control.stop` is a lost edge (one-shot, no latch — mycooc hit this and worked around it by gating `tick`; **fix specced:** [stop-discharge](../specs/stop-discharge.md)), and a cluster of "every consumer reimplements it" reader gaps (value-series, `progress`, `current_episode`/episode-aware reads) — exactly the files mycooc was forced to write.
+- **[mycooc-migration-audit](mycooc-migration-audit.md)** — findings from the *completed* mycooc migration (first end-to-end consumer) + a follow-up audit. **✅ The VERIFIED P0 CAS-atomicity bug (F1) is fixed** (2026-06-07; fix superseded 2026-06-09 by the atomic-by-construction form — mechanism + corrected diagnosis live in the file's F1). **✅ The lost/clobbered `control.stop` (F2/F3) is fixed** (2026-06-09 — [stop-discharge](../specs/stop-discharge.md), specced and implemented same day; mycooc can drop its `tick`-gating workaround). Remaining: the cluster of "every consumer reimplements it" reader gaps (value-series, `progress`, `current_episode`/episode-aware reads) — exactly the files mycooc was forced to write.
 - **[ensure-redrive-recoverable-terminations](ensure-redrive-recoverable-terminations.md)** — let `ensure` re-drive killed/timed-out runs that made progress, instead of raising; subsumes the consumer's custom resume loop. Surfaced by mycooc Phase-4 dogfood (the `_SyncHandle` terminal-synthesis and `_run_one_chunk` resume loop are the dual of this missing feature). Not bit-exact-testable; needs a mock-producer approach.
 - **The service/lifeline memoizer + a named `Producer` Protocol** — the deferred
   *other half*: an on-demand worker that produces only while subscribed
@@ -65,8 +65,8 @@ guard — plus an autonomous-extend integration test and the
   long-horizon data-plane protocol; post-relational-layer.
 
 **Live deferred items off run-episodes:** the cross-episode control-cursor item
-is **specced** ([stop-discharge](../specs/stop-discharge.md), 2026-06-09; pending
-implementation, pinned by a strict-xfail test). (The service/lifeline
+is **shipped** ([stop-discharge](../specs/stop-discharge.md), specced and
+implemented 2026-06-09; the strict-xfail pin now passes). (The service/lifeline
 policy is a Next pickup above; the best-effort launch pre-check / idempotent
 relaunch shipped with the memoizer as the free `relaunch_if_needed` helper — a
 log-read + `launch`, deliberately **not** a `Launcher` Protocol method.

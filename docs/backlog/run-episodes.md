@@ -119,8 +119,8 @@ a real worker owns resume.
 - **Control cursor across episodes.** ~~A fresh episode's worker drains
   `control.*` from `seq` 0, which correctly *re-derives standing subscriptions*
   but would also *replay one-shot commands* (a prior episode's `control.stop` →
-  the new episode stops immediately).~~ **Resolved 2026-06-09 — specced as the
-  discharge fold: [stop-discharge](../specs/stop-discharge.md)**, which carries
-  the rule and the refutation of this entry's original episode-fencing sketch
-  (its A2; pinned by a strict-xfail test). Cursor persistence stays a §12.5
-  *efficiency* item, orthogonal to correctness.
+  the new episode stops immediately).~~ **Resolved 2026-06-09 — specced and shipped
+  as the discharge fold: [stop-discharge](../specs/stop-discharge.md)**, which
+  carries the rule and the refutation of this entry's original episode-fencing
+  sketch (its A2; the once-xfail pin now passes). Cursor persistence stays a
+  §12.5 *efficiency* item, orthogonal to correctness.
