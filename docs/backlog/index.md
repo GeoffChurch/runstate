@@ -15,6 +15,9 @@ design; §12 = open implementation items, §14 = scope) → **this file** (the
 discoverable work list). For the v0.3 thread, also read the shipped specs
 **`../specs/run-episodes.md`**, **`../specs/run-id-recipe.md`**, and
 **`../specs/memoizer.md`**, and the trail **`../design-v0.3-exploration.md`**.
+For the **dependency/synergy view** over this list — the items grouped into
+clusters that unlock each other, with a sequencing — see
+[synergy-map](synergy-map.md).
 
 **Most recent — 2026-06-02: the memoizer shipped** (on `master`): `history()`
 replays the subscription algebra over the logged `value` points (passive,
@@ -38,6 +41,7 @@ guard — plus an autonomous-extend integration test and the
 
 **→ Next pickups:**
 
+- **[mycooc-migration-audit](mycooc-migration-audit.md)** — findings from the *completed* mycooc migration (first end-to-end consumer) + a follow-up audit. **✅ The VERIFIED P0 CAS-atomicity bug (F1) is fixed** (2026-06-07; fix superseded 2026-06-09 by the atomic-by-construction form — mechanism + corrected diagnosis live in the file's F1). Remaining: a fired `control.stop` is a lost edge (one-shot, no latch — mycooc hit this and worked around it by gating `tick`; **fix specced:** [stop-discharge](../specs/stop-discharge.md)), and a cluster of "every consumer reimplements it" reader gaps (value-series, `progress`, `current_episode`/episode-aware reads) — exactly the files mycooc was forced to write.
 - **[ensure-redrive-recoverable-terminations](ensure-redrive-recoverable-terminations.md)** — let `ensure` re-drive killed/timed-out runs that made progress, instead of raising; subsumes the consumer's custom resume loop. Surfaced by mycooc Phase-4 dogfood (the `_SyncHandle` terminal-synthesis and `_run_one_chunk` resume loop are the dual of this missing feature). Not bit-exact-testable; needs a mock-producer approach.
 - **The service/lifeline memoizer + a named `Producer` Protocol** — the deferred
   *other half*: an on-demand worker that produces only while subscribed
