@@ -12,7 +12,7 @@ import time
 
 from .vocabulary.schedule import Subscription, satisfied
 from .launcher import relaunch_if_needed
-from .liveness import peek_terminal
+from .observables import peek_terminal
 
 
 class _LaunchProducer:

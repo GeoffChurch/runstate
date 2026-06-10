@@ -1,10 +1,23 @@
-"""Observer-side liveness assessment (docs/design-v0.2.md §8, §9).
+"""The stateless observer plane (docs/specs/observables.md; design §8, §9).
 
-The layered failure detector, observer side. ``peek_terminal`` covers the two
-*terminal* tiers that are a pure read of the log — a clean ``lifecycle.stopped``
-(the worker's own report) and a reaped ``launcher.terminated`` (the manner of
-death). The non-terminal tiers (resolve-the-handle probe, heartbeat staleness)
-are evaluated by the stateful Watcher, which polls and tracks arrival times.
+Observables: pure, body-aware folds ``log -> derived view`` — the questions you
+can ask of a run without disturbing it (the read side of design §7's
+read-vs-subscribe line; reads never pin a worker, subscriptions do). Observe
+*statelessly* here; watch *statefully* with the ``Watcher`` (which adds the one
+non-log-derivable input, arrival time). Not Rx-style observables — pull-side
+pure functions; the push side is the subscription convention.
+
+Membership test: stateless, observer-side, derived-never-stored. Needs a
+cursor or a clock? It's the Watcher's. Parses a handle string? It's
+``vocabulary/``'s. Every fold is a tolerant reader: the substrate admits
+foreign bodies on any topic, so records missing a fold's required keys are
+skipped, never raised on.
+
+The liveness tiers live here too: ``peek_terminal`` covers the two *terminal*
+tiers that are a pure read of the log — a clean ``lifecycle.stopped`` (the
+worker's own report) and a reaped ``launcher.terminated`` (the manner of
+death); the non-terminal tiers (handle probe, heartbeat staleness) are the
+stateful Watcher's.
 """
 
 from __future__ import annotations

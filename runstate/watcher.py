@@ -23,7 +23,7 @@ import uuid
 from dataclasses import dataclass, field, replace
 from typing import Optional, Union
 
-from .liveness import RunResult, peek_terminal
+from .observables import RunResult, peek_terminal
 from .vocabulary.payloads import Heartbeat, Nak
 
 

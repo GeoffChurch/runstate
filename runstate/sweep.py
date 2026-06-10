@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
-from .liveness import peek_terminal
+from .observables import peek_terminal
 from .watcher import Watcher
 
 # Outcomes sweep treats as failure for stop_on_failure. A clean "preempted"

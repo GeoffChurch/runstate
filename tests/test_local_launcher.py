@@ -11,7 +11,7 @@ carrying the real manner of death (clean exit vs signal).
 import sys
 
 from runstate.launcher import LocalLauncher
-from runstate.liveness import peek_terminal
+from runstate.observables import peek_terminal
 
 # A worker that re-derives its channel from the environment and records a value.
 WORKER = (

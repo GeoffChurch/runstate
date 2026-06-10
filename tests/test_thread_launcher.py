@@ -9,7 +9,7 @@ log: launcher.launched (spawn-intent + handle) at start, launcher.terminated
 import threading
 
 from runstate.launcher import ThreadLauncher
-from runstate.liveness import peek_terminal
+from runstate.observables import peek_terminal
 
 
 def test_launch_runs_target_and_brackets_with_launcher_lifecycle(tmp_path):

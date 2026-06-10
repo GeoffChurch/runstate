@@ -8,7 +8,7 @@ the launcher's launcher.terminated together bracket the run.
 """
 
 from runstate.launcher import ThreadLauncher
-from runstate.liveness import peek_terminal
+from runstate.observables import peek_terminal
 from runstate.worker import Worker
 
 

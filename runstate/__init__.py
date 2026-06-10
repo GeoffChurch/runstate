@@ -13,7 +13,7 @@ import os
 from .channel import Envelope, open_channel
 from .launcher import Launcher, LaunchHandle, LocalLauncher, ThreadLauncher, relaunch_if_needed
 from .memoizer import ensure, history, launch_producer
-from .liveness import RunResult, peek_terminal
+from .observables import RunResult, peek_terminal
 from .vocabulary.payloads import (
     Heartbeat,
     Launched,

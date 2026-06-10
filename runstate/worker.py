@@ -16,7 +16,7 @@ from dataclasses import asdict
 from .vocabulary.payloads import Heartbeat, Nak, Started, Stopped, Value
 from .vocabulary.handle import local_handle
 from .vocabulary.schedule import Subscription, is_unsatisfiable, satisfied
-from .liveness import live_episode
+from .observables import live_episode
 
 
 class Worker:

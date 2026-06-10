@@ -28,7 +28,7 @@ from typing import Optional, Protocol
 from .channel import open_channel
 from .vocabulary.payloads import Launched, Terminated
 from .vocabulary.handle import local_handle
-from .liveness import live_episode
+from .observables import live_episode
 
 
 class LaunchHandle(Protocol):

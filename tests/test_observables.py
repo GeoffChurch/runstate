@@ -1,11 +1,12 @@
-"""Observer-side liveness assessment (docs/design-v0.2.md §8, §9).
+"""The stateless observer plane (docs/specs/observables.md).
 
-peek_terminal(channel) reads the log and returns a terminal RunResult if the run
-has finished — a clean lifecycle.stopped, or a reaped launcher.terminated — else
-None (still running / unknown). A single indexed existence lookup, no scan.
+Pure folds log -> derived view, parametrized over both backends: the liveness
+verdicts (peek_terminal -> RunResult, live_episode), the episode-boundary rule
+(latest_episode), the step frontier (progress), and the value-plane register
+projection (value_series).
 """
 
-from runstate.liveness import RunResult, live_episode, peek_terminal
+from runstate.observables import RunResult, live_episode, peek_terminal
 from runstate.vocabulary.handle import local_handle
 
 
