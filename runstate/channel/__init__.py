@@ -2,7 +2,14 @@
 
 A channel is one ordered, retained, multi-reader log of *envelopes*
 ``{seq, topic, name?, request_id?, body}``. The substrate routes/indexes on the
-envelope and never parses ``body``. See docs/design-v0.2.md §4.
+envelope and never parses ``body``.
+
+``send(expected_seq=)`` is the substrate's **compare-and-append**: the check and
+the append are one critical section across handles and processes. ``None`` means
+the claim was provably lost (the log moved); a raise means the outcome was
+indeterminate (a backend fault, e.g. a competing writer wedged past the wait
+bound) — never a loss. Every backend must honor this; the conformance race
+tests in ``tests/test_channel.py`` pin it. See docs/design-v0.2.md §4.
 
 This module is the package *facade*: it imports the core record, the backends,
 and the locator, and re-exports them. It is the top of the package's import DAG

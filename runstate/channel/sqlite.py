@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 
 from .envelope import Envelope
@@ -37,7 +38,33 @@ class SqliteChannel:
         self._conn = sqlite3.connect(
             str(path), isolation_level=None, check_same_thread=False
         )
-        self._conn.execute("PRAGMA journal_mode=WAL")
+        # ONE handle may be shared across threads (ThreadLauncher hands the same
+        # instance to the worker thread and the orchestrator's Watcher), and the
+        # sqlite3 module mis-handles concurrent statement use on one connection
+        # even when compiled threadsafe — so every connection touch is serialized.
+        self._lock = threading.Lock()
+        # WAL conversion races at db birth: it takes a SHARED->EXCLUSIVE lock
+        # escalation that sqlite exempts from the busy handler (deadlock-prone
+        # path), so when several fresh connections collide -- the multi-claimant
+        # ensure-create topology -- losers raise SQLITE_BUSY no matter what
+        # busy_timeout says. The mode is persistent in the file (one opener
+        # converts; for everyone else the pragma is a no-op read), so a brief
+        # bounded retry absorbs birth contention entirely.
+        for retries_left in reversed(range(20)):
+            try:
+                self._conn.execute("PRAGMA journal_mode=WAL")
+                break
+            except sqlite3.OperationalError as exc:
+                busy = getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_BUSY
+                if not busy or not retries_left:
+                    raise
+                time.sleep(0.01)
+        # Cross-connection CAS contention (send(expected_seq=)): a nonzero
+        # busy_timeout makes the losing claimant WAIT on the winner's write
+        # transaction and then cleanly observe the moved seq (returning None)
+        # instead of raising "database is locked". Single-writer-per-run is the
+        # norm, so outside a genuine multi-claimant race this never engages.
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
 
     def send(self, body: dict, *, topic: str, name=None, request_id=None,
@@ -45,17 +72,52 @@ class SqliteChannel:
         # json_default (sender-side) coerces exotic value payloads on the way out;
         # the stored text is always standard JSON, so any reader uses plain loads.
         body_json = json.dumps(body, default=self._json_default, separators=(",", ":"))
-        with self._conn:  # BEGIN/COMMIT — check + INSERT are one atomic transaction
-            if expected_seq is not None:
-                last = (self._conn.execute("SELECT MAX(seq) FROM log").fetchone()[0]) or 0
-                if last != expected_seq:
+        params = (topic, name, request_id, body_json, time.time())
+        with self._lock:
+            if expected_seq is None:
+                # Unconditional append: a single autocommitted INSERT (the
+                # connection runs in autocommit mode, isolation_level=None).
+                return self._conn.execute(
+                    "INSERT INTO log (topic, name, request_id, body, created_at)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    params,
+                ).lastrowid
+            # Compare-and-append (the run-episodes self-claim / §12.1 single-spawn
+            # guard). The check and the INSERT must be one critical section across
+            # connections AND processes; a guarded INSERT is ONE statement, hence
+            # one implicit write transaction, which sqlite serializes against
+            # every other writer. Atomicity by construction also means no
+            # multi-statement BEGIN..COMMIT window on this connection for another
+            # thread's send to fall into (and be erased by a rollback), and no
+            # uncommitted state for same-connection reads to phantom-see.
+            try:
+                cur = self._conn.execute(
+                    "INSERT INTO log (topic, name, request_id, body, created_at)"
+                    " SELECT ?, ?, ?, ?, ?"
+                    " WHERE (SELECT COALESCE(MAX(seq), 0) FROM log) = ?",
+                    (*params, expected_seq),
+                )
+            except sqlite3.OperationalError as exc:
+                if getattr(exc, "sqlite_errorcode", None) != sqlite3.SQLITE_BUSY:
+                    raise
+                # busy_timeout exhausted: a competing writer held the file's write
+                # lock for the whole wait, so the guard never ran. Disambiguate
+                # (WAL keeps the log readable while that writer holds the lock):
+                # if the log moved past expected_seq the claim is PROVABLY lost
+                # -> None, the same answer as losing the guard. If it hasn't
+                # moved, the holder is wedged mid-transaction and the outcome is
+                # indeterminate -> surface the fault. Synthesizing a loss here
+                # would be a silent liveness hole: a holder that then rolls back
+                # would leave the run claimed by nobody.
+                last = self._conn.execute(
+                    "SELECT COALESCE(MAX(seq), 0) FROM log"
+                ).fetchone()[0]
+                if last > expected_seq:
                     return None
-            cur = self._conn.execute(
-                "INSERT INTO log (topic, name, request_id, body, created_at)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (topic, name, request_id, body_json, time.time()),
-            )
-        return cur.lastrowid
+                raise
+            # Gate on rowcount: when the guard fails nothing was inserted, and
+            # lastrowid is a stale leftover from a prior INSERT, not a seq.
+            return cur.lastrowid if cur.rowcount == 1 else None
 
     def read(
         self,
@@ -94,29 +156,32 @@ class SqliteChannel:
         if limit is not None:
             sql += " LIMIT ?"
             params.append(limit)
-        rows = self._conn.execute(sql, params).fetchall()
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
         return [
             Envelope(seq, topic, name, request_id, json.loads(body))
             for (seq, topic, name, request_id, body) in rows
         ]
 
     def latest(self, topic: str, name=None) -> Envelope | None:
-        if name is None:
-            row = self._conn.execute(
-                "SELECT seq, topic, name, request_id, body FROM log"
-                " WHERE topic = ? ORDER BY seq DESC LIMIT 1",
-                (topic,),
-            ).fetchone()
-        else:
-            row = self._conn.execute(
-                "SELECT seq, topic, name, request_id, body FROM log"
-                " WHERE topic = ? AND name = ? ORDER BY seq DESC LIMIT 1",
-                (topic, name),
-            ).fetchone()
+        with self._lock:
+            if name is None:
+                row = self._conn.execute(
+                    "SELECT seq, topic, name, request_id, body FROM log"
+                    " WHERE topic = ? ORDER BY seq DESC LIMIT 1",
+                    (topic,),
+                ).fetchone()
+            else:
+                row = self._conn.execute(
+                    "SELECT seq, topic, name, request_id, body FROM log"
+                    " WHERE topic = ? AND name = ? ORDER BY seq DESC LIMIT 1",
+                    (topic, name),
+                ).fetchone()
         if row is None:
             return None
         seq, topic, name, request_id, body = row
         return Envelope(seq, topic, name, request_id, json.loads(body))
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()

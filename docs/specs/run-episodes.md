@@ -55,7 +55,9 @@ started, reapable only via the launcher's liveness — which breaks fire-and-for
 - **CAS primitive:** `send(..., expected_seq=S)` appends iff the log's last `seq` is
   `S`, else rejects. Opinion-free (checks a `seq`, never the body); maps to NATS
   expected-last-seq / Kafka's idempotent producer. Memory: under its existing lock;
-  SQLite: a transaction.
+  SQLite: one guarded statement, atomic by construction. (Normative concurrency
+  contract now in design §4: atomic across handles and processes; `None` =
+  provably lost; raise = indeterminate fault.)
 - **Worker self-claim:** on attach the worker **CAS-claims its `lifecycle.started`**
   (append iff no live episode). **Win →** proceed (load state, run). **Lose** (a live
   episode already claimed) **→ exit immediately**, before loading state or emitting

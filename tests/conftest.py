@@ -36,27 +36,20 @@ def ch(request, tmp_path):
 
 @pytest.fixture(params=["memory", "sqlite"])
 def open_channel(request, tmp_path):
-    """Factory: each call opens a Channel on the SAME run, so several handles
-    (e.g. a worker and a separate observer) share one log."""
+    """Factory: each call opens a handle on the SAME run, so several handles
+    (e.g. a worker and a separate observer, or N racing claimants) share one
+    log. Delegates to the real ``runstate.channel.open_channel`` rather than
+    hand-constructing backends, so handles share exactly what the library
+    shares (separate sqlite connections on one file; the registry-co-located
+    memory log + lock) and the fixture can't drift from the locator."""
+    from runstate.channel import open_channel as locate
+
     made = []
-    if request.param == "sqlite":
-        from runstate.channel.sqlite import SqliteChannel
 
-        path = tmp_path / "run.db"
-
-        def _open():
-            c = SqliteChannel(path)
-            made.append(c)
-            return c
-    else:
-        from runstate.channel.memory import MemoryChannel
-
-        shared: list = []
-
-        def _open():
-            c = MemoryChannel(shared)
-            made.append(c)
-            return c
+    def _open():
+        c = locate("run", root=str(tmp_path), backend=request.param)
+        made.append(c)
+        return c
 
     yield _open
     for c in made:
