@@ -60,8 +60,9 @@ guard — plus an autonomous-extend integration test and the
 - **Visualization** ([visualization-story](visualization-story.md)) — the
   long-horizon data-plane protocol; post-relational-layer.
 
-**Live deferred items off run-episodes:** the control-cursor *state-vs-event*
-refinement ([run-episodes](run-episodes.md) open questions). (The service/lifeline
+**Live deferred items off run-episodes:** the cross-episode control-cursor item
+is **specced** ([stop-discharge](../specs/stop-discharge.md), 2026-06-09; pending
+implementation, pinned by a strict-xfail test). (The service/lifeline
 policy is a Next pickup above; the best-effort launch pre-check / idempotent
 relaunch shipped with the memoizer as the free `relaunch_if_needed` helper — a
 log-read + `launch`, deliberately **not** a `Launcher` Protocol method.

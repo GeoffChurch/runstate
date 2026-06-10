@@ -66,6 +66,35 @@ def test_control_stop_at_step(open_channel):
     assert w.tick(step=100) is True
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="specs/stop-discharge.md: the discharge fold is not implemented yet --"
+    " the worker re-drains control from seq 0 on attach and re-arms a stop that"
+    " episode 1's lifecycle.stopped already discharged",
+)
+def test_resumed_episode_ignores_prior_episodes_stop(open_channel):
+    """Every control fact is live until its counter-record (the discharge rule,
+    specs/stop-discharge.md), and a ``control.stop``'s counter-record is the
+    next ``lifecycle.stopped``. Episode 1 honored this stop, so its ``stopped``
+    discharged it; episode 2 -- resumed on the SAME run -- must not re-honor it
+    and die at its first step. (A subscription follows the same rule with
+    ``unsubscribe`` as the counter-record: none arrived here, so it correctly
+    carries across episodes -- see test_run_episodes.test_relaunch_extends_one_series.)
+    """
+    orch = open_channel()
+    orch.send({}, topic="control.stop", request_id="s1")   # stop-now; lands at a low seq
+
+    # episode 1: claims its episode, drains + honors the stop, ends (started…stopped)
+    with Worker(open_channel(), now=lambda: 0.0) as w1:
+        list(w1.steps(total=3))
+
+    # episode 2: resumes on the same run. The prior episode's stop must not carry.
+    with Worker(open_channel(), now=lambda: 0.0) as w2:
+        resumed = list(w2.steps(start=5, total=10))
+
+    assert resumed == [5, 6, 7, 8, 9]   # a re-armed stop would leave just [5]
+
+
 def test_stopped_emits_dying_breath(open_channel):
     w = Worker(open_channel(), now=lambda: 0.0)
     w.stopped(completed=True, final_step=500)
