@@ -144,10 +144,15 @@ convention:
 
 | topic | produced by | consumed by |
 |---|---|---|
-| `control.subscribe` / `control.unsubscribe` / `control.stop` | orchestrator | worker |
+| `control.subscribe` / `control.unsubscribe` / `control.stop` | orchestrator¹ | worker |
 | `lifecycle.*` (started / heartbeat / stopped / nak) | worker | observers |
 | `launcher.*` (launched / terminated) | launcher | observers |
 | `value` (user metrics; `name` says which) | worker | observers |
+
+¹ with one completion case: the worker itself appends `control.unsubscribe`
+when a registration *expires* — the worker completing the
+subscribe/unsubscribe pair, exactly as its `stopped` completes a
+`control.stop` (design §5).
 
 "The worker is the consumer of control" is then an *emergent* fact (the worker is
 whoever reads `control.>`), not a hardwired worker-vs-everyone axis. This is why
@@ -173,16 +178,29 @@ The schedule is a small **condition-algebra** over the worker's coordinates
 `{}` = once, now · `{from: {step: 100}}` = once at step 100 ·
 `{every: {step: 1}, until: {step: 5000}}` = every step to 5000. `control.stop` is
 the same algebra with only a `from` (default = stop now). (`count` is admitted
-only in `until` — you can expire after N fires, not schedule *on* fire-count.) The
+only in `until` — you can expire after N fires, not schedule *on* fire-count;
+anywhere else it would be a circular gate, and the worker refuses it.) The
 algebra has **no normal form** on purpose: conditions are evaluated, never compared
 or hashed, so canonicalizing redundant encodings would buy nothing.
 
-*Did my command land?* There is no per-request ack. The worker instead publishes a
-**consumption watermark** (`consumed_seq`) on its heartbeat — its read position in
-the inbound control stream. A request is registered once `consumed_seq ≥ its seq`
-and no `nak` arrived (`await_consumed()` is the blessed read). A bad request is
-refused with `lifecycle.nak {reason, message}`, `reason ∈ {malformed,
-unsatisfiable, unsupported}`, and *dropped* — never fatal to the worker.
+Control facts live by one **pairing-by-`seq` rule** (design §7): a standing fact
+is live until its counter-record *follows* it on the log. A pending **stop** is
+discharged by the next `stopped` (so the decision is a latched *level* — a missed
+`True` is recovered at the next safe point — and a resumed episode never replays
+an answered stop). A **subscribe** is live until an unsubscribe-or-nak bearing
+its `request_id` follows it — the **answer fold** — and a registration *expires*
+the moment no future fire is possible (`until` met, one-shot consumed), with the
+worker writing the expiry record itself. So `observables.live_demand(channel)`
+reads "who still wants something" straight off the log.
+
+*Did my command land?* There is no per-request ack — and the read is
+**answer-first**: a `nak` following your request resolves it immediately
+(`{reason, message}`, `reason ∈ {malformed, unsatisfiable, unsupported}`,
+dropped — never fatal to the worker); otherwise the worker's **consumption
+watermark** (`consumed_seq`, on its heartbeat) passing your seq means
+registered-and-accepted; and a terminal `stopped` arriving instead means the run
+died under your request. `await_consumed()` is the blessed read, returning
+exactly that answer space (`Nak` | `RunResult` | `None`).
 
 **(c) Lifecycle — the worker's self-report** (`worker → observers`, reserved
 `lifecycle.*`):
@@ -237,9 +255,23 @@ out).
 Reference tooling built *on* the conventions. None of it is the protocol; a worker
 or orchestrator can ignore it and compose `send`/`read`/`latest` directly.
 
-- **`Worker`** — the reference loop. `steps()` drives your iteration; each `tick()`
-  drains control, services due subscriptions (emits `value`s), beacons a heartbeat,
-  and checks the stop; the `with` block emits the dying breath on exit.
+- **`Worker`** — the reference loop, with **two drivers** for the two
+  protocol-visible continuation policies: `steps(total)` runs to the launch
+  contract's target (the autonomous worker), `serve()` runs while *leased
+  demand* exists (the service worker — stops at zero subscriptions via the
+  **careful death**, `retire()`, whose dying breath is compare-and-appended
+  against the drained log so a racing subscribe is never orphaned; episodes
+  are CAS-claimed at both ends). Each `tick()` drains control, services due
+  subscriptions, beacons a heartbeat, and returns the stop level; `stop_pending`
+  and `pinned` expose the two levels to hosts that own their loop; the `with`
+  block emits the dying breath on exit. Service-ness is **opt-in by verb** —
+  an autonomous run's life never depends on its observers.
+- **The observables** (`runstate.observables`) — the stateless observer plane:
+  pure folds log → view. `peek_terminal` (the terminal verdict), `live_episode`,
+  `latest_episode` (the episode-boundary rule), `progress` (the step frontier),
+  `value_series` (the per-(name, step) register projection), `live_demand`
+  (unanswered subscribes). Observe statelessly here; watch statefully with the
+  `Watcher` below.
 - **`Launcher` / `LaunchHandle`** (Protocols) + **`ThreadLauncher`** (in-process;
   tests / single-process orchestration) and **`LocalLauncher`** (subprocess;
   injects `RUNSTATE_*` so the child's `attach()` meets the same log). A launcher
