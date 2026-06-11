@@ -267,17 +267,27 @@ probe.
 ## Recipe 4 — provenance: the child records its parent at birth
 
 A derived run appends one record onto **its own log** at creation, while
-the preimage is in hand, under an **app topic** — e.g.
-`topic="provenance"`, body `{"analyzed": <rid>, …}` (the consumer owns
-the spelling; topics are open by design — the envelope schema does not
-constrain them — and every shipped fold and the worker drain are
-topic-keyed, so an app topic is *totally* invisible to the conventions).
-The `topic="value"` spelling is **rejected**: the `value-v0.2` schema
-pins the wrapper (`required: value/step/t`, `additionalProperties:
-false`), so a bare edge dict would be wire-nonconformant, and
-`history()` on that name would raise. Backward edges only; every
-forward map (children-of, experiments-of) is computed, never stored —
-the git parents-vs-branches split.
+the preimage is in hand, as a **value-plane register**: `topic="value"`,
+`name="analyzed"` (the consumer owns the name), body `{"value":
+{"analyzed": <rid>, …}, "step": null, "t": …}` — the wrapper the
+`value-v0.2` schema pins, with `step` explicitly present-but-nullable, so
+the record is wire-conformant from day one. The third instance of an
+established pattern (mycooc's status register; the resolved-config
+record): a *register*, read by `latest`, invisible to every shipped fold
+(`_value_points` skips `step=null`; `live_demand` skips request_id-less
+records; the worker drain is topic-scoped). Two spellings are
+**rejected**: a *bare* edge dict under `topic="value"`
+(wire-nonconformant — the wrapper is `additionalProperties: false`), and
+an **app-minted topic** (e.g. `topic="provenance"`): the envelope
+schema's topic-openness is wire mechanics, not namespace governance —
+design §4 makes the split load-bearing ("`topic` closed/protocol-owned,
+`name` open/app-owned"; §13 rejects topic-carrying-user-identifiers
+outright), and squatting a topic now would manufacture a collision with
+this very record's own promotion trigger below. Known residue, loud not
+silent: `history()` on the register's name raises (`step=null` is not a
+trajectory) — nothing calls it. Backward edges only; every forward map
+(children-of, experiments-of) is computed, never stored — the git
+parents-vs-branches split.
 
 **Derived addressing is parent-scoped.** Derived homes nest —
 `runs/<R[:2]>/<R>/<derived-subdir>/<arid>.db`, the decided custody policy and
@@ -301,8 +311,9 @@ rule when one arrives: a **designated parent** hosts the home; the
 record carries all parents. Not a convention: nothing in the library
 routes on it (the CLAUDE.md helper test fails, correctly). **Promotion
 trigger:** the Cluster-4 viewer protocol needing cross-workload
-edge-walking — at that point the record shape gets a schema and a
-version, not before.
+edge-walking — at that point the *protocol* mints the vocabulary (a
+convention with a schema and a version; never the app pre-squatting the
+topic axis), not before.
 
 ## Recipe 5 — the index (documented, dormant)
 

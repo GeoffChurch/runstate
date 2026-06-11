@@ -205,8 +205,13 @@ the **foreign-episode handle** (`is_alive()` re-reads `live_episode`;
 (2) "Zero library code" became **one six-line helper + one bug fix** —
 the helper by the F7 doctrine (one-right-shape correctness machinery
 gets a public home), the fix retiring `launch_producer`'s own None-gate
-hang. The dissolution claim itself stands: pins 1/2a pass on shipped
-machinery alone.
+hang. (3) The birth/config records' spelling: the review pipeline's
+"app topic" recommendation was caught (by the user) contradicting the
+design's load-bearing axis split — `topic` is closed/protocol-owned
+(design §4:56, §13) — and corrected to **value-plane registers**
+(`topic="value"`, app-owned `name`, wrapper body with `step=null`; the
+status-register pattern). The dissolution claim itself stands: pins
+1/2a pass on shipped machinery alone.
 
 ## Riders (parked, mycooc-side)
 
