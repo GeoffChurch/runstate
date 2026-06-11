@@ -33,9 +33,12 @@ DISSOLUTION 2026-06-11** (`../specs/derived-runs.md`: key = the analyzed
 snapshot; a derived run is the existing autonomous worker, one step long,
 behind the existing `ensure` — zero new library surface, pinned executable by
 `test_derived_run_dissolution_pin`; the index algebra demoted to dormant with
-its trigger written in). **Cluster 1 is CLOSED** — the keystone chain's last
-link forged by showing it was never missing; the remaining build is
-mycooc-side wiring (`analyze_run.py --worker` + `ensure_analysis`).
+its trigger written in). **Cluster 1 is CLOSED and fully wired** — the keystone
+chain's last link forged by showing it was never missing, and the mycooc
+wiring landed 2026-06-11 (cached-by-default `analyze_run.py`, byte-identical
+to direct; the spec records the whole arc). Next per this map: Cluster 2
+(the Store), with the parked residue (ensure-redrive + `stopped.reason`)
+available as riders.
 
 `ensure` today has exactly **one** producer (the autonomous/sequence worker), so
 the "Producer Protocol" is a *basis of one* — unfalsifiable. The keystone is the
