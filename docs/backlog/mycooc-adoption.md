@@ -44,19 +44,27 @@ What mycooc actually has today where a Store would sit — file:line refs into
   <exp>/<scenario>/<variant>/`). Only **3** `.run_id` marker files exist
   (all in `_harness_fixture`) and **0** `.reused_from` — the identity index
   over real history is empty, and reuse has never fired in anger.
-- **Identity is computed, then dropped.** The rid is computed at every
-  dispatch (`run_experiment.py:3474`) but only *persisted* by
-  `_write_done_markers` (`:705`) at completion-classification time. Two
-  consequences: history predating June is unindexed forever (unless
-  backfilled), and a **partial-but-extendable** run — the thing B′ made
-  valuable — is invisible to the reuse query, because its marker doesn't
-  exist yet even though `_find_reusable_run` takes a `min_steps` that a
-  partial run could satisfy.
-- **The reuse query is a full scan.** `_find_reusable_run` (`:414`) walks
-  all `outputs/experiments/*/*/*` dirs, reads each `.run_id`, requires
-  `{rid}.db` + `_reusable_from_channel(channel, min_steps)`. O(all-cells)
-  per dispatched variant, re-walked per variant per invocation — a 24-cell
-  experiment does ~24 × 2052 dir reads against today's tree.
+- **Identity IS persisted at dispatch — as the channel filename — but the
+  reuse query reads a completion-time duplicate.** `ensure` births
+  `{rid}.db` on entry (`runstate/memoizer.py:200` opens `producer.channel`
+  before the first launch), so the rid is durably on disk from the moment
+  of dispatch. `_find_reusable_run`, however, keys on the `.run_id`
+  side-file, written only by `_write_done_markers` (`:705`) at
+  completion-classification time. Two consequences: history predating June
+  is unindexed forever (unless backfilled), and a **partial-but-extendable**
+  run — the thing B′ made valuable — is invisible to the reuse query even
+  though its channel exists from dispatch and `_find_reusable_run` takes a
+  `min_steps` a partial could satisfy. (`channel_read.py:28`'s claim that
+  the marker is "written at dispatch" is a verified mycooc doc bug.)
+- **The reuse query is a full scan — but the cost is a consumer bug, not
+  a scale wall.** `_find_reusable_run` (`:414`) walks all
+  `outputs/experiments/*/*/*` dirs, reads each `.run_id`, requires
+  `{rid}.db` + `_reusable_from_channel(channel, min_steps)`. It sits
+  inside the (variant × milestone-round) loop (`:3476`), so a chunked
+  24-cell experiment approaches ~240 full walks per invocation. Measured
+  on the real tree, though: one full walk = ~0.026s warm; a full
+  open+fold of a channel = ~0.14ms — so the whole pathology is seconds
+  today, fixable with one walk per invocation under any design.
 - **Membership IS directory placement.** Run × Experiment is one-to-many by
   construction (a cell lives at one path); the many-to-many case (same
   content in two experiments) is approximated by a second dir holding
