@@ -150,7 +150,10 @@ what the tabulated CSV serves — none exists today. Free breadcrumb
 telemetry on the runner's channel is app-side logging, not a basis
 vector.
 
-## Q4 — what runstate ships — DECIDED: recipes + a pin, zero library code
+## Q4 — what runstate ships — DECIDED: recipes + a pin
+*(as deliberated; superseded in two particulars by the spec's review
+pipeline — the gate's shape and "zero library code", see the addendum
+below)*
 
 With no member records there is nothing for the protocol to recognize —
 the CLAUDE.md helper test fails, *correctly* — so no `relation.*`
@@ -190,6 +193,20 @@ dissolution pins**. Sub-decisions taken:
   documented, not built.
 - **Spec naming: `store.md`** (the `derived-runs.md` precedent —
   dissolutions keep the feature's name for discoverability).
+
+**Addendum (the spec's review pipeline, same day):** two of the
+decisions above were amended during `../specs/store.md`'s adversarial +
+rubric rounds, and the spec is authoritative where they differ. (1) The
+gate's shape: "return `None` when live" (the `relaunch_if_needed`
+composition as literally written above) is the spec's **failure mode 2**
+— it hangs forever on a recordless winner crash; the decided shape is
+the **foreign-episode handle** (`is_alive()` re-reads `live_episode`;
+`wait()` no-op), public as `foreign_episode` beside `launch_producer`.
+(2) "Zero library code" became **one six-line helper + one bug fix** —
+the helper by the F7 doctrine (one-right-shape correctness machinery
+gets a public home), the fix retiring `launch_producer`'s own None-gate
+hang. The dissolution claim itself stands: pins 1/2a pass on shipped
+machinery alone.
 
 ## Riders (parked, mycooc-side)
 
