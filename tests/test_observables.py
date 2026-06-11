@@ -308,3 +308,20 @@ def test_live_demand_keeps_step_keyed_subs_across_boundaries(open_channel):
     ch.send({"handle": "local://h/2", "hostname": None, "attached_at": 1.0},
             topic="lifecycle.started")
     assert [e.request_id for e in live_demand(open_channel())] == ["r1"]
+
+
+def test_live_episode_crashed_local_episode_is_not_live(open_channel):
+    import socket
+    ch = open_channel()
+    ch.send({"handle": f"local://{socket.gethostname()}/2147483646",
+             "hostname": None, "attached_at": 0.0}, topic="lifecycle.started")
+    assert live_episode(open_channel()) is None        # dead pid, THIS host
+
+
+def test_live_episode_foreign_host_episode_reads_live(open_channel):
+    # an unresolvable handle (another host) is conservatively LIVE -- the
+    # waker never wakes a run it cannot probe (specs/lazy-launch.md).
+    ch = open_channel()
+    ch.send({"handle": "local://otherhost/2147483646", "hostname": None,
+             "attached_at": 0.0}, topic="lifecycle.started")
+    assert live_episode(open_channel()) == "local://otherhost/2147483646"

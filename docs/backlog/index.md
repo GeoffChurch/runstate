@@ -47,10 +47,12 @@ guard — plus an autonomous-extend integration test and the
   (`../specs/service-worker.md`) and **episode-scoped time-leases SHIPPED
   2026-06-11** (`../specs/time-lease-boundary.md` — the boundary `started`
   is the lease's counter-record; ghost relaunches bounded ≤2 by
-  construction). Remaining: **lazy-launch / the relaunch decider** (the
-  follow-on spec — its demand fold exists, it needs **no flap policy**; one
-  constraint survives: no `ensure` over stepless services), and the
-  **function producer + a named `Producer` Protocol** — the second `ensure` implementer
+  construction). **Lazy-launch SHIPPED
+  2026-06-11** (`../specs/lazy-launch.md`: `ensure_served` + the
+  foreign-claim-scoped reap discipline + hostname-scoped `resolve` + the
+  loser guard on `stopped()`; the activator daemon stays a recipe until a
+  launch-ignorant demander exists — the named promotion trigger). Remaining:
+  the **function producer + a named `Producer` Protocol** — the second `ensure` implementer
   must be the *stepped, memoizable* function worker (mycooc-analyze is the
   oracle), NOT the pure service (`ensure` over a service is a category
   error). Lands together with
@@ -99,6 +101,13 @@ Consumer-side cursor persistence was **decided out of scope**, design §12.5.)
   resumable-`timed_out` vs fatal-`crashed`) so consumers can branch on *why*
   without expanding the closed `outcome` enum. Surfaced by
   [mycooc-adoption](mycooc-adoption.md). Small.
+- **Cross-host liveness for the claim gate** — `live_episode` treats an
+  unresolvable handle as live *forever* (no staleness fallback): a crashed
+  episode under a foreign/renamed hostname blocks both the waker AND the
+  worker birth-CAS until a manual `stopped`. Fine single-host (the shipped
+  scope, `../specs/lazy-launch.md`); a staleness-based liveness tier is
+  needed before cross-host / shared-FS resume. Surfaced by the lazy-launch
+  review.
 - **Watcher boundary-aware re-broadcast** — a time-keyed `broadcast` barrier
   subscription on a run that *resumes* is boundary-voided with no record
   (`../specs/time-lease-boundary.md`); today's steering is "spell barriers

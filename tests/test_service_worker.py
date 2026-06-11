@@ -327,7 +327,12 @@ def test_serve_lost_claim_does_nothing(open_channel):
 # ----- episode-scoped time-leases (specs/time-lease-boundary.md) -----
 
 
-_DEAD = "local://anyhost/2147483646"
+import socket
+
+_DEAD = f"local://{socket.gethostname()}/2147483646"   # dead pid, THIS host:
+# resolve() must read it False (a fact), not None -- a foreign hostname would
+# make every worker below LOSE its claim and these tests pass vacuously
+# (specs/lazy-launch.md, the consistency sweep's finding).
 
 
 def _dead_started(ch):
@@ -353,6 +358,7 @@ def test_boundary_voids_a_time_lease(open_channel):
     _sub(orch, {"every": {"step": 1}, "until": {"time_seconds": 100}}, "r1")
     _dead_started(orch)                          # a prior episode's boundary
     w = Worker(open_channel(), now=lambda: 0.0)
+    assert w.claimed is True   # a lost worker emits nothing -- vacuous-green guard
     w.set("loss", 1.0)
     w.tick(step=0)
     assert open_channel().read(topics=["value"]) == []
@@ -371,6 +377,7 @@ def test_voided_lease_pops_its_same_id_predecessor(open_channel):
     _sub(orch, {"every": {"step": 1}, "until": {"time_seconds": 100}}, "r1")
     _dead_started(orch)
     w = Worker(open_channel(), now=lambda: 0.0)
+    assert w.claimed is True   # a lost worker emits nothing -- vacuous-green guard
     w.set("loss", 1.0)
     w.tick(step=0)
     assert open_channel().read(topics=["value"]) == []
@@ -448,3 +455,146 @@ def test_ghost_relaunch_bound(open_channel):
                 w.set("cpu", 0.0)
     assert launches == 1
     assert live_demand(open_channel()) == []
+
+
+# ----- lazy-launch (specs/lazy-launch.md) -----
+
+
+def test_ensure_served_gates(open_channel, tmp_path):
+    # demand + no live episode -> launch; no demand -> None; already live -> None.
+    import sys
+    from runstate import LocalLauncher, ensure_served, peek_terminal
+
+    root = tmp_path / "runs"
+    root.mkdir()
+    launcher = LocalLauncher(root=root)
+    with launcher:
+        # no demand at all -> no wake, even with no episode
+        assert ensure_served(launcher, "svc", [sys.executable, "-c", "pass"]) is None
+        # demand -> wake
+        ch = launcher.open_channel("svc")
+        ch.send({"every": {"time_seconds": 0.2}, "until": {"time_seconds": 2.0}},
+                topic="control.subscribe", name="load", request_id="d1")
+        body = ("import runstate\n"
+                "with runstate.Worker(runstate.attach()) as w:\n"
+                "    for _ in w.serve():\n"
+                "        w.set('load', 1.0)\n")
+        h = ensure_served(launcher, "svc", [sys.executable, "-c", body])
+        assert h is not None
+        # already being served -> None (the child claims fast; poll until it has)
+        import time
+        deadline = time.time() + 10
+        while time.time() < deadline and ch.latest("lifecycle.started") is None:
+            time.sleep(0.05)
+        assert ensure_served(launcher, "svc", [sys.executable, "-c", "pass"]) is None
+        h.wait(timeout=15)
+    assert peek_terminal(launcher.open_channel("svc")) is not None
+
+
+def test_stopped_is_lost_guarded(open_channel):
+    # a claim-race loser may not act on the channel -- including an EXPLICIT
+    # stopped() call (the minimal example's idiom would otherwise write a
+    # completed claim onto the winner's live log).
+    from runstate.vocabulary.handle import local_handle
+    ch = open_channel()
+    ch.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+            topic="lifecycle.started")           # a live episode already exists
+    w = Worker(open_channel(), now=lambda: 0.0)
+    assert w.claimed is False
+    w.stopped(completed=True)                    # must be a silent no-op
+    assert open_channel().read(topics=["lifecycle.stopped"]) == []
+
+
+class _StubProc:
+    def __init__(self, rc):
+        self.returncode = rc
+
+    def poll(self):
+        return self.returncode
+
+
+def _local_handle_for(ch, handle, rc, launched_seq):
+    from runstate.launcher import _LocalHandle
+    return _LocalHandle(run_id="r", channel=ch, handle=handle,
+                        _proc=_StubProc(rc), launched_seq=launched_seq)
+
+
+def test_reap_discipline_skips_the_foreign_claimed_away_loser(open_channel):
+    ch = open_channel()
+    seq = ch.send({"handle": f"local://{socket.gethostname()}/111"},
+                  topic="launcher.launched")
+    ch.send({"handle": f"local://{socket.gethostname()}/222", "hostname": None,
+             "attached_at": 0.0}, topic="lifecycle.started")   # the winner
+    h = _local_handle_for(ch, f"local://{socket.gethostname()}/111", rc=0,
+                          launched_seq=seq)
+    h.poll()
+    assert open_channel().read(topics=["launcher.terminated"]) == []
+
+
+def test_reap_discipline_keeps_the_null_workers_record(open_channel):
+    # nobody claimed at all: terminated is the null worker's ONLY terminal.
+    ch = open_channel()
+    seq = ch.send({"handle": f"local://{socket.gethostname()}/111"},
+                  topic="launcher.launched")
+    h = _local_handle_for(ch, f"local://{socket.gethostname()}/111", rc=0,
+                          launched_seq=seq)
+    h.poll()
+    terms = open_channel().read(topics=["launcher.terminated"])
+    assert len(terms) == 1 and terms[0].body["exit_code"] == 0
+
+
+def test_reap_discipline_keeps_the_unclean_death(open_channel):
+    ch = open_channel()
+    seq = ch.send({"handle": f"local://{socket.gethostname()}/111"},
+                  topic="launcher.launched")
+    ch.send({"handle": f"local://{socket.gethostname()}/222", "hostname": None,
+             "attached_at": 0.0}, topic="lifecycle.started")
+    h = _local_handle_for(ch, f"local://{socket.gethostname()}/111", rc=3,
+                          launched_seq=seq)
+    h.poll()
+    terms = open_channel().read(topics=["launcher.terminated"])
+    assert len(terms) == 1 and terms[0].body["exit_code"] == 3
+
+
+def test_reap_discipline_old_episodes_recycled_pid_is_not_my_claim(open_channel):
+    # a started with MY handle but BEFORE my launched seq (pid reuse across
+    # episodes) does not count as my claim; with a foreign claim after my
+    # launched, I am a loser -> no record.
+    ch = open_channel()
+    me = f"local://{socket.gethostname()}/111"
+    ch.send({"handle": me, "hostname": None, "attached_at": 0.0},
+            topic="lifecycle.started")                 # an OLD episode, my pid
+    ch.send({"completed": False, "error": None, "final_step": 1},
+            topic="lifecycle.stopped")
+    seq = ch.send({"handle": me}, topic="launcher.launched")
+    ch.send({"handle": f"local://{socket.gethostname()}/222", "hostname": None,
+             "attached_at": 1.0}, topic="lifecycle.started")   # the real winner
+    h = _local_handle_for(ch, me, rc=0, launched_seq=seq)
+    h.poll()
+    assert open_channel().read(topics=["launcher.terminated"]) == []
+
+
+def test_double_waker_race_loser_leaves_no_corpse(tmp_path):
+    # two launches into one run: one claim wins; the clean loser gets NO
+    # terminated record; the winner's record arrives as usual.
+    import sys
+    import time
+    from runstate import LocalLauncher, peek_terminal
+
+    body = ("import runstate\n"
+            "with runstate.Worker(runstate.attach()) as w:\n"
+            "    for s in w.steps(total=3):\n"
+            "        import time; time.sleep(0.05)\n")
+    root = tmp_path / "runs"
+    root.mkdir()
+    with LocalLauncher(root=root) as launcher:
+        h1 = launcher.launch("race", [sys.executable, "-c", body])
+        h2 = launcher.launch("race", [sys.executable, "-c", body])
+        h1.wait(timeout=20)
+        h2.wait(timeout=20)
+    ch = launcher.open_channel("race")
+    starteds = ch.read(topics=["lifecycle.started"])
+    assert len(starteds) == 1                          # exactly one claim
+    terms = ch.read(topics=["launcher.terminated"])
+    assert len(terms) == 1                             # the winner's only
+    assert peek_terminal(ch).outcome == "preempted"    # the winner's verdict

@@ -243,7 +243,7 @@ can't report itself.
 | `terminated` | `{reason: exited\|killed, exit_code?, signal?}` | the *manner* of death; only a `wait()`-ing parent can produce it |
 
 *What is a handle?* A portable, scheme-tagged liveness token — `local://host/pid`
-(and `slurm://…`, `k8s://…`, `ray://…` as backends land). Anyone can **resolve**
+(and `slurm://…`, `k8s://…`, `ray://…` as backends land). Anyone **on the same host** can **resolve**
 it (`os.kill(pid, 0)`, `squeue -j`) to a liveness *fact*, actor-independently — no
 parent relationship, no PID file. The worker self-reports its handle on `started`;
 the launcher also records it on `launched`.
@@ -299,7 +299,7 @@ best to worst. None is substrate state — liveness is *emitted messages* +
 1. **Clean completion** — a `lifecycle.stopped` record exists.
 2. **Reaped death** — a `launcher.terminated` record (the manner of death; needs a
    reaper).
-3. **Probe the handle** — resolve it (`kill -0`) for the *fact* of death, even if
+3. **Probe the handle** — resolve it (`kill -0`) for the *fact* of death — same-host only (a foreign host's handle is *not locally resolvable* and falls to tier 4, never a false verdict) — even if
    the launcher is gone.
 4. **Heartbeat staleness** — newest heartbeat older than a threshold ⟹ hung or
    crashed. The universal floor.

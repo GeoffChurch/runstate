@@ -185,8 +185,10 @@ def test_crashed_episodes_undischarged_stop_rearms_on_resume(open_channel):
     # discharge boundary is the last *stopped*, not a registered-watermark --
     # the refuted A5 -- which would silently drop the unanswered command.)
     orch = open_channel()
-    orch.send({"handle": "local://anyhost/2147483646", "hostname": None,
-               "attached_at": 0.0}, topic="lifecycle.started")   # crashed: dead pid, no stopped
+    import socket
+    orch.send({"handle": f"local://{socket.gethostname()}/2147483646",
+               "hostname": None, "attached_at": 0.0},
+              topic="lifecycle.started")   # crashed: dead pid (THIS host), no stopped
     orch.send({"from": {"step": 8}}, topic="control.stop", request_id="s1")
     with Worker(open_channel(), now=lambda: 0.0) as w:
         assert w.claimed is True                             # dead episode -> the claim is free

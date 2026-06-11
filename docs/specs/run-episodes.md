@@ -80,7 +80,7 @@ started, reapable only via the launcher's liveness — which breaks fire-and-for
   read the log and skip the spawn if a live episode is already visible — an
   optimization that avoids a wasted spawn in the common already-live case.
   Correctness never depends on it; the worker's claim is the guarantee.
-- **Wasted spawn:** in the rare check-to-claim race the loser spawns, checks, exits —
+- **Wasted spawn** *(amended by `specs/lazy-launch.md`: this analysis priced the spawn and forgot the funeral — the loser's reaped `terminated{0}` could forge the run's verdict, and an explicit `stopped()` lacked the loser guard; both fixed there)*: in the rare check-to-claim race the loser spawns, checks, exits —
   doing no *work* (it claims before acting). Cheap in the common case (the pre-check
   spawns nothing); instant even in the race if the worker claims *before* heavy
   imports (a documented guard-prologue pattern).

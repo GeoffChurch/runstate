@@ -9,7 +9,7 @@ EXPECTED = {
     "Watcher", "await_consumed", "RunStatus", "Running", "RunResult", "peek_terminal",
     "latest_episode", "live_demand", "live_episode", "progress", "value_series", "handle_pid",
     "sweep", "Variant",
-    "history", "ensure", "launch_producer", "relaunch_if_needed",
+    "history", "ensure", "launch_producer", "relaunch_if_needed", "ensure_served",
     "Value", "Started", "Heartbeat", "Stopped", "Nak", "Launched", "Terminated",
 }
 

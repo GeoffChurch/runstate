@@ -25,10 +25,12 @@ justified only by design taste.
 positional answer fold / `live_demand`; dogfood `examples/monitor/`).
 Episode-scoped time-leases shipped 2026-06-11
 (`../specs/time-lease-boundary.md` — the ghost-lease flap deleted by
-construction; the waker needs no policy). Remaining: lazy-launch (the
-relaunch decider — its demand fold exists and its hardest input is gone) and
-the *function* producer (the second `ensure` implementer must be stepped and
-memoizable — mycooc-analyze, not the pure service).
+construction; the waker needs no policy). Lazy-launch shipped 2026-06-11
+(`../specs/lazy-launch.md` — Cluster 1's service half is now COMPLETE
+end-to-end: demand → wake → serve → lapse → retire → re-wake, dogfooded
+twice over in `examples/monitor/`). Remaining: the *function* producer (the
+second `ensure` implementer must be stepped and memoizable — mycooc-analyze,
+not the pure service).
 
 `ensure` today has exactly **one** producer (the autonomous/sequence worker), so
 the "Producer Protocol" is a *basis of one* — unfalsifiable. The keystone is the
@@ -46,8 +48,9 @@ target-driven. Building it makes a cluster of deferred items *real at once*:
 - chains back to the bug: lazy-launch needs the §12.1 single-spawn guard, which
   needs the atomic CAS — **F1 → atomic claim → safe single-spawn → safe
   lazy-launch → service producer.** The most important *fix* and the most
-  promising *new thread* are one thread. (F1 fixed 2026-06-07; the rest of the
-  chain — single-spawn guard, lazy-launch, the producer — remains.)
+  promising *new thread* are one thread. (Every link but the last is now
+  forged: F1 2026-06-07, the guard 2026-06-01, the service worker + leases
+  2026-06-10/11, lazy-launch 2026-06-11 — the producer is all that remains.)
 
 Secondary members that complete the capability:
 

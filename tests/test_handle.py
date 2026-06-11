@@ -3,9 +3,14 @@ from runstate.vocabulary.handle import handle_pid, local_handle, resolve
 
 
 def test_resolve_live_and_dead_local_handle():
+    import socket
     assert resolve(local_handle()) is True            # our own pid is alive
-    # a pid that (almost certainly) doesn't exist
-    assert resolve("local://anyhost/2147483646") is False
+    # a pid that (almost certainly) doesn't exist, ON THIS HOST -> a fact
+    assert resolve(f"local://{socket.gethostname()}/2147483646") is False
+    # ANOTHER host's handle is not locally resolvable -- probing the local
+    # pid table for it would be garbage (specs/lazy-launch.md): None, never
+    # a false dead/alive
+    assert resolve("local://anyhost/2147483646") is None
     assert resolve("slurm://12345") is None            # unknown scheme -> not locally resolvable
 
 

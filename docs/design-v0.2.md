@@ -172,7 +172,7 @@ Reserved `launcher.*`, written by the spawner/reaper — a Layer-3 / process-lev
 
 | Topic | Body |
 |---|---|
-| `launcher.launched` | `{handle, status}` — spawn-intent + the worker's liveness **handle** (also resolves the lazy-launch race, §9). |
+| `launcher.launched` | `{handle, status}` — spawn-intent + the worker's liveness **handle**. (It is the launcher's *observation*, never the claim — the lazy-launch race is arbitrated by the worker's birth-CAS, with the reap discipline keeping loser corpses off the verdict plane; `specs/lazy-launch.md`.) |
 | `launcher.terminated` | `{exit_code?, signal?, reason: "exited" | "killed"}` — the *manner* of death; only a `wait()`ing parent can produce it. |
 
 **The handle** is a portable, scheme-tagged token: `local://host/pid?start=T`, `slurm://jobid`, `k8s://ns/pod`, `ray://actor`. Resolving it (`kill -0`, `squeue -j`) answers liveness **actor-independently** — robust even if the launcher is gone, cross-host where the scheme resolves. It obsoletes a `.worker.pid` file (the handle lives in the log). **Single source of truth:** the worker self-reports via `lifecycle.started`; `launcher.launched` carries the spawn-intent + the launcher's known handle.
@@ -187,7 +187,7 @@ Three reference configurations: **(a)** floor only · **(b)** + handle (observer
 
 **Spawn vs watch/reap split.** `launch()` does the irreducible job — spawn + emit handle — and returns (all a cluster scheduler permits; fire-and-forget). Watching/reaping is a *separable* role. `terminate()` resolves the handle and kills (`kill`/`scancel`/`kubectl`), not via a parent relationship.
 
-**Defaults (opinion-free ≠ batteries-not-included):** the reference worker loop heartbeats; the reference `LocalLauncher` writes a `local://` handle and, as a context manager, reaps and emits `terminated`. Every tier is removable.
+**Defaults (opinion-free ≠ batteries-not-included):** the reference worker loop heartbeats; the reference `LocalLauncher` writes a `local://` handle and reaps (`reap()`/`wait`/`poll`/`__exit__`), emitting `terminated` under the reap discipline — a clean-exit child whose silence is explained by a foreign claim is a race loser and gets no record (`specs/lazy-launch.md`). `resolve` is hostname-scoped: another host's `local://` handle is *not locally resolvable* (None → the staleness floor), never a false verdict from the wrong pid table. Every tier is removable.
 
 ## 9. Orchestration helpers (Layer 3)
 
@@ -196,7 +196,7 @@ Reference tooling; assumes the conventions (a worker that opts out composes its 
 ```python
 class Launcher(Protocol):                                    # target is launcher-specific (callable vs argv)
     def launch(self, run_id, target, **kwargs) -> LaunchHandle: ...
-    def open_channel(self, run_id) -> Channel: ...           # locate/open the run (lazy-launch-on-control deferred, §12)
+    def open_channel(self, run_id) -> Channel: ...           # locate/open the run (lazy-launch = caller-invoked ensure_served, specs/lazy-launch.md)
 
 class LaunchHandle(Protocol):                                # concrete per launcher (thread / subprocess)
     run_id: str; channel: Channel
@@ -262,8 +262,8 @@ This is the cut that dissolves "blocking for the schema": the convention decisio
 
 The six convention decisions are settled (see revision history). Status tags below are as of the rev-4 implementation pass. **None change the wire *envelope***; the items still open touch operational mechanics, not the frozen schemas. The *deferred* items below are mirrored as discoverable work in `docs/backlog/index.md`.
 
-1. **Lazy-launch double-spawn race** — *[deferred; its inputs now exist]* `launcher.launched.status` is pinned to `running`, but lazy-launch-on-first-`control` itself is **not** built: `launch()` is explicit (you spawn, then send control). The relaunch decider's demand fold is now log-derivable (`observables.live_demand`, specs/service-worker.md), the ghost-lease flap is bounded by construction (`specs/time-lease-boundary.md` — no waker flap policy needed; the one surviving constraint is no `ensure` over stepless services), and the worker-side claim (birth-CAS) and the careful death (death-CAS) bracket the race. The follow-on spec owns it.
-2. **`send_request` ↔ `Channel` seam** — *[deferred]* tied to #1; `open_channel` returns a plain channel, not a launch-wrapping one.
+1. **Lazy-launch double-spawn race** — *[CLOSED 2026-06-11 by `specs/lazy-launch.md`]* `ensure_served` (the leased-demand decider beside `relaunch_if_needed`), the foreign-claim-scoped reap discipline, hostname-scoped `resolve`, the `_lost` guard on explicit `stopped()`, and the mandatory per-cycle `reap()` in the activator recipe. Historical text follows. — *was: [deferred; its inputs now exist]* `launcher.launched.status` is pinned to `running`, but lazy-launch-on-first-`control` itself is **not** built: `launch()` is explicit (you spawn, then send control). The relaunch decider's demand fold is now log-derivable (`observables.live_demand`, specs/service-worker.md), the ghost-lease flap is bounded by construction (`specs/time-lease-boundary.md` — no waker flap policy needed; the one surviving constraint is no `ensure` over stepless services), and the worker-side claim (birth-CAS) and the careful death (death-CAS) bracket the race. The follow-on spec owns it.
+2. **`send_request` ↔ `Channel` seam** — *[dissolved with #1]* the decider is caller-invoked (`ensure_served`), never channel-wrapping; `open_channel` stays a plain channel.
 3. **`Watcher.observe`** — *[done]* `observe(run_id, channel)` is the handle-free / late-attach / observe-only path; `add(handle)` is the handle path that also enables the probe tier.
 4. **`broadcast` returns the assigned `request_id`** — *[done]* `Watcher.broadcast(name, schedule)` returns the shared id; pass `request_id=` to reuse one (cancel-the-lot reachable).
 5. **Cursor-persistence mechanics** — *[consumer-side decided out of scope (2026-06-01); worker-side deferred]*. **Consumer side:** the substrate owns durability + `seq`, not offset-tracking — caller-owned cursors (§3). The consumers we ship are *state-deriving* (`Watcher`, `peek_terminal`, `live_episode` fold the durable log to current state), so they re-derive on restart and need *no* cursor; an exactly-once *event-processing* consumer persists its own offset and resumes via `read(after=last_seq)` (~5 lines). We ship the primitive (durable log + `seq` + `read(after=)`), not the policy — same shape as the `run_id` recipe. (Holds because runstate is *fan-out*; competing-consumer / work-queue offset coordination is a different substrate, also out of scope.) **Worker side (still deferred, now bounded):** the worker's in-memory control cursor has no crash-replay persistence; the at-least-once / at-most-once boundary is now *bounded* by the expiry counter-records (specs/service-worker.md) plus the episode-boundary discharge (`specs/time-lease-boundary.md`) — a consumed one-shot or lapsed lease is never replayed once its record landed, and a time-lease that escaped its record is voided by the next boundary (re-anchor ≤ 1, globally — not per-episode); a `count`-`until`'s partial fire-history still resets on replay. Within a process, registration precedes the heartbeat, so `consumed_seq` advances only after registration. The cross-episode shape is **settled (2026-06-09)**: the unifying drain rule (§7; `specs/stop-discharge.md`) re-derives both verbs from `seq 0` and lets counter-records expire them — superseding the earlier state-vs-event framing. What this item retains is pure *efficiency*: resuming the drain from a persisted cursor instead of refolding, orthogonal to correctness.
@@ -296,6 +296,19 @@ The six convention decisions are settled (see revision history). Status tags bel
 
 ## Revision history
 
+- 2026-06-11 (rev 10): **Lazy-launch (§8/§9/§12.1–2; specs/lazy-launch.md).**
+  `ensure_served` — the leased-demand decider beside `relaunch_if_needed`
+  (two demand durabilities, two deciders): live demand ∧ no live episode ⟹
+  launch; caller-invoked (the demander's presence is the keepalive AND the
+  waker), with the standing activator as a composition whose per-cycle
+  `reap()` is load-bearing (zombies read alive to `kill -0`). Wasted spawns
+  stay accepted, their funerals disciplined: the foreign-claim-scoped reap
+  rule (skip `terminated` iff exit 0 ∧ never-claimed-after-own-`launched` ∧
+  a foreign claim follows) keeps loser corpses off the verdict plane while
+  null workers and startup crashes keep theirs; explicit `stopped()` gains
+  the loser guard; `resolve` becomes hostname-scoped (a pre-existing
+  false-dead off-host that could double-claim). ThreadLauncher named
+  degenerate for multi-waker use. Closes §12.1/§12.2.
 - 2026-06-11 (rev 9): **Episode-scoped time-leases (§6/§7/§9/§12;
   specs/time-lease-boundary.md).** The one piece of standing state that did
   not re-derive from the log — a lease's elapsed countdown — is dissolved

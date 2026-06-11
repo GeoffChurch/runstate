@@ -70,7 +70,10 @@ The substrate + opt-in conventions + reference orchestration, in
   unanswered subscribes). Membership test: needs a cursor or clock → it's the
   `Watcher`'s; parses a handle string → it's `vocabulary/`'s.
 - **`launcher.py`** — `Launcher` / `LaunchHandle` Protocols +
-  `ThreadLauncher` (in-process) + `LocalLauncher` (subprocess + `attach`).
+  `ThreadLauncher` (in-process) + `LocalLauncher` (subprocess + `attach`;
+  `reap()` + the foreign-claim-scoped reap discipline) + the two deciders:
+  `relaunch_if_needed` (durable demand) and `ensure_served` (leased demand —
+  lazy-launch, specs/lazy-launch.md).
 - **`watcher.py`** — `Watcher`, the stateful failure detector
   (`poll`/`wait`/`wait_all`/`iter_events`/`broadcast`) + `RunStatus`
   (`Running | RunResult`).
@@ -150,7 +153,7 @@ scores above.
 ```bash
 pip install -e .                    # install editable
 pip install -e .[test]              # + jsonschema for the schema tests
-pytest tests/                       # run all tests (~385, ~2s)
+pytest tests/                       # run all tests (~395, ~7s)
 pytest tests/test_channel.py -v     # one module
 pytest tests/test_schema.py -v      # emitted messages conform to the schema stack
 ```

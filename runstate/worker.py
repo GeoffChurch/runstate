@@ -217,8 +217,12 @@ class Worker:
         """Emit the cooperative dying breath (lifecycle.stopped). Its existence = a
         clean, resumable halt. ``completed=True`` is the opt-in completion claim; the
         default (completed=False, no error) projects to ``preempted``; an ``error``
-        projects to ``errored``. Idempotent — first writer wins."""
-        if self._stopped:
+        projects to ``errored``. Idempotent — first writer wins. A claim-race
+        LOSER may not act on the channel, explicit calls included — else the
+        minimal example's ``w.stopped(completed=True)`` idiom would, in a
+        double-spawn, write a completed claim onto the winner's live log
+        (specs/lazy-launch.md)."""
+        if self._stopped or self._lost:
             return
         self._stopped = True
         if final_step is None:

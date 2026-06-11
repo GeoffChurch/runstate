@@ -11,7 +11,7 @@ proposal) plus dialectic. Two candidate framings were refuted on the way and
 are recorded below — including the proposal this spec's author entered with.
 First half of Cluster 1 (synergy map); the validating consumer is the
 on-demand host-metrics monitor (`examples/monitor/`, this spec's deliverable);
-the second half (lazy-launch, the relaunch decider) is a follow-on spec that
+the second half (lazy-launch, the relaunch decider) is `specs/lazy-launch.md` (shipped 2026-06-11), a follow-on spec that
 consumes the demand fold this one makes possible.
 
 ## The model
