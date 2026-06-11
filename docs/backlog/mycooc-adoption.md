@@ -1,85 +1,104 @@
 # mycooc adoption + upstream candidates
 
-**Status:** assessment (2026-05), not work-in-progress. `~/src/mycooc` is an
-existing ML experiment framework that predates and partly inspired runstate;
-it's the **validating use case** for the deferred relational layer (Store +
-Hasher + reuse). This doc records what adopting runstate would take and what
-should flow *upstream* into runstate.
+**Status:** ledger, updated 2026-06-11 from a recon of post-rebase mycooc.
+The original 2026-05 assessment said "a full rebase isn't possible today" —
+that is now false: mycooc rebased onto runstate end-to-end across the June
+arc (worker emits lifecycle/B′; the channel is the run's complete external
+interface; ensure-driven milestone dispatch; derived analysis runs). This
+doc now does two jobs: (1) settle the May claims against what shipped, and
+(2) carry the **store-shaped recon facts** that feed the Store deliberation
+— the one big deferred piece left.
 
-## Bottom line
+## Ledger: the May claims, settled
 
-mycooc independently re-invented ~70% of runstate's protocol (`run_state.py`
-mirrors the lifecycle convention; its `.preempt {"at_step": N}` is a
-one-condition prototype of `control.stop` + the `from`-algebra). **A full rebase
-isn't possible today** — the two pieces mycooc leans on hardest, **reuse-by-hash**
-and the **`scenario × variant × seed` relational identity/membership**, are
-both the **Store** runstate deferred to Layer 4 (design §14) — the "Hasher"
-turns out to be a `run_id()` recipe, not a component (see [index](index.md)). The
-**control/lifecycle/liveness plane maps cleanly and is an *upgrade*** (runstate's
-condition-algebra + handle-liveness > mycooc's `.preempt` file + PID file). So:
-rebase the control plane now, keep store/hasher/status app-side, migrate them
-when Layer 4 lands — using mycooc's code as the reference.
+- **"Full rebase isn't possible today" — false now.** Phases 1–6b executed:
+  the worker mirrors every metric onto the channel (`channel_read.py` is the
+  single read seam), `.state`/PID files are gone (lifecycle + handle
+  liveness), dispatch is `ensure` over a milestone ladder via a producer
+  wrapping `LocalLauncher`, and the control inversion (friction 6) was
+  resolved in phase 6b.
+- **"Completed-but-extendable" (friction 4) — SHIPPED** as run-episodes B′
+  (`specs/preempted-vs-completed.md`, stop-discharge): a `stopped` ends an
+  episode, not the run; `ensure`/extend resumes a completed run.
+- **"Idempotent relaunch" (friction 5) — SHIPPED** as the birth-CAS +
+  `relaunch_if_needed` + `ensure_served` (`specs/lazy-launch.md`).
+- **The `run_id()` recipe — SHIPPED** (`specs/run-id-recipe.md`); mycooc's
+  `run_id.py` implements it (config + git-state-by-content + data files),
+  and derived-run identity composes on top (`analysis_run_id`,
+  `specs/derived-runs.md`).
+- **reuse-by-hash — half-shipped, app-side only.** mycooc now computes the
+  rid at dispatch and runs `_find_reusable_run` + `_reuse_run` (symlink
+  `metrics_global.csv` + `checkpoint_best.pt`, write `.reused_from`). What
+  it lacks is exactly the relational layer — see the recon below.
+- **`stopped.reason` vocabulary recipe — still parked** (small; rides with
+  any future convention-docs pass).
+- **Per-run `runstate status` CLI — still backlog** ([cli-status](cli-status.md));
+  the *matrix* status stays app-side, as judged in May.
 
-## Rebase today? — partial
+## The store-shaped recon (2026-06-11)
 
-- **Maps cleanly (upgrade):** cooperative preempt → `control.stop {}`; deferred
-  `{"at_step":N}` → `control.stop {"from":{"step":N}}` (plus `any`/`all`/time/count
-  for free); PID liveness → handle probe + heartbeat staleness; per-run `.state`
-  → `lifecycle.*`; sequential dispatch → `sweep`.
-- **Blocked (no runstate primitive yet):** reuse-by-hash; the `--status` *matrix*
-  (grid counts + ETA + cross-seed aggregation); Cartesian config generation;
-  "completed-but-extendable" resume (→ see [run-episodes](run-episodes.md)).
+What mycooc actually has today where a Store would sit — file:line refs into
+`~/src/mycooc/run_experiment.py` unless noted:
 
-## Upstream candidates (highest value first)
+- **Scale:** 130 experiment dirs, 2052 cell dirs (`outputs/experiments/
+  <exp>/<scenario>/<variant>/`). Only **3** `.run_id` marker files exist
+  (all in `_harness_fixture`) and **0** `.reused_from` — the identity index
+  over real history is empty, and reuse has never fired in anger.
+- **Identity is computed, then dropped.** The rid is computed at every
+  dispatch (`run_experiment.py:3474`) but only *persisted* by
+  `_write_done_markers` (`:705`) at completion-classification time. Two
+  consequences: history predating June is unindexed forever (unless
+  backfilled), and a **partial-but-extendable** run — the thing B′ made
+  valuable — is invisible to the reuse query, because its marker doesn't
+  exist yet even though `_find_reusable_run` takes a `min_steps` that a
+  partial run could satisfy.
+- **The reuse query is a full scan.** `_find_reusable_run` (`:414`) walks
+  all `outputs/experiments/*/*/*` dirs, reads each `.run_id`, requires
+  `{rid}.db` + `_reusable_from_channel(channel, min_steps)`. O(all-cells)
+  per dispatched variant, re-walked per variant per invocation — a 24-cell
+  experiment does ~24 × 2052 dir reads against today's tree.
+- **Membership IS directory placement.** Run × Experiment is one-to-many by
+  construction (a cell lives at one path); the many-to-many case (same
+  content in two experiments) is approximated by a second dir holding
+  symlinks + a `.reused_from` path marker (`:478`) — an artifact-level
+  copy, not a membership fact. There is also a *legacy second identity*
+  (`.config_hash`, kept for the YAML `reuse_from` path, `:3472`).
+- **The status matrix never needs enumeration.** `show_status_vertical`
+  (`:2504`) walks the *spec's* Cartesian grid (scenarios × variants ×
+  seeds) and per cell reads the channel (`_complete_from_channel`,
+  `_channel_phase`, liveness, progress). The grid's authority is
+  `experiment.yaml`; the channel is the authority for per-cell state. A
+  Store is not needed to answer "what cells does this experiment have" —
+  only cross-experiment/cross-run queries lack a home.
+- **Provenance is split across two roots:** tracked `experiments/<name>/`
+  (summary.csv, git_state, restricted_eval, the YAML, results.md —
+  `run_experiment.py:194`) vs gitignored `outputs/experiments/<name>/`
+  (channels, checkpoints, per-step CSVs).
+- **New relational citizens since May:** derived analysis runs (channels
+  under `{run_dir}/analysis/`, identity `analysis_run_id(analyzed_rid,
+  read_set, params, code)` — provenance edges rid → derived-rid currently
+  discoverable only by globbing the subdir), and service runs (leased
+  demand) on the runstate side.
 
-1. **Store + reuse-by-hash** — *the real Layer-4 component.* A **separate
-   Protocol**, NOT a channel convention: reuse-by-hash and the
-   `scenario × variant × seed` identity are cross-run relational queries the
-   per-run topic log structurally can't answer. mycooc proves the many-to-many
-   **Run × Experiment** table is non-optional. Keep *artifact*-sharing (mycooc
-   symlinks checkpoints) out of scope — runstate transports messages, not files.
-2. **A `run_id()` recipe (the ex-"Hasher")** — *a recipe, not a Protocol.* A
-   hasher's only content is the choice of which inputs determine the run's
-   output (workload-specific → user code); and the substrate already affords
-   content-addressable identity (set `run_id = h(inputs)`; reuse-for-dedup =
-   `open_channel` + `peek_terminal`). Ship one reference `run_id()`: mycooc's
-   `_compute_config_hash` + `_compute_git_fingerprint` is the seed, refined to
-   hash git state **by content** (don't infer clean-vs-dirty), which drops the
-   `_fingerprints_compatible` repair predicate.
-3. **A `lifecycle.stopped.reason` vocabulary recipe** — mycooc distinguishes
-   `patience` / `max_steps` / `preempted` and resumable-`timed_out` vs
-   fatal-`crashed`. Don't expand the closed `outcome` enum (that bakes policy —
-   see `liveness.py`); ship an *opt-in documented vocabulary* instead.
-4. **Per-run `runstate status <run_id>` CLI** ([cli-status](cli-status.md)) — clean.
-   The *matrix*/ETA/seed-aggregation stays app-level (workload-specific).
+**The queries that still have no home** (the Store's burden of proof):
+1. rid → location/channel ("does this content exist anywhere?") — today a
+   full scan over marker files that mostly don't exist.
+2. rid ↔ experiment membership, many-to-many — today unrepresentable;
+   symlink piles approximate it.
+3. rid → derived rids (and `.reused_from`-style edges) — today filesystem
+   archaeology.
 
-Stays in mycooc (orchestration policy / workload-specific): the smoke gate, the
-no-progress guard, the retry/resume policy table, `--diff`/Cohen's d, Hydra
-config, checkpoint mechanics.
+## Upstream candidates (what's left)
 
-## Friction points (biggest first)
+1. **The Store** — the one big deferred piece (design §14). The recon above
+   is its requirements doc; the central design fork (authoritative second
+   source of truth vs derived rebuildable index over the channels) is the
+   Store deliberation's opening question. Keep *artifact* sharing (mycooc's
+   symlinks) out of scope — runstate transports messages, not files.
+2. **`lifecycle.stopped.reason` vocabulary recipe** — unchanged from May;
+   an opt-in documented vocabulary, never an `outcome` enum expansion.
+3. **Per-run `runstate status <run_id>` CLI** ([cli-status](cli-status.md)).
 
-1. **"runstate transports one run; mycooc manages a matrix."** The no-Experiment-
-   class / one-`run_id`-one-channel / sequential-`sweep` stance (design §9, §14)
-   collides with mycooc's raison d'être (a Cartesian grid with reuse/ETA/resume).
-   That management layer is what runstate calls "likely never core."
-2. **Run identity:** positional `(exp, scenario, variant, seed)`→dir vs an opaque
-   `run_id`. The mapping needs the Store to live somewhere.
-3. **Artifact reuse is shared-FS symlinks** — won't follow into a message
-   substrate (esp. a NATS-style backend).
-4. **"Completed-but-extendable"** — dissolved by the [run-episodes](run-episodes.md)
-   model (a `stopped` ends an episode, not the run), but that's unbuilt.
-5. **Idempotent relaunch** — mycooc's "re-run = no-op if alive" PID-guard maps to
-   the lazy-launch single-spawn guard (design §12.1), unbuilt; see
-   [run-episodes](run-episodes.md).
-6. **Control inversion** — `Worker.tick()` drives the loop; mycooc's worker is a
-   guest callback inside `aligner.align(...)`. Doable (the callback already is the
-   safe point), but an integration seam.
-
-## What this drives in the backlog
-
-- [run-episodes](run-episodes.md) — the extendable-terminal + idempotent-relaunch
-  half.
-- **The Store + a `run_id()` recipe** (index.md, "relational layer") — the dedup
-  + enumeration half; mycooc is the reference and the validating use case.
-- A `lifecycle.stopped.reason` vocabulary recipe (new; small).
+Stays in mycooc (orchestration policy / workload-specific): the smoke gate,
+the no-progress guard, the retry/resume policy table, `--diff`/Cohen's d,
+Hydra config, checkpoint mechanics, the matrix/ETA/seed-aggregation display.

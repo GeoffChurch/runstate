@@ -57,8 +57,9 @@ guard — plus an autonomous-extend integration test and the
   the one-step-run convention, the existing `ensure`; no new library
   surface, no named Protocol (three implementers, one unchanged seam), the
   [index algebra](memoizer-index-algebra.md) dormant-with-trigger).
-  **Cluster 1 is CLOSED**; what remains is mycooc-side wiring
-  (`analyze_run.py --worker` + `ensure_analysis`, plan in the spec).
+  **Cluster 1 is CLOSED**, and the mycooc-side wiring landed the same day
+  (`ensure_analysis` + the one-step `--worker`, cached-by-default CLI;
+  record in the spec).
 - **The relational layer — the Store** (the real component), plus the
   `run_id()` *recipe* (shipped: `../specs/run-id-recipe.md`) and the
   dedup-vs-enumeration split (below), driven by [mycooc-adoption](mycooc-adoption.md),
