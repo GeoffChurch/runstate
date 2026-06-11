@@ -37,9 +37,9 @@ its trigger written in). **Cluster 1 is CLOSED and fully wired** — the keyston
 chain's last link forged by showing it was never missing, and the mycooc
 wiring landed 2026-06-11 (cached-by-default `analyze_run.py`, byte-identical
 to direct; the spec records the whole arc). Cluster 2 followed the same day —
-**dissolved** (`../specs/store.md`); what remains of it is the mycooc wiring
-plan, with the parked residue (ensure-redrive + `stopped.reason`) available
-as riders.
+**dissolved** (`../specs/store.md`) **and its mycooc wiring executed** (Phase
+7, four gated stages); the parked residue (ensure-redrive +
+`stopped.reason`) remains available as riders.
 
 `ensure` today has exactly **one** producer (the autonomous/sequence worker), so
 the "Producer Protocol" is a *basis of one* — unfalsifiable. The keystone is the
@@ -177,7 +177,7 @@ than any inspection-only item.
 3. ~~**Cluster 1**~~ — **done 2026-06-11** (the richest *design* payoff; the
    keystone resolved by dissolution and the mycooc wiring landed).
 4. ~~**Cluster 2**~~ — **dissolved 2026-06-11** (`../specs/store.md`: recipes
-   + one helper, not a relational build; remaining = the mycooc wiring plan).
+   + one helper, not a relational build; the wiring executed same day as mycooc Phase 7).
 
 **Least:**
 
@@ -198,7 +198,8 @@ F2/F3/stale-stop 2026-06-09 as [stop-discharge](../specs/stop-discharge.md),
 the readers 2026-06-10 as [observables](../specs/observables.md); the mycooc
 sweep deleted the workarounds) → **Cluster 1** ✅ (keystone, dissolved + wired
 2026-06-11) → **Cluster 2** ✅ (dissolved 2026-06-11, `../specs/store.md`) →
-**the mycooc wiring plan** (the cell/run split migration — NOW NEXT) →
+**the mycooc wiring** ✅ (executed 2026-06-11 as Phase 7 — the cell/run
+split, runner-as-worker, riders, GC; four gated stages) →
 Cluster 4 stays frozen until a viewer audience exists (its Store dependency
 is satisfied by dissolution). channel-postgres slots in on its own merits
 (wake-on-subscribe; the materialized-view future the store spec names); the

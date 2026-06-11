@@ -6,7 +6,13 @@ by the project's own F7 doctrine, so "zero new surface" is amended to
 **one six-line helper + one bug fix**, stated honestly). Deliberation
 trail: `docs/backlog/store-deliberation.md` (7-agent panel). Consistency
 round folded (13 fold-back targets added; the decision record's Q4 gate
-paragraph corrected to this spec's shape). The dissolution pins pending.
+paragraph corrected to this spec's shape). **SHIPPED same day**: the
+dissolution pins are green (pins 1/2a passed on shipped machinery alone —
+the refutation predicate held; pin 2b red→green through `foreign_episode`
++ the gate fix + the own-spawn-scoped guard), every fold-back landed, and
+the **mycooc wiring executed as Phase 7** the same day (four gated stages,
+mycooc 60f1b48→7fd8aa8 — the cell/run split, runner-as-worker, riders,
+GC; record in the consumer's plan + the adoption ledger).
 This spec records the month's fourth and largest dissolution (after the
 pure pin, the waker flap policy, and the function producer —
 `service-worker.md`, `time-lease-boundary.md`, `derived-runs.md`): the

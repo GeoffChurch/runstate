@@ -70,8 +70,9 @@ guard — plus an autonomous-extend integration test and the
   helper (`foreign_episode`, the producer gate's foreign half). The
   `run_id()` *recipe* had already shipped (`../specs/run-id-recipe.md`);
   [mycooc-adoption](mycooc-adoption.md) remains the validating-consumer
-  ledger. What remains is the **mycooc wiring plan** (the cell/run split
-  migration — the arc's largest consumer migration; separate artifact).
+  ledger. The **mycooc wiring EXECUTED the same day** (Phase 7, four gated
+  stages — the cell/run split, runner-as-worker, riders, GC; record in the
+  ledger). The thread is closed end to end.
 - **[conventions-hygiene](conventions-hygiene.md)** — *mostly resolved 2026-06-02
   (Thread A):* cut phantom `lifecycle.phase` (F1), dropped dead `RunResult.elapsed`
   (F8), gave `consumed_seq` the `await_consumed` consumer (F3). Only the pid
