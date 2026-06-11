@@ -213,7 +213,7 @@ design's load-bearing axis split — `topic` is closed/protocol-owned
 status-register pattern). The dissolution claim itself stands: pins
 1/2a pass on shipped machinery alone.
 
-## Riders (parked, mycooc-side)
+## Riders (mycooc-side — ALL EXECUTED with Phase 7, 2026-06-11, except as noted)
 
 - `channel_read.py:28` doc bug ("written at dispatch" — false; the only
   marker writer is `_write_done_markers` at completion).

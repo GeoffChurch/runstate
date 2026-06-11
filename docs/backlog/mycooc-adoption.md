@@ -2,7 +2,15 @@
 
 **Status:** ledger, updated 2026-06-11 from a recon of post-rebase mycooc;
 **the deliberation it fed is settled the same day** — the Store dissolved
-(`../specs/store.md`; trail: [store-deliberation](store-deliberation.md)).
+(`../specs/store.md`; trail: [store-deliberation](store-deliberation.md)) —
+**and the wiring plan EXECUTED the same day** (mycooc Phase 7, four gated
+stages 60f1b48→7fd8aa8: the cell/run split with `outputs/runs/` homes and
+pointer cells, the reuse machinery and all marker files deleted (−366
+lines), runner-as-worker with the pidfile/`.status`/SIGTERM plane deleted,
+the riders + the mark-and-sweep GC script; gates incl. the 51-min slow
+suite with the new home-convergence probe and a live `--stop` smoke).
+Every "today" claim in the recon below now describes the PRE-Phase-7
+state, kept as the record of what the dissolution dissolved.
 The original 2026-05 assessment said "a full rebase isn't possible today" —
 that is now false: mycooc rebased onto runstate end-to-end across the June
 arc (worker emits lifecycle/B′; the channel is the run's complete external
