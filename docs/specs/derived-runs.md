@@ -1,11 +1,11 @@
 # Spec: derived runs (compute-on-demand dissolves into the existing basis)
 
-**Status:** reviewed 2026-06-11 (adversarial round: survives-with-amendments;
-all six mandatory amendments folded — the full read-set identity, the custom
-producer, the direct-emit mechanism, the quiescence precondition,
-emit-only-missing, and the honest triangulation verdict). runstate side
-implemented (the dissolution pin); the mycooc wiring is the next session's
-build. The record of Cluster 1's last
+**Status:** SHIPPED 2026-06-11 — runstate side (the dissolution pin) and the
+mycooc wiring both landed the same day (mycooc: the compute/display refactor
+gated byte-identical against pristine HEAD; `ensure_analysis` + the one-step
+`--worker` + cached-by-default CLI; the cached path verified BYTE-IDENTICAL
+to direct on the full fixture; replay does not recompute). The adversarial
+round's six amendments are folded throughout. The record of Cluster 1's last
 leg *dissolving*: the "function producer" needs **no new worker class, no new
 library surface** — only an identity recipe extension and one convention. The
 build is consumer-side (mycooc-analyze, the oracle); the library's job here
@@ -119,7 +119,26 @@ constraint. Deferred on those grounds — argued from evidence, and recorded
 as a correction to Decisions 5–6's "lands with the second implementer"
 promise rather than a silent goalpost move.
 
-## The mycooc wiring plan (the build, next session)
+## The mycooc wiring plan (decisions taken 2026-06-11, pre-execution)
+
+User-decided: **full compute/display refactor** (every analysis JSON-native at
+compute; printing pure rendering — not the minimal bundle), **cached by
+default** (`--no-cache` bypasses; a LIVE analyzed run falls back to direct
+compute with a notice, honoring quiescence without breaking the interactive
+tool), and the db-location answer is **both**: `open_cell_channel` becomes
+deterministic (`.run_id`-marker-first; first-of-an-unsorted-glob was a latent
+wart regardless) AND analysis channels live in `run_dir/analysis/` (derived,
+plural over time — the run_dir top level stays one-run-one-db). Implementation
+policies: the top-matches table is stored at a fixed cap (50; display slices,
+and requests beyond the cap get a use-`--no-cache` note) so display knobs
+never shape the stored bundle; identity params = the resolved `source`,
+`device`, and the permutations gate; the analyzer code hash reuses mycooc's
+repo-wide partition (false-miss-only). Found during the refactor: dendrogram
+purity had a pre-existing `PYTHONHASHSEED`-dependent output order
+(ground-truth target *sets*) — the byte-diff gate runs seed-pinned; the
+nondeterminism is recorded mycooc-side.
+
+## The original wiring sketch (superseded above where they differ)
 
 1. `analyze_run.py --worker`: attach, `steps(total=1)`, compute
    `_analyze_single`, hand-emit `_result_to_json`'s top-level keys as named
