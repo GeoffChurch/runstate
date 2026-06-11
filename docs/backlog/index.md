@@ -13,8 +13,11 @@ A fresh session should read, in order: **`../../CLAUDE.md`** (orientation + the
 shipped-vs-deferred scope snapshot) → **`../design-v0.2.md`** (the converged
 design; §12 = open implementation items, §14 = scope) → **this file** (the
 discoverable work list). For the v0.3 thread, also read the shipped specs
-**`../specs/run-episodes.md`**, **`../specs/run-id-recipe.md`**, and
-**`../specs/memoizer.md`**, and the trail **`../design-v0.3-exploration.md`**.
+**`../specs/run-episodes.md`**, **`../specs/run-id-recipe.md`**,
+**`../specs/memoizer.md`**, and **`../specs/store.md`** (the arc's largest
+dissolution — the relational layer; decision trail
+[store-deliberation](store-deliberation.md)), and the trail
+**`../design-v0.3-exploration.md`**.
 For the **dependency/synergy view** over this list — the items grouped into
 clusters that unlock each other, with a sequencing — see
 [synergy-map](synergy-map.md).
@@ -60,19 +63,23 @@ guard — plus an autonomous-extend integration test and the
   **Cluster 1 is CLOSED**, and the mycooc-side wiring landed the same day
   (`ensure_analysis` + the one-step `--worker`, cached-by-default CLI;
   record in the spec).
-- **The relational layer — the Store** (the real component), plus the
-  `run_id()` *recipe* (shipped: `../specs/run-id-recipe.md`) and the
-  dedup-vs-enumeration split (below), driven by [mycooc-adoption](mycooc-adoption.md),
-  the validating use case. **Deliberation live
-  ([store-deliberation](store-deliberation.md), 2026-06-11):** Q1
-  dissolved per-fact; content-addressed placement (E) decided; Q3
-  (membership/experiment plane) and Q4 (what runstate ships) open.
+- **The relational layer — DISSOLVED 2026-06-11** (`../specs/store.md`;
+  decision trail [store-deliberation](store-deliberation.md)): the Store
+  ships as recipes over the existing basis (rid-as-address, cell pointers,
+  the child's birth record, a derived never-authoritative index) plus one
+  helper (`foreign_episode`, the producer gate's foreign half). The
+  `run_id()` *recipe* had already shipped (`../specs/run-id-recipe.md`);
+  [mycooc-adoption](mycooc-adoption.md) remains the validating-consumer
+  ledger. What remains is the **mycooc wiring plan** (the cell/run split
+  migration — the arc's largest consumer migration; separate artifact).
 - **[conventions-hygiene](conventions-hygiene.md)** — *mostly resolved 2026-06-02
   (Thread A):* cut phantom `lifecycle.phase` (F1), dropped dead `RunResult.elapsed`
   (F8), gave `consumed_seq` the `await_consumed` consumer (F3). Only the pid
   `?start=` disambiguator (F9) remains — deferred (rationale in the file).
 - **Visualization** ([visualization-story](visualization-story.md)) — the
-  long-horizon data-plane protocol; post-relational-layer.
+  long-horizon data-plane protocol. Its old "Store lands first" dependency
+  re-keys to the root set + the Recipe-5 index (`../specs/store.md`);
+  viewer discovery = list the roots, follow pointers and birth records.
 
 **Live deferred items off run-episodes:** the cross-episode control-cursor item
 is **shipped** ([stop-discharge](../specs/stop-discharge.md), specced and
@@ -88,7 +95,8 @@ Consumer-side cursor persistence was **decided out of scope**, design §12.5.)
   visualization protocols too (richer event types: Histogram, Image,
   Tensor; viewer-discovery protocol; artifact-storage protocol). Become
   a one-stop shop instead of running alongside wandb / MLflow / TB.
-  Strictly post-v0.2; depends on Store landing first.
+  Strictly post-v0.2; discovery rides the dissolved relational layer
+  (`../specs/store.md`: the root set + pointers + the dormant index).
 
 ## Protocol extensions (control plane)
 
@@ -177,59 +185,43 @@ push-based backend is the channel-postgres LISTEN/NOTIFY idea above.)
 - [cli-stop](cli-stop.md) — one-shot CLI: `runstate stop <run_id>`
   opens the run's channel and sends a `control.stop`. ~30 LOC.
 
-## Layer 4 — the relational layer: the Store (and why the Hasher is a recipe)
+## Layer 4 — the relational layer: DISSOLVED (2026-06-11)
 
-Re-scoped 2026-05 (the reasoning is worth keeping). The headline component is
-the **Store**; the once-planned "Hasher Protocol + DefaultHasher" collapses to a
-*recipe*.
+The Store is settled: **`../specs/store.md`** (decision trail:
+[store-deliberation](store-deliberation.md); the May framing that lived
+here — "Store Protocol + backends: FileStore/SqliteStore/PostgresStore;
+the structure a content-addressed `run_id` discards, so nothing else can
+supply it" — is retired by the per-fact dissolution). The shape that
+shipped:
 
-> **Deliberation in progress (2026-06-11)** — see
-> [store-deliberation](store-deliberation.md): Q1 ("where does relational
-> truth live") dissolved per-fact by an adversarial panel; placement
-> decided (content-addressed `runs/<rid>/`, cells as pointers). The
-> section below is the May framing the deliberation is revising.
+- **rid → location is the channel's address** (content-addressed
+  placement, `runs/<rid[:2]>/<rid>/`; cells are thin pointer dirs) — and
+  reuse-by-hash dissolves into `ensure` against the one home, arbitrated
+  by the shipped birth-CAS. The May split ("dedup is free; cross-run
+  reuse + enumeration need the Store") collapses: placement makes the
+  reuse query *also* free, and enumeration = the root set, a configured
+  constant.
+- **Membership** = the cell pointer (current) + the consumer's tracked
+  tabulated overview (archival); **provenance** = a backward record on
+  the derived run's own log; **any index** = a derived, rebuildable,
+  never-authoritative consumer-side cache (dormant-with-trigger).
+- One library helper by the F7 doctrine: `foreign_episode` (the producer
+  gate's foreign half; the `extend` seam contract revised — see
+  `../specs/memoizer.md` Decision 5).
 
-- **Store Protocol + backends** — *the real Layer-4 work.* Relational metadata
-  for runs and experiments; many-to-many `Run × Experiment` membership;
-  cross-run enumeration ("all seeds of this variant", "all runs at commit Y").
-  Backends: FileStore (zero deps), SqliteStore (central index), PostgresStore.
-  This is the structure a content-addressed `run_id` *discards*, so nothing
-  else can supply it.
-
-- **Why the Hasher is a recipe, not a component.** A hasher is just a function
-  `h: Inputs → Keys` whose kernel must *refine* the run's input→output kernel
-  (`h(i₁)=h(i₂) ⟹ run(i₁)=run(i₂)` is exactly the condition for reuse to be
-  correct). Its entire content is the *choice of partition* — which inputs
-  count, how they're canonicalized — which is workload-specific, so it belongs
-  in user code. The protocol recognizes no fingerprint, so a `Hasher`
-  *Protocol* earns no place unless a consumer (the Store, a reuse helper) takes
-  one polymorphically — i.e. bundled with that consumer, never a standalone
-  slice.
-
-- **Reuse-by-hash splits in two:**
-  - *Dedup is already free in the substrate.* `run_id` is opaque/caller-chosen,
-    so set `run_id = h(inputs)`; then "has this run happened?" =
-    `open_channel(run_id)` exists ∧ `peek_terminal(...)` terminal. No new API.
-    (Composes with [run-episodes](run-episodes.md): same inputs → same run_id →
-    same log → idempotent relaunch / resume.)
-  - *Cross-run reuse + enumeration need the Store* — a relational query the
-    per-run topic log structurally can't answer.
-
-- **The reference `run_id()` recipe** — capture git state **by content** (hash
-  the blob bytes that actually run), *not* by inferring clean-vs-dirty. mycooc's
-  `_compute_git_fingerprint` + `_fingerprints_compatible` over-distinguish (a
-  dirty-but-byte-identical file reads as changed → false cache *miss*) and then
-  hand-code a re-identification predicate to repair it; hashing content makes
-  the kernel track what matters and the predicate evaporates. The failure mode
-  to warn about is the opposite: *omitting* an output-determining input (data,
-  lib/CUDA version) → false *hit* = silently-wrong reuse.
-
-See [mycooc-adoption](mycooc-adoption.md) — the validating use case; its
-`_compute_config_hash` / `_find_reusable_run` are the reference for the
-`run_id()` recipe and the Store's reuse query.
+Still true and still here: **the Hasher is a recipe, not a component** —
+a hasher's kernel must refine the run's input→output kernel
+(`h(i₁)=h(i₂) ⟹ run(i₁)=run(i₂)`), its whole content is the
+workload-specific choice of partition, and the reference recipe is
+`../specs/run-id-recipe.md` (git state by content; the false-hit warning
+— sharpened under placement, where a false hit silently *converges* two
+intended computations). [mycooc-adoption](mycooc-adoption.md) remains the
+validating-consumer ledger.
 
 (Shipped in v0.2: the sequential `sweep` helper + `Variant`. A *Cartesian*
-config sweep on top of it, and Store-backed reuse skipping, remain.)
+config sweep on top of it remains app-side; reuse-skipping dissolved into
+`ensure`-against-the-home. Note `sweep`'s one-root assumption needs a
+per-rid wrapper under placement — `../specs/run-id-recipe.md`.)
 
 ## Open implementation items (mirrors design §12)
 
@@ -244,8 +236,10 @@ reasoning, listed here so they're discoverable as work (cross-ref, not moved):
 - **Multi-orchestrator attribution** (§12.7–8) — the drain model already makes
   every orchestrator's commands take effect; what's open is *attribution* (whose
   command), today a `request_id`-prefix stopgap.
-- **GC / retention policy** (§12.9) — retention is full, no GC (the precondition
-  `peek_terminal` / resume rely on); a policy is future work.
+- **GC / retention policy** (§12.9) — *in-log* retention is full, no GC (the
+  precondition `peek_terminal` / resume rely on); *home-level* collection is
+  recipe'd (`../specs/store.md` Recipe 3: pointer-rooted mark-and-sweep,
+  selective-prune default). In-log compaction remains future work.
 
 ## Conventions hygiene (2026-06 basis audit)
 
@@ -263,8 +257,9 @@ reasoning, listed here so they're discoverable as work (cross-ref, not moved):
 - **runstate-k8s** — `K8sLauncher` for Kubernetes Jobs.
 - **runstate-hydra** — Hydra config + sweep adapter; bridges Hydra
   multirun into a runstate sweep manifest.
-- **runstate-mlflow** — exporter that mirrors runstate Store entries
-  into MLflow's tracking server (when Store ships).
+- **runstate-mlflow** — exporter that mirrors the relational facts (the
+  `../specs/store.md` Recipe-5 index sources: pointers, birth records,
+  config records) into MLflow's tracking server.
 - **runstate-wandb** — convenience for routing Progress events to wandb
   alongside the runstate Channel.
 

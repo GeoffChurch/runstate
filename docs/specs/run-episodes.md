@@ -40,7 +40,8 @@ reads by run-absolute `step`, not by episode.)
 - **No "done forever" concept.** "Idle, may-relaunch" and "finished its last
   episode" are *identical on the log*, inherently (doneness is a future relaunch
   decision). Which one it is = the **caller's policy**. ("Never touched again" is a
-  retention/GC question — §12.9, deferred.)
+  retention/GC question — §12.9; *home-level* collection now has a recipe,
+  `specs/store.md` Recipe 3; in-log retention stays full.)
 - **Addendum (2026-06-09) — the drain-side mirror.** Cross-episode *control*
   follows the same follow-by-`seq` fold in the opposite direction: every control
   fact is live until its counter-record (`unsubscribe` rescinds a subscribe; the

@@ -270,7 +270,7 @@ The six convention decisions are settled (see revision history). Status tags bel
 6. **▸ `consumed_seq` scoping** — *[done for the shipped backends]* heartbeat = `{step, consumed_seq}` is implemented and frozen; `consumed_seq` is the worker's read position over `control.>`. On SQLite/Memory `seq` is globally ordered, so the scalar is well-defined. The per-subject-backend subtlety (a single watermark needs inbound-`control` single-ordering) re-surfaces only when a multi-subject backend (NATS) lands.
 7. **▸ Multi-orchestrator support** — *[handled by the drain model]* the worker **drains** `control.>` (processes every command after its cursor), so it never relies on `latest(control.*)` for "was a stop requested?" — multiple orchestrators' commands all take effect. The remaining piece is *attribution* under multiple writers, which is #8. (`peek_terminal`'s `latest` calls are on worker/launcher-written topics, each single-writer.)
 8. **Author / provenance** — *[deferred; stopgap available]* nothing routes on author, so by the lift-rule it's not an envelope field. `request_id` is an opaque string in the implementation, so the `"webui:<unique>"` prefix stopgap works today. A real field waits on provenance/authz becoming load-bearing.
-9. **Writer-serialization + GC/retention** — *[partial]* writer-serialization is handled (`MemoryChannel` takes a shared lock for concurrent in-process writers; `SqliteChannel` relies on autoincrement + SQLite's own locking). Retention is **full, no GC** — which is exactly the precondition `peek_terminal` / resume rely on; a retention/GC policy is future work.
+9. **Writer-serialization + GC/retention** — *[partial; home-level GC recipe'd 2026-06-11]* writer-serialization is handled (`MemoryChannel` takes a shared lock for concurrent in-process writers; `SqliteChannel` relies on autoincrement + SQLite's own locking). Retention is **full, no GC** *within a log* — which is exactly the precondition `peek_terminal` / resume rely on. **Home-level** collection (delete/prune a whole run's directory) is now a consumer recipe — `specs/store.md` Recipe 3: pointer-rooted mark-and-sweep, gated on `live_episode`, selective-prune default — and never truncates a live log; in-log retention/compaction remains future work.
 
 ## 13. Rejected alternatives
 
@@ -290,12 +290,22 @@ The six convention decisions are settled (see revision history). Status tags bel
 
 ## 14. Scope: v0.2 vs later
 
-**v0.2 ships (and now does):** the substrate (Memory + SQLite topic log) + the four conventions + the orchestration helpers (launchers, Watcher, sweep) + the frozen schema stack. The §12 items left open (lazy-launch, cursor-persistence/crash-replay, multi-orchestrator attribution, a GC/retention policy) are non-blocking operational refinements, not protocol gaps.
-**Layer 4 (later):** the **Store** — relational run/experiment metadata; many-to-many membership; the cross-run reuse-by-hash query. (The once-planned "Hasher" re-scoped to a `run_id()` recipe: content-addressable identity is already a substrate affordance via caller-chosen `run_id` — see `docs/backlog/`.)
+**v0.2 ships (and now does):** the substrate (Memory + SQLite topic log) + the four conventions + the orchestration helpers (launchers, Watcher, sweep) + the frozen schema stack. The §12 items left open (cursor-persistence/crash-replay efficiency, multi-orchestrator attribution, in-log retention/compaction) are non-blocking operational refinements, not protocol gaps (lazy-launch closed 2026-06-11, `specs/lazy-launch.md`; home-level GC recipe'd same day, §12.9).
+**Layer 4 — DISSOLVED (2026-06-11, `specs/store.md`):** the once-planned **Store** (relational run/experiment metadata; many-to-many membership; the cross-run reuse-by-hash query) ships as recipes over the existing basis, not a component: the rid is the run's *address* (content-addressed placement — reuse-by-hash dissolves into `ensure` against the one home), membership is the cell pointer + the consumer's tracked tabulated overview, provenance is a backward record on the derived run's own log, and any index is a derived, rebuildable, never-authoritative cache. (The once-planned "Hasher" had already re-scoped to a `run_id()` recipe: content-addressable identity is a substrate affordance via caller-chosen `run_id`.)
 **Long-term:** richer data-plane Progress + a viewer-discovery protocol — its *own* protocol in `protocol/`, distinct from this control protocol. Compose, don't conflate.
 
 ## Revision history
 
+- 2026-06-11 (rev 11): **Layer 4 dissolved (§12.9, §14; specs/store.md).**
+  The Store ships as recipes over the existing basis — rid-as-address
+  (content-addressed placement; reuse-by-hash = `ensure` against the one
+  home, arbitrated by the shipped birth-CAS), membership = cell pointers +
+  the consumer's tracked overview, provenance = the child's birth record,
+  index = derived/rebuildable/never-authoritative — plus one library
+  helper by the F7 doctrine (`foreign_episode`, the producer gate's
+  foreign half; the `extend` seam contract revised to
+  liveness-handle-always, and `ensure`'s no-progress guard own-spawn-
+  scoped). Home-level GC = pointer-rooted mark-and-sweep (recipe).
 - 2026-06-11 (rev 10): **Lazy-launch (§8/§9/§12.1–2; specs/lazy-launch.md).**
   `ensure_served` — the leased-demand decider beside `relaunch_if_needed`
   (two demand durabilities, two deciders): live demand ∧ no live episode ⟹

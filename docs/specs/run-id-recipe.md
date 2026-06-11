@@ -73,6 +73,17 @@ schedule depends on the total, either key it on the `run_id` (a fixed horizon) o
 don't treat the run as extendable. This is the one place extend can silently
 corrupt reuse.
 
+## Identity locates (2026-06-11)
+
+Under `specs/store.md` Recipe 1, the rid is also the run's **address**:
+the channel and artifacts live at `runs/<rid[:2]>/<rid>/` and
+`rid → location` is path construction, not a stored fact. The recipe's
+kernel condition gains a second consumer: a false *hit* now silently
+*converges* two intended computations on one home (no duplicate artifacts
+to diff), so owning the partition matters more, not less. (Note for
+one-root helpers: `sweep` and the lazy-launch activator hold one
+launcher/root over N rids and need a per-rid wrapper under this layout.)
+
 ## Derived runs: identity composes (2026-06-11)
 
 A computation *about* a run (analysis, evaluation, rendering) is itself a run,

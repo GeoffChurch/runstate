@@ -347,5 +347,7 @@ All scheduling fires in the worker's tick against `step` / wall-clock, never `se
 - `protocol/` — the JSON Schema stack (the wire-authoritative source of truth).
 - `examples/minimal/` — a runnable end-to-end example
   (`python examples/minimal/driver.py`).
-- `backlog/synergy-map.md` — the forward roadmap: the layers still to come (the
-  on-demand producer, the relational **Store**, the visualization data plane).
+- `backlog/synergy-map.md` — the forward roadmap. (Two of its layers since
+  resolved by dissolution — the on-demand producer, `specs/derived-runs.md`,
+  and the relational Store, `specs/store.md`; the visualization data plane
+  remains the long-horizon item.)

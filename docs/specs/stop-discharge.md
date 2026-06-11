@@ -199,8 +199,9 @@ something that is not standing state; the discharge fold subsumes it (the stop
 self-clears via the very `stopped` it requests). Fails Independence and
 "helpers earn their place." (If a durable "never run again" is ever wanted,
 that is a *hold/park* concept — a different convention, or the caller's
-relaunch policy, eventually the Store's fact — not a stop that outlives its
-answer.)
+relaunch policy — not a stop that outlives its answer. The Store this
+sentence once deferred to dissolved (`specs/store.md`); the named home is
+now the cell-local `.skip` policy file / the caller's relaunch policy.)
 
 ## Implementation
 

@@ -74,6 +74,12 @@ The substrate + opt-in conventions + reference orchestration, in
   `reap()` + the foreign-claim-scoped reap discipline) + the two deciders:
   `relaunch_if_needed` (durable demand) and `ensure_served` (leased demand —
   lazy-launch, specs/lazy-launch.md).
+- **`memoizer.py`** — `history` (replay the subscription algebra over the
+  logged `value` points) + `ensure` (read-first / produce-on-miss over the
+  duck-typed producer seam: `.channel`/`.run_id`/`.extend(until)` returning
+  a liveness handle, never None) + `launch_producer` (the callable-worker
+  factory) + `foreign_episode` (the gate's foreign half — specs/store.md
+  Recipe 2; the no-progress guard is own-spawn-scoped).
 - **`watcher.py`** — `Watcher`, the stateful failure detector
   (`poll`/`wait`/`wait_all`/`iter_events`/`broadcast`) + `RunStatus`
   (`Running | RunResult`).
@@ -197,9 +203,10 @@ and open questions. Refuted ideas with diagnosis move to `docs/dead_ends/`
 (parallel structure).
 
 **To take on deferred/upcoming work, start at `docs/backlog/index.md`** — its
-"Start here" gives the reading order and the big-ticket threads (run-episodes,
-the Store relational layer + `mycooc-adoption.md` — the "Hasher" re-scoped to a
-`run_id()` recipe — and the deferred design-§12 items mirrored there).
+"Start here" gives the reading order and the big-ticket threads (run-episodes;
+the relational layer, DISSOLVED 2026-06-11 into `docs/specs/store.md` with
+`mycooc-adoption.md` as the validating-consumer ledger and the mycooc wiring
+plan as the remaining work; and the deferred design-§12 items mirrored there).
 
 ## Scope snapshot
 
@@ -216,16 +223,23 @@ the Store relational layer + `mycooc-adoption.md` — the "Hasher" re-scoped to 
 - The JSON Schema stack + conformance tests.
 
 **Deferred (v0.3+)** (see `docs/backlog/index.md`):
-- Store Protocol + backends (relational metadata; many-to-many
-  Run × Experiment membership; the cross-run reuse-by-hash query).
-- A `run_id()` recipe (the re-scoped "Hasher" — *not* a component):
-  content-addressable identity is already a substrate affordance via
-  caller-chosen `run_id`; the input-partition policy is workload-specific.
+- ~~Store Protocol + backends~~ — **DISSOLVED 2026-06-11**
+  (`docs/specs/store.md`): the relational layer ships as recipes over the
+  existing basis (rid-as-address / content-addressed placement; cell
+  pointers; the child's birth record; a derived never-authoritative
+  index) + one helper (`foreign_episode`). Remaining: the mycooc wiring
+  plan (the cell/run split migration).
+- A `run_id()` recipe — **shipped** (`docs/specs/run-id-recipe.md`; the
+  re-scoped "Hasher", *not* a component): content-addressable identity is
+  a substrate affordance via caller-chosen `run_id`, and under placement
+  the rid is also the run's address; the input-partition policy is
+  workload-specific.
 - Pause / Resume / Snapshot / Reconfigure commands.
 - The webapp viewer (`docs/backlog/webapp-viewer.md`).
-- Open §12 implementation items still on the design's list (lazy-launch
-  double-spawn race, cursor-persistence mechanics, multi-orchestrator vs
-  `latest(control.*)`, author/provenance).
+- Open §12 implementation items still on the design's list
+  (cursor-persistence efficiency, multi-orchestrator attribution,
+  author/provenance; lazy-launch closed 2026-06-11, home-level GC
+  recipe'd same day).
 
 **Likely never in the core library:**
 - *Full* process management. The reference launchers are deliberately

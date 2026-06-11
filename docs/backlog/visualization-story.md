@@ -21,9 +21,11 @@ Three additional protocols beyond v0.1's cooperative-control messages:
    control messages, or in a parallel "data" Channel if volume warrants.
 
 2. **Viewer-discovery protocol** — how a UI finds available runs and
-   subscribes to updates. Pairs with the deferred v0.2 Store: the Store
-   answers "what runs exist?"; the viewer protocol answers "how do I
-   subscribe to one?"
+   subscribes to updates. *(Re-keyed 2026-06-11: the Store dissolved —
+   `../specs/store.md` — so "what runs exist?" is answered by the root
+   set + content-addressed placement + pointers/birth records, and the
+   viewer's need is the named promotion trigger for the provenance-record
+   schema.)* The viewer protocol answers "how do I subscribe to one?"
 
 3. **Artifact-storage protocol** — for big blobs (checkpoint files,
    model exports, eval outputs). Currently out of scope; users put
@@ -57,14 +59,15 @@ mandatory all-or-nothing.
 - Not a tracker rewrite. We don't need to invent new metric types;
   Histogram / Image / etc. are well-understood shapes; we just need to
   pick a JSON-serializable encoding.
-- Not v0.1, NOT v0.2. The Store + Hasher work in v0.2 is the
-  prerequisite — without persistent run metadata, the viewer protocol
-  has nothing to discover.
+- Not v0.1, NOT v0.2. Persistent, discoverable run metadata is the
+  prerequisite — satisfied 2026-06-11 by the dissolved relational layer
+  (`../specs/store.md`); the remaining gate is a viewer audience.
 
 ## When to revisit
 
-Revisit when v0.2 ships (Store + reuse + sweep helpers). At that point,
-the natural next question is "how does someone *see* the runs Store
+Revisit when a viewer audience exists (the metadata prerequisite is met:
+placement + pointers + birth records are the discovery surface). The
+natural next question is "how does someone *see* the runs the namespace
 knows about?" — and the answer might be "we have a viewer protocol and
 a reference webapp," or it might be "use mlflow ui after exporting,"
 depending on the audience we've found by then.
@@ -78,9 +81,11 @@ depending on the audience we've found by then.
   Base64? Out-of-band references with a URI? CBOR for the data plane
   even though JSON for control?
 - Do we need an explicit run-metadata protocol (start time, config,
-  tags, name) or does v0.2's Store cover that?
-- Where does the Hasher-based run identity intersect with the viewer's
-  notion of "which run am I looking at"? Run-hash as the viewer key
-  is clean but ties data plane to v0.2 Store machinery.
+  tags, name)? (Partially settled: the worker's resolved-config record +
+  `lifecycle.started` cover config/start; tags/names have no home — by
+  design so far.)
+- Where does content-addressed run identity intersect with the viewer's
+  notion of "which run am I looking at"? Run-id as the viewer key is
+  clean and is now also the run's *address* (`../specs/store.md`).
 
 None of these are urgent; document them as we approach the work.

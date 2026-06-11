@@ -100,7 +100,8 @@ lifecycle, launcher) plus reference orchestration (launchers, Watcher, sweep).
   dialectic) and rejected-alternative diagnoses that produced it. The journey,
   kept for rationale.
 - `design-v0.3-exploration.md` — the in-progress v0.3 decision trail (the
-  run-episodes / memoizer / Store arc); its converged outputs land in `specs/`.
+  run-episodes / memoizer / Store-dissolution arc); its converged outputs land
+  in `specs/`.
 
 **The authoritative sources for what the library currently is:**
 

@@ -1,13 +1,16 @@
 # mycooc adoption + upstream candidates
 
-**Status:** ledger, updated 2026-06-11 from a recon of post-rebase mycooc.
+**Status:** ledger, updated 2026-06-11 from a recon of post-rebase mycooc;
+**the deliberation it fed is settled the same day** — the Store dissolved
+(`../specs/store.md`; trail: [store-deliberation](store-deliberation.md)).
 The original 2026-05 assessment said "a full rebase isn't possible today" —
 that is now false: mycooc rebased onto runstate end-to-end across the June
 arc (worker emits lifecycle/B′; the channel is the run's complete external
 interface; ensure-driven milestone dispatch; derived analysis runs). This
-doc now does two jobs: (1) settle the May claims against what shipped, and
-(2) carry the **store-shaped recon facts** that feed the Store deliberation
-— the one big deferred piece left.
+doc's two jobs: (1) settle the May claims against what shipped, and (2)
+carry the **store-shaped recon facts** — whose *framing* is now settled
+(every homeless query got a recipe home) while the facts themselves remain
+the wiring plan's requirements.
 
 ## Ledger: the May claims, settled
 
@@ -26,10 +29,12 @@ doc now does two jobs: (1) settle the May claims against what shipped, and
   `run_id.py` implements it (config + git-state-by-content + data files),
   and derived-run identity composes on top (`analysis_run_id`,
   `specs/derived-runs.md`).
-- **reuse-by-hash — half-shipped, app-side only.** mycooc now computes the
-  rid at dispatch and runs `_find_reusable_run` + `_reuse_run` (symlink
-  `metrics_global.csv` + `checkpoint_best.pt`, write `.reused_from`). What
-  it lacks is exactly the relational layer — see the recon below.
+- **reuse-by-hash — half-shipped app-side, then DISSOLVED upstream**
+  (2026-06-11, `../specs/store.md`): mycooc computes the rid at dispatch and
+  runs `_find_reusable_run` + `_reuse_run` (symlink artifacts, write
+  `.reused_from`) — under content-addressed placement that machinery is
+  *deleted, not completed*: reuse is `ensure` against the rid's one home.
+  The recon below is the wiring plan's requirements doc.
 - **`stopped.reason` vocabulary recipe — still parked** (small; rides with
   any future convention-docs pass).
 - **Per-run `runstate status` CLI — still backlog** ([cli-status](cli-status.md));
@@ -88,21 +93,28 @@ What mycooc actually has today where a Store would sit — file:line refs into
   discoverable only by globbing the subdir), and service runs (leased
   demand) on the runstate side.
 
-**The queries that still have no home** (the Store's burden of proof):
+**The queries that had no home** — each settled by `../specs/store.md`
+(2026-06-11; the facts above stand, the framing is closed):
 1. rid → location/channel ("does this content exist anywhere?") — today a
-   full scan over marker files that mostly don't exist.
+   full scan over marker files that mostly don't exist. **Home: the
+   channel's address** (content-addressed placement, Recipe 1); the scan
+   and the markers are deleted.
 2. rid ↔ experiment membership, many-to-many — today unrepresentable;
-   symlink piles approximate it.
+   symlink piles approximate it. **Home: the cell pointer** (current) +
+   `summary.csv`+rid in the tracked root (archival).
 3. rid → derived rids (and `.reused_from`-style edges) — today filesystem
-   archaeology.
+   archaeology. **Home: the child's birth record** (Recipe 4; forward maps
+   computed); `.reused_from` dissolves into membership multiplicity.
 
 ## Upstream candidates (what's left)
 
-1. **The Store** — the one big deferred piece (design §14). The recon above
-   is its requirements doc; the central design fork (authoritative second
-   source of truth vs derived rebuildable index over the channels) is the
-   Store deliberation's opening question. Keep *artifact* sharing (mycooc's
-   symlinks) out of scope — runstate transports messages, not files.
+1. **The Store — RESOLVED BY DISSOLUTION** (2026-06-11,
+   `../specs/store.md`): the central fork (authoritative second source of
+   truth vs derived rebuildable index) dissolved per-fact; what shipped is
+   recipes + one helper, and what remains is the **mycooc wiring plan**
+   (the cell/run split migration, runner-as-worker, the claim guard, the
+   producer gates, riders, the GC script). Artifact sharing stayed out of
+   scope as judged — and largely dissolved too (one home, no copies).
 2. **`lifecycle.stopped.reason` vocabulary recipe** — unchanged from May;
    an opt-in documented vocabulary, never an `outcome` enum expansion.
 3. **Per-run `runstate status <run_id>` CLI** ([cli-status](cli-status.md)).

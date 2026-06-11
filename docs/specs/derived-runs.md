@@ -98,11 +98,16 @@ error, permanently, on an append-only log). The convention gives the run a
 real (length-one) step axis — `progress` reads 0, `ensure(until={"step": 1})`
 is satisfied exactly at completion, and the no-`ensure`-over-stepless
 constraint is sidestepped rather than special-cased. The `completed` claim
-is honest: an analysis is intrinsically done. **Single-driver-per-rid**,
-documented: two concurrent `ensure_analysis` calls race claims, and the
-loser's `ensure` can raise spuriously while the winner is mid-load (the
-191 MB window has no heartbeat yet) — the retry succeeds; don't parallelize
-demand for one snapshot.
+is honest: an analysis is intrinsically done. *(Superseded 2026-06-11 by
+`specs/store.md` Recipe 2: this paragraph originally said
+"single-driver-per-rid — don't parallelize demand for one snapshot",
+because the loser's `ensure` could raise spuriously while the winner was
+mid-load. With the foreign-episode gate, concurrent demand is the designed
+case — the latecomer poll-waits, zero launches — and the spurious raise
+survives only in the post-launch/pre-claim window, where the consumer
+catches the no-progress `RuntimeError` and, if `live_episode` is live,
+re-enters bounded. mycooc's `_AnalysisProducer.extend` is ungated today —
+a wiring-plan item.)*
 
 ## Producer Protocol: the triangulation verdict (honest version)
 
@@ -117,7 +122,11 @@ yes; a second *shape*, no — three implementers now share the identical
 3-attribute seam, and freezing a named Protocol would add a name and no
 constraint. Deferred on those grounds — argued from evidence, and recorded
 as a correction to Decisions 5–6's "lands with the second implementer"
-promise rather than a silent goalpost move.
+promise rather than a silent goalpost move. *(2026-06-11, `specs/store.md`:
+the attribute seam held a third time, but the `extend` RETURN contract
+gained a behavioral constraint — a liveness handle always, gated as
+`relaunch_if_needed(...) or foreign_episode(channel)`, never `None`. Both
+shipped mycooc producers violate it today; wiring-plan items.)*
 
 ## The mycooc wiring plan (decisions taken 2026-06-11, pre-execution)
 
@@ -127,8 +136,11 @@ default** (`--no-cache` bypasses; a LIVE analyzed run falls back to direct
 compute with a notice, honoring quiescence without breaking the interactive
 tool), and the db-location answer is **both**: `open_cell_channel` becomes
 deterministic (`.run_id`-marker-first; first-of-an-unsorted-glob was a latent
-wart regardless) AND analysis channels live in `run_dir/analysis/` (derived,
-plural over time — the run_dir top level stays one-run-one-db). Implementation
+wart regardless — *the marker locator is itself superseded by the cell
+pointer under `specs/store.md` Recipe 1, where `run_dir` becomes the
+content-addressed home `runs/<rid[:2]>/<rid>/`*) AND analysis channels live
+in `run_dir/analysis/` (derived, plural over time — the run_dir top level
+stays one-run-one-db). Implementation
 policies: the top-matches table is stored at a fixed cap (50; display slices,
 and requests beyond the cap get a use-`--no-cache` note) so display knobs
 never shape the stored bundle; identity params = the resolved `source`,

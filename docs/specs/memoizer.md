@@ -100,12 +100,15 @@ single-metric-pin smell from Review B.)
    condition. The worker resumes from its `run_id`-keyed checkpoint via
    `steps(start=k, total=N)` (self-bound, translating the condition to its own
    stop-bound) and emits (run-absolute) into the same log.
-3. **Wait until reached or our episode ends:** track the launched episode's
-   `LaunchHandle` (`extend` returns it) — `handle.is_alive()` is the exact,
-   race-free signal that *our* episode finished (a log-seq heuristic trips over
-   a prior episode's trailing `stopped`/`terminated` records). On a no-op extend
-   (a foreign episode was already live) wait for that episode to go terminal
-   (`peek_terminal`). The outcome is read from `peek_terminal`.
+3. **Wait until reached or the episode ends:** track the handle `extend`
+   returns — `handle.is_alive()` is the exact, race-free signal that the
+   episode driving the work finished (a log-seq heuristic trips over a prior
+   episode's trailing `stopped`/`terminated` records). When a foreign episode
+   was already live, the handle is `foreign_episode(channel)` — its
+   `is_alive()` re-reads `live_episode` every poll, so a recordless winner
+   death breaks the wait instead of stranding it (`specs/store.md` Recipe 2;
+   the old wait-for-a-terminal-*record* branch hung exactly there). The
+   outcome is read from `peek_terminal`.
 4. **Re-drive if preempted:** a `preempted` stop with the window still open → loop to
    step 2 (relaunch resumes from the higher checkpoint → converges). A `completed` stop
    short of the target → return the available trajectory (producer is done). A **failure**
@@ -140,16 +143,22 @@ to one run that can be extended —
 - `producer.run_id` — for diagnostics (and an optional out-of-band `Watcher.observe`);
 - `producer.extend(until)` — trigger production toward the condition `until` (idempotent;
   launch / relaunch-resume as needed; non-blocking — `ensure` owns the wait).
-  **Returns** the launched episode's `LaunchHandle`, or `None` if it no-op'd (an
-  episode was already live) — `ensure` tracks that handle's liveness and uses
-  truthiness to tell whether it actually drove new work (the seam contract:
-  `extend` returns truthy iff it triggered production).
+  **Returns a liveness handle for the work that will satisfy the demand**: the
+  launched episode's `LaunchHandle`, or `foreign_episode(channel)` when an
+  episode is already live (the Recipe-2 gate, `specs/store.md`). `None` is not
+  in the contract — `ensure` raises `TypeError` on it, because a handle-less
+  wait can only watch for terminal *records* and a recordless winner death
+  then strands it forever. `ensure` distinguishes the two handle kinds for
+  exactly one rule: the no-progress guard is **own-spawn-scoped** (a foreign
+  episode ending without progress is re-driven, never raised on — we never
+  launched, so there is no evidence a relaunch would spin).
 
 Ship one factory, **`launch_producer(launcher, variant, *, target_key="up_to")`**,
 for the common callable-worker case: its `extend({"step":N})` extracts the scalar
 `N` and injects it into the launch spec under `target_key`; any other condition shape
-(`time_seconds`, `any`/`all`) raises — bring your own producer for those. Calls
-`relaunch_if_needed` (Decision 6); its `channel` is
+(`time_seconds`, `any`/`all`) raises — bring your own producer for those. Its
+gate is `relaunch_if_needed(...) or foreign_episode(channel)` (Decision 6 +
+the store spec's Recipe 2); its `channel` is
 `launcher.open_channel(variant.run_id)`. **How the target reaches the worker is
 launcher/workload-specific** — a kwarg for an in-process `ThreadLauncher`
 callable, an env var / CLI arg for a `LocalLauncher` subprocess — so it lives in
@@ -170,6 +179,13 @@ producer) and the shape did NOT change — three implementers share the same
 3-attribute seam. The named Protocol stays deferred on evidence: it would add
 a name and no constraint. This corrects, rather than silently moves, the
 "lands with the second implementer" promise above.)*
+
+*(Second correction, same day — `specs/store.md`: the seam's ATTRIBUTE shape
+held again, but the `extend` RETURN contract was revised — a liveness handle
+always (own spawn or `foreign_episode(channel)`), never `None`, and the
+no-progress guard became own-spawn-scoped. The old `None`-on-no-op spelling
+hid a real hang (the recordless winner death) behind the record-only wait;
+this paragraph's earlier truthy-iff-drove clause is gone with it.)*
 
 ### Decision 6 — idempotent relaunch is a free helper, not a launcher method
 **`relaunch_if_needed(launcher, run_id, target, **launch_kwargs)`** —
@@ -247,13 +263,14 @@ doesn't read the log — it produces; the memoizer reads). Clean division:
 
 ## Deliverables
 - **`runstate/memoizer.py`** — `history`, `ensure`, the producer seam
-  (duck-typed) + `launch_producer`.
+  (duck-typed) + `launch_producer` (+ `foreign_episode`, added 2026-06-11 by
+  `specs/store.md`).
 - **`runstate/launcher.py`** — `relaunch_if_needed` free helper (no Protocol
   change).
 - **convention revision** — `value.t` → absolute wall-clock (worker +
   `payloads.py` docstring + design §10/§11 + §11 supersede note).
 - **`runstate/__init__.py`** — export `history`, `ensure`, `launch_producer`,
-  `relaunch_if_needed`.
+  `relaunch_if_needed` (+ `foreign_episode`).
 - **example** — `examples/reuse/` re-expressed via `ensure` (whole-run hit) + an
   extend-across-episodes demo.
 - **docs** — this spec; cross-ref `run-id-recipe.md`.

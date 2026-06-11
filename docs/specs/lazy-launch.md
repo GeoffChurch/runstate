@@ -71,6 +71,10 @@ with LocalLauncher(root=root) as launcher:
         sleep(poll_interval)
 ```
 
+(Under `specs/store.md` Recipe-1 placement — per-rid content-addressed
+roots — the one-launcher-many-rids shape above needs a per-rid wrapper
+loop: construct the launcher, or at least its root, per run_id.)
+
 The per-cycle `launcher.reap()` (a new public method: poll every
 outstanding handle) is load-bearing, not hygiene: a never-exiting loop
 never hits `__exit__`'s reap, so finished children accumulate as POSIX
