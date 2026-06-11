@@ -220,9 +220,10 @@ def test_ensure_surfaces_a_die_before_attach_without_hanging():
 
 
 def test_ensure_redrives_when_extend_noops_onto_a_live_episode(tmp_path):
-    # A foreign episode is already LIVE when ensure runs, so extend no-ops
-    # (drove=False). When that episode then stops BELOW target, ensure must
-    # re-drive -- NOT raise "no progress" (the bug the drove-gate fixes).
+    # A foreign episode is already LIVE when ensure runs, so the gate hands
+    # back its foreign handle. When that episode then stops BELOW target
+    # (preempted, no progress during our watch), ensure must re-drive -- NOT
+    # raise "no progress" (foreign handles are exempt from the guard).
     launcher = runstate.ThreadLauncher()
     rid = "exp"
     seed = launcher.open_channel(rid)
@@ -261,9 +262,11 @@ def test_ensure_redrives_when_extend_noops_onto_a_live_episode(tmp_path):
 
 
 def test_public_exports_present():
-    assert {"history", "ensure", "launch_producer", "relaunch_if_needed"} <= set(runstate.__all__)
+    assert {"history", "ensure", "launch_producer", "relaunch_if_needed",
+            "foreign_episode"} <= set(runstate.__all__)
     assert all(hasattr(runstate, n)
-               for n in ("history", "ensure", "launch_producer", "relaunch_if_needed"))
+               for n in ("history", "ensure", "launch_producer",
+                         "relaunch_if_needed", "foreign_episode"))
 
 
 # ---------------------------------------------------------------------------
@@ -273,9 +276,11 @@ def test_public_exports_present():
 class _FakeProducer:
     """A minimal duck-typed producer backed by a pre-seeded MemoryChannel.
 
-    `extend` is a no-op (returns None, simulating a foreign episode) and
-    counts how many times it was called.  The channel is shared so the caller
-    can inspect / mutate it after construction.
+    `extend` drives synchronously (the side effect appends the episode) and
+    returns an already-dead own-spawn handle -- the seam contract requires a
+    liveness handle, never None (specs/store.md Recipe 2). It counts how many
+    times it was called; the channel is shared so the caller can inspect /
+    mutate it after construction.
     """
 
     def __init__(self, channel, extend_side_effect=None):
@@ -292,7 +297,7 @@ class _FakeProducer:
         self.extend_calls += 1
         if self._extend_side_effect is not None:
             self._extend_side_effect(self._channel, until)
-        return None   # no handle: simulates a foreign/no-op extend
+        return _DeadHandle()   # synchronous own drive, already finished
 
 
 def _seed_episode(ch, *, heartbeat_step, completed: bool, value_steps=None):
@@ -580,3 +585,150 @@ def test_derived_run_dissolution_pin(tmp_path):
     assert len(ch.read(topics=["lifecycle.started"])) == 1            # no relaunch
     # the whole bundle is on the log for any value_series consumer
     assert set(runstate.value_series(ch)) == {"pair_metrics", "hubness"}
+
+
+# ----- the Store: the dissolution pins (specs/store.md) -----
+
+
+def _pin_producer(launcher, ckpt_dir, rid, *, stage_subscription=True):
+    """A `_cell` producer for the store pins; the subscription is staged at
+    most once (two drivers share ONE log -- double-staging would
+    double-register the demand)."""
+    if stage_subscription:
+        launcher.open_channel(rid).send(
+            {"every": {"step": 1}}, topic="control.subscribe",
+            name="loss", request_id="obs")
+    variant = runstate.Variant(
+        rid, _cell, {"kwargs": {"run_id": rid, "ckpt_dir": str(ckpt_dir)}}
+    )
+    return launch_producer(launcher, variant)
+
+
+def test_store_pin_reuse_is_extend_across_drivers(tmp_path):
+    """specs/store.md pin 1: two independent drivers ("experiments") demanding
+    one rid converge on ONE content-addressed home -- A computes a preempted
+    prefix, B extends the SAME log (no second channel file, no recompute of
+    the prefix). Must pass on shipped machinery alone; otherwise the
+    dissolution is refuted."""
+    rid = "abc123"
+    home = tmp_path / "runs" / rid[:2] / rid              # Recipe-1 layout
+    home.mkdir(parents=True)
+    ckpts = tmp_path / "ckpts"
+    ckpts.mkdir()
+    driver_a = runstate.ThreadLauncher(root=str(home), backend="sqlite")
+    driver_b = runstate.ThreadLauncher(root=str(home), backend="sqlite")
+    prod_a = _pin_producer(driver_a, ckpts, rid)
+    prod_b = _pin_producer(driver_b, ckpts, rid, stage_subscription=False)
+
+    series_a = ensure(prod_a, "loss", until={"step": 3})
+    assert [b["step"] for b in series_a] == [0, 1, 2]
+    series_b = ensure(prod_b, "loss", until={"step": 8})  # reuse IS extend
+    assert [b["step"] for b in series_b] == list(range(8))
+
+    dbs = sorted((tmp_path / "runs").rglob("*.db"))
+    assert dbs == [home / f"{rid}.db"]                    # one home, one log
+    episodes = driver_b.open_channel(rid).read(topics=["lifecycle.started"])
+    assert len(episodes) == 2                             # A's prefix + B's extension
+
+
+class _ForeignWait:
+    """specs/store.md Recipe 2, inlined test-locally (the pin-2a counterfactual:
+    the gate's handle shape is buildable on shipped machinery alone).
+    `is_alive()` re-reads the log every poll; `wait()` is a no-op."""
+    def __init__(self, channel):
+        self._channel = channel
+    def is_alive(self):
+        return runstate.live_episode(self._channel) is not None
+    def wait(self):
+        pass
+
+
+def test_store_pin_latecomer_waits_on_live_foreign_episode():
+    """specs/store.md pin 2a: while a foreign episode is LIVE, a gated
+    producer's ensure poll-waits -- zero launches -- and returns the satisfied
+    history once the winner delivers."""
+    launcher = runstate.ThreadLauncher()
+    rid = "exp"
+    ch = launcher.open_channel(rid)
+    ch.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+            topic="lifecycle.started")            # the live foreign winner (our pid)
+
+    class _Gated:                                 # the Recipe-2 gate, latecomer side
+        run_id = rid
+        channel = ch
+        def extend(self, until):
+            assert runstate.live_episode(ch) is not None   # the pin gates, never launches
+            return _ForeignWait(ch)
+
+    delivered = {"n": 0}
+
+    def winner_delivers(_):                       # the foreign winner, via the poll hook
+        s = delivered["n"]
+        if s < 5:
+            ch.send({"value": float(s), "step": s, "t": 0.0},
+                    topic="value", name="loss")
+            ch.send({"step": s, "consumed_seq": 0}, topic="lifecycle.heartbeat")
+            delivered["n"] += 1
+
+    series = ensure(_Gated(), "loss", until={"step": 5}, sleep=winner_delivers)
+    assert [b["step"] for b in series] == [0, 1, 2, 3, 4]
+    assert ch.read(topics=["launcher.launched"]) == []     # latecomer launched nothing
+    assert delivered["n"] == 5                             # it genuinely waited
+
+
+def test_store_pin_latecomer_recovers_when_foreign_winner_dies_recordless(tmp_path):
+    """specs/store.md pin 2b: a foreign winner that dies RECORDLESS mid-wait
+    (no stopped, no terminated -- a SIGKILLed, never-reaped runner) must not
+    strand the gated latecomer: `is_alive()` re-reads the log, the wait
+    breaks, and the next extend RE-DRIVES (relaunch_if_needed sees no live
+    episode and launches the recovery episode -- the lazy-launch re-wake
+    posture). The None-gate polls forever here; a hang-guard sleep converts
+    a hang into a loud failure."""
+    import socket
+    import time
+    launcher = runstate.ThreadLauncher()
+    rid = "exp"
+    ch = launcher.open_channel(rid)
+    ch.send({"every": {"step": 1}}, topic="control.subscribe",
+            name="loss", request_id="obs")
+    ch.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+            topic="lifecycle.started")            # the live foreign winner...
+
+    producer = _pin_producer(launcher, tmp_path, rid, stage_subscription=False)
+    calls = {"n": 0}
+    host = socket.gethostname()
+
+    def hang_guard(_):
+        calls["n"] += 1
+        if calls["n"] == 1:                       # ...replaced by a claim that died recordless
+            ch.send({"handle": f"local://{host}/2147483646", "hostname": host,
+                     "attached_at": 0.0}, topic="lifecycle.started")
+        time.sleep(0.001)                         # real yield: the recovery runs in a thread
+        if calls["n"] > 200:
+            raise AssertionError(
+                "ensure is hanging: the gate stranded the latecomer on a "
+                "recordless-dead foreign episode")
+
+    series = ensure(producer, "loss", until={"step": 4}, sleep=hang_guard)
+    assert [b["step"] for b in series] == [0, 1, 2, 3]
+    launched = ch.read(topics=["launcher.launched"])
+    assert len(launched) == 1                     # exactly one recovery spawn
+
+
+def test_foreign_episode_helper_tracks_live_episode():
+    """specs/store.md pin 3 (the helper): `foreign_episode(channel)` is the
+    public one-copy of the gate's foreign half (the F7 doctrine) -- is_alive()
+    re-reads live_episode on every call; wait() is a no-op."""
+    from runstate import foreign_episode
+    from runstate.channel.memory import MemoryChannel
+
+    ch = MemoryChannel()
+    handle = foreign_episode(ch)
+    assert handle.is_alive() is False             # empty log: no episode
+    ch.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+            topic="lifecycle.started")
+    assert handle.is_alive() is True              # claim landed: live
+    ch.send({"completed": False, "error": None, "final_step": 0},
+            topic="lifecycle.stopped")
+    assert handle.is_alive() is False             # episode over
+    assert handle.wait() is None                  # nothing to reap

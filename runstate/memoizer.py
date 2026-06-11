@@ -12,7 +12,34 @@ import time
 
 from .vocabulary.schedule import Subscription, satisfied
 from .launcher import relaunch_if_needed
-from .observables import peek_terminal, progress
+from .observables import live_episode, peek_terminal, progress
+
+
+class _ForeignEpisode:
+    """The gate's foreign half (specs/store.md Recipe 2): a liveness handle
+    for an episode this producer did NOT spawn. ``is_alive()`` re-reads
+    ``live_episode`` on every poll (verify-at-use: a recordless winner death
+    is noticed, never waited on forever); ``wait()`` is a no-op (not our
+    child; nothing to reap). ``ensure`` recognizes these handles and exempts
+    them from the no-progress guard: a foreign episode that stops without
+    progress is re-driven (the lazy-launch re-wake posture), never raised on
+    -- the guard remains for OWN spawns that burn without progress."""
+
+    def __init__(self, channel):
+        self._channel = channel
+
+    def is_alive(self):
+        return live_episode(self._channel) is not None
+
+    def wait(self):
+        return None
+
+
+def foreign_episode(channel):
+    """The one public copy of the producer gate's foreign-episode handle (the
+    F7 doctrine: one boundary rule, one implementation). Compose a producer's
+    ``extend`` as ``relaunch_if_needed(...) or foreign_episode(channel)``."""
+    return _ForeignEpisode(channel)
 
 
 class _LaunchProducer:
@@ -37,12 +64,15 @@ class _LaunchProducer:
         return self._launcher.open_channel(self._variant.run_id)
 
     def extend(self, until):
-        """Trigger production toward `until`: relaunch iff not already live.
-        The default producer translates ONLY a step condition -- it injects the
-        scalar `until["step"]` under `target_key`. Any other shape (time_seconds,
-        count, any/all) needs a launcher whose worker accepts that bound, i.e. the
-        user's own producer (.channel/.run_id/.extend(until)); reject it loudly
-        rather than inject a dict the worker can't consume."""
+        """Trigger production toward `until`: relaunch iff not already live,
+        else hand back the live episode's foreign handle (the Recipe-2 gate --
+        never ``None``, whose record-only wait strands the latecomer on a
+        recordless winner death). The default producer translates ONLY a step
+        condition -- it injects the scalar `until["step"]` under `target_key`.
+        Any other shape (time_seconds, count, any/all) needs a launcher whose
+        worker accepts that bound, i.e. the user's own producer
+        (.channel/.run_id/.extend(until)); reject it loudly rather than inject
+        a dict the worker can't consume."""
         if list(until.keys()) != ["step"]:
             raise ValueError(
                 f"the default launch-producer translates only {{'step': N}}; got "
@@ -56,7 +86,7 @@ class _LaunchProducer:
         launch_kwargs["kwargs"] = worker_kwargs
         return relaunch_if_needed(
             self._launcher, self._variant.run_id, self._variant.target, **launch_kwargs
-        )
+        ) or foreign_episode(self.channel)
 
 
 def launch_producer(launcher, variant, *, target_key="up_to"):
@@ -207,12 +237,15 @@ def ensure(producer, name, *, until, poll_interval=0.01, sleep=time.sleep,
     while not _satisfied(channel, until, clock=clock):
         before = _progress(channel)
         handle = producer.extend(until)
+        if handle is None:
+            raise TypeError(
+                "producer.extend returned None -- the seam contract requires a "
+                "liveness handle: your own spawn's, or foreign_episode(channel) "
+                "when an episode is already live (specs/store.md Recipe 2)"
+            )
         while not _satisfied(channel, until, clock=clock):
-            if handle is not None:
-                if not handle.is_alive():
-                    handle.wait()
-                    break
-            elif peek_terminal(channel) is not None:
+            if not handle.is_alive():
+                handle.wait()
                 break
             sleep(poll_interval)
         else:
@@ -224,7 +257,11 @@ def ensure(producer, name, *, until, poll_interval=0.01, sleep=time.sleep,
             )
         if result is not None and result.outcome == "completed":
             return history(channel, name, dense)
-        if (handle is not None and _progress(channel) <= before
+        # The no-progress guard is OWN-SPAWN-scoped: a foreign episode ending
+        # without progress is no evidence a relaunch would spin (we never
+        # launched) -- re-drive it, the lazy-launch re-wake posture.
+        if (not isinstance(handle, _ForeignEpisode)
+                and _progress(channel) <= before
                 and not satisfied(until, step=_progress(channel) + 1,
                                   time_seconds=float("inf"), count=0)):
             raise RuntimeError(

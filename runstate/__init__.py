@@ -13,7 +13,7 @@ import os
 from .channel import Envelope, open_channel
 from .launcher import (Launcher, LaunchHandle, LocalLauncher, ThreadLauncher,
                        ensure_served, relaunch_if_needed)
-from .memoizer import ensure, history, launch_producer
+from .memoizer import ensure, foreign_episode, history, launch_producer
 from .observables import (
     RunResult,
     latest_episode,
@@ -90,6 +90,7 @@ __all__ = [
     "history",
     "ensure",
     "launch_producer",
+    "foreign_episode",
     "relaunch_if_needed",
     "ensure_served",
     # convention bodies (typed; serialize via dataclasses.asdict, parse via Cls(**body))

@@ -172,9 +172,17 @@ the three failure modes it navigates:
    deliverable below: a bug fix to an existing helper, not new surface.)
 3. **Foreign-handle-gated**: liveness is re-verified every poll (the
    verify-at-use invariant, restored); a recordless winner crash flips
-   `is_alive()` false → the no-progress guard raises **accurately**, and
-   the consumer classifies it (resumable) exactly like a timed-out
-   chunk.
+   `is_alive()` false → the wait breaks and the next extend **re-drives**
+   (`relaunch_if_needed` sees no live episode and launches the recovery
+   episode — the lazy-launch re-wake posture). Implementation finding,
+   folded back from TDD: the no-progress guard is **own-spawn-scoped** —
+   `ensure` recognizes foreign handles and exempts them, because a
+   foreign episode ending without progress (preempted below target, or
+   recordless death) is no evidence a relaunch would spin: *we never
+   launched*. The guard remains for own spawns that burn without
+   progress. (The scoping is also what preserves the pre-existing
+   re-drive semantics for a foreign episode that stops preempted below
+   target.)
 
 **Gate scope (single-host honesty — the lazy-launch twin paragraph).**
 The handle rides `live_episode`, whose conservatism is asymmetric across
@@ -415,22 +423,25 @@ the gate's one-right-shape, not to make any pin pass.
    "experiments") — `ensure(..., until={"step": 8})` **extends the same
    log**: exactly one `{rid}.db` under the root, two `lifecycle.started`
    episodes, the full series 0–7 returned.
-2. **The latecomer:** (a) while A's episode is live (a slow worker), B's
-   gated `ensure` poll-waits — zero launches by B while the episode
-   lives — and returns the identical satisfied history after the winner
-   delivers; (b) **the crash case**: a foreign episode goes recordless-
-   dead (a `started` whose handle resolves dead, no `stopped`) — B's
-   `ensure` **raises** the no-progress `RuntimeError` promptly instead
-   of hanging (this is what the foreign-handle gate buys; a None-gate
-   producer hangs here).
+2. **The latecomer:** (a) while A's episode is live, B's gated `ensure`
+   poll-waits — zero launches by B while the episode lives — and returns
+   the identical satisfied history after the winner delivers (the gate
+   handle is built test-locally here, proving the counterfactual: pin 2a
+   needs shipped machinery only); (b) **the crash case**: the foreign
+   winner is replaced mid-wait by a claim that died recordless (a
+   `started` whose handle resolves dead, no `stopped`) — B's `ensure`
+   **recovers**: the wait breaks, the next extend launches the recovery
+   episode, the series completes. A None-gate producer polls forever
+   here; a hang-guard `sleep` converts the hang into a loud failure.
 3. **`foreign_episode` + the `launch_producer` hang fix (library,
-   TDD):** the helper exported beside `launch_producer`; the default
-   producer's gate becomes `relaunch_if_needed(...) or
+   TDD):** the helper exported beside `launch_producer` (unit-pinned:
+   `is_alive()` tracks `live_episode` call-by-call; `wait()` no-op); the
+   default producer's gate becomes `relaunch_if_needed(...) or
    foreign_episode(channel)` instead of returning `None`
-   (`memoizer.py:57-59`); red = pin 2b's scenario against
-   `launch_producer` detects the hang via an injected counting `sleep`,
-   green = the prompt raise. One six-line helper (the F7 doctrine) plus
-   a bug fix; pins 1–2 do not depend on either.
+   (`memoizer.py`), and `ensure`'s no-progress guard gains the own-spawn
+   scope. Red = pin 2b against `launch_producer` trips the hang guard;
+   green = recovery. One small helper (the F7 doctrine) plus a bug fix;
+   pins 1–2a do not depend on either.
 
 ## Deliverables / fold-backs
 
