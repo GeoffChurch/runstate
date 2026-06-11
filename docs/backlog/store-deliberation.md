@@ -1,8 +1,8 @@
 # The Store deliberation — decision record (living)
 
-**Status:** in progress (2026-06-11). Q1 dissolved; Q2 (placement) and Q3
-(membership / the experiment plane) DECIDED; Q4 (what runstate ships — the
-rump) open.
+**Status:** deliberation COMPLETE (2026-06-11) — Q1 dissolved; Q2, Q3, Q4
+DECIDED. The spec is `../specs/store.md` (drafted same day; this file is
+the decision trail).
 Evidence base: [mycooc-adoption](mycooc-adoption.md) (the recon ledger) +
 a 7-agent adversarial panel (3 advocates A/B/C, frame-breaker, prior-art
 miner, consumer-grounding, cross-exam; dossier split at `/tmp/storeq1/`,
@@ -150,23 +150,46 @@ what the tabulated CSV serves — none exists today. Free breadcrumb
 telemetry on the runner's channel is app-side logging, not a basis
 vector.
 
-## Q4 — OPEN (the rump): what runstate ships
+## Q4 — what runstate ships — DECIDED: recipes + a pin, zero library code
 
 With no member records there is nothing for the protocol to recognize —
 the CLAUDE.md helper test fails, *correctly* — so no `relation.*`
-convention, no Store Protocol, no backends, no enumeration primitive.
-(Exam note kept for the record: the candidate record shapes would not
-have polluted `value_series` — `_value_points` skips records lacking a
-name / int step / `value` key — so safety was never the issue;
-recognizability was, and nothing recognizes them.) The candidate end
-state: **one spec of documented recipes + a dissolution pin, zero library
-code**. Open sub-decisions: derived-run placement under E (nested under
-the parent's home — placement-as-edge, the same move as E itself — vs a
-flat namespace + explicit edge record); the parent-edge record's spelling
-(app dict now, promotion trigger = the Cluster-4 viewer protocol needing
-cross-workload edge-walking); whether even the consumer-side index is
-built day one (at ~26 ms scans it is dormant-with-trigger too); spec
-naming.
+convention, no Store Protocol, no backends, no enumeration primitive, no
+index component, no CLI. (Exam note kept for the record: the candidate
+record shapes would not have polluted `value_series` — `_value_points`
+skips records lacking a name / int step / `value` key — so safety was
+never the issue; recognizability was, and nothing recognizes them.)
+
+Shipped instead: **`../specs/store.md` — documented recipes + the
+dissolution pins**. Sub-decisions taken:
+
+- **Derived-run placement: nested** (`runs/<R>/analysis/<arid>.db`,
+  today's shipped shape — placement-as-edge, the same move as E itself;
+  GC custody free) — **but the child writes its parent-edge record at
+  birth regardless**: placement-as-edge dies in the postgres-backend
+  future (channels stop being files), and identity embeds the parent only
+  as a hash (verifiable, not readable). Nested-vs-flat then carries no
+  fact — pure custody policy, softened by selective prune.
+- **The parent-edge record is an app dict** (no convention); promotion
+  trigger = the Cluster-4 viewer protocol needing cross-workload
+  edge-walking.
+- **The producer's `extend` must be live-episode-gated** (the
+  `relaunch_if_needed` composition). Verified against `memoizer.py:207-233`:
+  an ungated extend spawns a loser per poll cycle while a foreign winner
+  serves, and the no-progress guard (`:227`) raises spuriously while the
+  winner is mid-load. With the gate, the latecomer's `ensure` is a clean
+  poll-wait. Residual honest window: two dispatchers inside the claim
+  window → one wasted spawn, and the spurious raise survives only there
+  (retry succeeds).
+- **`ensure` never extends `completed`** (B′: completed = done-done;
+  `preempted` is the extendable bucket) — E's "partials extend" means
+  preempted partials; a converged run demanded further returns its
+  history unextended, which is correct.
+- **The index is dormant even consumer-side** (~26 ms scans; day-one
+  queries are a path stat, readlinks, and a record read). The recipe is
+  documented, not built.
+- **Spec naming: `store.md`** (the `derived-runs.md` precedent —
+  dissolutions keep the feature's name for discoverability).
 
 ## Riders (parked, mycooc-side)
 
