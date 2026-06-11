@@ -164,6 +164,13 @@ that triangulates its shape. This *is* the "inner worker-shaped thing" the
 memoizer wraps; the wrapping is expressed by passing the producer to `ensure`,
 not by a class holding it.
 
+*(Correction, 2026-06-11 — `specs/derived-runs.md`: the predicted second
+implementer arrived (mycooc's subprocess producer; a third with the analysis
+producer) and the shape did NOT change — three implementers share the same
+3-attribute seam. The named Protocol stays deferred on evidence: it would add
+a name and no constraint. This corrects, rather than silently moves, the
+"lands with the second implementer" promise above.)*
+
 ### Decision 6 — idempotent relaunch is a free helper, not a launcher method
 **`relaunch_if_needed(launcher, run_id, target, **launch_kwargs)`** —
 launcher-agnostic: read `live_episode(channel)`; if a live episode exists, no-op

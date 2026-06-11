@@ -153,7 +153,7 @@ scores above.
 ```bash
 pip install -e .                    # install editable
 pip install -e .[test]              # + jsonschema for the schema tests
-pytest tests/                       # run all tests (~395, ~7s)
+pytest tests/                       # run all tests (~400, ~7s)
 pytest tests/test_channel.py -v     # one module
 pytest tests/test_schema.py -v      # emitted messages conform to the schema stack
 ```

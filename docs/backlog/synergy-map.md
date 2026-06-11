@@ -28,9 +28,14 @@ Episode-scoped time-leases shipped 2026-06-11
 construction; the waker needs no policy). Lazy-launch shipped 2026-06-11
 (`../specs/lazy-launch.md` — Cluster 1's service half is now COMPLETE
 end-to-end: demand → wake → serve → lapse → retire → re-wake, dogfooded
-twice over in `examples/monitor/`). Remaining: the *function* producer (the
-second `ensure` implementer must be stepped and memoizable — mycooc-analyze,
-not the pure service).
+twice over in `examples/monitor/`). The *function* producer **resolved by
+DISSOLUTION 2026-06-11** (`../specs/derived-runs.md`: key = the analyzed
+snapshot; a derived run is the existing autonomous worker, one step long,
+behind the existing `ensure` — zero new library surface, pinned executable by
+`test_derived_run_dissolution_pin`; the index algebra demoted to dormant with
+its trigger written in). **Cluster 1 is CLOSED** — the keystone chain's last
+link forged by showing it was never missing; the remaining build is
+mycooc-side wiring (`analyze_run.py --worker` + `ensure_analysis`).
 
 `ensure` today has exactly **one** producer (the autonomous/sequence worker), so
 the "Producer Protocol" is a *basis of one* — unfalsifiable. The keystone is the

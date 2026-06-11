@@ -540,3 +540,43 @@ def test_ensure_time_budget_completed_truncates_after_first_chunk():
     p = _TimeChunkProducer(MemoryChannel(), completed=True)
     series = ensure(p, "loss", until={"time_seconds": 5}, clock=_RampClock(), poll_interval=0)
     assert p.calls == 1 and [b["step"] for b in series] == [0]   # completed -> stopped at chunk 1
+
+
+# ----- derived runs: the dissolution pin (specs/derived-runs.md) -----
+
+
+def _derived_worker(channel, *, up_to=None, **_):
+    """The derived-run convention: one step, hand-emit the bundle
+    (emit-only-missing), claim completed. `set()`+tick would emit nothing --
+    ensure never subscribes."""
+    from dataclasses import asdict
+    with runstate.Worker(channel, now=lambda: 0.0) as w:
+        for _step in w.steps(total=1):
+            existing = {e.name for e in channel.read(topics=["value"])}
+            for k, v in {"pair_metrics": 0.42, "hubness": 7.0}.items():
+                if k not in existing:
+                    channel.send(asdict(runstate.Value(value=v, step=0, t=0.0)),
+                                 topic="value", name=k)
+        w.stopped(completed=True)
+
+
+def test_derived_run_dissolution_pin(tmp_path):
+    """specs/derived-runs.md: compute-on-demand needs NO new library surface --
+    a one-step, hand-emitting, completed-claiming worker behind the EXISTING
+    ensure is the whole "function producer". If this test cannot pass without
+    new library code, the dissolution finding is refuted."""
+    launcher = runstate.ThreadLauncher()
+    rid = "analysis-abc123"      # = run_id({analyzed, inputs, params, code})
+    variant = runstate.Variant(rid, _derived_worker, {"kwargs": {}})
+    producer = launch_producer(launcher, variant)
+
+    series = ensure(producer, "pair_metrics", until={"step": 1})
+    assert [(b["step"], b["value"]) for b in series] == [(0, 0.42)]   # non-empty
+    ch = launcher.open_channel(rid)
+    assert len(ch.read(topics=["lifecycle.started"])) == 1
+
+    series2 = ensure(producer, "pair_metrics", until={"step": 1})     # cache hit
+    assert series2 == series
+    assert len(ch.read(topics=["lifecycle.started"])) == 1            # no relaunch
+    # the whole bundle is on the log for any value_series consumer
+    assert set(runstate.value_series(ch)) == {"pair_metrics", "hubness"}

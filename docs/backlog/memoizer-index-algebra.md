@@ -5,7 +5,21 @@ Background: the memoizer spec's "Design note" (`../specs/memoizer.md`) — the
 memoizer is thin, the worker owns structure, and `up_to=N` is already sugar for
 "ensure the log holds indices `I`."
 
-## Status: the *bound* half landed; the *filter* half is the residue
+## Status: DORMANT (2026-06-11) — unfunded, not refuted; trigger below
+
+The first function-shaped consumer (mycooc-analyze) **refuted the premise**,
+not the idea: its ~8 kinds are cheap, always demanded together, and gated by
+one dominant shared load — so the right key is the whole snapshot, one run
+per key, and the existing `ensure(until=)` spans it with no filter language
+(`specs/derived-runs.md`, the dissolution; pinned by
+`test_derived_run_dissolution_pin`). **Revisit trigger:** a consumer with
+many *independent*, *individually expensive*, *sparsely demanded* keys for
+which one-run-per-key is too heavy — and the proposal must explicitly beat
+the run-granularity competitor (per-key derived runs) before adding
+vocabulary. The most plausible future bearer is the viewer thread
+(frame-scrubbing-shaped demand).
+
+## (historical) the *bound* half landed; the *filter* half is the residue
 
 `../specs/ensure-until-condition.md` (2026-06-04) generalized the **bound** —
 `ensure(up_to: int)` → `ensure(until: Condition)` over the full condition-algebra

@@ -73,6 +73,31 @@ schedule depends on the total, either key it on the `run_id` (a fixed horizon) o
 don't treat the run as extendable. This is the one place extend can silently
 corrupt reuse.
 
+## Derived runs: identity composes (2026-06-11)
+
+A computation *about* a run (analysis, evaluation, rendering) is itself a run,
+and the recipe composes: its `run_id` hashes **the full read-set's content**
+plus the analyzer's code and parameters —
+
+```python
+rid_analysis = run_id({
+    "analyzed": R_rid,                  # provenance / discoverability
+    "inputs": hash_files(read_set),     # EVERYTHING the analyzer reads
+    "params": {...},                    # analysis args that shape output
+    "code": hash_code(analyzer_sources),
+})
+```
+
+Two traps, both aliasing (identity must never alias distinct computations):
+`h(R_rid, code)` is stable while R's artifacts evolve across episodes; and a
+*partial* read-set (just the tensors, not the metrics CSVs the analyzer also
+reads) hides the same trap one layer down. Freshness then needs no policy —
+the identity IS the freshness check (R changes ⟹ the read-set changes ⟹ a
+new derived id; stale analyses remain as content-addressed history). Hash
+only *settled* snapshots (`live_episode(R) is None`) — the hash and the
+worker's later load are two reads of mutable files. Full rationale +
+the one-step-run convention: `specs/derived-runs.md`.
+
 ## Why no shipped function
 
 Canonicalization is one line; content-hashing a file set is trivial *and*

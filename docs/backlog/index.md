@@ -51,13 +51,14 @@ guard — plus an autonomous-extend integration test and the
   2026-06-11** (`../specs/lazy-launch.md`: `ensure_served` + the
   foreign-claim-scoped reap discipline + hostname-scoped `resolve` + the
   loser guard on `stopped()`; the activator daemon stays a recipe until a
-  launch-ignorant demander exists — the named promotion trigger). Remaining:
-  the **function producer + a named `Producer` Protocol** — the second `ensure` implementer
-  must be the *stepped, memoizable* function worker (mycooc-analyze is the
-  oracle), NOT the pure service (`ensure` over a service is a category
-  error). Lands together with
-  [memoizer-index-algebra](memoizer-index-algebra.md) — generalizing
-  `ensure(up_to=N)` to a (subscription-shaped) index term-algebra `ensure(I)`.
+  launch-ignorant demander exists — the named promotion trigger). **The function
+  producer RESOLVED BY DISSOLUTION 2026-06-11** (`../specs/derived-runs.md`:
+  one derived run per analyzed snapshot — full-read-set content identity,
+  the one-step-run convention, the existing `ensure`; no new library
+  surface, no named Protocol (three implementers, one unchanged seam), the
+  [index algebra](memoizer-index-algebra.md) dormant-with-trigger).
+  **Cluster 1 is CLOSED**; what remains is mycooc-side wiring
+  (`analyze_run.py --worker` + `ensure_analysis`, plan in the spec).
 - **The relational layer — the Store** (the real component), plus the
   `run_id()` *recipe* (shipped: `../specs/run-id-recipe.md`) and the
   dedup-vs-enumeration split (below), driven by [mycooc-adoption](mycooc-adoption.md),
