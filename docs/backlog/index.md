@@ -63,7 +63,10 @@ guard — plus an autonomous-extend integration test and the
 - **The relational layer — the Store** (the real component), plus the
   `run_id()` *recipe* (shipped: `../specs/run-id-recipe.md`) and the
   dedup-vs-enumeration split (below), driven by [mycooc-adoption](mycooc-adoption.md),
-  the validating use case.
+  the validating use case. **Deliberation live
+  ([store-deliberation](store-deliberation.md), 2026-06-11):** Q1
+  dissolved per-fact; content-addressed placement (E) decided; Q3
+  (membership/experiment plane) and Q4 (what runstate ships) open.
 - **[conventions-hygiene](conventions-hygiene.md)** — *mostly resolved 2026-06-02
   (Thread A):* cut phantom `lifecycle.phase` (F1), dropped dead `RunResult.elapsed`
   (F8), gave `consumed_seq` the `await_consumed` consumer (F3). Only the pid
@@ -179,6 +182,12 @@ push-based backend is the channel-postgres LISTEN/NOTIFY idea above.)
 Re-scoped 2026-05 (the reasoning is worth keeping). The headline component is
 the **Store**; the once-planned "Hasher Protocol + DefaultHasher" collapses to a
 *recipe*.
+
+> **Deliberation in progress (2026-06-11)** — see
+> [store-deliberation](store-deliberation.md): Q1 ("where does relational
+> truth live") dissolved per-fact by an adversarial panel; placement
+> decided (content-addressed `runs/<rid>/`, cells as pointers). The
+> section below is the May framing the deliberation is revising.
 
 - **Store Protocol + backends** — *the real Layer-4 work.* Relational metadata
   for runs and experiments; many-to-many `Run × Experiment` membership;
