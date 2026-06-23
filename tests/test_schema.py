@@ -17,6 +17,7 @@ import pytest
 jsonschema = pytest.importorskip("jsonschema")
 from jsonschema import Draft202012Validator  # noqa: E402
 
+from runstate import Topic  # noqa: E402
 from runstate.launcher import ThreadLauncher  # noqa: E402
 from runstate.worker import Worker  # noqa: E402
 
@@ -43,6 +44,12 @@ ALL_RESERVED_TOPICS = {
     "launcher.launched", "launcher.terminated",
     "value",
 }
+
+
+def test_topic_enum_matches_reserved_set():
+    """Topic is the single source of the reserved routing keys: it must equal the
+    set the schema scenario emits (ALL_RESERVED_TOPICS), or the two drift."""
+    assert set(map(str, Topic)) == ALL_RESERVED_TOPICS
 
 
 def _convention_for(topic):

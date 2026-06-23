@@ -23,8 +23,8 @@ import uuid
 from dataclasses import dataclass, field, replace
 from typing import Optional, Union
 
-from .observables import RunResult, peek_terminal
-from .vocabulary.payloads import Heartbeat, Nak
+from .observables import Outcome, RunResult, peek_terminal
+from .vocabulary.payloads import Heartbeat, Nak, Topic
 
 
 @dataclass(frozen=True)
@@ -112,7 +112,7 @@ class Watcher:
             r = peek_terminal(st.channel)
             if r is not None:
                 return replace(r, run_id=run_id)
-            return RunResult(outcome="presumed_dead", reason="probed_dead", run_id=run_id)
+            return RunResult(outcome=Outcome.PRESUMED_DEAD, reason="probed_dead", run_id=run_id)
 
         # tier 4: heartbeat staleness. The clock runs from when we began watching
         # (last_heartbeat_at seeds at registration, then tracks the latest beacon),
@@ -126,7 +126,7 @@ class Watcher:
         beacon_age = self._now() - st.last_heartbeat_at
         if self._hb_timeout is not None and beacon_age > self._hb_timeout:
             return RunResult(
-                outcome="presumed_dead", reason="heartbeat_stale", run_id=run_id
+                outcome=Outcome.PRESUMED_DEAD, reason="heartbeat_stale", run_id=run_id
             )
 
         return Running(step=st.last_step, beacon_age=beacon_age)
@@ -199,7 +199,7 @@ class Watcher:
         rid = request_id if request_id is not None else f"broadcast-{uuid.uuid4().hex}"
         for st in self._runs.values():
             st.channel.send(
-                dict(schedule), topic="control.subscribe", name=name, request_id=rid
+                dict(schedule), topic=Topic.CONTROL_SUBSCRIBE, name=name, request_id=rid
             )
         return rid
 
@@ -233,7 +233,7 @@ class Watcher:
         return out
 
     def _note_heartbeat(self, st: _RunState) -> None:
-        hb = st.channel.latest("lifecycle.heartbeat")
+        hb = st.channel.latest(Topic.LIFECYCLE_HEARTBEAT)
         if hb is not None and hb.seq > st.last_hb_seq:
             st.last_hb_seq = hb.seq
             st.last_heartbeat_at = self._now()
@@ -260,7 +260,7 @@ def await_consumed(channel, seq, *, request_id=None, timeout=None,
         # Positional: only a nak FOLLOWING the request answers it.
         if request_id is None:
             return None
-        naks = [e for e in channel.read(after=seq, topics=["lifecycle.nak"])
+        naks = [e for e in channel.read(after=seq, topics=[Topic.LIFECYCLE_NAK])
                 if e.request_id == request_id]
         return Nak(**naks[-1].body) if naks else None
 
@@ -272,7 +272,7 @@ def await_consumed(channel, seq, *, request_id=None, timeout=None,
         nak = _answer()
         if nak is not None:
             return nak
-        hb = channel.latest("lifecycle.heartbeat")
+        hb = channel.latest(Topic.LIFECYCLE_HEARTBEAT)
         if hb is not None and Heartbeat(**hb.body).consumed_seq >= seq:
             # Re-check once: the nak and its heartbeat may both have landed
             # between this iteration's two reads.
@@ -284,8 +284,8 @@ def await_consumed(channel, seq, *, request_id=None, timeout=None,
         term = peek_terminal(channel)
         if term is not None:
             last_terminal = max(
-                (e.seq for e in (channel.latest("lifecycle.stopped"),
-                                 channel.latest("launcher.terminated"))
+                (e.seq for e in (channel.latest(Topic.LIFECYCLE_STOPPED),
+                                 channel.latest(Topic.LAUNCHER_TERMINATED))
                  if e is not None),
                 default=0,
             )

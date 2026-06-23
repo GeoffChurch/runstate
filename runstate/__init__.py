@@ -15,6 +15,7 @@ from .launcher import (Launcher, LaunchHandle, LocalLauncher, ThreadLauncher,
                        ensure_served, relaunch_if_needed)
 from .memoizer import ensure, foreign_episode, history, launch_producer
 from .observables import (
+    Outcome,
     RunResult,
     latest_episode,
     live_demand,
@@ -31,6 +32,7 @@ from .vocabulary.payloads import (
     Started,
     Stopped,
     Terminated,
+    Topic,
     Value,
 )
 from .sweep import Variant, sweep
@@ -78,6 +80,7 @@ __all__ = [
     "RunStatus",
     "Running",
     "RunResult",
+    "Outcome",
     "peek_terminal",
     "latest_episode",
     "live_demand",
@@ -93,6 +96,8 @@ __all__ = [
     "foreign_episode",
     "relaunch_if_needed",
     "ensure_served",
+    # convention vocabulary
+    "Topic",
     # convention bodies (typed; serialize via dataclasses.asdict, parse via Cls(**body))
     "Value",
     "Started",

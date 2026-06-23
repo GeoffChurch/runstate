@@ -32,7 +32,7 @@ def train(channel, *, run_id, up_to, ckpt_dir, lr):
 def producer_for(launcher, ckpt_dir, *, lr):
     rid = run_id({"lr": lr})                       # excludes step target: the extend axis
     launcher.open_channel(rid).send(
-        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="obs"
+        {"every": {"step": 1}}, topic=runstate.Topic.CONTROL_SUBSCRIBE, name="loss", request_id="obs"
     )
     variant = runstate.Variant(
         rid, train, {"kwargs": {"run_id": rid, "ckpt_dir": ckpt_dir, "lr": lr}}

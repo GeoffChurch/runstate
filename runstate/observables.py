@@ -23,11 +23,32 @@ stateful Watcher's.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Optional
 
-from .vocabulary.payloads import Stopped, Terminated
+from .vocabulary.payloads import Stopped, Terminated, Topic
 from .vocabulary.handle import resolve
 from .vocabulary.schedule import references_time
+
+
+class Outcome(StrEnum):
+    """The CLOSED, normalized terminal verdict — the codomain of ``RunResult.outcome``.
+    StrEnum: each member IS its wire string (``Outcome.COMPLETED == "completed"``), so it
+    serializes byte-identically and compares equal to the bare strings on existing logs —
+    zero channel migration. The single authoritative home for the vocabulary: peek_terminal,
+    the Watcher, sweep, and the memoizer reference these members instead of re-spelling the
+    literals (which had drifted into four uncoordinated copies)."""
+    COMPLETED = "completed"
+    PREEMPTED = "preempted"
+    ERRORED = "errored"
+    KILLED = "killed"
+    PRESUMED_DEAD = "presumed_dead"
+
+    @classmethod
+    def failures(cls) -> frozenset["Outcome"]:
+        """The death outcomes (the worker died, not a clean finish/preempt) — the subset
+        sweep and the memoizer stop-and-surface on, spelled once here."""
+        return frozenset({cls.ERRORED, cls.KILLED, cls.PRESUMED_DEAD})
 
 
 @dataclass(frozen=True)
@@ -41,7 +62,7 @@ class RunResult:
     # deliberately no ``success`` bool: it is a pure projection of ``outcome`` that
     # would bake one contested policy ("is a clean non-completion a success?") into
     # the producer; consumers apply their own (e.g. sweep fails on the bottom three).
-    outcome: str  # "completed" | "preempted" | "errored" | "killed" | "presumed_dead"
+    outcome: Outcome  # the closed verdict vocabulary (see Outcome above)
     reason: str
     # run_id is stamped by the Watcher (which knows the run); peek_terminal works
     # from a bare channel and leaves it None.
@@ -68,7 +89,7 @@ def latest_episode(channel):
     read-side derivation, not a record) — named in the one place that changes
     if explicit episode markers ever land, instead of being re-derived (and
     misapplied — audit F7) by every consumer."""
-    return channel.latest("lifecycle.started")
+    return channel.latest(Topic.LIFECYCLE_STARTED)
 
 
 def live_episode(channel) -> Optional[str]:
@@ -78,7 +99,7 @@ def live_episode(channel) -> Optional[str]:
     started = latest_episode(channel)
     if started is None:
         return None
-    stopped = channel.latest("lifecycle.stopped")
+    stopped = channel.latest(Topic.LIFECYCLE_STOPPED)
     if stopped is not None and stopped.seq > started.seq:
         return None
     if resolve(started.body["handle"]) is False:
@@ -111,25 +132,25 @@ def peek_terminal(channel) -> Optional[RunResult]:
     episode's stop, not an earlier episode's). Same guard applies to
     ``launcher.terminated`` vs ``launcher.launched``.
     """
-    stopped = _terminal_unless_followed(channel, "lifecycle.stopped", "lifecycle.started")
+    stopped = _terminal_unless_followed(channel, Topic.LIFECYCLE_STOPPED, Topic.LIFECYCLE_STARTED)
     if stopped is not None:
         s = Stopped(**stopped.body)
         if s.error is not None:          # NB: `is not None`, not truthiness — "" still errors
-            outcome = "errored"
+            outcome = Outcome.ERRORED
         elif s.completed:
-            outcome = "completed"
+            outcome = Outcome.COMPLETED
         else:
-            outcome = "preempted"
+            outcome = Outcome.PREEMPTED
         return RunResult(outcome=outcome, reason=outcome, error=s.error, final_step=s.final_step)
-    term = _terminal_unless_followed(channel, "launcher.terminated", "launcher.launched")
+    term = _terminal_unless_followed(channel, Topic.LAUNCHER_TERMINATED, Topic.LAUNCHER_LAUNCHED)
     if term is not None:
         t = Terminated(**term.body)
         if t.reason == "killed":
-            outcome = "killed"
+            outcome = Outcome.KILLED
         elif t.exit_code == 0:
-            outcome = "completed"
+            outcome = Outcome.COMPLETED
         else:
-            outcome = "errored"
+            outcome = Outcome.ERRORED
         return RunResult(outcome=outcome, reason=t.reason)
     return None
 
@@ -160,14 +181,14 @@ def live_demand(channel) -> list:
     pending: dict = {}      # request_id -> the latest unanswered subscribe
     starteds: list = []
     for e in channel.read():
-        if e.topic == "lifecycle.started":
+        if e.topic == Topic.LIFECYCLE_STARTED:
             starteds.append(e.seq)
             continue
         if e.request_id is None:
             continue
-        if e.topic == "control.subscribe":
+        if e.topic == Topic.CONTROL_SUBSCRIBE:
             pending[e.request_id] = e
-        elif e.topic in ("control.unsubscribe", "lifecycle.nak"):
+        elif e.topic in (Topic.CONTROL_UNSUBSCRIBE, Topic.LIFECYCLE_NAK):
             pending.pop(e.request_id, None)
     latest = starteds[-1] if starteds else 0
     return sorted(
@@ -186,10 +207,10 @@ def progress(channel) -> Optional[int]:
     of two registers — under an episode rewind the latest heartbeat already
     reflects the resumed branch."""
     steps = []
-    hb = channel.latest("lifecycle.heartbeat")
+    hb = channel.latest(Topic.LIFECYCLE_HEARTBEAT)
     if hb is not None and hb.body.get("step") is not None:
         steps.append(hb.body["step"])
-    stopped = channel.latest("lifecycle.stopped")
+    stopped = channel.latest(Topic.LIFECYCLE_STOPPED)
     if stopped is not None and stopped.body.get("final_step") is not None:
         steps.append(stopped.body["final_step"])
     return max(steps) if steps else None
@@ -203,7 +224,7 @@ def _value_points(channel):
     on any topic. Private: the designated escape hatch if a custom-fold
     consumer ever appears; until then the bring-your-own-fold seam is the
     substrate itself (``read`` + a loop)."""
-    for e in channel.read(topics=["value"]):
+    for e in channel.read(topics=[Topic.VALUE]):
         if e.name is None or "value" not in e.body or e.body.get("step") is None:
             continue
         yield e.name, e.body["step"], e.body["value"]

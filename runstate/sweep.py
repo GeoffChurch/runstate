@@ -12,14 +12,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
-from .observables import peek_terminal
+from .observables import Outcome, peek_terminal
 from .watcher import Watcher
 
 # Outcomes sweep treats as failure for stop_on_failure. A clean "preempted"
 # (commanded / worker-chosen) and "completed" are NOT failures — this is exactly
 # the consumer-side success policy RunResult deliberately leaves to the caller
-# (instead of a baked-in `success` bool).
-_FAILURES = frozenset({"errored", "killed", "presumed_dead"})
+# (instead of a baked-in `success` bool). The set is the closed Outcome vocabulary's
+# death subset — spelled once on the enum, not re-listed here.
+_FAILURES = Outcome.failures()
 
 
 @dataclass(frozen=True)

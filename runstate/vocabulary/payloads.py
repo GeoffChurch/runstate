@@ -16,7 +16,30 @@ here -- it is a condition algebra, modelled in ``schedule.py``.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, ClassVar, Optional
+
+
+class Topic(StrEnum):
+    """The CLOSED, protocol-owned routing keys (``Envelope.topic``) — the complete
+    enumerable set, including the body-less ``control.*`` verbs. StrEnum: each member
+    IS its wire string (``Topic.VALUE == "value"``), so it serializes byte-identically
+    and a read-back plain-str topic compares equal — zero channel migration. The
+    ``name`` axis stays open/app-owned (the consumer's concern, not the protocol's).
+    Each spelling is defined exactly once — here, on the ``Topic`` member; a
+    body-bearing topic's ``<Payload>.TOPIC`` is a typed alias of that same member
+    (``Stopped.TOPIC is Topic.LIFECYCLE_STOPPED``). Every internal emit/read site
+    routes on ``Topic.X`` / ``<Payload>.TOPIC``, never a bare literal."""
+    VALUE = "value"
+    LIFECYCLE_STARTED = "lifecycle.started"
+    LIFECYCLE_HEARTBEAT = "lifecycle.heartbeat"
+    LIFECYCLE_STOPPED = "lifecycle.stopped"
+    LIFECYCLE_NAK = "lifecycle.nak"
+    LAUNCHER_LAUNCHED = "launcher.launched"
+    LAUNCHER_TERMINATED = "launcher.terminated"
+    CONTROL_STOP = "control.stop"
+    CONTROL_SUBSCRIBE = "control.subscribe"
+    CONTROL_UNSUBSCRIBE = "control.unsubscribe"
 
 
 @dataclass(frozen=True)
@@ -26,7 +49,7 @@ class Value:
     value: Any
     step: Optional[int]  # present-nullable: null when the worker is stepless
     t: Optional[float]  # absolute wall-clock seconds (the real-time axis); null = unstamped
-    TOPIC: ClassVar[str] = "value"
+    TOPIC: ClassVar[str] = Topic.VALUE
 
 
 @dataclass(frozen=True)
@@ -36,7 +59,7 @@ class Started:
     handle: str
     hostname: Optional[str]
     attached_at: Optional[float]
-    TOPIC: ClassVar[str] = "lifecycle.started"
+    TOPIC: ClassVar[str] = Topic.LIFECYCLE_STARTED
 
 
 @dataclass(frozen=True)
@@ -45,7 +68,7 @@ class Heartbeat:
 
     step: Optional[int]
     consumed_seq: int
-    TOPIC: ClassVar[str] = "lifecycle.heartbeat"
+    TOPIC: ClassVar[str] = Topic.LIFECYCLE_HEARTBEAT
 
 
 @dataclass(frozen=True)
@@ -58,7 +81,7 @@ class Stopped:
     completed: bool
     error: Optional[str]
     final_step: Optional[int]
-    TOPIC: ClassVar[str] = "lifecycle.stopped"
+    TOPIC: ClassVar[str] = Topic.LIFECYCLE_STOPPED
 
     def __post_init__(self):
         # completed ⟹ error is None: keeps the two content fields non-overlapping, so
@@ -73,7 +96,7 @@ class Nak:
 
     reason: str  # "malformed" | "unsatisfiable" | "unsupported"
     message: str
-    TOPIC: ClassVar[str] = "lifecycle.nak"
+    TOPIC: ClassVar[str] = Topic.LIFECYCLE_NAK
 
 
 @dataclass(frozen=True)
@@ -82,7 +105,7 @@ class Launched:
 
     handle: str
     status: str = "running"
-    TOPIC: ClassVar[str] = "launcher.launched"
+    TOPIC: ClassVar[str] = Topic.LAUNCHER_LAUNCHED
 
 
 @dataclass(frozen=True)
@@ -92,7 +115,7 @@ class Terminated:
     reason: str  # "exited" | "killed"
     exit_code: Optional[int]
     signal: Optional[int]
-    TOPIC: ClassVar[str] = "launcher.terminated"
+    TOPIC: ClassVar[str] = Topic.LAUNCHER_TERMINATED
 
     def __post_init__(self):
         # Structural coupling: the schema enforces exited(exit_code) XOR

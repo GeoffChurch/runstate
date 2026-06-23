@@ -24,7 +24,14 @@ import sys
 import time
 from pathlib import Path
 
-from runstate import LocalLauncher, ensure_served, live_demand, open_channel, peek_terminal
+from runstate import (
+    LocalLauncher,
+    Topic,
+    ensure_served,
+    live_demand,
+    open_channel,
+    peek_terminal,
+)
 
 RUN = "monitor"
 ROOT = Path(__file__).parent / ".runs"
@@ -34,7 +41,7 @@ SERVICE = Path(__file__).parent / "service.py"
 
 def demand(ch, rid):
     return ch.send({"every": {"time_seconds": 0.5}, "until": {"time_seconds": LEASE}},
-                   topic="control.subscribe", name="load1", request_id=rid)
+                   topic=Topic.CONTROL_SUBSCRIBE, name="load1", request_id=rid)
 
 
 def watch_until_idle(ch, launcher):
@@ -44,7 +51,7 @@ def watch_until_idle(ch, launcher):
         launcher.reap()                      # the activator discipline
         if not live_demand(ch) and peek_terminal(ch) is not None:
             return
-        e = ch.latest("value", "load1")
+        e = ch.latest(Topic.VALUE, "load1")
         if e is not None:
             print(f"[driver] load1 = {e.body['value']:.2f}")
         time.sleep(0.4)
@@ -63,14 +70,14 @@ def main():
         watch_until_idle(ch, launcher)       # lease lapses -> careful death
         print(f"[driver] episode 1 over: terminal={peek_terminal(ch).outcome}, "
               f"expiry records="
-              f"{[u.request_id for u in ch.read(topics=['control.unsubscribe'])]}")
+              f"{[u.request_id for u in ch.read(topics=[Topic.CONTROL_UNSUBSCRIBE])]}")
 
         # ----- episode 2: re-demand re-wakes the SAME run -----
         demand(ch, "dash-2")
         h = ensure_served(launcher, RUN, [sys.executable, str(SERVICE)])
         print(f"[driver] re-wake: {'launched' if h else 'already served'}")
         watch_until_idle(ch, launcher)
-        starteds = ch.read(topics=["lifecycle.started"])
+        starteds = ch.read(topics=[Topic.LIFECYCLE_STARTED])
         print(f"[driver] episodes on one run: {len(starteds)}; "
               f"live demand now: {live_demand(ch)}")
         print(f"[driver] terminal: {peek_terminal(ch)}")

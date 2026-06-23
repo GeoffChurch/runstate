@@ -26,7 +26,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Optional, Protocol
 
 from .channel import open_channel
-from .vocabulary.payloads import Launched, Terminated
+from .vocabulary.payloads import Launched, Terminated, Topic
 from .vocabulary.handle import local_handle
 from .observables import live_demand, live_episode
 
@@ -114,7 +114,7 @@ class ThreadLauncher:
         kwargs = kwargs or {}
         channel = self.open_channel(run_id)
         handle = local_handle()
-        channel.send(asdict(Launched(handle=handle)), topic="launcher.launched")
+        channel.send(asdict(Launched(handle=handle)), topic=Launched.TOPIC)
         state: dict = {"exc": None}
 
         def _run():
@@ -124,12 +124,12 @@ class ThreadLauncher:
                 state["exc"] = exc
                 channel.send(
                     asdict(Terminated(reason="exited", exit_code=1, signal=None)),
-                    topic="launcher.terminated",
+                    topic=Terminated.TOPIC,
                 )
             else:
                 channel.send(
                     asdict(Terminated(reason="exited", exit_code=0, signal=None)),
-                    topic="launcher.terminated",
+                    topic=Terminated.TOPIC,
                 )
 
         thread = threading.Thread(target=_run, daemon=True)
@@ -197,7 +197,7 @@ class _LocalHandle:
             body = asdict(Terminated(reason="killed", signal=-rc, exit_code=None))
         else:
             body = asdict(Terminated(reason="exited", exit_code=rc, signal=None))
-        self.channel.send(body, topic="launcher.terminated")
+        self.channel.send(body, topic=Terminated.TOPIC)
 
     def _claimed_away(self) -> bool:
         """True iff this child never claimed and a FOREIGN claim follows its
@@ -205,7 +205,7 @@ class _LocalHandle:
         being the episode."""
         mine = foreign = False
         for e in self.channel.read(after=self.launched_seq or 0,
-                                   topics=["lifecycle.started"]):
+                                   topics=[Topic.LIFECYCLE_STARTED]):
             if e.body.get("handle") == self.handle:
                 mine = True
             else:
@@ -244,7 +244,7 @@ class LocalLauncher:
         }
         proc = subprocess.Popen(cmd, env=child_env)
         handle = f"local://{socket.gethostname()}/{proc.pid}"
-        seq = channel.send(asdict(Launched(handle=handle)), topic="launcher.launched")
+        seq = channel.send(asdict(Launched(handle=handle)), topic=Launched.TOPIC)
         h = _LocalHandle(run_id=run_id, channel=channel, handle=handle, _proc=proc,
                          launched_seq=seq)
         self._handles.append(h)

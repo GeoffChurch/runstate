@@ -13,7 +13,7 @@ from __future__ import annotations
 import time
 from dataclasses import asdict
 
-from .vocabulary.payloads import Heartbeat, Nak, Started, Stopped, Value
+from .vocabulary.payloads import Heartbeat, Nak, Started, Stopped, Topic, Value
 from .vocabulary.handle import local_handle
 from .vocabulary.schedule import (
     Subscription,
@@ -51,7 +51,7 @@ class Worker:
             # (specs/stop-discharge.md). From the same read as the claim, so it
             # is exact: the CAS serializes the claim against concurrent appends.
             self._discharge_floor = max(
-                (e.seq for e in envs if e.topic == "lifecycle.stopped"), default=0
+                (e.seq for e in envs if e.topic == Topic.LIFECYCLE_STOPPED), default=0
             )
             # The positional answer fold (specs/service-worker.md): a
             # control.subscribe is live until an unsubscribe or nak bearing
@@ -61,20 +61,20 @@ class Worker:
             self._answers: dict = {}
             for e in envs:
                 if e.request_id is not None and e.topic in (
-                    "control.unsubscribe", "lifecycle.nak"
+                    Topic.CONTROL_UNSUBSCRIBE, Topic.LIFECYCLE_NAK
                 ):
                     self._answers.setdefault(e.request_id, []).append(e.seq)
             # Prior episodes' boundaries, for the time-lease discharge
             # (specs/time-lease-boundary.md) -- same read, zero extra I/O.
             self._started_seqs = [
-                e.seq for e in envs if e.topic == "lifecycle.started"
+                e.seq for e in envs if e.topic == Topic.LIFECYCLE_STARTED
             ]
             if live_episode(self._ch) is not None:
                 self._lost = True
                 break
             claim = self._ch.send(
                 asdict(Started(handle=local_handle(), hostname=None, attached_at=self._now())),
-                topic="lifecycle.started",
+                topic=Started.TOPIC,
                 expected_seq=last,
             )
             if claim is not None:
@@ -156,7 +156,7 @@ class Worker:
         self._drain_control(step)
         self._service(step)
         self._ch.send(asdict(Heartbeat(step=step, consumed_seq=self._cursor)),
-                      topic="lifecycle.heartbeat")
+                      topic=Heartbeat.TOPIC)
         return self._stop_decision(step)
 
     @property
@@ -207,7 +207,7 @@ class Worker:
                 return False               # new mail — keep serving
             body = asdict(Stopped(completed=False, error=None,
                                   final_step=self._last_step))
-            if self._ch.send(body, topic="lifecycle.stopped",
+            if self._ch.send(body, topic=Stopped.TOPIC,
                              expected_seq=observed) is not None:
                 self._stopped = True       # the idempotent latch; __exit__ no-ops
                 return True
@@ -228,11 +228,14 @@ class Worker:
         if final_step is None:
             final_step = self._last_step   # auto-fill from the last yielded step
         body = asdict(Stopped(completed=completed, error=error, final_step=final_step))
-        self._ch.send(body, topic="lifecycle.stopped")
+        self._ch.send(body, topic=Stopped.TOPIC)
 
     # ----- internals -----
 
     def _drain_control(self, step) -> None:
+        # "control.>" is a read-glob (the substrate expands it to the control.*
+        # family), not a wire topic -- it stays a bare string; there is no Topic
+        # member for a query pattern.
         for e in self._ch.read(after=self._cursor, topics=["control.>"]):
             self._cursor = e.seq
             # One bad control request must never be fatal: refuse it with a nak
@@ -245,7 +248,7 @@ class Worker:
                 self._nak(e.request_id, "malformed", str(exc))
 
     def _handle_control(self, e, step) -> None:
-        if e.topic == "control.subscribe":
+        if e.topic == Topic.CONTROL_SUBSCRIBE:
             if e.request_id is None:
                 self._nak(None, "malformed", "subscribe requires a request_id")
             elif any(a > e.seq for a in self._answers.get(e.request_id, ())):
@@ -282,12 +285,12 @@ class Worker:
                     e.name,
                     Subscription(e.body, registered_at=self._now()),
                 )
-        elif e.topic == "control.unsubscribe":
+        elif e.topic == Topic.CONTROL_UNSUBSCRIBE:
             if e.request_id is None:
                 self._nak(None, "malformed", "unsubscribe requires a request_id")
             else:
                 self._subs.pop(e.request_id, None)
-        elif e.topic == "control.stop":
+        elif e.topic == Topic.CONTROL_STOP:
             if e.seq < self._discharge_floor:
                 # Already answered: a lifecycle.stopped follows this stop on
                 # the log, discharging it. History, never again input -- and
@@ -324,7 +327,7 @@ class Worker:
     def _nak(self, request_id, reason: str, message: str) -> None:
         self._ch.send(
             asdict(Nak(reason=reason, message=message)),
-            topic="lifecycle.nak",
+            topic=Nak.TOPIC,
             request_id=request_id,
         )
 
@@ -345,7 +348,7 @@ class Worker:
                 try:
                     self._ch.send(
                         asdict(Value(value=value, step=step, t=self._now())),
-                        topic="value",
+                        topic=Value.TOPIC,
                         name=name,
                         request_id=request_id,
                     )
@@ -366,7 +369,7 @@ class Worker:
                 # stopped completing stop -- lands on the log before memory
                 # changes, so a crash between the two re-derives correctly
                 # (specs/service-worker.md).
-                self._ch.send({}, topic="control.unsubscribe", request_id=request_id)
+                self._ch.send({}, topic=Topic.CONTROL_UNSUBSCRIBE, request_id=request_id)
                 del self._subs[request_id]
 
     def _stop_decision(self, step) -> bool:

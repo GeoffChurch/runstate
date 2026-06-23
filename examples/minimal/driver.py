@@ -30,7 +30,7 @@ def main():
         ch = launcher.open_channel(run_id)
         ch.send(
             {"every": {"step": 1}},
-            topic="control.subscribe",
+            topic=runstate.Topic.CONTROL_SUBSCRIBE,
             name="loss",
             request_id="driver",
         )
@@ -45,12 +45,13 @@ def main():
 
         def on_event(rid, e):
             nonlocal stop_sent
-            if e.topic == "value" and e.request_id == "driver":
+            if e.topic == runstate.Topic.VALUE and e.request_id == "driver":
                 loss = e.body["value"]
                 print(f"[driver] step {e.body['step']:>2} loss {loss:.4f}")
                 if loss > 100 and not stop_sent:  # divergence preempt
                     ch.send(
                         {"from": {"step": 0}},
+                        # the wire is just strings -- Topic.CONTROL_STOP and "control.stop" are interchangeable
                         topic="control.stop",
                         request_id="driver-stop",
                     )

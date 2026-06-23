@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import time
 
+from .vocabulary.payloads import Topic
 from .vocabulary.schedule import Subscription, satisfied
 from .launcher import relaunch_if_needed
-from .observables import live_episode, peek_terminal, progress
+from .observables import Outcome, live_episode, peek_terminal, progress
 
 
 class _ForeignEpisode:
@@ -117,7 +118,7 @@ def history(channel, name, schedule: dict) -> list[dict]:
     clock cannot advance, so *time*-keyed conditions are inert for it (``step``
     conditions are unaffected)."""
     by_step: dict = {}
-    for e in channel.read(topics=["value"], name=name):
+    for e in channel.read(topics=[Topic.VALUE], name=name):
         b = e.body
         s = b["step"]
         if s in by_step and by_step[s]["value"] != b["value"]:
@@ -131,7 +132,7 @@ def history(channel, name, schedule: dict) -> list[dict]:
         raise ValueError("history() requires stepped emission; a value point has step=None")
     points = [by_step[s] for s in sorted(by_step)]
 
-    started = channel.read(topics=["lifecycle.started"], limit=1)
+    started = channel.read(topics=[Topic.LIFECYCLE_STARTED], limit=1)
     epoch = (
         started[0].body["attached_at"]
         if started and started[0].body.get("attached_at") is not None
@@ -151,9 +152,9 @@ def history(channel, name, schedule: dict) -> list[dict]:
 
 # outcomes that mean the worker died, not finished -- stop re-driving and surface.
 # (presumed_dead is inert here: ensure's only verdict source is peek_terminal,
-# which never returns it -- it's the Watcher's inference tier. Kept for parity
-# with the closed RunResult.outcome vocabulary / sweep's _FAILURES.)
-_FAILURES = frozenset({"errored", "killed", "presumed_dead"})
+# which never returns it -- it's the Watcher's inference tier. The death subset is
+# the closed Outcome vocabulary's, spelled once on the enum, shared with sweep.)
+_FAILURES = Outcome.failures()
 
 
 def _progress(channel) -> int:
@@ -170,7 +171,7 @@ def _elapsed(channel, clock) -> float:
     gap-inclusive; no wire dependency -- see the spec's clock rationale).
     Returns 0.0 before the run has started (no epoch yet -> time conditions
     are inert until the run begins)."""
-    started = channel.read(topics=["lifecycle.started"], limit=1)
+    started = channel.read(topics=[Topic.LIFECYCLE_STARTED], limit=1)
     if not started or started[0].body.get("attached_at") is None:
         return 0.0
     return clock() - started[0].body["attached_at"]
@@ -231,7 +232,7 @@ def ensure(producer, name, *, until, poll_interval=0.01, sleep=time.sleep,
     dense = {"every": {"step": 1}, "until": until}
     result = peek_terminal(channel)
     if _satisfied(channel, until, clock=clock) or (
-        result is not None and result.outcome == "completed"):
+        result is not None and result.outcome == Outcome.COMPLETED):
         return history(channel, name, dense)
 
     while not _satisfied(channel, until, clock=clock):
@@ -255,7 +256,7 @@ def ensure(producer, name, *, until, poll_interval=0.01, sleep=time.sleep,
             raise RuntimeError(
                 f"run {producer.run_id!r} failed: {result.outcome}/{result.reason}"
             )
-        if result is not None and result.outcome == "completed":
+        if result is not None and result.outcome == Outcome.COMPLETED:
             return history(channel, name, dense)
         # The no-progress guard is OWN-SPAWN-scoped: a foreign episode ending
         # without progress is no evidence a relaunch would spin (we never
