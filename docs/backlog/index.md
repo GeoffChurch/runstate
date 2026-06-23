@@ -46,6 +46,8 @@ guard — plus an autonomous-extend integration test and the
 
 - **[mycooc-migration-audit](mycooc-migration-audit.md)** — findings from the *completed* mycooc migration (first end-to-end consumer) + a follow-up audit. **✅ The VERIFIED P0 CAS-atomicity bug (F1) is fixed** (2026-06-07; fix superseded 2026-06-09 by the atomic-by-construction form — mechanism + corrected diagnosis live in the file's F1). **✅ The lost/clobbered `control.stop` (F2/F3) is fixed** (2026-06-09 — [stop-discharge](../specs/stop-discharge.md)). **✅ The reader gaps (F5–F8) are shipped** (2026-06-10 — [observables](../specs/observables.md): `value_series`/`progress`/`latest_episode`/`handle_pid`; mycooc deletes its hand-rolled files in one sweep). Remaining in the file: F4 (channel lifecycle/`close`) + the F9/F10 minors.
 - **[ensure-redrive-recoverable-terminations](ensure-redrive-recoverable-terminations.md)** — let `ensure` re-drive killed/timed-out runs that made progress, instead of raising; subsumes the consumer's custom resume loop. Surfaced by mycooc Phase-4 dogfood (the `_SyncHandle` terminal-synthesis and `_run_one_chunk` resume loop are the dual of this missing feature). Not bit-exact-testable; needs a mock-producer approach.
+- **[ensure-await-completion](ensure-await-completion.md)** — `ensure(await_complete=True)`: gate on the producer's `completed` verdict, not the step/time window — for a consumer that depends on a post-terminal off-channel artifact (the two-channel-publish race). ~8 lines in `memoizer.py`, **no wire change**; consults the verdict plane `preempted-vs-completed` already wired in. Sibling knob to ensure-redrive. Rejects the contrast case (a `{completed:true}` *condition-algebra* term — wrong plane). Surfaced by the translation dogfood; **not urgent** (1 repo, 2 instances, 1 already mitigated).
+- **[wal-liveness-mtime](wal-liveness-mtime.md)** — [minor · observability] freshness/liveness read from the main-`.db` mtime is **stale under WAL** (mtime only moves on checkpoint; per-step writes live in the `-wal` sidecar), so a "live pulse" sawtooths / reads stale on a healthy run. Surfaced by mycooc `--status` (verified: 222 s main-db mtime lag vs a 1 s `-wal`); fixed consumer-side via sidecar-max mtime. Optional runstate-side `freshness()`/`last_write_ts` helper so the right thing is the easy thing.
 - **Cluster 1, remaining halves** — the **service worker SHIPPED 2026-06-10**
   (`../specs/service-worker.md`) and **episode-scoped time-leases SHIPPED
   2026-06-11** (`../specs/time-lease-boundary.md` — the boundary `started`
@@ -250,6 +252,29 @@ reasoning, listed here so they're discoverable as work (cross-ref, not moved):
   `consumed_seq` given the `await_consumed` consumer. **F9 deferred:** the pid
   `?start=` disambiguator (rationale in the file). The basis itself audited as
   largely tight.
+
+## Exogenous-commit audit (2026-06-20) — deferred items
+
+The audit of the two exogenous commits (`sqlite: env-configurable journal mode`
+and `Outcome/Topic StrEnums`) actioned its findings into the rewritten commits;
+these were deliberately deferred or declined:
+
+- **DELETE-mode busy-retry (J3)** — under `journal_mode=DELETE`, `read`/`latest`
+  AND the unconditional-append branch of `send` lack the `SQLITE_BUSY` busy-retry
+  the CAS path has, so a writer holding the lock past `busy_timeout` surfaces
+  `database is locked` rather than waiting. Only reproduced with a *pathological
+  unpaced* worker (a realistic paced worker never starved it, and the conformance
+  suite runs clean under DELETE), so deferred — take it up across read **and**
+  unconditional-write if a realistic contention case ever reproduces it.
+- **`reason=str(outcome)` (V2)** — `peek_terminal`'s lifecycle tier assigns an
+  `Outcome` to the `str`-typed `RunResult.reason`; harmless (StrEnum is a str) and
+  tested, so deferred rather than churned.
+- **`Topic` placement (V3)** — `Topic` lives in `vocabulary/payloads.py` (a body
+  module) though it is routing vocabulary; a `vocabulary/topics.py` would be the
+  orthogonal home. Marginal; deferred.
+- **Wontfix-by-design:** the empty-`RUNSTATE_SQLITE_JOURNAL_MODE` `ValueError`
+  (J6 — fail-loud is correct), and the `"control.>"` read-glob staying a bare
+  literal rather than a `Topic` member (V5 — a glob is not a wire topic).
 
 ## Ecosystem adapters (separate packages)
 
