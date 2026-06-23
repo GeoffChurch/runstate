@@ -463,7 +463,7 @@ def test_ghost_relaunch_bound(open_channel):
 def test_ensure_served_gates(open_channel, tmp_path):
     # demand + no live episode -> launch; no demand -> None; already live -> None.
     import sys
-    from runstate import LocalLauncher, ensure_served, peek_terminal
+    from runstate import LocalLauncher, ensure_served, live_episode, peek_terminal
 
     root = tmp_path / "runs"
     root.mkdir()
@@ -471,22 +471,31 @@ def test_ensure_served_gates(open_channel, tmp_path):
     with launcher:
         # no demand at all -> no wake, even with no episode
         assert ensure_served(launcher, "svc", [sys.executable, "-c", "pass"]) is None
-        # demand -> wake
+        # demand -> wake. The worker PACES its serve() loop: an unpaced loop
+        # hammers heartbeat writes and, under DELETE's serialized writes, starves
+        # other writers (the control.stop below). The long lease keeps the episode
+        # live through the assertions (a short one can lapse mid-test under load,
+        # and ensure_served is best-effort -- it would then race a doomed second
+        # spawn); we end the worker explicitly with control.stop instead.
         ch = launcher.open_channel("svc")
-        ch.send({"every": {"time_seconds": 0.2}, "until": {"time_seconds": 2.0}},
+        ch.send({"every": {"time_seconds": 0.2}, "until": {"time_seconds": 30.0}},
                 topic="control.subscribe", name="load", request_id="d1")
-        body = ("import runstate\n"
+        body = ("import runstate, time\n"
                 "with runstate.Worker(runstate.attach()) as w:\n"
                 "    for _ in w.serve():\n"
-                "        w.set('load', 1.0)\n")
+                "        w.set('load', 1.0)\n"
+                "        time.sleep(0.05)\n")
         h = ensure_served(launcher, "svc", [sys.executable, "-c", body])
         assert h is not None
-        # already being served -> None (the child claims fast; poll until it has)
+        # already being served -> None: wait until the episode is actually LIVE
+        # (not merely claimed) -- the condition ensure_served gates on.
         import time
         deadline = time.time() + 10
-        while time.time() < deadline and ch.latest("lifecycle.started") is None:
+        while time.time() < deadline and live_episode(ch) is None:
             time.sleep(0.05)
+        assert live_episode(ch) is not None
         assert ensure_served(launcher, "svc", [sys.executable, "-c", "pass"]) is None
+        ch.send({}, topic="control.stop", request_id="stop1")   # end it promptly
         h.wait(timeout=15)
     assert peek_terminal(launcher.open_channel("svc")) is not None
 
