@@ -256,6 +256,43 @@ def test_init_retries_busy_wal_conversion(tmp_path, monkeypatch):
         ch.close()
 
 
+def test_journal_mode_defaults_to_wal(tmp_path, monkeypatch):
+    """sqlite-specific: with no override the channel opens WAL (fast local
+    concurrent reads -- the orchestrator polls while the worker writes)."""
+    from runstate.channel.sqlite import SqliteChannel
+
+    monkeypatch.delenv("RUNSTATE_SQLITE_JOURNAL_MODE", raising=False)
+    ch = SqliteChannel(tmp_path / "run.db")
+    try:
+        assert ch._conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    finally:
+        ch.close()
+
+
+def test_journal_mode_reads_env_when_unset(tmp_path, monkeypatch):
+    """sqlite-specific: the deployment knob. RUNSTATE_SQLITE_JOURNAL_MODE sets the
+    mode for every channel in the process, so an NFS cluster exports DELETE once
+    instead of threading a param everywhere. Mode names are case-insensitive."""
+    from runstate.channel.sqlite import SqliteChannel
+
+    monkeypatch.setenv("RUNSTATE_SQLITE_JOURNAL_MODE", "delete")
+    ch = SqliteChannel(tmp_path / "run.db")
+    try:
+        assert ch._conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+    finally:
+        ch.close()
+
+
+def test_journal_mode_rejects_unknown_value(tmp_path, monkeypatch):
+    """sqlite-specific: an unrecognized mode is a config error surfaced loudly at
+    open, not an opaque sqlite failure later nor a silent fall-through to default."""
+    from runstate.channel.sqlite import SqliteChannel
+
+    monkeypatch.setenv("RUNSTATE_SQLITE_JOURNAL_MODE", "bogus")
+    with pytest.raises(ValueError, match="journal"):
+        SqliteChannel(tmp_path / "run.db")
+
+
 def test_cas_wedged_writer_raises_not_false_loss(tmp_path):
     """sqlite-specific: a competing writer that holds the write lock past
     busy_timeout WITHOUT committing leaves the CAS outcome indeterminate. send()

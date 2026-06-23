@@ -8,11 +8,35 @@ stored as opaque JSON and never interpreted by the substrate.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import time
 
 from .envelope import Envelope
+
+# WAL is the default: on a local filesystem it keeps the log readable while a
+# writer holds the lock (the orchestrator polls while the worker writes). But WAL
+# needs a memory-mapped ``-shm`` file, which a network filesystem cannot back
+# coherently -- on NFS that wedges a worker in uninterruptible I/O sleep. The
+# rollback-journal modes (DELETE/TRUNCATE/PERSIST) use POSIX byte-range locks
+# instead of the -shm mmap, so an NFS-homed deployment exports
+# RUNSTATE_SQLITE_JOURNAL_MODE=DELETE (see the class docstring for the NFS
+# correctness caveat -- DELETE removes the hang, not the cross-host CAS). The
+# knob is the whole fix. Only WAL persists in the file header; the rollback
+# modes are per-connection, so the chosen mode is (re)applied on every
+# connection at open.
+_JOURNAL_MODES = frozenset({"WAL", "DELETE", "TRUNCATE", "PERSIST"})
+
+
+def _resolve_journal_mode():
+    journal_mode = os.environ.get("RUNSTATE_SQLITE_JOURNAL_MODE", "WAL").upper()
+    if journal_mode not in _JOURNAL_MODES:
+        raise ValueError(
+            f"unknown sqlite journal_mode {journal_mode!r} "
+            f"(expected one of {sorted(_JOURNAL_MODES)})"
+        )
+    return journal_mode
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS log (
@@ -31,10 +55,19 @@ CREATE INDEX IF NOT EXISTS idx_log_topic_seq ON log (topic, seq);
 
 
 class SqliteChannel:
-    """A per-run topic log backed by one SQLite file."""
+    """A per-run topic log backed by one SQLite file.
+
+    NFS deployment caveat: export RUNSTATE_SQLITE_JOURNAL_MODE=DELETE so the open
+    does not wedge on WAL's mmap'd ``-shm`` sidecar. That removes the *hang* but
+    does NOT make the cross-host compare-and-append correct: SQLite's POSIX
+    byte-range locks are unreliable on many NFS mounts, so the birth-claim CAS
+    (``send(expected_seq=)``) can admit two winners when locks aren't honored.
+    Single-writer-per-run is therefore REQUIRED on NFS, not merely typical.
+    """
 
     def __init__(self, path, *, json_default=None):
         self._json_default = json_default
+        self._journal_mode = _resolve_journal_mode()
         self._conn = sqlite3.connect(
             str(path), isolation_level=None, check_same_thread=False
         )
@@ -47,12 +80,14 @@ class SqliteChannel:
         # escalation that sqlite exempts from the busy handler (deadlock-prone
         # path), so when several fresh connections collide -- the multi-claimant
         # ensure-create topology -- losers raise SQLITE_BUSY no matter what
-        # busy_timeout says. The mode is persistent in the file (one opener
-        # converts; for everyone else the pragma is a no-op read), so a brief
-        # bounded retry absorbs birth contention entirely.
+        # busy_timeout says. WAL conversion persists in the file header (one opener
+        # converts; for everyone else the WAL pragma is a no-op read), so a brief
+        # bounded retry absorbs birth contention entirely. The rollback modes don't
+        # escalate -- their pragma is per-connection and, for DELETE (sqlite's
+        # default), a no-op on a fresh file -- so the retry never engages for them.
         for retries_left in reversed(range(20)):
             try:
-                self._conn.execute("PRAGMA journal_mode=WAL")
+                self._conn.execute(f"PRAGMA journal_mode={self._journal_mode}")
                 break
             except sqlite3.OperationalError as exc:
                 busy = getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_BUSY
