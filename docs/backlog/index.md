@@ -117,12 +117,19 @@ Consumer-side cursor persistence was **decided out of scope**, design §12.5.)
   resumable-`timed_out` vs fatal-`crashed`) so consumers can branch on *why*
   without expanding the closed `outcome` enum. Surfaced by
   [mycooc-adoption](mycooc-adoption.md). Small.
-- **Cross-host liveness for the claim gate** — `live_episode` treats an
-  unresolvable handle as live *forever* (no staleness fallback): a crashed
-  episode under a foreign/renamed hostname blocks both the waker AND the
-  worker birth-CAS until a manual `stopped`. Fine single-host (the shipped
-  scope, `../specs/lazy-launch.md`); a staleness-based liveness tier is
-  needed before cross-host / shared-FS resume. Surfaced by the lazy-launch
+- **Cross-host liveness for the claim gate** — `live_episode` sits at the probe-only
+  rung, so on a foreign host it goes blind and treats an unresolvable handle as live
+  *forever*; a crashed foreign episode blocks the waker and the birth-CAS. The
+  **observe-then-claim / heartbeat-as-claim-detector** approach was **REFUTED**
+  2026-06-24 (`../dead_ends/failure-detector.md`): claiming on heartbeat-staleness
+  *inference* admits a double-live window that *permanently poisons reuse*
+  (`history()`'s sticky divergent-re-emission raise), and the CAS it leans on is
+  unreliable on the motivating NFS deployment. Sound path: the **claim** gate needs a
+  *definitive* cross-host oracle — a connection-oriented backend's lock (a Postgres
+  advisory lock) via the `resolve` seam (composes with channel-postgres) — **plus**
+  value-plane robustness so a residual double-live can't sticky-poison the log;
+  sqlite-NFS stays conservative single-host. The heartbeat ◊P detector remains the
+  floor for *observation* (the `Watcher`), not the claim. Surfaced by the lazy-launch
   review.
 - **Watcher boundary-aware re-broadcast** — a time-keyed `broadcast` barrier
   subscription on a run that *resumes* is boundary-voided with no record
