@@ -391,6 +391,48 @@ def test_ensure_preempted_that_reaches_up_to_uses_progress_hit(tmp_path):
     # ensure returned via the progress hit (existing behavior unbroken)
 
 
+def test_ensure_killed_resumes_on_caller_re_call_take_the_latest():
+    # ensure FAILS FAST on a death (the retry decision is the CALLER's, not an
+    # in-ensure policy). The caller re-calls ensure to resume: read-first sees
+    # progress-but-not-done, relaunches from the checkpoint, and G1 take-the-latest
+    # absorbs the resumed overlap. This is the supported killed-redrive pattern.
+    from runstate.channel.memory import MemoryChannel
+    from runstate.vocabulary.handle import local_handle
+
+    ch = MemoryChannel()
+    calls = {"n": 0}
+
+    def episodes(channel, target):
+        calls["n"] += 1
+        channel.send({"handle": local_handle(), "hostname": None, "attached_at": float(calls["n"])},
+                     topic="lifecycle.started")
+        if calls["n"] == 1:                      # progress 0..2, then KILLED (external signal)
+            channel.send({"step": 2, "consumed_seq": 0}, topic="lifecycle.heartbeat")
+            for s in range(3):
+                channel.send({"value": float(s), "step": s, "t": 0.0}, topic="value", name="loss")
+            channel.send({"reason": "killed", "exit_code": None, "signal": 9},
+                         topic="launcher.terminated")
+        else:                                    # resume behind frontier: re-emit step 2 divergently, then 3..5, complete
+            channel.send({"step": 5, "consumed_seq": 0}, topic="lifecycle.heartbeat")
+            for s, v in [(2, 2.5), (3, 3.0), (4, 4.0), (5, 5.0)]:
+                channel.send({"value": v, "step": s, "t": 1.0}, topic="value", name="loss")
+            channel.send({"completed": True, "error": None, "final_step": 5},
+                         topic="lifecycle.stopped")
+
+    producer = _FakeProducer(ch, extend_side_effect=episodes)
+
+    # First call: ensure drives, hits the kill, and fails fast (no auto-redrive).
+    with pytest.raises(RuntimeError, match="failed"):
+        ensure(producer, "loss", until={"step": 10})
+    assert producer.extend_calls == 1
+
+    # The caller decides to retry -> a re-call resumes from the checkpoint.
+    series = ensure(producer, "loss", until={"step": 10})
+    assert [(b["step"], b["value"]) for b in series] == \
+        [(0, 0.0), (1, 1.0), (2, 2.5), (3, 3.0), (4, 4.0), (5, 5.0)]   # step 2 = take-the-latest
+    assert producer.extend_calls == 2
+
+
 def test_launch_producer_rejects_non_step_condition():
     launcher = runstate.ThreadLauncher()
     variant = runstate.Variant("exp", lambda channel, *, up_to: None, {"kwargs": {}})

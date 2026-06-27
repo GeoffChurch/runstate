@@ -92,9 +92,9 @@ independent of any new feature — G1 is a bug fix, not only a prerequisite.
 ## What it unblocks
 
 - **Killed-redrive** ([ensure-redrive-recoverable-terminations](ensure-redrive-recoverable-terminations.md)):
-  re-driving a non-self-diagnosed death re-emits the overlap; a non-sticky `history` no longer
-  permanently blocks reuse. Killed-redrive needs **only** this non-stickiness — not authoritative
-  resolution.
+  the caller re-drives a non-self-diagnosed death by re-calling `ensure`, which re-emits the
+  overlap; a non-sticky `history` no longer permanently blocks reuse. Killed-redrive needs
+  **only** this non-stickiness — not authoritative resolution.
 - **The cross-host claim gate** (index.md "Cross-host liveness"): a residual ◊P double-live can
   emit a divergent pair; a non-sticky `history` keeps that from permanently poisoning reuse. (The
   *detection* of that double-live is the claim gate's separate, hard problem.)
