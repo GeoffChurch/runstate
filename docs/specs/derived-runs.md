@@ -92,9 +92,11 @@ emission and `ensure` never subscribes — a `set`-based worker would complete
 with an empty series and every future call would cache-hit on nothing.)
 **Emit-only-missing:** before sending, read the channel's existing names at
 step 0 and skip those present — a crash-retry episode then fills gaps
-instead of re-emitting, so float jitter across retries can never poison the
-log with divergent same-cell re-emissions (which `history` treats as an
-error, permanently, on an append-only log). The convention gives the run a
+instead of re-emitting, so float jitter across retries never produces a
+divergent same-cell re-emission at all. (`history` now resolves any divergence
+by take-the-latest — `../backlog/value-plane-divergence-resolution.md` — so this
+is cleanliness, keeping the log free of pointless duplicate cells, not a
+correctness backstop.) The convention gives the run a
 real (length-one) step axis — `progress` reads 0, `ensure(until={"step": 1})`
 is satisfied exactly at completion, and the no-`ensure`-over-stepless
 constraint is sidestepped rather than special-cased. The `completed` claim

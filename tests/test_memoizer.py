@@ -30,15 +30,18 @@ def test_history_filters_by_name_and_respects_until(open_channel):
     assert [b["step"] for b in got] == [0, 1, 2, 3]            # name=loss only; until step 4
 
 
-def test_history_collapses_benign_re_emission_but_raises_on_divergence(open_channel):
+def test_history_collapses_re_emission_taking_the_latest(open_channel):
+    # A resumed episode re-emits the checkpoint overlap; history collapses by step,
+    # taking the latest (highest-seq) record -- the as-resumed / continuing branch.
+    # (docs/backlog/value-plane-divergence-resolution.md)
     ch = open_channel()
     ch.send({"value": 1.0, "step": 0, "t": 0.0}, topic="value", name="loss")
     ch.send({"value": 2.0, "step": 1, "t": 0.0}, topic="value", name="loss")
-    ch.send({"value": 1.0, "step": 0, "t": 9.0}, topic="value", name="loss")   # identical re-emit -> OK
+    ch.send({"value": 1.0, "step": 0, "t": 9.0}, topic="value", name="loss")   # identical re-emit -> collapses
     assert [b["step"] for b in history(open_channel(), "loss", {"every": {"step": 1}})] == [0, 1]
-    ch.send({"value": 99.0, "step": 1, "t": 9.0}, topic="value", name="loss")  # DIVERGENT
-    with pytest.raises(ValueError, match="divergent"):
-        history(open_channel(), "loss", {"every": {"step": 1}})
+    ch.send({"value": 99.0, "step": 1, "t": 9.0}, topic="value", name="loss")  # DIVERGENT re-emit (a resume)
+    got = history(open_channel(), "loss", {"every": {"step": 1}})
+    assert [(b["step"], b["value"]) for b in got] == [(0, 1.0), (1, 99.0)]      # take-the-latest by seq
 
 
 def test_history_time_schedule_is_run_relative_to_the_run_epoch(open_channel):

@@ -118,20 +118,26 @@ single-metric-pin smell from Review B.)
    condition never trips it; a step-stalled step condition always does.
 5. Return the series.
 
-### Decision 4 — `history` collapses by step but SURFACES divergent re-emission
+### Decision 4 — `history` collapses by step, take-the-latest
 A resume from a checkpoint behind the last *logged* step re-emits the overlap.
 Under a reproducible worker the re-emitted values are identical (a no-op); under
-a non-reproducible / non-target-independent one they differ — which is the exact
-corruption the reuse precondition forbids. So `history` collapses to one body
-per step but **raises on a same-step / differing-value collision** (the
-reuse-soundness alarm) rather than silently taking last-wins. The clean
-source-side fix is to checkpoint at the emission cadence (no overlap to
-collapse); the divergence check is the safety net that turns a silent wrong-reuse
-into a loud diagnostic. (Review B's sharpest catch.)
+a non-reproducible one they differ. `history` collapses to one body per step,
+**taking the latest record by `seq`** — the as-resumed / continuing branch (the
+same fold `value_series` uses for display).
+
+An earlier version *raised* on a same-step / differing-value collision (a
+"reuse-soundness alarm"). A code-grounded red-team retired it
+(`../backlog/value-plane-divergence-resolution.md`): the raise was **sticky** on
+the append-only log — it poisoned reuse for that run *forever*, including the
+already-shipped `preempted`-redrive path — and take-the-latest is **sound for
+every divergence `ensure` can produce** (`ensure` never re-drives a `completed`
+run, so the only case where latest ≠ authoritative — a finished run re-run
+divergently — is unreachable through `ensure`). The clean source-side fix
+remains to checkpoint at the emission cadence (no overlap to collapse).
 
 Crucially, **re-emission is never forced**: a worker is free to resume at
 `last-logged + 1` and skip the overlap entirely (the clean path), in which case
-the collapse/check do nothing. They are a *defensive free-rider* on whatever
+the collapse does nothing. It is a *defensive free-rider* on whatever
 overlap a lagging-checkpoint worker happens to produce — never a mandated
 re-emission (which would be wasted recompute). So `history` polices nothing it
 isn't handed; it imposes no cost on a worker that skips.
@@ -300,8 +306,8 @@ doesn't read the log — it produces; the memoizer reads). Clean division:
 
 ## Tests (TDD targets)
 - `history`: `every`/`from`/`until` replay over a fixed logged series → correct
-  fired subset; **divergent re-emission of a step → raises**; benign *identical*
-  re-emission → collapses silently; empty/short series; a `time_seconds` schedule
+  fired subset; **divergent re-emission of a step → take-the-latest (highest-`seq`
+  wins)**; benign *identical* re-emission → collapses; empty/short series; a `time_seconds` schedule
   replayed run-relative across two episodes (after the `value.t` fix). Both
   backends.
 - `ensure`: full hit (window closed, no launch); cold miss (extend → window closes);

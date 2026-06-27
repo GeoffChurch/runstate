@@ -106,9 +106,9 @@ def history(channel, name, schedule: dict) -> list[dict]:
     """Replay ``schedule`` (the Subscription algebra) over the logged ``value``
     points for ``name``; return the bodies it fires on, in step order.
 
-    Collapses by step (a resumed episode re-emits the checkpoint overlap), but
-    RAISES on a same-step / differing-value collision -- the reuse-soundness
-    alarm (a non-reproducible / non-target-independent trajectory). Time-based
+    Collapses by step (a resumed episode re-emits the checkpoint overlap),
+    taking the latest record by ``seq`` -- the as-resumed / continuing branch
+    (see docs/backlog/value-plane-divergence-resolution.md). Time-based
     conditions are evaluated run-relative: ``now`` is the point's absolute
     ``value.t`` and ``registered_at`` is the run epoch (earliest
     ``lifecycle.started``), so ``t - epoch`` is seconds since the run began.
@@ -121,13 +121,7 @@ def history(channel, name, schedule: dict) -> list[dict]:
     for e in channel.read(topics=[Topic.VALUE], name=name):
         b = e.body
         s = b["step"]
-        if s in by_step and by_step[s]["value"] != b["value"]:
-            raise ValueError(
-                f"divergent re-emission at step {s}: "
-                f"{by_step[s]['value']!r} != {b['value']!r} "
-                f"(trajectory not reproducible -- reuse would be unsound)"
-            )
-        by_step[s] = b
+        by_step[s] = b   # take-the-latest: a resumed episode's re-emission (higher seq) supersedes
     if any(s is None for s in by_step):
         raise ValueError("history() requires stepped emission; a value point has step=None")
     points = [by_step[s] for s in sorted(by_step)]
