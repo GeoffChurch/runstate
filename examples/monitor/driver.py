@@ -21,6 +21,7 @@ The whole service story, end to end, twice:
 """
 
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -34,7 +35,6 @@ from runstate import (
 )
 
 RUN = "monitor"
-ROOT = Path(__file__).parent / ".runs"
 LEASE = 2.0          # seconds: the keepalive lease each subscribe grants
 SERVICE = Path(__file__).parent / "service.py"
 
@@ -58,9 +58,9 @@ def watch_until_idle(ch, launcher):
 
 
 def main():
-    ROOT.mkdir(parents=True, exist_ok=True)
-    ch = open_channel(RUN, root=ROOT)
-    launcher = LocalLauncher(root=ROOT)
+    root = tempfile.mkdtemp(prefix="runstate-monitor-")   # off the repo tree (was ./.runs)
+    ch = open_channel(RUN, root=root)
+    launcher = LocalLauncher(root=root)
     with launcher:
         # ----- episode 1 -----
         demand(ch, "dash-1")

@@ -44,6 +44,44 @@ with runstate.LocalLauncher(root="/tmp/runs") as launcher:
 
 A runnable version is in `examples/minimal/` (`python examples/minimal/driver.py`).
 
+## Recipes
+
+Three common patterns; each has a runnable twin under `examples/`.
+
+**Reuse + extend** — `ensure` serves the logged prefix on a cache hit, else relaunches-to-extend and waits. Content-addressed by `run_id`, so re-asking is free and asking for *more* steps resumes:
+
+```python
+runstate.ensure(producer, "loss", until={"step": 8})    # cold: produce 0..7
+runstate.ensure(producer, "loss", until={"step": 8})    # warm: served from the log, no worker
+runstate.ensure(producer, "loss", until={"step": 20})   # extend: resume 8..19, one series
+```
+→ `examples/reuse/`
+
+**Divergence-preempt** — watch the value stream and send a cooperative `control.stop` when you've seen enough (divergence, a plateau, a budget); the worker stops cleanly at its next tick (`outcome` → `preempted`):
+
+```python
+def on_event(rid, e):
+    if e.topic == "value" and e.body["value"] > THRESHOLD:
+        ch.send({"from": {"step": 0}}, topic="control.stop", request_id="me")
+
+watcher.wait("run-1", on_event=on_event)
+```
+→ `examples/minimal/`
+
+**Killed-redrive (caller pattern)** — `ensure` auto-continues clean `preempted` stops but **fails fast on a death**; the retry decision is yours. Catch it, decide if it's resumable (the worker didn't self-diagnose a fatal `error`), and re-call `ensure` to resume from the checkpoint — take-the-latest absorbs the re-emitted overlap:
+
+```python
+for _ in range(budget):                          # the retry budget lives here, with you
+    try:
+        series = runstate.ensure(producer, "loss", until={"step": N}); break
+    except RuntimeError:
+        r = runstate.peek_terminal(producer.channel)
+        if r.error is not None:                  # worker self-diagnosed fatal -> don't retry
+            raise
+        # a killed / recordless death with progress -> the re-call resumes from the checkpoint
+```
+→ `examples/redrive/`
+
 ## What it is not
 
 - **Not an orchestrator framework.** No `Orchestrator.run()` class. There's an opt-in `Launcher` Protocol + thin reference launchers, but you can spawn worker processes however you want (`subprocess.Popen`, Hydra, submitit, ray) and use the protocol to talk to them.
