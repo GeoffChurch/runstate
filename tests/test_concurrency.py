@@ -3,12 +3,13 @@ contention TIER a backend supports (see ``conftest.conc_backend`` + the ``tier``
 marker). The sequential conformance suite can't see races -- the CAS-atomicity P0
 (F1) slipped past it -- so these race the CAS the substrate's claims rest on.
 
-Tiers, increasing in strength:
+Tiers, increasing in strength (all live here now; test_channel.py keeps the
+deterministic CAS conformance + the fault-injection tests -- the flakiness firewall):
 
-- ``in_process`` -- N threads, every backend. The CAS race here lives in
-  ``test_channel.py::test_concurrent_cas_admits_exactly_one_winner``.
+- ``in_process`` -- N threads, every backend (the multi-handle CAS race, the
+  shared-handle race, the memory seq-RMW, the two-Worker muzzle).
 - ``cross_process`` -- N real OS processes on one log; a file/networked backend only
-  (memory is in-process). This module.
+  (memory is in-process).
 - ``cross_host`` -- the claim oracle under cross-host contention; the postgres TDD
   target (no backend reaches it yet, so those tests skip everywhere for now).
 """
@@ -150,3 +151,144 @@ def test_two_workers_racing_the_claim_muzzle_the_loser(conc_backend):
                 f"{[v.body for v in values]}")
     finally:
         sys.setswitchinterval(old)
+
+
+# ===================== in_process tier (relocated) =====================
+# The in-process CAS races + the memory seq-RMW vector, gathered here so every
+# *real*-contention test lives in one tier-organized home; test_channel.py keeps
+# the deterministic CAS conformance + fault-injection (the flakiness firewall).
+
+
+def test_concurrent_cas_admits_exactly_one_winner(open_channel):
+    """A concurrent multi-handle CAS must admit exactly one winner.
+
+    ``send(expected_seq=)`` is the primitive the run-episodes self-claim and the
+    §12.1 single-spawn guard rest on: of N workers racing to claim a run, exactly
+    one wins ``send(..., expected_seq=last)`` and the rest get ``None``. The
+    sequential CAS test (test_channel.py) can't see the race; this opens N handles
+    on the SAME run (separate sqlite connections; the registry-shared memory
+    log+lock) and fires them through a barrier. Several trials, because a racy CAS
+    only *sometimes* admits >1 winner.
+    """
+    n = 8
+    seed = open_channel()
+    for trial in range(10):
+        log = seed.read()
+        last = log[-1].seq if log else 0  # each trial's winner advances this
+        barrier = threading.Barrier(n)
+        results: list = [None] * n
+        errors: list = []
+
+        def claim(i):
+            try:
+                ch = open_channel()
+                barrier.wait(timeout=10)  # line up so the check+INSERT windows overlap
+                results[i] = ch.send(
+                    {"who": i}, topic="lifecycle.started", expected_seq=last
+                )
+            except BaseException as exc:  # a loser must get None back, never an error
+                errors.append(exc)
+                barrier.abort()  # don't leave peers waiting on a dead participant
+
+        threads = [threading.Thread(target=claim, args=(i,)) for i in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        winners = [r for r in results if r is not None]
+        # A loser waits out the winner's write lock (busy_timeout) and reads the
+        # new seq; it must come back None, never a "database is locked" error.
+        assert not errors, f"[trial {trial}] losing claimants raised: {errors!r}"
+        assert len(winners) == 1, (
+            f"[trial {trial}] expected exactly 1 winner, got {len(winners)}: {results}"
+        )
+
+
+def test_shared_handle_concurrent_sends_are_serialized(ch):
+    """ONE channel instance used from several threads must serialize internally.
+
+    This is the ThreadLauncher topology: the worker thread and the orchestrator's
+    Watcher hold the SAME handle (launcher.py hands one channel to both sides).
+    The multi-handle race test above can't see it — each thread there opens its
+    own connection. Here mixed traffic (CAS claims + plain sends) hammers one
+    instance: every acknowledged send must actually be in the log (an ack that a
+    concurrent CAS's rollback can erase is corruption), at most one CAS wins, and
+    nobody sees an error (e.g. sqlite's "cannot start a transaction within a
+    transaction" from two CAS sends sharing one connection).
+    """
+    n = 8
+    for trial in range(10):
+        log = ch.read()
+        last = log[-1].seq if log else 0
+        len_before = len(log)
+        barrier = threading.Barrier(n)
+        results: list = [None] * n
+        errors: list = []
+
+        def send(i):
+            try:
+                barrier.wait(timeout=10)  # overlap the send windows
+                if i % 2:
+                    results[i] = ch.send({"who": i}, topic="value", name="plain")
+                else:
+                    results[i] = ch.send(
+                        {"who": i}, topic="lifecycle.started", expected_seq=last
+                    )
+            except BaseException as exc:
+                errors.append(exc)
+                barrier.abort()  # don't leave peers waiting on a dead participant
+
+        threads = [threading.Thread(target=send, args=(i,)) for i in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"[trial {trial}] concurrent sends raised: {errors!r}"
+        winners = [results[i] for i in range(0, n, 2) if results[i] is not None]
+        # 0 winners is legitimate (a plain send can land first and move MAX(seq))
+        assert len(winners) <= 1, f"[trial {trial}] CAS admitted {len(winners)} winners"
+        acked = [r for r in results if r is not None]
+        assert len(set(acked)) == len(acked), f"[trial {trial}] duplicate seqs: {acked}"
+        in_log = {e.seq for e in ch.read()}
+        missing = sorted(s for s in acked if s not in in_log)
+        assert not missing, f"[trial {trial}] acknowledged sends erased: {missing}"
+        # and nothing landed un-acked (a CAS that inserted but reported None)
+        assert len(in_log) - len_before == len(acked), (
+            f"[trial {trial}] log grew by {len(in_log) - len_before}, acked {len(acked)}"
+        )
+
+
+def test_concurrent_writers_produce_unique_contiguous_seqs(tmp_path):
+    """The memory backend's hand-rolled seq read-modify-write must be atomic across
+    instances: 4 threads x 3000 plain sends through distinct handles on one in-memory
+    log -> no lost or duplicated seqs. (A genuinely distinct vector from the CAS: the
+    plain append admits *all*, but the seq must stay unique + contiguous.)"""
+    writers, n = 4, 3000
+    # Force the GIL to switch as often as possible so the seq RMW window is reliably
+    # interleaved (otherwise the race hides behind the GIL).
+    old = sys.getswitchinterval()
+    sys.setswitchinterval(1e-9)
+    try:
+        chans = [
+            locate("race", root=tmp_path, backend="memory")  # all share one log
+            for _ in range(writers)
+        ]
+
+        def hammer(c):
+            for i in range(n):
+                c.send({"i": i}, topic="value")
+
+        threads = [threading.Thread(target=hammer, args=(c,)) for c in chans]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        sys.setswitchinterval(old)
+
+    total = writers * n
+    seqs = [e.seq for e in chans[0].read()]
+    assert len(seqs) == total  # no lost writes
+    assert sorted(seqs) == list(range(1, total + 1))  # unique + contiguous

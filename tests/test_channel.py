@@ -3,8 +3,6 @@
 Every test runs against all backends via the ``ch`` fixture (see conftest.py).
 """
 
-import threading
-
 import pytest
 
 
@@ -112,107 +110,6 @@ def test_send_expected_seq_appends_on_match_rejects_on_mismatch(ch):
                        expected_seq=s1)
     assert rejected is None
     assert [e.body["value"] for e in ch.read(topics=["value"])] == [1, 2]
-
-
-def test_concurrent_cas_admits_exactly_one_winner(open_channel):
-    """A concurrent multi-handle CAS must admit exactly one winner.
-
-    ``send(expected_seq=)`` is the primitive the run-episodes self-claim and the
-    §12.1 single-spawn guard rest on: of N workers racing to claim a run,
-    exactly one wins ``send(..., expected_seq=last)`` and the rest get ``None``.
-    The sequential CAS test above can't see the race; this opens N handles on
-    the SAME run (separate sqlite connections; the registry-shared memory
-    log+lock) and fires them through a barrier. Several trials, because a racy
-    CAS only *sometimes* admits >1 winner.
-    """
-    n = 8
-    seed = open_channel()
-    for trial in range(10):
-        log = seed.read()
-        last = log[-1].seq if log else 0  # each trial's winner advances this
-        barrier = threading.Barrier(n)
-        results: list = [None] * n
-        errors: list = []
-
-        def claim(i):
-            try:
-                ch = open_channel()
-                barrier.wait(timeout=10)  # line up so the check+INSERT windows overlap
-                results[i] = ch.send(
-                    {"who": i}, topic="lifecycle.started", expected_seq=last
-                )
-            except BaseException as exc:  # a loser must get None back, never an error
-                errors.append(exc)
-                barrier.abort()  # don't leave peers waiting on a dead participant
-
-        threads = [threading.Thread(target=claim, args=(i,)) for i in range(n)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        winners = [r for r in results if r is not None]
-        # A loser waits out the winner's write lock (busy_timeout) and reads the
-        # new seq; it must come back None, never a "database is locked" error.
-        assert not errors, f"[trial {trial}] losing claimants raised: {errors!r}"
-        assert len(winners) == 1, (
-            f"[trial {trial}] expected exactly 1 winner, got {len(winners)}: {results}"
-        )
-
-
-def test_shared_handle_concurrent_sends_are_serialized(ch):
-    """ONE channel instance used from several threads must serialize internally.
-
-    This is the ThreadLauncher topology: the worker thread and the orchestrator's
-    Watcher hold the SAME handle (launcher.py hands one channel to both sides).
-    The multi-handle race test above can't see it — each thread there opens its
-    own connection. Here mixed traffic (CAS claims + plain sends) hammers one
-    instance: every acknowledged send must actually be in the log (an ack that a
-    concurrent CAS's rollback can erase is corruption), at most one CAS wins, and
-    nobody sees an error (e.g. sqlite's "cannot start a transaction within a
-    transaction" from two CAS sends sharing one connection).
-    """
-    n = 8
-    for trial in range(10):
-        log = ch.read()
-        last = log[-1].seq if log else 0
-        len_before = len(log)
-        barrier = threading.Barrier(n)
-        results: list = [None] * n
-        errors: list = []
-
-        def send(i):
-            try:
-                barrier.wait(timeout=10)  # overlap the send windows
-                if i % 2:
-                    results[i] = ch.send({"who": i}, topic="value", name="plain")
-                else:
-                    results[i] = ch.send(
-                        {"who": i}, topic="lifecycle.started", expected_seq=last
-                    )
-            except BaseException as exc:
-                errors.append(exc)
-                barrier.abort()  # don't leave peers waiting on a dead participant
-
-        threads = [threading.Thread(target=send, args=(i,)) for i in range(n)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        assert not errors, f"[trial {trial}] concurrent sends raised: {errors!r}"
-        winners = [results[i] for i in range(0, n, 2) if results[i] is not None]
-        # 0 winners is legitimate (a plain send can land first and move MAX(seq))
-        assert len(winners) <= 1, f"[trial {trial}] CAS admitted {len(winners)} winners"
-        acked = [r for r in results if r is not None]
-        assert len(set(acked)) == len(acked), f"[trial {trial}] duplicate seqs: {acked}"
-        in_log = {e.seq for e in ch.read()}
-        missing = sorted(s for s in acked if s not in in_log)
-        assert not missing, f"[trial {trial}] acknowledged sends erased: {missing}"
-        # and nothing landed un-acked (a CAS that inserted but reported None)
-        assert len(in_log) - len_before == len(acked), (
-            f"[trial {trial}] log grew by {len(in_log) - len_before}, acked {len(acked)}"
-        )
 
 
 def test_init_retries_busy_wal_conversion(tmp_path, monkeypatch):
