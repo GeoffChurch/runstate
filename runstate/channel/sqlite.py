@@ -12,7 +12,9 @@ import os
 import sqlite3
 import threading
 import time
+from collections.abc import Callable
 
+from .base import Channel
 from .envelope import Envelope
 
 # WAL is the default: on a local filesystem it keeps the log readable while a
@@ -29,7 +31,7 @@ from .envelope import Envelope
 _JOURNAL_MODES = frozenset({"WAL", "DELETE", "TRUNCATE", "PERSIST"})
 
 
-def _resolve_journal_mode():
+def _resolve_journal_mode() -> str:
     journal_mode = os.environ.get("RUNSTATE_SQLITE_JOURNAL_MODE", "WAL").upper()
     if journal_mode not in _JOURNAL_MODES:
         raise ValueError(
@@ -54,7 +56,7 @@ CREATE INDEX IF NOT EXISTS idx_log_topic_seq ON log (topic, seq);
 """
 
 
-class SqliteChannel:
+class SqliteChannel(Channel):
     """A per-run topic log backed by one SQLite file.
 
     NFS deployment caveat: export RUNSTATE_SQLITE_JOURNAL_MODE=DELETE so the open
@@ -65,7 +67,8 @@ class SqliteChannel:
     Single-writer-per-run is therefore REQUIRED on NFS, not merely typical.
     """
 
-    def __init__(self, path, *, json_default=None):
+    def __init__(self, path: str | os.PathLike[str], *,
+                 json_default: Callable[[object], object] | None = None) -> None:
         self._json_default = json_default
         self._journal_mode = _resolve_journal_mode()
         self._conn = sqlite3.connect(
@@ -102,8 +105,8 @@ class SqliteChannel:
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
 
-    def send(self, body: dict, *, topic: str, name=None, request_id=None,
-             expected_seq=None) -> int | None:
+    def send(self, body: dict, *, topic: str, name: str | None = None,
+             request_id: str | None = None, expected_seq: int | None = None) -> int | None:
         # json_default (sender-side) coerces exotic value payloads on the way out;
         # the stored text is always standard JSON, so any reader uses plain loads.
         body_json = json.dumps(body, default=self._json_default, separators=(",", ":"))
@@ -158,10 +161,10 @@ class SqliteChannel:
         self,
         after: int = 0,
         *,
-        topics=None,
-        name=None,
-        request_ids=None,
-        limit=None,
+        topics: list[str] | None = None,
+        name: str | None = None,
+        request_ids: list[str] | None = None,
+        limit: int | None = None,
     ) -> list[Envelope]:
         where = ["seq > ?"]
         params: list = [after]
@@ -198,7 +201,7 @@ class SqliteChannel:
             for (seq, topic, name, request_id, body) in rows
         ]
 
-    def latest(self, topic: str, name=None) -> Envelope | None:
+    def latest(self, topic: str, name: str | None = None) -> Envelope | None:
         with self._lock:
             if name is None:
                 row = self._conn.execute(

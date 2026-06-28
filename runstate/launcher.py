@@ -22,10 +22,11 @@ import os
 import socket
 import subprocess
 import threading
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from typing import Optional, Protocol
+from typing import Any, Optional, Protocol
 
-from .channel import open_channel
+from .channel import Channel, open_channel
 from .vocabulary.payloads import Launched, Terminated, Topic
 from .vocabulary.handle import local_handle
 from .observables import live_demand, live_episode
@@ -42,11 +43,11 @@ class LaunchHandle(Protocol):
     """
 
     run_id: str
-    channel: object
+    channel: Channel
     handle: str
 
     def is_alive(self) -> bool: ...
-    def wait(self, timeout=None) -> Optional[int]: ...
+    def wait(self, timeout: float | None = None) -> Optional[int]: ...
     def terminate(self) -> None: ...
 
 
@@ -58,8 +59,8 @@ class Launcher(Protocol):
     channel (passed directly vs re-derived via ``attach``) differs in kind.
     """
 
-    def open_channel(self, run_id) -> object: ...
-    def launch(self, run_id, target, **kwargs) -> LaunchHandle: ...
+    def open_channel(self, run_id: str) -> Channel: ...
+    def launch(self, run_id: str, target: object, **kwargs: object) -> LaunchHandle: ...
 
 
 @dataclass
@@ -68,7 +69,7 @@ class _ThreadHandle:
     Protocols are extracted once LocalLauncher gives a second implementer)."""
 
     run_id: str
-    channel: object
+    channel: Channel
     handle: str
     _thread: threading.Thread
     _state: dict
@@ -82,7 +83,7 @@ class _ThreadHandle:
     def is_alive(self) -> bool:
         return self._thread.is_alive()
 
-    def wait(self, timeout=None) -> Optional[int]:
+    def wait(self, timeout: float | None = None) -> Optional[int]:
         """Block until the worker thread finishes. Returns None — a thread has no
         exit code; the manner of death is on the log (launcher.terminated) and
         the raised exception, if any, is on ``.exception``."""
@@ -97,14 +98,15 @@ class _ThreadHandle:
 
 
 class ThreadLauncher:
-    def __init__(self, *, root=None, backend: str = "memory"):
+    def __init__(self, *, root: str | os.PathLike[str] | None = None, backend: str = "memory") -> None:
         self._root = root
         self._backend = backend
 
-    def open_channel(self, run_id):
+    def open_channel(self, run_id: str) -> Channel:
         return open_channel(run_id, root=self._root, backend=self._backend)
 
-    def launch(self, run_id, target, *, args=(), kwargs=None) -> _ThreadHandle:
+    def launch(self, run_id: str, target: Callable[..., object], *,
+               args: tuple = (), kwargs: dict | None = None) -> _ThreadHandle:
         """Run ``target(channel, *args, **kwargs)`` on a thread for ``run_id``.
 
         Brackets the work with launcher.launched / launcher.terminated. Returns
@@ -117,7 +119,7 @@ class ThreadLauncher:
         channel.send(asdict(Launched(handle=handle)), topic=Launched.TOPIC)
         state: dict = {"exc": None}
 
-        def _run():
+        def _run() -> None:
             try:
                 target(channel, *args, **kwargs)
             except BaseException as exc:  # recorded on the log, not swallowed
@@ -147,7 +149,7 @@ class _LocalHandle:
     string is for *other* observers that resolve it without the Popen (§8)."""
 
     run_id: str
-    channel: object
+    channel: Channel
     handle: str
     _proc: subprocess.Popen
     _reaped: bool = field(default=False)
@@ -159,7 +161,7 @@ class _LocalHandle:
     def is_alive(self) -> bool:
         return self._proc.poll() is None
 
-    def wait(self, timeout=None) -> int:
+    def wait(self, timeout: float | None = None) -> int:
         """Block until the child exits, reap it (emit launcher.terminated once),
         and return its exit code."""
         rc = self._proc.wait(timeout)
@@ -225,15 +227,16 @@ class LocalLauncher:
     fire-and-forget split).
     """
 
-    def __init__(self, *, root, backend: str = "sqlite"):
+    def __init__(self, *, root: str | os.PathLike[str], backend: str = "sqlite") -> None:
         self._root = root
         self._backend = backend
         self._handles: list[_LocalHandle] = []
 
-    def open_channel(self, run_id):
+    def open_channel(self, run_id: str) -> Channel:
         return open_channel(run_id, root=self._root, backend=self._backend)
 
-    def launch(self, run_id, cmd, *, env=None) -> _LocalHandle:
+    def launch(self, run_id: str, cmd: list[str] | str, *,
+               env: dict[str, str] | None = None) -> _LocalHandle:
         channel = self.open_channel(run_id)
         child_env = {
             **os.environ,
@@ -263,12 +266,12 @@ class LocalLauncher:
     def __enter__(self) -> "LocalLauncher":
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> bool:
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         self.reap()  # best-effort; don't block or kill stragglers
-        return False
 
 
-def relaunch_if_needed(launcher, run_id, target, **launch_kwargs):
+def relaunch_if_needed(launcher: Any, run_id: str, target: object,
+                       **launch_kwargs: object) -> LaunchHandle | None:
     """Launch ``target`` into ``run_id`` only if no episode is currently live --
     a launcher-agnostic, best-effort single-spawn guard composed over a log read
     (``live_episode``) + ``launch``. Returns the new LaunchHandle, or None if a
@@ -281,10 +284,17 @@ def relaunch_if_needed(launcher, run_id, target, **launch_kwargs):
     channel = launcher.open_channel(run_id)
     if live_episode(channel) is not None:
         return None
-    return launcher.launch(run_id, target, **launch_kwargs)
+    # `launcher` is intentionally `Any`: the two reference launchers have
+    # genuinely different `launch` signatures (a callable `target` + args/kwargs
+    # vs a `cmd` + env), so no single typed Protocol method admits both. We keep
+    # the call dynamic here and re-assert the return type rather than force a
+    # widening that would erase the launchers' own signatures.
+    handle: LaunchHandle = launcher.launch(run_id, target, **launch_kwargs)
+    return handle
 
 
-def ensure_served(launcher, run_id, target, **launch_kwargs):
+def ensure_served(launcher: Any, run_id: str, target: object,
+                  **launch_kwargs: object) -> LaunchHandle | None:
     """Wake a service iff there is live leased demand and no live episode —
     ``relaunch_if_needed``'s leased-demand sibling (two demand durabilities,
     two deciders — specs/lazy-launch.md). Returns the new LaunchHandle, or
@@ -305,4 +315,10 @@ def ensure_served(launcher, run_id, target, **launch_kwargs):
         return None
     if live_episode(channel) is not None:
         return None
-    return launcher.launch(run_id, target, **launch_kwargs)
+    # `launcher` is intentionally `Any`: the two reference launchers have
+    # genuinely different `launch` signatures (a callable `target` + args/kwargs
+    # vs a `cmd` + env), so no single typed Protocol method admits both. We keep
+    # the call dynamic here and re-assert the return type rather than force a
+    # widening that would erase the launchers' own signatures.
+    handle: LaunchHandle = launcher.launch(run_id, target, **launch_kwargs)
+    return handle

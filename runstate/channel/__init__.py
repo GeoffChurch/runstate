@@ -18,9 +18,12 @@ and the locator, and re-exports them. It is the top of the package's import DAG
 
 from __future__ import annotations
 
+import os
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
+from .base import Channel
 from .envelope import Envelope
 from .memory import MemoryChannel
 from .sqlite import SqliteChannel
@@ -34,7 +37,9 @@ from .sqlite import SqliteChannel
 _MEMORY_LOGS: dict = {}
 
 
-def open_channel(run_id: str, *, root=None, backend: str = "sqlite", json_default=None):
+def open_channel(run_id: str, *, root: str | os.PathLike[str] | None = None,
+                 backend: str = "sqlite",
+                 json_default: Callable[[object], object] | None = None) -> Channel:
     """Locate and open a run's channel.
 
     ``root`` is the directory (sqlite) or namespace (memory) holding runs;
@@ -44,6 +49,8 @@ def open_channel(run_id: str, *, root=None, backend: str = "sqlite", json_defaul
     value payloads (e.g. numpy scalars -> float); readers are unaffected.
     """
     if backend == "sqlite":
+        if root is None:
+            raise ValueError("the sqlite backend requires a root directory (got root=None)")
         return SqliteChannel(Path(root) / f"{run_id}.db", json_default=json_default)
     if backend == "memory":
         log, lock = _MEMORY_LOGS.setdefault((str(root), run_id), ([], threading.Lock()))
@@ -51,4 +58,4 @@ def open_channel(run_id: str, *, root=None, backend: str = "sqlite", json_defaul
     raise ValueError(f"unknown backend: {backend!r} (expected 'sqlite' or 'memory')")
 
 
-__all__ = ["Envelope", "MemoryChannel", "SqliteChannel", "open_channel"]
+__all__ = ["Channel", "Envelope", "MemoryChannel", "SqliteChannel", "open_channel"]

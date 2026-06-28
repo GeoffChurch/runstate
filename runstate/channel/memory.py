@@ -17,18 +17,21 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Callable
 
+from .base import Channel
 from .envelope import Envelope
 
 
-class MemoryChannel:
-    def __init__(self, log: list | None = None, lock=None, *, json_default=None):
+class MemoryChannel(Channel):
+    def __init__(self, log: list | None = None, lock: threading.Lock | None = None,
+                 *, json_default: Callable[[object], object] | None = None) -> None:
         self._log: list[Envelope] = log if log is not None else []
         self._lock = lock if lock is not None else threading.Lock()
         self._json_default = json_default
 
-    def send(self, body: dict, *, topic: str, name=None, request_id=None,
-             expected_seq=None) -> int | None:
+    def send(self, body: dict, *, topic: str, name: str | None = None,
+             request_id: str | None = None, expected_seq: int | None = None) -> int | None:
         # The json round-trip both validates serializability and snapshots the
         # body to an independent, JSON-safe copy (json_default coerces exotic
         # types on the way out; the stored copy then needs no hook on read).
@@ -46,10 +49,10 @@ class MemoryChannel:
         self,
         after: int = 0,
         *,
-        topics=None,
-        name=None,
-        request_ids=None,
-        limit=None,
+        topics: list[str] | None = None,
+        name: str | None = None,
+        request_ids: list[str] | None = None,
+        limit: int | None = None,
     ) -> list[Envelope]:
         with self._lock:
             log = list(self._log)
@@ -70,7 +73,7 @@ class MemoryChannel:
                 break
         return out
 
-    def latest(self, topic: str, name=None) -> Envelope | None:
+    def latest(self, topic: str, name: str | None = None) -> Envelope | None:
         with self._lock:
             log = list(self._log)
         for e in reversed(log):
@@ -87,7 +90,7 @@ def _snapshot(e: Envelope) -> Envelope:
     return Envelope(e.seq, e.topic, e.name, e.request_id, json.loads(json.dumps(e.body)))
 
 
-def _topic_match(topic: str, patterns) -> bool:
+def _topic_match(topic: str, patterns: list[str]) -> bool:
     for p in patterns:
         if p.endswith(".>"):
             if topic.startswith(p[:-1]):  # "control.>" -> prefix "control."

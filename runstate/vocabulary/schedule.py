@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import NamedTuple
 
 
-def satisfied(cond: dict, *, step=None, time_seconds: float = 0.0, count: int = 0) -> bool:
+def satisfied(cond: dict, *, step: int | None = None, time_seconds: float = 0.0, count: int = 0) -> bool:
     """Is ``cond`` satisfied at coordinates (step, time_seconds, count)?"""
     if "any" in cond:
         return any(
@@ -32,9 +32,9 @@ def satisfied(cond: dict, *, step=None, time_seconds: float = 0.0, count: int = 
     if "step" in cond:
         return step is not None and step >= cond["step"]
     if "time_seconds" in cond:
-        return time_seconds >= cond["time_seconds"]
+        return bool(time_seconds >= cond["time_seconds"])
     if "count" in cond:
-        return count >= cond["count"]
+        return bool(count >= cond["count"])
     raise ValueError(f"unknown condition: {cond!r}")
 
 
@@ -58,10 +58,10 @@ class Subscription:
         self.until = schedule.get("until")
         self.registered_at = registered_at
         self.count = 0
-        self._last_step = None
-        self._last_elapsed = None
+        self._last_step: int | None = None
+        self._last_elapsed: float | None = None
 
-    def tick(self, *, step, now: float) -> Decision:
+    def tick(self, *, step: int | None, now: float) -> Decision:
         elapsed = now - self.registered_at
         # Pre-fire expiry gate (catches step/time `until`, and count `until`
         # once the budget is already spent).
@@ -76,7 +76,7 @@ class Subscription:
             self._last_elapsed = elapsed
         return Decision(fire, self._expired(step, elapsed))
 
-    def _triggers(self, step, elapsed: float) -> bool:
+    def _triggers(self, step: int | None, elapsed: float) -> bool:
         from_open = self.from_ is None or satisfied(
             self.from_, step=step, time_seconds=elapsed, count=self.count
         )
@@ -91,10 +91,11 @@ class Subscription:
             if (step is not None and self._last_step is not None)
             else None
         )
+        assert self._last_elapsed is not None  # set with count on the first fire (count>0 here)
         since_elapsed = elapsed - self._last_elapsed
         return satisfied(self.every, step=since_step, time_seconds=since_elapsed, count=0)
 
-    def _expired(self, step, elapsed: float) -> bool:
+    def _expired(self, step: int | None, elapsed: float) -> bool:
         # Post-fire: count-based `until` (the fire that reached the budget), and
         # one-shot subscriptions that have now fired.
         if self.until is not None and satisfied(
@@ -115,7 +116,7 @@ class Subscription:
         )
 
 
-def is_unsatisfiable(schedule: dict, *, step) -> bool:
+def is_unsatisfiable(schedule: dict, *, step: int | None) -> bool:
     """Can this schedule produce *zero* fires, determinable at registration?
 
     Static cases (docs/design-v0.2.md §6):
@@ -150,7 +151,7 @@ def is_unsatisfiable(schedule: dict, *, step) -> bool:
     return False
 
 
-def _conjunctive_corner(cond: dict):
+def _conjunctive_corner(cond: dict) -> tuple[int, float] | None:
     """The single minimal ``(step, time)`` corner of a conjunctive condition, or
     None if it contains an ``any`` (many corners) or isn't corner-representable.
     Sound for the from ⟹ until check: ``until`` holding at this corner means it
@@ -172,7 +173,7 @@ def _conjunctive_corner(cond: dict):
     return None  # count (not a `from` key) or unknown -> punt
 
 
-def references_time(schedule) -> bool:
+def references_time(schedule: dict) -> bool:
     """Does the schedule contain a ``time_seconds`` atom anywhere in
     ``from``/``every``/``until``? The episode-scoping predicate
     (specs/time-lease-boundary.md): a time atom's meaning — seconds since
@@ -180,7 +181,7 @@ def references_time(schedule) -> bool:
     *lease*, scoped to a single episode (blunt-but-crisp: no per-atom
     carve-outs). Tolerant: an unparseable schedule is NOT time-referencing
     (the worker naks it, which answers it)."""
-    def has_time(cond):
+    def has_time(cond: object) -> bool:
         if not isinstance(cond, dict):
             return False
         if "any" in cond and isinstance(cond["any"], list):

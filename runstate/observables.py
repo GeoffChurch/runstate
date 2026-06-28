@@ -22,10 +22,12 @@ stateful Watcher's.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Optional
 
+from .channel import Channel, Envelope
 from .vocabulary.payloads import Stopped, Terminated, Topic
 from .vocabulary.handle import resolve
 from .vocabulary.schedule import references_time
@@ -76,7 +78,7 @@ class RunResult:
         return True
 
 
-def latest_episode(channel):
+def latest_episode(channel: Channel) -> Envelope | None:
     """The latest ``lifecycle.started`` envelope, or None if no worker ever
     attached. *Latest* means latest — live, cleanly ended, or crashed alike
     (liveness is ``live_episode``'s composition; None = the run was never
@@ -92,7 +94,7 @@ def latest_episode(channel):
     return channel.latest(Topic.LIFECYCLE_STARTED)
 
 
-def live_episode(channel) -> Optional[str]:
+def live_episode(channel: Channel) -> Optional[str]:
     """Handle of the currently-live episode, or None: the latest episode
     (``latest_episode``) with no following ``stopped`` whose worker resolves
     alive (a started-then-crashed episode resolves dead -> not live)."""
@@ -102,12 +104,13 @@ def live_episode(channel) -> Optional[str]:
     stopped = channel.latest(Topic.LIFECYCLE_STOPPED)
     if stopped is not None and stopped.seq > started.seq:
         return None
-    if resolve(started.body["handle"]) is False:
+    handle: str = started.body["handle"]
+    if resolve(handle) is False:
         return None
-    return started.body["handle"]
+    return handle
 
 
-def _terminal_unless_followed(channel, terminal_topic, opener_topic):
+def _terminal_unless_followed(channel: Channel, terminal_topic: str, opener_topic: str) -> Envelope | None:
     """The latest terminal record, unless a newer episode opened after it."""
     term = channel.latest(terminal_topic)
     if term is None:
@@ -118,7 +121,7 @@ def _terminal_unless_followed(channel, terminal_topic, opener_topic):
     return term
 
 
-def peek_terminal(channel) -> Optional[RunResult]:
+def peek_terminal(channel: Channel) -> Optional[RunResult]:
     """Return a terminal RunResult if the run has left a terminal *record*, else
     None. This is the record-based verdict (a clean ``lifecycle.stopped``, or a
     reaped ``launcher.terminated``); the inference-based tier (heartbeat
@@ -155,7 +158,7 @@ def peek_terminal(channel) -> Optional[RunResult]:
     return None
 
 
-def _boundary_voided(sub_seq, started_seqs, drainer_started_seq) -> bool:
+def _boundary_voided(sub_seq: int, started_seqs: list[int], drainer_started_seq: int) -> bool:
     """The episode-boundary discharge (specs/time-lease-boundary.md): a
     time-referencing subscribe is voided iff a ``lifecycle.started`` other
     than the draining episode's own follows it — equivalently, a ``started``
@@ -165,7 +168,7 @@ def _boundary_voided(sub_seq, started_seqs, drainer_started_seq) -> bool:
     return any(sub_seq < b < drainer_started_seq for b in started_seqs)
 
 
-def live_demand(channel) -> list:
+def live_demand(channel: Channel) -> list:
     """The live leased demand: every ``control.subscribe`` envelope with no
     **answer** following it by seq (specs/service-worker.md: the positional
     answer fold — an answer is a ``control.unsubscribe`` or ``lifecycle.nak``
@@ -199,7 +202,7 @@ def live_demand(channel) -> list:
     )
 
 
-def progress(channel) -> Optional[int]:
+def progress(channel: Channel) -> Optional[int]:
     """Max step the trajectory reached, from the DENSE axis (the heartbeat
     beats every tick regardless of emission): the latest
     ``lifecycle.heartbeat.step`` and the latest ``lifecycle.stopped.final_step``,
@@ -216,7 +219,7 @@ def progress(channel) -> Optional[int]:
     return max(steps) if steps else None
 
 
-def _value_points(channel):
+def _value_points(channel: Channel) -> Iterator[tuple[str, object, object]]:
     """Decode ``value`` envelopes to ``(name, step, value)`` samples, lazily.
     Applies the domain rules: skip records with no envelope ``name``, a null
     ``step``, or no ``"value"`` key — a stepless emission is outside the
@@ -230,7 +233,7 @@ def _value_points(channel):
         yield e.name, e.body["step"], e.body["value"]
 
 
-def value_series(channel) -> dict:
+def value_series(channel: Channel) -> dict:
     """``{name: {step: value}}`` — the run's reported values as functions of
     step, in one log pass (per-name access = indexing; name enumeration =
     ``.keys()``).

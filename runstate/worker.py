@@ -11,8 +11,10 @@ The clock is injectable (``now``) for deterministic tests.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable, Iterator
 from dataclasses import asdict
 
+from .channel import Channel, Envelope
 from .vocabulary.payloads import Heartbeat, Nak, Started, Stopped, Topic, Value
 from .vocabulary.handle import local_handle
 from .vocabulary.schedule import (
@@ -26,7 +28,7 @@ from .observables import _boundary_voided, live_episode
 
 
 class Worker:
-    def __init__(self, channel, *, now=time.time):
+    def __init__(self, channel: Channel, *, now: Callable[[], float] = time.time):
         self._ch = channel
         self._now = now
         self._values: dict = {}
@@ -37,7 +39,7 @@ class Worker:
         self._pending_stops: list = []
         self._cursor = 0
         self._stopped = False
-        self._last_step = None
+        self._last_step: int | None = None
         # Attaching CAS-claims the episode: a worker that loses (a live episode
         # already exists) sets _lost and exits without acting on the channel.
         self._lost = False
@@ -89,16 +91,15 @@ class Worker:
     def __enter__(self) -> "Worker":
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> bool:
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         if self._lost:
-            return False
+            return
         if exc_type is not None:
             self.stopped(error=str(exc), final_step=self._last_step)
         else:
             self.stopped(final_step=self._last_step)   # default: no claim -> preempted
-        return False
 
-    def steps(self, total=None, *, start=0):
+    def steps(self, total: int | None = None, *, start: int = 0) -> Iterator[int]:
         """Drive the worker over a loop. Yields each step; after the body it
         ``tick``s (servicing the values set this iteration) and stops on a
         commanded stop. Pair with ``with Worker(...) as w`` so the dying breath
@@ -119,7 +120,7 @@ class Worker:
                 return
             step += 1
 
-    def serve(self):
+    def serve(self) -> Iterator[int]:
         """Drive a service: yield (the body does its work — set values, pace
         itself), then tick STEPLESS (``step=None``: the heartbeat carries a
         null step and step-keyed conditions nak — design §7's service worker),
@@ -139,11 +140,11 @@ class Worker:
                 return
             i += 1
 
-    def set(self, name: str, value) -> None:
+    def set(self, name: str, value: object) -> None:
         """Update the worker's current value for ``name``."""
         self._values[name] = value
 
-    def tick(self, step) -> bool:
+    def tick(self, step: int | None) -> bool:
         """Drain control, service due subscriptions, beacon a heartbeat. Returns
         True iff a pending commanded stop has triggered (stop at this safe
         point). The decision is a monotone *level*, not a one-shot pulse: once
@@ -213,7 +214,8 @@ class Worker:
                 return True
             # CAS lost: something landed after `observed` — loop re-reads.
 
-    def stopped(self, *, completed: bool = False, error=None, final_step=None) -> None:
+    def stopped(self, *, completed: bool = False, error: str | None = None,
+                final_step: int | None = None) -> None:
         """Emit the cooperative dying breath (lifecycle.stopped). Its existence = a
         clean, resumable halt. ``completed=True`` is the opt-in completion claim; the
         default (completed=False, no error) projects to ``preempted``; an ``error``
@@ -232,7 +234,7 @@ class Worker:
 
     # ----- internals -----
 
-    def _drain_control(self, step) -> None:
+    def _drain_control(self, step: int | None) -> None:
         # "control.>" is a read-glob (the substrate expands it to the control.*
         # family), not a wire topic -- it stays a bare string; there is no Topic
         # member for a query pattern.
@@ -247,7 +249,7 @@ class Worker:
             except Exception as exc:
                 self._nak(e.request_id, "malformed", str(exc))
 
-    def _handle_control(self, e, step) -> None:
+    def _handle_control(self, e: Envelope, step: int | None) -> None:
         if e.topic == Topic.CONTROL_SUBSCRIBE:
             if e.request_id is None:
                 self._nak(None, "malformed", "subscribe requires a request_id")
@@ -324,14 +326,14 @@ class Worker:
         else:
             self._nak(e.request_id, "unsupported", f"unknown control topic {e.topic!r}")
 
-    def _nak(self, request_id, reason: str, message: str) -> None:
+    def _nak(self, request_id: str | None, reason: str, message: str) -> None:
         self._ch.send(
             asdict(Nak(reason=reason, message=message)),
             topic=Nak.TOPIC,
             request_id=request_id,
         )
 
-    def _service(self, step) -> None:
+    def _service(self, step: int | None) -> None:
         now = self._now()
         for request_id, (name, sub) in list(self._subs.items()):
             # A schedule that's well-formed enough to register but blows up when
@@ -372,7 +374,7 @@ class Worker:
                 self._ch.send({}, topic=Topic.CONTROL_UNSUBSCRIBE, request_id=request_id)
                 del self._subs[request_id]
 
-    def _stop_decision(self, step) -> bool:
+    def _stop_decision(self, step: int | None) -> bool:
         """Does any pending stop's condition hold at (step, now)? Conditions
         are monotone (schedule.py), so the decision latches by inheritance --
         no fired flag, and evaluating it consumes nothing. Combination is the

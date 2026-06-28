@@ -10,9 +10,12 @@ failed outcome. Concurrent / cross-run coordination is the Watcher's barrier
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
+from typing import Any
 
-from .observables import Outcome, peek_terminal
+from .channel import Envelope
+from .observables import Outcome, RunResult, peek_terminal
 from .watcher import Watcher
 
 # Outcomes sweep treats as failure for stop_on_failure. A clean "preempted"
@@ -35,19 +38,19 @@ class Variant:
 
 
 def sweep(
-    variants,
-    launcher,
+    variants: Iterable[Variant],
+    launcher: Any,   # heterogeneous `launch` signatures -> not a typed Protocol (see launcher.py)
     *,
-    on_event=None,
-    resume=True,
-    stop_on_failure=False,
-    watcher=None,
-):
+    on_event: Callable[[str, Envelope], object] | None = None,
+    resume: bool = True,
+    stop_on_failure: bool = False,
+    watcher: Watcher | None = None,
+) -> list[RunResult]:
     """Launch each variant into its own run and watch it to a terminal result,
     sequentially. Returns one RunResult per run actually reached (so a
     stop_on_failure halt yields a shorter list)."""
     watcher = watcher if watcher is not None else Watcher()
-    results = []
+    results: list[RunResult] = []
     for v in variants:
         if resume:
             existing = peek_terminal(launcher.open_channel(v.run_id))

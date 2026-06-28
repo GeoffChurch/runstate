@@ -9,11 +9,39 @@ needs a producer). The layers join *through the log*, never by piping values.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Protocol
 
+from .channel import Channel
 from .vocabulary.payloads import Topic
 from .vocabulary.schedule import Subscription, satisfied
-from .launcher import relaunch_if_needed
+from .launcher import Launcher, relaunch_if_needed
 from .observables import Outcome, live_episode, peek_terminal, progress
+
+if TYPE_CHECKING:
+    from .sweep import Variant
+
+
+class LiveHandle(Protocol):
+    """The minimal liveness handle `ensure` drives: is it still running, and
+    block until it isn't. Satisfied by a launcher's `LaunchHandle` and by the
+    `_ForeignEpisode` gate (specs/store.md Recipe 2)."""
+
+    def is_alive(self) -> bool: ...
+    def wait(self) -> object: ...
+
+
+class Producer(Protocol):
+    """The producer seam (specs/memoizer.md): a run `ensure` can read and extend.
+    `channel` / `run_id` locate the log; `extend(until)` drives toward `until`
+    and returns a liveness handle (never None -- the seam contract)."""
+
+    run_id: str
+
+    @property
+    def channel(self) -> Channel: ...
+
+    def extend(self, until: dict) -> LiveHandle: ...
 
 
 class _ForeignEpisode:
@@ -26,17 +54,17 @@ class _ForeignEpisode:
     progress is re-driven (the lazy-launch re-wake posture), never raised on
     -- the guard remains for OWN spawns that burn without progress."""
 
-    def __init__(self, channel):
+    def __init__(self, channel: Channel):
         self._channel = channel
 
-    def is_alive(self):
+    def is_alive(self) -> bool:
         return live_episode(self._channel) is not None
 
-    def wait(self):
+    def wait(self) -> None:
         return None
 
 
-def foreign_episode(channel):
+def foreign_episode(channel: Channel) -> _ForeignEpisode:
     """The one public copy of the producer gate's foreign-episode handle (the
     F7 doctrine: one boundary rule, one implementation). Compose a producer's
     ``extend`` as ``relaunch_if_needed(...) or foreign_episode(channel)``."""
@@ -52,19 +80,19 @@ class _LaunchProducer:
     service producer is the user's own object with the same ``.channel`` /
     ``.run_id`` / ``.extend`` shape (the seam)."""
 
-    def __init__(self, launcher, variant, target_key="up_to"):
-        self._launcher = launcher
+    def __init__(self, launcher: Any, variant: Variant, target_key: str = "up_to") -> None:
+        self._launcher: Launcher = launcher
         self._variant = variant
         self._target_key = target_key
         self.run_id = variant.run_id
 
     @property
-    def channel(self):
+    def channel(self) -> Channel:
         # cheap: both backends share the backing store, so a fresh read view per
         # access is fine (and is what `ensure` wants as the log grows).
         return self._launcher.open_channel(self._variant.run_id)
 
-    def extend(self, until):
+    def extend(self, until: dict) -> LiveHandle:
         """Trigger production toward `until`: relaunch iff not already live,
         else hand back the live episode's foreign handle (the Recipe-2 gate --
         never ``None``, whose record-only wait strands the latecomer on a
@@ -90,7 +118,7 @@ class _LaunchProducer:
         ) or foreign_episode(self.channel)
 
 
-def launch_producer(launcher, variant, *, target_key="up_to"):
+def launch_producer(launcher: Any, variant: Variant, *, target_key: str = "up_to") -> _LaunchProducer:
     """A producer backed by ``launcher`` relaunching ``variant``, injecting the
     target into the worker kwargs under ``target_key`` (the loop bound).
 
@@ -102,7 +130,7 @@ def launch_producer(launcher, variant, *, target_key="up_to"):
     return _LaunchProducer(launcher, variant, target_key)
 
 
-def history(channel, name, schedule: dict) -> list[dict]:
+def history(channel: Channel, name: str, schedule: dict) -> list[dict]:
     """Replay ``schedule`` (the Subscription algebra) over the logged ``value``
     points for ``name``; return the bodies it fires on, in step order.
 
@@ -151,7 +179,7 @@ def history(channel, name, schedule: dict) -> list[dict]:
 _FAILURES = Outcome.failures()
 
 
-def _progress(channel) -> int:
+def _progress(channel: Channel) -> int:
     """The public ``observables.progress`` with None mapped to -1 — a local
     arithmetic convenience so `_window_step = _progress + 1` starts at 0 on an
     empty log (the in-band sentinel stays private; the public observable
@@ -160,7 +188,7 @@ def _progress(channel) -> int:
     return -1 if p is None else p
 
 
-def _elapsed(channel, clock) -> float:
+def _elapsed(channel: Channel, clock: Callable[[], float]) -> float:
     """Run-relative seconds on the consumer's OWN poll-clock (dense, monotone,
     gap-inclusive; no wire dependency -- see the spec's clock rationale).
     Returns 0.0 before the run has started (no epoch yet -> time conditions
@@ -168,10 +196,10 @@ def _elapsed(channel, clock) -> float:
     started = channel.read(topics=[Topic.LIFECYCLE_STARTED], limit=1)
     if not started or started[0].body.get("attached_at") is None:
         return 0.0
-    return clock() - started[0].body["attached_at"]
+    return float(clock() - started[0].body["attached_at"])
 
 
-def _window_step(channel) -> int:
+def _window_step(channel: Channel) -> int:
     """The step coordinate for window-close satisfaction: `_progress + 1`.
 
     `ensure(until={step:N})` drives the half-open window `[0, N)` -- the
@@ -199,7 +227,7 @@ def _reject_count(cond: dict) -> None:
             _reject_count(c)
 
 
-def _satisfied(channel, until, *, clock) -> bool:
+def _satisfied(channel: Channel, until: dict, *, clock: Callable[[], float]) -> bool:
     """Has the run closed the `until` window? Coordinates read live: step from
     the dense axis (`_window_step`), time from the consumer's poll-clock
     (`_elapsed`). `count=0` -- the count drive-axis is rejected at entry."""
@@ -209,8 +237,9 @@ def _satisfied(channel, until, *, clock) -> bool:
 
 # `until` is the run *bound*; the emission *filter* (`from`/`every`, the
 # ensure(I) strided case) is deferred -- docs/backlog/memoizer-index-algebra.md.
-def ensure(producer, name, *, until, poll_interval=0.01, sleep=time.sleep,
-           clock=time.time) -> list[dict]:
+def ensure(producer: Producer, name: str, *, until: dict, poll_interval: float = 0.01,
+           sleep: Callable[[float], None] = time.sleep,
+           clock: Callable[[], float] = time.time) -> list[dict]:
     """Return ``name``'s series for the window ``until`` (a Condition from the
     subscription algebra: ``{"step":N} | {"time_seconds":S} | any/all``),
     producing the missing suffix on a miss. Window-closed (or worker-declared

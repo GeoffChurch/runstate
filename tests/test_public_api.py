@@ -3,7 +3,7 @@
 import runstate
 
 EXPECTED = {
-    "open_channel", "attach", "Envelope",
+    "open_channel", "attach", "Channel", "Envelope",
     "Worker",
     "Launcher", "LaunchHandle", "ThreadLauncher", "LocalLauncher",
     "Watcher", "await_consumed", "RunStatus", "Running", "RunResult", "Outcome", "peek_terminal",

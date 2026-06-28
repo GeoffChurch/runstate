@@ -20,9 +20,12 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from typing import Optional, Union
 
+from .channel import Channel, Envelope
+from .launcher import LaunchHandle
 from .observables import Outcome, RunResult, peek_terminal
 from .vocabulary.payloads import Heartbeat, Nak, Topic
 
@@ -49,8 +52,8 @@ RunStatus = Union[Running, RunResult]
 @dataclass
 class _RunState:
     run_id: str
-    channel: object
-    handle: Optional[object]
+    channel: Channel
+    handle: Optional[LaunchHandle]
     last_heartbeat_at: float
     last_hb_seq: int = field(default=0)
     last_step: Optional[int] = field(default=None)
@@ -60,8 +63,8 @@ class Watcher:
     def __init__(
         self,
         *,
-        now=time.time,
-        sleep=time.sleep,
+        now: Callable[[], float] = time.time,
+        sleep: Callable[[float], None] = time.sleep,
         poll_interval: float = 0.05,
         heartbeat_timeout: Optional[float] = None,
     ):
@@ -72,16 +75,16 @@ class Watcher:
         self._runs: dict[str, _RunState] = {}
         self._event_cursors: dict[str, int] = {}
 
-    def add(self, handle) -> None:
+    def add(self, handle: LaunchHandle) -> None:
         """Track a launched run by its handle (enables the probe tier)."""
         self._track(handle.run_id, handle.channel, handle)
 
-    def observe(self, run_id: str, channel) -> None:
+    def observe(self, run_id: str, channel: Channel) -> None:
         """Track a run by run_id + channel, handle-free (late-attach or
         observe-only). The probe tier is unavailable; staleness still applies."""
         self._track(run_id, channel, None)
 
-    def _track(self, run_id, channel, handle) -> None:
+    def _track(self, run_id: str, channel: Channel, handle: Optional[LaunchHandle]) -> None:
         self._runs[run_id] = _RunState(
             run_id=run_id,
             channel=channel,
@@ -132,7 +135,9 @@ class Watcher:
         return Running(step=st.last_step, beacon_age=beacon_age)
 
     def wait(
-        self, run_id: str, *, on_event=None, timeout: Optional[float] = None
+        self, run_id: str, *,
+        on_event: Callable[[str, Envelope], object] | None = None,
+        timeout: Optional[float] = None,
     ) -> RunResult:
         """Block until ``run_id`` is terminal (any tier), polling at
         ``poll_interval``. If ``on_event`` is given, drain new envelopes across
@@ -146,7 +151,7 @@ class Watcher:
                 for rid, e in self._drain():
                     on_event(rid, e)
             s = self.poll(run_id)
-            if s.done:
+            if isinstance(s, RunResult):
                 if on_event is not None:  # deliver any envelopes up to the verdict
                     for rid, e in self._drain():
                         on_event(rid, e)
@@ -155,7 +160,8 @@ class Watcher:
                 raise TimeoutError(f"run {run_id!r} not terminal within {timeout}s")
             self._sleep(self._poll_interval)
 
-    def wait_all(self, *, on_event=None, timeout: Optional[float] = None) -> dict:
+    def wait_all(self, *, on_event: Callable[[str, Envelope], object] | None = None,
+                 timeout: Optional[float] = None) -> dict:
         """Block until every tracked run is terminal, returning ``{run_id:
         RunStatus}`` total over the tracked set. Uncapped this is a pure
         synchronization (a slow-but-healthy run delays it, by design). With
@@ -191,7 +197,7 @@ class Watcher:
             self._sleep(self._poll_interval)
         return results
 
-    def broadcast(self, name: str, schedule: dict, *, request_id=None) -> str:
+    def broadcast(self, name: str, schedule: dict, *, request_id: str | None = None) -> str:
         """Fan one ``control.subscribe`` across every tracked run under a single
         shared ``request_id`` (returned). The run_id disambiguates the responses;
         this is the cross-run barrier primitive — no Experiment class. The caller
@@ -203,7 +209,7 @@ class Watcher:
             )
         return rid
 
-    def iter_events(self, timeout: Optional[float] = None):
+    def iter_events(self, timeout: Optional[float] = None) -> Iterator[tuple[str, Envelope]]:
         """Yield ``(run_id, Envelope)`` for new envelopes across all tracked runs
         as they arrive, advancing a per-run cursor independent of the verdict
         polling. Without ``timeout`` this is an endless stream (the caller breaks
@@ -240,8 +246,10 @@ class Watcher:
             st.last_step = Heartbeat(**hb.body).step
 
 
-def await_consumed(channel, seq, *, request_id=None, timeout=None,
-                   poll_interval=0.05, now=time.time, sleep=time.sleep):
+def await_consumed(channel: Channel, seq: int, *, request_id: str | None = None,
+                   timeout: float | None = None, poll_interval: float = 0.05,
+                   now: Callable[[], float] = time.time,
+                   sleep: Callable[[float], None] = time.sleep) -> "Nak | RunResult | None":
     """Block until the control request at ``seq`` is ANSWERED or drained.
     Answer-first (specs/service-worker.md): a ``lifecycle.nak`` bearing
     ``request_id`` that *follows* ``seq`` resolves immediately (returns the
@@ -256,7 +264,7 @@ def await_consumed(channel, seq, *, request_id=None, timeout=None,
     ``RunResult`` (the run died under the request) | ``None`` (accepted)."""
     deadline = None if timeout is None else now() + timeout
 
-    def _answer():
+    def _answer() -> "Nak | None":
         # Positional: only a nak FOLLOWING the request answers it.
         if request_id is None:
             return None

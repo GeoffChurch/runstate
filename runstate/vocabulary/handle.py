@@ -20,7 +20,7 @@ def local_handle() -> str:
     return f"local://{socket.gethostname()}/{os.getpid()}"
 
 
-def _parse_local(handle):
+def _parse_local(handle: str) -> tuple[str, int] | None:
     """``(host, pid)`` of a ``local://host/pid`` token, or None — THE one
     parse site for the local-handle grammar (audit F8; the ``?start=T``
     disambiguator of conventions-hygiene F9 lands here)."""

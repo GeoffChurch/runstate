@@ -83,7 +83,7 @@ class Stopped:
     final_step: Optional[int]
     TOPIC: ClassVar[str] = Topic.LIFECYCLE_STOPPED
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         # completed ⟹ error is None: keeps the two content fields non-overlapping, so
         # `error is not None` ⟺ errored holds globally (mirrors Terminated's exited-XOR-killed).
         if self.completed and self.error is not None:
@@ -117,7 +117,7 @@ class Terminated:
     signal: Optional[int]
     TOPIC: ClassVar[str] = Topic.LAUNCHER_TERMINATED
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         # Structural coupling: the schema enforces exited(exit_code) XOR
         # killed(signal) on the wire; mirror it here so an illegal object can't
         # exist in Python either. (Validation-only -- safe on a frozen dataclass.)
