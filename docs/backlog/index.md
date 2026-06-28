@@ -99,6 +99,11 @@ clusters that unlock each other, with a sequencing — see
   survives multi-writer `control.*` (§12.7–8) and replicated logs, where "next" is
   not well-defined. No-op while every log has a single home; revisit with the
   Postgres/Redis backends or any replication story.
+- [launcher-protocol-typing](launcher-protocol-typing.md) — the `Launcher` Protocol's
+  `launch` can't be structurally typed (the two reference launchers have disjoint
+  `launch` signatures: a callable `target` vs a `cmd`). Split the uniform
+  `open_channel` from the per-launcher `launch` (helpers take a launch thunk). Interim:
+  `launcher: Any` in the four helpers.
 - [protocol-async-api](protocol-async-api.md) — wrap the JSON Schema in AsyncAPI for
   a richer spec format (multi-channel, lifecycle events). Defer until the v0.2
   protocol grows enough to justify the layer.
