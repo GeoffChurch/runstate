@@ -206,9 +206,11 @@ One consumer repo (translation), two instances, **one already mitigated**:
 
 So: well-motivated, but below the "≥3 validated use cases" bar the repo applies
 to speculative surface (cf. the Reconfigure non-goal). Promote when a live
-consumer depends on a post-terminal artifact (the `estimate_worker` trigger), or
-fold in opportunistically if `ensure`'s terminal-outcome handling is reopened for
-`ensure-redrive-recoverable-terminations.md`.
+consumer depends on a post-terminal artifact (the `estimate_worker` trigger).
+*(The earlier "fold in opportunistically when `ensure`'s terminal handling is
+reopened for ensure-redrive" trigger has **lapsed**: ensure-redrive shipped
+2026-06-27 as G1 + a caller recipe with `ensure` left **unchanged** — there is no
+reopening to ride, so this awaits the `estimate_worker` consumer pull alone.)*
 
 ## Non-goals
 

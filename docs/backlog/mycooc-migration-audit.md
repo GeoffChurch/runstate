@@ -139,7 +139,7 @@ keep the earliest-firing pending stop, or simply latch on the first fire of *any
 stop (the F2 latch subsumes this). Ties into "Multi-orchestrator attribution
 (§12.7–8)".
 
-## F4 (HIGH — leak) — channels are never closed; `_LaunchProducer` reopens per access
+## F4 (re-audited LOW — a lifecycle gap, not an unbounded leak) — no channel `close` contract
 
 Only `SqliteChannel.close()` exists; nothing in `runstate/` calls it (grep-clean).
 `Watcher` (one channel per tracked run), `sweep`, `peek_terminal`/`live_episode`
@@ -150,6 +150,14 @@ all leak sqlite connections + WAL fds. A long-lived orchestrator (mycooc's
 make channels context managers and/or cache the connection in `_LaunchProducer`
 instead of reopening; give `Watcher`/`sweep` a `close()`. At minimum, document
 the ownership/lifecycle contract (who closes what) — it's currently unstated.
+
+**Re-audit 2026-06-27 (downgraded):** the original "HIGH leak" was overstated. Both
+backends now have `close()` (`memory.py` no-op, `sqlite.py`), and `ensure` binds
+`channel = producer.channel` **once** (`memoizer.py:225`) — so the per-access reopen
+bites only at the `extend`/`peek` call sites, where CPython refcounting reclaims the
+connection at GC. A paper-cut, not an unbounded leak. The idiomatic fix (make
+`Channel` a context manager + document who closes what) is still nice-to-have, not
+forced.
 
 ## F5 (MED — missing primitive) — no first-class reader for the historical value series
 
