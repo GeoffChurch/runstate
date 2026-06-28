@@ -32,8 +32,8 @@ The orchestrator spawns it, subscribes, and watches it to a terminal result:
 ```python
 import runstate
 
-with runstate.LocalLauncher(root="/tmp/runs") as launcher:
-    ch = launcher.open_channel("run-1")
+with runstate.LocalLauncher(root="/tmp/runs") as launcher, \
+        launcher.open_channel("run-1") as ch:   # the channel is a context manager
     ch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="me")
     handle = launcher.launch("run-1", ["python", "worker.py"])
 

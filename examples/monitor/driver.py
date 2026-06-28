@@ -59,9 +59,8 @@ def watch_until_idle(ch, launcher):
 
 def main():
     root = tempfile.mkdtemp(prefix="runstate-monitor-")   # off the repo tree (was ./.runs)
-    ch = open_channel(RUN, root=root)
     launcher = LocalLauncher(root=root)
-    with launcher:
+    with open_channel(RUN, root=root) as ch, launcher:    # the channel is a context manager
         # ----- episode 1 -----
         demand(ch, "dash-1")
         print("[driver] demand pre-staged; live:",
