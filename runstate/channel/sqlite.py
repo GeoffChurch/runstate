@@ -13,9 +13,10 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable
+from typing import Any
 
 from .base import Channel
-from .envelope import Envelope
+from .envelope import Body, Envelope
 
 # WAL is the default: on a local filesystem it keeps the log readable while a
 # writer holds the lock (the orchestrator polls while the worker writes). But WAL
@@ -105,7 +106,7 @@ class SqliteChannel(Channel):
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
 
-    def send(self, body: dict, *, topic: str, name: str | None = None,
+    def send(self, body: Body, *, topic: str, name: str | None = None,
              request_id: str | None = None, expected_seq: int | None = None) -> int | None:
         # json_default (sender-side) coerces exotic value payloads on the way out;
         # the stored text is always standard JSON, so any reader uses plain loads.
@@ -167,7 +168,7 @@ class SqliteChannel(Channel):
         limit: int | None = None,
     ) -> list[Envelope]:
         where = ["seq > ?"]
-        params: list = [after]
+        params: list[Any] = [after]
         if topics is not None:
             ors = []
             for t in topics:

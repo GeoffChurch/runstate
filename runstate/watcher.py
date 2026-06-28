@@ -28,6 +28,7 @@ from .channel import Channel, Envelope
 from .launcher import LaunchHandle
 from .observables import Outcome, RunResult, peek_terminal
 from .vocabulary.payloads import Heartbeat, Nak, Topic
+from .vocabulary.schedule import Condition
 
 
 @dataclass(frozen=True)
@@ -161,7 +162,7 @@ class Watcher:
             self._sleep(self._poll_interval)
 
     def wait_all(self, *, on_event: Callable[[str, Envelope], object] | None = None,
-                 timeout: Optional[float] = None) -> dict:
+                 timeout: Optional[float] = None) -> dict[str, RunStatus]:
         """Block until every tracked run is terminal, returning ``{run_id:
         RunStatus}`` total over the tracked set. Uncapped this is a pure
         synchronization (a slow-but-healthy run delays it, by design). With
@@ -174,7 +175,7 @@ class Watcher:
         ``wait_all`` over such a run blocks forever. Give those a timeout, a
         handle, or a heartbeat_timeout."""
         deadline = None if timeout is None else self._now() + timeout
-        results: dict = {}
+        results: dict[str, RunStatus] = {}
         pending = set(self._runs)
         while pending:
             if on_event is not None:
@@ -197,7 +198,7 @@ class Watcher:
             self._sleep(self._poll_interval)
         return results
 
-    def broadcast(self, name: str, schedule: dict, *, request_id: str | None = None) -> str:
+    def broadcast(self, name: str, schedule: Condition, *, request_id: str | None = None) -> str:
         """Fan one ``control.subscribe`` across every tracked run under a single
         shared ``request_id`` (returned). The run_id disambiguates the responses;
         this is the cross-run barrier primitive — no Experiment class. The caller
@@ -226,11 +227,11 @@ class Watcher:
             if not batch:
                 self._sleep(self._poll_interval)
 
-    def _drain(self) -> list:
+    def _drain(self) -> list[tuple[str, Envelope]]:
         """Pull all envelopes new since the last drain across every tracked run,
         advancing the per-run event cursor. Shared by iter_events and wait's
         on_event streaming."""
-        out = []
+        out: list[tuple[str, Envelope]] = []
         for run_id, st in list(self._runs.items()):
             cur = self._event_cursors.get(run_id, 0)
             for e in st.channel.read(after=cur):

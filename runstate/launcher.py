@@ -64,6 +64,13 @@ class Launcher(Protocol):
 
 
 @dataclass
+class _ThreadState:
+    """Mutable holder for the exception the target raised (in-process debug aid)."""
+
+    exc: BaseException | None = None
+
+
+@dataclass
 class _ThreadHandle:
     """The handle ThreadLauncher returns (concrete; the Launcher/LaunchHandle
     Protocols are extracted once LocalLauncher gives a second implementer)."""
@@ -72,13 +79,13 @@ class _ThreadHandle:
     channel: Channel
     handle: str
     _thread: threading.Thread
-    _state: dict
+    _state: _ThreadState
 
     @property
     def exception(self) -> Optional[BaseException]:
         """The exception the target raised, if any (in-process debugging aid;
         the *fact* of an errored death is on the log as launcher.terminated)."""
-        return self._state.get("exc")
+        return self._state.exc
 
     def is_alive(self) -> bool:
         return self._thread.is_alive()
@@ -106,7 +113,7 @@ class ThreadLauncher:
         return open_channel(run_id, root=self._root, backend=self._backend)
 
     def launch(self, run_id: str, target: Callable[..., object], *,
-               args: tuple = (), kwargs: dict | None = None) -> _ThreadHandle:
+               args: tuple[Any, ...] = (), kwargs: dict[str, Any] | None = None) -> _ThreadHandle:
         """Run ``target(channel, *args, **kwargs)`` on a thread for ``run_id``.
 
         Brackets the work with launcher.launched / launcher.terminated. Returns
@@ -117,13 +124,13 @@ class ThreadLauncher:
         channel = self.open_channel(run_id)
         handle = local_handle()
         channel.send(asdict(Launched(handle=handle)), topic=Launched.TOPIC)
-        state: dict = {"exc": None}
+        state = _ThreadState()
 
         def _run() -> None:
             try:
                 target(channel, *args, **kwargs)
             except BaseException as exc:  # recorded on the log, not swallowed
-                state["exc"] = exc
+                state.exc = exc
                 channel.send(
                     asdict(Terminated(reason="exited", exit_code=1, signal=None)),
                     topic=Terminated.TOPIC,
@@ -151,7 +158,7 @@ class _LocalHandle:
     run_id: str
     channel: Channel
     handle: str
-    _proc: subprocess.Popen
+    _proc: subprocess.Popen[bytes]
     _reaped: bool = field(default=False)
     # The seq of this child's launcher.launched record: the reap discipline's
     # claim check is scoped to starteds AFTER it, so an old episode's recycled

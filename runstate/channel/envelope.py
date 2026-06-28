@@ -8,7 +8,10 @@ package facade can depend on it without a cycle. See docs/design-v0.2.md §4.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
+
+Body = dict[str, Any]
+"""An envelope's opaque body: a JSON object the substrate stores but never interprets."""
 
 
 @dataclass(frozen=True)
@@ -25,4 +28,4 @@ class Envelope:
     topic: str
     name: Optional[str]
     request_id: Optional[str]
-    body: dict
+    body: Body

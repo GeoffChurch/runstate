@@ -12,9 +12,9 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol
 
-from .channel import Channel
+from .channel import Body, Channel
 from .vocabulary.payloads import Topic
-from .vocabulary.schedule import Subscription, satisfied
+from .vocabulary.schedule import Condition, Subscription, satisfied
 from .launcher import Launcher, relaunch_if_needed
 from .observables import Outcome, live_episode, peek_terminal, progress
 
@@ -41,7 +41,7 @@ class Producer(Protocol):
     @property
     def channel(self) -> Channel: ...
 
-    def extend(self, until: dict) -> LiveHandle: ...
+    def extend(self, until: Condition) -> LiveHandle: ...
 
 
 class _ForeignEpisode:
@@ -92,7 +92,7 @@ class _LaunchProducer:
         # access is fine (and is what `ensure` wants as the log grows).
         return self._launcher.open_channel(self._variant.run_id)
 
-    def extend(self, until: dict) -> LiveHandle:
+    def extend(self, until: Condition) -> LiveHandle:
         """Trigger production toward `until`: relaunch iff not already live,
         else hand back the live episode's foreign handle (the Recipe-2 gate --
         never ``None``, whose record-only wait strands the latecomer on a
@@ -130,7 +130,7 @@ def launch_producer(launcher: Any, variant: Variant, *, target_key: str = "up_to
     return _LaunchProducer(launcher, variant, target_key)
 
 
-def history(channel: Channel, name: str, schedule: dict) -> list[dict]:
+def history(channel: Channel, name: str, schedule: Condition) -> list[Body]:
     """Replay ``schedule`` (the Subscription algebra) over the logged ``value``
     points for ``name``; return the bodies it fires on, in step order.
 
@@ -145,7 +145,7 @@ def history(channel: Channel, name: str, schedule: dict) -> list[dict]:
     stepped-trajectory reader). For a point with ``t is None`` the run-relative
     clock cannot advance, so *time*-keyed conditions are inert for it (``step``
     conditions are unaffected)."""
-    by_step: dict = {}
+    by_step: dict[Any, Body] = {}
     for e in channel.read(topics=[Topic.VALUE], name=name):
         b = e.body
         s = b["step"]
@@ -161,7 +161,7 @@ def history(channel: Channel, name: str, schedule: dict) -> list[dict]:
         else 0.0
     )
     sub = Subscription(schedule, registered_at=epoch)
-    out: list[dict] = []
+    out: list[Body] = []
     for b in points:
         now = b["t"] if b["t"] is not None else epoch
         decision = sub.tick(step=b["step"], now=now)
@@ -214,7 +214,7 @@ def _window_step(channel: Channel) -> int:
     return _progress(channel) + 1
 
 
-def _reject_count(cond: dict) -> None:
+def _reject_count(cond: Condition) -> None:
     """ensure does not drive the count axis (no use case; an un-driven count atom
     would never satisfy -> livelock). Reject at entry, walking any/all. (count
     stays legal in a *subscription* until -- only the ensure drive-target rejects it.)"""
@@ -227,7 +227,7 @@ def _reject_count(cond: dict) -> None:
             _reject_count(c)
 
 
-def _satisfied(channel: Channel, until: dict, *, clock: Callable[[], float]) -> bool:
+def _satisfied(channel: Channel, until: Condition, *, clock: Callable[[], float]) -> bool:
     """Has the run closed the `until` window? Coordinates read live: step from
     the dense axis (`_window_step`), time from the consumer's poll-clock
     (`_elapsed`). `count=0` -- the count drive-axis is rejected at entry."""
@@ -237,9 +237,9 @@ def _satisfied(channel: Channel, until: dict, *, clock: Callable[[], float]) -> 
 
 # `until` is the run *bound*; the emission *filter* (`from`/`every`, the
 # ensure(I) strided case) is deferred -- docs/backlog/memoizer-index-algebra.md.
-def ensure(producer: Producer, name: str, *, until: dict, poll_interval: float = 0.01,
+def ensure(producer: Producer, name: str, *, until: Condition, poll_interval: float = 0.01,
            sleep: Callable[[float], None] = time.sleep,
-           clock: Callable[[], float] = time.time) -> list[dict]:
+           clock: Callable[[], float] = time.time) -> list[Body]:
     """Return ``name``'s series for the window ``until`` (a Condition from the
     subscription algebra: ``{"step":N} | {"time_seconds":S} | any/all``),
     producing the missing suffix on a miss. Window-closed (or worker-declared
@@ -252,7 +252,7 @@ def ensure(producer: Producer, name: str, *, until: dict, poll_interval: float =
     No hang timeout (unchanged)."""
     _reject_count(until)
     channel = producer.channel
-    dense = {"every": {"step": 1}, "until": until}
+    dense: Condition = {"every": {"step": 1}, "until": until}
     result = peek_terminal(channel)
     if _satisfied(channel, until, clock=clock) or (
         result is not None and result.outcome == Outcome.COMPLETED):

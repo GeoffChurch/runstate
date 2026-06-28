@@ -24,14 +24,14 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from .envelope import Envelope
+from .envelope import Body, Envelope
 
 
 class Channel(ABC):
     """A handle on one run's append-only topic log (see the module docstring)."""
 
     @abstractmethod
-    def send(self, body: dict, *, topic: str, name: str | None = None,
+    def send(self, body: Body, *, topic: str, name: str | None = None,
              request_id: str | None = None, expected_seq: int | None = None) -> int | None:
         """Append ``body`` under ``topic`` (+ optional ``name`` / ``request_id``),
         returning the new ``seq``. With ``expected_seq`` it is a compare-and-append:

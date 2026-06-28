@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Iterator
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 
 from .channel import Channel, Envelope
 from .vocabulary.payloads import Heartbeat, Nak, Started, Stopped, Topic, Value
 from .vocabulary.handle import local_handle
 from .vocabulary.schedule import (
+    Condition,
     Subscription,
     contains_count,
     is_unsatisfiable,
@@ -27,16 +28,26 @@ from .vocabulary.schedule import (
 from .observables import _boundary_voided, live_episode
 
 
+@dataclass
+class PendingStop:
+    """A drained, undischarged commanded stop -- the request half of a stop pair,
+    live until the next ``lifecycle.stopped`` discharges it (specs/stop-discharge.md)."""
+
+    request_id: str | None
+    from_: Condition | None
+    registered_at: float
+
+
 class Worker:
     def __init__(self, channel: Channel, *, now: Callable[[], float] = time.time):
         self._ch = channel
         self._now = now
-        self._values: dict = {}
-        self._subs: dict = {}  # request_id -> (name, Subscription)
+        self._values: dict[str, object] = {}
+        self._subs: dict[str, tuple[str | None, Subscription]] = {}  # request_id -> (name, sub)
         # Drained, undischarged commanded stops: (request_id, from_, registered_at).
         # A stop is the request half of a request/outcome pair -- live until the
         # next lifecycle.stopped discharges it (specs/stop-discharge.md).
-        self._pending_stops: list = []
+        self._pending_stops: list[PendingStop] = []
         self._cursor = 0
         self._stopped = False
         self._last_step: int | None = None
@@ -60,7 +71,7 @@ class Worker:
             # its request_id FOLLOWS it by seq. Same read as the claim; the
             # drain skips answered subscribes (so a resumed episode neither
             # resurrects an expired lease nor re-naks a refused request).
-            self._answers: dict = {}
+            self._answers: dict[str, list[int]] = {}
             for e in envs:
                 if e.request_id is not None and e.topic in (
                     Topic.CONTROL_UNSUBSCRIBE, Topic.LIFECYCLE_NAK
@@ -322,7 +333,7 @@ class Worker:
                     # never auto-stopping.
                     self._nak(e.request_id, "unsatisfiable", "stop trigger can never fire")
                 else:
-                    self._pending_stops.append((e.request_id, from_, self._now()))
+                    self._pending_stops.append(PendingStop(e.request_id, from_, self._now()))
         else:
             self._nak(e.request_id, "unsupported", f"unknown control topic {e.topic!r}")
 
@@ -346,7 +357,7 @@ class Worker:
                 del self._subs[request_id]
                 continue
             if decision.fire:
-                value = self._values.get(name)
+                value = self._values.get(name) if name is not None else None
                 try:
                     self._ch.send(
                         asdict(Value(value=value, step=step, t=self._now())),
@@ -382,7 +393,7 @@ class Worker:
         the run."""
         now = self._now()
         return any(
-            from_ is None
-            or satisfied(from_, step=step, time_seconds=now - registered_at, count=0)
-            for _request_id, from_, registered_at in self._pending_stops
+            stop.from_ is None
+            or satisfied(stop.from_, step=step, time_seconds=now - stop.registered_at, count=0)
+            for stop in self._pending_stops
         )

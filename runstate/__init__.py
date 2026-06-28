@@ -11,7 +11,7 @@ the submodules (runstate.channel, runstate.schedule, ...).
 import os
 from collections.abc import Callable
 
-from .channel import Channel, Envelope, open_channel
+from .channel import Body, Channel, Envelope, open_channel
 from .launcher import (Launcher, LaunchHandle, LocalLauncher, ThreadLauncher,
                        ensure_served, relaunch_if_needed)
 from .memoizer import ensure, foreign_episode, history, launch_producer
@@ -26,6 +26,7 @@ from .observables import (
     value_series,
 )
 from .vocabulary.handle import handle_pid
+from .vocabulary.schedule import Condition
 from .vocabulary.payloads import (
     Heartbeat,
     Launched,
@@ -70,6 +71,7 @@ __all__ = [
     "open_channel",
     "attach",
     "Channel",
+    "Body",
     "Envelope",
     # worker
     "Worker",
@@ -102,6 +104,7 @@ __all__ = [
     "ensure_served",
     # convention vocabulary
     "Topic",
+    "Condition",
     # convention bodies (typed; serialize via dataclasses.asdict, parse via Cls(**body))
     "Value",
     "Started",

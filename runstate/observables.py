@@ -25,7 +25,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Optional
+from typing import Any, Optional
 
 from .channel import Channel, Envelope
 from .vocabulary.payloads import Stopped, Terminated, Topic
@@ -168,7 +168,7 @@ def _boundary_voided(sub_seq: int, started_seqs: list[int], drainer_started_seq:
     return any(sub_seq < b < drainer_started_seq for b in started_seqs)
 
 
-def live_demand(channel: Channel) -> list:
+def live_demand(channel: Channel) -> list[Envelope]:
     """The live leased demand: every ``control.subscribe`` envelope with no
     **answer** following it by seq (specs/service-worker.md: the positional
     answer fold — an answer is a ``control.unsubscribe`` or ``lifecycle.nak``
@@ -181,8 +181,8 @@ def live_demand(channel: Channel) -> list:
     one public home of the rule the worker's refold and the relaunch decider
     both consume. Value-blind: it reads schedule *shape* for the time-atom
     check, never payloads."""
-    pending: dict = {}      # request_id -> the latest unanswered subscribe
-    starteds: list = []
+    pending: dict[str, Envelope] = {}   # request_id -> the latest unanswered subscribe
+    starteds: list[int] = []
     for e in channel.read():
         if e.topic == Topic.LIFECYCLE_STARTED:
             starteds.append(e.seq)
@@ -219,7 +219,7 @@ def progress(channel: Channel) -> Optional[int]:
     return max(steps) if steps else None
 
 
-def _value_points(channel: Channel) -> Iterator[tuple[str, object, object]]:
+def _value_points(channel: Channel) -> Iterator[tuple[str, Any, Any]]:
     """Decode ``value`` envelopes to ``(name, step, value)`` samples, lazily.
     Applies the domain rules: skip records with no envelope ``name``, a null
     ``step``, or no ``"value"`` key — a stepless emission is outside the
@@ -233,7 +233,7 @@ def _value_points(channel: Channel) -> Iterator[tuple[str, object, object]]:
         yield e.name, e.body["step"], e.body["value"]
 
 
-def value_series(channel: Channel) -> dict:
+def value_series(channel: Channel) -> dict[str, dict[int, Any]]:
     """``{name: {step: value}}`` — the run's reported values as functions of
     step, in one log pass (per-name access = indexing; name enumeration =
     ``.keys()``).
@@ -250,7 +250,7 @@ def value_series(channel: Channel) -> dict:
     Pure and cache-free: the fold inherits the scope of the read view it is
     given (visibility/enforcement compose upstream — design §6); ``request_id``
     is a dedup concern only and is ignored."""
-    out: dict = {}
+    out: dict[str, dict[int, Any]] = {}
     for name, step, value in _value_points(channel):
         out.setdefault(name, {})[step] = value
     return {name: dict(sorted(series.items())) for name, series in out.items()}

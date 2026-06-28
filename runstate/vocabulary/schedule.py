@@ -14,10 +14,15 @@ condition is monotone (once true, stays true as coordinates advance). A
 
 from __future__ import annotations
 
-from typing import NamedTuple
+from typing import Any, NamedTuple
+
+Condition = dict[str, Any]
+"""A condition-algebra dict (the wire subscription shape): a step/time_seconds/count
+threshold or an any/all of them, plus the from/every/until schedule. Kept as the wire
+dict by design -- no separate Bound/Target type."""
 
 
-def satisfied(cond: dict, *, step: int | None = None, time_seconds: float = 0.0, count: int = 0) -> bool:
+def satisfied(cond: Condition, *, step: int | None = None, time_seconds: float = 0.0, count: int = 0) -> bool:
     """Is ``cond`` satisfied at coordinates (step, time_seconds, count)?"""
     if "any" in cond:
         return any(
@@ -43,6 +48,13 @@ class Decision(NamedTuple):
     expired: bool
 
 
+class Corner(NamedTuple):
+    """The minimal ``(step, time)`` corner of a conjunctive condition."""
+
+    step: int
+    time: float
+
+
 class Subscription:
     """A subscription's schedule + firing history.
 
@@ -52,7 +64,7 @@ class Subscription:
     evaluates over deltas-since-the-last-fire. Absent ``every`` => one-shot.
     """
 
-    def __init__(self, schedule: dict, *, registered_at: float):
+    def __init__(self, schedule: Condition, *, registered_at: float):
         self.from_ = schedule.get("from")
         self.every = schedule.get("every")
         self.until = schedule.get("until")
@@ -116,7 +128,7 @@ class Subscription:
         )
 
 
-def is_unsatisfiable(schedule: dict, *, step: int | None) -> bool:
+def is_unsatisfiable(schedule: Condition, *, step: int | None) -> bool:
     """Can this schedule produce *zero* fires, determinable at registration?
 
     Static cases (docs/design-v0.2.md §6):
@@ -145,13 +157,13 @@ def is_unsatisfiable(schedule: dict, *, step: int | None) -> bool:
             # is meaningless -- pass step=None so a `step` atom in `until`
             # evaluates as it does everywhere else (never satisfied), instead of
             # spuriously matching at corner step 0.
-            corner_step = corner[0] if step is not None else None
-            if satisfied(until, step=corner_step, time_seconds=corner[1], count=0):
+            corner_step = corner.step if step is not None else None
+            if satisfied(until, step=corner_step, time_seconds=corner.time, count=0):
                 return True
     return False
 
 
-def _conjunctive_corner(cond: dict) -> tuple[int, float] | None:
+def _conjunctive_corner(cond: Condition) -> Corner | None:
     """The single minimal ``(step, time)`` corner of a conjunctive condition, or
     None if it contains an ``any`` (many corners) or isn't corner-representable.
     Sound for the from ⟹ until check: ``until`` holding at this corner means it
@@ -164,16 +176,16 @@ def _conjunctive_corner(cond: dict) -> tuple[int, float] | None:
             sub = _conjunctive_corner(c)
             if sub is None:
                 return None
-            step, time = max(step, sub[0]), max(time, sub[1])
-        return (step, time)
+            step, time = max(step, sub.step), max(time, sub.time)
+        return Corner(step, time)
     if "step" in cond:
-        return (cond["step"], 0.0)
+        return Corner(cond["step"], 0.0)
     if "time_seconds" in cond:
-        return (0, cond["time_seconds"])
+        return Corner(0, cond["time_seconds"])
     return None  # count (not a `from` key) or unknown -> punt
 
 
-def references_time(schedule: dict) -> bool:
+def references_time(schedule: Condition) -> bool:
     """Does the schedule contain a ``time_seconds`` atom anywhere in
     ``from``/``every``/``until``? The episode-scoping predicate
     (specs/time-lease-boundary.md): a time atom's meaning — seconds since
@@ -198,7 +210,7 @@ def references_time(schedule: dict) -> bool:
     )
 
 
-def contains_count(cond: dict) -> bool:
+def contains_count(cond: Condition) -> bool:
     """Does ``cond`` contain a ``count`` atom anywhere? The schema already
     forbids count outside ``until`` (it is grammatical only in ``UntilTerm``);
     the worker enforces the same rule as defense-in-depth, because a count
@@ -211,7 +223,7 @@ def contains_count(cond: dict) -> bool:
     return "count" in cond
 
 
-def _satisfiable_stepless(cond: dict) -> bool:
+def _satisfiable_stepless(cond: Condition) -> bool:
     """Could ``cond`` ever be satisfied when the worker has no step?"""
     if "any" in cond:
         return any(_satisfiable_stepless(c) for c in cond["any"])

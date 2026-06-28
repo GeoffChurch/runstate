@@ -20,17 +20,17 @@ import threading
 from collections.abc import Callable
 
 from .base import Channel
-from .envelope import Envelope
+from .envelope import Body, Envelope
 
 
 class MemoryChannel(Channel):
-    def __init__(self, log: list | None = None, lock: threading.Lock | None = None,
+    def __init__(self, log: list[Envelope] | None = None, lock: threading.Lock | None = None,
                  *, json_default: Callable[[object], object] | None = None) -> None:
         self._log: list[Envelope] = log if log is not None else []
         self._lock = lock if lock is not None else threading.Lock()
         self._json_default = json_default
 
-    def send(self, body: dict, *, topic: str, name: str | None = None,
+    def send(self, body: Body, *, topic: str, name: str | None = None,
              request_id: str | None = None, expected_seq: int | None = None) -> int | None:
         # The json round-trip both validates serializability and snapshots the
         # body to an independent, JSON-safe copy (json_default coerces exotic

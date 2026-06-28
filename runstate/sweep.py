@@ -34,7 +34,7 @@ class Variant:
 
     run_id: str
     target: object
-    launch_kwargs: dict = field(default_factory=dict)
+    launch_kwargs: dict[str, Any] = field(default_factory=dict)
 
 
 def sweep(
@@ -53,7 +53,8 @@ def sweep(
     results: list[RunResult] = []
     for v in variants:
         if resume:
-            existing = peek_terminal(launcher.open_channel(v.run_id))
+            with launcher.open_channel(v.run_id) as ch:   # close the probe channel
+                existing = peek_terminal(ch)
             if existing is not None:
                 result = replace(existing, run_id=v.run_id)
                 results.append(result)

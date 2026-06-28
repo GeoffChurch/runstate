@@ -24,7 +24,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from .base import Channel
-from .envelope import Envelope
+from .envelope import Body, Envelope
 from .memory import MemoryChannel
 from .sqlite import SqliteChannel
 
@@ -34,7 +34,7 @@ from .sqlite import SqliteChannel
 # SqliteChannels on one file). Each entry is (log, lock): the shared lock keeps
 # the seq read-modify-write atomic across every instance on that log. Distinct
 # (root, run_id) keys stay isolated.
-_MEMORY_LOGS: dict = {}
+_MEMORY_LOGS: dict[tuple[str, str], tuple[list[Envelope], threading.Lock]] = {}
 
 
 def open_channel(run_id: str, *, root: str | os.PathLike[str] | None = None,
@@ -58,4 +58,4 @@ def open_channel(run_id: str, *, root: str | os.PathLike[str] | None = None,
     raise ValueError(f"unknown backend: {backend!r} (expected 'sqlite' or 'memory')")
 
 
-__all__ = ["Channel", "Envelope", "MemoryChannel", "SqliteChannel", "open_channel"]
+__all__ = ["Body", "Channel", "Envelope", "MemoryChannel", "SqliteChannel", "open_channel"]
