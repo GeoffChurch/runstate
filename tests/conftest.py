@@ -4,6 +4,8 @@ The substrate conformance tests run against *every* Channel backend via the
 ``ch`` fixture, parametrized over backends; each must pass independently.
 """
 
+from types import SimpleNamespace
+
 import pytest
 
 
@@ -64,3 +66,35 @@ def open_channel(request, tmp_path, monkeypatch):
     yield _open
     for c in made:
         c.close()
+
+
+# --- concurrency sub-suite: tier-gated backend fixture ---
+# A backend declares the strongest contention tier it supports; a concurrency test
+# declares the tier it needs (``@pytest.mark.tier``). The fixture SKIPS (not xfails)
+# a backend below the required tier -- "not applicable by nature", not "known bug".
+_TIERS = ["in_process", "cross_process", "cross_host"]
+_MAX_TIER = {
+    "memory": "in_process",       # shared via a process-global registry, NOT across OS processes
+    "sqlite": "cross_process",    # one db file; multiple connections / OS processes on a local FS
+    "sqlite:delete": "cross_process",
+    # "postgres": "cross_host",   # the advisory-lock claim oracle -- the cross-host TDD target
+}
+
+
+@pytest.fixture(params=["memory", "sqlite", "sqlite:delete"])
+def conc_backend(request, tmp_path, monkeypatch):
+    """A backend for the concurrency sub-suite. Reads the test's ``@pytest.mark.tier``
+    (default ``in_process``) and SKIPS backends that don't reach it. Yields the locator
+    config so a test can open the channel from any thread or process; the sqlite journal
+    mode is set in the env (inherited by forked children) AND carried explicitly (so a
+    spawned child can set it itself)."""
+    param = request.param
+    marker = request.node.get_closest_marker("tier")
+    required = marker.args[0] if marker else "in_process"
+    if _TIERS.index(_MAX_TIER[param]) < _TIERS.index(required):
+        pytest.skip(f"{param}: max tier {_MAX_TIER[param]!r} < required {required!r}")
+    backend = "sqlite" if param.startswith("sqlite") else param
+    journal = "DELETE" if param == "sqlite:delete" else ("WAL" if backend == "sqlite" else None)
+    if journal:
+        monkeypatch.setenv("RUNSTATE_SQLITE_JOURNAL_MODE", journal)
+    return SimpleNamespace(param=param, backend=backend, root=str(tmp_path), journal=journal)

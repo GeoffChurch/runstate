@@ -22,3 +22,6 @@ include = ["runstate*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "tier(name): the concurrency contention tier a test needs (in_process | cross_process | cross_host); the conc_backend fixture skips backends below it",
+]
