@@ -1,18 +1,20 @@
-# visualization-story — own the data-plane protocols too
+# visualization-story — a data-plane / viewer ecosystem on runstate (a SEPARATE project)
 
-The v0.1 positioning treats runstate as the *control-plane* counterpart to
-data-plane tools (wandb, MLflow, TensorBoard). Users run runstate + wandb
-side-by-side: runstate for bidirectional control, wandb for metric viz.
+runstate is the *control-plane* counterpart to data-plane tools (wandb, MLflow,
+TensorBoard): runstate for bidirectional cooperative control, wandb for metric viz.
+That division of labor is defensible — we don't out-wandb wandb on plotting and
+team sharing. But "control plane is ours, data plane is theirs" isn't the only
+long-term shape; a **separate viz project built on runstate** could close the
+data-plane gap without bloating runstate's core.
 
-This is a defensible division of labor for v0.1 — we're not trying to
-out-wandb wandb on plotting and team sharing in our first release. But
-"control plane is ours, data plane is theirs" is not the only viable
-long-term shape, and treating it as permanent gates us out of being a
-one-stop shop.
+**These protocols do NOT belong in runstate** (see *The discipline*). runstate stays
+the minimal cooperative-control protocol + substrate; the data-plane / viewer /
+artifact protocols live in their own project that depends on it.
 
-## What runstate-as-one-stop-shop would mean
+## What the data-plane / viewer project would add
 
-Three additional protocols beyond v0.1's cooperative-control messages:
+Three protocols, in a separate project on top of runstate, beyond runstate's own
+cooperative-control conventions:
 
 1. **Data-plane event protocol** — richer worker-to-orchestrator
    events than the current scalar Progress(metrics: dict[str, float]).
@@ -36,21 +38,32 @@ Three additional protocols beyond v0.1's cooperative-control messages:
 Plus a companion webapp / TUI that consumes all three protocols and
 provides the visualization layer.
 
-## The discipline
+## The discipline: a SEPARATE project, not runstate's `protocol/`
 
-If we go this direction, each protocol stays in its own file under
-`protocol/`. The control-plane protocol (v0.1) stays as-is — it's the
-core asset and we don't muddy it with viz concerns.
+These protocols do **not** go in runstate — not even as separate files under its
+`protocol/`. runstate's one asset is the cooperative-control protocol (the
+topic-log substrate + the `control` / `lifecycle` / `launcher` / `value` convention
+schemas); the data plane is a distinct concern (rendering, discovery, artifacts), a
+distinct audience (viewers / UIs), and a distinct evolution timeline. Co-locating
+them — even in their own files under runstate's `protocol/` — conflates the core
+control protocol with a downstream viz opinion and creeps runstate toward "another
+tracking tool."
 
-- `protocol/messages-v0.1.schema.json` — control plane (current)
-- `protocol/data-v0.x.schema.json` — data plane events (future)
-- `protocol/viewer-v0.x.schema.json` — discovery/subscription (future)
-- `protocol/artifacts-v0.x.schema.json` — blob storage interface (future)
+Split by **project**, not by file:
 
-This gives us forward composability: a user building a Rust orchestrator
-that only cares about control implements just the v0.1 schema. A user
-building a TUI that wants live metrics implements data + viewer. No
-mandatory all-or-nothing.
+- **runstate** — the cooperative-control protocol + the substrate the data plane
+  rides on. The topic log already carries arbitrary `value` bodies; the observer
+  plane folds them; the root set + content-addressed placement + pointers are the
+  discovery surface. runstate gains *nothing* viz-specific.
+- **a separate viz project** (its own repo, depending on runstate) — the typed
+  rich-value bodies + schemas (Histogram / Image / Audio / Tensor / Text), the
+  viewer-discovery / subscription protocol, the artifact-storage interface, and the
+  companion webapp / TUI.
+
+Forward composability still holds, now across project boundaries: a Rust
+orchestrator that only needs control depends on runstate's schemas alone; a viewer
+depends on the viz project (which depends on runstate). No mandatory all-or-nothing
+— and runstate stays minimal and opinion-free.
 
 ## What this is NOT
 
@@ -68,9 +81,9 @@ mandatory all-or-nothing.
 Revisit when a viewer audience exists (the metadata prerequisite is met:
 placement + pointers + birth records are the discovery surface). The
 natural next question is "how does someone *see* the runs the namespace
-knows about?" — and the answer might be "we have a viewer protocol and
-a reference webapp," or it might be "use mlflow ui after exporting,"
-depending on the audience we've found by then.
+knows about?" — and the answer might be "a separate viz project (on runstate) has a
+viewer protocol and a reference webapp," or it might be "use mlflow ui after
+exporting," depending on the audience we've found by then.
 
 ## Open questions
 

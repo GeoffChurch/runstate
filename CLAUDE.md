@@ -252,12 +252,14 @@ plan as the remaining work; and the deferred design-§12 items mirrored there).
 - **Visualization protocols.** runstate ships a control-plane protocol; a
   data-plane protocol (richer `value` events: histograms, images, audio,
   tensors) plus a viewer-side protocol (how a UI discovers runs,
-  subscribes, renders) would let runstate be a one-stop shop instead of
-  shipping alongside wandb / MLflow / TensorBoard. (`Watcher`'s
+  subscribes, renders) would let a **separate viz project on runstate** be a
+  one-stop shop instead of shipping alongside wandb / MLflow / TensorBoard. (`Watcher`'s
   `RunStatus`/`Running` already gestures at the viewer-side fold.) See
   `docs/backlog/visualization-story.md`. The bar: only ship this as a
   coherent protocol story, not "another tracking tool."
 - **Companion webapp / TUI** built on those protocols.
 
-The discipline: visualization gets its OWN protocol (in `protocol/`),
-distinct from the cooperative-control protocol. Compose, don't conflate.
+The discipline: visualization gets its OWN protocol in a **separate project**
+(not runstate's `protocol/`), distinct from the cooperative-control protocol —
+runstate stays the minimal control protocol + the substrate the data plane rides
+on. Compose, don't conflate.
