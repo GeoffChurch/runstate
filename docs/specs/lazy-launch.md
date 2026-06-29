@@ -174,7 +174,7 @@ re-subscribe, **re-wake** — the end-to-end dogfood of the whole service
 story. Docs: design §12.1 → closed (this spec); trackers; the activator
 recipe documented here only.
 
-## Tests (TDD targets; both backends where applicable)
+## Tests (TDD targets; the backends where applicable)
 
 - `ensure_served`: launches when demand ∧ no live episode; `None` when no
   demand (even with no episode); `None` when already served (live episode);

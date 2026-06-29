@@ -169,7 +169,7 @@ episode-scoped, stops re-anchored). CLAUDE.md post-implementation.
 specs/run-episodes.md "re-derives standing subscriptions" → FOLD-LATER
 qualifier.
 
-## Tests (TDD targets; both backends)
+## Tests (TDD targets; all backends)
 
 - Founding idiom regression: a pre-staged time-lease is registered by
   episode 1 (no boundary between them).

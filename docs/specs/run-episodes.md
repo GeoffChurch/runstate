@@ -114,7 +114,7 @@ started, reapable only via the launcher's liveness — which breaks fire-and-for
 
 ## Deliverables
 - **substrate:** `send(..., expected_seq=...)` CAS on the Channel surface +
-  Memory + SQLite (both backends; conformance-tested).
+  Memory + SQLite + Postgres (all backends; conformance-tested).
 - **liveness:** episode-aware `peek_terminal` (the `seq` follow-check).
 - **watcher:** episode-aware record tiers (same follow-check); reap reused at launch.
 - **launcher:** idempotent `launch` (CAS-claim loop + reap-dead-orphan); returns the
@@ -132,9 +132,9 @@ started, reapable only via the launcher's liveness — which breaks fire-and-for
 ## Tests (TDD targets)
 - **episode-aware `peek_terminal`:** `started…stopped…started` (live ep2) → `None`;
   `…stopped` with no following `started` → terminal. Same for
-  `launched`/`terminated`. Parametrized over both backends.
+  `launched`/`terminated`. Parametrized over all backends.
 - **CAS `send(expected_seq=)`:** appends at the matching last-`seq`, rejects on
-  mismatch; both backends.
+  mismatch; all backends.
 - **idempotent `launch`:** concurrent relaunch of one `run_id` → exactly one
   `launcher.launched` and one spawn; an already-live `run_id` → no-op + the existing
   handle.

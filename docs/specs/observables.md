@@ -159,7 +159,7 @@ consumer's `rsplit`.
   sentence (rev 7); trackers (audit F5–F8, synergy map Cluster 3, index) →
   shipped; mycooc sweep checklist flips its pending section to ready.
 
-## Tests (TDD targets; observables tests parametrized over both backends)
+## Tests (TDD targets; observables tests parametrized over all backends)
 
 - `latest_episode`: empty → None; one started → that envelope; started…stopped
   → still that envelope (ended ≠ absent); started…stopped…started → the second.

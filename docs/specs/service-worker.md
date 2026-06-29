@@ -386,7 +386,7 @@ README's "next up" line. CLAUDE.md architecture/test lines post-implementation.
 - Prewarm helpers, grace windows, a time-indexed value series.
 - Any constructor flag, mode, or wire declaration of worker class.
 
-## Tests (TDD targets; both backends)
+## Tests (TDD targets; all backends)
 
 - Expiry records: until-lapse and one-shot-consumed each append
   `control.unsubscribe` with the right `request_id` (emit before delete); a
