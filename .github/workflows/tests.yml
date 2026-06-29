@@ -1,0 +1,75 @@
+name: tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  # The full suite, including the Postgres backend tier, against a real server.
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: runstate_test
+        ports:
+          - 5432:5432
+        # gate the steps on the server actually being ready
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # a DIRECT endpoint (not a transaction-mode pooler): the session advisory
+      # lock and the per-connection session state depend on one stable backend.
+      RUNSTATE_TEST_PG_DSN: postgresql://postgres:postgres@localhost:5432/runstate_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .[test]
+      # SERIAL on purpose: the shared `log` table + the session-end connection-leak
+      # check are xdist-unsafe (cross-worker backends would cross-contaminate the
+      # baseline count). Per-test uuid run_ids isolate the data; the process must not.
+      - name: pytest (serial)
+        run: pytest tests/
+      - name: mypy --strict
+        run: mypy
+
+  # `import runstate` must work WITHOUT the optional psycopg extra; the postgres
+  # locator branch must fail with a clear, actionable message (not a raw ImportError).
+  import-without-psycopg:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .   # NO extras -> psycopg is absent
+      - name: import is psycopg-free
+        run: |
+          python -c "
+          import sys, runstate
+          from runstate import Worker, Watcher
+          from runstate.channel import open_channel, Channel, EpisodeHolder, EpisodeProbe
+          assert 'psycopg' not in sys.modules, 'importing runstate pulled in psycopg'
+          print('import runstate is psycopg-free')
+          "
+      - name: postgres locator raises a clear install hint
+        run: |
+          python -c "
+          from runstate.channel import open_channel
+          try:
+              open_channel('r', root='postgresql://x', backend='postgres')
+          except ImportError as e:
+              assert 'pip install runstate[postgres]' in str(e), e
+              print('clear error:', e)
+          else:
+              raise SystemExit('expected ImportError without psycopg')
+          "
