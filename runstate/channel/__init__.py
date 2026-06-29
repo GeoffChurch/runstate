@@ -23,7 +23,7 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
-from .base import Channel
+from .base import Channel, EpisodeHolder, EpisodeProbe
 from .envelope import Body, Envelope
 from .memory import MemoryChannel
 from .sqlite import SqliteChannel
@@ -55,7 +55,20 @@ def open_channel(run_id: str, *, root: str | os.PathLike[str] | None = None,
     if backend == "memory":
         log, lock = _MEMORY_LOGS.setdefault((str(root), run_id), ([], threading.Lock()))
         return MemoryChannel(log, lock, json_default=json_default)
-    raise ValueError(f"unknown backend: {backend!r} (expected 'sqlite' or 'memory')")
+    if backend == "postgres":
+        if root is None:
+            raise ValueError("the postgres backend requires a DSN root (got root=None)")
+        try:
+            from .postgres import PostgresChannel
+        except ImportError as exc:  # the optional extra isn't installed
+            raise ImportError(
+                "the postgres backend needs psycopg: pip install runstate[postgres]"
+            ) from exc
+        return PostgresChannel(str(root), run_id, json_default=json_default)
+    raise ValueError(
+        f"unknown backend: {backend!r} (expected 'sqlite', 'memory', or 'postgres')"
+    )
 
 
-__all__ = ["Body", "Channel", "Envelope", "MemoryChannel", "SqliteChannel", "open_channel"]
+__all__ = ["Body", "Channel", "EpisodeHolder", "EpisodeProbe", "Envelope",
+           "MemoryChannel", "SqliteChannel", "open_channel"]

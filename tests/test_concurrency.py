@@ -10,8 +10,9 @@ deterministic CAS conformance + the fault-injection tests -- the flakiness firew
   shared-handle race, the memory seq-RMW, the two-Worker muzzle).
 - ``cross_process`` -- N real OS processes on one log; a file/networked backend only
   (memory is in-process).
-- ``cross_host`` -- the claim oracle under cross-host contention; the postgres TDD
-  target (no backend reaches it yet, so those tests skip everywhere for now).
+- ``cross_host`` -- the shared-log CAS as the cross-host claim arbiter under
+  multi-client contention; reached by postgres (one server = one total order;
+  with one CI server this is multi-client-to-one-server, not literally multi-host).
 """
 
 import multiprocessing as mp
@@ -51,14 +52,14 @@ def test_cas_admits_one_winner_across_processes(conc_backend):
     """N real OS processes race the birth-CAS on one log -> exactly one wins; the
     losers get ``None``, never a "database is locked" error. The cross-process tier
     (skipped for in-process-only backends): the stronger claim a file/networked backend
-    must hold under true parallelism (no shared GIL), and the shape the postgres claim
-    oracle extends to cross-host."""
+    must hold under true parallelism (no shared GIL), and the shape postgres's shared-log
+    CAS extends to cross-host (multi-client to one server)."""
     if "fork" not in mp.get_all_start_methods():
         pytest.skip("the cross_process racer needs the 'fork' start method")
     n = 8
     ctx = mp.get_context("fork")
     for trial in range(3):                       # races are flaky; several trials
-        run_id = f"race-{trial}"
+        run_id = f"{conc_backend.namespace}-race-{trial}"
         locate(run_id, root=conc_backend.root, backend=conc_backend.backend).close()  # create the file/schema
         fire = ctx.Barrier(n)
         q = ctx.Queue()
@@ -120,7 +121,7 @@ def test_two_workers_racing_the_claim_muzzle_the_loser(conc_backend):
     sys.setswitchinterval(1e-9)                  # fine interleaving so the claim's internal race is real
     try:
         for trial in range(5):
-            run_id = f"claim-{trial}"
+            run_id = f"{conc_backend.namespace}-claim-{trial}"
             seed = locate(run_id, root=conc_backend.root, backend=conc_backend.backend)
             seed.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="obs")
             seed.close()

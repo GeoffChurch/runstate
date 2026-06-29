@@ -23,6 +23,7 @@ compare-and-append; see the package docstring and design-v0.2.md §4.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Protocol, runtime_checkable
 
 from .envelope import Body, Envelope
 
@@ -61,3 +62,33 @@ class Channel(ABC):
 
     def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
         self.close()
+
+
+# --- optional liveness capability (off the base ABC; the collections.abc base-plus-
+# mixins shape) ---
+# A backend whose handle is bound to a connection that auto-releases on death can
+# offer a *definitive* cross-host liveness signal -- where a bare-handle probe
+# (os.kill on a foreign host) must abstain. It is exposed as two capability
+# Protocols, isinstance-dispatched and split by VIEWPOINT so a pure observer's
+# channel type never advertises a method it must not call (the worker holds; the
+# observer probes). This is a liveness SIGNAL the Watcher consumes -- never a claim
+# arbiter: the claim stays the uniform CAS. The substrate ABC stays the four pure
+# data ops; this is opt-in and backend-specific (PostgresChannel implements both).
+
+
+@runtime_checkable
+class EpisodeHolder(Protocol):
+    """Worker-side capability: pin THIS episode's liveness after winning the claim.
+    The signal is held for the episode's life and auto-releases when the holding
+    connection dies (clean stop or crash) -- no explicit release call."""
+
+    def hold_episode(self, started_seq: int) -> None: ...
+
+
+@runtime_checkable
+class EpisodeProbe(Protocol):
+    """Observer-side capability: read whether an episode is still live -- a definitive
+    cross-host signal where a bare-handle probe abstains (a foreign host's pid table
+    isn't ours to read). ``started_seq`` identifies the episode on the run's log."""
+
+    def episode_alive(self, started_seq: int) -> bool: ...

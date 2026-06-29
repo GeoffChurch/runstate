@@ -15,7 +15,8 @@ authors = [
 dependencies = []
 
 [project.optional-dependencies]
-test = ["pytest", "jsonschema", "mypy"]
+postgres = ["psycopg[binary]>=3"]
+test = ["pytest", "jsonschema", "mypy", "psycopg[binary]>=3"]
 
 [tool.setuptools.packages.find]
 include = ["runstate*"]

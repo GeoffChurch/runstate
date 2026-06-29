@@ -22,9 +22,9 @@ import time
 import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
-from typing import Optional, Union
+from typing import Optional, Protocol, Union
 
-from .channel import Channel, Envelope
+from .channel import Channel, EpisodeProbe, Envelope
 from .launcher import LaunchHandle
 from .observables import Outcome, RunResult, peek_terminal
 from .vocabulary.payloads import Heartbeat, Nak, Topic
@@ -50,12 +50,78 @@ class Running:
 RunStatus = Union[Running, RunResult]
 
 
+# --- per-run liveness probe (resolved once at registration) ---
+# The episode-lock signal is a backend CAPABILITY (channel/base.py), so the Watcher
+# resolves it ONCE when a run is registered -- to a real probe for an EpisodeProbe
+# channel, or a null probe otherwise -- and poll() just folds the verdict. This keeps
+# the lock's state (which episode; when first seen) and its birth-grace logic OUT of
+# the Watcher's general _RunState/poll: capability detection lives at the boundary,
+# the hot path stays linear, and the substrate Channel keeps its four pure ops.
+
+
+class _LockChannel(Protocol):
+    """What the episode-lock probe needs of a channel: read the log AND probe the
+    lock. A real ``EpisodeProbe`` backend (PostgresChannel) satisfies both."""
+
+    def latest(self, topic: str, name: str | None = None) -> Optional[Envelope]: ...
+    def episode_alive(self, started_seq: int) -> bool: ...
+
+
+class _LivenessProbe(Protocol):
+    """A per-run liveness contributor the Watcher folds into its cascade: a definitive
+    death verdict, or None to abstain (fall through to the staleness floor)."""
+
+    def verdict(self, now: float) -> Optional[RunResult]: ...
+
+
+class _EpisodeLockProbe:
+    """Liveness via the channel's episode lock. Owns the episode-tracking + birth-grace
+    state so the Watcher's _RunState/poll don't carry it. The lock is a Watcher-consumed
+    SIGNAL, never a claim arbiter; it can only vote DEAD (past the grace) or abstain, so
+    it never vetoes the staleness floor."""
+
+    def __init__(self, run_id: str, channel: _LockChannel, grace: float) -> None:
+        self._run_id = run_id
+        self._channel = channel
+        self._grace = grace
+        self._episode_seq: Optional[int] = None
+        self._seen_at = 0.0
+
+    def verdict(self, now: float) -> Optional[RunResult]:
+        started = self._channel.latest(Topic.LIFECYCLE_STARTED)
+        if started is None:
+            return None                          # no episode yet -> abstain
+        if started.seq != self._episode_seq:     # a new (or first-seen) episode
+            self._episode_seq = started.seq
+            self._seen_at = now                  # the birth grace runs from first-sight
+        if self._channel.episode_alive(started.seq):
+            return None                          # alive -> abstain (fall to staleness)
+        if now - self._seen_at > self._grace:
+            # lock released past the birth grace -> a definitive cross-host death,
+            # where os.kill abstains on a foreign host.
+            return RunResult(outcome=Outcome.PRESUMED_DEAD,
+                             reason="episode_lock_released", run_id=self._run_id)
+        return None                              # within the grace (CAS->hold window)
+
+
+class _NoLivenessProbe:
+    """Null object: a channel without the lock capability contributes no liveness
+    signal, so the Watcher falls through to its other tiers."""
+
+    def verdict(self, now: float) -> Optional[RunResult]:
+        return None
+
+
+_NO_LIVENESS = _NoLivenessProbe()
+
+
 @dataclass
 class _RunState:
     run_id: str
     channel: Channel
     handle: Optional[LaunchHandle]
     last_heartbeat_at: float
+    liveness: _LivenessProbe
     last_hb_seq: int = field(default=0)
     last_step: Optional[int] = field(default=None)
 
@@ -68,11 +134,16 @@ class Watcher:
         sleep: Callable[[float], None] = time.sleep,
         poll_interval: float = 0.05,
         heartbeat_timeout: Optional[float] = None,
+        episode_grace: float = 5.0,
     ):
         self._now = now
         self._sleep = sleep
         self._poll_interval = poll_interval
         self._hb_timeout = heartbeat_timeout
+        # The birth grace for the episode-lock probe: a not-held lock within this
+        # window of first-sight is the CAS->hold_episode gap (inconclusive), not a
+        # death. Only consulted for a backend whose channel is an EpisodeProbe.
+        self._episode_grace = episode_grace
         self._runs: dict[str, _RunState] = {}
         self._event_cursors: dict[str, int] = {}
 
@@ -86,11 +157,19 @@ class Watcher:
         self._track(run_id, channel, None)
 
     def _track(self, run_id: str, channel: Channel, handle: Optional[LaunchHandle]) -> None:
+        # Resolve the liveness capability ONCE, here at the boundary: a real probe for a
+        # lock-capable channel, else the null probe. poll() never re-checks the type.
+        liveness: _LivenessProbe = (
+            _EpisodeLockProbe(run_id, channel, self._episode_grace)
+            if isinstance(channel, EpisodeProbe)
+            else _NO_LIVENESS
+        )
         self._runs[run_id] = _RunState(
             run_id=run_id,
             channel=channel,
             handle=handle,
             last_heartbeat_at=self._now(),
+            liveness=liveness,
         )
 
     def poll(self, run_id: str) -> RunStatus:
@@ -117,6 +196,16 @@ class Watcher:
             if r is not None:
                 return replace(r, run_id=run_id)
             return RunResult(outcome=Outcome.PRESUMED_DEAD, reason="probed_dead", run_id=run_id)
+
+        # tier 3b: the episode-liveness signal (resolved per run at registration; a null
+        # probe for backends without the capability). poll() folds an OPAQUE verdict --
+        # the lock's episode-tracking and birth-grace state live in the probe, not here.
+        # It can only vote DEAD (a definitive cross-host death, where os.kill abstains)
+        # or abstain (None -> fall through), so a held lock never vetoes the staleness
+        # floor below. A SIBLING to the handle probe, independent of a tracked handle.
+        verdict = st.liveness.verdict(self._now())
+        if verdict is not None:
+            return verdict
 
         # tier 4: heartbeat staleness. The clock runs from when we began watching
         # (last_heartbeat_at seeds at registration, then tracks the latest beacon),

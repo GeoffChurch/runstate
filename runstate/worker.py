@@ -14,7 +14,7 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass
 
-from .channel import Channel, Envelope
+from .channel import Channel, Envelope, EpisodeHolder
 from .vocabulary.payloads import Heartbeat, Nak, Started, Stopped, Topic, Value
 from .vocabulary.handle import local_handle
 from .vocabulary.schedule import (
@@ -92,6 +92,12 @@ class Worker:
             )
             if claim is not None:
                 self._started_seq = claim
+                # Pin this episode's liveness (iff the backend offers the capability):
+                # a session-bound signal an observer reads to detect a cross-host death
+                # where os.kill abstains. Taken AFTER the claim CAS -- a liveness signal,
+                # never a claim gate (the CAS alone arbiters the claim).
+                if isinstance(self._ch, EpisodeHolder):
+                    self._ch.hold_episode(claim)
                 break  # won the claim
 
     @property
