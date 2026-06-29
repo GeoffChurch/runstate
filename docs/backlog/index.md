@@ -122,10 +122,13 @@ clusters that unlock each other, with a sequencing — see
 
 ## Backends
 
-- [channel-postgres](backends/channel-postgres.md) — Postgres backend for Channel
-  using LISTEN/NOTIFY for push semantics. Natural fit for multi-host orchestration
-  where shared FS is fragile or absent; the advisory-lock claim oracle for the
-  cross-host tier (above).
+- [channel-postgres](backends/channel-postgres.md) — **design spec'd** (converged through
+  three 4-lens adversarial rounds). Principle: **claim = the uniform CAS; liveness = a poset
+  the Watcher combines.** v1 = conformant core (cross-host single-spawn + control fall out of
+  the shared-log CAS) + the **advisory lock as a Watcher-consumed liveness signal**
+  (definitive cross-host death detection — *not* a claim arbiter). Deferred: low-latency
+  push, cross-host auto-relaunch (the rejected co-arbiter), sharding, HA. Motivating use
+  case: a viz dashboard / Bayesian-optimizer that reads AND steers runs on other hosts.
 - [channel-redis](backends/channel-redis.md) — Redis backend; alternative to
   Postgres for cross-host scenarios. Lighter daemon but weaker durability story.
 
