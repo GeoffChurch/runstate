@@ -1,14 +1,19 @@
-# `PostgresChannel` — a cross-host substrate backend (design)
+# `PostgresChannel` — a cross-host substrate backend
 
-**Status:** design, approved to build. **v1 = conformant core + the liveness lock as a
-Watcher-consumed signal.** Deferred: low-latency push, cross-host auto-relaunch, sharding,
-HA (see *Deferred / rejected-for-now*). Motivating use case: a controller on *another
+**Status:** SHIPPED — `runstate/channel/postgres.py` (tests: `tests/test_postgres_channel.py`
++ the backend-parametrized conformance/concurrency suites; CI runs them against a Postgres
+service). Shipped core: the four ops + the CAS over one shared `log` table, and the advisory
+lock as a Watcher-consumed liveness signal (the `EpisodeHolder`/`EpisodeProbe` capability,
+resolved at the Watcher's boundary into a per-run probe). Still deferred: low-latency push,
+cross-host auto-relaunch, sharding, HA (see *Deferred / rejected-for-now*). Motivating use
+case: a controller on *another
 host* (a viz dashboard, a Bayesian-optimizer) that both **reads** run state and **writes
 cooperative control** (`control.stop` / `control.subscribe`) to runs whose workers are
 elsewhere — the control plane is the differentiator vs read-only trackers (a dashboard
 stop button; a BO that preempts a losing trial cooperatively → resumable `preempted`).
 
-Hardened by two four-lens adversarial review rounds; the findings are folded in.
+Hardened by three four-lens adversarial review rounds before implementation; the findings
+are folded in.
 
 ## The one design principle (load-bearing)
 

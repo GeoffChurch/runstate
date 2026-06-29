@@ -73,11 +73,12 @@ runstate is a stack of thin layers, each justified on its own. Bottom-up:
 
 ### Layer 0 — Backend (storage)
 
-The storage engine behind the substrate. v0.2 ships two: **SQLite** (durable,
+The storage engine behind the substrate. v0.2 shipped two — **SQLite** (durable,
 stdlib, zero-dependency — a single-file `log` table whose autoincrement `seq` is
 already a sequenced, retained log) and **Memory** (a shared in-process list, for
-in-proc orchestration and tests). Both pass one conformance suite; multi-host
-backends (NATS JetStream, Kafka, Postgres) are future work.
+in-proc orchestration and tests) — and the cross-host **Postgres** backend has since
+shipped (`specs/channel-postgres.md`). All pass one conformance suite; other
+off-the-shelf-log backends (NATS JetStream, Kafka) remain future work.
 
 ### Layer 1 — The substrate: a per-run topic log
 

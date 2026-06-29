@@ -74,9 +74,10 @@ clusters that unlock each other, with a sequencing — see
   (`../dead_ends/failure-detector.md`): claiming on heartbeat-staleness *inference*
   admits a double-live window that permanently poisons reuse, and the CAS it leans
   on is unreliable on the motivating NFS deployment. Sound path: the **claim** gate
-  needs a *definitive* cross-host oracle — a connection-oriented backend's lock (a
-  Postgres advisory lock) via the `resolve` seam (composes with channel-postgres) —
-  **plus** value-plane robustness
+  needs a *definitive* cross-host oracle — a connection-oriented backend's lock (the
+  Postgres advisory lock now **ships** in channel-postgres, but as a *Watcher* signal; the
+  deferred *co-arbiter* wires it into the claim gate) via the `resolve` seam — **plus**
+  value-plane robustness
   ([value-plane-divergence-resolution](value-plane-divergence-resolution.md)) so a
   residual double-live can't sticky-poison the log. sqlite-NFS stays conservative
   single-host; the heartbeat ◊P detector remains the floor for *observation* (the
@@ -97,8 +98,9 @@ clusters that unlock each other, with a sequencing — see
   the subscribe answer fold, design §7) — to explicit causal reference: a `stopped`
   names the `request_id`(s) it discharges. Makes the control fold commutative, so it
   survives multi-writer `control.*` (§12.7–8) and replicated logs, where "next" is
-  not well-defined. No-op while every log has a single home; revisit with the
-  Postgres/Redis backends or any replication story.
+  not well-defined. No-op while every log has a single home — including the shipped
+  single-instance Postgres backend (one total order, even under multi-writer `control.*`);
+  revisit only with a replicated / multi-home log.
 - [launcher-protocol-typing](launcher-protocol-typing.md) — the `Launcher` Protocol's
   `launch` can't be structurally typed (the two reference launchers have disjoint
   `launch` signatures: a callable `target` vs a `cmd`). Split the uniform
@@ -122,19 +124,19 @@ clusters that unlock each other, with a sequencing — see
 
 ## Backends
 
-- [channel-postgres](backends/channel-postgres.md) — **design spec'd** (converged through
-  three 4-lens adversarial rounds). Principle: **claim = the uniform CAS; liveness = a poset
-  the Watcher combines.** v1 = conformant core (cross-host single-spawn + control fall out of
-  the shared-log CAS) + the **advisory lock as a Watcher-consumed liveness signal**
-  (definitive cross-host death detection — *not* a claim arbiter). Deferred: low-latency
-  push, cross-host auto-relaunch (the rejected co-arbiter), sharding, HA. Motivating use
-  case: a viz dashboard / Bayesian-optimizer that reads AND steers runs on other hosts.
-- [channel-redis](backends/channel-redis.md) — Redis backend; alternative to
-  Postgres for cross-host scenarios. Lighter daemon but weaker durability story.
+- **channel-postgres — SHIPPED** (`../specs/channel-postgres.md`): the cross-host backend.
+  Claim = the uniform shared-log CAS (cross-host single-spawn + control fall out of it);
+  liveness = the advisory lock as a Watcher-consumed signal, *not* a claim arbiter. Still
+  open (deferred in the spec): low-latency push (LISTEN/NOTIFY), cross-host auto-relaunch
+  (the rejected co-arbiter — see "Cross-host liveness for the claim gate" above), sharding,
+  HA.
+- **channel-redis** — a Redis backend; an alternative to Postgres for cross-host scenarios
+  (lighter daemon, weaker durability). Dominated by the shipped channel-postgres for the
+  same use case; revisit only if the lighter-daemon tradeoff is specifically wanted.
 
-(The substrate ships `MemoryChannel` + `SqliteChannel`; a push-based backend is the
-channel-postgres LISTEN/NOTIFY idea above. `SubmititLauncher` / `RayLauncher` /
-`K8sLauncher` are the ecosystem adapters below.)
+(The substrate ships `MemoryChannel` + `SqliteChannel` + `PostgresChannel`; a *push*-based
+backend is the deferred channel-postgres LISTEN/NOTIFY idea. `SubmititLauncher` /
+`RayLauncher` / `K8sLauncher` are the ecosystem adapters below.)
 
 ## Derived tools
 

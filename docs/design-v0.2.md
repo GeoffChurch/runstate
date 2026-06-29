@@ -14,7 +14,7 @@ runstate is a protocol for **cooperative bidirectional control of a long-running
 ## 2. Entities & layers
 
 ```
-backend          — storage engine: SQLite (v0.2); NATS JetStream / Kafka / Redis / Postgres (later)
+backend          — storage engine: SQLite + Postgres; NATS JetStream / Kafka / Redis (later)
 substrate        — a per-run TOPIC LOG over a backend. Opaque body; truly opinion-free.        [§4]
 conventions      — opt-in protocols the substrate is blind to but carries:
   cooperative-control — content categories + the per-role subscription protocol                 [§5]

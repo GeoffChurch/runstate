@@ -42,11 +42,14 @@ The substrate + opt-in conventions + reference orchestration, in
 `runstate/`:
 
 - **`channel/`** — the substrate. `Envelope` (the log record, in
-  `channel/envelope.py`), `MemoryChannel` + `SqliteChannel` (the two
-  backends), `open_channel` (locate/open a run's channel). A per-run
-  append-only **topic log** of envelopes `{seq, topic, name?,
-  request_id?, body}`; the substrate routes/indexes on the envelope and
-  never parses `body`.
+  `channel/envelope.py`), `MemoryChannel` + `SqliteChannel` + the cross-host
+  `PostgresChannel` (the three backends; Postgres is the optional `[postgres]`
+  extra — `docs/specs/channel-postgres.md`), `open_channel` (locate/open a run's
+  channel), and the opt-in capability Protocols `EpisodeHolder`/`EpisodeProbe` in
+  `channel/base.py` (a backend's connection-bound liveness signal off the four-op
+  base, isinstance-detected; the Watcher consumes it). A per-run append-only
+  **topic log** of envelopes `{seq, topic, name?, request_id?, body}`; the
+  substrate routes/indexes on the envelope and never parses `body`.
 - **`vocabulary/`** — the L2 **convention vocabulary** (the typed terms another
   language reimplements to interop): `payloads.py` (frozen body dataclasses
   mirroring the schemas — `Value`/`Started`/`Heartbeat`/`Stopped`/`Nak`/
@@ -159,14 +162,16 @@ scores above.
 ```bash
 pip install -e .                    # install editable
 pip install -e .[test]              # + jsonschema for the schema tests
-pytest tests/                       # run all tests (~400, ~7s)
+pytest tests/                       # run all tests (~700, ~9s; +Postgres if a DSN is set)
 pytest tests/test_channel.py -v     # one module
 pytest tests/test_schema.py -v      # emitted messages conform to the schema stack
 ```
 
 The Channel conformance tests and the substrate-level convention tests are
-parametrized over **both** backends (`memory` + `sqlite`); both must pass
-independently. `tests/test_schema.py` is skipped if `jsonschema` is absent.
+parametrized over the backends (`memory` + `sqlite` always, and `postgres` when
+`RUNSTATE_TEST_PG_DSN` points at a server); each must pass independently. The
+shared-table Postgres fixtures mint a uuid run_id per test and run **serial**
+(xdist-unsafe). `tests/test_schema.py` is skipped if `jsonschema` is absent.
 
 ## Common operations
 
@@ -221,6 +226,15 @@ plan as the remaining work; and the deferred design-§12 items mirrored there).
   `ThreadLauncher`, `LocalLauncher`, `Watcher` (4 liveness tiers,
   `RunStatus`), `peek_terminal`/`RunResult`, `sweep`.
 - The JSON Schema stack + conformance tests.
+
+**Shipped since v0.2:**
+- The cross-host **`PostgresChannel`** backend (`docs/specs/channel-postgres.md`):
+  one shared `log` table, the CAS (`PRIMARY KEY (run_id, seq)`) as the cross-host
+  claim arbiter (cross-host single-spawn + control fall out of it, claim model
+  unchanged), and a session advisory lock as a Watcher-consumed liveness capability
+  (`EpisodeHolder`/`EpisodeProbe`, resolved at the Watcher's boundary into a per-run
+  probe — never a claim arbiter). Optional `[postgres]` extra; the repo's first CI
+  workflow runs it against a Postgres service.
 
 **Deferred (v0.3+)** (see `docs/backlog/index.md`):
 - ~~Store Protocol + backends~~ — **DISSOLVED 2026-06-11**
