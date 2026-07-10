@@ -132,7 +132,14 @@ clusters that unlock each other, with a sequencing — see
   concrete validated use cases exist.
 - **Pause / Resume commands** — for cluster-preemption or "another job needs the GPU"
   scenarios. v0.2 if a real use case emerges; for now Stop + restart externally is
-  the recommended pattern.
+  the recommended pattern. *Prior art (Bluesky RunEngine, researched 2026-07-10):*
+  deferred-pause-at-checkpoint independently validates the stop-at-next-safe-point
+  level; the four-way post-pause fan-out (resume / stop / abort / halt) is a
+  field-tested answer space for "paused, now what"; and **suspenders**
+  (auto-suspend/auto-resume) need *non-monotone* band predicates — weigh that
+  deliberately before extending the deliberately-monotone condition-algebra.
+  (Bluesky's `RE.stop()` bakes `exit_status='success'` — the producer-baked bool
+  runstate refuses; our no-`success` stance is the more principled projection.)
 - **Snapshot command** — orchestrator asks worker to checkpoint without exiting.
   Workload-specific; users can define their own dict shape via raw Channel. Promote
   to first-class if a common shape emerges.

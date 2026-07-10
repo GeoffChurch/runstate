@@ -21,6 +21,15 @@ cooperative-control conventions:
    Candidates: Histogram, Image, Audio, Tensor, Text. Each gets its own
    typed message + JSON Schema entry. Stored in the same Channel as
    control messages, or in a parallel "data" Channel if volume warrants.
+   *Prior art (Bluesky event-model, researched 2026-07-10):* two
+   field-tested patterns to found this on — the **EventDescriptor**
+   (declare dtype/shape/units/plot-hints once per stream; events
+   reference it by id, so a viewer renders without body-sniffing and
+   per-event bytes amortize — the same move as the heartbeat's
+   subscribe-ack amortization) and **Resource/StreamResource** (bulk
+   data by typed *pointer* — uri/mimetype/format-spec — never in the
+   stream; tensors/images stay off the log). Both belong to THIS
+   project, not core runstate (in core they'd be opinion creep).
 
 2. **Viewer-discovery protocol** — how a UI finds available runs and
    subscribes to updates. *(Re-keyed 2026-06-11: the Store dissolved —
