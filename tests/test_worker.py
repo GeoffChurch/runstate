@@ -586,6 +586,22 @@ def test_second_worker_loses_the_claim_and_does_no_work(open_channel):
     assert len(open_channel().read(topics=["lifecycle.started"])) == 1  # no second started
 
 
+def test_claim_losers_bare_tick_appends_nothing(open_channel):
+    # The callback-guest pattern drives bare tick(); a racing loser must not
+    # drain, nak, or beacon onto the winner's live log ("explicit calls
+    # included"). Its tick answers True -- stop at this safe point; `claimed`
+    # says why.
+    winner = Worker(open_channel(), now=lambda: 0.0)
+    assert winner.claimed is True
+    loser = Worker(open_channel(), now=lambda: 0.0)
+    assert loser.claimed is False
+    log_before = [e.seq for e in open_channel().read()]
+    loser.set("loss", 1.0)                       # local-only: allowed
+    assert loser.tick(step=0) is True            # the muzzle: touch nothing, stop now
+    assert loser.stop_pending is True            # the side-effect-free poll agrees
+    assert [e.seq for e in open_channel().read()] == log_before
+
+
 def test_steps_resumes_at_start_with_run_absolute_step(open_channel):
     orch = open_channel()
     orch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r")

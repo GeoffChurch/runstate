@@ -170,7 +170,14 @@ class Worker:
         episode stops, so a caller that misses one True recovers it at the
         next. The worker's own *completion* is a separate opt-in claim
         (``w.stopped(completed=True)``); a commanded stop carries no reason —
-        commandedness is recoverable from the control.stop on the log."""
+        commandedness is recoverable from the control.stop on the log.
+
+        A claim-race LOSER may not act on the channel, explicit calls included
+        (see ``stopped``): a loser's tick touches nothing and returns True —
+        stop at this safe point; ``claimed`` tells a lost claim from a
+        commanded stop."""
+        if self._lost:
+            return True
         self._last_step = step
         self._drain_control(step)
         self._service(step)
@@ -183,7 +190,8 @@ class Worker:
         """The same decision ``tick`` returns, as a side-effect-free poll
         evaluated at the worker's last safe point. For a callback-guest whose
         host loop cannot act on ``tick``'s return: poll this at your own safe
-        point instead; reading it consumes nothing."""
+        point instead; reading it consumes nothing. True for a claim loser
+        too (its only instruction is to stop); ``claimed`` says which."""
         return self._stop_decision(self._last_step)
 
     @property
@@ -378,7 +386,10 @@ class Worker:
         are monotone (schedule.py), so the decision latches by inheritance --
         no fired flag, and evaluating it consumes nothing. Combination is the
         condition-algebra's own any-join: the first satisfied condition stops
-        the run."""
+        the run. A lost claim decides True outright — the one permanent level:
+        a loser may do no work, so every safe point is its stop point."""
+        if self._lost:
+            return True
         now = self._now()
         return any(
             stop.from_ is None
