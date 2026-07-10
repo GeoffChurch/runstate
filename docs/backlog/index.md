@@ -25,6 +25,13 @@ clusters that unlock each other, with a sequencing — see
 
 ## Next pickups
 
+- **[launcher-record-identity](launcher-record-identity.md)** — [wrong-verdict ·
+  red-team 2026-07-10] a late-landing identityless `launcher.terminated` forges
+  the LIVE run's verdict (`peek_terminal`'s latest-vs-latest pairing is defeated
+  by a reap that lands after a relaunch; verified on both reference launchers).
+  Candidate fix: envelope-`request_id` correlation for launched/terminated (no
+  schema change). Interim mitigations shipped: the claim-aware no-progress
+  guard; the ThreadLauncher single-dispatcher caution in memoizer.md.
 - **[mycooc-migration-audit](mycooc-migration-audit.md)** — remaining findings from
   the mycooc migration (runstate's first end-to-end consumer): **F4** (channel
   lifecycle / `close` contract), and the **F9/F10** minors (`await_consumed`

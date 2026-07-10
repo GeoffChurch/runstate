@@ -193,6 +193,15 @@ no-progress guard became own-spawn-scoped. The old `None`-on-no-op spelling
 hid a real hang (the recordless winner death) behind the record-only wait;
 this paragraph's earlier truthy-iff-drove clause is gone with it.)*
 
+*(Concurrency caution, 2026-07-10 — red-team: `ThreadLauncher` has no reap
+discipline, so under CONCURRENT dispatchers a claim-race loser's runner writes
+`Terminated(exited, 0)` unconditionally, which `peek_terminal` can read as the
+live run's `completed` — `ensure` then returns a truncated series with no
+error. `launch_producer` over `ThreadLauncher` is single-dispatcher; concurrent
+dispatch over one run needs a reap-disciplined launcher (`LocalLauncher`). The
+durable fix is the launcher-record identity thread,
+`../backlog/launcher-record-identity.md`.)*
+
 ### Decision 6 — idempotent relaunch is a free helper, not a launcher method
 **`relaunch_if_needed(launcher, run_id, target, **launch_kwargs)`** —
 launcher-agnostic: read `live_episode(channel)`; if a live episode exists, no-op
