@@ -54,7 +54,7 @@
       "properties": {
         "from": {"$ref": "#/$defs/Condition"},
         "every": {"$ref": "#/$defs/Condition"},
-        "until": {"$ref": "#/$defs/ConditionWithCount"}
+        "until": {"$ref": "#/$defs/UntilCondition"}
       }
     },
 
@@ -83,16 +83,16 @@
       ]
     },
 
-    "ConditionWithCount": {
-      "description": "As Condition, plus `count` thresholds (until-only).",
+    "UntilCondition": {
+      "description": "The `until` slot's condition grammar: as Condition, plus `count` thresholds (a fire budget is meaningful only as an expiry).",
       "oneOf": [
         {"$ref": "#/$defs/StepThreshold"},
         {"$ref": "#/$defs/TimeThreshold"},
         {"$ref": "#/$defs/CountThreshold"},
         {"type": "object", "required": ["any"], "additionalProperties": false,
-         "properties": {"any": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/ConditionWithCount"}}}},
+         "properties": {"any": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/UntilCondition"}}}},
         {"type": "object", "required": ["all"], "additionalProperties": false,
-         "properties": {"all": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/ConditionWithCount"}}}}
+         "properties": {"all": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/UntilCondition"}}}}
       ]
     }
   }
