@@ -15,9 +15,10 @@ order below is the red-team's recommendation; deliberation order is the owner's.
 
 ## 1. Remove `Started.hostname` (lifecycle-convention bump + migration)
 
-**Status:** AGREED 2026-07-10 (rulings: migrate-then-delete the v0.2 schema — no
-era coexistence; the migration script is committed, run to convergence, then
-deleted) · ship first, alone
+**Status:** SHIPPED 2026-07-10 — the bump in `de1238d`; migration converged in
+one pass (1,810 dbs migrated, 85 clean, 0 skipped-live; independent scan: 1,898
+started records, zero hostname keys; idempotent re-run all-clean), script
+deleted per ruling. The rest of this entry is retained until the agenda closes.
 
 **What it is.** Drop the `hostname` field from the `lifecycle.started` body: the
 dataclass, the schema (a lifecycle-convention version bump), the emit site, and a
