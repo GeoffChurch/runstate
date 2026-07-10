@@ -32,6 +32,12 @@ clusters that unlock each other, with a sequencing — see
   Candidate fix: envelope-`request_id` correlation for launched/terminated (no
   schema change). Interim mitigations shipped: the claim-aware no-progress
   guard; the ThreadLauncher single-dispatcher caution in memoizer.md.
+- **[worker-attach-scale](worker-attach-scale.md)** — [measured · fix designed]
+  `Worker` attach is O(N_total) — ~3.4 s + ~0.8 GB on a 10⁶-envelope log even
+  with one control record (the unfiltered claim-read); fix = head-first +
+  topic-filtered folds capped at the head, exactness preserved. Needs a cheap
+  current-head affordance — the one substrate-basis question, for the basis
+  audit.
 - **[mycooc-migration-audit](mycooc-migration-audit.md)** — remaining findings from
   the mycooc migration (runstate's first end-to-end consumer): **F4** (channel
   lifecycle / `close` contract), and the **F9/F10** minors (`await_consumed`
@@ -167,7 +173,10 @@ reasoning, listed here so they're discoverable as work (cross-ref, not moved):
 
 - **Cursor persistence / crash-replay** (§12.5) — the worker's read cursor is
   in-memory; no restart persistence, so the at-least-once / at-most-once boundary
-  (a `value` or `count`-`until` over-firing on replay) is unaddressed.
+  (a `value` or `count`-`until` over-firing on replay) is unaddressed. *Measured
+  2026-07-10:* the refold this would optimize costs ~2 ms at a 10⁶-envelope log;
+  the dominant resume term is the attach-time unfiltered read —
+  [worker-attach-scale](worker-attach-scale.md) owns that fix.
 - **Multi-orchestrator attribution** (§12.7–8) — the drain model already makes
   every orchestrator's commands take effect; what's open is *attribution* (whose
   command), today a `request_id`-prefix stopgap.

@@ -38,6 +38,29 @@ cooperative-control conventions:
 Plus a companion webapp / TUI that consumes all three protocols and
 provides the visualization layer.
 
+## Scale constraints for the viewer (measured 2026-07-10)
+
+Stage-3b probes on translation-shaped sqlite logs (10⁶ envelopes, ~50%
+heartbeats), warm cache — the numbers the viewer design must respect:
+
+- **The polling plane is free.** Every `latest`-backed fold (`peek_terminal`,
+  `live_episode`, `progress`, `Watcher.poll`) is 5–17 µs, flat in N: 50 runs at
+  1 Hz ≈ 0.85 ms/cycle; all ~1,200 translation runs ≈ 20 ms/cycle.
+- **Refolding per frame is not viable.** The replay folds are O(N) at ~3.2–3.9
+  µs/envelope decoded: one `value_series` of a 10⁶ log is ~1.9 s (and a bare
+  `read()` materializes ~0.77 GB transient). A viewer MUST carry per-run
+  cursors and fold plot state incrementally over `read(after=cursor)` — a
+  one-time ~2 s/run initial load, then ~23 µs tail reads. Stateful cursors are
+  exactly where the design already puts them (the Watcher plane, per
+  `observables.py`'s membership test).
+- **Heartbeat compaction is not the enabler**: the topic index already skips
+  heartbeats, so stripping them buys plots only 2–8% (it halves only the
+  full-log scans: `live_demand`, Worker attach, first event replay). In-log
+  GC/compaction is a nice-to-have ~2× on those paths, not a viewer
+  prerequisite.
+- Write path: ~3.4 k appends/s per run (fsync-bound), flat in N — never the
+  viewer's problem.
+
 ## The discipline: a SEPARATE project, not runstate's `protocol/`
 
 These protocols do **not** go in runstate — not even as separate files under its
