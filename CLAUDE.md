@@ -26,11 +26,9 @@ with opt-in **conventions** on top. The design rationale lives in
    per-convention schemas (`subscription` / `lifecycle` / `launcher` /
    `value`-`v0.2`), each `additionalProperties: false` and independently
    versioned. Authoritative for the wire format.
-   (`messages-v0.1.schema.json` is the superseded single-schema.)
 2. **`docs/design-v0.2.md`** — prose. Defines the two-layer model and
    semantics: the topic-log substrate, the conventions, the liveness
    tiers, the subscription condition-algebra, the three clocks.
-   (`protocol/spec.md` is the superseded v0.1 prose.)
 
 When in doubt about "is this protocol-conformant?", check both. The
 Python library MUST produce messages that pass the schema validators;

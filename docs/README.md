@@ -112,7 +112,7 @@ lifecycle, launcher) plus reference orchestration (launchers, Watcher, sweep).
 3. The code in `../runstate/` and the tests in `../tests/`.
 
 `overview.md` sits *below* all three — a derived restatement for reading order,
-never the tiebreaker. (`../protocol/messages-v0.1.schema.json` and
-`../protocol/spec.md` are the superseded v0.1 artifacts.) As with v0.1, the
-design docs capture *direction* and rationale; the code + schema are what's
-binding.
+never the tiebreaker. (The v0.1 wire artifacts — `messages-v0.1.schema.json`,
+`spec.md` — were deleted from `protocol/` when superseded; git carries them.)
+As with v0.1, the design docs capture *direction* and rationale; the code +
+schema are what's binding.
