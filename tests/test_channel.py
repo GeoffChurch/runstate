@@ -13,6 +13,19 @@ def test_send_returns_monotonically_increasing_seq(ch):
     assert s2 > s1
 
 
+def test_seq_is_contiguous_and_one_based(ch):
+    # The substrate contract: seq is contiguous, 1-based, per log -- on every
+    # backend, not an autoincrement accident. Interleaved reads must not
+    # perturb it (reads are non-destructive, never log events).
+    seqs = [ch.send({"i": 0}, topic="value", name="loss")]
+    for i in range(1, 5):
+        ch.read()
+        ch.latest("value")
+        seqs.append(ch.send({"i": i}, topic="value", name="loss"))
+    assert seqs == [1, 2, 3, 4, 5]
+    assert [e.seq for e in ch.read()] == [1, 2, 3, 4, 5]
+
+
 def test_read_returns_envelopes_after_cursor(ch):
     s1 = ch.send({"v": 1}, topic="value", name="loss")
     ch.send({"v": 2}, topic="value", name="loss")
@@ -62,6 +75,40 @@ def test_read_filters_by_topic_prefix_wildcard(ch):
     ch.send({"v": 1}, topic="value", name="loss")
     got = [e.topic for e in ch.read(topics=["control.>"])]
     assert got == ["control.stop", "control.subscribe"]
+
+
+def test_read_with_empty_topics_list_returns_empty(ch):
+    # topics=[] means "among these zero topics" -- vacuously none, on every
+    # backend (not an SQL error from an empty OR-clause).
+    ch.send({"v": 1}, topic="value", name="loss")
+    assert ch.read(topics=[]) == []
+
+
+def test_wildcard_prefix_is_literal_not_metacharacters(ch):
+    # The pattern grammar is exact-or-".>"-prefix; everything before ".>" is
+    # LITERAL. A backend's pattern operator (sqlite GLOB, postgres LIKE) must
+    # not let its metacharacters leak into topic matching.
+    for topic in ("a?b.x", "aXb.x", "a_b.x", "a%b.x", "a*b.x", "a[b.x"):
+        ch.send({}, topic=topic)
+    for pattern, hit in (("a?b.>", "a?b.x"), ("a_b.>", "a_b.x"),
+                         ("a%b.>", "a%b.x"), ("a*b.>", "a*b.x"),
+                         ("a[b.>", "a[b.x")):
+        assert [e.topic for e in ch.read(topics=[pattern])] == [hit]
+
+
+def test_exact_topic_filter_with_metacharacters_is_literal(ch):
+    ch.send({}, topic="a*b")
+    ch.send({}, topic="aXb")
+    ch.send({}, topic="a%b")
+    assert [e.topic for e in ch.read(topics=["a*b"])] == ["a*b"]
+    assert [e.topic for e in ch.read(topics=["a%b"])] == ["a%b"]
+
+
+def test_topic_matching_is_case_sensitive(ch):
+    ch.send({}, topic="Control.stop")
+    ch.send({}, topic="control.stop")
+    assert [e.topic for e in ch.read(topics=["control.>"])] == ["control.stop"]
+    assert [e.topic for e in ch.read(topics=["Control.stop"])] == ["Control.stop"]
 
 
 def test_read_filters_by_name(ch):

@@ -41,6 +41,15 @@ def _resolve_journal_mode() -> str:
         )
     return journal_mode
 
+
+def _escape_glob(s: str) -> str:
+    """Escape a literal string for use as a GLOB prefix: the metacharacters
+    ``*?[`` become single-character classes, so a topic containing them matches
+    only itself. GLOB (unlike sqlite's LIKE, which is ASCII-case-insensitive)
+    is case-sensitive, which topic matching requires."""
+    return "".join(f"[{c}]" if c in "*?[" else c for c in s)
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS log (
     seq        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -167,6 +176,8 @@ class SqliteChannel(Channel):
         request_ids: list[str] | None = None,
         limit: int | None = None,
     ) -> list[Envelope]:
+        if topics is not None and not topics:
+            return []  # "among these zero topics": vacuously none (no empty OR-clause SQL)
         where = ["seq > ?"]
         params: list[Any] = [after]
         if topics is not None:
@@ -174,7 +185,7 @@ class SqliteChannel(Channel):
             for t in topics:
                 if t.endswith(".>"):
                     ors.append("topic GLOB ?")
-                    params.append(t[:-1] + "*")  # "control.>" -> "control.*"
+                    params.append(_escape_glob(t[:-1]) + "*")  # "control.>" -> "control.*"; the prefix is LITERAL
                 else:
                     ors.append("topic = ?")
                     params.append(t)

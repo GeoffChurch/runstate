@@ -210,6 +210,8 @@ class PostgresChannel(Channel):
     def read(self, after: int = 0, *, topics: list[str] | None = None,
              name: str | None = None, request_ids: list[str] | None = None,
              limit: int | None = None) -> list[Envelope]:
+        if topics is not None and not topics:
+            return []  # "among these zero topics": vacuously none (no empty OR-clause SQL)
         where = ["run_id = %s", "seq > %s"]
         params: list[Any] = [self._run_id, after]
         if topics is not None:
