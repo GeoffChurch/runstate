@@ -25,6 +25,10 @@ clusters that unlock each other, with a sequencing — see
 
 ## Next pickups
 
+- **[review-2026-07-agenda](review-2026-07-agenda.md)** — the deliberation ledger
+  for the holistic review's convergent items (8 proposed changes + the dropped
+  ones), each with current-state / improvement / forced amendments / open
+  questions; statuses move PROPOSED → AGREED → SHIPPED as the owner rules.
 - **[launcher-record-identity](launcher-record-identity.md)** — [wrong-verdict ·
   red-team 2026-07-10] a late-landing identityless `launcher.terminated` forges
   the LIVE run's verdict (`peek_terminal`'s latest-vs-latest pairing is defeated

@@ -56,6 +56,40 @@ job, and the lift-rule already put it on the envelope for this reason. Weigh at
 the basis-audit / simplification stages with the fold cost and the id-less
 fallback in view.
 
+## Second red-team pass (2026-07-10) — amendments
+
+1. **The live-guard must be log-ordered, never probe-based.** A `resolve()`-based
+   "definitively live" check inverts the failure: pid reuse makes a DEAD run read
+   live, VOIDING a *true* `killed` verdict — `--status` lies indefinitely and
+   `ensure`'s foreign gate (`is_alive()` re-reads the same false-live) waits
+   forever: a wedged sweep, operationally worse than the forgery. The sound rule
+   is a **pure fold**: a `terminated` is void if any worker-authored record
+   (`lifecycle.*`, `value`) FOLLOWS it by seq. No probe, lives in `peek_terminal`
+   itself (dissolving the Watcher-vs-ensure home question), self-heals within one
+   beacon; `EpisodeProbe` (connection-bound, genuinely definitive) stays
+   admissible where present; bare `resolve()` never voids.
+2. **Correlation alone does not close the live variants.** A ThreadLauncher
+   claim-loser's pair is internally clean — its own `launched` is the newest
+   opener, so id-pairing still reads it as terminal. The void rule (amendment 1)
+   is load-bearing for all three reproduced live-forgery variants; correlation is
+   what fixes **dead-log attribution** (post-hoc, nothing alive to write records —
+   only correlation carries which episode a manner-of-death belongs to). Two
+   halves, both required.
+3. **No id-less dual path.** Old logs can be migrated by a one-time offline pass
+   stamping synthetic correlation ids via today's positional pairing — replayed
+   once, no worse than current behavior for old data — so the runtime keeps ONE
+   fold (the no-compat doctrine holds).
+4. **ThreadLauncher loser-suppression** (retires memoizer.md's single-dispatcher
+   caution): handle identity can't work (sibling threads share `local://host/pid`);
+   the portable rule is LocalLauncher's lifted — clean exit + `live_episode(ch)
+   is not None` → suppress the `Terminated` write (a foreign claim explains the
+   silence).
+5. **Priority raised: translation is exposed today.** Its concurrent `drive_block`
+   shells over ThreadLauncher share rids by design; a forged truncated result
+   would be stored under a content-addressed rid as permanent, silent cache
+   corruption. The interim mitigations protect mycooc (serial runner) but not this
+   topology.
+
 ## Related
 
 - The `ensure` no-progress guard is now **claim-aware** (`live_episode` check;
