@@ -1,12 +1,15 @@
 """The stateless observer plane (docs/specs/observables.md).
 
-Pure folds log -> derived view, parametrized over both backends: the liveness
+Pure folds log -> derived view, parametrized over the backends: the liveness
 verdicts (peek_terminal -> RunResult, live_episode), the episode-boundary rule
 (latest_episode), the step frontier (progress), and the value-plane register
 projection (value_series).
 """
 
+import pytest
+
 from runstate.observables import (
+    MalformedRecordError,
     RunResult,
     latest_episode,
     live_demand,
@@ -308,6 +311,86 @@ def test_live_demand_keeps_step_keyed_subs_across_boundaries(open_channel):
     ch.send({"handle": "local://h/2", "hostname": None, "attached_at": 1.0},
             topic="lifecycle.started")
     assert [e.request_id for e in live_demand(open_channel())] == ["r1"]
+
+
+# ----- the verdict/measurement split: verdict folds refuse to guess -----
+
+
+def test_peek_terminal_typed_error_on_extra_key_stopped(open_channel):
+    # a verdict fold must not guess at an uninterpretable record: typed and
+    # catchable, never the accidental bare TypeError of Stopped(**body).
+    seq = open_channel().send(
+        {"completed": True, "error": None, "final_step": None, "oops": 1},
+        topic="lifecycle.stopped",
+    )
+    with pytest.raises(MalformedRecordError) as ei:
+        peek_terminal(open_channel())
+    assert ei.value.seq == seq
+    assert ei.value.topic == "lifecycle.stopped"
+    assert str(seq) in str(ei.value) and "lifecycle.stopped" in str(ei.value)
+
+
+def test_peek_terminal_typed_error_on_missing_key_stopped(open_channel):
+    open_channel().send({"completed": True}, topic="lifecycle.stopped")
+    with pytest.raises(MalformedRecordError):
+        peek_terminal(open_channel())
+
+
+def test_peek_terminal_typed_error_on_completed_with_error(open_channel):
+    # the payload constraint (completed => error is None) is a convention
+    # violation like any other: ValueError from __post_init__ is wrapped too.
+    open_channel().send({"completed": True, "error": "x", "final_step": None},
+                        topic="lifecycle.stopped")
+    with pytest.raises(MalformedRecordError):
+        peek_terminal(open_channel())
+
+
+def test_peek_terminal_typed_error_on_malformed_terminated(open_channel):
+    seq = open_channel().send(
+        {"reason": "vanished", "exit_code": None, "signal": None},
+        topic="launcher.terminated",
+    )
+    with pytest.raises(MalformedRecordError) as ei:
+        peek_terminal(open_channel())
+    assert ei.value.seq == seq
+    assert ei.value.topic == "launcher.terminated"
+
+
+def test_live_episode_typed_error_on_handleless_started(open_channel):
+    ch = open_channel()
+    ch.send({"hostname": None, "attached_at": 0.0}, topic="lifecycle.started")
+    with pytest.raises(MalformedRecordError):
+        live_episode(open_channel())
+    ch.send({"handle": None, "hostname": None, "attached_at": 0.0},
+            topic="lifecycle.started")   # null handle: present but uninterpretable
+    with pytest.raises(MalformedRecordError):
+        live_episode(open_channel())
+
+
+def test_measurement_folds_skip_junk_records(open_channel):
+    # the other half of the split: progress / value_series / live_demand are
+    # measurement folds -- one junk record is one lost point, skipped silently.
+    ch = open_channel()
+    ch.send({"junk": True}, topic="lifecycle.heartbeat")
+    ch.send({"junk": True}, topic="value", name="loss")
+    ch.send({"frm": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r1")
+    assert progress(open_channel()) is None
+    assert value_series(open_channel()) == {}
+    # live_demand is value-blind: a junk-bodied subscribe is still live demand
+    assert [e.request_id for e in live_demand(open_channel())] == ["r1"]
+
+
+def test_measurement_folds_skip_wrong_typed_junk(open_channel):
+    # type-junk is junk too: a wrong-typed step is not a measurement --
+    # skipped, never leaked into the frontier or compared (no TypeError).
+    ch = open_channel()
+    ch.send({"step": "abc", "consumed_seq": 0}, topic="lifecycle.heartbeat")
+    assert progress(open_channel()) is None
+    ch.send({"completed": True, "error": None, "final_step": 3}, topic="lifecycle.stopped")
+    assert progress(open_channel()) == 3   # the junk axis contributes nothing
+    ch.send({"value": 1.0, "step": 0, "t": 0.0}, topic="value", name="loss")
+    ch.send({"value": 9.9, "step": "x", "t": 1.0}, topic="value", name="loss")
+    assert value_series(open_channel()) == {"loss": {0: 1.0}}
 
 
 def test_live_episode_crashed_local_episode_is_not_live(open_channel):

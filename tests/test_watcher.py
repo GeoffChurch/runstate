@@ -13,6 +13,7 @@ import pytest
 
 from runstate.channel import open_channel
 from runstate.launcher import ThreadLauncher
+from runstate.observables import MalformedRecordError
 from runstate.watcher import Watcher, await_consumed
 from runstate.worker import Worker
 
@@ -405,6 +406,18 @@ def test_await_consumed_resolves_refused_by_death(open_channel):
     assert isinstance(r, RunResult) and r.outcome == "preempted"
 
 
+def test_await_consumed_typed_error_on_malformed_nak(open_channel):
+    # the nak parse is on the verdict plane: an uninterpretable answer raises
+    # the typed MalformedRecordError, not a bare TypeError from Nak(**body).
+    ch = open_channel()
+    s = ch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r")
+    nak_seq = ch.send({"reason": "malformed"}, topic="lifecycle.nak", request_id="r")  # no message
+    with pytest.raises(MalformedRecordError) as ei:
+        await_consumed(open_channel(), s, request_id="r", timeout=1.0)
+    assert ei.value.seq == nak_seq
+    assert ei.value.topic == "lifecycle.nak"
+
+
 def test_await_consumed_keeps_waiting_when_death_precedes_the_request(open_channel):
     # the request landed AFTER the death: it correctly awaits the next episode
     # (lazy-launch's case) -- a timeout, never refused-by-death.
@@ -414,3 +427,42 @@ def test_await_consumed_keeps_waiting_when_death_precedes_the_request(open_chann
     s = ch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r")
     with pytest.raises(TimeoutError):
         await_consumed(open_channel(), s, request_id="r", timeout=0.0, now=lambda: 0.0)
+
+
+def test_poll_skips_junk_heartbeat_body(tmp_path):
+    # heartbeats are measurement-plane: a junk body earns no liveness credit
+    # and never crashes poll; the next conforming beacon lands normally.
+    ch = open_channel("r", root=tmp_path, backend="sqlite")
+    w = Watcher()
+    w.observe("r", ch)
+    ch.send({"beat": "junk"}, topic="lifecycle.heartbeat")
+    s = w.poll("r")
+    assert s.done is False
+    assert s.step is None  # the junk record contributed nothing
+    ch.send({"step": 7, "consumed_seq": 0}, topic="lifecycle.heartbeat")
+    assert w.poll("r").step == 7
+
+
+def test_await_consumed_ignores_junk_heartbeat_watermark(open_channel):
+    # a junk beacon is no watermark evidence: keep waiting (timeout), never a
+    # bare TypeError from Heartbeat(**body).
+    import pytest
+    ch = open_channel()
+    s = ch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r")
+    ch.send({"beat": "junk"}, topic="lifecycle.heartbeat")
+    with pytest.raises(TimeoutError):
+        await_consumed(open_channel(), s, request_id="r", timeout=0.0, now=lambda: 0.0)
+
+
+def test_poll_skips_wrong_typed_heartbeat_step(tmp_path):
+    # type-junk is junk too: a non-int step earns no measurement credit and
+    # never leaks a str into Running.step.
+    ch = open_channel("r", root=tmp_path, backend="sqlite")
+    w = Watcher()
+    w.observe("r", ch)
+    ch.send({"step": "abc", "consumed_seq": 0}, topic="lifecycle.heartbeat")
+    s = w.poll("r")
+    assert s.done is False
+    assert s.step is None
+    ch.send({"step": 7, "consumed_seq": 0}, topic="lifecycle.heartbeat")
+    assert w.poll("r").step == 7

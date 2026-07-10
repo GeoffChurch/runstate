@@ -7,7 +7,7 @@ EXPECTED = {
     "Worker",
     "Launcher", "LaunchHandle", "ThreadLauncher", "LocalLauncher",
     "Watcher", "await_consumed", "RunStatus", "Running", "RunResult", "Outcome",
-    "peek_terminal",
+    "MalformedRecordError", "peek_terminal",
     "latest_episode", "live_demand", "live_episode", "progress", "value_series", "handle_pid",
     "sweep", "Variant",
     "history", "ensure", "launch_producer", "relaunch_if_needed", "ensure_served",

@@ -37,8 +37,13 @@ name a lie.
   shapes), the conventions *observe* (body-aware folds). NOT Rx-style
   observables — pull-side pure functions; the push side is the subscription
   convention.
-- **Tolerant reader:** the substrate admits foreign bodies on any topic, so
-  every fold skips records missing its required keys; selection never raises.
+- **Tolerance splits by plane:** the substrate admits foreign bodies on any
+  topic. The measurement folds (`progress`, `value_series`, `live_demand`)
+  skip what isn't a measurement — one lost point is marginal; the verdict
+  folds (`peek_terminal`, `live_episode`, and `await_consumed`'s nak parse)
+  decide categorical answers from single records and refuse to guess — an
+  uninterpretable record raises the typed, catchable `MalformedRecordError`
+  (loud-by-default is catchable; silent-by-default is unobservable).
 
 ## Surface
 

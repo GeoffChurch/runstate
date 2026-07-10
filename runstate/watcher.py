@@ -26,7 +26,7 @@ from typing import Optional, Protocol, Union
 
 from .channel import Channel, EpisodeProbe, Envelope
 from .launcher import LaunchHandle
-from .observables import Outcome, RunResult, peek_terminal
+from .observables import Outcome, RunResult, verdict_parse, peek_terminal
 from .vocabulary.payloads import Heartbeat, Nak, Topic
 from .vocabulary.schedule import Condition
 
@@ -234,7 +234,9 @@ class Watcher:
         all tracked runs to it as ``(run_id, Envelope)`` while waiting (the same
         stream ``iter_events`` exposes). Raises TimeoutError if ``timeout``
         elapses first — the caller's patience running out is not a death verdict
-        (the run may be a healthy slow one)."""
+        (the run may be a healthy slow one). An uninterpretable record on the
+        verdict plane raises ``MalformedRecordError`` (observables) — propagated,
+        not swallowed."""
         deadline = None if timeout is None else self._now() + timeout
         while True:
             if on_event is not None:
@@ -332,8 +334,17 @@ class Watcher:
         hb = st.channel.latest(Topic.LIFECYCLE_HEARTBEAT)
         if hb is not None and hb.seq > st.last_hb_seq:
             st.last_hb_seq = hb.seq
+            try:
+                step = Heartbeat(**hb.body).step
+            except TypeError:
+                # measurement-plane tolerance: a junk beacon isn't a
+                # measurement — it earns no liveness credit and is skipped
+                # (the next conforming beacon supersedes it).
+                return
+            if step is not None and not (isinstance(step, int) and not isinstance(step, bool)):
+                return  # wrong-typed step: the same junk-beacon rule
             st.last_heartbeat_at = self._now()
-            st.last_step = Heartbeat(**hb.body).step
+            st.last_step = step
 
 
 def await_consumed(channel: Channel, seq: int, *, request_id: str | None = None,
@@ -349,9 +360,11 @@ def await_consumed(channel: Channel, seq: int, *, request_id: str | None = None,
     will ever drain it: returns the terminal ``RunResult`` (refused-by-death)
     instead of blocking — while a request sent *after* a death correctly waits
     for the next episode. Raises ``TimeoutError`` if ``timeout`` elapses —
-    not-yet-drained is not a refusal. With ``request_id=None``, nak detection
-    is skipped. So the full codomain is the answer space: ``Nak`` (refused) |
-    ``RunResult`` (the run died under the request) | ``None`` (accepted)."""
+    not-yet-drained is not a refusal — and ``MalformedRecordError`` on a nak
+    body it cannot parse (the answer is on the verdict plane). With
+    ``request_id=None``, nak detection is skipped. So the full codomain is the
+    answer space: ``Nak`` (refused) | ``RunResult`` (the run died under the
+    request) | ``None`` (accepted)."""
     deadline = None if timeout is None else now() + timeout
 
     def _answer() -> "Nak | None":
@@ -360,7 +373,7 @@ def await_consumed(channel: Channel, seq: int, *, request_id: str | None = None,
             return None
         naks = [e for e in channel.read(after=seq, topics=[Topic.LIFECYCLE_NAK])
                 if e.request_id == request_id]
-        return Nak(**naks[-1].body) if naks else None
+        return verdict_parse(Nak, naks[-1]) if naks else None
 
     while True:
         # Answer-first (specs/service-worker.md): a nak IS the answer; the
@@ -371,10 +384,15 @@ def await_consumed(channel: Channel, seq: int, *, request_id: str | None = None,
         if nak is not None:
             return nak
         hb = channel.latest(Topic.LIFECYCLE_HEARTBEAT)
-        if hb is not None and Heartbeat(**hb.body).consumed_seq >= seq:
-            # Re-check once: the nak and its heartbeat may both have landed
-            # between this iteration's two reads.
-            return _answer()
+        if hb is not None:
+            try:
+                consumed = Heartbeat(**hb.body).consumed_seq >= seq
+            except TypeError:
+                consumed = False  # a junk beacon is no watermark evidence
+            if consumed:
+                # Re-check once: the nak and its heartbeat may both have landed
+                # between this iteration's two reads.
+                return _answer()
         # Refused-by-death: a terminal record FOLLOWING the request, with no
         # later episode (peek_terminal is episode-aware), means no worker will
         # ever drain it — return the terminal verdict. A terminal that

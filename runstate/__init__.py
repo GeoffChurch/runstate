@@ -16,6 +16,7 @@ from .launcher import (Launcher, LaunchHandle, LocalLauncher, ThreadLauncher,
                        ensure_served, relaunch_if_needed)
 from .memoizer import ensure, foreign_episode, history, launch_producer
 from .observables import (
+    MalformedRecordError,
     Outcome,
     RunResult,
     latest_episode,
@@ -84,6 +85,7 @@ __all__ = [
     "Running",
     "RunResult",
     "Outcome",
+    "MalformedRecordError",
     "peek_terminal",
     "latest_episode",
     "live_demand",

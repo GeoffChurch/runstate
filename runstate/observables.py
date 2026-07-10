@@ -9,9 +9,12 @@ pure functions; the push side is the subscription convention.
 
 Membership test: stateless, observer-side, derived-never-stored. Needs a
 cursor or a clock? It's the Watcher's. Parses a handle string? It's
-``vocabulary/``'s. Every fold is a tolerant reader: the substrate admits
-foreign bodies on any topic, so records missing a fold's required keys are
-skipped, never raised on.
+``vocabulary/``'s. Tolerance splits by plane (the substrate admits foreign
+bodies on any topic): measurement folds (``progress``, ``value_series``,
+``live_demand``) skip what isn't a measurement — one lost point is marginal;
+verdict folds (``peek_terminal``, ``live_episode``) decide categorical
+answers from single records and refuse to guess — an uninterpretable record
+raises ``MalformedRecordError``, typed and catchable.
 
 The liveness tiers live here too: ``peek_terminal`` covers the two *terminal*
 tiers that are a pure read of the log — a clean ``lifecycle.stopped`` (the
@@ -25,12 +28,39 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Optional
+from typing import Any, Optional, TypeVar
 
 from .channel import Channel, Envelope
 from .vocabulary.payloads import Stopped, Terminated, Topic
 from .vocabulary.handle import resolve
 from .vocabulary.schedule import references_time
+
+_T = TypeVar("_T")
+
+
+class MalformedRecordError(Exception):
+    """A record on a verdict topic cannot be interpreted — the writer violated
+    the convention. Raised by the verdict folds (``peek_terminal``,
+    ``live_episode``, ``await_consumed``'s nak parse), which decide categorical
+    answers from single records and refuse to guess; the measurement folds
+    (``progress``, ``value_series``, ``live_demand``) skip junk instead.
+    Callers wanting degradation catch this."""
+
+    def __init__(self, seq: int, topic: str, detail: str) -> None:
+        super().__init__(f"uninterpretable record at seq {seq} on topic {topic!r}: {detail}")
+        self.seq = seq
+        self.topic = topic
+        self.detail = detail
+
+
+def verdict_parse(cls: type[_T], e: Envelope) -> _T:
+    """Parse a verdict-plane record via ``cls(**body)``, wrapping the writer's
+    convention violation (bad keys -> TypeError, a payload-constraint violation
+    -> ValueError) in the typed MalformedRecordError."""
+    try:
+        return cls(**e.body)
+    except (TypeError, ValueError) as exc:
+        raise MalformedRecordError(e.seq, e.topic, str(exc)) from exc
 
 
 class Outcome(StrEnum):
@@ -104,7 +134,14 @@ def live_episode(channel: Channel) -> Optional[str]:
     stopped = channel.latest(Topic.LIFECYCLE_STOPPED)
     if stopped is not None and stopped.seq > started.seq:
         return None
-    handle: str = started.body["handle"]
+    try:
+        handle = started.body["handle"]
+    except KeyError as exc:
+        raise MalformedRecordError(started.seq, started.topic, "missing 'handle'") from exc
+    if not isinstance(handle, str):
+        raise MalformedRecordError(
+            started.seq, started.topic, f"handle must be a string, got {handle!r}"
+        )
     if resolve(handle) is False:
         return None
     return handle
@@ -137,7 +174,7 @@ def peek_terminal(channel: Channel) -> Optional[RunResult]:
     """
     stopped = _terminal_unless_followed(channel, Topic.LIFECYCLE_STOPPED, Topic.LIFECYCLE_STARTED)
     if stopped is not None:
-        s = Stopped(**stopped.body)
+        s = verdict_parse(Stopped, stopped)
         if s.error is not None:          # NB: `is not None`, not truthiness — "" still errors
             outcome = Outcome.ERRORED
         elif s.completed:
@@ -147,7 +184,7 @@ def peek_terminal(channel: Channel) -> Optional[RunResult]:
         return RunResult(outcome=outcome, reason=outcome, error=s.error, final_step=s.final_step)
     term = _terminal_unless_followed(channel, Topic.LAUNCHER_TERMINATED, Topic.LAUNCHER_LAUNCHED)
     if term is not None:
-        t = Terminated(**term.body)
+        t = verdict_parse(Terminated, term)
         if t.reason == "killed":
             outcome = Outcome.KILLED
         elif t.exit_code == 0:
@@ -211,24 +248,31 @@ def progress(channel: Channel) -> Optional[int]:
     reflects the resumed branch."""
     steps = []
     hb = channel.latest(Topic.LIFECYCLE_HEARTBEAT)
-    if hb is not None and hb.body.get("step") is not None:
+    if hb is not None and _is_step(hb.body.get("step")):
         steps.append(hb.body["step"])
     stopped = channel.latest(Topic.LIFECYCLE_STOPPED)
-    if stopped is not None and stopped.body.get("final_step") is not None:
+    if stopped is not None and _is_step(stopped.body.get("final_step")):
         steps.append(stopped.body["final_step"])
     return max(steps) if steps else None
+
+
+def _is_step(v: object) -> bool:
+    """A conforming step measurement: an int (bool excluded — JSON ``true`` is
+    not an integer). Wrong-typed junk isn't a measurement (the tolerance split,
+    module docstring): skip it, never compare against it."""
+    return isinstance(v, int) and not isinstance(v, bool)
 
 
 def _value_points(channel: Channel) -> Iterator[tuple[str, Any, Any]]:
     """Decode ``value`` envelopes to ``(name, step, value)`` samples, lazily.
     Applies the domain rules: skip records with no envelope ``name``, a null
-    ``step``, or no ``"value"`` key — a stepless emission is outside the
-    step-indexed observable's domain, and the substrate admits foreign bodies
-    on any topic. Private: the designated escape hatch if a custom-fold
-    consumer ever appears; until then the bring-your-own-fold seam is the
-    substrate itself (``read`` + a loop)."""
+    (or wrong-typed) ``step``, or no ``"value"`` key — a stepless emission is
+    outside the step-indexed observable's domain, and the substrate admits
+    foreign bodies on any topic. Private: the designated escape hatch if a
+    custom-fold consumer ever appears; until then the bring-your-own-fold seam
+    is the substrate itself (``read`` + a loop)."""
     for e in channel.read(topics=[Topic.VALUE]):
-        if e.name is None or "value" not in e.body or e.body.get("step") is None:
+        if e.name is None or "value" not in e.body or not _is_step(e.body.get("step")):
             continue
         yield e.name, e.body["step"], e.body["value"]
 
