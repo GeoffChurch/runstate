@@ -77,8 +77,9 @@ def main():
                 except RuntimeError:
                     r = runstate.peek_terminal(producer.channel)
                     ok = resumable(r)
-                    print(f"[driver] attempt {attempt}: ensure raised "
-                          f"(outcome={r.outcome}, error={r.error!r}) -> "
+                    desc = ("recordless" if r is None
+                            else f"outcome={r.outcome}, error={r.error!r}")
+                    print(f"[driver] attempt {attempt}: ensure raised ({desc}) -> "
                           f"{'resumable, re-calling' if ok else 'fatal, giving up'}")
                     if not ok:
                         raise

@@ -308,7 +308,7 @@ doesn't read the log — it produces; the memoizer reads). Clean division:
 - `history`: `every`/`from`/`until` replay over a fixed logged series → correct
   fired subset; **divergent re-emission of a step → take-the-latest (highest-`seq`
   wins)**; benign *identical* re-emission → collapses; empty/short series; a `time_seconds` schedule
-  replayed run-relative across two episodes (after the `value.t` fix). Both
+  replayed run-relative across two episodes (after the `value.t` fix). All
   backends.
 - `ensure`: full hit (window closed, no launch); cold miss (extend → window closes);
   partial hit + extend (0..k logged → resume → one continuous series, run-absolute);

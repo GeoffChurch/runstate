@@ -322,8 +322,8 @@ a long step should beacon within it.
 
 Three independent notions of time, never conflated:
 
-- **`seq`** — the substrate's transport order (per topic; global where a single
-  sequencer exists).
+- **`seq`** — the substrate's transport order (the log's total order, assigned
+  on append).
 - **`step`** — the worker's logical clock (a `body` field); what scheduling
   predicates evaluate against.
 - **wall-clock** — real time (`value.t`, heartbeat staleness).

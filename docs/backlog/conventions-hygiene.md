@@ -39,8 +39,13 @@ and `started.hostname` / `started.attached_at` are written but **read by nothing
 shipped** (the Watcher reads only `heartbeat.step`). Legitimate forward-design
 for an orchestrator ack-check (`latest("lifecycle.heartbeat").consumed_seq >=
 my_seq`) — now addressed by `await_consumed` in `runstate/watcher.py`, the
-canonical "did my control land?" read. `started.hostname` / `started.attached_at`
-remain unconsumed (forward-design for a viewer; not actioned here).
+canonical "did my control land?" read. *Update 2026-07-10:* `started.attached_at`
+has since gained shipped consumers (the run epoch in `memoizer.history` /
+`_elapsed` — `specs/ensure-until-condition.md`); `started.hostname` alone remains
+unconsumed — and is never emitted non-null (`worker.py` hardcodes
+`hostname=None`, and the hostname is already carried inside the handle string),
+so the field has never held data on any log (forward-design for a viewer; not
+actioned here).
 
 ## F8 (low-med) — `RunResult.elapsed` is a dead field
 

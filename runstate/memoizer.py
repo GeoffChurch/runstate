@@ -88,7 +88,7 @@ class _LaunchProducer:
 
     @property
     def channel(self) -> Channel:
-        # cheap: both backends share the backing store, so a fresh read view per
+        # cheap: the backends share the backing store, so a fresh read view per
         # access is fine (and is what `ensure` wants as the log grows).
         return self._launcher.open_channel(self._variant.run_id)
 

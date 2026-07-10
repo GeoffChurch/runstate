@@ -106,8 +106,9 @@ started, reapable only via the launcher's liveness — which breaks fire-and-for
   the relaunched worker reads its `run_id`-keyed checkpoint, restores at step `k`,
   and continues `value.step` at `k, k+1, …`. runstate gives no directory.
 - **`Worker.steps(start=k, total=N)`** affordance: run-absolute resume *with*
-  correct lifecycle bookkeeping (`final_step` / commanded `stop_reason`), closing
-  the `steps(total=N-k)` episode-relative footgun.
+  correct lifecycle bookkeeping (`final_step` / commanded `stop_reason` — *the
+  latter since removed by `completed-opt-in.md`; a commanded stop now reads as
+  `completed=False`*), closing the `steps(total=N-k)` episode-relative footgun.
 - **Memoizer composition** (the consumer — built in the *next* thread, not here):
   `ensure(run_id, config, up_to=N)` → read `loss[0:N]`; if latest logged step ≥
   `N−1`, reuse; else CAS-guarded-relaunch(target=`N`) → wait (episode-aware) → read.
@@ -141,7 +142,8 @@ started, reapable only via the launcher's liveness — which breaks fire-and-for
 - **reap-before-relaunch:** a dangling `launched` whose handle probes dead →
   `terminated` written → relaunch proceeds.
 - **`steps(start=k, total=N)`:** emits `value.step` `k…N−1`; `final_step` and a
-  commanded `stop_reason` are correct.
+  commanded stop's lifecycle record are correct (*amended: `stop_reason` since
+  removed by `completed-opt-in.md`*).
 - **autonomous-extend (integration):** a resumable test worker runs `run_id` to
   `k`, checkpoints; relaunch with target `N` resumes (`steps(start=k)`) and extends;
   the log reads back as one `loss[0:N]` series (run-absolute step), and

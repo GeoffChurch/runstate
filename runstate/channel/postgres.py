@@ -1,6 +1,6 @@
 """PostgresChannel: the cross-host substrate backend.
 
-Design: docs/backlog/backends/channel-postgres.md. One shared ``log`` table for
+Design: docs/specs/channel-postgres.md. One shared ``log`` table for
 all runs, keyed ``(run_id, seq)``; ``PRIMARY KEY (run_id, seq)`` is the CAS
 arbiter (contiguous per-run seq, cross-host-reliable). ``body`` stays opaque
 ``text`` (``jsonb`` would mutate the immutable snapshot). The substrate never
