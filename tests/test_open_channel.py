@@ -41,3 +41,19 @@ def test_attach_reads_env(monkeypatch, tmp_path):
     ch.send({"v": 1}, topic="value", name="loss")
     other = open_channel("envrun", root=tmp_path, backend="sqlite")
     assert [e.body for e in other.read()] == [{"v": 1}]
+
+
+def test_memory_root_none_is_not_the_string_none():
+    # None is a registry sentinel, never str()'d into the namespace "None"
+    a = open_channel("reg-none", backend="memory")
+    b = open_channel("reg-none", root="None", backend="memory")
+    a.send({"v": 1}, topic="value", name="x")
+    assert b.read() == []
+
+
+def test_memory_root_spellings_of_one_path_share(tmp_path):
+    # memory mirrors sqlite's identity: two spellings of one location = one log
+    a = open_channel("reg-path", root=str(tmp_path), backend="memory")
+    b = open_channel("reg-path", root=str(tmp_path) + "/.", backend="memory")
+    a.send({"v": 1}, topic="value", name="x")
+    assert [e.body for e in b.read()] == [{"v": 1}]

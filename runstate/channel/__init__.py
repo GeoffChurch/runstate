@@ -33,8 +33,11 @@ from .sqlite import SqliteChannel
 # multiple readers/writers of the *same* run (the analogue of several
 # SqliteChannels on one file). Each entry is (log, lock): the shared lock keeps
 # the seq read-modify-write atomic across every instance on that log. Distinct
-# (root, run_id) keys stay isolated.
-_MEMORY_LOGS: dict[tuple[str, str], tuple[list[Envelope], threading.Lock]] = {}
+# (root, run_id) keys stay isolated; the root is identity-normalized (absolute
+# path, None kept as None) so two spellings of one location share a log exactly
+# as they would share a file on sqlite -- and root=None never collides with a
+# namespace literally named "None".
+_MEMORY_LOGS: dict[tuple[str | None, str], tuple[list[Envelope], threading.Lock]] = {}
 
 
 def open_channel(run_id: str, *, root: str | os.PathLike[str] | None = None,
@@ -53,7 +56,8 @@ def open_channel(run_id: str, *, root: str | os.PathLike[str] | None = None,
             raise ValueError("the sqlite backend requires a root directory (got root=None)")
         return SqliteChannel(Path(root) / f"{run_id}.db", json_default=json_default)
     if backend == "memory":
-        log, lock = _MEMORY_LOGS.setdefault((str(root), run_id), ([], threading.Lock()))
+        key = (None if root is None else os.path.abspath(str(root)), run_id)
+        log, lock = _MEMORY_LOGS.setdefault(key, ([], threading.Lock()))
         return MemoryChannel(log, lock, json_default=json_default)
     if backend == "postgres":
         if root is None:
