@@ -66,7 +66,12 @@ clusters that unlock each other, with a sequencing — see
   vocabulary (e.g. `completed`/`preempted`/`converged`/`budget_exhausted`,
   resumable-`timed_out` vs fatal-`crashed`) so consumers can branch on *why*
   without expanding the closed `outcome` enum. Surfaced by
-  [mycooc-adoption](mycooc-adoption.md). Small.
+  [mycooc-adoption](mycooc-adoption.md). Small. *Evidence upgrade (2026-07-10,
+  consumer harvest):* mycooc built the whole thing as a parallel value-plane
+  register (`emit_completion_reason`, two writers incl. the force-kill path, an
+  authoritative reader) after a recurring completion-classification bug class
+  (mycooc 1963732, 8ea82e3) — the validating consumer now exists, and
+  `RunResult.reason` is branched on by nobody. Promotion candidate.
 - **Cross-host liveness for the claim gate** — `live_episode` sits at the probe-only
   rung, so on a foreign host it goes blind and treats an unresolvable handle as live
   *forever*; a crashed foreign episode blocks the waker and the birth-CAS. The

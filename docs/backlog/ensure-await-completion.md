@@ -2,7 +2,10 @@
 
 **Status:** forward-looking idea, surfaced by the translation dogfood (a
 cross-pollination review of a runstate consumer). Designed-and-ready, **not
-urgent** — see *Use-case evidence*.
+urgent** — see *Use-case evidence*. *Re-confirmed parked 2026-07-10 (consumer
+harvest):* the latent cross-step case is still alive (translation's
+`estimate_worker` writes `per_sentence` after its step loop) but still has no
+live consumer depending on it post-terminal.
 **Basis:** builds directly on `../specs/preempted-vs-completed.md` (`ensure`
 already returns on `outcome == completed`) and `../specs/ensure-until-condition.md`
 (the *condition ⟂ enforcement ⟂ resume-policy* split, and the "**no new
