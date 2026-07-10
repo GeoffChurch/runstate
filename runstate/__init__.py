@@ -41,8 +41,6 @@ from .sweep import Variant, sweep
 from .watcher import Running, RunStatus, Watcher, await_consumed
 from .worker import Worker
 
-__version__ = "0.2.0.dev0"
-
 
 def attach(run_id: str | None = None, *, root: str | os.PathLike[str] | None = None,
            backend: str | None = None,
@@ -66,7 +64,6 @@ def attach(run_id: str | None = None, *, root: str | os.PathLike[str] | None = N
 
 
 __all__ = [
-    "__version__",
     # substrate
     "open_channel",
     "attach",

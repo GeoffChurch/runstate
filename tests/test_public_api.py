@@ -6,7 +6,8 @@ EXPECTED = {
     "open_channel", "attach", "Channel", "Body", "Envelope",
     "Worker",
     "Launcher", "LaunchHandle", "ThreadLauncher", "LocalLauncher",
-    "Watcher", "await_consumed", "RunStatus", "Running", "RunResult", "Outcome", "peek_terminal",
+    "Watcher", "await_consumed", "RunStatus", "Running", "RunResult", "Outcome",
+    "peek_terminal",
     "latest_episode", "live_demand", "live_episode", "progress", "value_series", "handle_pid",
     "sweep", "Variant",
     "history", "ensure", "launch_producer", "relaunch_if_needed", "ensure_served",
@@ -22,7 +23,7 @@ def test_all_public_names_resolve():
 
 
 def test_public_surface_is_stable():
-    assert set(runstate.__all__) - {"__version__"} == EXPECTED
+    assert set(runstate.__all__) == EXPECTED
 
 
 def test_vocab_enums_are_wire_strings():
