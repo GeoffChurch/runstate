@@ -15,9 +15,10 @@ Use-after-close is a backend error (a closed SQLite connection raises), not
 defined behavior.
 
 The surface is declared here (the abstract methods) and pinned *behaviorally* by
-the backend-parametrized conformance suite in ``tests/test_channel.py`` — both
-backends must pass it independently. ``send(expected_seq=)`` is the substrate's
-compare-and-append; see the package docstring and design-v0.2.md §4.
+the backend-parametrized conformance suite in ``tests/test_channel.py`` — every
+backend must pass it independently. ``send(expected_seq=)`` is the substrate's
+compare-and-append and ``last_seq()`` is its read half; see the package docstring
+and design-v0.2.md §4.
 """
 
 from __future__ import annotations
@@ -53,6 +54,13 @@ class Channel(ABC):
         """The most recent envelope for ``topic`` (and ``name`` if given), or None."""
 
     @abstractmethod
+    def last_seq(self) -> int:
+        """The log's last ``seq`` (``0`` = empty) — the CAS's read half: exactly the
+        value ``send(expected_seq=...)`` requires callers to assert, and (with seq
+        contiguous, §4) the record count. O(1) on every backend. Also the cheap
+        has-anything-new watermark for an incremental reader."""
+
+    @abstractmethod
     def close(self) -> None:
         """Release this handle's backend resources. Does not touch the log or any
         other handle on the run (see the module docstring)."""
@@ -72,7 +80,7 @@ class Channel(ABC):
 # Protocols, isinstance-dispatched and split by VIEWPOINT so a pure observer's
 # channel type never advertises a method it must not call (the worker holds; the
 # observer probes). This is a liveness SIGNAL the Watcher consumes -- never a claim
-# arbiter: the claim stays the uniform CAS. The substrate ABC stays the four pure
+# arbiter: the claim stays the uniform CAS. The substrate ABC stays the five pure
 # data ops; this is opt-in and backend-specific (PostgresChannel implements both).
 
 

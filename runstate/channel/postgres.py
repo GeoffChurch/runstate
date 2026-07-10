@@ -263,6 +263,15 @@ class PostgresChannel(Channel):
         seq, topic, name, request_id, body = row
         return Envelope(seq, topic, name, request_id, json.loads(body))
 
+    def last_seq(self) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) FROM log WHERE run_id = %s",
+                [self._run_id],
+            ).fetchone()
+        assert row is not None  # aggregate always yields one row
+        return int(row[0])
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()

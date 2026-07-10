@@ -26,6 +26,22 @@ def test_seq_is_contiguous_and_one_based(ch):
     assert [e.seq for e in ch.read()] == [1, 2, 3, 4, 5]
 
 
+def test_last_seq_is_the_cas_read_half(ch):
+    # The fifth op (§4, the admission principle: the surface must be readable
+    # in every coordinate it requires callers to assert): 0 = empty (the CAS
+    # base case), == the last returned seq, == the record count (contiguity);
+    # reads never move it, and asserting it is sufficient to win the CAS.
+    assert ch.last_seq() == 0
+    s1 = ch.send({"i": 0}, topic="value", name="loss")
+    assert ch.last_seq() == s1 == 1
+    s2 = ch.send({"i": 1}, topic="value", name="loss")
+    assert ch.last_seq() == s2 == 2
+    ch.read()
+    ch.latest("value")
+    assert ch.last_seq() == 2
+    assert ch.send({"i": 2}, topic="value", expected_seq=ch.last_seq()) == 3
+
+
 def test_read_returns_envelopes_after_cursor(ch):
     s1 = ch.send({"v": 1}, topic="value", name="loss")
     ch.send({"v": 2}, topic="value", name="loss")

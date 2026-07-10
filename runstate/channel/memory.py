@@ -81,6 +81,10 @@ class MemoryChannel(Channel):
                 return _snapshot(e)
         return None
 
+    def last_seq(self) -> int:
+        with self._lock:
+            return len(self._log)   # seq is contiguous from 1, so last == count
+
     def close(self) -> None:
         pass
 

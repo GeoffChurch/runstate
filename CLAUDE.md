@@ -44,7 +44,7 @@ The substrate + opt-in conventions + reference orchestration, in
   `PostgresChannel` (the three backends; Postgres is the optional `[postgres]`
   extra — `docs/specs/channel-postgres.md`), `open_channel` (locate/open a run's
   channel), and the opt-in capability Protocols `EpisodeHolder`/`EpisodeProbe` in
-  `channel/base.py` (a backend's connection-bound liveness signal off the four-op
+  `channel/base.py` (a backend's connection-bound liveness signal off the five-op
   base, isinstance-detected; the Watcher consumes it). A per-run append-only
   **topic log** of envelopes `{seq, topic, name?, request_id?, body}`; the
   substrate routes/indexes on the envelope and never parses `body`.

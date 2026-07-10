@@ -232,6 +232,11 @@ class SqliteChannel(Channel):
         seq, topic, name, request_id, body = row
         return Envelope(seq, topic, name, request_id, json.loads(body))
 
+    def last_seq(self) -> int:
+        with self._lock:
+            (n,) = self._conn.execute("SELECT COALESCE(MAX(seq), 0) FROM log").fetchone()
+        return int(n)
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()
