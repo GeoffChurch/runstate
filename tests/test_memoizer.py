@@ -56,6 +56,60 @@ def test_history_time_schedule_is_run_relative_to_the_run_epoch(open_channel):
     assert [b["step"] for b in got] == [0, 2, 4]
 
 
+def test_history_skips_nonconforming_value_records(open_channel):
+    # The substrate admits foreign bodies on any topic; junk on `value` with a
+    # matching name is not a point in the series -- skipped, as the observables'
+    # measurement folds skip it (the tolerance split).
+    ch = open_channel()
+    ch.send({"value": 0.0, "step": 0, "t": 0.0}, topic="value", name="loss")
+    ch.send({"note": "junk"}, topic="value", name="loss")                         # no value/step/t
+    ch.send({"value": 1.0, "step": 1}, topic="value", name="loss")                # missing t
+    ch.send({"value": 2.0, "step": "two", "t": 0.0}, topic="value", name="loss")  # wrong-typed step
+    ch.send({"value": 3.0, "step": True, "t": 0.0}, topic="value", name="loss")   # bool is not a step
+    ch.send({"value": 4.0, "step": 2, "t": True}, topic="value", name="loss")     # bool is not a t
+    ch.send({"value": 5.0, "step": 2, "t": 0.0}, topic="value", name="loss")
+    got = history(open_channel(), "loss", {"every": {"step": 1}})
+    assert [(b["step"], b["value"]) for b in got] == [(0, 0.0), (2, 5.0)]
+
+
+def test_history_conforming_stepless_point_still_raises(open_channel):
+    # A CONFORMING point with `step` present-and-null is a real domain error
+    # (history is a stepped-trajectory reader), never junk to skip.
+    ch = open_channel()
+    ch.send({"value": 1.0, "step": None, "t": 0.0}, topic="value", name="loss")
+    with pytest.raises(ValueError, match="stepped emission"):
+        history(open_channel(), "loss", {"every": {"step": 1}})
+
+
+def test_history_time_schedule_requires_a_run_epoch(open_channel):
+    # No epoch -> no run-relative clock to anchor a time-referencing replay:
+    # raise, never anchor at 0.0 (absolute value.t would satisfy untils
+    # instantly). Step-only schedules never touch the epoch.
+    ch = open_channel()
+    ch.send({"value": 0.0, "step": 0, "t": 1000.0}, topic="value", name="loss")
+    with pytest.raises(ValueError, match="run epoch"):        # no started record
+        history(open_channel(), "loss", {"every": {"time_seconds": 2}})
+    ch.send({"handle": "local://h/1", "hostname": None, "attached_at": None},
+            topic="lifecycle.started")
+    with pytest.raises(ValueError, match="run epoch"):        # null attached_at
+        history(open_channel(), "loss", {"every": {"time_seconds": 2}})
+    got = history(open_channel(), "loss", {"every": {"step": 1}})
+    assert [b["step"] for b in got] == [0]
+
+
+def test_history_null_t_points_are_inert_for_time_conditions(open_channel):
+    # t=None -> the run-relative clock cannot advance at that point: time-keyed
+    # conditions see it at the epoch (inert); step conditions are unaffected.
+    ch = open_channel()
+    ch.send({"handle": "local://h/1", "hostname": None, "attached_at": 1000.0},
+            topic="lifecycle.started")
+    ch.send({"value": 0.0, "step": 0, "t": 1000.0}, topic="value", name="loss")
+    ch.send({"value": 1.0, "step": 1, "t": None}, topic="value", name="loss")
+    ch.send({"value": 2.0, "step": 2, "t": 1002.0}, topic="value", name="loss")
+    got = history(open_channel(), "loss", {"every": {"time_seconds": 2}})
+    assert [b["step"] for b in got] == [0, 2]
+
+
 def test_relaunch_if_needed_launches_when_not_live():
     launcher = runstate.ThreadLauncher()           # memory backend, in-process
     ran = []

@@ -101,6 +101,13 @@ def _elapsed(channel, clock) -> float:
 pre-start call yields `0.0` (not a spurious huge elapsed). `clock` joins `poll_interval`/`sleep` as
 an injectable so tests drive it deterministically.
 
+*(Amended 2026-07-10: "the same epoch" is true by construction — one shared reader,
+`_epoch(channel) -> float | None`. The null-epoch responses differ by role: `_elapsed` returns
+`0.0` (time inert during its transient run-hasn't-started wait), while `history` with a
+time-referencing schedule **raises** `ValueError` — an epoch-less log cannot anchor run-relative
+time, and anchoring at `0.0` would evaluate absolute `value.t` as elapsed. Step-only replays never
+touch the epoch.)*
+
 **Why the poll-clock and not a logged timestamp** (this was the sharpest review finding):
 
 - **`Heartbeat.t` is rejected, not staged.** `design-v0.2.md:156` is a converged decision: the

@@ -14,9 +14,9 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from .channel import Body, Channel
 from .vocabulary.payloads import Topic
-from .vocabulary.schedule import Condition, Subscription, satisfied
+from .vocabulary.schedule import Condition, Subscription, references_time, satisfied
 from .launcher import Launcher, relaunch_if_needed
-from .observables import Outcome, live_episode, peek_terminal, progress
+from .observables import Outcome, is_step, live_episode, peek_terminal, progress
 
 if TYPE_CHECKING:
     from .sweep import Variant
@@ -130,6 +130,31 @@ def launch_producer(launcher: Any, variant: Variant, *, target_key: str = "up_to
     return _LaunchProducer(launcher, variant, target_key)
 
 
+def _conforming_point(b: Body) -> bool:
+    """A conforming stepped-value body: ``value``/``step``/``t`` present,
+    ``step`` int-or-None and ``t`` number-or-None (bool excluded -- the
+    ``is_step`` rule). Junk fails here and is skipped (the observables'
+    tolerance split: the substrate admits foreign bodies on any topic); a
+    conforming *stepless* point passes and is ``history``'s own domain error."""
+    if any(k not in b for k in ("value", "step", "t")):
+        return False
+    if b["step"] is not None and not is_step(b["step"]):
+        return False
+    t = b["t"]
+    return t is None or (isinstance(t, (int, float)) and not isinstance(t, bool))
+
+
+def _epoch(channel: Channel) -> float | None:
+    """The run epoch -- the earliest ``lifecycle.started.attached_at`` -- or
+    None when the run has none (never started, or a null ``attached_at``).
+    The ONE epoch reader ``history`` and ``_elapsed`` share; their null-epoch
+    responses differ (raise vs. inert) but the epoch itself cannot."""
+    started = channel.read(topics=[Topic.LIFECYCLE_STARTED], limit=1)
+    if not started or started[0].body.get("attached_at") is None:
+        return None
+    return float(started[0].body["attached_at"])
+
+
 def history(channel: Channel, name: str, schedule: Condition) -> list[Body]:
     """Replay ``schedule`` (the Subscription algebra) over the logged ``value``
     points for ``name``; return the bodies it fires on, in step order.
@@ -140,26 +165,32 @@ def history(channel: Channel, name: str, schedule: Condition) -> list[Body]:
     conditions are evaluated run-relative: ``now`` is the point's absolute
     ``value.t`` and ``registered_at`` is the run epoch (earliest
     ``lifecycle.started``), so ``t - epoch`` is seconds since the run began.
+    A time-referencing schedule therefore requires an epoch: with none on the
+    log it raises (anchoring at 0.0 would evaluate absolute ``value.t`` as
+    elapsed). Step-only schedules never touch the epoch.
 
-    Assumes stepped emission: a ``value.step`` of ``None`` raises (this is a
-    stepped-trajectory reader). For a point with ``t is None`` the run-relative
-    clock cannot advance, so *time*-keyed conditions are inert for it (``step``
-    conditions are unaffected)."""
+    Domain rules: a NONCONFORMING record -- missing any of ``value``/``step``/
+    ``t``, or wrong-typed ``step``/``t`` -- is foreign junk, skipped as the
+    observables' measurement folds skip it; a CONFORMING point with ``step``
+    null raises (this is a stepped-trajectory reader). For a point with ``t is
+    None`` the run-relative clock cannot advance, so *time*-keyed conditions
+    are inert for it (``step`` conditions are unaffected)."""
     by_step: dict[Any, Body] = {}
     for e in channel.read(topics=[Topic.VALUE], name=name):
         b = e.body
-        s = b["step"]
-        by_step[s] = b   # take-the-latest: a resumed episode's re-emission (higher seq) supersedes
+        if not _conforming_point(b):
+            continue
+        by_step[b["step"]] = b   # take-the-latest: a resumed episode's re-emission (higher seq) supersedes
     if any(s is None for s in by_step):
         raise ValueError("history() requires stepped emission; a value point has step=None")
     points = [by_step[s] for s in sorted(by_step)]
 
-    started = channel.read(topics=[Topic.LIFECYCLE_STARTED], limit=1)
-    epoch = (
-        started[0].body["attached_at"]
-        if started and started[0].body.get("attached_at") is not None
-        else 0.0
-    )
+    epoch = _epoch(channel)
+    if epoch is None:
+        if references_time(schedule):
+            raise ValueError(
+                "time-referencing replay requires a run epoch (started.attached_at)")
+        epoch = 0.0
     sub = Subscription(schedule, registered_at=epoch)
     out: list[Body] = []
     for b in points:
@@ -191,12 +222,11 @@ def _progress(channel: Channel) -> int:
 def _elapsed(channel: Channel, clock: Callable[[], float]) -> float:
     """Run-relative seconds on the consumer's OWN poll-clock (dense, monotone,
     gap-inclusive; no wire dependency -- see the spec's clock rationale).
-    Returns 0.0 before the run has started (no epoch yet -> time conditions
-    are inert until the run begins)."""
-    started = channel.read(topics=[Topic.LIFECYCLE_STARTED], limit=1)
-    if not started or started[0].body.get("attached_at") is None:
-        return 0.0
-    return float(clock() - started[0].body["attached_at"])
+    Returns 0.0 with no epoch yet -- honestly correct for its transient case
+    (the run hasn't started during ensure's wait), so time conditions are
+    inert until the run begins."""
+    epoch = _epoch(channel)
+    return 0.0 if epoch is None else float(clock() - epoch)
 
 
 def _window_step(channel: Channel) -> int:

@@ -248,15 +248,15 @@ def progress(channel: Channel) -> Optional[int]:
     reflects the resumed branch."""
     steps = []
     hb = channel.latest(Topic.LIFECYCLE_HEARTBEAT)
-    if hb is not None and _is_step(hb.body.get("step")):
+    if hb is not None and is_step(hb.body.get("step")):
         steps.append(hb.body["step"])
     stopped = channel.latest(Topic.LIFECYCLE_STOPPED)
-    if stopped is not None and _is_step(stopped.body.get("final_step")):
+    if stopped is not None and is_step(stopped.body.get("final_step")):
         steps.append(stopped.body["final_step"])
     return max(steps) if steps else None
 
 
-def _is_step(v: object) -> bool:
+def is_step(v: object) -> bool:
     """A conforming step measurement: an int (bool excluded — JSON ``true`` is
     not an integer). Wrong-typed junk isn't a measurement (the tolerance split,
     module docstring): skip it, never compare against it."""
@@ -272,7 +272,7 @@ def _value_points(channel: Channel) -> Iterator[tuple[str, Any, Any]]:
     custom-fold consumer ever appears; until then the bring-your-own-fold seam
     is the substrate itself (``read`` + a loop)."""
     for e in channel.read(topics=[Topic.VALUE]):
-        if e.name is None or "value" not in e.body or not _is_step(e.body.get("step")):
+        if e.name is None or "value" not in e.body or not is_step(e.body.get("step")):
             continue
         yield e.name, e.body["step"], e.body["value"]
 
