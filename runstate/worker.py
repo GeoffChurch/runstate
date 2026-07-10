@@ -20,8 +20,9 @@ from .vocabulary.handle import local_handle
 from .vocabulary.schedule import (
     Condition,
     Subscription,
-    contains_count,
     is_unsatisfiable,
+    malformed_schedule,
+    malformed_stop_trigger,
     references_time,
     satisfied,
 )
@@ -288,15 +289,11 @@ class Worker:
                 # superseded immortal sub must not resurrect).
                 self._subs.pop(e.request_id, None)
                 return
-            elif any(
-                contains_count(c)
-                for c in (e.body.get("from"), e.body.get("every"))
-                if c is not None
-            ):
-                # A count atom outside `until` is a circular gate (the
-                # accidental pure pin); the schema already forbids it.
-                self._nak(e.request_id, "malformed",
-                          "count thresholds are valid only in `until`")
+            elif (problem := malformed_schedule(e.body)) is not None:
+                # The structural gate (design §6 `malformed`): the full grammar
+                # check, before any semantic check -- so a registered schedule
+                # is guaranteed to evaluate cleanly at every safe point.
+                self._nak(e.request_id, "malformed", problem)
             elif is_unsatisfiable(e.body, step=step):
                 self._nak(e.request_id, "unsatisfiable", "schedule can produce no fires")
             else:
@@ -317,29 +314,20 @@ class Worker:
                 # reasons have no word for it), and a discharged-but-malformed
                 # stop was already naked by its own era's worker.
                 return
-            # a stop is one-shot: at most a `from` (when to stop). `every` is
-            # inert and `until` could gate the stop from ever firing, so reject
-            # them rather than silently honor a self-defeating request.
-            if "every" in e.body or "until" in e.body:
-                self._nak(e.request_id, "malformed", "control.stop takes only `from`")
+            # The structural gate again: naks a bad stop like a bad subscribe,
+            # so the pending set only ever holds conditions the unguarded
+            # tick-time eval site (`_stop_decision`) can't choke on.
+            if (problem := malformed_stop_trigger(e.body)) is not None:
+                self._nak(e.request_id, "malformed", problem)
+            elif is_unsatisfiable(e.body, step=step):
+                # e.g. a step-keyed stop on a stepless worker: it can never
+                # fire, so nak (parity with subscribe) rather than silently
+                # never auto-stopping.
+                self._nak(e.request_id, "unsatisfiable", "stop trigger can never fire")
             else:
-                # Validate the `from` here (inside the drain guard) so a malformed
-                # condition naks like a bad subscribe, instead of poisoning the
-                # pending set and crashing at the unguarded tick-time eval site.
-                from_ = e.body.get("from")
-                if from_ is not None and contains_count(from_):
-                    self._nak(e.request_id, "malformed",
-                              "count thresholds are valid only in `until`")
-                    return
-                if from_ is not None:
-                    satisfied(from_, step=step, time_seconds=0.0, count=0)  # raises -> nak
-                if is_unsatisfiable(e.body, step=step):
-                    # e.g. a step-keyed stop on a stepless worker: it can never
-                    # fire, so nak (parity with subscribe) rather than silently
-                    # never auto-stopping.
-                    self._nak(e.request_id, "unsatisfiable", "stop trigger can never fire")
-                else:
-                    self._pending_stops.append(PendingStop(e.request_id, from_, self._now()))
+                self._pending_stops.append(
+                    PendingStop(e.request_id, e.body.get("from"), self._now())
+                )
         else:
             self._nak(e.request_id, "unsupported", f"unknown control topic {e.topic!r}")
 
@@ -353,15 +341,9 @@ class Worker:
     def _service(self, step: int | None) -> None:
         now = self._now()
         for request_id, (name, sub) in list(self._subs.items()):
-            # A schedule that's well-formed enough to register but blows up when
-            # evaluated (e.g. an unknown condition deeper in the tree) is naked
-            # and dropped here, not allowed to crash the loop.
-            try:
-                decision = sub.tick(step=step, now=now)
-            except Exception as exc:
-                self._nak(request_id, "malformed", str(exc))
-                del self._subs[request_id]
-                continue
+            # Registered => evaluates cleanly: the structural gate validated
+            # the full grammar at drain time, so tick cannot raise here.
+            decision = sub.tick(step=step, now=now)
             if decision.fire:
                 value = self._values.get(name) if name is not None else None
                 try:

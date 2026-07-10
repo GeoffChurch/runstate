@@ -210,17 +210,74 @@ def references_time(schedule: Condition) -> bool:
     )
 
 
-def contains_count(cond: Condition) -> bool:
-    """Does ``cond`` contain a ``count`` atom anywhere? The schema already
-    forbids count outside ``until`` (it is grammatical only in ``UntilTerm``);
-    the worker enforces the same rule as defense-in-depth, because a count
-    atom inside ``from``/``every`` is a circular gate (count advances only on
-    fires) -- the accidental pure pin (specs/service-worker.md)."""
-    if "any" in cond:
-        return any(contains_count(c) for c in cond["any"])
-    if "all" in cond:
-        return any(contains_count(c) for c in cond["all"])
-    return "count" in cond
+def malformed_schedule(body: Condition) -> str | None:
+    """Why ``body`` fails the Schedule grammar, or None if it conforms.
+
+    The full structural check against the subscription schema
+    (protocol/subscription-v0.2.schema.json ``$defs.Schedule``), spelled in
+    Python so the worker needs no jsonschema dependency: top-level keys ⊆
+    ``from``/``every``/``until``, each a Condition -- with ``count``
+    grammatical only under ``until`` (elsewhere it is a circular gate: count
+    advances only on fires -- the accidental pure pin,
+    specs/service-worker.md). A non-None reason is the worker's ``malformed``
+    nak message, decided before any semantic (unsatisfiable) check; a None
+    guarantees the schedule evaluates cleanly at every safe point."""
+    for key, value in body.items():
+        if key not in ("from", "every", "until"):
+            return f"unknown schedule key {key!r} (a schedule takes from/every/until)"
+        problem = _malformed_condition(value, allow_count=(key == "until"), path=key)
+        if problem is not None:
+            return problem
+    return None
+
+
+def malformed_stop_trigger(body: Condition) -> str | None:
+    """Why ``body`` fails the StopTrigger grammar, or None if it conforms:
+    at most a count-free ``from`` (a stop is one-shot -- ``every`` is inert
+    and an ``until`` could perversely gate it from ever firing)."""
+    for key, value in body.items():
+        if key != "from":
+            return "control.stop takes only `from`"
+        problem = _malformed_condition(value, allow_count=False, path="from")
+        if problem is not None:
+            return problem
+    return None
+
+
+def _malformed_condition(cond: object, *, allow_count: bool, path: str) -> str | None:
+    """The Condition/UntilCondition oneOf: exactly one key -- a threshold atom
+    (``count`` only where ``allow_count``) or a non-empty ``any``/``all`` of
+    conditions. ``path`` locates the offense in the reason string."""
+    if cond is None:
+        return f"`{path}` is null (omit the key instead)"
+    if not isinstance(cond, dict):
+        return f"`{path}` must be a condition object, got {type(cond).__name__}"
+    if len(cond) != 1:
+        keys = "step/time_seconds/count/any/all" if allow_count else "step/time_seconds/any/all"
+        return f"`{path}` must carry exactly one condition key ({keys}), got {list(cond)}"
+    ((key, value),) = cond.items()
+    if key in ("any", "all"):
+        if not isinstance(value, list) or not value:
+            return f"`{path}.{key}` must be a non-empty list of conditions"
+        for i, child in enumerate(value):
+            problem = _malformed_condition(
+                child, allow_count=allow_count, path=f"{path}.{key}[{i}]"
+            )
+            if problem is not None:
+                return problem
+        return None
+    if key == "count" and not allow_count:
+        return "count thresholds are valid only in `until`"
+    if key not in ("step", "time_seconds", "count"):
+        return f"`{path}` has unknown condition key {key!r}"
+    # bool is excluded explicitly: Python True serializes to JSON true, which
+    # the schema rejects where it requires an integer/number.
+    if key == "time_seconds":
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            return f"`{path}.time_seconds` must be a number >= 0, got {value!r}"
+    elif isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return f"`{path}.{key}` must be an integer >= 0, got {value!r}"
+    return None
 
 
 def _satisfiable_stepless(cond: Condition) -> bool:

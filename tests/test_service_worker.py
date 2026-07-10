@@ -44,18 +44,18 @@ def test_one_shot_consumed_writes_the_counter_record(open_channel):
     assert unsubs[0].seq < hb.seq
 
 
-def test_naked_at_service_keeps_the_nak_as_the_answer(open_channel):
-    # a schedule that registers but blows up at eval (a bogus `every` is only
-    # evaluated at the SECOND fire attempt -- the first short-circuits at
-    # count==0): nak'd and dropped -- the nak IS the answer; no unsubscribe
-    # record on top of it.
+def test_nak_is_the_answer_no_expiry_record_on_top(open_channel):
+    # a refused subscribe is answered by its nak alone -- no unsubscribe record
+    # on top (the expiry counter-record answers expired REGISTRATIONS, and the
+    # structural gate refuses a bogus `every` before it can ever register).
     orch = open_channel()
     _sub(orch, {"every": {"bogus": 1}}, "bad")
     w = Worker(open_channel(), now=lambda: 0.0)
     w.set("loss", 1.0)
-    w.tick(step=0)                              # first fire (legitimate)
-    w.tick(step=1)                              # every evaluates -> naked
+    w.tick(step=0)
+    w.tick(step=1)
     assert open_channel().latest("lifecycle.nak").request_id == "bad"
+    assert open_channel().read(topics=["value"]) == []   # never registered, never fired
     assert open_channel().read(topics=["control.unsubscribe"]) == []
 
 

@@ -325,6 +325,127 @@ def test_nak_subscribe_without_request_id(open_channel):
     assert open_channel().read(topics=["value"]) == []  # nothing registered/emitted
 
 
+# ----- the structural gate: full grammar validation of inbound control -----
+
+
+def test_nak_misspelled_schedule_key(open_channel):
+    # a misspelled slot is a sender bug (design §6 `malformed`), refused with a
+    # reason naming the key -- NOT silently registered as a fire-once-now.
+    orch = open_channel()
+    orch.send({"frm": {"step": 5}}, topic="control.subscribe", name="loss", request_id="r1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.set("loss", 1.0)
+    w.tick(step=10)
+    nak = open_channel().latest("lifecycle.nak")
+    assert nak.request_id == "r1"
+    assert nak.body["reason"] == "malformed"
+    assert "frm" in nak.body["message"]
+    assert open_channel().read(topics=["value"]) == []  # did not register or fire
+
+
+def test_nak_null_schedule_slot(open_channel):
+    # the schema has no null conditions: absent means absent (present-nullable
+    # is a body-field convention, not a condition-slot one).
+    orch = open_channel()
+    orch.send({"from": None}, topic="control.subscribe", name="loss", request_id="r1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.tick(step=0)
+    nak = open_channel().latest("lifecycle.nak")
+    assert nak.request_id == "r1"
+    assert nak.body["reason"] == "malformed"
+
+
+def test_nak_unknown_condition_atom(open_channel):
+    orch = open_channel()
+    orch.send({"from": {"frobnicate": 1}}, topic="control.subscribe", name="loss",
+              request_id="r1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.set("loss", 1.0)
+    w.tick(step=0)
+    nak = open_channel().latest("lifecycle.nak")
+    assert nak.request_id == "r1"
+    assert nak.body["reason"] == "malformed"
+    assert open_channel().read(topics=["value"]) == []
+
+
+def test_nak_empty_any_or_all(open_channel):
+    # minItems 1: an empty any is vacuously false and an empty all vacuously
+    # true -- both are sender bugs, not degenerate schedules.
+    orch = open_channel()
+    orch.send({"every": {"any": []}}, topic="control.subscribe", name="loss", request_id="r1")
+    orch.send({"every": {"all": []}}, topic="control.subscribe", name="loss", request_id="r2")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.set("loss", 1.0)
+    w.tick(step=0)
+    naks = open_channel().read(topics=["lifecycle.nak"])
+    assert [(n.request_id, n.body["reason"]) for n in naks] == [
+        ("r1", "malformed"), ("r2", "malformed")
+    ]
+    assert open_channel().read(topics=["value"]) == []
+
+
+def test_nak_bool_posing_as_number(open_channel):
+    # Python True serializes to JSON true, which the schema rejects where it
+    # wants an integer -- the validator must agree, not let bool ride int.
+    orch = open_channel()
+    orch.send({"from": {"step": True}}, topic="control.subscribe", name="loss",
+              request_id="r1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.tick(step=5)
+    assert open_channel().latest("lifecycle.nak").body["reason"] == "malformed"
+
+
+def test_nak_negative_threshold(open_channel):
+    orch = open_channel()
+    orch.send({"from": {"step": -1}}, topic="control.subscribe", name="loss",
+              request_id="r1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.tick(step=0)
+    assert open_channel().latest("lifecycle.nak").body["reason"] == "malformed"
+
+
+def test_nak_stop_with_unknown_key(open_channel):
+    # previously a bogus-key stop fell through to from_=None = stop-now; the
+    # structural gate refuses it instead of honoring a request it can't read.
+    orch = open_channel()
+    orch.send({"bogus": 1}, topic="control.stop", request_id="s1")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    assert w.tick(step=0) is False  # must NOT stop on a malformed stop
+    nak = open_channel().latest("lifecycle.nak")
+    assert nak.request_id == "s1"
+    assert nak.body["reason"] == "malformed"
+
+
+def test_valid_full_schedule_still_registers_and_serves(open_channel):
+    # the gate must pass the whole legal grammar: all three slots, nested
+    # any/all, and a count atom inside `until` (where it is grammatical).
+    orch = open_channel()
+    orch.send(
+        {"from": {"step": 1},
+         "every": {"any": [{"step": 2}, {"time_seconds": 60.0}]},
+         "until": {"all": [{"step": 100}, {"count": 3}]}},
+        topic="control.subscribe", name="loss", request_id="r1",
+    )
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.set("loss", 0.5)
+    w.tick(step=1)
+    assert open_channel().latest("lifecycle.nak") is None
+    assert open_channel().latest("value", "loss").request_id == "r1"
+
+
+def test_worker_keeps_serving_after_a_malformed_request(open_channel):
+    # one naked request is never fatal: the good sibling registers and serves.
+    orch = open_channel()
+    orch.send({"frm": {"step": 1}}, topic="control.subscribe", name="loss", request_id="bad")
+    orch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="ok")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.set("loss", 1.0)
+    w.tick(step=0)
+    naks = open_channel().read(topics=["lifecycle.nak"], request_ids=["bad"])
+    assert naks[0].body["reason"] == "malformed"
+    assert open_channel().latest("value", "loss").request_id == "ok"
+
+
 def test_unserializable_value_fails_clearly_naming_the_metric(tmp_path):
     from runstate.channel import open_channel as oc
 

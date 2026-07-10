@@ -82,10 +82,12 @@ subscribe is eventually answered by exactly one of the two:
   met, and one-shot consumed. No new vocabulary, no schema change; and
   visibility scoping delivers the expiry notice to exactly the right observer
   for free (the record carries their `request_id`).
-- **Refusal → the nak already on the log is the answer.** This covers both
-  nak sites: refusal at registration, and a registration *naked at service
-  time* (worker.py's term for a schedule that registers but blows up when
-  evaluated — nak'd and dropped mid-`_service`); neither needs an
+- **Refusal → the nak already on the log is the answer.** Refusal happens at
+  registration alone: the structural gate (`malformed_schedule`, schedule.py)
+  validates the full grammar at drain time, so registered ⟹ evaluates cleanly
+  (*amended 2026-07-10*: the second nak site — a registration *naked at
+  service time*, a schedule that registered but blew up when evaluated
+  mid-`_service` — is subsumed by the gate and gone). A refusal needs no
   unsubscribe. Consequence, deliberate: **nak is final** — a refold skips a
   subscribe whose nak is on the log, so resumed episodes stop re-nakking the
   same bad request (today's unbounded duplicate-nak growth), and a subscribe
