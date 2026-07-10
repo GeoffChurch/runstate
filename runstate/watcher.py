@@ -10,7 +10,9 @@ need state a single log read can't have:
   4. **heartbeat staleness** — if the newest ``lifecycle.heartbeat`` is older than
      ``heartbeat_timeout`` (wall-clock since it *arrived*), the worker is hung or
      crashed → ``presumed_dead``. Off unless a timeout is given (the dead-vs-busy
-     threshold is per-workload, §8).
+     threshold is per-workload, §8). The clock seeds at registration (so a
+     never-beaconing startup death is caught), resets only when a poll observes a
+     NEW heartbeat seq, and the boundary is strict: age == timeout is still alive.
 
 ``poll(run_id)`` is the single non-blocking verdict across all tiers; ``wait``
 loops it until terminal. ``now``/``sleep`` are injectable for deterministic tests.
@@ -230,13 +232,15 @@ class Watcher:
         timeout: Optional[float] = None,
     ) -> RunResult:
         """Block until ``run_id`` is terminal (any tier), polling at
-        ``poll_interval``. If ``on_event`` is given, drain new envelopes across
-        all tracked runs to it as ``(run_id, Envelope)`` while waiting (the same
-        stream ``iter_events`` exposes). Raises TimeoutError if ``timeout``
-        elapses first — the caller's patience running out is not a death verdict
-        (the run may be a healthy slow one). An uninterpretable record on the
-        verdict plane raises ``MalformedRecordError`` (observables) — propagated,
-        not swallowed."""
+        ``poll_interval``. If ``on_event`` is given, drain envelopes across all
+        tracked runs to it as ``(run_id, Envelope)`` while waiting (the same
+        stream ``iter_events`` exposes — cursor from 0, so the first drain
+        replays logged history), with one final drain after the terminal
+        verdict so no event under the verdict is lost. Raises TimeoutError if
+        ``timeout`` elapses first — the caller's patience running out is not a
+        death verdict (the run may be a healthy slow one). An uninterpretable
+        record on the verdict plane raises ``MalformedRecordError``
+        (observables) — propagated, not swallowed."""
         deadline = None if timeout is None else self._now() + timeout
         while True:
             if on_event is not None:
@@ -302,11 +306,13 @@ class Watcher:
         return rid
 
     def iter_events(self, timeout: Optional[float] = None) -> Iterator[tuple[str, Envelope]]:
-        """Yield ``(run_id, Envelope)`` for new envelopes across all tracked runs
-        as they arrive, advancing a per-run cursor independent of the verdict
-        polling. Without ``timeout`` this is an endless stream (the caller breaks
-        out, e.g. on a terminal envelope); with ``timeout`` it returns once the
-        wall-clock deadline passes with nothing new left to drain.
+        """Yield ``(run_id, Envelope)`` for envelopes across all tracked runs,
+        advancing a per-run cursor independent of the verdict polling. The
+        cursor starts at 0: the first drain replays each run's ENTIRE logged
+        history — not "new since tracking" — then later drains yield only new
+        arrivals. Without ``timeout`` this is an endless stream (the caller
+        breaks out, e.g. on a terminal envelope); with ``timeout`` it returns
+        once the wall-clock deadline passes with nothing new left to drain.
         """
         deadline = None if timeout is None else self._now() + timeout
         while True:

@@ -119,6 +119,9 @@ class ThreadLauncher:
         Brackets the work with launcher.launched / launcher.terminated. Returns
         immediately with a handle (the irreducible launch job, §8); reaping is
         the handle's ``join`` — the manner of death lands on the log either way.
+        A raised exception maps to ``Terminated(reason="exited", exit_code=1)``:
+        the 1 is a synthetic convention (a thread has no exit code), not a
+        process exit status — a viewer should not read it as one.
         """
         kwargs = kwargs or {}
         channel = self.open_channel(run_id)

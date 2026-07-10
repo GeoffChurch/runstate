@@ -222,7 +222,13 @@ reasoning, listed here so they're discoverable as work (cross-ref, not moved):
   reuse/divergence-preempt/killed-redrive recipes shipped.
 - **Protocol-implementer's guide** — a doc for someone writing a non-Python
   implementation (Rust, Go, TS). What conformance means; what tests to write; how to
-  interop with the Python reference.
+  interop with the Python reference. Must collect the audit's harvest of what a
+  non-Python implementer cannot infer without reading the Python: the public
+  raise-contract table (which functions raise what, when — `open_channel`
+  ValueError/ImportError, `attach` KeyError, `Watcher.poll` KeyError, `ensure`
+  TypeError/RuntimeError/ValueError), the conformance tier ladder
+  (`in_process`/`cross_process`/`cross_host`), the `RunResult.reason` string
+  vocabulary, the Postgres lock-key constants, and the topic-pattern grammar.
 - [protocol-algebra](protocol-algebra.md) — the principled constructions behind the
   layer interfaces (L1 free-monoid initiality, L2 designated intro/elim discipline +
   discharge folds = the context Γ, L3 observer-join), each yielding a **decision

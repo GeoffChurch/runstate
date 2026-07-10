@@ -80,7 +80,9 @@ run.
 first-connectors race on the `pg_type`/`pg_class` catalog — the analogue of SQLite's
 WAL-birth race). So DDL is **not** in `__init__`. A one-time `ensure_schema(dsn)` creates the
 table, **wrapping the DDL in a server-side `pg_advisory_xact_lock`** (`BEGIN; SELECT
-pg_advisory_xact_lock(K); CREATE TABLE IF NOT EXISTS …; CREATE INDEX IF NOT EXISTS …; COMMIT`)
+pg_advisory_xact_lock(K); CREATE TABLE IF NOT EXISTS …; CREATE INDEX IF NOT EXISTS …; COMMIT`,
+where `K` is the interop constant `0x72756E7374617465` — the 8 ASCII bytes of `"runstate"` as
+one int8)
 — concurrency-safe **cross-host**, so two orchestrators cold-starting against a fresh DB can't
 race the `pg_type` catalog, and it subsumes any host-local test lock (one mechanism, per the
 rubric — a `FileLock` would be a redundant weaker second primitive). `__init__` cheaply probes
@@ -167,8 +169,11 @@ class EpisodeHolder(Protocol):                       # worker side, after the cl
 class EpisodeProbe(Protocol):                        # observer side
     def episode_alive(self, started_seq: int) -> bool: ...   # is this episode's lock held?
 ```
-The key is a deterministic **int8** — a stable hash of the *full* `(run_id, started_seq)` pair
-(e.g. `hashtextextended`), **not** a two-`int4` form (which collapses to a 32-bit collision
+The key is a deterministic **int8**, pinned as an interop constant: the key *material* is the
+length-prefixed string `f"{len(run_id)}:{run_id}:{started_seq}"` (distinct pairs never alias — a
+`:` inside `run_id` cannot shift the boundary), hashed **server-side** as
+`hashtextextended(material, 0)` (seed 0) — a second-language holder or observer sharing the DB
+must reproduce it bit-identically. **Not** a two-`int4` form (which collapses to a 32-bit collision
 domain on `hash(run_id)`, since first episodes share `started_seq` — colliding at ~65k
 concurrent runs on the very many-runs-one-server topology this targets) and **not** Python's
 salted `hash()` (the observer must recompute a bit-identical key cross-process).

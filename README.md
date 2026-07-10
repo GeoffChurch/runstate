@@ -10,7 +10,7 @@ A protocol + reference Python implementation for **cooperative bidirectional con
 
 1. **A protocol** — a per-run, append-only **topic log** of envelopes `{seq, topic, name?, request_id?, body}`, with opt-in **conventions** layered on top (cooperative-control, subscription, lifecycle, launcher, value). Wire format: the JSON Schema stack in `protocol/` (`envelope-v0.2.schema.json` + the per-convention schemas). Semantics: `docs/design-v0.2.md`.
 
-2. **A reference Python implementation** — the `runstate.channel` substrate (`MemoryChannel` + `SqliteChannel` + the cross-host `PostgresChannel`, the optional `[postgres]` extra), the reference `Worker` loop, and opt-in orchestration helpers (`ThreadLauncher` / `LocalLauncher`, `Watcher`, `sweep`).
+2. **A reference Python implementation** — the `runstate.channel` substrate (`MemoryChannel` + `SqliteChannel` + the cross-host `PostgresChannel`, the optional `[postgres]` extra), the reference `Worker` loop, and opt-in orchestration helpers (`ThreadLauncher` / `LocalLauncher`, `Watcher`, `sweep`). (On NFS, export `RUNSTATE_SQLITE_JOURNAL_MODE=DELETE` — the default WAL journal needs shared memory a network filesystem can't back.)
 
 The protocol is language-agnostic: any implementation that produces conforming messages can interoperate. The Python library is one such implementation.
 

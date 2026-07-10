@@ -194,7 +194,10 @@ add or change a convention body.
 2. Add a `"<name>"` branch in `runstate/channel/__init__.py:open_channel`.
 3. Parametrize the conformance tests over the new backend in
    `tests/conftest.py`.
-4. All existing Channel conformance tests must pass against it unchanged.
+4. Declare the backend's concurrency tier (`in_process` / `cross_process` /
+   `cross_host`) in `tests/conftest.py`'s `_MAX_TIER` ladder, so the
+   tier-gated concurrency suite covers it up to that tier.
+5. All existing Channel conformance tests must pass against it unchanged.
 
 ## Where to put new ideas
 

@@ -211,7 +211,11 @@ Two near-independent changes in `runstate/worker.py`, no wire change:
    already reads the whole log for the CAS claim; from that same read, record
    `self._discharge_floor = max(seq of lifecycle.stopped envelopes, default 0)`
    — zero extra I/O, exact at claim time (the CAS serializes attach against any
-   concurrent append). In `_handle_control`'s `control.stop` branch, first:
+   concurrent append). The same-read fusion generalizes: the positional answer
+   fold (`specs/service-worker.md`) and the episode-boundary list
+   (`specs/time-lease-boundary.md`) are computed from that **same read** the
+   claim CAS is issued against — which is what makes all three exact. In
+   `_handle_control`'s `control.stop` branch, first:
    `if e.seq < self._discharge_floor: return` — **silently**, before
    validation/nak (a discharged-but-malformed stop was already naked by its own
    era's worker; and "already answered" is not a refusal — the nak `reason`
