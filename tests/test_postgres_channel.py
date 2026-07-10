@@ -117,7 +117,7 @@ def test_lock_answers_liveness_where_resolve_abstains(pg_ready):
     ch = PostgresChannel(pg_ready, run_id=run_id)
     holder = PostgresChannel(pg_ready, run_id=run_id)
     try:
-        started_seq = ch.send({"handle": foreign, "hostname": "OTHER-HOST", "attached_at": None},
+        started_seq = ch.send({"handle": foreign, "attached_at": None},
                               topic="lifecycle.started", expected_seq=0)
         holder.hold_episode(started_seq)
         assert ch.episode_alive(started_seq) is True   # the lock answers where resolve can't

@@ -46,7 +46,7 @@ def test_history_collapses_re_emission_taking_the_latest(open_channel):
 
 def test_history_time_schedule_is_run_relative_to_the_run_epoch(open_channel):
     ch = open_channel()
-    ch.send({"handle": "local://h/1", "hostname": None, "attached_at": 1000.0},
+    ch.send({"handle": "local://h/1", "attached_at": 1000.0},
             topic="lifecycle.started")                          # run epoch = 1000.0
     for step in range(6):
         ch.send({"value": float(step), "step": step, "t": 1000.0 + step},
@@ -89,7 +89,7 @@ def test_history_time_schedule_requires_a_run_epoch(open_channel):
     ch.send({"value": 0.0, "step": 0, "t": 1000.0}, topic="value", name="loss")
     with pytest.raises(ValueError, match="run epoch"):        # no started record
         history(open_channel(), "loss", {"every": {"time_seconds": 2}})
-    ch.send({"handle": "local://h/1", "hostname": None, "attached_at": None},
+    ch.send({"handle": "local://h/1", "attached_at": None},
             topic="lifecycle.started")
     with pytest.raises(ValueError, match="run epoch"):        # null attached_at
         history(open_channel(), "loss", {"every": {"time_seconds": 2}})
@@ -101,7 +101,7 @@ def test_history_null_t_points_are_inert_for_time_conditions(open_channel):
     # t=None -> the run-relative clock cannot advance at that point: time-keyed
     # conditions see it at the epoch (inert); step conditions are unaffected.
     ch = open_channel()
-    ch.send({"handle": "local://h/1", "hostname": None, "attached_at": 1000.0},
+    ch.send({"handle": "local://h/1", "attached_at": 1000.0},
             topic="lifecycle.started")
     ch.send({"value": 0.0, "step": 0, "t": 1000.0}, topic="value", name="loss")
     ch.send({"value": 1.0, "step": 1, "t": None}, topic="value", name="loss")
@@ -146,7 +146,7 @@ def test_relaunch_if_needed_noops_when_a_live_episode_exists():
     launcher = runstate.ThreadLauncher()
     ch = launcher.open_channel("r")
     # fake a live episode: a started by OUR pid (resolve() -> alive), no stopped
-    ch.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+    ch.send({"handle": local_handle(), "attached_at": 0.0},
             topic="lifecycle.started")
     h = relaunch_if_needed(launcher, "r", lambda channel, **_: None, kwargs={})
     assert h is None
@@ -286,7 +286,7 @@ def test_ensure_redrives_when_extend_noops_onto_a_live_episode(tmp_path):
     seed = launcher.open_channel(rid)
     # a live foreign episode (started by our pid -> resolve() alive, no stopped),
     # having emitted loss 0,1 and beaconed step 1
-    seed.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+    seed.send({"handle": local_handle(), "attached_at": 0.0},
               topic="lifecycle.started")
     seed.send({"value": 0.0, "step": 0, "t": 0.0}, topic="value", name="loss", request_id="obs")
     seed.send({"value": 1.0, "step": 1, "t": 0.0}, topic="value", name="loss", request_id="obs")
@@ -361,7 +361,7 @@ def _seed_episode(ch, *, heartbeat_step, completed: bool, value_steps=None):
     """Write a completed single-episode lifecycle into *ch* (no live episode after)."""
     from runstate.vocabulary.handle import local_handle
     ch.send(
-        {"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+        {"handle": local_handle(), "attached_at": 0.0},
         topic="lifecycle.started",
     )
     ch.send({"step": heartbeat_step, "consumed_seq": 0}, topic="lifecycle.heartbeat")
@@ -411,7 +411,7 @@ def test_ensure_preempted_redrives_then_stops_on_completion():
         """On the producer's first extend call, append a second episode that completes."""
         from runstate.vocabulary.handle import local_handle
         channel.send(
-            {"handle": local_handle(), "hostname": None, "attached_at": 1.0},
+            {"handle": local_handle(), "attached_at": 1.0},
             topic="lifecycle.started",
         )
         channel.send({"step": M, "consumed_seq": 0}, topic="lifecycle.heartbeat")
@@ -458,7 +458,7 @@ def test_ensure_killed_resumes_on_caller_re_call_take_the_latest():
 
     def episodes(channel, target):
         calls["n"] += 1
-        channel.send({"handle": local_handle(), "hostname": None, "attached_at": float(calls["n"])},
+        channel.send({"handle": local_handle(), "attached_at": float(calls["n"])},
                      topic="lifecycle.started")
         if calls["n"] == 1:                      # progress 0..2, then KILLED (external signal)
             channel.send({"step": 2, "consumed_seq": 0}, topic="lifecycle.heartbeat")
@@ -533,7 +533,7 @@ def test_ensure_time_milestone_does_not_false_raise_on_zero_step_progress():
     from runstate.vocabulary.handle import local_handle
 
     ch = MemoryChannel()
-    ch.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+    ch.send({"handle": local_handle(), "attached_at": 0.0},
             topic="lifecycle.started")            # epoch 0.0
     ch.send({"step": 0, "consumed_seq": 0}, topic="lifecycle.heartbeat")  # 0 steps
     ch.send({"value": 0.0, "step": 0, "t": 0.0}, topic="value", name="loss")
@@ -550,7 +550,7 @@ def test_ensure_time_milestone_satisfies_via_poll_clock_even_when_value_sparse()
     from runstate.vocabulary.handle import local_handle
 
     ch = MemoryChannel()
-    ch.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+    ch.send({"handle": local_handle(), "attached_at": 0.0},
             topic="lifecycle.started")
     ch.send({"value": 0.0, "step": 0, "t": 0.0}, topic="value", name="loss")  # value.t frozen at 0
     ch.send({"step": 0, "consumed_seq": 0}, topic="lifecycle.heartbeat")
@@ -589,7 +589,7 @@ class _StepThenWaitProducer:
         from runstate.vocabulary.handle import local_handle
         self.calls += 1
         if self.calls == 1:
-            self._c.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+            self._c.send({"handle": local_handle(), "attached_at": 0.0},
                          topic="lifecycle.started")
             for s in range(3):
                 self._c.send({"value": float(s), "step": s, "t": 0.0},
@@ -620,7 +620,7 @@ class _TimeChunkProducer:
     def extend(self, until):
         from runstate.vocabulary.handle import local_handle
         if self.calls == 0:
-            self._c.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+            self._c.send({"handle": local_handle(), "attached_at": 0.0},
                          topic="lifecycle.started")
         self.calls += 1
         self._c.send({"value": float(self._s), "step": self._s, "t": 0.0}, topic="value", name="loss")
@@ -749,7 +749,7 @@ def test_store_pin_latecomer_waits_on_live_foreign_episode():
     launcher = runstate.ThreadLauncher()
     rid = "exp"
     ch = launcher.open_channel(rid)
-    ch.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+    ch.send({"handle": local_handle(), "attached_at": 0.0},
             topic="lifecycle.started")            # the live foreign winner (our pid)
 
     class _Gated:                                 # the Recipe-2 gate, latecomer side
@@ -790,7 +790,7 @@ def test_store_pin_latecomer_recovers_when_foreign_winner_dies_recordless(tmp_pa
     ch = launcher.open_channel(rid)
     ch.send({"every": {"step": 1}}, topic="control.subscribe",
             name="loss", request_id="obs")
-    ch.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+    ch.send({"handle": local_handle(), "attached_at": 0.0},
             topic="lifecycle.started")            # the live foreign winner...
 
     producer = _pin_producer(launcher, tmp_path, rid, stage_subscription=False)
@@ -800,7 +800,7 @@ def test_store_pin_latecomer_recovers_when_foreign_winner_dies_recordless(tmp_pa
     def hang_guard(_):
         calls["n"] += 1
         if calls["n"] == 1:                       # ...replaced by a claim that died recordless
-            ch.send({"handle": f"local://{host}/2147483646", "hostname": host,
+            ch.send({"handle": f"local://{host}/2147483646",
                      "attached_at": 0.0}, topic="lifecycle.started")
         time.sleep(0.001)                         # real yield: the recovery runs in a thread
         if calls["n"] > 200:
@@ -824,7 +824,7 @@ def test_foreign_episode_helper_tracks_live_episode():
     ch = MemoryChannel()
     handle = foreign_episode(ch)
     assert handle.is_alive() is False             # empty log: no episode
-    ch.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+    ch.send({"handle": local_handle(), "attached_at": 0.0},
             topic="lifecycle.started")
     assert handle.is_alive() is True              # claim landed: live
     ch.send({"completed": False, "error": None, "final_step": 0},
@@ -860,7 +860,7 @@ def test_ensure_collision_skips_no_progress_raise_when_foreign_episode_lives(ope
             if len(calls) == 1:
                 # the loser's spawn: dies recordless; the winner's claim lives
                 self.channel.send(
-                    {"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+                    {"handle": local_handle(), "attached_at": 0.0},
                     topic="lifecycle.started")
             else:
                 # second pass: the winner delivers the window
@@ -882,7 +882,7 @@ def test_history_junk_epoch_reads_as_no_epoch(open_channel, junk):
     # time-referencing replay raises the typed complaint -- never an untyped
     # float() TypeError -- and step-only replay is unaffected.
     ch = open_channel()
-    ch.send({"handle": "local://h/1", "hostname": None, "attached_at": junk},
+    ch.send({"handle": "local://h/1", "attached_at": junk},
             topic="lifecycle.started")
     ch.send({"value": 1.0, "step": 0, "t": 5.0}, topic="value", name="loss")
     with pytest.raises(ValueError, match="epoch"):

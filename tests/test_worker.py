@@ -187,7 +187,7 @@ def test_crashed_episodes_undischarged_stop_rearms_on_resume(open_channel):
     orch = open_channel()
     import socket
     orch.send({"handle": f"local://{socket.gethostname()}/2147483646",
-               "hostname": None, "attached_at": 0.0},
+               "attached_at": 0.0},
               topic="lifecycle.started")   # crashed: dead pid (THIS host), no stopped
     orch.send({"from": {"step": 8}}, topic="control.stop", request_id="s1")
     with Worker(open_channel(), now=lambda: 0.0) as w:
@@ -576,7 +576,7 @@ def test_stopped_is_idempotent(open_channel):
 def test_second_worker_loses_the_claim_and_does_no_work(open_channel):
     ch = open_channel()
     # a live episode already exists: a started by *our* pid (resolves alive), no stopped
-    ch.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+    ch.send({"handle": local_handle(), "attached_at": 0.0},
             topic="lifecycle.started")
     with Worker(open_channel(), now=lambda: 0.0) as w:
         assert w.claimed is False                            # lost: an episode is already live

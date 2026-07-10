@@ -57,7 +57,6 @@ class Started:
     """Pushed on attach; the worker self-reports its liveness handle (§8)."""
 
     handle: str
-    hostname: Optional[str]
     attached_at: Optional[float]
     TOPIC: ClassVar[str] = Topic.LIFECYCLE_STARTED
 

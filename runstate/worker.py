@@ -87,7 +87,7 @@ class Worker:
                 self._lost = True
                 break
             claim = self._ch.send(
-                asdict(Started(handle=local_handle(), hostname=None, attached_at=self._now())),
+                asdict(Started(handle=local_handle(), attached_at=self._now())),
                 topic=Started.TOPIC,
                 expected_seq=last,
             )

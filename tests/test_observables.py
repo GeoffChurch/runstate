@@ -82,7 +82,7 @@ def test_clean_stop_takes_precedence_over_terminated(open_channel):
 def test_live_episode_running_then_none_when_stopped(open_channel):
     ch = open_channel()
     assert live_episode(open_channel()) is None                      # nothing yet
-    ch.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+    ch.send({"handle": local_handle(), "attached_at": 0.0},
             topic="lifecycle.started")
     assert live_episode(open_channel()) == local_handle()            # running (our pid alive)
     ch.send({"completed": True, "error": None, "final_step": 1}, topic="lifecycle.stopped")
@@ -92,11 +92,11 @@ def test_live_episode_running_then_none_when_stopped(open_channel):
 def test_peek_terminal_is_episode_aware(open_channel):
     ch = open_channel()
     # episode 1: started ... stopped
-    ch.send({"handle": "local://h/1", "hostname": None, "attached_at": 0.0}, topic="lifecycle.started")
+    ch.send({"handle": "local://h/1", "attached_at": 0.0}, topic="lifecycle.started")
     ch.send({"completed": True, "error": None, "final_step": 5}, topic="lifecycle.stopped")
     assert peek_terminal(open_channel()).outcome == "completed"   # ep1 terminal
     # episode 2 attaches -> the old stopped is no longer terminal (a started follows it)
-    ch.send({"handle": "local://h/2", "hostname": None, "attached_at": 1.0}, topic="lifecycle.started")
+    ch.send({"handle": "local://h/2", "attached_at": 1.0}, topic="lifecycle.started")
     assert peek_terminal(open_channel()) is None                  # ep2 live
     # episode 2 stops -> terminal again, with ep2's verdict
     ch.send({"completed": True, "error": None, "final_step": 9}, topic="lifecycle.stopped")
@@ -114,7 +114,7 @@ def test_latest_episode_returns_the_started_envelope(open_channel):
     # the raw envelope: .seq is the episode-window watermark
     # (read(after=e.seq, ...)), .body carries the handle. No Episode view type.
     seq = open_channel().send(
-        {"handle": "local://h/1", "hostname": None, "attached_at": 0.0},
+        {"handle": "local://h/1", "attached_at": 0.0},
         topic="lifecycle.started",
     )
     e = latest_episode(open_channel())
@@ -127,7 +127,7 @@ def test_latest_episode_survives_the_episodes_end(open_channel):
     # is live_episode's composition). A stopped run's latest episode is what a
     # status display shows: ended != absent.
     ch = open_channel()
-    seq = ch.send({"handle": "local://h/1", "hostname": None, "attached_at": 0.0},
+    seq = ch.send({"handle": "local://h/1", "attached_at": 0.0},
                   topic="lifecycle.started")
     ch.send({"completed": True, "error": None, "final_step": 5}, topic="lifecycle.stopped")
     assert latest_episode(open_channel()).seq == seq
@@ -137,10 +137,10 @@ def test_latest_episode_tracks_the_newest_started(open_channel):
     # started...stopped...started -> the second episode's opener. The rule
     # whose misapplication (oldest started) was audit F7's stale-pid bug.
     ch = open_channel()
-    ch.send({"handle": "local://h/1", "hostname": None, "attached_at": 0.0},
+    ch.send({"handle": "local://h/1", "attached_at": 0.0},
             topic="lifecycle.started")
     ch.send({"completed": False, "error": None, "final_step": 5}, topic="lifecycle.stopped")
-    seq2 = ch.send({"handle": "local://h/2", "hostname": None, "attached_at": 1.0},
+    seq2 = ch.send({"handle": "local://h/2", "attached_at": 1.0},
                    topic="lifecycle.started")
     e = latest_episode(open_channel())
     assert e.seq == seq2
@@ -294,10 +294,10 @@ def test_live_demand_excludes_boundary_voided_time_leases(open_channel):
     ch.send({"every": {"step": 1}, "until": {"time_seconds": 60}},
             topic="control.subscribe", name="loss", request_id="r1")
     assert len(live_demand(open_channel())) == 1     # no boundary yet
-    ch.send({"handle": "local://h/1", "hostname": None, "attached_at": 0.0},
+    ch.send({"handle": "local://h/1", "attached_at": 0.0},
             topic="lifecycle.started")
     assert len(live_demand(open_channel())) == 1     # its first possible drainer
-    ch.send({"handle": "local://h/2", "hostname": None, "attached_at": 1.0},
+    ch.send({"handle": "local://h/2", "attached_at": 1.0},
             topic="lifecycle.started")
     assert live_demand(open_channel()) == []         # a boundary intervenes
 
@@ -306,9 +306,9 @@ def test_live_demand_keeps_step_keyed_subs_across_boundaries(open_channel):
     ch = open_channel()
     ch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss",
             request_id="r1")
-    ch.send({"handle": "local://h/1", "hostname": None, "attached_at": 0.0},
+    ch.send({"handle": "local://h/1", "attached_at": 0.0},
             topic="lifecycle.started")
-    ch.send({"handle": "local://h/2", "hostname": None, "attached_at": 1.0},
+    ch.send({"handle": "local://h/2", "attached_at": 1.0},
             topic="lifecycle.started")
     assert [e.request_id for e in live_demand(open_channel())] == ["r1"]
 
@@ -358,10 +358,10 @@ def test_peek_terminal_typed_error_on_malformed_terminated(open_channel):
 
 def test_live_episode_typed_error_on_handleless_started(open_channel):
     ch = open_channel()
-    ch.send({"hostname": None, "attached_at": 0.0}, topic="lifecycle.started")
+    ch.send({"attached_at": 0.0}, topic="lifecycle.started")
     with pytest.raises(MalformedRecordError):
         live_episode(open_channel())
-    ch.send({"handle": None, "hostname": None, "attached_at": 0.0},
+    ch.send({"handle": None, "attached_at": 0.0},
             topic="lifecycle.started")   # null handle: present but uninterpretable
     with pytest.raises(MalformedRecordError):
         live_episode(open_channel())
@@ -397,7 +397,7 @@ def test_live_episode_crashed_local_episode_is_not_live(open_channel):
     import socket
     ch = open_channel()
     ch.send({"handle": f"local://{socket.gethostname()}/2147483646",
-             "hostname": None, "attached_at": 0.0}, topic="lifecycle.started")
+             "attached_at": 0.0}, topic="lifecycle.started")
     assert live_episode(open_channel()) is None        # dead pid, THIS host
 
 
@@ -405,6 +405,6 @@ def test_live_episode_foreign_host_episode_reads_live(open_channel):
     # an unresolvable handle (another host) is conservatively LIVE -- the
     # waker never wakes a run it cannot probe (specs/lazy-launch.md).
     ch = open_channel()
-    ch.send({"handle": "local://otherhost/2147483646", "hostname": None,
+    ch.send({"handle": "local://otherhost/2147483646",
              "attached_at": 0.0}, topic="lifecycle.started")
     assert live_episode(open_channel()) == "local://otherhost/2147483646"

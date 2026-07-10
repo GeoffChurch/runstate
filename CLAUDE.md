@@ -23,8 +23,8 @@ with opt-in **conventions** on top. The design rationale lives in
 
 1. **The JSON Schema stack in `protocol/`** — `envelope-v0.2.schema.json`
    (the substrate record: structure only, opaque body) plus the
-   per-convention schemas (`subscription` / `lifecycle` / `launcher` /
-   `value`-`v0.2`), each `additionalProperties: false` and independently
+   per-convention schemas (`subscription` / `launcher` / `value`-`v0.2`,
+   `lifecycle`-`v0.3`), each `additionalProperties: false` and independently
    versioned. Authoritative for the wire format.
 2. **`docs/design-v0.2.md`** — prose. Defines the two-layer model and
    semantics: the topic-log substrate, the conventions, the liveness

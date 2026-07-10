@@ -41,11 +41,12 @@ for an orchestrator ack-check (`latest("lifecycle.heartbeat").consumed_seq >=
 my_seq`) — now addressed by `await_consumed` in `runstate/watcher.py`, the
 canonical "did my control land?" read. *Update 2026-07-10:* `started.attached_at`
 has since gained shipped consumers (the run epoch in `memoizer.history` /
-`_elapsed` — `specs/ensure-until-condition.md`); `started.hostname` alone remains
-unconsumed — and is never emitted non-null (`worker.py` hardcodes
-`hostname=None`, and the hostname is already carried inside the handle string),
-so the field has never held data on any log (forward-design for a viewer; not
-actioned here).
+`_elapsed` — `specs/ensure-until-condition.md`); `started.hostname` alone remained
+unconsumed — never emitted non-null, and the hostname is already carried inside
+the handle string, so the field never held data on any log. **Closed same day:
+removed in `lifecycle`-`v0.3`** (the review's basis audit confirmed the
+independence violation; the viewer forward-case routes to the handle grammar or
+a value-plane register; existing logs migrated).
 
 ## F8 (low-med) — `RunResult.elapsed` is a dead field
 

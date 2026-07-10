@@ -317,7 +317,7 @@ def test_serve_exits_on_commanded_stop(open_channel):
 def test_serve_lost_claim_does_nothing(open_channel):
     from runstate.vocabulary.handle import local_handle
     ch = open_channel()
-    ch.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+    ch.send({"handle": local_handle(), "attached_at": 0.0},
             topic="lifecycle.started")           # a live episode already exists
     with Worker(open_channel(), now=lambda: 0.0) as w:
         assert list(w.serve()) == []
@@ -336,7 +336,7 @@ _DEAD = f"local://{socket.gethostname()}/2147483646"   # dead pid, THIS host:
 
 
 def _dead_started(ch):
-    return ch.send({"handle": _DEAD, "hostname": None, "attached_at": 0.0},
+    return ch.send({"handle": _DEAD, "attached_at": 0.0},
                    topic="lifecycle.started")
 
 
@@ -506,7 +506,7 @@ def test_stopped_is_lost_guarded(open_channel):
     # completed claim onto the winner's live log).
     from runstate.vocabulary.handle import local_handle
     ch = open_channel()
-    ch.send({"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+    ch.send({"handle": local_handle(), "attached_at": 0.0},
             topic="lifecycle.started")           # a live episode already exists
     w = Worker(open_channel(), now=lambda: 0.0)
     assert w.claimed is False
@@ -532,7 +532,7 @@ def test_reap_discipline_skips_the_foreign_claimed_away_loser(open_channel):
     ch = open_channel()
     seq = ch.send({"handle": f"local://{socket.gethostname()}/111"},
                   topic="launcher.launched")
-    ch.send({"handle": f"local://{socket.gethostname()}/222", "hostname": None,
+    ch.send({"handle": f"local://{socket.gethostname()}/222",
              "attached_at": 0.0}, topic="lifecycle.started")   # the winner
     h = _local_handle_for(ch, f"local://{socket.gethostname()}/111", rc=0,
                           launched_seq=seq)
@@ -556,7 +556,7 @@ def test_reap_discipline_keeps_the_unclean_death(open_channel):
     ch = open_channel()
     seq = ch.send({"handle": f"local://{socket.gethostname()}/111"},
                   topic="launcher.launched")
-    ch.send({"handle": f"local://{socket.gethostname()}/222", "hostname": None,
+    ch.send({"handle": f"local://{socket.gethostname()}/222",
              "attached_at": 0.0}, topic="lifecycle.started")
     h = _local_handle_for(ch, f"local://{socket.gethostname()}/111", rc=3,
                           launched_seq=seq)
@@ -571,12 +571,12 @@ def test_reap_discipline_old_episodes_recycled_pid_is_not_my_claim(open_channel)
     # launched, I am a loser -> no record.
     ch = open_channel()
     me = f"local://{socket.gethostname()}/111"
-    ch.send({"handle": me, "hostname": None, "attached_at": 0.0},
+    ch.send({"handle": me, "attached_at": 0.0},
             topic="lifecycle.started")                 # an OLD episode, my pid
     ch.send({"completed": False, "error": None, "final_step": 1},
             topic="lifecycle.stopped")
     seq = ch.send({"handle": me}, topic="launcher.launched")
-    ch.send({"handle": f"local://{socket.gethostname()}/222", "hostname": None,
+    ch.send({"handle": f"local://{socket.gethostname()}/222",
              "attached_at": 1.0}, topic="lifecycle.started")   # the real winner
     h = _local_handle_for(ch, me, rc=0, launched_seq=seq)
     h.poll()

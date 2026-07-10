@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://runstate.dev/protocol/lifecycle-v0.2.json",
-  "title": "runstate v0.2 lifecycle convention",
+  "$id": "https://runstate.dev/protocol/lifecycle-v0.3.json",
+  "title": "runstate v0.3 lifecycle convention",
   "description": "Pins the bodies of the lifecycle.* topics the worker produces: started (attach + self-reported liveness handle), heartbeat (tick beacon), stopped (cooperative dying breath), nak (a refused control request). Applied on top of the envelope schema.",
 
   "allOf": [
@@ -29,11 +29,10 @@
 
   "$defs": {
     "Started": {
-      "type": "object", "required": ["handle", "hostname", "attached_at"], "additionalProperties": false,
+      "type": "object", "required": ["handle", "attached_at"], "additionalProperties": false,
       "description": "Pushed on attach; the worker self-reports its liveness handle (§8).",
       "properties": {
         "handle": {"type": "string"},
-        "hostname": {"type": ["string", "null"]},
         "attached_at": {"type": ["number", "null"], "minimum": 0}
       }
     },

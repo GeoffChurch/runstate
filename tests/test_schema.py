@@ -24,8 +24,8 @@ from runstate.worker import Worker  # noqa: E402
 _PROTO = Path(__file__).resolve().parent.parent / "protocol"
 
 
-def _validator(name):
-    schema = json.loads((_PROTO / f"{name}-v0.2.schema.json").read_text())
+def _validator(name, version="v0.2"):
+    schema = json.loads((_PROTO / f"{name}-{version}.schema.json").read_text())
     Draft202012Validator.check_schema(schema)
     return Draft202012Validator(schema)
 
@@ -33,7 +33,7 @@ def _validator(name):
 ENVELOPE = _validator("envelope")
 CONVENTIONS = {
     "control.": _validator("subscription"),
-    "lifecycle.": _validator("lifecycle"),
+    "lifecycle.": _validator("lifecycle", "v0.3"),   # independently versioned
     "launcher.": _validator("launcher"),
     "value": _validator("value"),
 }
@@ -258,23 +258,26 @@ def test_stopped_rejects_completed_with_error():
                         {"completed": True, "error": "x", "final_step": None}))
 
 
-def test_started_hostname_and_attached_at_present_nullable():
+def test_started_attached_at_present_nullable_and_hostname_gone():
+    # lifecycle-v0.3 dropped the dead hostname field: attached_at stays
+    # present-nullable; a hostname key is now an unknown field
+    # (additionalProperties pins the removal).
     L = CONVENTIONS["lifecycle."]
     L.validate(_env("lifecycle.started",
-                    {"handle": "local://h/1", "hostname": None, "attached_at": None}))
+                    {"handle": "local://h/1", "attached_at": None}))
     L.validate(_env("lifecycle.started",
-                    {"handle": "local://h/1", "hostname": "h", "attached_at": 1.5}))
-    for missing in ({"handle": "local://h/1", "hostname": None},     # attached_at omitted
-                    {"handle": "local://h/1", "attached_at": None},  # hostname omitted
-                    {"handle": "local://h/1"}):                      # both omitted
+                    {"handle": "local://h/1", "attached_at": 1.5}))
+    for bad in ({"handle": "local://h/1"},                       # attached_at omitted
+                {"handle": "local://h/1", "hostname": None,
+                 "attached_at": 0.0}):                           # the removed field
         with pytest.raises(jsonschema.ValidationError):
-            L.validate(_env("lifecycle.started", missing))
+            L.validate(_env("lifecycle.started", bad))
 
 
 def test_started_requires_handle():
     with pytest.raises(jsonschema.ValidationError):
         CONVENTIONS["lifecycle."].validate(
-            _env("lifecycle.started", {"hostname": None, "attached_at": None}))
+            _env("lifecycle.started", {"attached_at": None}))
 
 
 def test_nak_requires_reason_and_message():
@@ -293,7 +296,7 @@ def test_convention_dataclasses_serialize_to_schema_valid_bodies():
 
     bodies = [
         payloads.Value(value=0.5, step=10, t=0.0),
-        payloads.Started(handle="local://h/1", hostname=None, attached_at=0.0),
+        payloads.Started(handle="local://h/1", attached_at=0.0),
         payloads.Heartbeat(step=7, consumed_seq=3),
         payloads.Stopped(completed=True, error=None, final_step=9),
         payloads.Nak(reason="malformed", message="x"),

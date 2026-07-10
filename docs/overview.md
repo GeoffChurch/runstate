@@ -213,7 +213,7 @@ exactly that answer space (`Nak` | `RunResult` | `None`).
 
 | topic | body | what it is / why |
 |---|---|---|
-| `started` | `{handle, hostname?, attached_at?}` | pushed on attach; the worker self-reports its liveness **handle** |
+| `started` | `{handle, attached_at?}` | pushed on attach; the worker self-reports its liveness **handle** |
 | `heartbeat` | `{step?, consumed_seq}` | a tick-driven **beacon** — see below |
 | `stopped` | `{completed, error, final_step}` | the cooperative **dying breath** — see below |
 | `nak` | `{reason, message}` | a refused control request (correlated by `request_id`) |
