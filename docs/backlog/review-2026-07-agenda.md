@@ -54,7 +54,15 @@ shipped as a documented command.
 
 ## 2. `last_seq()` — the fifth substrate op, then the attach fix
 
-**Status:** PROPOSED
+**Status:** SHIPPED 2026-07-10 — rulings: named `last_seq` (the CAS's read half;
+"head" is front/back-ambiguous); §4 gains the op-admission principle ("the
+surface must be readable in every coordinate it requires callers to assert");
+`retire()` does NOT adopt (its read is load-bearing — it drains what it reads).
+Ship evidence: attach on the same 10⁶-envelope log the 3.4 s baseline was
+measured on now takes **1.5 ms median** (5 trials), no gigabyte materialization;
+conformance pins 0-on-empty / contiguity-agreement / assert-to-win;
+`worker-attach-scale.md` executed and deleted. The rest of this entry is
+retained until the agenda closes.
 
 **What it is.** Add one substrate operation, `last_seq() -> int` — the log's
 current last `seq`, `0` for an empty log — to the Channel surface, the design §4

@@ -57,21 +57,30 @@ class Worker:
         self._lost = False
         self._started_seq = None       # this episode's own claim, once won
         while True:
-            envs = self._ch.read()
-            last = envs[-1].seq if envs else 0
+            # HEAD-FIRST (§4): read the head the claim will assert, then compute
+            # the folds from topic-filtered reads CAPPED at it. CAS success at
+            # `last` proves nothing landed past the cap, so the capped folds
+            # equal an unfiltered same-read's folds -- the same-read fusion
+            # (specs/stop-discharge.md) preserved by assertion, at
+            # O(lifecycle + control) instead of O(N_total) (which measured
+            # ~3.4 s and ~0.8 GB transient on a 10^6-envelope log; §12.5).
+            last = self._ch.last_seq()
+            envs = [e for e in self._ch.read(topics=[
+                        Topic.LIFECYCLE_STOPPED, Topic.LIFECYCLE_STARTED,
+                        Topic.CONTROL_UNSUBSCRIBE, Topic.LIFECYCLE_NAK])
+                    if e.seq <= last]
             # The discharge floor: the latest lifecycle.stopped already on the
             # log. Every control.stop below it is answered (discharged) by that
             # stopped -- its designated counter-record -- so the drain skips it
-            # (specs/stop-discharge.md). From the same read as the claim, so it
-            # is exact: the CAS serializes the claim against concurrent appends.
+            # (specs/stop-discharge.md).
             self._discharge_floor = max(
                 (e.seq for e in envs if e.topic == Topic.LIFECYCLE_STOPPED), default=0
             )
             # The positional answer fold (specs/service-worker.md): a
             # control.subscribe is live until an unsubscribe or nak bearing
-            # its request_id FOLLOWS it by seq. Same read as the claim; the
-            # drain skips answered subscribes (so a resumed episode neither
-            # resurrects an expired lease nor re-naks a refused request).
+            # its request_id FOLLOWS it by seq; the drain skips answered
+            # subscribes (so a resumed episode neither resurrects an expired
+            # lease nor re-naks a refused request).
             self._answers: dict[str, list[int]] = {}
             for e in envs:
                 if e.request_id is not None and e.topic in (
@@ -79,7 +88,7 @@ class Worker:
                 ):
                     self._answers.setdefault(e.request_id, []).append(e.seq)
             # Prior episodes' boundaries, for the time-lease discharge
-            # (specs/time-lease-boundary.md) -- same read, zero extra I/O.
+            # (specs/time-lease-boundary.md) -- same capped read, zero extra I/O.
             self._started_seqs = [
                 e.seq for e in envs if e.topic == Topic.LIFECYCLE_STARTED
             ]

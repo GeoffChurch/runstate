@@ -68,7 +68,8 @@ heartbeats), warm cache — the numbers the viewer design must respect:
   µs/envelope decoded: one `value_series` of a 10⁶ log is ~1.9 s (and a bare
   `read()` materializes ~0.77 GB transient). A viewer MUST carry per-run
   cursors and fold plot state incrementally over `read(after=cursor)` — a
-  one-time ~2 s/run initial load, then ~23 µs tail reads. Stateful cursors are
+  one-time ~2 s/run initial load, then ~23 µs tail reads — with `last_seq()`
+  (design §4, a sanctioned consumer) as the free has-anything-new watermark. Stateful cursors are
   exactly where the design already puts them (the Watcher plane, per
   `observables.py`'s membership test).
 - **Heartbeat compaction is not the enabler**: the topic index already skips
