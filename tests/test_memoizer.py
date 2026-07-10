@@ -831,3 +831,61 @@ def test_foreign_episode_helper_tracks_live_episode():
             topic="lifecycle.stopped")
     assert handle.is_alive() is False             # episode over
     assert handle.wait() is None                  # nothing to reap
+
+
+def test_ensure_collision_skips_no_progress_raise_when_foreign_episode_lives(open_channel):
+    # the claim-window collision (red-team P1): the own spawn died recordless
+    # with zero progress, but a LIVE foreign episode holds the claim -- the
+    # run isn't "stuck", someone else owns it. The claim-aware guard skips the
+    # raise; ensure re-enters and waits on the winner. The genuinely-stuck
+    # case (no live episode) still raises -- pinned by the no-progress tests.
+    ch = open_channel()
+    calls = []
+
+    class _DeadHandle:
+        def is_alive(self):
+            return False
+
+        def wait(self):
+            return None
+
+    class _Collider:
+        run_id = "collide"
+
+        def __init__(self, channel):
+            self.channel = channel
+
+        def extend(self, until):
+            calls.append(len(calls))
+            if len(calls) == 1:
+                # the loser's spawn: dies recordless; the winner's claim lives
+                self.channel.send(
+                    {"handle": local_handle(), "hostname": None, "attached_at": 0.0},
+                    topic="lifecycle.started")
+            else:
+                # second pass: the winner delivers the window
+                for s in range(3):
+                    self.channel.send({"value": float(s), "step": s, "t": None},
+                                      topic="value", name="loss")
+                self.channel.send({"step": 2, "consumed_seq": 0},
+                                  topic="lifecycle.heartbeat")
+            return _DeadHandle()
+
+    series = ensure(_Collider(ch), "loss", until={"step": 3})
+    assert [b["step"] for b in series] == [0, 1, 2]
+    assert len(calls) == 2                        # re-entered, never raised
+
+
+@pytest.mark.parametrize("junk", [{"j": 1}, "garbage", "3.5", True, [1]])
+def test_history_junk_epoch_reads_as_no_epoch(open_channel, junk):
+    # a junk-typed attached_at earns no epoch (the measurement rule):
+    # time-referencing replay raises the typed complaint -- never an untyped
+    # float() TypeError -- and step-only replay is unaffected.
+    ch = open_channel()
+    ch.send({"handle": "local://h/1", "hostname": None, "attached_at": junk},
+            topic="lifecycle.started")
+    ch.send({"value": 1.0, "step": 0, "t": 5.0}, topic="value", name="loss")
+    with pytest.raises(ValueError, match="epoch"):
+        history(open_channel(), "loss", {"every": {"time_seconds": 1}})
+    assert [b["step"] for b in
+            history(open_channel(), "loss", {"every": {"step": 1}})] == [0]

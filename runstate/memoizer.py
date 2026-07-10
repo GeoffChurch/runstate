@@ -146,13 +146,15 @@ def _conforming_point(b: Body) -> bool:
 
 def _epoch(channel: Channel) -> float | None:
     """The run epoch -- the earliest ``lifecycle.started.attached_at`` -- or
-    None when the run has none (never started, or a null ``attached_at``).
+    None when the run has none (never started, or a null or junk-typed
+    ``attached_at``: junk earns no epoch, the measurement rule).
     The ONE epoch reader ``history`` and ``_elapsed`` share; their null-epoch
     responses differ (raise vs. inert) but the epoch itself cannot."""
     started = channel.read(topics=[Topic.LIFECYCLE_STARTED], limit=1)
-    if not started or started[0].body.get("attached_at") is None:
+    at = started[0].body.get("attached_at") if started else None
+    if not isinstance(at, (int, float)) or isinstance(at, bool):
         return None
-    return float(started[0].body["attached_at"])
+    return float(at)
 
 
 def history(channel: Channel, name: str, schedule: Condition) -> list[Body]:
@@ -313,13 +315,21 @@ def ensure(producer: Producer, name: str, *, until: Condition, poll_interval: fl
             return history(channel, name, dense)
         # The no-progress guard is OWN-SPAWN-scoped: a foreign episode ending
         # without progress is no evidence a relaunch would spin (we never
-        # launched) -- re-drive it, the lazy-launch re-wake posture.
+        # launched) -- re-drive it, the lazy-launch re-wake posture. And it is
+        # CLAIM-AWARE: at this site the own spawn is dead, so a LIVE episode
+        # means someone else holds the claim -- the claim-window collision
+        # (two dispatchers spawned; ours lost the birth-CAS recordless while
+        # the winner is still mid-load) -- not "stuck": skip the raise, and
+        # the next extend waits on the winner (the foreign_episode posture).
+        # A genuinely stuck own spawn has no live episode and still raises; a
+        # false-live handle degrades to the conservative wait.
         if (not isinstance(handle, _ForeignEpisode)
                 and _progress(channel) <= before
                 and not satisfied(until, step=_progress(channel) + 1,
-                                  time_seconds=float("inf"), count=0)):
+                                  time_seconds=float("inf"), count=0)
+                and live_episode(channel) is None):
             raise RuntimeError(
                 f"run {producer.run_id!r} made no progress toward {until} "
-                f"(stuck at {_progress(channel)}); cannot extend"
+                f"(progress={progress(channel)}); cannot extend"
             )
     return history(channel, name, dense)
