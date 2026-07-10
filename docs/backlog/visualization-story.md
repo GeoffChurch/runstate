@@ -30,6 +30,15 @@ cooperative-control conventions:
    data by typed *pointer* — uri/mimetype/format-spec — never in the
    stream; tensors/images stay off the log). Both belong to THIS
    project, not core runstate (in core they'd be opinion creep).
+   From the full "Bluesky's Ahead" paper (SRN 32(3), 2019), two more:
+   the **replay principle** — consumers must not know whether documents
+   are live or replayed from storage (runstate's folds already have this
+   property; the viewer protocol should pin it as a founding constraint,
+   so every viewer feature works on finished runs for free) — and the
+   paper's **metadata checklist** (sample identity/prep/intent; who took
+   the data; ownership/retention) as prior art for the provenance/
+   discovery surface (design §12.8 author/provenance + store.md's birth
+   and config records).
 
 2. **Viewer-discovery protocol** — how a UI finds available runs and
    subscribes to updates. *(Re-keyed 2026-06-11: the Store dissolved —
