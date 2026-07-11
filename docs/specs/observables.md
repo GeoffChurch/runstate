@@ -38,8 +38,10 @@ name a lie.
   observables — pull-side pure functions; the push side is the subscription
   convention.
 - **Tolerance splits by plane:** the substrate admits foreign bodies on any
-  topic. The measurement folds (`progress`, `value_series`, `live_demand`)
-  skip what isn't a measurement — one lost point is marginal; the verdict
+  topic. The measurement folds (`progress`, `value_series`, `live_demand`,
+  and — added 2026-07-11 — `undischarged_stops`, the stop-discharge rule's
+  observer home, pairing instance 1's public fold beside `live_demand`'s
+  instance 2) skip what isn't a measurement — one lost point is marginal; the verdict
   folds (`peek_terminal`, `live_episode`, and `await_consumed`'s nak parse)
   decide categorical answers from single records and refuse to guess — an
   uninterpretable record raises the typed, catchable `MalformedRecordError`

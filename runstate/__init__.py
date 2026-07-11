@@ -25,6 +25,7 @@ from .observables import (
     live_episode,
     peek_terminal,
     progress,
+    undischarged_stops,
     value_series,
 )
 from .vocabulary.handle import handle_pid
@@ -92,6 +93,7 @@ __all__ = [
     "live_demand",
     "live_episode",
     "progress",
+    "undischarged_stops",
     "value_series",
     "handle_pid",
     "sweep",

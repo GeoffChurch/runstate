@@ -26,7 +26,7 @@ from .vocabulary.schedule import (
     references_time,
     satisfied,
 )
-from .observables import _boundary_voided, live_episode
+from .observables import boundary_voided, live_episode
 
 
 @dataclass
@@ -325,7 +325,7 @@ class Worker:
             elif (
                 references_time(e.body)
                 and self._started_seq is not None
-                and _boundary_voided(e.seq, self._started_seqs, self._started_seq)
+                and boundary_voided(e.seq, self._started_seqs, self._started_seq)
             ):
                 # Episode-boundary discharge (specs/time-lease-boundary.md):
                 # a time-lease is a contract with one living episode, and a
@@ -359,7 +359,8 @@ class Worker:
                 # the log, discharging it. History, never again input -- and
                 # silently so: "already answered" is not a refusal (the nak
                 # reasons have no word for it), and a discharged-but-malformed
-                # stop was already naked by its own era's worker.
+                # stop was already naked by its own era's worker. (The rule's
+                # public observer home: observables.undischarged_stops.)
                 return
             # The structural gate again: naks a bad stop like a bad subscribe,
             # so the pending set only ever holds conditions the unguarded

@@ -16,6 +16,7 @@ from runstate.observables import (
     live_episode,
     peek_terminal,
     progress,
+    undischarged_stops,
     value_series,
 )
 from runstate.vocabulary.handle import local_handle
@@ -378,6 +379,47 @@ def test_measurement_folds_skip_junk_records(open_channel):
     assert value_series(open_channel()) == {}
     # live_demand is value-blind: a junk-bodied subscribe is still live demand
     assert [e.request_id for e in live_demand(open_channel())] == ["r1"]
+
+
+# ----- undischarged_stops: the stop-discharge fold's observer home -----
+
+
+def test_undischarged_stops_pending_until_the_next_stopped(open_channel):
+    ch = open_channel()
+    assert undischarged_stops(open_channel()) == []
+    s1 = ch.send({}, topic="control.stop", request_id="a")
+    s2 = ch.send({}, topic="control.stop")                     # id-less: still a stop
+    assert [e.seq for e in undischarged_stops(open_channel())] == [s1, s2]
+    ch.send({"completed": False, "error": None, "final_step": 3},
+            topic="lifecycle.stopped")
+    assert undischarged_stops(open_channel()) == []            # ONE stopped discharges ALL
+    s3 = ch.send({}, topic="control.stop", request_id="b")
+    assert [e.seq for e in undischarged_stops(open_channel())] == [s3]
+
+
+def test_undischarged_stops_pending_is_not_due(open_channel):
+    # a from-conditioned stop is pending the moment it lands, though the
+    # worker won't honor it until the condition crosses: the fold reports
+    # PENDING, deliberately never "due" (due needs the worker's coordinates).
+    ch = open_channel()
+    ch.send({"from": {"step": 1000}}, topic="control.stop", request_id="late")
+    assert [e.request_id for e in undischarged_stops(open_channel())] == ["late"]
+
+
+def test_undischarged_stops_overreports_naked_stops(open_channel):
+    # a malformed stop is refused by the worker (never in its pending set),
+    # but no nak discharges a stop -- the fold conservatively lists it until
+    # the next stopped discharges everything (never under-reports).
+    from runstate.worker import Worker
+
+    ch = open_channel()
+    ch.send({"bogus": 1}, topic="control.stop", request_id="bad")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.tick(step=0)                                             # the worker naks it...
+    assert ch.latest("lifecycle.nak") is not None
+    assert [e.request_id for e in undischarged_stops(open_channel())] == ["bad"]
+    w.stopped()                                                # ...the next stopped discharges
+    assert undischarged_stops(open_channel()) == []
 
 
 def test_measurement_folds_skip_wrong_typed_junk(open_channel):

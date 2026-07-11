@@ -195,7 +195,7 @@ def peek_terminal(channel: Channel) -> Optional[RunResult]:
     return None
 
 
-def _boundary_voided(sub_seq: int, started_seqs: list[int], drainer_started_seq: int) -> bool:
+def boundary_voided(sub_seq: int, started_seqs: list[int], drainer_started_seq: int) -> bool:
     """The episode-boundary discharge (specs/time-lease-boundary.md): a
     time-referencing subscribe is voided iff a ``lifecycle.started`` other
     than the draining episode's own follows it — equivalently, a ``started``
@@ -234,9 +234,31 @@ def live_demand(channel: Channel) -> list[Envelope]:
     return sorted(
         (e for e in pending.values()
          if not (references_time(e.body)
-                 and _boundary_voided(e.seq, starteds, latest))),
+                 and boundary_voided(e.seq, starteds, latest))),
         key=lambda e: e.seq,
     )
+
+
+def undischarged_stops(channel: Channel) -> list[Envelope]:
+    """The ``control.stop`` envelopes not yet discharged — pending from append
+    until the next ``lifecycle.stopped`` FOLLOWS by seq, when one ``stopped``
+    discharges every pending stop at once (specs/stop-discharge.md). The
+    positional stop rule's public observer home, mirroring ``live_demand``
+    (the subscribe fold's): "is there an unhonored stop?" for a status
+    surface or a dispatch gate. The worker's drain applies the same rule
+    (its ``_discharge_floor`` skip).
+
+    Two edges an observer cannot avoid: **pending ≠ due** — a stop with a
+    ``from`` condition is pending the moment it lands but fires only when the
+    condition crosses (due-evaluation needs the worker's coordinates), so a
+    gate refusing work on "pending" may be gating on a not-yet-due stop. And
+    **naked stops over-report**: a malformed stop was refused by the worker
+    (never in its pending set), but no nak discharges a stop — it stays
+    listed until the next ``stopped`` discharges everything (conservative:
+    never under-reports)."""
+    stopped = channel.latest(Topic.LIFECYCLE_STOPPED)
+    return channel.read(after=stopped.seq if stopped is not None else 0,
+                        topics=[Topic.CONTROL_STOP])
 
 
 def progress(channel: Channel) -> Optional[int]:

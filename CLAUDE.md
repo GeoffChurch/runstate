@@ -70,7 +70,8 @@ The substrate + opt-in conventions + reference orchestration, in
   `success`), `live_episode`, `latest_episode` (the episode-boundary rule),
   `progress` (the step frontier), `value_series` (the per-(name, step)
   register projection), `live_demand` (the positional answer fold —
-  unanswered subscribes). Membership test: needs a cursor or clock → it's the
+  unanswered subscribes), `undischarged_stops` (the stop fold's observer
+  twin). Membership test: needs a cursor or clock → it's the
   `Watcher`'s; parses a handle string → it's `vocabulary/`'s.
 - **`launcher.py`** — `Launcher` / `LaunchHandle` Protocols +
   `ThreadLauncher` (in-process) + `LocalLauncher` (subprocess + `attach`;

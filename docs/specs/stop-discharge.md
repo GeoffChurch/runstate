@@ -220,6 +220,9 @@ Two near-independent changes in `runstate/worker.py`, no wire change:
    validation/nak (a discharged-but-malformed stop was already naked by its own
    era's worker; and "already answered" is not a refusal — the nak `reason`
    enum (`malformed`/`unsatisfiable`/`unsupported`) rightly has no word for it).
+   *(2026-07-11: the rule gained its public observer home,
+   `observables.undischarged_stops` — the fold a status surface or dispatch
+   gate reads; pending ≠ due and naked-stop over-reporting documented there.)*
 2. **The re-typing (fixes S1, S4).** Delete the `Subscription`-for-stop
    machinery; `self._stop` (slot) → `self._stops` (list of
    `(request_id, from_, registered_at)`); the tick decision and the new

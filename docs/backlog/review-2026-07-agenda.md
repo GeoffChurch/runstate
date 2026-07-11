@@ -191,7 +191,13 @@ introducing now or only when a third member appears.
 
 ## 5. `undischarged_stops(channel)` — the stop fold's observer home
 
-**Status:** PROPOSED
+**Status:** SHIPPED 2026-07-11 — `list[Envelope]`, one `latest` + one
+topic-filtered `read(after=floor)` (the discharge rule expressed as a cursor);
+the two edges documented and test-pinned (pending ≠ due; naked stops
+over-report until the next `stopped`); design §7's pairing-instance list now
+names it as instance 1's public home beside `live_demand`'s instance 2. Riding
+along: `_boundary_voided` → `boundary_voided` (the established cross-module
+convention). The rest of this entry is retained until the agenda closes.
 
 **What it is.** A stateless observable returning the `control.stop` envelopes not
 yet discharged by a following `lifecycle.stopped` — the observer half of the

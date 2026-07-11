@@ -279,7 +279,8 @@ or orchestrator can ignore it and compose `send`/`read`/`latest` directly.
   pure folds log → view. `peek_terminal` (the terminal verdict), `live_episode`,
   `latest_episode` (the episode-boundary rule), `progress` (the step frontier),
   `value_series` (the per-(name, step) register projection), `live_demand`
-  (unanswered subscribes). Observe statelessly here; watch statefully with the
+  (unanswered subscribes), `undischarged_stops` (unhonored stops — the stop
+  button's "did it land?"). Observe statelessly here; watch statefully with the
   `Watcher` below.
 - **`Launcher` / `LaunchHandle`** (Protocols) + **`ThreadLauncher`** (in-process;
   tests / single-process orchestration) and **`LocalLauncher`** (subprocess;
