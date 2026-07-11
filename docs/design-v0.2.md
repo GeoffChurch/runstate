@@ -301,6 +301,7 @@ The six convention decisions are settled (see revision history). Status tags bel
 - **A normal form for the condition algebra.** Canonicalization buys nothing here (we never compare/hash conditions). → accept inert algebraic redundancy; keep the algebra fully recursive.
 - **A separate `stop_at` name; `now`/`step:N` as `when` primitives.** → `control.stop` + `from`; one-shot = omit `every`; `now`/`at` are helper sugar.
 - **FileChannel / a file backend.** Fan-out scales badly. → SQLite-only; topic-log backends (NATS/…) later.
+- **An engine-owned loop (inversion of control — the RunEngine/durable-execution shape).** At scale it converges on a log internally anyway (durable execution = persisted event history + deterministic replay), so the log is the foundation and IoC a programming-model veneer; the layering is one-directional — an opt-in driver can own a user's loop *on* the substrate, but the opinion-free log can never be recovered *from* an engine — and it is totalizing at adoption (workloads rewritten into the engine's vocabulary, against an ecosystem of user-owned training loops). → the cooperative worker: the user keeps the loop; `steps()`'s generator boundary is the deliberate midpoint (the library gets control exactly at safe points); rich interruption (pause/rewind/suspenders) stays an opt-in Layer-3 driver if its use cases ever land (§14, the Pause/Resume backlog item carries the prior art).
 
 ## 14. Scope: v0.2 vs later
 

@@ -140,6 +140,19 @@ def test_emitted_stepless_heartbeat_and_value_conform():
     _validate(val)
 
 
+def test_emitted_broadcast_value_via_emit_conforms():
+    # Worker.emit: the unconditional broadcast point -- request_id=None,
+    # stamped with the worker's current step and clock.
+    ch = _open_memory("emit")
+    w = Worker(ch, now=lambda: 1.5)
+    w.tick(step=2)
+    w.emit("loss", 0.25)
+    val = ch.latest("value", "loss")
+    assert val.request_id is None
+    assert val.body == {"value": 0.25, "step": 2, "t": 1.5}
+    _validate(val)
+
+
 def test_emitted_completed_stopped_conforms():
     ch = _open_memory("done")
     w = Worker(ch, now=lambda: 0.0)

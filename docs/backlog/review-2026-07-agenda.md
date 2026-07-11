@@ -103,7 +103,17 @@ whether the memory backend's `read(after, limit)` O(after) scan is worth a note.
 
 ## 3. `Worker.emit(name, value)` — the typed broadcast-value verb
 
-**Status:** PROPOSED
+**Status:** SHIPPED 2026-07-10 — rulings: named `emit`; returns None (`last_seq`
+is racy as "my record's seq" — the race-free need has no consumer; raw
+`channel.send` returns the seq if one ever appears); `emit` ALSO updates the
+`set` register (the two planes can never disagree about the current value);
+no-step-to-stamp RAISES (stricter than the red-team's document-only amendment —
+a fake default step of 0/-1 is schema-invalid or silently corrupts the
+per-(name, step) folds; the design already chose null-over-fake-0 for the
+stepless heartbeat). The `set`/`emit` docstrings carry the two-persona split
+(observer-chosen vs worker-chosen cadence); design §13 gains the
+inversion-of-control rejected-alternative from this item's deliberation. The
+rest of this entry is retained until the agenda closes.
 
 **What it is.** One new Worker method: emit a value point unconditionally —
 `{value, step: <last tick step>, t: <now>}` on topic `value`, `request_id=None`

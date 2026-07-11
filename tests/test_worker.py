@@ -621,3 +621,68 @@ def test_value_t_is_absolute_wall_clock_not_birth_relative(open_channel):
             w.set("loss", float(step))
     ts = [v.body["t"] for v in open_channel().read(topics=["value"])]
     assert ts == [1000.0, 1000.0]   # absolute clock; birth-relative would be 0.0
+
+
+# ----- emit: the unconditional broadcast-value verb (worker-chosen cadence) -----
+
+
+def test_emit_logs_the_broadcast_point_now(open_channel):
+    # {value, step: current, t: now}, request_id=None -- visible to the
+    # log-as-cache plane (history) with no subscription anywhere.
+    from runstate.memoizer import history
+
+    ch = open_channel()
+    with Worker(ch, now=lambda: 42.0) as w:
+        for step in w.steps(total=3):
+            w.emit("loss", float(step))
+    evs = open_channel().read(topics=["value"])
+    assert [(e.name, e.request_id) for e in evs] == [("loss", None)] * 3
+    assert [e.body for e in evs] == [
+        {"value": 0.0, "step": 0, "t": 42.0},
+        {"value": 1.0, "step": 1, "t": 42.0},
+        {"value": 2.0, "step": 2, "t": 42.0},
+    ]
+    assert [b["value"] for b in
+            history(open_channel(), "loss", {"every": {"step": 1}})] == [0.0, 1.0, 2.0]
+
+
+def test_emit_updates_the_register_a_subscription_samples(open_channel):
+    # register coherence: a worker using ONLY emit never leaves a subscriber
+    # sampling an empty register -- the two planes can't disagree.
+    orch = open_channel()
+    orch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="obs")
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.tick(step=0)                       # a safe point, as inside steps()'s body
+    w.emit("loss", 0.7)
+    w.tick(step=1)                       # the subscription fires, samples the register
+    samples = [e for e in open_channel().read(topics=["value"]) if e.request_id == "obs"]
+    assert samples and samples[-1].body["value"] == 0.7
+
+
+def test_emit_is_muzzled_for_a_claim_loser(open_channel):
+    ch = open_channel()
+    winner = Worker(ch, now=lambda: 0.0)
+    loser = Worker(open_channel(), now=lambda: 0.0)
+    assert winner.claimed and not loser.claimed
+    before = ch.last_seq()
+    loser.emit("loss", 1.0)              # silent no-op: a loser may not act
+    assert ch.last_seq() == before
+
+
+def test_emit_with_no_step_to_stamp_raises(open_channel):
+    # before the first tick / on a stepless worker a step=None point would
+    # permanently poison history() for the name (append-only log): refuse
+    # loudly; raw channel.send is the stepless / caller-clocked path.
+    w = Worker(open_channel(), now=lambda: 0.0)
+    with pytest.raises(ValueError, match="poison"):
+        w.emit("loss", 1.0)
+    w.tick(step=None)                    # the stepless (serve) path
+    with pytest.raises(ValueError, match="poison"):
+        w.emit("loss", 1.0)
+
+
+def test_emit_unserializable_value_raises_naming_the_metric(open_channel):
+    w = Worker(open_channel(), now=lambda: 0.0)
+    w.tick(step=0)
+    with pytest.raises(TypeError, match="loss"):
+        w.emit("loss", object())

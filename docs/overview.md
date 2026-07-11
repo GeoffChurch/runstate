@@ -56,7 +56,10 @@ code is kept in those two places only, so it can't drift.)
 - **Worker side** — wrap your loop. `attach()` finds the run's channel (from
   the `RUNSTATE_*` env a launcher set); `with Worker(attach()) as w:` drains
   control, services subscriptions, and beacons lifecycle while you iterate
-  `w.steps(...)` and `w.set(...)` the values you're willing to report.
+  `w.steps(...)` and report values by cadence owner: `w.emit(...)` logs a
+  point unconditionally (worker-chosen cadence — the series `ensure`/`history`
+  read), `w.set(...)` updates the register subscriptions sample (observer-chosen
+  cadence — records land only on demand).
 - **Orchestrator side** — spawn, subscribe, watch: a `Launcher` opens the run's
   channel and spawns the worker; a `control.subscribe` requests a value series;
   `Watcher.wait(...)` streams events and folds liveness into the terminal

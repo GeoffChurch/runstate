@@ -168,8 +168,38 @@ class Worker:
             i += 1
 
     def set(self, name: str, value: object) -> None:
-        """Update the worker's current value for ``name``."""
+        """Update the worker's current value for ``name`` — the register a
+        fired subscription samples. OBSERVER-chosen cadence: records land on
+        the log only on demand (the service persona). To log a point
+        unconditionally — worker-chosen cadence — use ``emit``."""
         self._values[name] = value
+
+    def emit(self, name: str, value: object) -> None:
+        """Log ``value`` for ``name`` NOW: the unconditional broadcast point
+        (envelope ``request_id=None``, design §6), stamped with the worker's
+        current step and clock — and update the ``set`` register, so a
+        concurrent subscription can never disagree with the log about the
+        current value.
+
+        The two-persona split: ``emit`` is WORKER-chosen cadence — points that
+        matter unconditionally (a training curve; the log-as-cache plane
+        ``ensure``/``history`` reads). ``set`` is observer-chosen cadence. A
+        claim-race loser's emit touches nothing (``claimed`` is the tell).
+        Raises ValueError before the first tick or on a stepless worker: a
+        ``step=None`` point would permanently poison ``history()`` for the
+        name (the log is append-only); genuinely stepless or caller-clocked
+        points use raw ``channel.send`` deliberately."""
+        if self._lost:
+            return
+        if self._last_step is None:
+            raise ValueError(
+                f"emit({name!r}) before the first tick / on a stepless worker "
+                "would log a step=None point, permanently poisoning history() "
+                "for the name; use channel.send for stepless or caller-clocked "
+                "points"
+            )
+        self._values[name] = value
+        self._send_value(name, value, step=self._last_step, request_id=None)
 
     def tick(self, step: int | None) -> bool:
         """Drain control, service due subscriptions, beacon a heartbeat. Returns
@@ -355,6 +385,27 @@ class Worker:
             request_id=request_id,
         )
 
+    def _send_value(self, name: str | None, value: object, *,
+                    step: int | None, request_id: str | None) -> None:
+        try:
+            self._ch.send(
+                asdict(Value(value=value, step=step, t=self._now())),
+                topic=Value.TOPIC,
+                name=name,
+                request_id=request_id,
+            )
+        except (TypeError, ValueError) as exc:
+            # A user value that won't serialize is the user's own bug,
+            # surfaced clearly at the point we try to report it (not the
+            # opaque json error) -- and fatal: a broken reporting path
+            # should stop the run, not silently drop the metric. The
+            # escape hatch is json_default on attach()/open_channel().
+            raise TypeError(
+                f"value for {name!r} ({type(value).__name__}) is not "
+                f"JSON-serializable; pass json_default to "
+                f"attach()/open_channel() to coerce it"
+            ) from exc
+
     def _service(self, step: int | None) -> None:
         now = self._now()
         for request_id, (name, sub) in list(self._subs.items()):
@@ -363,24 +414,7 @@ class Worker:
             decision = sub.tick(step=step, now=now)
             if decision.fire:
                 value = self._values.get(name) if name is not None else None
-                try:
-                    self._ch.send(
-                        asdict(Value(value=value, step=step, t=self._now())),
-                        topic=Value.TOPIC,
-                        name=name,
-                        request_id=request_id,
-                    )
-                except (TypeError, ValueError) as exc:
-                    # A user value that won't serialize is the user's own bug,
-                    # surfaced clearly at the point we try to report it (not the
-                    # opaque json error) -- and fatal: a broken reporting path
-                    # should stop the run, not silently drop the metric. The
-                    # escape hatch is json_default on attach()/open_channel().
-                    raise TypeError(
-                        f"value for {name!r} ({type(value).__name__}) is not "
-                        f"JSON-serializable; pass json_default to "
-                        f"attach()/open_channel() to coerce it"
-                    ) from exc
+                self._send_value(name, value, step=step, request_id=request_id)
             if decision.expired:
                 # Emit-then-delete: the expiry counter-record -- the worker
                 # completing the subscribe/unsubscribe pair, the same shape as

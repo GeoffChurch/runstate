@@ -59,7 +59,9 @@ The substrate + opt-in conventions + reference orchestration, in
 - **`worker.py`** — the reference `Worker` loop (context manager + the two
   drivers: `steps(total)` runs on the launch contract's target, `serve()` on
   leased demand): drains `control.*` (positional answer fold; expiry
-  counter-records), services subscriptions into `value` events, emits
+  counter-records), services subscriptions into `value` events (`set`, the
+  demand-sampled register) beside the unconditional `emit` (the broadcast
+  point the memoizer reads), emits
   `lifecycle.*`, exposes the levels (`stop_pending`, `pinned`), and dies
   carefully (`retire()` — the death-CAS; specs/service-worker.md).
 - **`observables.py`** — the **stateless observer plane**: pure body-aware
