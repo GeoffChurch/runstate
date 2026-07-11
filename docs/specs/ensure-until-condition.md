@@ -185,7 +185,7 @@ algebra itself with time set to infinity — no separate axis-classifier:
 if (handle is not None and _progress(channel) <= before
         and not satisfied(until, step=_progress(channel) + 1,
                           time_seconds=float("inf"), count=0)):
-    raise RuntimeError(...)            # step required, stalled, and time can't rescue it
+    raise NoProgressError(...)         # step required, stalled, and time can't rescue it (typed 2026-07-11)
 ```
 
 Correct across the lattice:

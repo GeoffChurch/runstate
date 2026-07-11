@@ -68,17 +68,16 @@ watcher.wait("run-1", on_event=on_event)
 ```
 → `examples/minimal/`
 
-**Killed-redrive (caller pattern)** — `ensure` auto-continues clean `preempted` stops but **fails fast on a death**; the retry decision is yours. Catch it, decide if it's resumable (the worker didn't self-diagnose a fatal `error`), and re-call `ensure` to resume from the checkpoint — take-the-latest absorbs the re-emitted overlap:
+**Killed-redrive (caller pattern)** — `ensure` auto-continues clean `preempted` stops but **fails fast on a death**; the retry decision is yours. `RunFailedError` hands you the verdict observed at raise time — decide if it's resumable (the worker didn't self-diagnose a fatal `error`) and re-call `ensure` to resume from the checkpoint; take-the-latest absorbs the re-emitted overlap:
 
 ```python
 for _ in range(budget):                          # the retry budget lives here, with you
     try:
         series = runstate.ensure(producer, "loss", until={"step": N}); break
-    except RuntimeError:
-        r = runstate.peek_terminal(producer.channel)
-        if r is not None and r.error is not None:  # worker self-diagnosed fatal -> don't retry
+    except runstate.RunFailedError as e:
+        if e.result.error is not None:           # worker self-diagnosed fatal -> don't retry
             raise
-        # a killed / recordless death with progress -> the re-call resumes from the checkpoint
+        # killed without a self-diagnosis -> the re-call resumes from the checkpoint
 ```
 → `examples/redrive/`
 

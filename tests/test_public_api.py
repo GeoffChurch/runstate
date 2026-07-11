@@ -11,7 +11,7 @@ EXPECTED = {
     "latest_episode", "live_demand", "live_episode", "progress", "value_series", "handle_pid",
     "sweep", "Variant",
     "history", "ensure", "launch_producer", "relaunch_if_needed", "ensure_served",
-    "foreign_episode",
+    "foreign_episode", "RunFailedError", "NoProgressError",
     "Topic", "Condition",
     "Value", "Started", "Heartbeat", "Stopped", "Nak", "Launched", "Terminated",
 }

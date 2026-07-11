@@ -48,10 +48,11 @@ class SubprocessProducer:
 
 
 def resumable(result) -> bool:
-    """The caller's retry predicate: a non-self-diagnosed death (killed / recordless
-    exit) is resumable; a worker that wrote ``Stopped(error=...)`` self-diagnosed fatal,
-    so don't retry it. Only the worker knows its death was fatal."""
-    return (result is not None and result.error is None
+    """The caller's retry predicate: a non-self-diagnosed death (killed, or
+    exited without writing a diagnosis) is resumable; a worker that wrote
+    ``Stopped(error=...)`` self-diagnosed fatal, so don't retry it. Only the
+    worker knows its death was fatal."""
+    return (result.error is None
             and result.outcome in (runstate.Outcome.KILLED, runstate.Outcome.ERRORED))
 
 
@@ -74,12 +75,11 @@ def main():
                     series = runstate.ensure(producer, "loss", until={"step": 10})
                     print(f"[driver] attempt {attempt}: ensure returned")
                     break
-                except RuntimeError:
-                    r = runstate.peek_terminal(producer.channel)
+                except runstate.RunFailedError as e:
+                    r = e.result                 # the verdict, observed at raise time
                     ok = resumable(r)
-                    desc = ("recordless" if r is None
-                            else f"outcome={r.outcome}, error={r.error!r}")
-                    print(f"[driver] attempt {attempt}: ensure raised ({desc}) -> "
+                    print(f"[driver] attempt {attempt}: ensure raised "
+                          f"(outcome={r.outcome}, error={r.error!r}) -> "
                           f"{'resumable, re-calling' if ok else 'fatal, giving up'}")
                     if not ok:
                         raise

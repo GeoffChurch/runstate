@@ -150,7 +150,16 @@ or nothing).
 
 ## 4. Typed `ensure` exceptions
 
-**Status:** PROPOSED
+**Status:** SHIPPED 2026-07-11 — rulings: `RunFailedError(run_id, result)` /
+`NoProgressError(run_id, progress=, until=)`, plain-`Exception` bases (the
+subclass-RuntimeError continuity idea stayed dead — compat-speak), both
+exported; context attributes per the principle *anything load-bearing in the
+message becomes an attribute*. runstate's own catch sites migrated (README
+killed-redrive recipe — which SIMPLIFIED, the recordless-None dance is gone
+since the verdict rides the exception — and examples/redrive, whose
+`resumable()` dropped its None-guard). Consumer migration note handed to the
+owner (mycooc: two catch sites + tests; translation: unaffected). The rest of
+this entry is retained until the agenda closes.
 
 **What it is.** Replace `ensure`'s two branched-on `RuntimeError`s with types:
 `RunFailedError` (carrying the `RunResult` observed at raise time) and

@@ -2,7 +2,8 @@ import json
 import pytest
 from pathlib import Path
 import runstate
-from runstate.memoizer import history, launch_producer, ensure
+from runstate.memoizer import (NoProgressError, RunFailedError, ensure,
+                               history, launch_producer)
 from runstate.launcher import relaunch_if_needed
 from runstate.vocabulary.handle import local_handle
 
@@ -208,8 +209,10 @@ def test_ensure_surfaces_a_failure_outcome(tmp_path):
 
     variant = runstate.Variant("exp", crash, {"kwargs": {}})
     producer = launch_producer(launcher, variant)
-    with pytest.raises(RuntimeError, match="failed"):
+    with pytest.raises(RunFailedError, match="failed") as ei:
         ensure(producer, "loss", until={"step": 5})
+    assert ei.value.result.outcome in runstate.Outcome.failures()   # the verdict, at raise time
+    assert ei.value.run_id == "exp"
 
 
 def test_ensure_raises_when_run_makes_no_progress(tmp_path):
@@ -227,8 +230,9 @@ def test_ensure_raises_when_run_makes_no_progress(tmp_path):
         {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="obs"
     )
     producer = launch_producer(launcher, variant)
-    with pytest.raises(RuntimeError, match="progress"):
+    with pytest.raises(NoProgressError, match="progress") as ei:
         ensure(producer, "loss", until={"step": 5})
+    assert ei.value.progress == 1 and ei.value.until == {"step": 5}   # the diagnostics, as data
 
 
 def test_ensure_redrives_within_one_call_to_reach_target(tmp_path):
@@ -272,7 +276,7 @@ def test_ensure_surfaces_a_die_before_attach_without_hanging():
 
     variant = runstate.Variant("exp", die_early, {"kwargs": {}})
     producer = launch_producer(launcher, variant)
-    with pytest.raises(RuntimeError, match="failed"):
+    with pytest.raises(RunFailedError, match="failed"):
         ensure(producer, "loss", until={"step": 5})
 
 
@@ -476,7 +480,7 @@ def test_ensure_killed_resumes_on_caller_re_call_take_the_latest():
     producer = _FakeProducer(ch, extend_side_effect=episodes)
 
     # First call: ensure drives, hits the kill, and fails fast (no auto-redrive).
-    with pytest.raises(RuntimeError, match="failed"):
+    with pytest.raises(RunFailedError, match="failed"):
         ensure(producer, "loss", until={"step": 10})
     assert producer.extend_calls == 1
 

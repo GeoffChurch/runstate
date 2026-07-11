@@ -16,10 +16,41 @@ from .channel import Body, Channel
 from .vocabulary.payloads import Topic
 from .vocabulary.schedule import Condition, Subscription, references_time, satisfied
 from .launcher import Launcher, relaunch_if_needed
-from .observables import Outcome, is_step, live_episode, peek_terminal, progress
+from .observables import (Outcome, RunResult, is_step, live_episode,
+                          peek_terminal, progress)
 
 if TYPE_CHECKING:
     from .sweep import Variant
+
+
+class RunFailedError(Exception):
+    """``ensure``'s producer run died with a failure verdict (``errored`` /
+    ``killed`` / ``presumed_dead``). ``result`` is the ``RunResult`` observed
+    AT RAISE TIME — the retry decision's input, handed over rather than
+    racily re-read (the log may have moved by the time a catcher looks)."""
+
+    def __init__(self, run_id: str, result: RunResult) -> None:
+        super().__init__(f"run {run_id!r} failed: {result.outcome}/{result.reason}")
+        self.run_id = run_id
+        self.result = result
+
+
+class NoProgressError(Exception):
+    """``ensure``'s OWN spawn died without advancing the step frontier, and no
+    live episode owns the run — relaunching would spin, so refuse. ``progress``
+    is the frontier at raise (None = no stepped record yet); ``until`` the
+    target. A foreign episode's no-progress death re-drives instead (the
+    guard is own-spawn-scoped), and a live foreign claim skips the raise
+    (claim-aware)."""
+
+    def __init__(self, run_id: str, *, progress: int | None, until: Condition) -> None:
+        super().__init__(
+            f"run {run_id!r} made no progress toward {until} "
+            f"(progress={progress}); cannot extend"
+        )
+        self.run_id = run_id
+        self.progress = progress
+        self.until = until
 
 
 class LiveHandle(Protocol):
@@ -308,9 +339,7 @@ def ensure(producer: Producer, name: str, *, until: Condition, poll_interval: fl
             return history(channel, name, dense)
         result = peek_terminal(channel)
         if result is not None and result.outcome in _FAILURES:
-            raise RuntimeError(
-                f"run {producer.run_id!r} failed: {result.outcome}/{result.reason}"
-            )
+            raise RunFailedError(producer.run_id, result)
         if result is not None and result.outcome == Outcome.COMPLETED:
             return history(channel, name, dense)
         # The no-progress guard is OWN-SPAWN-scoped: a foreign episode ending
@@ -328,8 +357,6 @@ def ensure(producer: Producer, name: str, *, until: Condition, poll_interval: fl
                 and not satisfied(until, step=_progress(channel) + 1,
                                   time_seconds=float("inf"), count=0)
                 and live_episode(channel) is None):
-            raise RuntimeError(
-                f"run {producer.run_id!r} made no progress toward {until} "
-                f"(progress={progress(channel)}); cannot extend"
-            )
+            raise NoProgressError(producer.run_id, progress=progress(channel),
+                                  until=until)
     return history(channel, name, dense)

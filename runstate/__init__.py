@@ -14,7 +14,8 @@ from collections.abc import Callable
 from .channel import Body, Channel, Envelope, open_channel
 from .launcher import (Launcher, LaunchHandle, LocalLauncher, ThreadLauncher,
                        ensure_served, relaunch_if_needed)
-from .memoizer import ensure, foreign_episode, history, launch_producer
+from .memoizer import (NoProgressError, RunFailedError, ensure,
+                       foreign_episode, history, launch_producer)
 from .observables import (
     MalformedRecordError,
     Outcome,
@@ -99,6 +100,8 @@ __all__ = [
     "ensure",
     "launch_producer",
     "foreign_episode",
+    "RunFailedError",
+    "NoProgressError",
     "relaunch_if_needed",
     "ensure_served",
     # convention vocabulary

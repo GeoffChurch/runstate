@@ -252,7 +252,7 @@ reasoning, listed here so they're discoverable as work (cross-ref, not moved):
   non-Python implementer cannot infer without reading the Python: the public
   raise-contract table (which functions raise what, when — `open_channel`
   ValueError/ImportError, `attach` KeyError, `Watcher.poll` KeyError, `ensure`
-  TypeError/RuntimeError/ValueError), the conformance tier ladder
+  TypeError/ValueError/`RunFailedError`/`NoProgressError`), the conformance tier ladder
   (`in_process`/`cross_process`/`cross_host`), the `RunResult.reason` string
   vocabulary, the Postgres lock-key constants, and the topic-pattern grammar.
 - [protocol-algebra](protocol-algebra.md) — the principled constructions behind the
