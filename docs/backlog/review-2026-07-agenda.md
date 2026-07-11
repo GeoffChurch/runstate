@@ -228,32 +228,33 @@ worker's due-evaluated set, which this deliberately is not.
 
 ---
 
-## 6. `window_closed(progress, until)` — the fencepost's one public home
+## 6. `window_closed(progress, until)` — DROPPED (documented instead)
 
-**Status:** PROPOSED · reduced scope (the red-team killed the general form)
+**Status:** DROPPED 2026-07-11 — cut the function, documented the fencepost.
 
-**What it is.** A pure-data predicate in `vocabulary/schedule.py`, beside
-`satisfied`: given a step frontier (`progress`, possibly None) and a **step-only**
-`until`, is the half-open `[0, N)` window closed? Time and count atoms are
-rejected loudly (time needs a caller's clock — a channel-shaped fold would flip a
-*dead* run's window closed just by the observer waiting; count needs fire history
-and is inexpressible in principle).
+The owner's surface-accretion worry landed on exactly this item, and an
+independent helper-classification audit confirmed it: the `[0, N)` /
+`progress + 1 >= N` fencepost is **shallow arithmetic on an already-correct
+`progress()` value** — it does NOT trace to the append-only/multi-episode
+staleness that earns every other observable, and BOTH consumers spelled it
+right by hand (translation `keys.py:floor_ok`, mycooc inline `p >= req`) and
+neither would adopt a helper. So it is sugar, not a footgun-preventer. The
+memoizer already has the one internal home (`_window_step`); the beneficiaries
+who needed the *rule* (a second-language implementer, the viewer) needed it
+**written down**, not minted as API. Resolution: the fencepost is now
+documented on `observables.progress` (its docstring) and in the
+implementer's-guide backlog entry.
 
-**Current state.** The `+1` fencepost (`_window_step = progress + 1`) is a private
-convention in `memoizer.py` that consumers must mirror to ask "did this run reach
-its target?": translation's `keys.py:floor_ok` mirrors it verbatim (with a comment
-citing the private), and mycooc spells it inline.
-
-**The improvement.** The coordinate convention gets one home; the memoizer
-consumes it internally so the spelling can't drift; the Rust implementer and the
-viewer (per-run done-vs-target from the `progress` they already poll) get it for
-free. Deliberately *not* a general Condition evaluator — the reduced scope is the
-honest one.
-
-**Open questions.** Whether translation's deliberately runstate-import-free
-`keys.py` would even adopt it (probably not — fine; the home exists for everyone
-else), which slightly weakens the dedup story; the red-team's minimalist would cut
-this item entirely if one had to go.
+*Banked for future simplification passes (the audit's other soft spots — do NOT
+re-flag as sugar):* `sweep` is the **batch-sweep persona's entry point** (run a
+fixed variant set to completion, collect verdicts), parallel to `ensure`'s
+memoized-target door — not sugar; the two consumers are both reuse-shaped so
+they take the `ensure` door, and translation reuses `sweep`'s `Variant` +
+`launch_producer` regardless. `pinned`/`broadcast`/`ensure_served` are the
+service/leased-demand plane the basis audit (Q4) already ruled KEEP for a
+future persona. The meta-lesson: **"unused by mycooc + translation" is weak
+sugar-evidence** — both repos are the same (reuse) persona and speak for no
+other.
 
 ---
 
@@ -353,8 +354,10 @@ also conditions `ensure`'s failure/completed branches or lets the fixed
 - **Batching the item-1 schema bump with item 8's** — conventions version on
   independent timelines by doctrine, and item 8 needs no schema bump; the batch
   never forms.
-- **A general `window_closed(channel, until, now=...)` fold** — see item 6; the
-  count/time holes make the general form dishonest.
+- **`window_closed` in any form** — item 6, DROPPED 2026-07-11: the general
+  channel-fold has count/time holes; even the reduced pure-data predicate is
+  sugar (arithmetic on an already-correct `progress()`, both consumers cleared
+  it by hand). Documented on `observables.progress` instead of minted as API.
 - **An `ensure_terminal` helper** (send stop, await the terminal) — parked below
   the bar (one consumer, ~5 lines composable); if ever promoted, the canonical
   form generalizes `await_consumed` to the drain rule's full answer space, not a

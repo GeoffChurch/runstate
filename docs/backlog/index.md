@@ -254,7 +254,9 @@ reasoning, listed here so they're discoverable as work (cross-ref, not moved):
   ValueError/ImportError, `attach` KeyError, `Watcher.poll` KeyError, `ensure`
   TypeError/ValueError/`RunFailedError`/`NoProgressError`), the conformance tier ladder
   (`in_process`/`cross_process`/`cross_host`), the `RunResult.reason` string
-  vocabulary, the Postgres lock-key constants, and the topic-pattern grammar.
+  vocabulary, the Postgres lock-key constants, the topic-pattern grammar, and the
+  half-open window fencepost (`until={"step": N}` = `[0, N)`, reached iff
+  `progress + 1 >= N`; documented on `observables.progress`).
 - [protocol-algebra](protocol-algebra.md) — the principled constructions behind the
   layer interfaces (L1 free-monoid initiality, L2 designated intro/elim discipline +
   discharge folds = the context Γ, L3 observer-join), each yielding a **decision

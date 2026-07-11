@@ -267,7 +267,16 @@ def progress(channel: Channel) -> Optional[int]:
     ``lifecycle.heartbeat.step`` and the latest ``lifecycle.stopped.final_step``,
     whichever is greater; None if neither axis has a value yet. The frontier
     of two registers — under an episode rewind the latest heartbeat already
-    reflects the resumed branch."""
+    reflects the resumed branch.
+
+    THE WINDOW FENCEPOST (the one home for the rule a second implementation and
+    a viewer both need): a target ``until={"step": N}`` is the **half-open**
+    window ``[0, N)`` — steps ``0 … N-1`` — so the target is reached iff
+    ``progress + 1 >= N`` (equivalently ``progress >= N - 1``); ``progress is
+    None`` (no stepped record) is window-step 0, so ``N == 0`` is trivially
+    reached. This is what ``ensure``/``history`` gate on internally
+    (``memoizer._window_step``); a consumer asking "did this run reach its
+    target?" uses this arithmetic, not a bespoke off-by-one."""
     steps = []
     hb = channel.latest(Topic.LIFECYCLE_HEARTBEAT)
     if hb is not None and is_step(hb.body.get("step")):
