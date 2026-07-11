@@ -71,6 +71,35 @@ recoverable with no free `reason`. (Test `error is not None`, **not** truthiness
   outcome, surfaced by `RunResult.error`. It is not a general "why" — the general "why" is exactly
   what moves to user-space.
 
+### Recipe: the completion-reason register (2026-07-11 — a shape, no vocabulary)
+
+For a consumer that must branch on *why* (not just the closed `outcome`), the blessed way to record
+it — **one recipe; build your own** — is a **value-plane register**, validated by the mycooc adoption
+(which built it after the recurring completion-classification bug class this removal otherwise
+invites, re-deriving "why" from `outcome + progress`):
+
+- **Shape.** A stepless `value` record: `topic="value"`, a name of your choosing (mycooc uses
+  `completion_reason`, the **conventional** name — a viewer/second consumer then has one place to
+  look; the *vocabulary* stays yours), body `{value: {reason: <your word>}, step: null, t: now}`.
+  `step=null` keeps it out of the step-indexed metric folds (it is a register, latest-by-`seq`, not a
+  series point). No wire change — the substrate already carries arbitrary `value` bodies.
+- **Writer(s).** The **worker** emits it once before its dying-breath `stopped` (it knows the
+  intrinsic why); optionally the **orchestrator** emits it when it force-kills a worker that could not
+  self-report (the exogenous why the killed worker never got to write). The value plane is
+  author-agnostic, so both are legitimate.
+- **Rule 1 — episode-scope the read.** Read only the register *after* `latest_episode().seq`, else a
+  resumed run reports the *prior* dispatch's reason before it re-emits. (mycooc learned this; it is
+  not optional.)
+- **Rule 2 — the terminal owns done-ness; the register owns only *why*.** The register is written
+  *before* the terminal, so it is a **prophecy** of a stop the worker's shutdown work (final
+  checkpoint, artifact flush) must still complete: **never derive done-ness from the register alone.**
+  Pair the read with `peek_terminal` — the terminal proves the stop happened and carries the
+  `outcome`; the register only qualifies *why*. The hazard scales with the register→terminal gap: a
+  worker that writes the reason early and then does expensive shutdown has a wide window in which a
+  register-trusting reader calls it done mid-write. (mycooc's `_complete_from_channel` shortcuts a
+  `PATIENCE` register to "done" without the terminal check — the pattern this rule warns against;
+  benign there only because its two sends are adjacent, a microsecond window.)
+
 ### Why (the orthonormal core)
 
 - **Ask each party only what it uniquely knows.** *Intrinsic completion* — only the worker knows it

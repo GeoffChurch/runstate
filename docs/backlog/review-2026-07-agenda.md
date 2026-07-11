@@ -260,7 +260,15 @@ other.
 
 ## 7. The `stopped.reason` vocabulary recipe (a shape, no words)
 
-**Status:** PROPOSED
+**Status:** SHIPPED 2026-07-11 — a section in `../specs/completed-opt-in.md` (the
+spec that removed `Stopped.reason`, closing the loop it opened — no new file).
+Rulings: bless the SHAPE only (stepless `value` register), suggest `completion_reason`
+as the conventional NAME (vocabulary stays the workload's — the one hair of opinion,
+cheap coordination for a viewer), both safety rules in (episode-scoped read;
+terminal-owns-done-ness / register-owns-why). mycooc's `_complete_from_channel`
+PATIENCE-trusts-register-without-terminal surfaced to the owner as calibrated
+observation (microsecond window — the rule bites a large register→terminal gap,
+not their adjacent sends). The rest of this entry is retained until the agenda closes.
 
 **What it is.** A short spec documenting the opt-in pattern for recording *why* a
 run stopped — a value-plane register (one agreed name, e.g. mycooc's

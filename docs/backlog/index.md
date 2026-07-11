@@ -73,16 +73,15 @@ clusters that unlock each other, with a sequencing — see
 
 ## Protocol extensions (control plane)
 
-- **`lifecycle.stopped.reason` vocabulary recipe** — an opt-in documented
-  vocabulary (e.g. `completed`/`preempted`/`converged`/`budget_exhausted`,
-  resumable-`timed_out` vs fatal-`crashed`) so consumers can branch on *why*
-  without expanding the closed `outcome` enum. Surfaced by
-  [mycooc-adoption](mycooc-adoption.md). Small. *Evidence upgrade (2026-07-10,
-  consumer harvest):* mycooc built the whole thing as a parallel value-plane
-  register (`emit_completion_reason`, two writers incl. the force-kill path, an
-  authoritative reader) after a recurring completion-classification bug class
-  (mycooc 1963732, 8ea82e3) — the validating consumer now exists, and
-  `RunResult.reason` is branched on by nobody. Promotion candidate.
+- **completion-reason register recipe — SHIPPED 2026-07-11** as a section in
+  `../specs/completed-opt-in.md` ("Recipe: the completion-reason register"): a
+  value-plane register carrying *why* a run stopped, blessing the SHAPE only (no
+  vocabulary — workload words never enter the protocol) + the two safety rules
+  the mycooc adoption's scars taught (episode-scope the read; the terminal owns
+  done-ness, the register owns only why — never trust a pre-terminal register for
+  done-ness). Defends the closed `outcome` enum from the recurring
+  completion-classification bug class (mycooc 1963732, 8ea82e3). `RunResult.reason`
+  stays branched-on-by-nobody by design (a refinement of `outcome`, not a why).
 - **Cross-host liveness for the claim gate** — `live_episode` sits at the probe-only
   rung, so on a foreign host it goes blind and treats an unresolvable handle as live
   *forever*; a crashed foreign episode blocks the waker and the birth-CAS. The

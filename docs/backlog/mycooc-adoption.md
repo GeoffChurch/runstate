@@ -43,8 +43,10 @@ the wiring plan's requirements.
   `.reused_from`) — under content-addressed placement that machinery is
   *deleted, not completed*: reuse is `ensure` against the rid's one home.
   The recon below is the wiring plan's requirements doc.
-- **`stopped.reason` vocabulary recipe — still parked** (small; rides with
-  any future convention-docs pass).
+- **completion-reason register recipe — SHIPPED 2026-07-11**
+  (`../specs/completed-opt-in.md`, "Recipe: the completion-reason register"): mycooc's
+  own `emit_completion_reason` shape blessed as the pattern (shape + the two safety
+  rules its scars taught), no vocabulary.
 - **Per-run `runstate status` CLI — still backlog** ([cli-status](cli-status.md));
   the *matrix* status stays app-side, as judged in May.
 
@@ -123,8 +125,9 @@ What mycooc actually has today where a Store would sit — file:line refs into
    (the cell/run split migration, runner-as-worker, the claim guard, the
    producer gates, riders, the GC script). Artifact sharing stayed out of
    scope as judged — and largely dissolved too (one home, no copies).
-2. **`lifecycle.stopped.reason` vocabulary recipe** — unchanged from May;
-   an opt-in documented vocabulary, never an `outcome` enum expansion.
+2. **completion-reason register recipe** — SHIPPED 2026-07-11
+   (`../specs/completed-opt-in.md`); the shape (not a vocabulary), never an
+   `outcome` enum expansion.
 3. **Per-run `runstate status <run_id>` CLI** ([cli-status](cli-status.md)).
 
 Stays in mycooc (orchestration policy / workload-specific): the smoke gate,
