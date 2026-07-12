@@ -301,52 +301,41 @@ the other side — legitimate, since the value plane is author-agnostic).
 
 ---
 
-## 8. Launcher-record identity (the forged-verdict fix) — fast-tracked spec, then implementation
+## 8. Launcher-record identity (the forged-verdict fix)
 
-**Status:** PROPOSED · the design converged through two red-team passes; see the
-amended `launcher-record-identity.md` for full detail
+**Status:** SPEC WRITTEN 2026-07-11 → `../specs/launcher-record-identity.md`
+(graduated from backlog). Converged core, one sub-question flagged for a spike.
 
-**What it is.** Two composing halves. **(i) The log-ordered void rule** in
-`peek_terminal`'s launcher tier: a `terminated` is void if any *worker-authored*
-record (`lifecycle.*`, `value`) **follows it by seq** — a late reap contradicted
-by the live run's own subsequent records cannot stand as its verdict. A pure fold:
-no probe, stays on the observables plane, self-heals within one beacon. **(ii)
-Correlation ids**: a launcher stamps its `launched` and `terminated` with one
-envelope `request_id`; the tier pairs a terminated to its *own* launched and
-scopes the pair to its episode — this is what fixes *dead-log attribution*
-(post-hoc, nothing left alive to write records; only correlation carries which
-episode a manner-of-death belongs to). Plus: ThreadLauncher loser-suppression
-(clean exit + a live foreign episode → suppress the `Terminated` write), and a
-one-time migration stamping synthetic correlation ids into old logs by replaying
-today's positional pairing once, offline — so no id-less dual path survives.
+**The design shifted while being written** (an honest finding from working the
+fold mechanics across every reproduced case, superseding this item's earlier
+A+B+C′ sketch):
+- **Core (converged):** correlation via envelope `request_id` on
+  `launched`+`terminated` (no schema change — the launcher schema pins only
+  topic+body) de-conflates "*my launch* ended" from "the run is dead"; the
+  launcher-tier fold anchors the verdict to the **claimed** episode (the latest
+  `started`), not the latest `launched` — so the claim-loser, which never
+  claimed, is ignored *by construction*, window-free. Plus the no-dual-path
+  migration (the `lifecycle-v0.3` precedent).
+- **"B" (ThreadLauncher loser-suppression) likely UNNEEDED** — claimed-anchoring
+  ignores the loser at the fold, no source-side change.
+- **"C′" (generalized supersession) demoted to optional** — claimed-anchoring
+  makes it non-load-bearing for the launcher tier; keep only as stopped-tier
+  foreign-writer robustness if it earns ~2 lines. (Corrects the earlier "C′ is
+  the principled core" framing — it isn't.)
+- **The rationale sharpened** (via the owner's bare-channel question): `terminated`
+  stays a record in `peek_terminal` because record-vs-inference and
+  first-party-vs-third-party are *orthogonal* axes — `terminated` is
+  third-party-but-durable-record, which live inference (the Watcher) cannot
+  reconstruct post-hoc; the bare-channel reader is real and blessed.
+- **Open sub-question (spike, not prose):** ThreadLauncher's shared pid breaks
+  `started`→launch attribution (neither handle nor position is reliable). Three
+  options in the spec §5 (id flows to the worker's `started` / source-suppression
+  / single-dispatch scope); the existing red-team reproductions adjudicate.
 
-**Current state.** Reproduced on both reference launchers: a `terminated` landing
-after a relaunch's opener defeats the latest-vs-latest pairing and the **live,
-beaconing run reads as `completed` (or `killed`)** — `ensure` returns a truncated
-series silently; `sweep` raises a spurious failure. **translation is exposed
-today**: its concurrent `drive_block` shells over ThreadLauncher can store a
-forged truncated result under a content-addressed rid — permanent, silent cache
-corruption in exactly the concurrency its key layer was designed for.
-
-**The improvement.** The one shipped wrong-verdict class closes, in both its live
-form (the void rule — all three reproduced variants) and its post-hoc form
-(correlation). The memoizer.md single-dispatcher caution retires.
-
-**Forced amendments (red-team, second pass).** The guard must be **log-ordered,
-never probe-based**: a `resolve()`-based "definitively live" check would let pid
-reuse void *true* verdicts — a dead run reads live forever, `ensure`'s foreign
-gate waits on a recycled pid indefinitely, a wedged sweep — operationally worse
-than the forgery. (`EpisodeProbe`, connection-bound and genuinely definitive,
-remains admissible where present.) Correlation alone is NOT sufficient for the
-live variants (a loser's pair is internally clean — its own launched is the
-newest opener), which is why the void rule is load-bearing. §6's
-correlation-vs-visibility wording gets one clarifying line (launcher ids are
-correlation-only).
-
-**Open questions.** The void rule's exact record set (worker-authored only, or
-any following record?); the one-beat residue's documentation; whether the spec
-also conditions `ensure`'s failure/completed branches or lets the fixed
-`peek_terminal` carry everything (likely the latter — one home).
+**Recommended next step:** an implementation spike against `p2_reap_late.py` +
+`p1_thread_flavor.py` + the conformance suite — the tests settle §5 faster and
+more reliably than more armchair analysis (the fold formulation broke twice under
+pure reasoning). translation's live exposure makes this the priority close.
 
 ---
 

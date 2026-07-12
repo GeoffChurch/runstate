@@ -29,13 +29,15 @@ clusters that unlock each other, with a sequencing — see
   for the holistic review's convergent items (8 proposed changes + the dropped
   ones), each with current-state / improvement / forced amendments / open
   questions; statuses move PROPOSED → AGREED → SHIPPED as the owner rules.
-- **[launcher-record-identity](launcher-record-identity.md)** — [wrong-verdict ·
-  red-team 2026-07-10] a late-landing identityless `launcher.terminated` forges
-  the LIVE run's verdict (`peek_terminal`'s latest-vs-latest pairing is defeated
-  by a reap that lands after a relaunch; verified on both reference launchers).
-  Candidate fix: envelope-`request_id` correlation for launched/terminated (no
-  schema change). Interim mitigations shipped: the claim-aware no-progress
-  guard; the ThreadLauncher single-dispatcher caution in memoizer.md.
+- **[launcher-record-identity](../specs/launcher-record-identity.md)** —
+  [wrong-verdict · GRADUATED TO SPEC 2026-07-11] a late-landing identityless
+  `launcher.terminated` forges the LIVE run's verdict; the converged design
+  (correlation via envelope `request_id` — no schema change — + anchoring the
+  launcher verdict to the *claimed* episode + a no-dual-path migration) lives in
+  the spec, with one fold-mechanics sub-question (ThreadLauncher shared-pid
+  attribution) flagged for an implementation spike. Interim mitigations remain:
+  the claim-aware no-progress guard (`be5387b`); the ThreadLauncher
+  single-dispatcher caution in memoizer.md. Agenda item 8 (the review's last).
 - **[mycooc-migration-audit](mycooc-migration-audit.md)** — remaining findings from
   the mycooc migration (runstate's first end-to-end consumer): **F4** (channel
   lifecycle / `close` contract), and the **F9/F10** minors (`await_consumed`
