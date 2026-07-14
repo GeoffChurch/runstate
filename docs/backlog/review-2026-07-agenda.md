@@ -303,39 +303,49 @@ the other side — legitimate, since the value plane is author-agnostic).
 
 ## 8. Launcher-record identity (the forged-verdict fix)
 
-**Status:** SPEC WRITTEN 2026-07-11 → `../specs/launcher-record-identity.md`
-(graduated from backlog). Converged core, one sub-question flagged for a spike.
+**Status:** SHIPPED 2026-07-14 (`16c8ede`) → `../specs/launcher-record-identity.md`.
+The spike the spec called for ran, settled §5, and **changed the design twice** —
+both times because the code said so and the prose hadn't.
 
-**The design shifted while being written** (an honest finding from working the
-fold mechanics across every reproduced case, superseding this item's earlier
-A+B+C′ sketch):
-- **Core (converged):** correlation via envelope `request_id` on
-  `launched`+`terminated` (no schema change — the launcher schema pins only
-  topic+body) de-conflates "*my launch* ended" from "the run is dead"; the
-  launcher-tier fold anchors the verdict to the **claimed** episode (the latest
-  `started`), not the latest `launched` — so the claim-loser, which never
-  claimed, is ignored *by construction*, window-free. Plus the no-dual-path
-  migration (the `lifecycle-v0.3` precedent).
-- **"B" (ThreadLauncher loser-suppression) likely UNNEEDED** — claimed-anchoring
-  ignores the loser at the fold, no source-side change.
-- **"C′" (generalized supersession) demoted to optional** — claimed-anchoring
-  makes it non-load-bearing for the launcher tier; keep only as stopped-tier
-  foreign-writer robustness if it earns ~2 lines. (Corrects the earlier "C′ is
-  the principled core" framing — it isn't.)
-- **The rationale sharpened** (via the owner's bare-channel question): `terminated`
-  stays a record in `peek_terminal` because record-vs-inference and
-  first-party-vs-third-party are *orthogonal* axes — `terminated` is
-  third-party-but-durable-record, which live inference (the Watcher) cannot
-  reconstruct post-hoc; the bare-channel reader is real and blessed.
-- **Open sub-question (spike, not prose):** ThreadLauncher's shared pid breaks
-  `started`→launch attribution (neither handle nor position is reliable). Three
-  options in the spec §5 (id flows to the worker's `started` / source-suppression
-  / single-dispatch scope); the existing red-team reproductions adjudicate.
+**What shipped:** one correlation id per launch, on the launcher's `launched` +
+`terminated` **and re-emitted by the worker on its `lifecycle.started`** (ambient:
+`RUNSTATE_LAUNCH_ID` / a ContextVar). `terminated` now asserts "*my launch* ended"
+instead of the unknowable "the run is dead", and the verdict is anchored to the
+**claimed** episode, paired by id. Both reproduced forgeries — the late reap and
+the claim-loser — die by construction, window-free. Both tiers now obey one rule:
+*a terminal stands until a new episode claims*.
 
-**Recommended next step:** an implementation spike against `p2_reap_late.py` +
-`p1_thread_flavor.py` + the conformance suite — the tests settle §5 faster and
-more reliably than more armchair analysis (the fold formulation broke twice under
-pure reasoning). translation's live exposure makes this the priority close.
+**The spike's two corrections (each supersedes what this ledger said above):**
+1. **§5's lean won, and paid a dividend nobody predicted.** Carrying the id to the
+   worker's claim made the fold *launcher-agnostic* — which let the **reap
+   discipline be DELETED** rather than extended (its conditional silence was a
+   writer-side workaround for identity-less records; with identity, the writer
+   stays honest and the reader attributes). The fix removed more machinery than it
+   added. Old "B" was indeed unneeded; old "C′" was indeed not load-bearing.
+2. **"No schema change" was WRONG** — and only writing the tests exposed it (a
+   fixture holding an id-less launcher record kept passing while quietly producing
+   *no verdict*). Legality (`request_id` was unconstrained) is not necessity (the
+   fold now *depends* on it), and a dependency the schema doesn't pin is exactly
+   the unstated invariant this review exists to eliminate. Hence **launcher-v0.3**:
+   `request_id` required on both records; an unidentified death is malformed and
+   the verdict plane raises rather than guess.
+
+**Method note, worth keeping:** the spec explicitly refused to settle §5 by more
+prose ("the fold formulation broke twice under pure reasoning") and mandated a
+spike. Both of the above are things reasoning had gotten *wrong* and the
+reproductions + tests got right within an hour. When a design breaks twice under
+analysis, stop analyzing.
+
+**One action outstanding (needs the owner):** the data migration.
+`scripts/migrate_launcher_v0_3.py` is committed and verified end-to-end, but it
+**writes to `~/src/translation`'s run logs** (1,129 of them carry id-less launcher
+records) — a repo scoped READ-ONLY for this review, so it awaits explicit
+authorization. mycooc needs nothing (685 logs, **zero** launcher records — it never
+used runstate's launchers). Translation's logs all read correctly *today* (each ends
+with a clean `stopped`, so the launcher tier is never consulted), but the first
+`ensure`-**resume** of any of them under the new library raises `MalformedRecordError`
+— verified on a copy. Until it runs, item 8 is shipped in-library but not converged
+on disk; the script is deleted (per the migrate-then-delete discipline) only after.
 
 ---
 
@@ -349,8 +359,10 @@ pure reasoning). translation's live exposure makes this the priority close.
   vocabularies; only the inference tier's (`probed_dead`/`heartbeat_stale`/
   `episode_lock_released` → `presumed_dead`) refines outcome."
 - **Batching the item-1 schema bump with item 8's** — conventions version on
-  independent timelines by doctrine, and item 8 needs no schema bump; the batch
-  never forms.
+  independent timelines by doctrine; the batch never forms. *(Postscript: item 8
+  DID need a schema bump after all — launcher-v0.3 — but the doctrine held: it
+  shipped on its own timeline, three days after lifecycle-v0.3, batched with
+  nothing.)*
 - **`window_closed` in any form** — item 6, DROPPED 2026-07-11: the general
   channel-fold has count/time holes; even the reduced pure-data predicate is
   sugar (arithmetic on an already-correct `progress()`, both consumers cleared

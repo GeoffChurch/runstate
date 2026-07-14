@@ -30,14 +30,14 @@ clusters that unlock each other, with a sequencing — see
   ones), each with current-state / improvement / forced amendments / open
   questions; statuses move PROPOSED → AGREED → SHIPPED as the owner rules.
 - **[launcher-record-identity](../specs/launcher-record-identity.md)** —
-  [wrong-verdict · GRADUATED TO SPEC 2026-07-11] a late-landing identityless
-  `launcher.terminated` forges the LIVE run's verdict; the converged design
-  (correlation via envelope `request_id` — no schema change — + anchoring the
-  launcher verdict to the *claimed* episode + a no-dual-path migration) lives in
-  the spec, with one fold-mechanics sub-question (ThreadLauncher shared-pid
-  attribution) flagged for an implementation spike. Interim mitigations remain:
-  the claim-aware no-progress guard (`be5387b`); the ThreadLauncher
-  single-dispatcher caution in memoizer.md. Agenda item 8 (the review's last).
+  [wrong-verdict · SHIPPED 2026-07-14, `16c8ede`] a late-landing identityless
+  `launcher.terminated` forged the LIVE run's verdict. Fixed by giving a launch
+  an identity: one correlation id on `launched` + `terminated` + the worker's
+  `started`, with the verdict anchored to the *claimed* episode
+  (launcher-**v0.3**). The spike deleted the reap discipline rather than
+  extending it, and retired the ThreadLauncher single-dispatcher caution.
+  Agenda item 8 (the review's last) — the data migration awaits owner
+  authorization (it writes to translation's logs).
 - **[mycooc-migration-audit](mycooc-migration-audit.md)** — remaining findings from
   the mycooc migration (runstate's first end-to-end consumer): **F4** (channel
   lifecycle / `close` contract), and the **F9/F10** minors (`await_consumed`
