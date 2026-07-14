@@ -258,11 +258,21 @@ did.
 
 ## 8. Open questions
 
-1. **`send()` cannot re-supply `t`** (Proposal A). So a log cannot be exported and
-   re-materialized into another backend through the public surface without forging every
-   timestamp to the copy time. Is log *transfer* a substrate-level operation (copy the
-   file; `INSERT … SELECT`), or must the API support it? If the latter, an import path
-   that accepts `t` reopens "a writer can supply it" — and with it, part of the argument.
+1. **`send()` cannot re-supply `t`** (Proposal A) — **RULED 2026-07-14: log transfer is a
+   SUBSTRATE-level operation, not an API one.** Copy the file; `INSERT … SELECT` between
+   tables. The Channel API is for *participating in a run*, not for archiving one — and
+   reading is unaffected either way (`read()` hands back each envelope's own `t`, so folds,
+   plots and post-hoc replay all work; the replay principle holds). The property that makes
+   `t` trustworthy — **nobody can supply it** — is the same property that makes a log
+   un-copyable through the front door, and that is an acceptable trade because the front
+   door is not how logs are copied.
+   **Promotion trigger, named:** the day a consumer genuinely needs cross-backend transfer,
+   add a *distinct* operation — `restore(envelopes)`, valid only on an empty log,
+   preserving both `seq` and `t` — rather than an optional `t=` on `send()`. Appending to a
+   living log and rebuilding a dead one are different acts, and only the second may assert
+   a past time. (A database restore is not a series of `INSERT`s from the application.)
+   *Note this is a real, permanent advantage for Proposal B: a body clock rides inside the
+   opaque `body` and round-trips through `send()` for free.*
 2. **Monotonicity across processes on one host** is asserted (the stamp is taken while the
    write lock is held) but has only been measured *within* one process. Pin it with a
    conformance test before promising it.
