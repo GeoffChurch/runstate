@@ -20,13 +20,21 @@ def run_id(inputs: dict) -> str:
 
 
 def train(channel, *, run_id, up_to, ckpt_dir, lr):
-    """Resumable cell: continue the run-absolute loss curve from the checkpoint."""
+    """Resumable cell: continue the run-absolute loss curve from the checkpoint.
+
+    The checkpoint records the FRONTIER (the work actually done), never the target:
+    a cooperative ``control.stop`` can cut the loop short at any step, and a
+    checkpoint written after the loop as ``{"next": up_to}`` would then claim work
+    that never happened — the next episode would resume past the gap, do nothing,
+    and ``ensure`` would raise NoProgressError. Checkpoint what you did, not what
+    you were asked to do.
+    """
     ckpt = Path(ckpt_dir) / f"{run_id}.json"
     start = json.loads(ckpt.read_text())["next"] if ckpt.exists() else 0
     with runstate.Worker(channel) as w:
         for step in w.steps(start=start, total=up_to):
             w.set("loss", 5.0 * math.exp(-lr * step))
-    ckpt.write_text(json.dumps({"next": up_to}))
+            ckpt.write_text(json.dumps({"next": step + 1}))   # this step is done
 
 
 def producer_for(launcher, ckpt_dir, *, lr):
