@@ -38,6 +38,14 @@ clusters that unlock each other, with a sequencing — see
   extending it, and retired the ThreadLauncher single-dispatcher caution.
   Agenda item 8 (the review's last) — the data migration awaits owner
   authorization (it writes to translation's logs).
+- **[third-party-observer](third-party-observer.md)** — [LIVING · opened
+  2026-07-14, the review's stage 6 executed adversarially] **the log records what a
+  run DID, but not WHEN it did it nor WHAT IT WAS ASKED TO DO** — and neither
+  absence is visible to the party that launched the run. The persona that falls into
+  both (a viewer/TUI/scheduler attaching to a run it did not start) is new, and it
+  is the one the TUI/viz work depends on. Headline: a run dead 21 days reads as
+  `Running(beacon_age=9.5e-06)`, because no liveness record carries a clock. Six
+  items + the ship order; each graduates to its own spec.
 - **[mycooc-migration-audit](mycooc-migration-audit.md)** — remaining findings from
   the mycooc migration (runstate's first end-to-end consumer): **F4** (channel
   lifecycle / `close` contract), and the **F9/F10** minors (`await_consumed`

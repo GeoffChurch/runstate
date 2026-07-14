@@ -2,7 +2,16 @@
 
 **Status:** caveat surfaced 2026-06-23 from a consumer (mycooc `run_experiment.py --status`). Filed here
 because runstate is the shared sqlite-log substrate and defaults to `journal_mode=WAL` (see
-`exogenous-commit-audit.md`, commit `3304e8c`). Disposition OPEN. Strike when documented/addressed.
+`exogenous-commit-audit.md`, commit `3304e8c`). Disposition OPEN — **SUBSUMED 2026-07-14 by
+[third-party-observer](third-party-observer.md) item 1, which also RE-GRADES it.**
+
+**The grade below ("minor · observability") was wrong.** It is minor only for the persona in view
+when it was filed — an orchestrator watching its own live run, for whom a bad clock is a cosmetic
+sawtooth. For a *third party attaching to a run it did not launch*, the same missing clock is a
+**wrong verdict**: a run dead 21 days reports `Running(beacon_age=9.5e-06)`, because no liveness
+record carries a time and the Watcher's staleness clock seeds at registration. The consumer-side fix
+below (sidecar mtimes / `max(created_at)`) stands, and the runstate-side fix it proposes — a
+`freshness()` helper — is option (c) of the ledger's design fork. Severity is persona-relative.
 
 ---
 

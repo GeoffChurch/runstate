@@ -61,9 +61,15 @@ provides the visualization layer.
 Stage-3b probes on translation-shaped sqlite logs (10⁶ envelopes, ~50%
 heartbeats), warm cache — the numbers the viewer design must respect:
 
-- **The polling plane is free.** Every `latest`-backed fold (`peek_terminal`,
-  `live_episode`, `progress`, `Watcher.poll`) is 5–17 µs, flat in N: 50 runs at
-  1 Hz ≈ 0.85 ms/cycle; all ~1,200 translation runs ≈ 20 ms/cycle.
+- **The polling plane is cheap, but not free** (numbers CORRECTED 2026-07-14 —
+  the originals were ~3× optimistic; re-measured over 400 real translation logs
+  with the channels held open). Every `latest`-backed fold is flat in N, but:
+  `peek_terminal` **30.1 µs/run**, `progress` 16.8, `last_seq` 6.8 — so a full
+  status row is **~54 µs/run**, i.e. **~64 ms/frame for 1,200 runs** (not the
+  ~20 ms first reported). Viable at 1 Hz; it is 5–7% of a core, so budget it.
+  Also unrecorded until now: a `SqliteChannel` holds **3 fds**, so a viewer
+  **EMFILEs at ~340 open runs** on a default 1024-fd system — it needs an LRU
+  channel pool.
 - **Refolding per frame is not viable.** The replay folds are O(N) at ~3.2–3.9
   µs/envelope decoded: one `value_series` of a 10⁶ log is ~1.9 s (and a bare
   `read()` materializes ~0.77 GB transient). A viewer MUST carry per-run
