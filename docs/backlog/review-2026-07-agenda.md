@@ -336,16 +336,21 @@ spike. Both of the above are things reasoning had gotten *wrong* and the
 reproductions + tests got right within an hour. When a design breaks twice under
 analysis, stop analyzing.
 
-**One action outstanding (needs the owner):** the data migration.
-`scripts/migrate_launcher_v0_3.py` is committed and verified end-to-end, but it
-**writes to `~/src/translation`'s run logs** (1,129 of them carry id-less launcher
-records) — a repo scoped READ-ONLY for this review, so it awaits explicit
-authorization. mycooc needs nothing (685 logs, **zero** launcher records — it never
-used runstate's launchers). Translation's logs all read correctly *today* (each ends
-with a clean `stopped`, so the launcher tier is never consulted), but the first
-`ensure`-**resume** of any of them under the new library raises `MalformedRecordError`
-— verified on a copy. Until it runs, item 8 is shipped in-library but not converged
-on disk; the script is deleted (per the migrate-then-delete discipline) only after.
+**Migration: CONVERGED** (owner-authorized 2026-07-14, one pass — 1,129 migrated,
+96 clean, 0 skipped-live; idempotent re-run all-clean; independent scan: 2,260
+launcher records, **zero** unstamped, **zero** logs raising). mycooc needed nothing
+(685 logs, **zero** launcher records — it never used runstate's launchers). The
+motivating breakage is gone: an `ensure`-resume of a migrated log now reads *running*
+where it raised `MalformedRecordError` before (both verified on copies). Script
+deleted per the discipline; git carries it.
+
+*One log's pairing was flagged as a genuine guess and left as one:* a real claim race
+in translation's history (two processes; pid 136727 won the claim) left exactly ONE
+death record, which FIFO attributed to the loser's launch though the evidence (it
+lands one seq after the winner's clean stop) says it was the winner's. Undeterminable
+from the log — that destroyed information *is* the bug this item fixed — and inert:
+the winner's `stopped` owns the verdict, so the launcher tier is never consulted.
+Recorded rather than silently re-guessed.
 
 ---
 
