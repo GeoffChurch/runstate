@@ -84,3 +84,57 @@ def test_target_receives_args(tmp_path):
     h = launcher.launch("run-4", target, args=(1, 2), kwargs={"c": 3})
     h.wait()
     assert got == [(1, 2, 3)]
+
+
+def test_a_claim_losers_clean_exit_does_not_forge_the_winners_verdict(tmp_path):
+    """Two concurrent dispatchers, one run: the loser's launch is the NEWEST on
+    the log and its clean exit the newest death — and the winner is still alive.
+
+    The winner is deliberately SLOW to claim, so its ``lifecycle.started`` lands
+    *after* the loser's ``launcher.launched``: log position cannot attribute the
+    claim to its launch, which is why the correlation id (not the seq, and not
+    the handle — in-process threads share one pid, hence one handle) is what
+    carries identity here (specs/launcher-record-identity.md).
+    """
+    from runstate.worker import Worker
+
+    launcher = ThreadLauncher(root=tmp_path)
+    claim_now = threading.Event()
+    winner_claimed = threading.Event()
+    loser_done = threading.Event()
+    release_winner = threading.Event()
+
+    def winner(channel):
+        claim_now.wait(20)
+        with Worker(channel) as w:              # wins the CAS
+            winner_claimed.set()
+            release_winner.wait(20)             # ...and is still alive at the end
+            for _ in w.steps(1):
+                pass
+
+    def loser(channel):
+        winner_claimed.wait(20)
+        with Worker(channel) as w:              # loses the CAS
+            assert not w.claimed
+            for _ in w.steps(3):
+                pass
+        loser_done.set()                        # returns cleanly -> Terminated(exited, 0)
+
+    hw = launcher.launch("collide", winner)     # launched FIRST...
+    hl = launcher.launch("collide", loser)      # ...but claims after this launch
+    claim_now.set()
+    assert loser_done.wait(20) and hl.wait() is None
+    ch = launcher.open_channel("collide")
+
+    starteds = ch.read(topics=["lifecycle.started"])
+    assert len(starteds) == 1                             # exactly one claim
+    assert starteds[0].request_id == hw.launch_id         # it names the launch it answers
+    assert starteds[0].seq > ch.read(topics=["launcher.launched"])[-1].seq   # after BOTH launches
+
+    terms = ch.read(topics=["launcher.terminated"])
+    assert [t.request_id for t in terms] == [hl.launch_id]   # the loser's corpse, honestly recorded
+    assert peek_terminal(ch) is None                         # ...and the winner runs on
+
+    release_winner.set()
+    hw.wait()
+    assert peek_terminal(ch).outcome == "preempted"          # now the winner's own verdict

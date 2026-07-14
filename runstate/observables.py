@@ -147,15 +147,73 @@ def live_episode(channel: Channel) -> Optional[str]:
     return handle
 
 
-def _terminal_unless_followed(channel: Channel, terminal_topic: str, opener_topic: str) -> Envelope | None:
-    """The latest terminal record, unless a newer episode opened after it."""
-    term = channel.latest(terminal_topic)
-    if term is None:
+def _episode_stopped(channel: Channel) -> Envelope | None:
+    """The latest ``lifecycle.stopped``, unless a newer episode CLAIMED after it
+    — then it is a past episode's dying breath, not the run's verdict."""
+    stopped = channel.latest(Topic.LIFECYCLE_STOPPED)
+    if stopped is None:
         return None
-    opener = channel.latest(opener_topic)
-    if opener is not None and opener.seq > term.seq:
-        return None  # a started/launched follows this terminal -> an episode is live
-    return term
+    started = channel.latest(Topic.LIFECYCLE_STARTED)
+    if started is not None and started.seq > stopped.seq:
+        return None
+    return stopped
+
+
+def _launch_id(e: Envelope) -> str:
+    """The launch a ``launcher.*`` record names. Every launcher record must name
+    one (launcher-v0.3 requires the ``request_id``): a death record that names no
+    launch asserts the unknowable "the run is dead" and cannot be attributed —
+    the verdict plane refuses to guess, so it is malformed, loudly."""
+    if e.request_id is None:
+        raise MalformedRecordError(
+            e.seq, e.topic,
+            "no request_id: a launcher record must name the launch it reports "
+            "(launcher-v0.3)",
+        )
+    return e.request_id
+
+
+def _launcher_terminal(channel: Channel) -> Envelope | None:
+    """The launcher tier's verdict record (specs/launcher-record-identity.md).
+
+    Anchored to the **claimed** episode, never to log position: a run's episode
+    is its *claim* (``lifecycle.started``), so the only death that can speak for
+    the run is the death of *the launch that claim answered* — found by
+    correlation id. Position cannot do this job: a reap is a reader-side
+    observation that lands arbitrarily late (a stale one after a relaunch), and
+    a claim-race loser's launch can be the newest one on the log. Both forgeries
+    die by construction here — the stale reap names the OLD launch, and the
+    loser's death names a launch no episode ever claimed.
+
+    Two silences are deliberate. A claim with no launch id (nobody launched this
+    worker — it was hand-run) has no launcher record that speaks for it; the
+    Watcher's inference tiers still do. And a claimed episode whose launch has
+    not ended yet is, simply, running.
+
+    If nothing ever claimed, the launcher's records stand alone: that is the
+    null-worker startup crash, whose ``terminated`` is its ONLY possible
+    terminal. Like every terminal here, it stands until an episode claims."""
+    deaths = channel.read(topics=[Topic.LAUNCHER_TERMINATED])
+    for e in deaths:
+        _launch_id(e)   # every death names its launch, or the tier is poisoned
+    if not deaths:
+        return None
+    started = latest_episode(channel)
+    if started is None:
+        return deaths[-1]
+    return next((e for e in reversed(deaths)
+                 if e.request_id == started.request_id), None)
+
+
+def _verdict_record(channel: Channel) -> Envelope | None:
+    """The single record ``peek_terminal`` speaks for, or None. Split out so the
+    Watcher can ask *where* the verdict sits (its seq) without re-deriving
+    "which terminal counts" — a re-derivation that is exactly what forges
+    verdicts."""
+    stopped = _episode_stopped(channel)
+    if stopped is not None:
+        return stopped
+    return _launcher_terminal(channel)
 
 
 def peek_terminal(channel: Channel) -> Optional[RunResult]:
@@ -167,14 +225,17 @@ def peek_terminal(channel: Channel) -> Optional[RunResult]:
     A clean ``lifecycle.stopped`` takes precedence (the worker's own report);
     otherwise a reaped ``launcher.terminated`` gives the manner of death.
 
-    Episode-aware: a ``lifecycle.stopped`` is only terminal if no
-    ``lifecycle.started`` follows it in the log (i.e. it is the latest
-    episode's stop, not an earlier episode's). Same guard applies to
-    ``launcher.terminated`` vs ``launcher.launched``.
-    """
-    stopped = _terminal_unless_followed(channel, Topic.LIFECYCLE_STOPPED, Topic.LIFECYCLE_STARTED)
-    if stopped is not None:
-        s = verdict_parse(Stopped, stopped)
+    **Episode-aware, and both tiers on the same rule: a terminal stands until a
+    new episode CLAIMS.** The stop tier reads the latest ``stopped`` unless a
+    newer ``started`` follows it. The launcher tier reads the death of the launch
+    that the latest claim answered (``_launcher_terminal``) — correlated by id,
+    because a third-party death record is neither self-identifying nor reliably
+    ordered."""
+    record = _verdict_record(channel)
+    if record is None:
+        return None
+    if record.topic == Topic.LIFECYCLE_STOPPED:
+        s = verdict_parse(Stopped, record)
         if s.error is not None:          # NB: `is not None`, not truthiness — "" still errors
             outcome = Outcome.ERRORED
         elif s.completed:
@@ -182,17 +243,14 @@ def peek_terminal(channel: Channel) -> Optional[RunResult]:
         else:
             outcome = Outcome.PREEMPTED
         return RunResult(outcome=outcome, reason=outcome, error=s.error, final_step=s.final_step)
-    term = _terminal_unless_followed(channel, Topic.LAUNCHER_TERMINATED, Topic.LAUNCHER_LAUNCHED)
-    if term is not None:
-        t = verdict_parse(Terminated, term)
-        if t.reason == "killed":
-            outcome = Outcome.KILLED
-        elif t.exit_code == 0:
-            outcome = Outcome.COMPLETED
-        else:
-            outcome = Outcome.ERRORED
-        return RunResult(outcome=outcome, reason=t.reason)
-    return None
+    t = verdict_parse(Terminated, record)
+    if t.reason == "killed":
+        outcome = Outcome.KILLED
+    elif t.exit_code == 0:
+        outcome = Outcome.COMPLETED
+    else:
+        outcome = Outcome.ERRORED
+    return RunResult(outcome=outcome, reason=t.reason)
 
 
 def boundary_voided(sub_seq: int, started_seqs: list[int], drainer_started_seq: int) -> bool:

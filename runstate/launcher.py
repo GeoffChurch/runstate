@@ -27,8 +27,9 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Optional, Protocol
 
 from .channel import Channel, open_channel
-from .vocabulary.payloads import Launched, Terminated, Topic
+from .vocabulary.payloads import Launched, Terminated
 from .vocabulary.handle import local_handle
+from .vocabulary.launch import LAUNCH_ID_ENV, launch_scope, new_launch_id
 from .observables import live_demand, live_episode
 
 
@@ -80,6 +81,11 @@ class _ThreadHandle:
     handle: str
     _thread: threading.Thread
     _state: _ThreadState
+    # This launch's correlation id: on our launched/terminated, and on the
+    # started of the worker we spawn (specs/launcher-record-identity.md). For
+    # threads it is the ONLY thing that tells two launches apart — they share
+    # the launcher's pid, hence one handle.
+    launch_id: str
 
     @property
     def exception(self) -> Optional[BaseException]:
@@ -122,31 +128,43 @@ class ThreadLauncher:
         A raised exception maps to ``Terminated(reason="exited", exit_code=1)``:
         the 1 is a synthetic convention (a thread has no exit code), not a
         process exit status — a viewer should not read it as one.
+
+        Both records carry this launch's correlation id, and ``launch_scope``
+        binds it for the target — so the ``Worker`` the target builds stamps its
+        ``lifecycle.started`` with the same id. That is the only thing that tells
+        two thread launches apart (they share the launcher's pid, hence one
+        handle), and it is what keeps a claim-race loser's clean exit from
+        forging the winner's verdict (specs/launcher-record-identity.md).
         """
         kwargs = kwargs or {}
         channel = self.open_channel(run_id)
         handle = local_handle()
-        channel.send(asdict(Launched(handle=handle)), topic=Launched.TOPIC)
+        launch_id = new_launch_id()
+        channel.send(asdict(Launched(handle=handle)), topic=Launched.TOPIC,
+                     request_id=launch_id)
         state = _ThreadState()
+
+        def _terminated(exit_code: int) -> None:
+            channel.send(
+                asdict(Terminated(reason="exited", exit_code=exit_code, signal=None)),
+                topic=Terminated.TOPIC,
+                request_id=launch_id,
+            )
 
         def _run() -> None:
             try:
-                target(channel, *args, **kwargs)
+                with launch_scope(launch_id):
+                    target(channel, *args, **kwargs)
             except BaseException as exc:  # recorded on the log, not swallowed
                 state.exc = exc
-                channel.send(
-                    asdict(Terminated(reason="exited", exit_code=1, signal=None)),
-                    topic=Terminated.TOPIC,
-                )
+                _terminated(1)
             else:
-                channel.send(
-                    asdict(Terminated(reason="exited", exit_code=0, signal=None)),
-                    topic=Terminated.TOPIC,
-                )
+                _terminated(0)
 
         thread = threading.Thread(target=_run, daemon=True)
         h = _ThreadHandle(
-            run_id=run_id, channel=channel, handle=handle, _thread=thread, _state=state
+            run_id=run_id, channel=channel, handle=handle, _thread=thread,
+            _state=state, launch_id=launch_id,
         )
         thread.start()
         return h
@@ -162,11 +180,12 @@ class _LocalHandle:
     channel: Channel
     handle: str
     _proc: subprocess.Popen[bytes]
+    # This launch's correlation id — on our launched and on the terminated we
+    # reap, and (via RUNSTATE_LAUNCH_ID) on the started of the child that claims
+    # (specs/launcher-record-identity.md). It is what makes our death record say
+    # "MY launch ended" instead of the unknowable "the run is dead".
+    launch_id: str
     _reaped: bool = field(default=False)
-    # The seq of this child's launcher.launched record: the reap discipline's
-    # claim check is scoped to starteds AFTER it, so an old episode's recycled
-    # pid never reads as this child's claim (specs/lazy-launch.md).
-    launched_seq: Optional[int] = None
 
     def is_alive(self) -> bool:
         return self._proc.poll() is None
@@ -191,38 +210,25 @@ class _LocalHandle:
         self._proc.terminate()
 
     def _reap(self) -> None:
+        """Record this child's death, unconditionally and exactly once.
+
+        Unconditionally: a launcher reports what its OWN child did, and the
+        correlation id says whose death it is — so a claim-race loser's clean
+        exit lands on the log as what it is (that launch ended, having never
+        claimed) instead of being suppressed for fear of forging the winner's
+        verdict. The old reap discipline's conditional silence was a workaround
+        for identity-less records; with identity, attribution is the *reader's*
+        job (peek_terminal anchors to the claimed episode) and the writer can
+        stay honest (specs/launcher-record-identity.md)."""
         rc = self._proc.returncode
         if self._reaped or rc is None:
             return
         self._reaped = True
-        if rc == 0 and self._claimed_away():
-            # The reap discipline (specs/lazy-launch.md): a clean exit from a
-            # child that never claimed, while someone ELSE'S claim follows
-            # our spawn, is a claim-race loser -- nobody. Writing terminated
-            # would forge the run's terminal over the winner's live episode
-            # (the launcher pairing is by latest record and `terminated`
-            # carries no child identity). A null worker -- nobody claimed at
-            # all -- keeps its record (terminated is its ONLY terminal), and
-            # an unclean death keeps its record (startup-crash visibility).
-            return
         if rc < 0:  # died from signal -rc
             body = asdict(Terminated(reason="killed", signal=-rc, exit_code=None))
         else:
             body = asdict(Terminated(reason="exited", exit_code=rc, signal=None))
-        self.channel.send(body, topic=Terminated.TOPIC)
-
-    def _claimed_away(self) -> bool:
-        """True iff this child never claimed and a FOREIGN claim follows its
-        own ``launched`` record — the silence is explained by someone else
-        being the episode."""
-        mine = foreign = False
-        for e in self.channel.read(after=self.launched_seq or 0,
-                                   topics=[Topic.LIFECYCLE_STARTED]):
-            if e.body.get("handle") == self.handle:
-                mine = True
-            else:
-                foreign = True
-        return foreign and not mine
+        self.channel.send(body, topic=Terminated.TOPIC, request_id=self.launch_id)
 
 
 class LocalLauncher:
@@ -248,18 +254,23 @@ class LocalLauncher:
     def launch(self, run_id: str, cmd: list[str] | str, *,
                env: dict[str, str] | None = None) -> _LocalHandle:
         channel = self.open_channel(run_id)
+        launch_id = new_launch_id()
         child_env = {
             **os.environ,
             **(env or {}),
             "RUNSTATE_RUN_ID": run_id,
             "RUNSTATE_CHANNEL_ROOT": str(self._root),
             "RUNSTATE_CHANNEL_BACKEND": self._backend,
+            # The child's Worker re-emits this on its lifecycle.started, so its
+            # claim names the launch that spawned it (vocabulary/launch.py).
+            LAUNCH_ID_ENV: launch_id,
         }
         proc = subprocess.Popen(cmd, env=child_env)
         handle = f"local://{socket.gethostname()}/{proc.pid}"
-        seq = channel.send(asdict(Launched(handle=handle)), topic=Launched.TOPIC)
+        channel.send(asdict(Launched(handle=handle)), topic=Launched.TOPIC,
+                     request_id=launch_id)
         h = _LocalHandle(run_id=run_id, channel=channel, handle=handle, _proc=proc,
-                         launched_seq=seq)
+                         launch_id=launch_id)
         self._handles.append(h)
         return h
 

@@ -209,15 +209,16 @@ guarantee holds iff (a) workers are **claim-honoring**: the loser must
 not act (the reference `Worker` drivers no-op on `_lost`; a surgical
 adoption like mycooc's `_run_body` — which today trains regardless and
 only gates the terminal emit — must early-exit when `not w.claimed`:
-a consumer rider below), and (b) launchers are **reap-disciplined**:
-`ThreadLauncher` writes `terminated{exit_code: 0}` unconditionally for a
-loser, which the launcher liveness tier reads as a **completed terminal
-while the winner is live** — an ungated latecomer over `ThreadLauncher`
-returns a truncated series as a *false cache hit*, violating the
-polarity invariant. Multi-demand over `ThreadLauncher` is
-forbidden-by-doc (consistent with `specs/lazy-launch.md`'s
-single-spawner scoping); the pins use the foreign-handle gate, which
-never consults the loser's terminal.
+a consumer rider below), and (b) launcher records **name their launch**
+(launcher-v0.3): a loser's `terminated{exit_code: 0}` must not be readable
+as the run's terminal while the winner is live, or an ungated latecomer
+returns a truncated series as a *false cache hit*, violating the polarity
+invariant. *(Was: "launchers are reap-disciplined", with multi-demand over
+`ThreadLauncher` forbidden-by-doc because its in-process children share one
+handle. SUPERSEDED 2026-07-14 by `specs/launcher-record-identity.md` — the
+verdict is now anchored to the claimed episode and paired by launch id, so
+the loser's corpse is recorded honestly and speaks for nobody; the
+`ThreadLauncher` prohibition is retired.)*
 
 **The claim-window residue, and its consumer obligation.** Two
 dispatchers inside the post-launch/pre-claim window cost one wasted

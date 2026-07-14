@@ -522,72 +522,73 @@ class _StubProc:
         return self.returncode
 
 
-def _local_handle_for(ch, handle, rc, launched_seq):
+from runstate import peek_terminal
+from runstate.vocabulary.handle import local_handle
+
+
+def _local_handle_for(ch, handle, rc, launch_id):
     from runstate.launcher import _LocalHandle
     return _LocalHandle(run_id="r", channel=ch, handle=handle,
-                        _proc=_StubProc(rc), launched_seq=launched_seq)
+                        _proc=_StubProc(rc), launch_id=launch_id)
 
 
-def test_reap_discipline_skips_the_foreign_claimed_away_loser(open_channel):
+# The reap is UNCONDITIONAL (specs/launcher-record-identity.md): a launcher
+# reports what its own child did, and the correlation id says whose death it is.
+# The old reap discipline's conditional silence -- suppressing a claim-loser's
+# clean exit -- was a workaround for identity-less records; with identity, the
+# writer stays honest and attribution is the reader's job (peek_terminal anchors
+# to the claimed episode). These pin the honest corpse AND its powerlessness.
+
+def test_the_claim_race_losers_corpse_lands_and_never_speaks_for_the_run(open_channel):
     ch = open_channel()
-    seq = ch.send({"handle": f"local://{socket.gethostname()}/111"},
-                  topic="launcher.launched")
-    ch.send({"handle": f"local://{socket.gethostname()}/222",
-             "attached_at": 0.0}, topic="lifecycle.started")   # the winner
+    ch.send({"handle": f"local://{socket.gethostname()}/111"},
+            topic="launcher.launched", request_id="loser")
+    ch.send({"handle": f"local://{socket.gethostname()}/222"},
+            topic="launcher.launched", request_id="winner")
+    ch.send({"handle": f"local://{socket.gethostname()}/222", "attached_at": 0.0},
+            topic="lifecycle.started", request_id="winner")     # the winner claims
     h = _local_handle_for(ch, f"local://{socket.gethostname()}/111", rc=0,
-                          launched_seq=seq)
-    h.poll()
-    assert open_channel().read(topics=["launcher.terminated"]) == []
-
-
-def test_reap_discipline_keeps_the_null_workers_record(open_channel):
-    # nobody claimed at all: terminated is the null worker's ONLY terminal.
-    ch = open_channel()
-    seq = ch.send({"handle": f"local://{socket.gethostname()}/111"},
-                  topic="launcher.launched")
-    h = _local_handle_for(ch, f"local://{socket.gethostname()}/111", rc=0,
-                          launched_seq=seq)
+                          launch_id="loser")
     h.poll()
     terms = open_channel().read(topics=["launcher.terminated"])
-    assert len(terms) == 1 and terms[0].body["exit_code"] == 0
+    assert len(terms) == 1 and terms[0].request_id == "loser"   # the corpse IS recorded
+    assert peek_terminal(open_channel()) is None                # but the winner runs on
 
 
-def test_reap_discipline_keeps_the_unclean_death(open_channel):
+def test_the_null_workers_death_is_its_own_verdict(open_channel):
+    # nobody claimed at all: terminated is the null worker's ONLY terminal.
     ch = open_channel()
-    seq = ch.send({"handle": f"local://{socket.gethostname()}/111"},
-                  topic="launcher.launched")
-    ch.send({"handle": f"local://{socket.gethostname()}/222",
-             "attached_at": 0.0}, topic="lifecycle.started")
+    ch.send({"handle": f"local://{socket.gethostname()}/111"},
+            topic="launcher.launched", request_id="L1")
     h = _local_handle_for(ch, f"local://{socket.gethostname()}/111", rc=3,
-                          launched_seq=seq)
+                          launch_id="L1")
     h.poll()
     terms = open_channel().read(topics=["launcher.terminated"])
     assert len(terms) == 1 and terms[0].body["exit_code"] == 3
+    assert peek_terminal(open_channel()).outcome == "errored"
 
 
-def test_reap_discipline_old_episodes_recycled_pid_is_not_my_claim(open_channel):
-    # a started with MY handle but BEFORE my launched seq (pid reuse across
-    # episodes) does not count as my claim; with a foreign claim after my
-    # launched, I am a loser -> no record.
+def test_an_unclean_death_beside_a_foreign_claim_stays_on_the_log(open_channel):
+    # startup-crash visibility: the record lands (it is the only trace of that
+    # launch), and the foreign live claim keeps it off the run's verdict.
     ch = open_channel()
-    me = f"local://{socket.gethostname()}/111"
-    ch.send({"handle": me, "attached_at": 0.0},
-            topic="lifecycle.started")                 # an OLD episode, my pid
-    ch.send({"completed": False, "error": None, "final_step": 1},
-            topic="lifecycle.stopped")
-    seq = ch.send({"handle": me}, topic="launcher.launched")
-    ch.send({"handle": f"local://{socket.gethostname()}/222",
-             "attached_at": 1.0}, topic="lifecycle.started")   # the real winner
-    h = _local_handle_for(ch, me, rc=0, launched_seq=seq)
+    ch.send({"handle": f"local://{socket.gethostname()}/111"},
+            topic="launcher.launched", request_id="crasher")
+    ch.send({"handle": local_handle(), "attached_at": 0.0},
+            topic="lifecycle.started", request_id="other")
+    h = _local_handle_for(ch, f"local://{socket.gethostname()}/111", rc=3,
+                          launch_id="crasher")
     h.poll()
-    assert open_channel().read(topics=["launcher.terminated"]) == []
+    terms = open_channel().read(topics=["launcher.terminated"])
+    assert len(terms) == 1 and terms[0].body["exit_code"] == 3
+    assert peek_terminal(open_channel()) is None
 
 
-def test_double_waker_race_loser_leaves_no_corpse(tmp_path):
-    # two launches into one run: one claim wins; the clean loser gets NO
-    # terminated record; the winner's record arrives as usual.
+def test_double_waker_race_losers_corpse_does_not_forge_the_verdict(tmp_path):
+    # two launches into one run: one claim wins. BOTH children leave a corpse
+    # (the loser exits cleanly the moment it loses the CAS) -- and the verdict
+    # is the winner's, because the loser's death names a launch nobody claimed.
     import sys
-    import time
     from runstate import LocalLauncher, peek_terminal
 
     body = ("import runstate\n"
@@ -604,6 +605,9 @@ def test_double_waker_race_loser_leaves_no_corpse(tmp_path):
     ch = launcher.open_channel("race")
     starteds = ch.read(topics=["lifecycle.started"])
     assert len(starteds) == 1                          # exactly one claim
+    claim = starteds[0].request_id
     terms = ch.read(topics=["launcher.terminated"])
-    assert len(terms) == 1                             # the winner's only
-    assert peek_terminal(ch).outcome == "preempted"    # the winner's verdict
+    assert len(terms) == 2                             # both children are reaped
+    assert {t.request_id for t in terms} == {h1.launch_id, h2.launch_id}
+    assert claim in (h1.launch_id, h2.launch_id)       # the claim names its launch
+    assert peek_terminal(ch).outcome == "preempted"    # the winner's own verdict

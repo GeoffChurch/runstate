@@ -66,7 +66,8 @@ def test_default_stop_is_preempted(open_channel):
 def test_killed_from_launcher_terminated(open_channel):
     # the worker died without a clean stop; the reaper recorded the manner
     open_channel().send(
-        {"reason": "killed", "signal": 9, "exit_code": None}, topic="launcher.terminated"
+        {"reason": "killed", "signal": 9, "exit_code": None},
+        topic="launcher.terminated", request_id="L1",
     )
     r = peek_terminal(open_channel())
     assert r.outcome == "killed"
@@ -76,8 +77,71 @@ def test_killed_from_launcher_terminated(open_channel):
 def test_clean_stop_takes_precedence_over_terminated(open_channel):
     ch = open_channel()
     ch.send({"completed": True, "error": None, "final_step": 9}, topic="lifecycle.stopped")
-    ch.send({"reason": "exited", "exit_code": 0, "signal": None}, topic="launcher.terminated")
+    ch.send({"reason": "exited", "exit_code": 0, "signal": None},
+            topic="launcher.terminated", request_id="L1")
     assert peek_terminal(open_channel()).outcome == "completed"
+
+
+# The launcher tier is anchored to the CLAIMED episode and correlated by launch
+# id (specs/launcher-record-identity.md). A third-party death record is neither
+# self-identifying nor reliably ordered -- a reap is an observation that can land
+# arbitrarily late -- so position cannot attribute it. These pin the two forgeries
+# that position produced, both reproduced against the shipped launchers.
+
+def _episode(ch, *, launch, pid, at):
+    ch.send({"handle": f"local://h/{pid}"}, topic="launcher.launched", request_id=launch)
+    ch.send({"handle": f"local://h/{pid}", "attached_at": at},
+            topic="lifecycle.started", request_id=launch)
+
+
+def test_a_late_reap_does_not_forge_the_live_episodes_verdict(open_channel):
+    # ep1 stops cleanly and lingers; ep2 launches, claims, and is LIVE; THEN
+    # ep1's reap lands. Its death names ep1's launch -- it cannot speak for ep2.
+    ch = open_channel()
+    _episode(ch, launch="L1", pid=1, at=0.0)
+    ch.send({"completed": True, "error": None, "final_step": 5}, topic="lifecycle.stopped")
+    _episode(ch, launch="L2", pid=2, at=1.0)                       # ep2 claims, live
+    assert peek_terminal(open_channel()) is None
+    ch.send({"reason": "exited", "exit_code": 0, "signal": None},  # the LATE reap of ep1
+            topic="launcher.terminated", request_id="L1")
+    assert peek_terminal(open_channel()) is None                   # ep2 still runs
+
+
+def test_a_late_reap_is_attributed_to_its_own_episode_post_hoc(open_channel):
+    # both episodes dead, ep1's reap landing LAST: ep2's death is the verdict,
+    # not the newest record. Attribution survives on a cold log, forever.
+    ch = open_channel()
+    _episode(ch, launch="L1", pid=1, at=0.0)
+    _episode(ch, launch="L2", pid=2, at=1.0)
+    ch.send({"reason": "killed", "exit_code": None, "signal": 9},  # ep2 was killed
+            topic="launcher.terminated", request_id="L2")
+    ch.send({"reason": "exited", "exit_code": 0, "signal": None},  # ep1's late, clean reap
+            topic="launcher.terminated", request_id="L1")
+    assert peek_terminal(open_channel()).outcome == "killed"       # ep2's, not the newest
+
+
+def test_a_claim_losers_clean_exit_does_not_complete_the_run(open_channel):
+    # the loser's launch is the NEWEST launched, and its clean exit the newest
+    # terminated -- but no episode ever claimed it, so it speaks for nobody.
+    ch = open_channel()
+    _episode(ch, launch="winner", pid=1, at=0.0)                   # the winner claims
+    ch.send({"handle": "local://h/2"}, topic="launcher.launched", request_id="loser")
+    ch.send({"reason": "exited", "exit_code": 0, "signal": None},
+            topic="launcher.terminated", request_id="loser")
+    assert peek_terminal(open_channel()) is None                   # the winner runs on
+
+
+def test_a_hand_run_workers_episode_has_no_launcher_verdict(open_channel):
+    # no launcher spawned this worker, so its claim names no launch and no
+    # launcher record speaks for it -- an earlier launch's death least of all.
+    ch = open_channel()
+    ch.send({"handle": "local://h/9"}, topic="launcher.launched", request_id="L1")
+    ch.send({"reason": "exited", "exit_code": 1, "signal": None},
+            topic="launcher.terminated", request_id="L1")
+    assert peek_terminal(open_channel()).outcome == "errored"      # nobody claimed: L1 speaks
+    ch.send({"handle": local_handle(), "attached_at": 1.0},
+            topic="lifecycle.started")                             # hand-run: no launch id
+    assert peek_terminal(open_channel()) is None                   # ...and now L1 does not
 
 
 def test_live_episode_running_then_none_when_stopped(open_channel):
@@ -349,12 +413,26 @@ def test_peek_terminal_typed_error_on_completed_with_error(open_channel):
 def test_peek_terminal_typed_error_on_malformed_terminated(open_channel):
     seq = open_channel().send(
         {"reason": "vanished", "exit_code": None, "signal": None},
-        topic="launcher.terminated",
+        topic="launcher.terminated", request_id="L1",
     )
     with pytest.raises(MalformedRecordError) as ei:
         peek_terminal(open_channel())
     assert ei.value.seq == seq
     assert ei.value.topic == "launcher.terminated"
+
+
+def test_peek_terminal_typed_error_on_a_death_that_names_no_launch(open_channel):
+    # launcher-v0.3: a death record with no request_id is unattributable -- it
+    # asserts the unknowable "the run is dead". The verdict plane refuses to
+    # guess (it would forge), so it raises instead of quietly speaking.
+    seq = open_channel().send(
+        {"reason": "exited", "exit_code": 0, "signal": None},
+        topic="launcher.terminated",
+    )
+    with pytest.raises(MalformedRecordError) as ei:
+        peek_terminal(open_channel())
+    assert ei.value.seq == seq
+    assert "request_id" in ei.value.detail
 
 
 def test_live_episode_typed_error_on_handleless_started(open_channel):

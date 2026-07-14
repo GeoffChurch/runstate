@@ -56,6 +56,11 @@ def attach(run_id: str | None = None, *, root: str | os.PathLike[str] | None = N
     orchestrator named the run, so both ends meet on the same log. ``json_default``
     is a sender-side ``json.dumps`` hook for coercing exotic value payloads
     (e.g. numpy scalars / tensors) the worker reports.
+
+    A launcher also sets ``RUNSTATE_LAUNCH_ID`` (the launch's correlation id);
+    the ``Worker`` re-emits it on its ``lifecycle.started`` so its claim names
+    the launch it answers — read by ``vocabulary/launch.py``, not here, since it
+    identifies the *episode*, not the channel.
     """
     if run_id is None:
         run_id = os.environ["RUNSTATE_RUN_ID"]

@@ -1,13 +1,19 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://runstate.dev/protocol/launcher-v0.2.json",
-  "title": "runstate v0.2 launcher convention",
-  "description": "Pins the bodies of the launcher.* topics the spawner/reaper produces: launched (spawn-intent + liveness handle) and terminated (the manner of death; only a wait()ing parent can produce it). Applied on top of the envelope schema.",
+  "$id": "https://runstate.dev/protocol/launcher-v0.3.json",
+  "title": "runstate v0.3 launcher convention",
+  "description": "Pins the launcher.* topics the spawner/reaper produces: launched (spawn-intent + liveness handle) and terminated (the manner of death; only a wait()ing parent can produce it). Applied on top of the envelope schema. v0.3 additionally REQUIRES the envelope's request_id on both records: it is the launch's correlation id, minted once per launch and stamped on that launch's launched, its terminated, and the lifecycle.started of the worker it spawns. Without it a third-party death record is unattributable -- it asserts the unknowable 'the run is dead' rather than 'my launch ended', and a late or losing launch's death forges a live episode's verdict (docs/specs/launcher-record-identity.md).",
 
   "allOf": [
     {
       "if": {"required": ["topic"], "properties": {"topic": {"pattern": "^launcher\\."}}},
-      "then": {"properties": {"topic": {"enum": ["launcher.launched", "launcher.terminated"]}}}
+      "then": {
+        "properties": {
+          "topic": {"enum": ["launcher.launched", "launcher.terminated"]},
+          "request_id": {"type": "string", "minLength": 1, "description": "The launch's correlation id (see the convention description). Never null on a launcher record: a launch that cannot be named cannot be reasoned about."}
+        },
+        "required": ["request_id"]
+      }
     },
     {
       "if": {"required": ["topic"], "properties": {"topic": {"const": "launcher.launched"}}},

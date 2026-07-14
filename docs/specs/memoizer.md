@@ -193,14 +193,15 @@ no-progress guard became own-spawn-scoped. The old `None`-on-no-op spelling
 hid a real hang (the recordless winner death) behind the record-only wait;
 this paragraph's earlier truthy-iff-drove clause is gone with it.)*
 
-*(Concurrency caution, 2026-07-10 — red-team: `ThreadLauncher` has no reap
-discipline, so under CONCURRENT dispatchers a claim-race loser's runner writes
-`Terminated(exited, 0)` unconditionally, which `peek_terminal` can read as the
-live run's `completed` — `ensure` then returns a truncated series with no
-error. `launch_producer` over `ThreadLauncher` is single-dispatcher; concurrent
-dispatch over one run needs a reap-disciplined launcher (`LocalLauncher`). The
-durable fix is the launcher-record identity spec,
-`./launcher-record-identity.md` (converging; retires this caution once landed).)*
+*(Concurrency caution, 2026-07-10 — **RETIRED 2026-07-14**, as promised, by
+`./launcher-record-identity.md` shipping. It read: under CONCURRENT dispatchers a
+claim-race loser's `ThreadLauncher` runner writes `Terminated(exited, 0)`
+unconditionally, which `peek_terminal` read as the live run's `completed` —
+`ensure` then returned a truncated series with no error; so `launch_producer`
+over `ThreadLauncher` was single-dispatcher-only. Launcher records now name their
+launch (launcher-v0.3) and the verdict is anchored to the claimed episode, so the
+loser's death speaks for nobody: **concurrent dispatch over `ThreadLauncher` is
+supported**, and pinned by the slow-winner test.)*
 
 ### Decision 6 — idempotent relaunch is a free helper, not a launcher method
 **`relaunch_if_needed(launcher, run_id, target, **launch_kwargs)`** —

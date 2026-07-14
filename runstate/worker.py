@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass
 from .channel import Channel, Envelope, EpisodeHolder
 from .vocabulary.payloads import Heartbeat, Nak, Started, Stopped, Topic, Value
 from .vocabulary.handle import local_handle
+from .vocabulary.launch import current_launch_id
 from .vocabulary.schedule import (
     Condition,
     Subscription,
@@ -98,6 +99,11 @@ class Worker:
             claim = self._ch.send(
                 asdict(Started(handle=local_handle(), attached_at=self._now())),
                 topic=Started.TOPIC,
+                # The claim names the launch it answers (ambient; None if no
+                # launcher spawned us). This is what lets a launcher's death
+                # record be attributed to an episode instead of forging the
+                # run's verdict (specs/launcher-record-identity.md).
+                request_id=current_launch_id(),
                 expected_seq=last,
             )
             if claim is not None:

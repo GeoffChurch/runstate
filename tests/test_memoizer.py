@@ -462,14 +462,15 @@ def test_ensure_killed_resumes_on_caller_re_call_take_the_latest():
 
     def episodes(channel, target):
         calls["n"] += 1
+        launch = f"L{calls['n']}"                # each episode answers its own launch
         channel.send({"handle": local_handle(), "attached_at": float(calls["n"])},
-                     topic="lifecycle.started")
+                     topic="lifecycle.started", request_id=launch)
         if calls["n"] == 1:                      # progress 0..2, then KILLED (external signal)
             channel.send({"step": 2, "consumed_seq": 0}, topic="lifecycle.heartbeat")
             for s in range(3):
                 channel.send({"value": float(s), "step": s, "t": 0.0}, topic="value", name="loss")
             channel.send({"reason": "killed", "exit_code": None, "signal": 9},
-                         topic="launcher.terminated")
+                         topic="launcher.terminated", request_id=launch)
         else:                                    # resume behind frontier: re-emit step 2 divergently, then 3..5, complete
             channel.send({"step": 5, "consumed_seq": 0}, topic="lifecycle.heartbeat")
             for s, v in [(2, 2.5), (3, 3.0), (4, 4.0), (5, 5.0)]:

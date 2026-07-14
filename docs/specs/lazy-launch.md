@@ -100,36 +100,29 @@ double-spawn — the loser exits before acting. The deliberation found the
 old "wasted spawns are cheap" analysis priced the spawn and forgot the
 funeral, twice:
 
-1. **The reap discipline (foreign-claim-scoped — the adversarial round's
-   reformulation).** A reaping `LocalLauncher` *skips* the
-   `launcher.terminated` record **iff** the child exited 0 ∧ never claimed
-   (no `lifecycle.started` carries its handle **after its own `launched`
-   seq** — the handle retains that seq, closing the pid-reuse
-   false-positive) ∧ **a foreign claim explains the silence** (a `started`
-   with a *different* handle follows its `launched` — someone else is the
-   episode). Everything else keeps its record: a **null worker** (opts out
-   of control entirely; `terminated` is its only terminal — a named protocol
-   citizen) has no foreign claim and stays visible; a startup crash (nonzero
-   / killed) stays visible; a wrapper-pid winner (launcher recorded `sh -c`'s
-   pid, the worker claimed with python's) loses only a redundant record —
-   its `stopped` already carries the verdict, and a silent exit-0 crash
-   falls to the staleness tier. Without the skip, the loser's corpse reads
-   as the run's `completed` terminal while the winner serves
-   (`peek_terminal` pairs latest-terminated against latest-launched, and
-   `terminated` carries no child identity).
-   **Scope:** the discipline — and the multi-waker posture itself — applies
-   to launchers with *log-distinguishable child identity* (`LocalLauncher`).
-   `ThreadLauncher` is degenerate (every in-process child shares one
-   `local://host/pid`, and its runner writes `terminated` unconditionally):
-   multi-waker `ensure_served` over it is forbidden-by-doc; it remains the
-   single-spawner/test launcher.
-   **Acknowledged residue (the unclean loser):** a loser that crashes
-   *before claiming* (OOM mid-import) keeps its `terminated{exited≠0}`
-   record and pollutes the verdict plane with `errored` until the winner's
-   own `stopped` — accepted, rare (the claim-before-allocate prologue exists
-   to make heavy losers rare), and curable only by per-handle pairing: the
-   `terminated`-identity launcher-schema bump already filed with the
-   multi-writer/attribution backlog thread.
+1. **The corpse is recorded honestly; it just cannot speak (SUPERSEDED
+   2026-07-14 by `specs/launcher-record-identity.md`).** A reaping launcher
+   records what its own child did — *unconditionally* — and the launch's
+   correlation id says whose death it is. A claim-race loser's clean exit
+   lands on the log as exactly that (a launch that ended, having never
+   claimed), and `peek_terminal` ignores it structurally: the launcher tier
+   is anchored to the **claimed** episode and pairs by id, so only the death
+   of the launch that the claim answered can speak for the run.
+   *This section previously specified a **reap discipline** — a
+   foreign-claim-scoped, `launched`-seq-scoped conditional SILENCE in
+   `_reap`, suppressing the loser's record so it could not be misread as the
+   run's `completed`. That was a writer-side workaround for identity-less
+   records, and it is **deleted**: with identity, the writer stays honest and
+   attribution is the reader's job. Its own "acknowledged residue" (an
+   unclean loser polluting the verdict plane with `errored`, "curable only by
+   per-handle pairing — the `terminated`-identity schema bump already filed")
+   is cured too: that bump shipped as launcher-v0.3.*
+   **Scope:** the multi-waker posture no longer needs log-distinguishable
+   *child* identity, because identity now lives on the *launch* rather than
+   the handle — so `ThreadLauncher`'s shared `local://host/pid` is no longer
+   disqualifying, and concurrent dispatch over it no longer forges verdicts.
+   (`ThreadLauncher` remains unable to force-terminate a thread; that is a
+   separate, intrinsic degeneracy.)
 2. **The loser may not speak (the `stopped()` hole).** "A loser never acts
    on the channel" was enforced everywhere except an *explicit*
    `Worker.stopped()` call — the minimal example's own
@@ -156,13 +149,15 @@ services).
   operator's; the primitive takes data).
 - A shipped daemon (recipe only, until the named promotion trigger).
 - Any waker-side relaunch policy (deleted upstream).
-- `terminated` identity / per-handle pairing (backlog, schema bump).
+- `terminated` identity / per-launch pairing — *filed here as out-of-scope;
+  SHIPPED 2026-07-14 as launcher-v0.3 (`specs/launcher-record-identity.md`),
+  which superseded this spec's reap discipline (see the corpse note above).*
 
 ## Deliverables
 
-`launcher.py`: `ensure_served` beside `relaunch_if_needed`; the
-foreign-claim-scoped reap discipline in the local handle's `_reap` (the
-handle retains its `launched` seq); a public `LocalLauncher.reap()`.
+`launcher.py`: `ensure_served` beside `relaunch_if_needed`; a public
+`LocalLauncher.reap()`. *(The foreign-claim-scoped reap discipline this spec
+shipped in `_reap` was deleted 2026-07-14 — see the corpse note above.)*
 `vocabulary/handle.py`: `resolve()` becomes hostname-scoped (a pre-existing
 bug the review surfaced: it probed the *local* pid table for any host's
 handle — false-dead off-host would double-claim; foreign-host handles now

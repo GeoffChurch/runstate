@@ -28,7 +28,7 @@ from typing import Optional, Protocol, Union
 
 from .channel import Channel, EpisodeProbe, Envelope
 from .launcher import LaunchHandle
-from .observables import Outcome, RunResult, verdict_parse, peek_terminal
+from .observables import Outcome, RunResult, _verdict_record, verdict_parse, peek_terminal
 from .vocabulary.payloads import Heartbeat, Nak, Topic
 from .vocabulary.schedule import Condition
 
@@ -399,19 +399,16 @@ def await_consumed(channel: Channel, seq: int, *, request_id: str | None = None,
                 # Re-check once: the nak and its heartbeat may both have landed
                 # between this iteration's two reads.
                 return _answer()
-        # Refused-by-death: a terminal record FOLLOWING the request, with no
-        # later episode (peek_terminal is episode-aware), means no worker will
-        # ever drain it — return the terminal verdict. A terminal that
-        # PRECEDES the request leaves it waiting for the next episode.
-        term = peek_terminal(channel)
-        if term is not None:
-            last_terminal = max(
-                (e.seq for e in (channel.latest(Topic.LIFECYCLE_STOPPED),
-                                 channel.latest(Topic.LAUNCHER_TERMINATED))
-                 if e is not None),
-                default=0,
-            )
-            if last_terminal > seq:
+        # Refused-by-death: the terminal record FOLLOWING the request means no
+        # worker will ever drain it — return the terminal verdict. A terminal
+        # that PRECEDES the request leaves it waiting for the next episode. The
+        # record is the one peek_terminal speaks for (_verdict_record), not the
+        # latest terminal-topic envelope: an unrelated launch's death (a
+        # claim-race loser's) is not this request's refusal.
+        record = _verdict_record(channel)
+        if record is not None and record.seq > seq:
+            term = peek_terminal(channel)
+            if term is not None:
                 return term
         if deadline is not None and now() >= deadline:
             raise TimeoutError(f"control seq {seq} not consumed within {timeout}s")

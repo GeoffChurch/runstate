@@ -34,7 +34,7 @@ ENVELOPE = _validator("envelope")
 CONVENTIONS = {
     "control.": _validator("subscription"),
     "lifecycle.": _validator("lifecycle", "v0.3"),   # independently versioned
-    "launcher.": _validator("launcher"),
+    "launcher.": _validator("launcher", "v0.3"),     # (each convention on its own timeline)
     "value": _validator("value"),
 }
 
@@ -319,11 +319,13 @@ def test_convention_dataclasses_serialize_to_schema_valid_bodies():
     ]
     for body in bodies:
         topic = type(body).TOPIC
-        _convention_for(topic).validate(_env(topic, asdict(body)))
+        # launcher-v0.3 requires the launch's correlation id on the envelope
+        extra = {"request_id": "L1"} if topic.startswith("launcher.") else {}
+        _convention_for(topic).validate(_env(topic, asdict(body), **extra))
 
 
 def test_launcher_launched_rejects_unknown_status():
-    bad = _env("launcher.launched", {"handle": "local://h/1", "status": "intended"})
+    bad = _env("launcher.launched", {"handle": "local://h/1", "status": "intended"}, request_id="L1")
     with pytest.raises(jsonschema.ValidationError):
         CONVENTIONS["launcher."].validate(bad)
 
@@ -372,7 +374,7 @@ def test_control_and_launcher_reject_unknown_subtopics():
     with pytest.raises(jsonschema.ValidationError):
         CONVENTIONS["control."].validate(_env("control.bogus", {}))
     with pytest.raises(jsonschema.ValidationError):
-        CONVENTIONS["launcher."].validate(_env("launcher.bogus", {}))
+        CONVENTIONS["launcher."].validate(_env("launcher.bogus", {}, request_id="L1"))
 
 
 def test_control_stop_takes_only_from():
@@ -387,7 +389,7 @@ def test_control_stop_takes_only_from():
 def test_well_known_body_shapes_validate():
     # positive coverage for shapes the emitted-bytes scenario doesn't reach
     CONVENTIONS["launcher."].validate(
-        _env("launcher.terminated", {"reason": "killed", "signal": 9, "exit_code": None})
+        _env("launcher.terminated", {"reason": "killed", "signal": 9, "exit_code": None}, request_id="L1")
     )
     for reason in ("malformed", "unsatisfiable", "unsupported"):
         CONVENTIONS["lifecycle."].validate(
@@ -410,14 +412,14 @@ def test_envelope_rejects_empty_string_ids():
 
 
 def test_terminated_rejects_negative_exit_code():
-    bad = _env("launcher.terminated", {"reason": "exited", "exit_code": -1, "signal": None})
+    bad = _env("launcher.terminated", {"reason": "exited", "exit_code": -1, "signal": None}, request_id="L1")
     with pytest.raises(jsonschema.ValidationError):
         CONVENTIONS["launcher."].validate(bad)
 
 
 def test_terminated_rejects_signal_zero():
     # signal numbers start at 1; "killed by signal 0" is not a manner of death
-    bad = _env("launcher.terminated", {"reason": "killed", "signal": 0, "exit_code": None})
+    bad = _env("launcher.terminated", {"reason": "killed", "signal": 0, "exit_code": None}, request_id="L1")
     with pytest.raises(jsonschema.ValidationError):
         CONVENTIONS["launcher."].validate(bad)
 
@@ -425,8 +427,8 @@ def test_terminated_rejects_signal_zero():
 def test_terminated_enforces_reason_field_pairing():
     L = CONVENTIONS["launcher."]
     # present-nullable + reason-coupled: every key present; the inapplicable one null
-    L.validate(_env("launcher.terminated", {"reason": "exited", "exit_code": 0, "signal": None}))
-    L.validate(_env("launcher.terminated", {"reason": "killed", "signal": 9, "exit_code": None}))
+    L.validate(_env("launcher.terminated", {"reason": "exited", "exit_code": 0, "signal": None}, request_id="L1"))
+    L.validate(_env("launcher.terminated", {"reason": "killed", "signal": 9, "exit_code": None}, request_id="L1"))
     for bad in (
         {"reason": "exited", "exit_code": 0, "signal": 9},        # exited: signal must be null
         {"reason": "killed", "signal": 9, "exit_code": 5},        # killed: exit_code must be null
@@ -436,7 +438,27 @@ def test_terminated_enforces_reason_field_pairing():
         {"reason": "killed", "signal": 9},                        # exit_code key missing
     ):
         with pytest.raises(jsonschema.ValidationError):
-            L.validate(_env("launcher.terminated", bad))
+            L.validate(_env("launcher.terminated", bad, request_id="L1"))
+
+
+def test_launcher_records_must_name_their_launch():
+    # launcher-v0.3: the envelope's request_id is the launch's correlation id,
+    # REQUIRED on both records. A death record that names no launch is
+    # unattributable -- it asserts the unknowable "the run is dead" instead of
+    # "my launch ended", and a late or losing launch's death then forges a live
+    # episode's verdict (docs/specs/launcher-record-identity.md).
+    L = CONVENTIONS["launcher."]
+    for topic, body in (
+        ("launcher.launched", {"handle": "local://h/1", "status": "running"}),
+        ("launcher.terminated", {"reason": "exited", "exit_code": 0, "signal": None}),
+    ):
+        L.validate(_env(topic, body, request_id="L1"))
+        with pytest.raises(jsonschema.ValidationError):
+            L.validate(_env(topic, body))                  # request_id: null
+    # the id is NOT required elsewhere: a hand-run worker's claim names no launch
+    CONVENTIONS["lifecycle."].validate(
+        _env("lifecycle.started", {"handle": "local://h/1", "attached_at": 0.0})
+    )
 
 
 def test_subscribe_requires_request_id():

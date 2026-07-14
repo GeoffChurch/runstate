@@ -81,8 +81,14 @@ use `.seq` as the episode-window watermark — `ch.read(after=e.seq, …)` — a
 `RunResult`'s three-tier unification, and a view type invites the span
 ontology Decision 1 declined; `Started(**e.body)` is the typing idiom).
 `live_episode` = `latest_episode` + no-`stopped`-after + handle-resolves;
-`peek_terminal`'s `_terminal_unless_followed` stays the generic mirror (it
-also serves the launcher pair).
+`peek_terminal`'s `_episode_stopped` is its terminal mirror (latest `stopped`
+unless a newer claim follows). The launcher tier is **not** a mirror of it:
+`_launcher_terminal` anchors to the *claimed* episode and pairs the death to
+its launch by correlation id, because a third-party record is neither
+self-identifying nor reliably ordered (`specs/launcher-record-identity.md`).
+Both tiers obey one rule — **a terminal stands until a new episode claims** —
+and `_verdict_record` names the single record `peek_terminal` speaks for (the
+Watcher reads its seq rather than re-deriving which terminal counts).
 
 ### `progress` — publishing `memoizer._progress`
 

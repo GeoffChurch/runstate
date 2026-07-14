@@ -23,9 +23,9 @@ with opt-in **conventions** on top. The design rationale lives in
 
 1. **The JSON Schema stack in `protocol/`** — `envelope-v0.2.schema.json`
    (the substrate record: structure only, opaque body) plus the
-   per-convention schemas (`subscription` / `launcher` / `value`-`v0.2`,
-   `lifecycle`-`v0.3`), each `additionalProperties: false` and independently
-   versioned. Authoritative for the wire format.
+   per-convention schemas (`subscription` / `value`-`v0.2`,
+   `lifecycle` / `launcher`-`v0.3`), each `additionalProperties: false` and
+   independently versioned. Authoritative for the wire format.
 2. **`docs/design-v0.2.md`** — prose. Defines the two-layer model and
    semantics: the topic-log substrate, the conventions, the liveness
    tiers, the subscription condition-algebra, the three clocks.
@@ -55,7 +55,12 @@ The substrate + opt-in conventions + reference orchestration, in
   `schedule.py` (the subscription **condition-algebra**: `satisfied()`,
   `Subscription`, `is_unsatisfiable()` — `from`/`every`/`until` over
   `step`/time/count), `handle.py` (portable liveness handles `local://host/pid`;
-  `handle_pid` owns the parse, `resolve` the liveness probe).
+  `handle_pid` owns the parse, `resolve` the liveness probe), `launch.py` (the
+  launch's correlation id: minted per launch, stamped on both `launcher.*`
+  records and re-emitted on the worker's `lifecycle.started`, so a death names
+  the launch it ended rather than forging the run's verdict —
+  `docs/specs/launcher-record-identity.md`; transported ambiently via
+  `RUNSTATE_LAUNCH_ID` / a ContextVar).
 - **`worker.py`** — the reference `Worker` loop (context manager + the two
   drivers: `steps(total)` runs on the launch contract's target, `serve()` on
   leased demand): drains `control.*` (positional answer fold; expiry
