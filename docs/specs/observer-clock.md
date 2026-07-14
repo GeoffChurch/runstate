@@ -1,9 +1,32 @@
 # Spec: the observer clock — `seq` orders, `t` measures
 
-**Status:** DRAFT 2026-07-14, pending the adversarial pass. Item 1 of
-`../backlog/third-party-observer.md`. Proposes the **first envelope bump in the
-project's history** (`envelope-v0.3`), and argues it costs zero migration and
-*deletes* more than it adds.
+**Status:** DRAFT 2026-07-14 — **REFUTED IN PART by the adversarial pass; under
+revision.** The *field* survives; its **justification and all three of its deletions do
+not**. Corrections landed below inline; the full rewrite awaits the owner's ruling.
+Item 1 of `../backlog/third-party-observer.md`.
+
+**The corrections (each verified by hand, not taken on an adversary's word):**
+1. **A load-bearing statistic in this doc was INVERTED.** It read "`Value.t` … null on 0
+   of 150 sampled translation runs", which as written says the field was *never*
+   forgotten — refuting the very claim it was cited for. Measured truth: translation
+   **90,732 / 90,732 value points are null (100%)** — written by hand as `t=None`,
+   deliberately, by workers whose `step` is a sentence index and who honestly decline a
+   time axis they do not have. And mycooc: **0 / 95,738 null (0%)**, because it uses the
+   reference `Worker`. **The real rule is not "body fields get forgotten" — it is
+   "fields the LIBRARY writes are never forgotten; fields user code hand-builds are."**
+   That weakens the coverage killer aimed at the heartbeat-only alternative below.
+2. **`created_at` is NOT an append time**, so §2.4's "a projection, not a change" is too
+   strong. `SqliteChannel` calls `time.time()` **before** taking the lock, so under 8
+   concurrent writers — one host, one clock, no NTP step — **11% of records have `t`
+   going backwards versus `seq`** (worst: −56.7 ms, measured). The stamp must move
+   **inside the append critical section** (SQL-side, as Postgres already does): the same
+   hammer then yields **0 inversions in 2,400**. Which is the payoff — **monotone-with-`seq`
+   becomes a testable CONFORMANCE PROPERTY**, answering the objection that `t` would be
+   the first envelope field a backend cannot be held to.
+3. **The keystone rule (§2.2) is FALSE as stated** — "the envelope carries what the
+   substrate KNOWS" evicts `name` and `request_id`, which are *writer*-supplied (the
+   substrate indexes them; it does not know them). See §2.2's replacement.
+4. **All three deletions (§2.3) are withdrawn.** See §2.3.
 
 ## 1. The problem: nothing on the log says when anything happened
 
@@ -68,8 +91,13 @@ Envelope = (seq, topic, name, request_id, t, body)
   with the fact that at any distance where clocks cannot be synced, **absence of news is
   not news**: a log ending at T cannot distinguish "the worker died at T" from "the rest
   has not arrived."
-- **Time NEVER arbitrates.** Claims, verdicts and discharge are decided by `seq` + the
-  CAS, forever. Claiming on staleness *inference* is an already-refuted dead end
+- **Time never arbitrates a CLAIM or a DEATH VERDICT.** *(Corrected: "time NEVER
+  arbitrates" was false the day it was written — `ensure` already gates production on
+  wall-clock via `until={"time_seconds": …}`, and `store.md`'s GC grace window gates an
+  `rm -rf`.)* The precise rule: time may gate a **reversible** decision (`ensure`'s drive
+  window); an **irreversible** one (the GC) must be gated on a **record-plane fact**
+  (`live_episode is None` ∧ no pointer), with time as a belt and never as the reason.
+  Claims, verdicts and discharge are decided by `seq` + the CAS, forever. Claiming on staleness *inference* is an already-refuted dead end
   (`../dead_ends/failure-detector.md`: it admits a double-live window that permanently
   poisons reuse). The clock describes; it does not decide. This line must be defended
   every time someone says "we have timestamps now."
@@ -81,8 +109,22 @@ filters on it"* — misfiles time: our backends store it and do not route on it,
 Kafka (`offsetsForTimes`) and Redis Streams (whose IDs **are** timestamps) do. The
 rule is a proxy for something truer:
 
-> **The envelope carries what the SUBSTRATE knows. The body carries what the WRITER
-> knows.**
+> ~~**The envelope carries what the SUBSTRATE knows. The body carries what the WRITER
+> knows.**~~ **REFUTED**: `name` and `request_id` are supplied by the *writer*; the
+> substrate merely indexes them. The rule evicts two fields already in the envelope.
+>
+> **The replacement — an ADDED clause, not a new rule.** The envelope carries **(a)**
+> what the substrate **assigns at the append chokepoint**, uniformly, for every record,
+> without reading the body — `seq` (the order) and `t` (the instant); and **(b)** what it
+> **indexes / routes / filters** on — `topic`, `name`, `request_id` (the original rule,
+> intact). Author/provenance (§12.8) is in neither: the *writer* supplies it, and nothing
+> routes on it — so it stays excluded, which is what the rule had to achieve.
+>
+> The real argument for `t` is **universality + chokepoint**, not epistemics: every record
+> is appended at some instant, and `channel.send` is the one code path every record passes
+> through — so a field stamped there cannot be forgotten by any convention, any writer, or
+> any *future* topic. (The "only envelope bump we will ever need" boast is withdrawn: it is
+> unearned, and was written the same week the ledger found another missing basis vector.)
 
 `seq` — the substrate assigns it. `topic`/`name`/`request_id` — the routing keys it
 indexes. **`t` — the substrate is the party doing the appending, and appending is an
@@ -96,7 +138,30 @@ It also **bounds this bump**: what else does a substrate know? Order, routing ke
 time. That is the complete list — so this is plausibly the only envelope bump the
 design will ever need, which is the claim one wants before touching a frozen wire.
 
-### 2.3 What this DELETES (the basis reduction)
+### 2.3 What this DELETES — ~~the basis reduction~~ **ALL THREE WITHDRAWN**
+
+**The deletions were the spec's selling point and they are wrong.** `t` is a pure ADDITION
+to the basis. Honest, and weaker than what was pitched:
+
+- **`Watcher.last_heartbeat_at` — KEEP.** Deleting it is a *regression*. Today
+  `beacon_age = now() − arrival`, and BOTH terms come from the observer's own clock —
+  **skew-immune by construction**. `now() − t` is a *cross-clock* subtraction: a worker
+  clock 10 min slow makes a healthy, beaconing run read `presumed_dead` (a failure
+  outcome — `sweep` would fail a live run); 10 min fast makes `beacon_age` negative → the
+  run reads maximally fresh forever and a hang is never detected. **That is verbatim the
+  failure this spec uses to execute the monotone clamp** (§3). Correct design: keep the
+  arrival clock as the preferred input for beacons the observer *witnessed*, and use `t`
+  ONLY to seed the prefix it did not.
+- **`Value.t` / `Started.attached_at` — KEEP.** They are the **worker's frame**; envelope
+  `t` is the **appender's frame**. Design §11: *"all scheduling predicates evaluate in the
+  worker's tick, against step/wall-clock"* — and `history()` replays that axis
+  (`t_point − epoch`). On `PostgresChannel` the appender is the *server*, so deleting them
+  silently moves the replay into a different frame from the live evaluation. The null is
+  load-bearing too: a timeless worker (translation's) *declines* the axis, and the memoizer
+  documents and TESTS the resulting inertness. If coverage is wanted, it is a `value-v0.3`
+  bump making `Value.t` required — a separate question, not this spec's.
+
+*(Superseded text follows.)*
 
 - **`Value.t`** — the value's wall-clock, worker-stamped, nullable. Now derivable from
   its envelope. *(And unreliable in practice: null on **0 of 150** sampled translation
