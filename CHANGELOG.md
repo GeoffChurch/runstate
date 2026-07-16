@@ -162,7 +162,13 @@ since v0.2. The lifecycle and launcher conventions each bumped twice:
 - User-facing documentation: `docs/guide.md` ("Integrate your training loop in 15
   minutes") and `docs/api.md` (the public-surface reference, with a drift-guard
   test), plus a submitit/SLURM launcher *recipe* (`examples/submitit/`) and its
-  design entry (`docs/backlog/submitit-launcher.md`).
+  design entry (`docs/backlog/submitit-launcher.md`). Then the
+  **protocol-implementer's guide** (`docs/implementers-guide.md`) — the
+  language-neutral conformance reference for a non-Python implementation, whose
+  embedded wire examples are drift-guarded by `tests/test_implementers_guide.py`
+  (the `test_schema.py` mechanic) — and two owner-gated design deliberations it
+  surfaced: `docs/backlog/cross-host-claim-gate.md` and
+  `docs/backlog/in-log-compaction.md` (both NOT CONVERGED).
 
 ## [0.2.0.dev0] — unreleased development version
 

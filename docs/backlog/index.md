@@ -90,7 +90,11 @@ clusters that unlock each other, with a sequencing — see
   done-ness). Defends the closed `outcome` enum from the recurring
   completion-classification bug class (mycooc 1963732, 8ea82e3). `RunResult.reason`
   stays branched-on-by-nobody by design (a refinement of `outcome`, not a why).
-- **Cross-host liveness for the claim gate** — `live_episode` sits at the probe-only
+- **Cross-host liveness for the claim gate** — elaborated 2026-07-16 into
+  [cross-host-claim-gate](cross-host-claim-gate.md) (DESIGN DELIBERATION, NOT
+  CONVERGED, owner-gated: the two candidate designs analyzed against the
+  invariants each touches, plus the owner-decision list). Summary:
+  `live_episode` sits at the probe-only
   rung, so on a foreign host it goes blind and treats an unresolvable handle as live
   *forever*; a crashed foreign episode blocks the waker and the birth-CAS. The
   observe-then-claim / heartbeat-as-claim-detector approach is **refuted**
@@ -197,7 +201,11 @@ reasoning, listed here so they're discoverable as work (cross-ref, not moved):
 - **GC / retention policy** (§12.9) — *in-log* retention is full, no GC (the
   precondition `peek_terminal` / resume rely on); *home-level* collection is
   recipe'd (`../specs/store.md` Recipe 3: pointer-rooted mark-and-sweep,
-  selective-prune default). In-log compaction remains future work.
+  selective-prune default). In-log compaction remains future work, elaborated
+  2026-07-16 into [in-log-compaction](in-log-compaction.md) (DESIGN DELIBERATION,
+  NOT CONVERGED, owner-gated: the heartbeat keep-latest candidate, what it does to
+  the contiguous-`seq` contract, why the value plane is never compactable, and the
+  owner-decision list).
 
 ## Deferred from the exogenous-commit audit (2026-06-20)
 
@@ -262,20 +270,25 @@ reasoning, listed here so they're discoverable as work (cross-ref, not moved):
 - **README recipes** — remaining: the synchronous-yield RPC pattern, and
   multi-orchestrator (a launcher + a separate UI sending stops). The
   reuse/divergence-preempt/killed-redrive recipes shipped.
-- **Protocol-implementer's guide** — a doc for someone writing a non-Python
-  implementation (Rust, Go, TS). What conformance means; what tests to write; how to
-  interop with the Python reference. Must collect the audit's harvest of what a
-  non-Python implementer cannot infer without reading the Python: the public
-  raise-contract table (which functions raise what, when — `open_channel`
-  ValueError/ImportError, `attach` KeyError, `Watcher.poll` KeyError, `ensure`
-  TypeError/ValueError/`RunFailedError`/`NoProgressError`), the conformance tier ladder
-  (`in_process`/`cross_process`/`cross_host`), the `RunResult.reason` string
-  vocabulary, the Postgres lock-key constants, the topic-pattern grammar, and the
-  half-open window fencepost (`until={"step": N}` = `[0, N)`, reached iff
-  `progress + 1 >= N`; documented on `observables.progress`).
+- ~~**Protocol-implementer's guide**~~ — **SHIPPED 2026-07-16** as
+  [`../implementers-guide.md`](../implementers-guide.md): the language-neutral
+  reference for a non-Python implementation (Rust, Go, TS) — two-tier conformance,
+  the substrate contract, the conventions at their current wire versions, and the
+  audit's harvest of what a non-Python implementer cannot infer without reading the
+  Python (the public raise-contract table; the `in_process`/`cross_process`/
+  `cross_host` tier ladder; the `RunResult.reason` per-tier vocabulary; the Postgres
+  interop constants; the full topic-pattern grammar; the half-open window fencepost
+  `until={"step": N}` = `[0, N)`, reached iff `progress + 1 >= N`). Its wire
+  examples are drift-guarded by `tests/test_implementers_guide.py` (the
+  `test_schema.py` mechanic). Three tree-vs-note corrections folded in: only the
+  *verdict* folds raise `MalformedRecordError` (measurement folds skip); `history`
+  has no divergence raise since G1 (take-the-latest); `open_channel`'s `ValueError`
+  covers both `root=None` cases, not only a bad backend.
 - [protocol-algebra](protocol-algebra.md) — the principled constructions behind the
   layer interfaces (L1 free-monoid initiality, L2 designated intro/elim discipline +
   discharge folds = the context Γ, L3 observer-join), each yielding a **decision
   rule**, with retrodictions and the rejected-formalisms negative space. **Placement
-  open** — design appendix vs `overview.md` incorporation; seeds the implementer's
-  guide above.
+  partly resolved (2026-07-16):** the reader-facing seed (the three decision rules +
+  the intro/elim table) now lives in the implementer's guide "why layer" (§7,
+  dated); the **formal** treatment's final home (design appendix vs `overview.md`
+  incorporation) is still open.

@@ -16,6 +16,12 @@ The map:
 - [`api.md`](api.md) — the public-surface reference (every `runstate.__all__`
   name, the wire topics, the CLI, the exceptions; derived, drift-guarded by
   `tests/test_public_api.py`).
+- [`implementers-guide.md`](implementers-guide.md) — the language-neutral
+  reference for someone writing a **non-Python** implementation (Rust, Go, TS):
+  what conformance means, the raise-contract / tier-ladder / interop-constant
+  harvest, and how to interop with the Python reference on shared storage
+  (derived; its wire examples are drift-guarded by
+  `tests/test_implementers_guide.py`).
 - `backlog/` — forward-looking ideas (living documents; index + standalone files).
 - `dead_ends/` — refuted ideas with diagnosis (index + standalone files).
 - `specs/` — converged, ready-to-implement feature designs.

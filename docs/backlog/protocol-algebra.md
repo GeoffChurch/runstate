@@ -1,11 +1,14 @@
 # The protocol algebra — the constructions behind the layer interfaces
 
 **Status:** drafted 2026-06-09 out of a design conversation (organic-development
-retrospective). **Placement is deliberately unsettled** — candidate homes:
-a design appendix (in `../design-v0.2.md` or standalone), partial incorporation
-into `../overview.md` (reader-facing form of the decision rules), and the seed
-of the **protocol-implementer's guide** (Documentation section of the
-[index](index.md)). Until that settles, this file is the canonical draft.
+retrospective). **Placement partly resolved (2026-07-16):** the reader-facing
+seed — the three decision rules + the intro/elim table (with multiplicities) —
+shipped into the implementer's guide's "why layer"
+([`../implementers-guide.md`](../implementers-guide.md) §7). The **formal**
+treatment's final home is still unsettled — candidate homes: a design appendix
+(in `../design-v0.2.md` or standalone) and partial incorporation into
+`../overview.md`. Until that settles, this file is the canonical draft (the
+retrodictions and rejected-formalisms negative space live only here).
 
 **Purpose.** The orthonormal-basis rubric (`CLAUDE.md` "Design rigor") *audits*
 primitives post-hoc; the constructions here are what *generate* the rubric's
@@ -144,12 +147,15 @@ into `lifecycle.*`" — a proposal this rule rejects without discussion.
 
 ## Open questions / next steps
 
-- [ ] **Placement:** design appendix vs `overview.md` incorporation vs both.
-  The three decision rules are the reader-facing payload; the retrodictions
-  and negative space may be appendix-only material.
-- [ ] **Implementer's guide seed:** an implementer who knows "L2 = designated
-  intro/elim pairs + discharge folds" can re-derive most of the conventions —
-  fold this into the planned protocol-implementer's guide.
+- [ ] **Placement (formal home):** design appendix vs `overview.md`
+  incorporation vs both. The three decision rules (the reader-facing payload)
+  shipped into the implementer's guide §7 (2026-07-16); what is still open is
+  where the *formal* treatment — the retrodictions and negative space, likely
+  appendix-only material — finally lands.
+- [x] **Implementer's guide seed:** DONE (2026-07-16). The guide's "why layer"
+  (`../implementers-guide.md` §7) carries "L2 = designated intro/elim pairs +
+  discharge folds" so an implementer can re-derive most of the conventions —
+  exactly the seed this item called for.
 - [ ] **Uninvestigated lens — effects & handlers:** the Worker surface as an
   effect signature (yield value / check stop / heartbeat) with launchers as
   handlers; possibly the right shape for worker SDKs in other languages.
