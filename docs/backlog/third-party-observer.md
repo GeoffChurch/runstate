@@ -37,7 +37,13 @@ imagine. A persona with a keyboard finds the ones you aren't.
 
 ## 1. The observer clock — a dead run reads as `Running`  *(ship FIRST, alone)*
 
-**→ GRADUATED TO SPEC 2026-07-16: [`../specs/observer-clock.md`](../specs/observer-clock.md)** —
+**→ SHIPPED 2026-07-16 (`4729fcd`; migration converged, `8aa8129`+run). Spec:
+[`../specs/observer-clock.md`](../specs/observer-clock.md).** lifecycle-v0.4 + launcher-v0.4
+date the beacon; `Watcher` seeds from the beacon's `t` (the victim-1 fix), `last_activity`
+lands as a derived fold, no substrate op. Migration ran on both consumer roots — 1,786
+logs migrated, 1,910 read cleanly, 0 `t`-less, idempotent; the recency guard learned the
+observer-clock lesson the hard way (file mtime is self-defeating after a read; use
+`max(created_at)`). 725 tests green. Original graduation note follows. —
 **CONVERGED on Proposal B.** The fork (envelope `t` vs a convention clock vs a capability)
 resolved, after three adversaries and a long deliberation, to **date the beacon**: the gap
 is not a stamping behaviour but a **missing field** — `Heartbeat` (the record liveness
