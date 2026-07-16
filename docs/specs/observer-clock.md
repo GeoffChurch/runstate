@@ -315,8 +315,17 @@ your liveness" is the design's standing line for convention opt-outs. Noted, not
 - **Dating `control.*`** (control-latency: "stop issued at T₁, honored at T₂"). A B-shaped
   extension (a `subscription`-convention bump adding `t`), not a step toward A. Trigger:
   a third-party controller that needs issue-time it did not itself send.
-- **`Value.t` required** (the data-plane wall-clock x-axis). Trigger: the viz project's
-  data plane. Until then it stays present-nullable.
+- **`Value.t` required** (a data-plane wall-clock x-axis). Deferred **not** for migration
+  cost but because present-nullable encodes a *genuine N/A state*: `Value.t` is the value's
+  **observation** time, and a backfill/import/externally-replayed or non-temporally-indexed
+  series has no known one — null says so honestly, and `history()` correctly makes
+  time-conditioned replay **inert** for it (verified: null-`t` series → 1 point;
+  `_conforming_point` admits `t is None`). Required-`t` would force fabricating an
+  observation time from the write moment — the write-vs-observe conflation the A-vs-B
+  argument rejected — and silently fire time-conditions on a fake cadence. Freshness never
+  reads `Value.t` regardless (it reads the beacon), so this is not this spec's call.
+  Trigger: the viz/data-plane project — which may keep base `Value` nullable and put a
+  required acquisition clock on a *richer* typed value convention instead.
 - **`restore(envelopes)`** (cross-backend log transfer preserving `seq`). Trigger: a
   consumer that needs to re-materialize a log into a different backend through the API.
 - **Expose the staleness clock-basis** (witnessed vs seeded, §5). Deferred: the seeded
