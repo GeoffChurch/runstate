@@ -42,6 +42,9 @@ Issues = "https://github.com/GeoffChurch/runstate/issues"
 
 [project.optional-dependencies]
 postgres = ["psycopg[binary]>=3"]
+# examples/vqe only; the other examples are stdlib+runstate. qiskit needs
+# numpy 2.x -- prefer a fresh venv (see examples/vqe/vqe.py's module note).
+examples = ["qiskit>=1.0"]
 test = ["pytest", "jsonschema", "mypy", "black", "psycopg[binary]>=3"]
 
 [tool.setuptools.packages.find]
