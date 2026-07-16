@@ -3,18 +3,51 @@
 import runstate
 
 EXPECTED = {
-    "open_channel", "attach", "Channel", "Body", "Envelope",
+    "open_channel",
+    "attach",
+    "Channel",
+    "Body",
+    "Envelope",
     "Worker",
-    "Launcher", "LaunchHandle", "ThreadLauncher", "LocalLauncher",
-    "Watcher", "await_consumed", "RunStatus", "Running", "RunResult", "Outcome",
-    "MalformedRecordError", "peek_terminal",
-    "latest_episode", "live_demand", "live_episode", "progress", "undischarged_stops",
-    "value_series", "handle_pid",
-    "sweep", "Variant",
-    "history", "ensure", "launch_producer", "relaunch_if_needed", "ensure_served",
-    "foreign_episode", "RunFailedError", "NoProgressError",
-    "Topic", "Condition",
-    "Value", "Started", "Heartbeat", "Stopped", "Nak", "Launched", "Terminated",
+    "Launcher",
+    "LaunchHandle",
+    "ThreadLauncher",
+    "LocalLauncher",
+    "Watcher",
+    "await_consumed",
+    "RunStatus",
+    "Running",
+    "RunResult",
+    "Outcome",
+    "MalformedRecordError",
+    "peek_terminal",
+    "last_activity",
+    "latest_episode",
+    "live_demand",
+    "live_episode",
+    "progress",
+    "undischarged_stops",
+    "value_series",
+    "handle_pid",
+    "sweep",
+    "Variant",
+    "history",
+    "ensure",
+    "launch_producer",
+    "relaunch_if_needed",
+    "ensure_served",
+    "foreign_episode",
+    "RunFailedError",
+    "NoProgressError",
+    "Topic",
+    "Condition",
+    "Value",
+    "Started",
+    "Heartbeat",
+    "Stopped",
+    "Nak",
+    "Launched",
+    "Terminated",
 }
 
 
@@ -33,7 +66,9 @@ def test_vocab_enums_are_wire_strings():
     stored on every existing .db, so serialization is byte-identical."""
     assert runstate.Outcome.COMPLETED == "completed"
     assert runstate.Outcome.PRESUMED_DEAD == "presumed_dead"
-    assert runstate.Outcome.failures() == frozenset({"errored", "killed", "presumed_dead"})
+    assert runstate.Outcome.failures() == frozenset(
+        {"errored", "killed", "presumed_dead"}
+    )
     assert runstate.Topic.VALUE == "value"
     assert runstate.Topic.CONTROL_STOP == "control.stop"
-    assert runstate.Stopped.TOPIC == "lifecycle.stopped"   # ClassVars now point at Topic
+    assert runstate.Stopped.TOPIC == "lifecycle.stopped"  # ClassVars now point at Topic

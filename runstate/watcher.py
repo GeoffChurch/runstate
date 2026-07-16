@@ -8,11 +8,17 @@ need state a single log read can't have:
   3. **probe the handle** — if a tracked handle resolves dead and the log has no
      terminal record, the worker died without reporting → ``presumed_dead``;
   4. **heartbeat staleness** — if the newest ``lifecycle.heartbeat`` is older than
-     ``heartbeat_timeout`` (wall-clock since it *arrived*), the worker is hung or
-     crashed → ``presumed_dead``. Off unless a timeout is given (the dead-vs-busy
-     threshold is per-workload, §8). The clock seeds at registration (so a
-     never-beaconing startup death is caught), resets only when a poll observes a
-     NEW heartbeat seq, and the boundary is strict: age == timeout is still alive.
+     ``heartbeat_timeout``, the worker is hung or crashed → ``presumed_dead``. Off
+     unless a timeout is given (the dead-vs-busy threshold is per-workload, §8).
+     The staleness clock (``last_heartbeat_at``) is the WITNESSED arrival time of a
+     beacon once one is observed (skew-immune: both terms are the observer's own
+     clock), reset only when a poll observes a NEW heartbeat seq. At registration
+     it is SEEDED from the newest beacon's own ``t`` — the un-witnessed prefix's
+     best cross-clock estimate (observer-clock §5), so a cold attach to a
+     long-dead run dies correctly instead of reading fresh — or from ``now()`` when
+     no beacon exists yet (so a never-beaconing startup death is still caught) or
+     the beacon's ``t`` is junk/unmigrated. The boundary is strict: age == timeout
+     is still alive.
 
 ``poll(run_id)`` is the single non-blocking verdict across all tiers; ``wait``
 loops it until terminal. ``now``/``sleep`` are injectable for deterministic tests.
@@ -56,6 +62,13 @@ class Running:
 
 # A run's current status is either still-running or a terminal verdict.
 RunStatus = Union[Running, RunResult]
+
+
+def _is_beacon_step(step: object) -> bool:
+    """A conforming heartbeat step: None (stepless) or a real int (bool excluded).
+    The one definition of the step-junk rule the beacon seed (``_seed_beacon``)
+    and the witnessed-beacon upgrade (``_note_heartbeat``) both apply."""
+    return step is None or (isinstance(step, int) and not isinstance(step, bool))
 
 
 # --- per-run liveness probe (resolved once at registration) ---
@@ -177,13 +190,43 @@ class Watcher:
             if isinstance(channel, EpisodeProbe)
             else _NO_LIVENESS
         )
+        # Seed the staleness clock (observer-clock §5). last_heartbeat_at is the
+        # WITNESSED (skew-immune) arrival time once we observe a NEW beacon seq --
+        # but a cold attach did not witness the prefix. So seed it from the newest
+        # beacon's own `t` when that beacon carries a well-typed one (the
+        # un-witnessed prefix's best estimate, in a clock comparable to now()), and
+        # mark that beacon's seq accounted so ONLY a strictly-newer, witnessed
+        # beacon upgrades to now() (via the unchanged _note_heartbeat). No beacon
+        # yet, or a junk/unmigrated `t`, falls back to now() exactly as before --
+        # which preserves the never-beaconed-startup-crash catch and tolerates junk
+        # (measurement-plane). A future-dated `t` yields a negative age downstream
+        # and lands conservative-live through the existing path -- no special case.
+        seed_at, seed_seq, seed_step = self._seed_beacon(channel)
         self._runs[run_id] = _RunState(
             run_id=run_id,
             channel=channel,
             handle=handle,
-            last_heartbeat_at=self._now(),
+            last_heartbeat_at=seed_at,
             liveness=liveness,
+            last_hb_seq=seed_seq,
+            last_step=seed_step,
         )
+
+    def _seed_beacon(self, channel: Channel) -> tuple[float, int, Optional[int]]:
+        """The (last_heartbeat_at, last_hb_seq, last_step) seed for a freshly
+        tracked run (observer-clock §5): the newest beacon's `t`/seq/step when the
+        `t` is well-typed, else (now(), 0, None) -- the pre-clock behavior, which
+        catches a never-beaconed startup crash and tolerates a junk/unmigrated `t`.
+        A well-typed seed carries its seq so the prefix beacon is not re-witnessed
+        (only a strictly-newer beacon upgrades the clock)."""
+        hb = channel.latest(Topic.LIFECYCLE_HEARTBEAT)
+        if hb is not None:
+            t = hb.body.get("t")
+            if isinstance(t, (int, float)) and not isinstance(t, bool):
+                step = hb.body.get("step")
+                seed_step = step if _is_beacon_step(step) else None
+                return float(t), hb.seq, seed_step
+        return self._now(), 0, None
 
     def poll(self, run_id: str) -> RunStatus:
         """One non-blocking status for ``run_id`` across all tiers: a terminal
@@ -370,10 +413,10 @@ class Watcher:
                 # measurement — it earns no liveness credit and is skipped
                 # (the next conforming beacon supersedes it).
                 return
-            if step is not None and not (
-                isinstance(step, int) and not isinstance(step, bool)
-            ):
+            if not _is_beacon_step(step):
                 return  # wrong-typed step: the same junk-beacon rule
+            # A NEW beacon seq is one we WITNESSED arriving, so upgrade the clock
+            # to now() -- skew-immune again (observer-clock §5).
             st.last_heartbeat_at = self._now()
             st.last_step = step
 

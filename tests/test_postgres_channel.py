@@ -117,7 +117,7 @@ def test_lock_answers_liveness_where_resolve_abstains(pg_ready):
     ch = PostgresChannel(pg_ready, run_id=run_id)
     holder = PostgresChannel(pg_ready, run_id=run_id)
     try:
-        started_seq = ch.send({"handle": foreign, "attached_at": None},
+        started_seq = ch.send({"handle": foreign, "t": None},
                               topic="lifecycle.started", expected_seq=0)
         holder.hold_episode(started_seq)
         assert ch.episode_alive(started_seq) is True   # the lock answers where resolve can't
@@ -237,7 +237,7 @@ def test_watcher_staleness_floor_is_not_vetoed_by_a_held_lock(pg_ready):
     try:
         s = obs.send({}, topic="lifecycle.started", expected_seq=0)
         holder.hold_episode(s)                                       # lock HELD (alive)
-        obs.send({"step": 0, "consumed_seq": 0}, topic="lifecycle.heartbeat")
+        obs.send({"step": 0, "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat")
         clock = {"t": 0.0}
         w = Watcher(now=lambda: clock["t"], heartbeat_timeout=1.0)
         w.observe(run_id, obs)

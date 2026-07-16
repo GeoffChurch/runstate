@@ -22,6 +22,7 @@ import os
 import socket
 import subprocess
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional, Protocol
@@ -149,13 +150,22 @@ class ThreadLauncher:
         handle = local_handle()
         launch_id = new_launch_id()
         channel.send(
-            asdict(Launched(handle=handle)), topic=Launched.TOPIC, request_id=launch_id
+            asdict(Launched(handle=handle, t=time.time())),
+            topic=Launched.TOPIC,
+            request_id=launch_id,
         )
         state = _ThreadState()
 
         def _terminated(exit_code: int) -> None:
             channel.send(
-                asdict(Terminated(reason="exited", exit_code=exit_code, signal=None)),
+                asdict(
+                    Terminated(
+                        reason="exited",
+                        exit_code=exit_code,
+                        signal=None,
+                        t=time.time(),
+                    )
+                ),
                 topic=Terminated.TOPIC,
                 request_id=launch_id,
             )
@@ -237,10 +247,11 @@ class _LocalHandle:
         if self._reaped or rc is None:
             return
         self._reaped = True
+        t = time.time()  # the reaper's clock, at the reaped death (one reap, one t)
         if rc < 0:  # died from signal -rc
-            body = asdict(Terminated(reason="killed", signal=-rc, exit_code=None))
+            body = asdict(Terminated(reason="killed", signal=-rc, exit_code=None, t=t))
         else:
-            body = asdict(Terminated(reason="exited", exit_code=rc, signal=None))
+            body = asdict(Terminated(reason="exited", exit_code=rc, signal=None, t=t))
         self.channel.send(body, topic=Terminated.TOPIC, request_id=self.launch_id)
 
 
@@ -284,7 +295,9 @@ class LocalLauncher:
         proc = subprocess.Popen(cmd, env=child_env)
         handle = f"local://{socket.gethostname()}/{proc.pid}"
         channel.send(
-            asdict(Launched(handle=handle)), topic=Launched.TOPIC, request_id=launch_id
+            asdict(Launched(handle=handle, t=time.time())),
+            topic=Launched.TOPIC,
+            request_id=launch_id,
         )
         h = _LocalHandle(
             run_id=run_id,

@@ -3,8 +3,10 @@
 Observables: pure, body-aware folds ``log -> derived view`` — the questions you
 can ask of a run without disturbing it (the read side of design §7's
 read-vs-subscribe line; reads never pin a worker, subscriptions do). Observe
-*statelessly* here; watch *statefully* with the ``Watcher`` (which adds the one
-non-log-derivable input, arrival time). Not Rx-style observables — pull-side
+*statelessly* here; watch *statefully* with the ``Watcher`` (which adds the
+preferred witness clock, a beacon's *arrival* time — skew-immune, but only for a
+run watched from birth; a beacon's own ``t`` seeds the un-witnessed prefix, and
+``last_activity`` reads it directly for a cold observer). Not Rx-style observables — pull-side
 pure functions; the push side is the subscription convention.
 
 Membership test: stateless, observer-side, derived-never-stored. Needs a
@@ -166,7 +168,7 @@ def _episode_stopped(channel: Channel) -> Envelope | None:
 
 def _launch_id(e: Envelope) -> str:
     """The launch a ``launcher.*`` record names. Every launcher record must name
-    one (launcher-v0.3 requires the ``request_id``): a death record that names no
+    one (launcher-v0.4 requires the ``request_id``): a death record that names no
     launch asserts the unknowable "the run is dead" and cannot be attributed —
     the verdict plane refuses to guess, so it is malformed, loudly."""
     if e.request_id is None:
@@ -174,7 +176,7 @@ def _launch_id(e: Envelope) -> str:
             e.seq,
             e.topic,
             "no request_id: a launcher record must name the launch it reports "
-            "(launcher-v0.3)",
+            "(launcher-v0.4)",
         )
     return e.request_id
 
@@ -263,6 +265,37 @@ def peek_terminal(channel: Channel) -> Optional[RunResult]:
     else:
         outcome = Outcome.ERRORED
     return RunResult(outcome=outcome, reason=t.reason)
+
+
+def last_activity(channel: Channel) -> Optional[float]:
+    """When this run last did anything, by the newest dated record's own ``t`` —
+    the freshness clock a third-party observer reads (observer-clock §6). The
+    newest ``t`` among ``latest(heartbeat)``, ``latest(stopped)``,
+    ``latest(terminated)``: a handful of O(1) ``latest`` reads, never a ``max`` over
+    the whole log (one record from a fast clock would pin a whole-log max into the
+    future forever, and this feeds the GC's irreversible action — §4's
+    irreversible-action rule is the guard; ``latest`` only reads the current newest,
+    so a saner later beacon supersedes it). None if no dated record exists yet.
+
+    Cross-clock by construction: ``t`` is the worker/reaper's wall-clock, so an
+    observer computing ``now() - last_activity`` mixes two clocks — a display-only
+    estimate, never an ordering key or an arbiter of an irreversible decision (§4).
+    A record whose ``t`` is absent or wrong-typed (a foreign/unmigrated log)
+    contributes nothing — the measurement rule (a non-measurement is skipped, never
+    compared against)."""
+    ts: list[float] = []
+    for topic in (
+        Topic.LIFECYCLE_HEARTBEAT,
+        Topic.LIFECYCLE_STOPPED,
+        Topic.LAUNCHER_TERMINATED,
+    ):
+        e = channel.latest(topic)
+        if e is None:
+            continue
+        t = e.body.get("t")
+        if isinstance(t, (int, float)) and not isinstance(t, bool):
+            ts.append(float(t))
+    return max(ts) if ts else None
 
 
 def boundary_voided(
