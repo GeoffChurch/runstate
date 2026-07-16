@@ -76,8 +76,13 @@ Everything else below is completeness around that core.
   do its one job, and the emitter always knows *now*.
 - `Stopped` → `{completed, error, final_step, t}` — `t` **required**. The death time; the
   "when did it finish" and GC-age answer for a cleanly-stopped run.
-- `Started` — **unchanged**. `attached_at` already is its dated clock (and the run epoch,
-  `memoizer._epoch`). *(Naming harmony — `attached_at` vs `t` — is §10 Q1.)*
+- `Started` → `{handle, t}` — **`attached_at` renamed to `t`, and made required non-null**
+  (harmonized 2026-07-16). Every lifecycle record now carries one uniform field: `t` = the
+  worker's wall-clock when it emitted that record; the attach is just the started record's
+  event. `attached_at` was present-*nullable* only for a symmetry with `Value.t` that does
+  not apply — a worker that attaches always attaches *at a time* — so the null option goes,
+  matching its siblings. `memoizer._epoch` reads `Started.t` and its dead null-branch is
+  removed (the epoch is simply the started record's `t`).
 - `Nak` — **unchanged**, undated. Not read by the observer plane; keep minimal.
 
 **`launcher-v0.4`** (from v0.3):
@@ -127,20 +132,50 @@ below the conventions. This is the minimality that chose B over A.
 
 ---
 
-## 5. The `Watcher`: keep `last_heartbeat_at`
+## 5. The `Watcher`: keep `last_heartbeat_at`; seed it from `t`
 
-Do **not** replace the arrival clock with `now() − t`. `beacon_age = now() − last_heartbeat_at`
-is **skew-immune** — both terms are the observer's own clock — and it is the correct,
-preferred measurement for a beacon the observer *witnessed*. Replacing it wholesale
-reintroduces the exact failure used to kill the monotone clamp (a worker clock 10 min
-fast ⟹ negative age ⟹ maximally fresh forever ⟹ a hang never detected).
+**Staleness is secretly two inferences**, and separating them is the whole design here:
+- **Progress** — "has a *new* beacon seq appeared since I started watching?" Both
+  timestamps are the observer's own clock, so it is **skew-immune** — but it needs an
+  observation *duration*, which a cold reader has not had.
+- **Cold freshness** — "how old is the newest beacon, by *its own* `t`?" Available
+  **instantly** from the record, but `now_observer − t_worker` is **cross-clock** by
+  construction. You cannot have both skew-immunity and an instant cold answer: instant +
+  cold means all you hold is the record (worker clock) and your now (observer clock), and
+  comparing them is cross-clock definitionally.
 
-The record's `t` does one new job: **seed the prefix the observer did not witness.** On
-`observe()`/registration, initialize `last_heartbeat_at` from `t(latest heartbeat)` rather
-than `now()`. Then a 21-day-old beacon reads its true age immediately (fixing victim 1),
-while beacons that arrive *during* watching are still timed skew-immune by arrival. Surface
-which basis produced a verdict (a distinct `reason`) so a consumer sees whether it stands
-on a cross-clock assumption.
+So: **keep `last_heartbeat_at` as the witnessed (skew-immune) clock — do not replace it.**
+`beacon_age = now() − last_heartbeat_at` with a witnessed arrival is both terms in the
+observer's clock; replacing it wholesale reintroduces the failure that kills the clamp (a
+worker clock 10 min fast ⟹ negative age ⟹ fresh forever ⟹ a hang never detected). The
+record's `t` does exactly one new job: **seed the prefix the observer did not witness.** On
+`observe()`/registration, initialize `last_heartbeat_at` from `t(latest heartbeat)` instead
+of `now()`; thereafter a witnessed new-seq beacon upgrades it to `now()` (skew-immune
+again). Read the field as *"the best available estimate of when the last beacon happened,
+in a clock comparable to now(): the record's own `t`, refined to your arrival observation
+when you have one."*
+
+**Why the seed is correct enough.** It converts today's *unconditional, unbounded*
+false-alive (every cold-attached dead run reads live, forever) into a *skew-bounded* one:
+the age estimate errs by at most the clock skew δ, extending the false-alive window from
+`timeout` to `timeout + δ`. In a datacenter δ is NTP-scale against a minutes-scale timeout
+— negligible. And the residual error is in the **conservative-live** direction the design
+already prefers (`live_episode` treats the unresolvable as live; §4 forbids hanging any
+irreversible action on staleness). A *negative* beacon_age (a future-dated beacon — the one
+unambiguous "my cross-clock estimate is broken" signal) lands as conservative-live by the
+existing code, which is the safe direction; no special handling is needed.
+
+**Galaxy note.** The witnessed clock is the observer's private observation — it does not
+travel. The record's `t` is on the log — it travels, and intra-worldline durations built
+from it (how long the run beaconed, the beat cadence) are the worker's proper time,
+frame-invariant at any distance. So the record's `t` is the *fundamental* liveness datum
+and witnessed-arrival is a local refinement on top — consistent with §4's "staleness is a
+local inference": at distance the tier is simply off (no shared now; absence of news is not
+news), and a distant reader computes durations, not observer-relative staleness.
+
+Whether to **expose which clock a verdict stood on** (witnessed vs seeded) is deferred to
+§9 — the residual error is bounded and conservative, and §4 already forbids the decisions
+where the basis would matter, so it is not load-bearing now.
 
 ---
 
@@ -205,7 +240,7 @@ GC's irreversible action. §4's irreversible-action rule is its guard.
   (the clock is already in hand). `runstate/launcher.py` — the `Launched`/`Terminated`
   emits gain `t` (both launchers; the reaper's clock for `terminated`).
 - `runstate/watcher.py` — seed `last_heartbeat_at` from `t(latest heartbeat)`; keep the
-  arrival clock for witnessed beacons; add the verdict-basis `reason`.
+  arrival clock for witnessed beacons (§5). No verdict-basis `reason` added (§9 defers it).
 - `runstate/observables.py` — a `last_activity(channel)` fold (§6); the "one
   non-log-derivable input" docstring softens (arrival time is now the *preferred* witness
   clock, not the *only* clock).
@@ -228,20 +263,25 @@ GC's irreversible action. §4's irreversible-action rule is its guard.
   data plane. Until then it stays present-nullable.
 - **`restore(envelopes)`** (cross-backend log transfer preserving `seq`). Trigger: a
   consumer that needs to re-materialize a log into a different backend through the API.
+- **Expose the staleness clock-basis** (witnessed vs seeded, §5). Deferred: the seeded
+  reading's error is bounded and conservative, and §4 forbids the only decisions where the
+  basis would matter, so no verdict needs it yet. Trigger: a consumer that wants to
+  *wait-and-confirm* a cold "dead" before acting on it.
 
 ---
 
-## 10. Open questions
+## 10. Resolved decisions (2026-07-16)
 
-1. **Naming harmony.** `Started.attached_at` vs the new `t` on its sibling lifecycle
-   records: one concept ("this record's wall-clock"), two names. No-warts leans toward
-   renaming `attached_at` → `t` and letting `memoizer._epoch` read the started's `t` —
-   but it touches `_epoch` and the run-epoch story. Harmonize in this bump, or leave
-   `attached_at` as the named epoch anchor? *(Lean: harmonize — one name for one concept.)*
-2. **Two convention bumps, or batch them?** `lifecycle-v0.4` + `launcher-v0.4` land
-   together and for one reason. Doctrine says independent timelines; the owner is fine
-   coupling a closed set. Cosmetic either way — but pick deliberately.
-3. **The `reason` vocabulary for the witnessed-vs-seeded staleness distinction** (§5):
-   does a consumer actually need to see which clock a `presumed_dead` stood on, or is it
-   internal to the `Watcher`? *(Lean: expose it — a cross-clock verdict is exactly the one
-   a careful consumer wants to double-check.)*
+1. **Naming harmony — HARMONIZE.** `Started.attached_at` → `t`, required non-null;
+   `memoizer._epoch` reads the started's `t`, null-branch removed (§3). One name, one
+   contract, for one concept.
+2. **Two bumps, not one version — INDEPENDENT.** `lifecycle-v0.4` + `launcher-v0.4` land in
+   one commit but keep separate numbers: coupling buys nothing (a shared schema fragment
+   fights `additionalProperties:false` regardless, §7-C), and independent versioning keeps
+   its real property — a consumer implementing only `lifecycle` never tracks `launcher`'s
+   churn. Two conventions are two conventions.
+3. **The staleness clock-basis — DO NOT expose now** (§5, §9). The seeded reading is a
+   bounded, conservative approximation, and §4 forbids the decisions where the
+   witnessed-vs-seeded distinction would matter; exposing it is surface without a consumer.
+   Parked with a named trigger (§9). *(This reverses the draft's "expose it" lean, on the
+   same minimality ground that chose B over A.)*
