@@ -76,13 +76,20 @@ def ch(request, tmp_path, monkeypatch):
     mints a unique uuid run_id per test (the shared ``log`` table has no per-test
     freshness -- uuid isolation stands in for ``tmp_path``'s)."""
     if request.param == "postgres":
+        # Resolve pg_ready FIRST: its pg_dsn dependency SKIPs when
+        # RUNSTATE_TEST_PG_DSN is unset -- before anything imports psycopg. The
+        # import below coming first turned "no postgres here" into 22 collection
+        # ERRORs on a machine without the [postgres] extra, where open_channel /
+        # conc_backend (which already resolve the fixture first) skip cleanly.
+        dsn = request.getfixturevalue("pg_ready")
         from runstate.channel.postgres import PostgresChannel
 
-        channel = PostgresChannel(request.getfixturevalue("pg_ready"),
-                                  run_id=f"ch-{uuid.uuid4()}")
+        channel = PostgresChannel(dsn, run_id=f"ch-{uuid.uuid4()}")
     elif request.param.startswith("sqlite"):
-        monkeypatch.setenv("RUNSTATE_SQLITE_JOURNAL_MODE",
-                           "DELETE" if request.param == "sqlite:delete" else "WAL")
+        monkeypatch.setenv(
+            "RUNSTATE_SQLITE_JOURNAL_MODE",
+            "DELETE" if request.param == "sqlite:delete" else "WAL",
+        )
         from runstate.channel.sqlite import SqliteChannel
 
         channel = SqliteChannel(tmp_path / "run.db")
@@ -113,8 +120,10 @@ def open_channel(request, tmp_path, monkeypatch):
     else:
         backend = "sqlite" if request.param.startswith("sqlite") else request.param
         if request.param.startswith("sqlite"):
-            monkeypatch.setenv("RUNSTATE_SQLITE_JOURNAL_MODE",
-                               "DELETE" if request.param == "sqlite:delete" else "WAL")
+            monkeypatch.setenv(
+                "RUNSTATE_SQLITE_JOURNAL_MODE",
+                "DELETE" if request.param == "sqlite:delete" else "WAL",
+            )
         root = str(tmp_path)
         run_id = "run"
 
@@ -136,10 +145,10 @@ def open_channel(request, tmp_path, monkeypatch):
 # a backend below the required tier -- "not applicable by nature", not "known bug".
 _TIERS = ["in_process", "cross_process", "cross_host"]
 _MAX_TIER = {
-    "memory": "in_process",       # shared via a process-global registry, NOT across OS processes
-    "sqlite": "cross_process",    # one db file; multiple connections / OS processes on a local FS
+    "memory": "in_process",  # shared via a process-global registry, NOT across OS processes
+    "sqlite": "cross_process",  # one db file; multiple connections / OS processes on a local FS
     "sqlite:delete": "cross_process",
-    "postgres": "cross_host",     # the shared-log CAS is the cross-host claim arbiter (one server = one total order)
+    "postgres": "cross_host",  # the shared-log CAS is the cross-host claim arbiter (one server = one total order)
 }
 
 
@@ -162,9 +171,18 @@ def conc_backend(request, tmp_path, monkeypatch):
         backend, journal = "postgres", None
     else:
         backend = "sqlite" if param.startswith("sqlite") else param
-        journal = "DELETE" if param == "sqlite:delete" else ("WAL" if backend == "sqlite" else None)
+        journal = (
+            "DELETE"
+            if param == "sqlite:delete"
+            else ("WAL" if backend == "sqlite" else None)
+        )
         if journal:
             monkeypatch.setenv("RUNSTATE_SQLITE_JOURNAL_MODE", journal)
         root = str(tmp_path)
-    return SimpleNamespace(param=param, backend=backend, root=root, journal=journal,
-                           namespace=uuid.uuid4().hex)
+    return SimpleNamespace(
+        param=param,
+        backend=backend,
+        root=root,
+        journal=journal,
+        namespace=uuid.uuid4().hex,
+    )
