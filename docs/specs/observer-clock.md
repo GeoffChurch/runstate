@@ -1,12 +1,15 @@
 # Spec: the observer clock — date the beacon
 
-**Status:** CONVERGED on **Proposal B** (2026-07-16). Draft 1 proposed a wall-clock `t`
-on every **envelope** (Proposal A); three independent adversaries refuted its
-justification (not the field — the *reasons*), and the owner ruled **B over A on
+**Status:** CONVERGED on **Proposal B**, then hardened by a fourth (implementation) review
+(2026-07-16). Draft 1 proposed a wall-clock `t` on every **envelope** (Proposal A); three
+adversaries refuted its *justification* (not the field), and the owner ruled **B over A on
 minimality + layer**: the clock is a semantic, run-life concern, so it belongs in the
-**opt-in conventions**, not the opinion-free substrate. This is the implementable spec.
-Item 1 of `../backlog/third-party-observer.md`. The full A-vs-B judgment and the
-adversarial findings are preserved in git history (commits `3ce77b1`, `3ce9eab`).
+**opt-in conventions**, not the opinion-free substrate. A final review then caught two
+implementation blockers now folded in: the Watcher fix must seed **three** fields or it is
+a silent no-op (§5), and `started` must be **renamed**, not `created_at`-stamped, in the
+migration (§8). This is the implementable spec. Item 1 of
+`../backlog/third-party-observer.md`; full A-vs-B judgment and adversarial findings in git
+(`3ce77b1`, `3ce9eab`).
 
 ---
 
@@ -46,7 +49,11 @@ Worker forgetting to stamp; the `Heartbeat` body has nowhere to put a time.
 3. **The GC's safety net does not hold.** `./store.md` Recipe 3 gates an *irreversible
    deletion* on "skip homes younger than T", with no clock to compute the age; the
    fallback (file mtime) is the one `../backlog/wal-liveness-mtime.md` documents as lying
-   under WAL. "When did this home last change?" = the newest dated record's time.
+   under WAL. "When did this home last change?" = `last_activity` (§6). *Scope: this spec
+   supplies the grace window's **age** (the belt); it does not by itself make the GC safe
+   cross-host — the hard gate `live_episode is None` reads conservatively-live for an
+   unresolvable foreign handle (`observables.py:145`). That is store.md's concern, not
+   this one's; victim 3 is the missing age, not the whole gate.*
 
 A consumer already broke the abstraction over this: mycooc reaches past the API with raw
 `sqlite3` + `SELECT max(created_at)`. That is the strongest evidence a primitive is
@@ -71,19 +78,27 @@ Everything else below is completeness around that core.
 
 ## 3. The change set
 
+**The basis: date the records the observer/liveness plane READS** — not "every lifecycle
+record." That set is `{started, heartbeat, stopped}` (lifecycle) + `{launched, terminated}`
+(launcher); `nak` is a lifecycle record and is deliberately *left undated* (only
+`await_consumed` reads it, for request correlation, never for time), so the set is minimal
+and orthogonal, not uniform-by-topic.
+
 **`lifecycle-v0.4`** (from v0.3):
 - `Heartbeat` → `{step, consumed_seq, t}` — `t` **required**. A beacon with no time cannot
   do its one job, and the emitter always knows *now*.
 - `Stopped` → `{completed, error, final_step, t}` — `t` **required**. The death time; the
   "when did it finish" and GC-age answer for a cleanly-stopped run.
 - `Started` → `{handle, t}` — **`attached_at` renamed to `t`, and made required non-null**
-  (harmonized 2026-07-16). Every lifecycle record now carries one uniform field: `t` = the
-  worker's wall-clock when it emitted that record; the attach is just the started record's
-  event. `attached_at` was present-*nullable* only for a symmetry with `Value.t` that does
-  not apply — a worker that attaches always attaches *at a time* — so the null option goes,
-  matching its siblings. `memoizer._epoch` reads `Started.t` and its dead null-branch is
-  removed (the epoch is simply the started record's `t`).
-- `Nak` — **unchanged**, undated. Not read by the observer plane; keep minimal.
+  (harmonized 2026-07-16). `t` = the worker's wall-clock when it attached. `attached_at` was
+  present-*nullable* only for a symmetry with `Value.t` that does not apply — a worker that
+  attaches always attaches *at a time* — so the null option goes, matching `heartbeat`/
+  `stopped`. `memoizer._epoch` reads `Started.t`; **keep its junk-tolerance guard** (a
+  non-numeric/absent `t` on a hand-composed or foreign started earns `None`, not a crash —
+  the measurement-plane rule, `memoizer.py:186`); only the reference-Worker *null* case
+  becomes unreachable, not the guard's purpose.
+- `Nak` — **unchanged, undated by design.** Not on the observer plane; a clock on it would
+  be spanning-creep (dating a record nothing times). Do **not** "date Nak for symmetry."
 
 **`launcher-v0.4`** (from v0.3):
 - `Launched` → `{handle, status, t}` — `t` **required**. Launch time; and it dates the
@@ -148,12 +163,23 @@ So: **keep `last_heartbeat_at` as the witnessed (skew-immune) clock — do not r
 `beacon_age = now() − last_heartbeat_at` with a witnessed arrival is both terms in the
 observer's clock; replacing it wholesale reintroduces the failure that kills the clamp (a
 worker clock 10 min fast ⟹ negative age ⟹ fresh forever ⟹ a hang never detected). The
-record's `t` does exactly one new job: **seed the prefix the observer did not witness.** On
-`observe()`/registration, initialize `last_heartbeat_at` from `t(latest heartbeat)` instead
-of `now()`; thereafter a witnessed new-seq beacon upgrades it to `now()` (skew-immune
-again). Read the field as *"the best available estimate of when the last beacon happened,
-in a clock comparable to now(): the record's own `t`, refined to your arrival observation
-when you have one."*
+record's `t` does exactly one new job: **seed the prefix the observer did not witness.**
+
+**Seed THREE fields at registration, not one — this is the load-bearing detail.** `poll()`
+calls `_note_heartbeat` *first* (`watcher.py:183`), and `_note_heartbeat` upgrades
+`last_heartbeat_at → now()` whenever `hb.seq > last_hb_seq` (`watcher.py:341-352`). Today
+`_track` leaves `last_hb_seq = 0`, so on a cold attach the *pre-existing* old beacon
+(`seq 41 > 0`) is mistaken for a freshly-witnessed arrival and the seed is clobbered to
+`now()` on the first poll — **the naive "seed `last_heartbeat_at`" is a silent no-op.** So
+`_track`/`observe` must seed, from the latest heartbeat already on the log: `last_hb_seq =
+hb.seq` (so the seed beacon is *not* re-counted as a new arrival), `last_step = hb.step`
+(else `Running(step=None)` regresses), and `last_heartbeat_at = hb.t`. Only a genuinely
+*newer* beacon (`seq > seed seq`) then upgrades `last_heartbeat_at` to `now()`
+(skew-immune, as today). **No heartbeat on the log ⟹ seed `last_heartbeat_at = now()`** (the
+current behaviour), preserving the never-beaconed-startup-death catch that tier 4 exists
+for. Read the field as *"the best available estimate of when the last beacon happened, in a
+clock comparable to now(): the record's own `t`, refined to your arrival observation when
+you have one."*
 
 **Why the seed is correct enough.** It converts today's *unconditional, unbounded*
 false-alive (every cold-attached dead run reads live, forever) into a *skew-bounded* one:
@@ -181,14 +207,26 @@ where the basis would matter, so it is not load-bearing now.
 
 ## 6. `freshness` needs no new op
 
-`last_activity(channel)` = the newest `t` among `latest(heartbeat)`, `latest(stopped)`,
-`latest(terminated)` — a handful of O(1) `latest()` reads, no full scan, no sixth
-substrate op. This is exactly what mycooc reached past the API to compute, now inside the
-observer plane and ~30× faster than its `SELECT max(created_at)` full scan.
+`last_activity(channel)` = **`max(t)` over the ≤3 finalists** `latest(heartbeat)`,
+`latest(stopped)`, `latest(terminated)` — a handful of O(1) `latest()` reads, no full scan,
+no sixth substrate op. *Pin the definition precisely* (the two phrasings in earlier drafts
+were not equivalent under skew): it is the max-`t` **among the latest-by-seq record of each
+of those three topics**, not "the `t` of the single newest-by-seq record" (which differ when
+`t` is non-monotone vs `seq`) and not `max(t)` over the *whole* log (which a single
+fast-clocked record pins into the future forever). Max-among-finalists is the conservative
+choice for its consumer: largest plausible last-activity ⟹ smallest age ⟹ errs toward *not*
+deleting, which is what the GC's grace window (§4, irreversible) wants.
 
-Ship it **only** as `t` of the newest dated record — never `max(t)` over the whole log:
-one record from a fast clock would pin `max(t)` into the future forever, and this feeds the
-GC's irreversible action. §4's irreversible-action rule is its guard.
+This is morally what mycooc reached past the API to compute — though not identically:
+mycooc runs `SELECT max(created_at)` over the *whole* log (`run_experiment.py:2395`), the
+whole-log form this fold deliberately avoids; the two coincide only for a reference-Worker
+run whose `t` is monotone.
+
+**Known blind spot (accepted):** `last_activity` reads the liveness records, not `value`, so
+a worker that *opts out of the `lifecycle` convention* and emits only dated `value` records
+has activity but no `last_activity`. The reference `Worker` always beats a heartbeat per
+tick (`worker.py:229`), so this never bites it; and "you composed your own loop, you own
+your liveness" is the design's standing line for convention opt-outs. Noted, not fixed.
 
 ---
 
@@ -239,17 +277,35 @@ GC's irreversible action. §4's irreversible-action rule is its guard.
 - `runstate/worker.py` — the `Heartbeat(...)` and `Stopped(...)` emits gain `t=self._now()`
   (the clock is already in hand). `runstate/launcher.py` — the `Launched`/`Terminated`
   emits gain `t` (both launchers; the reaper's clock for `terminated`).
-- `runstate/watcher.py` — seed `last_heartbeat_at` from `t(latest heartbeat)`; keep the
-  arrival clock for witnessed beacons (§5). No verdict-basis `reason` added (§9 defers it).
+- `runstate/watcher.py` — seed **three** fields at registration (`last_hb_seq`,
+  `last_step`, `last_heartbeat_at`) from the latest heartbeat, with the no-heartbeat →
+  `now()` fallback (§5 — the naive one-field seed is a no-op). Keep the arrival clock for
+  witnessed beacons. No verdict-basis `reason` added (§9 defers it).
 - `runstate/observables.py` — a `last_activity(channel)` fold (§6); the "one
   non-log-derivable input" docstring softens (arrival time is now the *preferred* witness
   clock, not the *only* clock).
-- `tests/test_schema.py` — the emitted `heartbeat`/`stopped`/`launched`/`terminated`
-  bodies must now carry `t`; add the required-field negative cases.
-- **Migration:** old logs' beacon/terminal bodies have no `t`. Per the no-compat doctrine,
-  a one-time offline pass stamps them from the backend's existing `created_at` column
-  (which every row already has — verified: 1,998/1,998 on a sampled log) — the
-  `lifecycle-v0.3` precedent, committed → run → deleted. Quiescence-gated, idempotent.
+- **Tests — the rename ripples widely.** `attached_at` appears across `test_observables.py`,
+  `test_memoizer.py`, `test_service_worker.py`, `test_payloads.py`, `test_postgres_channel.py`
+  (and fixtures asserting the now-deleted `attached_at=None` path must change); every fixture
+  constructing `heartbeat`/`stopped`/`launched`/`terminated` must add `t`. `test_schema.py`
+  gains the required-`t` negative cases. **Add the victim-1 regression test the current suite
+  lacks:** `observe()` a log whose only heartbeat is old, then `poll()` — it must return
+  `presumed_dead` (today, and under a naive one-field seed, it returns `Running`).
+- **Migration — two distinct operations, do not conflate:**
+  - `started`: **RENAME** `attached_at` → `t` in each body (preserve the value). It must
+    **not** be stamped from `created_at` — a fabricated epoch (e.g. a test's
+    `attached_at=1000.0`) is precision-load-bearing for `history()`'s time replay, and
+    stamping the row's real wall-clock would silently shift the run epoch. Where an old
+    `attached_at` was `null` (rare; the reference Worker never wrote null), fall back to the
+    row's `created_at`.
+  - `heartbeat` / `stopped` / `launched` / `terminated`: **STAMP** `t` from the backend's
+    existing `created_at` column (every row has it — verified 1,998/1,998 on a sampled log).
+    These are freshness-only readers, so `created_at`'s pre-lock, mildly-non-monotone value
+    is sound (an approximate age is the point). This is orthogonal to the launcher-v0.3
+    migration (which stamped the envelope `request_id`, done and deleted `6b48886`): a
+    different column, no field collision, no ordering hazard.
+  - Quiescence-gated, idempotent, converge-over-passes; committed → run → deleted (the
+    `lifecycle-v0.3` precedent). `MemoryChannel` has no persistence — a migration non-issue.
 - **No envelope change, no substrate op.**
 
 ---
