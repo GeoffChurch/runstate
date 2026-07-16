@@ -1,10 +1,13 @@
 # Spec: the observer clock — date the beacon
 
-**Status:** CONVERGED on **Proposal B** (2026-07-16). Draft 1 proposed a wall-clock `t`
-on every **envelope** (Proposal A); three independent adversaries refuted its
-justification (not the field — the *reasons*), and the owner ruled **B over A on
-minimality + layer**: the clock is a semantic, run-life concern, so it belongs in the
-**opt-in conventions**, not the opinion-free substrate. This is the implementable spec.
+**Status:** SHIPPED (2026-07-16, spec-same-day). CONVERGED on **Proposal B** the same
+day; Draft 1 proposed a wall-clock `t` on every **envelope** (Proposal A); three
+independent adversaries refuted its justification (not the field — the *reasons*), and
+the owner ruled **B over A on minimality + layer**: the clock is a semantic, run-life
+concern, so it belongs in the **opt-in conventions**, not the opinion-free substrate.
+Shipped as `lifecycle-v0.4` + `launcher-v0.4` (the second and third exercised
+convention bumps), the `Watcher` seed, the `last_activity` fold, and the
+quiescence-gated offline migration (`scripts/migrate_observer_clock_v0_4.py`).
 Item 1 of `../backlog/third-party-observer.md`. The full A-vs-B judgment and the
 adversarial findings are preserved in git history (commits `3ce77b1`, `3ce9eab`).
 

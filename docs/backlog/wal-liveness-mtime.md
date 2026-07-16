@@ -2,8 +2,12 @@
 
 **Status:** caveat surfaced 2026-06-23 from a consumer (mycooc `run_experiment.py --status`). Filed here
 because runstate is the shared sqlite-log substrate and defaults to `journal_mode=WAL` (see
-`exogenous-commit-audit.md`, commit `3304e8c`). Disposition OPEN — **SUBSUMED 2026-07-14 by
-[third-party-observer](third-party-observer.md) item 1, which also RE-GRADES it.**
+`exogenous-commit-audit.md`, commit `3304e8c`). Disposition **RESOLVED 2026-07-16** — subsumed
+2026-07-14 by [third-party-observer](third-party-observer.md) item 1 (which also re-graded it),
+and the runstate-side fix it proposed now **exists**: `observables.last_activity(channel)`
+(the observer-clock ship, `../specs/observer-clock.md`) reads the newest dated record's own
+`t` — the beacon is dated, so freshness no longer reaches for any file mtime. The consumer-side
+sidecar-max fix below stands for any log not yet migrated; a fully migrated log has `last_activity`.
 
 **The grade below ("minor · observability") was wrong.** It is minor only for the persona in view
 when it was filed — an orchestrator watching its own live run, for whom a bad clock is a cosmetic

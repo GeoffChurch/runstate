@@ -222,17 +222,23 @@ exactly that answer space (`Nak` | `RunResult` | `None`).
 
 | topic | body | what it is / why |
 |---|---|---|
-| `started` | `{handle, attached_at?}` | pushed on attach; the worker self-reports its liveness **handle** |
-| `heartbeat` | `{step?, consumed_seq}` | a tick-driven **beacon** — see below |
-| `stopped` | `{completed, error, final_step}` | the cooperative **dying breath** — see below |
+| `started` | `{handle, t}` | pushed on attach; the worker self-reports its liveness **handle**, and `t` = its wall-clock at attach (the run epoch) |
+| `heartbeat` | `{step?, consumed_seq, t}` | a tick-driven **beacon** — see below |
+| `stopped` | `{completed, error, final_step, t}` | the cooperative **dying breath** — see below |
 | `nak` | `{reason, message}` | a refused control request (correlated by `request_id`) |
 
 *What is a heartbeat?* A periodic **beacon** the worker pushes from inside its loop
-(not on request). It does triple duty: **liveness** (if it goes stale, the worker
-is hung or dead), **progress** (its `step` is advancing), and the **ack watermark**
-(`consumed_seq`). Crucially it is *tick-driven* — emitted from the loop — so a hung
-loop *stops* beaconing, which is exactly what makes staleness a real hang-detector.
-(`step` is null for a "stepless" service worker.)
+(not on request). It does quadruple duty: **liveness** (if it goes stale, the worker
+is hung or dead), **progress** (its `step` is advancing), the **ack watermark**
+(`consumed_seq`), and **freshness** — `t`, the worker's wall-clock at the beat.
+Crucially it is *tick-driven* — emitted from the loop — so a hung loop *stops*
+beaconing, which is exactly what makes staleness a real hang-detector. (`step` is
+null for a "stepless" service worker.) **The beacon is dated** (`t`, required since
+`lifecycle`-`v0.4` — `specs/observer-clock.md`): a `Watcher` watching from birth still
+prefers a beacon's *arrival* time (skew-immune), but a party that attaches to a cold
+log reads the record's own `t` to answer "when did this run last do anything?" — the
+question `observables.last_activity` folds, and the reason a run dead for weeks no
+longer reads `Running`.
 
 *What is `stopped`?* The worker's own cooperative halt. **Its existence on the log
 = a clean, resumable stop** (a retained fact, not a transient signal).
@@ -249,8 +255,8 @@ can't report itself.
 
 | topic | body | what it is |
 |---|---|---|
-| `launched` | `{handle, status}` | spawn-intent + the liveness handle |
-| `terminated` | `{reason: exited\|killed, exit_code?, signal?}` | the *manner* of death; only a `wait()`-ing parent can produce it |
+| `launched` | `{handle, status, t}` | spawn-intent + the liveness handle; `t` = the spawner's wall-clock at launch |
+| `terminated` | `{reason: exited\|killed, exit_code?, signal?, t}` | the *manner* of death; only a `wait()`-ing parent can produce it; `t` = the reaper's wall-clock at the reaped death |
 
 *What is a handle?* A portable, scheme-tagged liveness token — `local://host/pid`
 (and `slurm://…`, `k8s://…`, `ray://…` as backends land). Anyone **on the same host** can **resolve**
@@ -286,8 +292,9 @@ or orchestrator can ignore it and compose `send`/`read`/`latest` directly.
   `latest_episode` (the episode-boundary rule), `progress` (the step frontier),
   `value_series` (the per-(name, step) register projection), `live_demand`
   (unanswered subscribes), `undischarged_stops` (unhonored stops — the stop
-  button's "did it land?"). Observe statelessly here; watch statefully with the
-  `Watcher` below.
+  button's "did it land?"), and `last_activity` (the freshness clock — the newest
+  dated record's `t`, what a cold observer reads for "when did this last do
+  anything?"). Observe statelessly here; watch statefully with the `Watcher` below.
 - **`Launcher` / `LaunchHandle`** (Protocols) + **`ThreadLauncher`** (in-process;
   tests / single-process orchestration) and **`LocalLauncher`** (subprocess;
   injects `RUNSTATE_*` so the child's `attach()` meets the same log). A launcher

@@ -30,13 +30,16 @@ clusters that unlock each other, with a sequencing — see
   run DID, but not WHEN it did it nor WHAT IT WAS ASKED TO DO** — and neither
   absence is visible to the party that launched the run. The persona that falls into
   both (a viewer/TUI/scheduler attaching to a run it did not start) is new, and it
-  is the one the TUI/viz work depends on. Headline: a run dead 21 days reads as
-  `Running(beacon_age=9.5e-06)`, because no liveness record carries a clock. Six
-  items + the ship order; each graduates to its own spec. **Item 1 has graduated
-  and CONVERGED: [observer-clock](../specs/observer-clock.md) (2026-07-16) — the
-  next implementable pickup** (`lifecycle-v0.4` + `launcher-v0.4`: `t` on the
-  beacon and the terminals, the Watcher seed, `last_activity`; the log migration
-  is owner-run, per the launcher-v0.3 precedent).
+  is the one the TUI/viz work depends on. Six items + the ship order; each graduates
+  to its own spec. **Item 1 (the observer clock) SHIPPED 2026-07-16**
+  (`../specs/observer-clock.md`): the beacon is dated (`lifecycle`/`launcher`-`v0.4`),
+  so the headline wrong-verdict (a run dead 21 days reading
+  `Running(beacon_age=9.5e-06)`) is fixed; migrating existing dbs is owner-run
+  (`scripts/migrate_observer_clock_v0_4.py`, the launcher-v0.3 precedent). **Next
+  implementable pickup: item 2 — the run's TARGET** (`control.target`), the one
+  *missing basis vector*, which awaits its own spec + adversarial pass (it may subsume
+  conditional-stop, so it gets the full treatment). Then items 3–6 (enumeration /
+  read-only open / cursored folds / third-party-stop safety) as the build demands them.
 - **[ensure-await-completion](ensure-await-completion.md)** —
   `ensure(await_complete=True)`: gate on the producer's `completed` verdict, not the
   step/time window — for a consumer that depends on a post-terminal off-channel
@@ -160,11 +163,12 @@ backend is the deferred channel-postgres LISTEN/NOTIFY idea. `SubmititLauncher` 
 - [webapp-viewer](webapp-viewer.md) — fancy webapp: lists active runs, tails their
   progress, has a per-run stop button. The topic log is non-destructive, so any
   backend can be tailed by a read-only viewer. FastAPI + WebSockets or SSE.
-- **cli-status** (inline; no file) — terminal status table over a root's runs via
-  the observables (`peek_terminal` / `progress` / `live_episode` per run). Maybe
-  `runstate status <root>`.
-- **cli-stop** (inline; no file) — one-shot CLI: `runstate stop <run_id>` opens
-  the run's channel and sends a `control.stop`.
+- ~~cli-status / cli-stop~~ — **SHIPPED 2026-07-16** as `runstate/cli.py`
+  (`runstate status <root>` + `runstate stop <root> <run_id> [--wait]`): the
+  minimal stdlib-argparse tool over a run's sqlite log, unblocked by the observer
+  clock (status reads `last_activity` for freshness). Deliberately not a daemon or
+  viewer — that stays webapp-viewer / visualization-story. sqlite only (Postgres
+  discovery has no shape — item 3 above).
 
 ## Open implementation items (mirrors design §12)
 

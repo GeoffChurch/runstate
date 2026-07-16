@@ -24,7 +24,8 @@ with opt-in **conventions** on top. The design rationale lives in
 1. **The JSON Schema stack in `protocol/`** — `envelope-v0.2.schema.json`
    (the substrate record: structure only, opaque body) plus the
    per-convention schemas (`subscription` / `value`-`v0.2`,
-   `lifecycle` / `launcher`-`v0.3`), each `additionalProperties: false` and
+   `lifecycle` / `launcher`-`v0.4` — the observer-clock bump dated the beacon,
+   `docs/specs/observer-clock.md`), each `additionalProperties: false` and
    independently versioned. Authoritative for the wire format.
 2. **`docs/design-v0.2.md`** — prose. Defines the two-layer model and
    semantics: the topic-log substrate, the conventions, the liveness
@@ -76,7 +77,8 @@ The substrate + opt-in conventions + reference orchestration, in
   `progress` (the step frontier), `value_series` (the per-(name, step)
   register projection), `live_demand` (the positional answer fold —
   unanswered subscribes), `undischarged_stops` (the stop fold's observer
-  twin). Membership test: needs a cursor or clock → it's the
+  twin), `last_activity` (the freshness clock — the newest dated record's `t`,
+  O(1); observer-clock §6). Membership test: needs a cursor or clock → it's the
   `Watcher`'s; parses a handle string → it's `vocabulary/`'s.
 - **`launcher.py`** — `Launcher` / `LaunchHandle` Protocols +
   `ThreadLauncher` (in-process) + `LocalLauncher` (subprocess + `attach`;
@@ -93,6 +95,11 @@ The substrate + opt-in conventions + reference orchestration, in
   (`poll`/`wait`/`wait_all`/`iter_events`/`broadcast`) + `RunStatus`
   (`Running | RunResult`).
 - **`sweep.py`** — sequential multi-run helper (`sweep` + `Variant`).
+- **`cli.py`** — the minimal terminal tool (`runstate status <root>` /
+  `runstate stop <root> <run_id> [--wait]`), a `[project.scripts]` console entry
+  (`main`); stdlib `argparse`, sqlite only, read-only discovery (both the flat and
+  Recipe-1 sharded layouts). A **tool, not API** — not in `__init__.__all__`; and
+  deliberately not a daemon/viewer (that's `docs/backlog/webapp-viewer.md`).
 - **`__init__.py`** — `attach()` (worker-side Channel factory reading
   `RUNSTATE_RUN_ID` / `RUNSTATE_CHANNEL_ROOT` / `RUNSTATE_CHANNEL_BACKEND`
   from env) + the public re-exports.
@@ -189,6 +196,12 @@ Spawns the worker as a subprocess via `LocalLauncher`, subscribes to its
 `loss` each step, streams the `value` events through `Watcher.wait(on_event=…)`,
 would send a cooperative `control.stop` if loss diverged (it doesn't here),
 and prints the terminal `RunResult`. Demonstrates the full surface.
+
+**Inspect / steer runs from a terminal:** `runstate status <root>` prints a
+snapshot table (verdict / progress / freshness) of the runs under a root, and
+`runstate stop <root> <run_id> [--wait N]` sends a cooperative `control.stop`
+(warns when the run is down — the stop is then armed for the next episode). See
+`runstate/cli.py` (sqlite only; a tool, not API).
 
 **Validate that emitted messages stay schema-conformant:**
 `tests/test_schema.py` drives a scenario that emits every reserved topic,

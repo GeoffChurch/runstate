@@ -35,7 +35,14 @@ imagine. A persona with a keyboard finds the ones you aren't.
 
 ---
 
-## 1. The observer clock — a dead run reads as `Running`  *(ship FIRST, alone)*
+## 1. The observer clock — a dead run reads as `Running`  *(SHIPPED)*
+
+**→ SHIPPED 2026-07-16 (spec-same-day): [`../specs/observer-clock.md`](../specs/observer-clock.md).**
+`lifecycle-v0.4` + `launcher-v0.4` date the beacon (required non-null `t`;
+`Started.attached_at` renamed to `t`); the `Watcher` seeds its staleness clock from the
+newest beacon's own `t`; `observables.last_activity` is the freshness fold; the offline
+migration (`scripts/migrate_observer_clock_v0_4.py`) is quiescence-gated. The headline
+wrong-verdict (a run dead weeks reading `Running`) is fixed. Historical framing follows.
 
 **→ GRADUATED TO SPEC 2026-07-16: [`../specs/observer-clock.md`](../specs/observer-clock.md)** —
 **CONVERGED on Proposal B.** The fork (envelope `t` vs a convention clock vs a capability)

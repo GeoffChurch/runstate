@@ -166,9 +166,9 @@ Well-known **outbound** events (`worker → observers`), reserved `lifecycle.*`.
 
 | Topic | Semantics |
 |---|---|
-| `lifecycle.started` | Pushed on attach. Body `{handle, attached_at?}` — the worker self-reports its **liveness handle** (§8) when no launcher recorded one. (A `hostname` field was removed in `lifecycle`-`v0.3`, 2026-07-10 — dead: never emitted non-null, and the handle owns location; existing logs migrated.) |
-| `lifecycle.stopped` | The cooperative dying breath; body `{completed, error, final_step}`. **Existence = a clean, *resumable* halt** (a retained log fact); `completed=True` is the worker's opt-in claim of intrinsic, permanent completion — else `preempted`. A crashed worker emits nothing — absence ≠ alive (§8). |
-| `lifecycle.heartbeat` | **Pushed beacon** (`request_id=None`), **tick-driven** (a hung loop stops it), periodic. Body `{step?, consumed_seq}` — serves **liveness** (staleness), **progress** (step advancing), and the **registration watermark** (§6; `consumed_seq` = the worker's read position in its inbound `control` order). `step` is null for a service worker with no step. No embedded timestamp (staleness uses the reader's arrival clock). |
+| `lifecycle.started` | Pushed on attach. Body `{handle, t}` — the worker self-reports its **liveness handle** (§8) when no launcher recorded one, and `t` = its wall-clock at attach (the run epoch). (`attached_at` was **renamed to `t`** and made required non-null in `lifecycle`-`v0.4`, 2026-07-16 — one uniform clock field across the lifecycle bodies, `docs/specs/observer-clock.md`; a `hostname` field was removed in `lifecycle`-`v0.3`, 2026-07-10 — dead; existing logs migrated at both bumps.) |
+| `lifecycle.stopped` | The cooperative dying breath; body `{completed, error, final_step, t}`. **Existence = a clean, *resumable* halt** (a retained log fact); `completed=True` is the worker's opt-in claim of intrinsic, permanent completion — else `preempted`. `t` = the wall-clock at the halt (the finish-time / GC-age answer, `lifecycle`-`v0.4`). A crashed worker emits nothing — absence ≠ alive (§8). |
+| `lifecycle.heartbeat` | **Pushed beacon** (`request_id=None`), **tick-driven** (a hung loop stops it), periodic. Body `{step?, consumed_seq, t}` — serves **liveness** (staleness), **progress** (step advancing), the **registration watermark** (§6; `consumed_seq` = the worker's read position in its inbound `control` order), and now **freshness**: `t` = the worker's wall-clock at the beat (required, `lifecycle`-`v0.4`). `step` is null for a service worker with no step. **The beacon is dated** (`docs/specs/observer-clock.md`): arrival time stays the `Watcher`'s *preferred* (skew-immune) witness clock, but the record's own `t` seeds the un-witnessed prefix so a party that attaches later can read staleness at all — `seq` orders, `t` measures. |
 | `lifecycle.nak` | Negative ack (§6); body `{reason, message}`, `reason ∈ {malformed, unsatisfiable, unsupported}` (syntactic / semantic / unknown-verb), envelope `request_id` = the offending request. |
 
 **Worker-owned termination.** Stopping is always the worker's decision — intrinsic completion, data-dependent stops, and commanded stops (`control.stop`) all feed one stop check. The orchestrator never *removes* a worker. (`control.stop` "landed" = the watermark; its *effect* = `lifecycle.stopped`; there is no separate stop receipt.)
@@ -183,8 +183,8 @@ Reserved `launcher.*`, written by the spawner/reaper — a Layer-3 / process-lev
 
 | Topic | Body |
 |---|---|
-| `launcher.launched` | `{handle, status}` — spawn-intent + the worker's liveness **handle**. (It is the launcher's *observation*, never the claim — the lazy-launch race is arbitrated by the worker's birth-CAS; `specs/lazy-launch.md`.) |
-| `launcher.terminated` | `{exit_code?, signal?, reason: "exited" | "killed"}` — the *manner* of death; only a `wait()`ing parent can produce it. |
+| `launcher.launched` | `{handle, status, t}` — spawn-intent + the worker's liveness **handle**; `t` = the spawner's wall-clock at launch (required, `launcher`-`v0.4`; it also dates a never-beaconed startup crash — a `launched`+`terminated` with no heartbeat still carries a time). (It is the launcher's *observation*, never the claim — the lazy-launch race is arbitrated by the worker's birth-CAS; `specs/lazy-launch.md`.) |
+| `launcher.terminated` | `{exit_code?, signal?, reason: "exited" | "killed", t}` — the *manner* of death; only a `wait()`ing parent can produce it. `t` = the reaper's wall-clock at the reaped death (the finish-time / GC-age answer for a killed/crashed run, `launcher`-`v0.4`). |
 
 **Launch identity (launcher-v0.3).** Both launcher records **must** carry the envelope's `request_id`: one id per launch, minted by the launcher, and **re-emitted by the worker on its `lifecycle.started`** (ambiently — `RUNSTATE_LAUNCH_ID`, beside the other `attach` variables; null iff nobody launched the worker). So a launch, the claim answering it, and the death ending it name the same thing. Without it, `terminated` asserts the unknowable *"the run is dead"* rather than *"my launch ended"*, and a late reap or a claim-race loser's death forges a live episode's verdict — reproduced, then fixed (`specs/launcher-record-identity.md`). Here `request_id` is **correlation only**: it never scopes visibility (that stays a value-plane concern), and the verdict fold pairs a death to the launch the *claimed* episode answered, never by log position.
 
@@ -268,7 +268,7 @@ No single schema:
 - **Envelope schema** — `{seq, topic, name?, request_id?, body}` with `body: object` (opaque). Close to freezable; constrains neither `topic` semantics nor body shapes.
 - **Convention schemas** — each strictly pins its own well-known bodies (`additionalProperties: false`), independently versioned. Adding a field to a well-known body is a deliberate convention-version bump. **User `value` bodies** pin only the *wrapper* (`{value, step?, t?}`); the `value` payload is `Any` JSON-serializable value — a sender-side `json_default` hook (`attach`/`open_channel`) coerces exotic types (numpy scalars, tensors), and an unserializable value with no hook fails fast at emission (naming the metric), rather than silently dropping it. Validation is opt-in/layered: the substrate never validates; "opt-in convention" means "you needn't emit `lifecycle.*`, but if you do, conform."
 
-This is the cut that dissolves "blocking for the schema": the convention decisions block specific *convention* schemas, downstream — not the envelope. **Freeze status (rev 4):** the stack is written and frozen in `protocol/` — `envelope-v0.2` plus `subscription` / `launcher` / `value`-`v0.2` and `lifecycle`-`v0.3` (the first exercised convention bump: `Started.hostname` removed 2026-07-10, logs migrated — per-convention versioning working as designed), each `additionalProperties: false`. The two previously-held bodies are pinned: `lifecycle.heartbeat` = `{step, consumed_seq}` (`consumed_seq` = the inbound-`control` read position, §11) and `launcher.launched.status` = `enum ["running"]` (room to widen via a convention-version bump). `tests/test_schema.py` validates that the messages the implementation emits conform.
+This is the cut that dissolves "blocking for the schema": the convention decisions block specific *convention* schemas, downstream — not the envelope. **Freeze status:** the stack is written and frozen in `protocol/` — `envelope-v0.2` plus `subscription` / `value`-`v0.2`, and `lifecycle`-`v0.4` / `launcher`-`v0.4`, each `additionalProperties: false`. Three convention bumps have been exercised, each on its own timeline — the first, `lifecycle`-`v0.3` (`Started.hostname` removed 2026-07-10); then the observer-clock pair, `lifecycle`-`v0.4` + `launcher`-`v0.4` (2026-07-16, `docs/specs/observer-clock.md`), which **date the beacon**: a required non-null `t` on `lifecycle.started`/`heartbeat`/`stopped` (`started.attached_at` renamed to `t`) and on `launcher.launched`/`terminated`. Logs migrated at each bump — per-convention versioning working as designed. The two previously-held bodies are pinned: `lifecycle.heartbeat` = `{step, consumed_seq, t}` (`consumed_seq` = the inbound-`control` read position, §11; `t` = the emit wall-clock) and `launcher.launched.status` = `enum ["running"]` (room to widen via a convention-version bump). `Value.t` stays present-nullable (the data plane's clock, a separate concern — observer-clock §3). `tests/test_schema.py` validates that the messages the implementation emits conform.
 
 ## 11. Three clocks
 
@@ -313,6 +313,20 @@ The six convention decisions are settled (see revision history). Status tags bel
 
 ## Revision history
 
+- 2026-07-16 (rev 12): **The observer clock — date the beacon (§7/§8/§10;
+  specs/observer-clock.md).** A required, non-null `t` (the emitter's wall-clock at
+  emission) on the dated lifecycle/launcher bodies — `lifecycle.started` (`attached_at`
+  renamed to `t`), `heartbeat`, `stopped`, `launcher.launched`, `terminated` — via two
+  independent bumps, `lifecycle`-`v0.4` + `launcher`-`v0.4`. Fixes a wrong-verdict bug:
+  a party that attaches to a cold log had no clock, so a run dead for weeks read
+  `Running`. The `Watcher` keeps arrival time as its skew-immune witness clock and now
+  *seeds* the un-witnessed prefix from the newest beacon's own `t`; a new
+  `observables.last_activity` fold reads the freshness clock (newest `t` of the three
+  dated records, O(1)). `seq` orders / `t` measures — `t` is never an ordering key,
+  filter, or arbiter, and never gates an irreversible decision. `Value.t`, `Nak`, and
+  the envelope are untouched. Proposal A (a substrate/envelope `t`) was rejected on
+  minimality + layer (a clock is a run-life *opinion*). Logs migrated offline
+  (`scripts/migrate_observer_clock_v0_4.py`, quiescence-gated).
 - 2026-06-11 (rev 11): **Layer 4 dissolved (§12.9, §14; specs/store.md).**
   The Store ships as recipes over the existing basis — rid-as-address
   (content-addressed placement; reuse-by-hash = `ensure` against the one
