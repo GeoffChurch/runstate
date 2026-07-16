@@ -15,6 +15,12 @@ met: the audience is the owner, running mycooc + translation, who already hand-r
 > across groups of runs, and lets you act on one. No plots.** Its own repo, depending
 > on runstate.
 
+**Home:** `~/src/runstate-tui` (owner, 2026-07-16) — a sibling of `runstate`, not a
+subdirectory: the separation is the point (`visualization-story.md`'s *"split by
+**project**, not by file"*), and a sibling repo is what forces the cockpit to consume
+runstate as a *dependency*, through its public API, exactly as a third party would. That
+is what makes the API-purity rule below real instead of aspirational.
+
 ## Why this shape — the identity, and how it clears the bar
 
 CLAUDE.md sets the bar: *"only ship this as a coherent protocol story, not 'another
@@ -223,7 +229,6 @@ hand-wave.
 
 ## Open questions
 
-- **Where the repo lives, and its name.** Not decided; the design does not depend on it.
 - **Item 6's safety predicate** — is there a public "will a stop sent now be served?" and
   is it still needed post-item-1?
 - **Lazy creation's real cost** (above) — and whether `mode="r"` earns its place anyway
