@@ -1,6 +1,10 @@
 """The top-level public surface is the supported API; guard it against drift."""
 
+from pathlib import Path
+
 import runstate
+
+_API_DOC = Path(__file__).resolve().parent.parent / "docs" / "api.md"
 
 EXPECTED = {
     "open_channel",
@@ -58,6 +62,16 @@ def test_all_public_names_resolve():
 
 def test_public_surface_is_stable():
     assert set(runstate.__all__) == EXPECTED
+
+
+def test_api_doc_covers_the_public_surface():
+    """docs/api.md is the public-surface reference; a name added to __all__ but
+    not documented there is a silent orphan. Assert every export appears
+    (backticked, so a name that only shows up as a substring of another does not
+    count)."""
+    text = _API_DOC.read_text()
+    undocumented = [name for name in runstate.__all__ if f"`{name}`" not in text]
+    assert not undocumented, f"docs/api.md is missing: {undocumented}"
 
 
 def test_vocab_enums_are_wire_strings():

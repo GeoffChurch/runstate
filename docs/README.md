@@ -4,11 +4,18 @@
 (what it does, the layers, every component justified). It is the reader's entry
 point, and it is **derived, not authoritative**: it restates the design for
 newcomers, and where it disagrees with the schemas or `design-v0.2.md`, those
-win (authority order at the bottom of this file).
+win (authority order at the bottom of this file). If you just want to wire up a
+loop, [`guide.md`](guide.md) is the 15-minute how-to; [`api.md`](api.md) is the
+public-surface reference.
 
 The map:
 
 - [`overview.md`](overview.md) — the guided tour (derived; maintained in sync).
+- [`guide.md`](guide.md) — "Integrate your training loop in 15 minutes": the
+  task-oriented how-to for someone wiring up a loop (derived; maintained in sync).
+- [`api.md`](api.md) — the public-surface reference (every `runstate.__all__`
+  name, the wire topics, the CLI, the exceptions; derived, drift-guarded by
+  `tests/test_public_api.py`).
 - `backlog/` — forward-looking ideas (living documents; index + standalone files).
 - `dead_ends/` — refuted ideas with diagnosis (index + standalone files).
 - `specs/` — converged, ready-to-implement feature designs.
@@ -111,7 +118,8 @@ lifecycle, launcher) plus reference orchestration (launchers, Watcher, sweep).
    not yet folded back into it).
 3. The code in `../runstate/` and the tests in `../tests/`.
 
-`overview.md` sits *below* all three — a derived restatement for reading order,
+`overview.md`, `guide.md`, and `api.md` sit *below* all three — derived
+restatements for reading order (a tour, a how-to, a surface reference),
 never the tiebreaker. (The v0.1 wire artifacts — `messages-v0.1.schema.json`,
 `spec.md` — were deleted from `protocol/` when superseded; git carries them.)
 As with v0.1, the design docs capture *direction* and rationale; the code +
