@@ -159,6 +159,23 @@ connection at GC. A paper-cut, not an unbounded leak. The idiomatic fix (make
 `Channel` a context manager + document who closes what) is still nice-to-have, not
 forced.
 
+**Re-verified by measurement 2026-07-16** (the re-audit above reasoned it; this is the
+reproduction the ground rule asks for). Repeatedly touching `_LaunchProducer.channel`,
+collecting between rounds — fds over baseline: **77 @ 500 accesses → 84 @ 1.5k → 88 @
+3.5k → 94 @ 7.5k**. Sublinear, i.e. **bounded**: the re-audit's verdict stands, and a
+long-lived orchestrator does not accumulate without bound. **The trap for the next
+re-auditor:** measuring this with `gc.disable()` shows `4 → 405 fds over 200 accesses`
+and looks like a catastrophic leak — a review of PR #1 reported exactly that number and
+concluded the finding was live. It is a measurement artifact; the collector is the
+mechanism the verdict rests on, so disabling it removes the thing under test. Note also
+that the FIRST paragraph above still carries the original overstatement ("a fresh
+`SqliteChannel` on *every property access* **inside `ensure`'s poll loop**") — that same
+review quoted it as F4's live worst offender without reading the re-audit beneath it.
+`ensure` binds the channel once, **outside** the loop (`memoizer.py:320`); the real rate
+is ~2 per `ensure()` call. Kept as written, with this correction attached, because the
+misreading is instructive: **a correction placed below a finding does not retract the
+finding — readers quote the headline.**
+
 ## F5 (MED — missing primitive) — no first-class reader for the historical value series
 
 **Resolved 2026-06-10** (`../specs/observables.md`) — shipped as the
