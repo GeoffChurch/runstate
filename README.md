@@ -88,6 +88,8 @@ for _ in range(budget):                          # the retry budget lives here, 
 ```
 → `examples/redrive/`
 
+The patterns compose: `examples/vqe/` is a full domain workload (a variational quantum eigensolver, qiskit + optional IonQ Cloud — `pip install runstate[examples]`) whose step is **long, expensive, and cancelable** — the worker keeps ticking *while it waits* on a queued job (the heartbeat stays fresh; a `control.stop` lands mid-queue and cancels the in-flight job), the run is content-addressed so re-running is a cache hit, and the driver's plateau policy steers it. `examples/monitor/` is the on-demand service worker (leased demand, lazy-launch).
+
 ## What it is not
 
 - **Not an orchestrator framework.** No `Orchestrator.run()` class. There's an opt-in `Launcher` Protocol + thin reference launchers, but you can spawn worker processes however you want (`subprocess.Popen`, Hydra, submitit, ray) and use the protocol to talk to them.
