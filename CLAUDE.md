@@ -24,7 +24,7 @@ with opt-in **conventions** on top. The design rationale lives in
 1. **The JSON Schema stack in `protocol/`** — `envelope-v0.2.schema.json`
    (the substrate record: structure only, opaque body) plus the
    per-convention schemas (`subscription` / `value`-`v0.2`,
-   `lifecycle` / `launcher`-`v0.3`), each `additionalProperties: false` and
+   `lifecycle` / `launcher`-`v0.4`), each `additionalProperties: false` and
    independently versioned. Authoritative for the wire format.
 2. **`docs/design-v0.2.md`** — prose. Defines the two-layer model and
    semantics: the topic-log substrate, the conventions, the liveness
@@ -76,7 +76,9 @@ The substrate + opt-in conventions + reference orchestration, in
   `progress` (the step frontier), `value_series` (the per-(name, step)
   register projection), `live_demand` (the positional answer fold —
   unanswered subscribes), `undischarged_stops` (the stop fold's observer
-  twin). Membership test: needs a cursor or clock → it's the
+  twin), `last_activity` (max-`t` among the dated finalists — freshness off
+  the log, so a third party can age a run it never launched;
+  `docs/specs/observer-clock.md`). Membership test: needs a cursor or clock → it's the
   `Watcher`'s; parses a handle string → it's `vocabulary/`'s.
 - **`launcher.py`** — `Launcher` / `LaunchHandle` Protocols +
   `ThreadLauncher` (in-process) + `LocalLauncher` (subprocess + `attach`;

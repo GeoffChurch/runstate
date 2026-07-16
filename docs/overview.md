@@ -113,6 +113,7 @@ substrate *routes, indexes, or filters* on it. Everything else stays in `body`.
 send(body, *, topic, name=None, request_id=None, expected_seq=None) -> int | None
 read(after=0, *, topics=None, name=None, request_ids=None, limit=None) -> list[Envelope]
 latest(topic, name=None) -> Envelope | None
+last_seq() -> int
 close()
 ```
 
@@ -128,6 +129,13 @@ close()
 - **`latest(topic, name)`** is a first-class primitive (backends optimize it:
   indexed `ORDER BY seq DESC LIMIT 1`) — how you read "the current value" of a
   register-like topic.
+- **`last_seq()`** is the CAS's read half, admitted on the **op-admission principle**:
+  *the surface must be readable in every coordinate it requires callers to assert.*
+  `expected_seq` makes every claimant assert the head, so the head must be readable —
+  O(1) on every backend (`len(log)`; `MAX(seq)` on the key). Its consumers: CAS
+  claimants (the worker's head-first attach) and an incremental reader's
+  has-anything-new watermark. `count(topic)` / `first()` pass no such test — nobody is
+  required to assert them — which is why the surface is **five** ops, not six.
 
 **Why a log and not a queue.** A queue consumes-once — the first reader to pull a
 message removes it for everyone else, which breaks multi-observer. A *retained log
@@ -216,9 +224,9 @@ exactly that answer space (`Nak` | `RunResult` | `None`).
 
 | topic | body | what it is / why |
 |---|---|---|
-| `started` | `{handle, attached_at?}` | pushed on attach; the worker self-reports its liveness **handle** |
-| `heartbeat` | `{step?, consumed_seq}` | a tick-driven **beacon** — see below |
-| `stopped` | `{completed, error, final_step}` | the cooperative **dying breath** — see below |
+| `started` | `{handle, t}` | pushed on attach; the worker self-reports its liveness **handle**; `t` is the attach wall-clock (the run epoch) |
+| `heartbeat` | `{step?, consumed_seq, t}` | a tick-driven **beacon** — see below |
+| `stopped` | `{completed, error, final_step, t}` | the cooperative **dying breath** — see below |
 | `nak` | `{reason, message}` | a refused control request (correlated by `request_id`) |
 
 *What is a heartbeat?* A periodic **beacon** the worker pushes from inside its loop
@@ -243,8 +251,8 @@ can't report itself.
 
 | topic | body | what it is |
 |---|---|---|
-| `launched` | `{handle, status}` | spawn-intent + the liveness handle |
-| `terminated` | `{reason: exited\|killed, exit_code?, signal?}` | the *manner* of death; only a `wait()`-ing parent can produce it |
+| `launched` | `{handle, status, t}` | spawn-intent + the liveness handle; `t` is the launcher's wall-clock at spawn |
+| `terminated` | `{reason: exited\|killed, exit_code?, signal?, t}` | the *manner* of death; only a `wait()`-ing parent can produce it; `t` is when the reaper observed it |
 
 *What is a handle?* A portable, scheme-tagged liveness token — `local://host/pid`
 (and `slurm://…`, `k8s://…`, `ray://…` as backends land). Anyone **on the same host** can **resolve**
@@ -330,7 +338,8 @@ Three independent notions of time, never conflated:
   on append).
 - **`step`** — the worker's logical clock (a `body` field); what scheduling
   predicates evaluate against.
-- **wall-clock** — real time (`value.t`, heartbeat staleness).
+- **wall-clock** — real time (`value.t`; the required `t` each `lifecycle.*` /
+  `launcher.*` record carries since the observer clock; heartbeat staleness).
 
 All scheduling fires in the worker's tick against `step` / wall-clock, never `seq`.
 (`consumed_seq` in the heartbeat is a read *position* in the inbound control order

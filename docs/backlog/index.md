@@ -123,7 +123,7 @@ clusters that unlock each other, with a sequencing — see
   `launch` signatures: a callable `target` vs a `cmd`). Split the uniform
   `open_channel` from the per-launcher `launch` (helpers take a launch thunk). Interim:
   `launcher: Any` in the four helpers.
-- [protocol-async-api](protocol-async-api.md) — wrap the JSON Schema in AsyncAPI for
+- **protocol-async-api** — wrap the JSON Schema in AsyncAPI for
   a richer spec format (multi-channel, lifecycle events). Defer until the v0.2
   protocol grows enough to justify the layer.
 - **Reconfigure command** — typed orchestrator-to-worker command for mid-flight
@@ -172,16 +172,18 @@ backend is the deferred channel-postgres LISTEN/NOTIFY idea. `SubmititLauncher` 
   the data-plane protocol entirely. Its governing rule — **public API only; every time
   it can't, that's a finding** — makes it the review's stage 6 with a keyboard,
   permanently. Predicts item 3 **refuted** (the app owns discovery), item 5 **deferred**
-  (no plots ⇒ no cursors), and item 4's proposed `create=False` **refuted** (candidate
-  replacement: lazy creation). Supersedes the deleted `webapp-viewer.md` (a v0.1
-  artifact).
-- [cli-status](cli-status.md) — terminal status table reading directly from the
+  (no plots ⇒ no cursors). Item 4 is **UNSETTLED**: the cockpit's first refutation of it
+  (lazy creation) was **itself refuted** by a two-lens pass — `channel/base.py` defines
+  the log as the container, so create-on-open is the abstraction's ontology, not a leak.
+  `create=False` is the candidate, graded **minor**. Supersedes the deleted
+  `webapp-viewer.md` (a v0.1 artifact).
+- **cli-status** — terminal status table reading directly from the
   SqliteChannel `log` table. Maybe `runstate status <root>`. **Overlaps [cockpit](cockpit.md)
   and is in tension with it twice over** — it puts discovery *in* runstate (which the
   cockpit's resolver predicts is unnecessary) and it reads the `log` table directly
   (exactly the API-bypass the cockpit's purity rule exists to catch). Reconcile when the
   cockpit lands: it may simply die.
-- [cli-stop](cli-stop.md) — one-shot CLI: `runstate stop <run_id>` opens the run's
+- **cli-stop** — one-shot CLI: `runstate stop <run_id>` opens the run's
   channel and sends a `control.stop`.
 
 ## Open implementation items (mirrors design §12)
