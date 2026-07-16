@@ -260,11 +260,13 @@ not correctness.
 
 ## F10 (DOCS) — the episode model + the resumable-must-be-preempted discipline are under-documented
 
-**(b) resolved 2026-07-16** — the discipline now lives in the `ensure` and
+**Resolved 2026-07-16** — (b) the discipline now lives in the `ensure` and
 `Worker.stopped` docstrings (a per-chunk `completed` claim truncates the
-drive). **(a) partially addressed**: `docs/overview.md` (written after this
-finding) carries the episode model and the pairing rules prominently; a
-README/quickstart mention remains the open sliver.
+drive), and the README quickstart demonstrates the claim with the default
+spelled out beside it. (a) the consumer-facing episode rule now lives in the
+README ("Runs are episodic": read the *latest* `started`, never the first;
+terminals stand until a new claim) and in `docs/overview.md`'s mental-model
+section; `observables.latest_episode` remains the rule's one code home.
 
 - The **consumer-facing** episode rule ("a channel hosts many episodes; always
   read the *latest* `started`, never the oldest; statuses/pids are
@@ -295,5 +297,7 @@ README/quickstart mention remains the open sliver.
    (its checklist: `mycooc/docs/backlog/infrastructure/runstate-adoption-sweep.md`).
    Since closed: F4 (context-manager channels + the ownership contract,
    2026-07-16), F9 (the nak read's `request_ids=` push-down, 2026-07-16), and
-   F10(b) (the discipline promoted into docstrings, same day). The one open
-   sliver is F10(a)'s README/quickstart mention of the episode rule.
+   F10 (the discipline promoted into docstrings; the episode rule surfaced in
+   the README's "Runs are episodic" note — same day). **Every finding in this
+   audit is now resolved**; the file stays as the ledger of runstate's first
+   end-to-end consumer exercise.

@@ -37,15 +37,6 @@ clusters that unlock each other, with a sequencing — see
   next implementable pickup** (`lifecycle-v0.4` + `launcher-v0.4`: `t` on the
   beacon and the terminals, the Watcher seed, `last_activity`; the log migration
   is owner-run, per the launcher-v0.3 precedent).
-- **[mycooc-migration-audit](mycooc-migration-audit.md)** — remaining from the
-  mycooc migration (runstate's first end-to-end consumer): the **F10(a)** doc
-  minor (surface the consumer-facing episode rule in the README/quickstart;
-  `overview.md` already carries it). Closed since the audit: **F4**'s ask shipped
-  (channels are context managers; `channel/base.py` documents the handle-vs-log
-  ownership contract), **F9** fixed 2026-07-16 (`await_consumed` pushes
-  `request_ids=` into the nak read), **F10(b)** promoted into the
-  `ensure`/`Worker.stopped` docstrings the same day. F1–F3 and F5–F8 shipped long
-  since.
 - **[ensure-await-completion](ensure-await-completion.md)** —
   `ensure(await_complete=True)`: gate on the producer's `completed` verdict, not the
   step/time window — for a consumer that depends on a post-terminal off-channel
