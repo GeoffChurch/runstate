@@ -37,13 +37,18 @@ imagine. A persona with a keyboard finds the ones you aren't.
 
 ## 1. The observer clock — a dead run reads as `Running`  *(ship FIRST, alone)*
 
-**→ GRADUATED TO SPEC 2026-07-14: [`../specs/observer-clock.md`](../specs/observer-clock.md)** (DRAFT,
-pending the adversarial pass). The fork below resolved to **(a), envelope-v0.3** — and the
-spec found two things this entry did not: the bump costs **zero migration** (every real log
-already carries the timestamp; the backends have been recording it privately all along), and it
-**deletes** `Value.t`, `Started.attached_at`, and the Watcher's arrival-time state. The clamp that
-looked necessary is dead too (unbounded silent poisoning); what replaced it is a rule, not a
-mechanism: **`seq` orders, `t` measures, and `t` is comparable only within one writer.**
+**→ GRADUATED TO SPEC 2026-07-16: [`../specs/observer-clock.md`](../specs/observer-clock.md)** —
+**CONVERGED on Proposal B.** The fork (envelope `t` vs a convention clock vs a capability)
+resolved, after three adversaries and a long deliberation, to **date the beacon**: the gap
+is not a stamping behaviour but a **missing field** — `Heartbeat` (the record liveness
+reads) has no clock, so the `Worker` (which already holds `self._now()`) has nowhere to put
+one. Fix: `t` **required** on `Heartbeat`/`Stopped` (`lifecycle-v0.4`) and
+`Launched`/`Terminated` (`launcher-v0.4`); `Value.t` unchanged (present-nullable, data
+plane); **substrate untouched, no new op**. Proposal A (envelope `t`) was rejected on
+**minimality + layer** — a clock is a run-life *opinion*, so it belongs in the opt-in
+conventions, not the opinion-free substrate — *not* on the frozen-envelope argument, and
+*not* on cost (A/B read-overhead measured a wash). `freshness()` is derivable, not a sixth
+op. Full A-vs-B judgment in git (`3ce77b1`).
 
 **No liveness record carries a time.** `Envelope` is `(seq, topic, name, request_id,
 body)`. `Heartbeat` is `{step, consumed_seq}`. `Stopped` / `Terminated` / `Launched`
