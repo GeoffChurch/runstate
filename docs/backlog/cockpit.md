@@ -146,60 +146,138 @@ protocol.)*
 |---|---|
 | **3 — enumeration** | **Refuted.** The app owns discovery; the core never needs `list_runs()`. |
 | **5 — cursored folds** | **Deferred.** It was only ever a *plotting* requirement; v1 has no plots. |
-| **4 — no read-only open** | **Proposed fix refuted; replacement candidate below.** |
+| **4 — no read-only open** | **UNSETTLED** (see below). My refutation of it was itself refuted; the candidate is now `create=False`, graded **minor**. Do NOT read this row as a win — it is the specimen. |
 | **6 — third-party stop** | **Live on day one.** May already be dissolved by item 1 — the cockpit finds out. |
 | **2 — the target** | The missing progress-bar denominator. If that is the top annoyance in real use, the rework has its evidence. If not, it was speculation. |
 
-Three of five reshaped rather than implemented — which is itself the argument for
-building before speccing.
+Two of five reshaped on build evidence (3, 5); item 4 is UNSETTLED and its earlier "refuted" mark was motivated reasoning — see below. The honest score is two, not three, and the
+argument for building before speccing rests on the two that were earned.
 
-## Item 4 — the proposed fix is refuted; the candidate is lazy creation
+## Item 4 — my refutation was wrong; the candidate is `create=False`
 
-**Verified 2026-07-16:** a pure open of a nonexistent run creates three files.
+**Superseded 2026-07-16 by a two-lens adversarial pass.** An earlier draft of this
+section argued for **lazy creation** on an ontology claim. **That argument is refuted,
+and the record of how is worth more than the conclusion** — it is the second time in one
+day that solo reasoning produced a confident, wrong design (cf. `../specs/control-target.md`).
 
-```
-before:     (empty)
-after open: ['nonexistent-rid.db', 'nonexistent-rid.db-shm', 'nonexistent-rid.db-wal']
-last_seq:   0    read(): []
-```
+### What the argument was, and what killed it
 
-But **Postgres creates nothing on open** (every op is `WHERE run_id = %s` on a shared
-table) and memory only makes an ephemeral dict entry. So:
+It ran: *(M1)* open is side-effect-free on Postgres and memory, so create-on-open is a
+**SQLite artifact leaking through the abstraction, never part of the Channel contract**;
+*(M2)* under an append-only log **a run IS its log**, so never-created and zero-envelopes
+are **the same state** — item 4's "cannot distinguish no-run from empty-run" is not a
+defect but opinion creep; *(M3)* therefore `create=False` would *codify the leak* (and is
+a **no-op on Postgres — the tell**), and **lazy creation** is right because it adds no API.
 
-> **`open_channel` is side-effect-free on two backends and pollutes the disk on the
-> third. The create-on-open is a SQLite artifact leaking through the abstraction — it
-> was never part of the Channel contract.**
+Every move fails, on verified evidence:
 
-That kills the ledger's `open_channel(..., create=False)`: a flag would **codify the
-leak** — a knob suppressing a side effect the contract never promised, on the one
-backend that has it, and a no-op on Postgres. The no-op is the tell.
+- **M1 — the empirical base is false.** `channel/base.py`'s *first paragraph* says the
+  opposite of what M1 asserts: *"A Channel is a handle on a run's shared topic log — not
+  the log itself. **The log is the durable, shared thing (a SQLite file; the
+  process-global in-memory registry)**."* **The contract defines the log AS the
+  container.** Create-on-open is not a leak *through* the abstraction; it is the
+  abstraction's stated ontology — and M1 was asserted without reading it. Further:
+  memory is **not** side-effect-free (`_MEMORY_LOGS.setdefault` mints an entry, `close()`
+  is `pass`; measured: **1,000 pure opens+closes → 1,000 resident entries**), and
+  Postgres's silence is **not testimony** — it has no per-run container at all, so it is
+  structurally incapable of exhibiting the behavior in either direction.
+- **M2 — an equivocation on "log"** (the envelope sequence vs. the durable container the
+  contract names). Existence and non-emptiness come apart in at least four places *in
+  this repo*: `tests/test_memoizer.py`'s store pin asserts an **exact set** of `.db`
+  files found by `rglob` (a phantom fails it — the suite already treats phantom-creation
+  as a defect); `store.md`'s dispatcher **mkdirs the home before opening the channel**
+  (three ordered states); the sqlite backend already distinguishes, arbitrarily (a
+  missing **root** raises, a missing **run** creates); and — fatally — **the cockpit's own
+  Resolver answers "what runs exist" by `glob`/`readlink`, never by `last_seq()`**.
+  Existence came apart from non-emptiness *in the very unit that motivated the argument*.
+- **M3 — the inference is backwards.** "A no-op on Postgres is the tell" is refuted from
+  inside the same ABC: `MemoryChannel.close()` is `pass` and `last_seq()` is `len()` on
+  memory. **No-ops where there is nothing to do is what a uniform contract looks like.**
+  Postgres's no-op is the **proof**, not the tell: Postgres has no container, so it
+  *already behaves as `create=False`* — the flag is that contract written down.
 
-**And item 4's stated defect is not the real one.** It complains the API *"cannot
-distinguish 'no run' from 'empty run'."* Under an append-only topic log **a run IS its
-log** — zero envelopes and never-created are *the same state*, and `last_seq() == 0`
-already says so uniformly on every backend. The model has no such distinction, and
-asking the API to invent one is opinion creep. **The real complaint was always the side
-effect**, written up as an ontology gap.
+### What the build lens found (it disagreed with the argument lens — read both)
 
-**Candidate: lazy creation — SQLite does not touch disk until the first write.** Open
-becomes side-effect-free everywhere; the backends **converge** instead of diverging;
-`last_seq() == 0` uniformly means "nothing here"; the phantom-run pollution of a
-content-addressed store disappears; and **no new API exists at all** — no flag, no
-second verb, no mode. It *deletes* an inconsistency rather than adding a surface — the
-shape of item 8's fix, which deleted the reap discipline rather than extending it.
+A second adversary **prototyped lazy creation** and recommended shipping it bundled with
+fixes. It is kept here because its evidence is what actually settles the question, and
+because the two verdicts disagreeing is the most informative outcome available.
 
-Alternatives, recorded: a **`mode="r"` read-only open** gives the cockpit a can't-write
-*guarantee* (defense-in-depth for the API-purity rule) but is unnecessary once open
-creates nothing, and is another mode flag. **Two verbs** (`create_channel` /
-`open_channel`) is the textbook split but breaks every caller for a distinction the model
-says does not exist.
+**It refuted one over-claim:** lazy does **not** corrupt the birth CAS. Measured — **480
+claimants across 40×12 and 12×15 process races on a nonexistent run: `winners=1` every
+round, `0` spurious raises, byte-identical to eager.** Schema creation does not race.
+Also verified sound: all seven observables answer identically on a never-written run;
+WAL/`busy_timeout`/J3 intact; the attach path fine over 25 real spawns; and a **12.6×
+speedup** on a missing run's status row (94.3 µs → 7.5 µs).
 
-**Not settled — deliberately.** Lazy creation has a visible cost (errors move from
-open-time to first-write-time, a worse place to learn your root is unwritable) and may
-have callers depending on eager creation that nobody has looked for. **This analysis was
-done in one head, which is exactly what produced `control-target.md`.** It gets the
-adversarial treatment before it is believed, and the cockpit's resolver hitting a stale
-pointer for real is the thing that tests it. **Decide it then, not now.**
+**But it confirmed the orphan with a live repro, and named what the argument missed:**
+
+> **Eager creation is doing *two* jobs — creating the file, and preflighting writability.
+> The proposal names only the first.**
+
+`LocalLauncher.launch` is ordered `open_channel` (:258) → `Popen` (:270) → `send(Launched)`
+(:272), and it *must* Popen first (it needs the pid). Today the eager open proves the root
+is writable **before the child exists**. Under lazy, on an existing-but-unwritable root:
+the child spawns, `send` raises, `_handles.append` never runs — **a live subprocess with
+no `launcher.launched` record, invisible to every fold, that `reap()` can never see.**
+Its own mitigation is partial by its own admission: reordering the append makes the orphan
+*reapable*, but *"it still runs; full mitigation needs the launcher to kill on
+send-failure."* Eager prevents the spawn outright.
+
+It also found a **new** major: under lazy, a **typo'd or unmounted root reads as
+"everything is empty"** — a full cockpit table of healthy-looking empty runs. *A fold
+lying: this ledger's signature bug.* Repairable with one `isdir` stat — but note what
+that repair is: **re-adding, by hand, a check eager was doing for free.**
+
+### The decision: `create=False`, and why the disagreement resolves this way
+
+**Feasibility is not desirability.** The builder proved lazy *can* work; the arguer showed
+it *should not be the choice*. The asymmetry settles it:
+
+> **The phantom is a READER's problem. Lazy fixes it by changing WRITER semantics** —
+> deleting a preflight the reference launcher depends on, breaking a real consumer idiom
+> (mycooc's `test_open_cell_channel_finds_db` calls `open_channel` *purely to materialize
+> a `.db`* for a glob), and needing a compensating check to stop a missing root from
+> lying. **`create=False` costs writers nothing** (the eager default is unchanged) and
+> gives the reader an opt-out — in ~10 lines, in the form POSIX (`O_CREAT`) and SQLite
+> (`mode=rw`, verified: raises on an absent file, creates nothing) already converged on.
+
+Lazy's one advantage was "no new API" — which is **counting signature width as basis
+elegance**. The rubric measures primitives, not parameters.
+
+**Severity, honestly: MINOR — item 4 oversold itself, and so did I.** Its headline ("a
+stale/GC'd pointer manufactures a phantom") is **not reproducible under Recipe 1** — a
+whole-home GC removes the *directory*, so the open raises. The phantom needs a **flat**
+root (translation's shape) or a mkdir'd-but-never-ensured home. A `glob`-resolved cockpit
+may never hit it at all. **This is the evidence-based refutation that was available all
+along, and my ontology argument crowded it out.**
+
+**Still deferred to the build**, per this document's own rule — minor, and the demand
+should be evidence.
+
+### The motivated-reasoning tell, recorded on purpose
+
+Items 3 and 5 were refuted by **evidence from the build** (the app owns discovery; no
+plots ⇒ no cursors) — earned. **Item 4 alone was refuted by an assertion made in one
+head**, and it is precisely the item that got the count to *"three of five reshaped —
+which is itself the argument for building before speccing."* **The conclusion was doing
+the premise's work.** Worse: the experiment table above scored item 4 "refuted" while this
+section said "not settled — deliberately." *The ledger was marked before the pass it was
+asking for, in the same document.* Left here as a specimen.
+
+### `mode="r"` — REOPENED as its own question (a real gap, found in passing)
+
+This document dismissed a read-only mode as "unnecessary once open creates nothing."
+**Refuted, and independently of everything above.** Verified under *both* eager and lazy:
+reading an **existing** run whose root is read-only raises `attempt to write a readonly
+database` — because the read path connects read-write (WAL conversion + `executescript`
+are writes). **A viewer on an archive mount cannot read at all today.** `mode=ro` reads it
+fine, which is exactly what mycooc's `run_experiment.py`'s `file:{db}?mode=ro` was
+reaching for.
+
+So **create-or-not** and **writable-or-not** are orthogonal axes, and neither proposal
+addresses the second. The cockpit plausibly wants both — the table opened read-only, the
+stop button **explicitly escalating** to a writable handle, which makes every write an
+auditable act rather than a latent capability. **Do not fold this into item 4.**
 
 ## Item 6 — the stop button's hazard (open)
 
@@ -231,8 +309,15 @@ hand-wave.
 
 - **Item 6's safety predicate** — is there a public "will a stop sent now be served?" and
   is it still needed post-item-1?
-- **Lazy creation's real cost** (above) — and whether `mode="r"` earns its place anyway
-  as the API-purity rule's enforcement.
+- **`mode=ro` — a real, independent gap** (above): a viewer on a read-only mount **cannot
+  read an existing run at all today** (the read path connects read-write). Orthogonal to
+  item 4; do not fold them. Decide whether the cockpit opens read-only by default and the
+  stop button **explicitly escalates** to a writable handle.
+- **Does `create=False` ever get demanded?** A `glob`-resolved cockpit never opens a run
+  it did not find, so the phantom may be unreachable in practice. Take it if and when the
+  `explicit`/`cells` adapter hits a stale rid on a flat root. *(Second consumer already
+  waiting: `sweep.py`'s `with launcher.open_channel(v.run_id) as ch:` — the library's own
+  pure-read open.)*
 - **Does the cockpit want `run_epoch`?** ("started 3 days ago, ran 2 h" needs the epoch;
   `last_activity` shipped without its twin, and the promotion was deferred for want of a
   second consumer — the cockpit would be it.)
