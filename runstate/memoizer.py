@@ -16,8 +16,14 @@ from .channel import Body, Channel
 from .vocabulary.payloads import Topic
 from .vocabulary.schedule import Condition, Subscription, references_time, satisfied
 from .launcher import Launcher, relaunch_if_needed
-from .observables import (Outcome, RunResult, is_step, live_episode,
-                          peek_terminal, progress)
+from .observables import (
+    Outcome,
+    RunResult,
+    is_step,
+    live_episode,
+    peek_terminal,
+    progress,
+)
 
 if TYPE_CHECKING:
     from .sweep import Variant
@@ -111,7 +117,9 @@ class _LaunchProducer:
     service producer is the user's own object with the same ``.channel`` /
     ``.run_id`` / ``.extend`` shape (the seam)."""
 
-    def __init__(self, launcher: Any, variant: Variant, target_key: str = "up_to") -> None:
+    def __init__(
+        self, launcher: Any, variant: Variant, target_key: str = "up_to"
+    ) -> None:
         self._launcher: Launcher = launcher
         self._variant = variant
         self._target_key = target_key
@@ -149,7 +157,9 @@ class _LaunchProducer:
         ) or foreign_episode(self.channel)
 
 
-def launch_producer(launcher: Any, variant: Variant, *, target_key: str = "up_to") -> _LaunchProducer:
+def launch_producer(
+    launcher: Any, variant: Variant, *, target_key: str = "up_to"
+) -> _LaunchProducer:
     """A producer backed by ``launcher`` relaunching ``variant``, injecting the
     target into the worker kwargs under ``target_key`` (the loop bound).
 
@@ -213,16 +223,21 @@ def history(channel: Channel, name: str, schedule: Condition) -> list[Body]:
         b = e.body
         if not _conforming_point(b):
             continue
-        by_step[b["step"]] = b   # take-the-latest: a resumed episode's re-emission (higher seq) supersedes
+        by_step[b["step"]] = (
+            b  # take-the-latest: a resumed episode's re-emission (higher seq) supersedes
+        )
     if any(s is None for s in by_step):
-        raise ValueError("history() requires stepped emission; a value point has step=None")
+        raise ValueError(
+            "history() requires stepped emission; a value point has step=None"
+        )
     points = [by_step[s] for s in sorted(by_step)]
 
     epoch = _epoch(channel)
     if epoch is None:
         if references_time(schedule):
             raise ValueError(
-                "time-referencing replay requires a run epoch (started.attached_at)")
+                "time-referencing replay requires a run epoch (started.attached_at)"
+            )
         epoch = 0.0
     sub = Subscription(schedule, registered_at=epoch)
     out: list[Body] = []
@@ -284,30 +299,47 @@ def _reject_count(cond: Condition) -> None:
     if "count" in cond:
         raise ValueError(
             "ensure(until=...) does not support a 'count' condition (no driven "
-            "count axis); use step / time_seconds")
+            "count axis); use step / time_seconds"
+        )
     for key in ("any", "all"):
         for c in cond.get(key, ()):
             _reject_count(c)
 
 
-def _satisfied(channel: Channel, until: Condition, *, clock: Callable[[], float]) -> bool:
+def _satisfied(
+    channel: Channel, until: Condition, *, clock: Callable[[], float]
+) -> bool:
     """Has the run closed the `until` window? Coordinates read live: step from
     the dense axis (`_window_step`), time from the consumer's poll-clock
     (`_elapsed`). `count=0` -- the count drive-axis is rejected at entry."""
-    return satisfied(until, step=_window_step(channel),
-                     time_seconds=_elapsed(channel, clock), count=0)
+    return satisfied(
+        until,
+        step=_window_step(channel),
+        time_seconds=_elapsed(channel, clock),
+        count=0,
+    )
 
 
 # `until` is the run *bound*; the emission *filter* (`from`/`every`, the
 # ensure(I) strided case) is deferred -- docs/backlog/memoizer-index-algebra.md.
-def ensure(producer: Producer, name: str, *, until: Condition, poll_interval: float = 0.01,
-           sleep: Callable[[float], None] = time.sleep,
-           clock: Callable[[], float] = time.time) -> list[Body]:
+def ensure(
+    producer: Producer,
+    name: str,
+    *,
+    until: Condition,
+    poll_interval: float = 0.01,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.time,
+) -> list[Body]:
     """Return ``name``'s series for the window ``until`` (a Condition from the
     subscription algebra: ``{"step":N} | {"time_seconds":S} | any/all``),
     producing the missing suffix on a miss. Window-closed (or worker-declared
     ``completed``) -> a pure log read; else ``producer.extend(until)`` and wait,
     re-driving ``preempted`` and raising on a failure outcome or no progress.
+    The worker contract rides on that split: a resumable/chunked producer stops
+    ``preempted`` (the default) per chunk -- a per-chunk ``completed`` claim
+    ends the drive early with the truncated series
+    (specs/preempted-vs-completed.md).
 
     `up_to=N` is `until={"step":N}` (the half-open window `[0, N)`). Time is the
     consumer's poll-clock; the generalization to the emission filter
@@ -318,7 +350,8 @@ def ensure(producer: Producer, name: str, *, until: Condition, poll_interval: fl
     dense: Condition = {"every": {"step": 1}, "until": until}
     result = peek_terminal(channel)
     if _satisfied(channel, until, clock=clock) or (
-        result is not None and result.outcome == Outcome.COMPLETED):
+        result is not None and result.outcome == Outcome.COMPLETED
+    ):
         return history(channel, name, dense)
 
     while not _satisfied(channel, until, clock=clock):
@@ -352,11 +385,15 @@ def ensure(producer: Producer, name: str, *, until: Condition, poll_interval: fl
         # the next extend waits on the winner (the foreign_episode posture).
         # A genuinely stuck own spawn has no live episode and still raises; a
         # false-live handle degrades to the conservative wait.
-        if (not isinstance(handle, _ForeignEpisode)
-                and _progress(channel) <= before
-                and not satisfied(until, step=_progress(channel) + 1,
-                                  time_seconds=float("inf"), count=0)
-                and live_episode(channel) is None):
-            raise NoProgressError(producer.run_id, progress=progress(channel),
-                                  until=until)
+        if (
+            not isinstance(handle, _ForeignEpisode)
+            and _progress(channel) <= before
+            and not satisfied(
+                until, step=_progress(channel) + 1, time_seconds=float("inf"), count=0
+            )
+            and live_episode(channel) is None
+        ):
+            raise NoProgressError(
+                producer.run_id, progress=progress(channel), until=until
+            )
     return history(channel, name, dense)
