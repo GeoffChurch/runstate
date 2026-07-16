@@ -1,12 +1,17 @@
 # Value-plane divergence: take-the-latest resolution (delete the sticky raise)
 
-**Status:** forward-looking design (2026-06-26), not implemented. This is the keystone the
+**Status:** SHIPPED 2026-06-27 (designed 2026-06-26) — the sticky raise is deleted and
+`history` collapses take-the-latest by `seq` (`runstate/memoizer.py`; pinned by
+`test_history_collapses_re_emission_taking_the_latest` and
+`test_ensure_killed_resumes_on_caller_re_call_take_the_latest`). Kept as the design
+record: the reachability argument below is the soundness proof consumers lean on. This is
+the keystone the
 [ensure-redrive-recoverable-terminations](ensure-redrive-recoverable-terminations.md) item
 calls **G1**, and the value-plane robustness the cross-host claim gate needs
 (`../dead_ends/failure-detector.md` "where it goes instead"; index.md "Cross-host liveness").
 **An earlier draft proposed attribution + an "authoritative attempt" default; a code-grounded
 red-team refuted it** — it added machinery to resolve a case that cannot arise. The converged
-design is below: the fix is to *delete* the raise, not add machinery. Living document.
+design is below: the fix was to *delete* the raise, not add machinery.
 
 ## The problem
 

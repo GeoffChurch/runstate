@@ -25,19 +25,6 @@ clusters that unlock each other, with a sequencing — see
 
 ## Next pickups
 
-- **[review-2026-07-agenda](review-2026-07-agenda.md)** — the deliberation ledger
-  for the holistic review's convergent items (8 proposed changes + the dropped
-  ones), each with current-state / improvement / forced amendments / open
-  questions; statuses move PROPOSED → AGREED → SHIPPED as the owner rules.
-- **[launcher-record-identity](../specs/launcher-record-identity.md)** —
-  [wrong-verdict · SHIPPED 2026-07-14, `16c8ede`] a late-landing identityless
-  `launcher.terminated` forged the LIVE run's verdict. Fixed by giving a launch
-  an identity: one correlation id on `launched` + `terminated` + the worker's
-  `started`, with the verdict anchored to the *claimed* episode
-  (launcher-**v0.3**). The spike deleted the reap discipline rather than
-  extending it, and retired the ThreadLauncher single-dispatcher caution.
-  Agenda item 8 (the review's last) — the data migration awaits owner
-  authorization (it writes to translation's logs).
 - **[third-party-observer](third-party-observer.md)** — [LIVING · opened
   2026-07-14, the review's stage 6 executed adversarially] **the log records what a
   run DID, but not WHEN it did it nor WHAT IT WAS ASKED TO DO** — and neither
@@ -45,13 +32,20 @@ clusters that unlock each other, with a sequencing — see
   both (a viewer/TUI/scheduler attaching to a run it did not start) is new, and it
   is the one the TUI/viz work depends on. Headline: a run dead 21 days reads as
   `Running(beacon_age=9.5e-06)`, because no liveness record carries a clock. Six
-  items + the ship order; each graduates to its own spec.
-- **[mycooc-migration-audit](mycooc-migration-audit.md)** — remaining findings from
-  the mycooc migration (runstate's first end-to-end consumer): **F4** (channel
-  lifecycle / `close` contract), and the **F9/F10** minors (`await_consumed`
-  nak-rescan; under-documented episode + resumable-must-be-`preempted` rules). The
-  CAS-atomicity bug (F1), the lost/clobbered `control.stop` (F2/F3), and the reader
-  gaps (F5–F8) all shipped.
+  items + the ship order; each graduates to its own spec. **Item 1 has graduated
+  and CONVERGED: [observer-clock](../specs/observer-clock.md) (2026-07-16) — the
+  next implementable pickup** (`lifecycle-v0.4` + `launcher-v0.4`: `t` on the
+  beacon and the terminals, the Watcher seed, `last_activity`; the log migration
+  is owner-run, per the launcher-v0.3 precedent).
+- **[mycooc-migration-audit](mycooc-migration-audit.md)** — remaining from the
+  mycooc migration (runstate's first end-to-end consumer): the **F10(a)** doc
+  minor (surface the consumer-facing episode rule in the README/quickstart;
+  `overview.md` already carries it). Closed since the audit: **F4**'s ask shipped
+  (channels are context managers; `channel/base.py` documents the handle-vs-log
+  ownership contract), **F9** fixed 2026-07-16 (`await_consumed` pushes
+  `request_ids=` into the nak read), **F10(b)** promoted into the
+  `ensure`/`Worker.stopped` docstrings the same day. F1–F3 and F5–F8 shipped long
+  since.
 - **[ensure-await-completion](ensure-await-completion.md)** —
   `ensure(await_complete=True)`: gate on the producer's `completed` verdict, not the
   step/time window — for a consumer that depends on a post-terminal off-channel
@@ -60,12 +54,12 @@ clusters that unlock each other, with a sequencing — see
   (a `{completed:true}` *condition-algebra* term — wrong plane). Surfaced by the
   translation dogfood; **not urgent** (1 repo, 2 instances, 1 already mitigated) —
   promote when a live consumer depends on a post-terminal artifact.
-- **[wal-liveness-mtime](wal-liveness-mtime.md)** — [minor · observability]
-  freshness/liveness read from the main-`.db` mtime is **stale under WAL** (mtime
-  only moves on checkpoint; per-step writes live in the `-wal` sidecar), so a "live
-  pulse" sawtooths on a healthy run. Fixed consumer-side via sidecar-max mtime;
-  optional runstate-side `freshness()` / `last_write_ts` helper so the right thing
-  is the easy thing.
+- **[wal-liveness-mtime](wal-liveness-mtime.md)** — SUBSUMED 2026-07-14 (and
+  re-graded from "minor") by [third-party-observer](third-party-observer.md)
+  item 1; the runstate-side fix is now the `last_activity` fold in
+  [observer-clock](../specs/observer-clock.md). Kept as the record of the
+  WAL/mtime measurement (306 s stale on a healthy run) and the consumer-side
+  sidecar-max fix.
 - **[conventions-hygiene](conventions-hygiene.md)** — only the pid `?start=`
   disambiguator (F9) remains, deferred (rationale in the file); the rest of the
   adversarial orthonormal-basis audit of the L2 conventions resolved, and the basis
@@ -131,7 +125,7 @@ clusters that unlock each other, with a sequencing — see
   `launch` signatures: a callable `target` vs a `cmd`). Split the uniform
   `open_channel` from the per-launcher `launch` (helpers take a launch thunk). Interim:
   `launcher: Any` in the four helpers.
-- [protocol-async-api](protocol-async-api.md) — wrap the JSON Schema in AsyncAPI for
+- **protocol-async-api** (inline; no file) — wrap the JSON Schema in AsyncAPI for
   a richer spec format (multi-channel, lifecycle events). Defer until the v0.2
   protocol grows enough to justify the layer.
 - **Reconfigure command** — typed orchestrator-to-worker command for mid-flight
@@ -175,10 +169,11 @@ backend is the deferred channel-postgres LISTEN/NOTIFY idea. `SubmititLauncher` 
 - [webapp-viewer](webapp-viewer.md) — fancy webapp: lists active runs, tails their
   progress, has a per-run stop button. The topic log is non-destructive, so any
   backend can be tailed by a read-only viewer. FastAPI + WebSockets or SSE.
-- [cli-status](cli-status.md) — terminal status table reading directly from the
-  SqliteChannel `log` table. Maybe `runstate status <root>`.
-- [cli-stop](cli-stop.md) — one-shot CLI: `runstate stop <run_id>` opens the run's
-  channel and sends a `control.stop`.
+- **cli-status** (inline; no file) — terminal status table over a root's runs via
+  the observables (`peek_terminal` / `progress` / `live_episode` per run). Maybe
+  `runstate status <root>`.
+- **cli-stop** (inline; no file) — one-shot CLI: `runstate stop <run_id>` opens
+  the run's channel and sends a `control.stop`.
 
 ## Open implementation items (mirrors design §12)
 
@@ -208,9 +203,6 @@ reasoning, listed here so they're discoverable as work (cross-ref, not moved):
   unpaced* worker (a realistic paced worker never starved it, and the conformance
   suite runs clean under DELETE); take it up across read **and** unconditional-write
   if a realistic contention case ever reproduces it.
-- **`reason=str(outcome)` (V2)** — `peek_terminal`'s lifecycle tier assigns an
-  `Outcome` to the `str`-typed `RunResult.reason`; harmless (StrEnum is a str) and
-  tested.
 - **`Topic` placement (V3)** — `Topic` lives in `vocabulary/payloads.py` (a body
   module) though it is routing vocabulary; a `vocabulary/topics.py` would be the
   orthogonal home. Marginal.
@@ -233,8 +225,11 @@ reasoning, listed here so they're discoverable as work (cross-ref, not moved):
 
 ## Tactical
 
-- **Windows support** — currently Unix-only (uses `fcntl.flock`). Add `portalocker`
-  as an optional dep for cross-platform file locking.
+- **Windows support** — untested, unclaimed. The old rationale ("uses
+  `fcntl.flock`") died with the v0.1 file backend — v0.2 holds no file locks
+  (sqlite serializes internally; memory uses a threading lock). The actual
+  suspects now: the `os.kill(pid, 0)` handle-probe semantics, the signal-based
+  `Terminated(killed, signal=-rc)` mapping, and the fork-only concurrency tests.
 - **xxhash** — faster file hashing for the reference `run_id()` recipe; stdlib
   SHA-256 is fine until codebase sizes get unwieldy.
 - **Schema codegen for other languages** — Rust types via `quicktype` /

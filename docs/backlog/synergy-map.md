@@ -66,9 +66,13 @@ Secondary members that complete the capability:
 - [ensure-redrive-recoverable-terminations](ensure-redrive-recoverable-terminations.md)
   needs a discriminator between "recoverable stop" and "fatal error" — exactly
   what a **`lifecycle.stopped.reason` vocabulary recipe** supplies
-  (resumable-`timed_out` vs fatal-`crashed`). Build them together.
+  (resumable-`timed_out` vs fatal-`crashed`). Build them together. *(Both since
+  resolved: ensure-redrive 2026-06-27 as G1 + the caller recipe with `ensure`
+  unchanged; the reason register recipe 2026-07-11 into
+  `../specs/completed-opt-in.md` — a shape, no vocabulary.)*
 - **channel-postgres** LISTEN/NOTIFY is the natural substrate for
-  *wake-on-subscribe* (push beats polling for a lazy-launched worker).
+  *wake-on-subscribe* (push beats polling for a lazy-launched worker). *(The
+  backend has since shipped; LISTEN/NOTIFY stays deferred in its spec.)*
 
 **Payoff:** one coherent capability — on-demand compute / inference-server /
 metric-server — out of ~6 deferred items, each making the others exercised
@@ -207,12 +211,9 @@ CLI/webapp tools after Cluster 3's readers are public.
 
 ## Doc hygiene (v0.1→v0.2 staleness, fold in when touched)
 
-- [webapp-viewer](webapp-viewer.md) — written against the dead v0.1 API
-  (`messages` table, `direction='to_orchestrator'`, `control.send_stop`,
-  `role="orchestrator"`, `iter_history()`). Rewrite to the topic-log substrate
-  before picking up.
-- [visualization-story](visualization-story.md) — cites
-  `messages-v0.1.schema.json` as "current"; the schema stack is now per-convention
-  v0.2.
-- [run-episodes](run-episodes.md) "Built vs not" — lists episode-aware
-  `peek_terminal`/liveness as not built; it shipped 2026-06-01 (per [index](index.md)).
+All three items folded as of 2026-07-16: [webapp-viewer](webapp-viewer.md)
+rewritten to the topic-log substrate; [visualization-story](visualization-story.md)
+shed its v0.1 schema citation in the 2026-07 measurement updates;
+[run-episodes](run-episodes.md)' status and "Built vs not" now reflect the
+shipped arc. Section retained as the standing reminder: sweep for v0.1 residue
+whenever an old entry is touched.

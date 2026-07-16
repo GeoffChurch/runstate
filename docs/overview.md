@@ -113,6 +113,7 @@ substrate *routes, indexes, or filters* on it. Everything else stays in `body`.
 send(body, *, topic, name=None, request_id=None, expected_seq=None) -> int | None
 read(after=0, *, topics=None, name=None, request_ids=None, limit=None) -> list[Envelope]
 latest(topic, name=None) -> Envelope | None
+last_seq() -> int
 close()
 ```
 
@@ -128,6 +129,11 @@ close()
 - **`latest(topic, name)`** is a first-class primitive (backends optimize it:
   indexed `ORDER BY seq DESC LIMIT 1`) — how you read "the current value" of a
   register-like topic.
+- **`last_seq()`** is the CAS's read half: the log's last `seq` (`0` = empty),
+  O(1) on every backend — exactly the coordinate `expected_seq` requires a
+  claimant to assert (design §4's op-admission principle), and the cheap
+  has-anything-new watermark for an incremental reader (poll it, re-read only
+  on change).
 
 **Why a log and not a queue.** A queue consumes-once — the first reader to pull a
 message removes it for everyone else, which breaks multi-observer. A *retained log

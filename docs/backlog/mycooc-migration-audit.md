@@ -159,6 +159,14 @@ connection at GC. A paper-cut, not an unbounded leak. The idiomatic fix (make
 `Channel` a context manager + document who closes what) is still nice-to-have, not
 forced.
 
+**Closed 2026-07-16:** the idiomatic fix has since shipped — `Channel` is a
+context manager and `channel/base.py`'s module docstring carries the ownership
+contract (a Channel is a *handle* on the log, not the log; `close()` releases
+the handle, never the run). `sweep` closes its resume-probe channels, and the
+two deciders (`relaunch_if_needed` / `ensure_served`) now scope their probe
+handles in `with` blocks — load-bearing for the standing activator loop, which
+probes every cycle.
+
 ## F5 (MED — missing primitive) — no first-class reader for the historical value series
 
 **Resolved 2026-06-10** (`../specs/observables.md`) — shipped as the
@@ -241,12 +249,22 @@ function — *before* the disambiguator forces a breaking change on consumers.
 
 ## F9 (LOW — ergonomics) — `await_consumed` rescans all naks each poll
 
+**Resolved 2026-07-16** — the nak read now passes `request_ids=[request_id]`,
+pushing the id filter into the backend; the exact-id check stays on top because
+the visibility filter also admits null-id broadcasts, which answer nothing.
+
 `watcher.py` `await_consumed` does `channel.read(topics=["lifecycle.nak"])` then
 filters by `request_id` in Python — re-scanning every nak ever written on each
 poll. The substrate already supports `request_ids=[...]`; pass it. Perf/ergonomics,
 not correctness.
 
 ## F10 (DOCS) — the episode model + the resumable-must-be-preempted discipline are under-documented
+
+**(b) resolved 2026-07-16** — the discipline now lives in the `ensure` and
+`Worker.stopped` docstrings (a per-chunk `completed` claim truncates the
+drive). **(a) partially addressed**: `docs/overview.md` (written after this
+finding) carries the episode model and the pairing rules prominently; a
+README/quickstart mention remains the open sliver.
 
 - The **consumer-facing** episode rule ("a channel hosts many episodes; always
   read the *latest* `started`, never the oldest; statuses/pids are
@@ -275,5 +293,7 @@ not correctness.
    sections above; `current_episode` shipped renamed as `latest_episode`).
    mycooc deletes `channel_read.py` + the `_channel_*` helpers in one sweep
    (its checklist: `mycooc/docs/backlog/infrastructure/runstate-adoption-sweep.md`).
-   The remaining open findings here are F4 (channel lifecycle/close) and the
-   F9/F10 minors.
+   Since closed: F4 (context-manager channels + the ownership contract,
+   2026-07-16), F9 (the nak read's `request_ids=` push-down, 2026-07-16), and
+   F10(b) (the discipline promoted into docstrings, same day). The one open
+   sliver is F10(a)'s README/quickstart mention of the episode rule.

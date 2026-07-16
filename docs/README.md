@@ -10,7 +10,7 @@ The map:
 
 - [`overview.md`](overview.md) — the guided tour (derived; maintained in sync).
 - `backlog/` — forward-looking ideas (living documents; index + standalone files).
-- `dead_ends/` — refuted ideas with diagnosis (doesn't exist yet).
+- `dead_ends/` — refuted ideas with diagnosis (index + standalone files).
 - `specs/` — converged, ready-to-implement feature designs.
 - `plans/` — dated execution artifacts for landed threads.
 - `design-v0.2*.md` — the authoritative prose, plus `design-v0.3-exploration.md`
@@ -40,7 +40,7 @@ When an idea is executed:
 - **Refuted by investigation** → move to `dead_ends/` (parallel
   structure) with a diagnosis of what didn't work and why.
 
-## `dead_ends/` (doesn't exist yet; create when first needed)
+## `dead_ends/`
 
 Refuted ideas with diagnosis. Parallels `backlog/`. The point isn't
 "things we considered briefly and rejected"; it's "things we
