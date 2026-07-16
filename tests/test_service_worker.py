@@ -243,7 +243,7 @@ def test_retire_wins_on_a_quiet_log(open_channel):
     w.tick(step=None)
     assert w.retire() is True
     e = open_channel().latest("lifecycle.stopped")
-    assert e.body == {"completed": False, "error": None, "final_step": None}
+    assert e.body == {"completed": False, "error": None, "final_step": None, "t": 0.0}
     w.stopped()                                  # __exit__ path: idempotent
     assert len(open_channel().read(topics=["lifecycle.stopped"])) == 1
 
@@ -317,7 +317,7 @@ def test_serve_exits_on_commanded_stop(open_channel):
 def test_serve_lost_claim_does_nothing(open_channel):
     from runstate.vocabulary.handle import local_handle
     ch = open_channel()
-    ch.send({"handle": local_handle(), "attached_at": 0.0},
+    ch.send({"handle": local_handle(), "t": 0.0},
             topic="lifecycle.started")           # a live episode already exists
     with Worker(open_channel(), now=lambda: 0.0) as w:
         assert list(w.serve()) == []
@@ -336,7 +336,7 @@ _DEAD = f"local://{socket.gethostname()}/2147483646"   # dead pid, THIS host:
 
 
 def _dead_started(ch):
-    return ch.send({"handle": _DEAD, "attached_at": 0.0},
+    return ch.send({"handle": _DEAD, "t": 0.0},
                    topic="lifecycle.started")
 
 
@@ -506,7 +506,7 @@ def test_stopped_is_lost_guarded(open_channel):
     # completed claim onto the winner's live log).
     from runstate.vocabulary.handle import local_handle
     ch = open_channel()
-    ch.send({"handle": local_handle(), "attached_at": 0.0},
+    ch.send({"handle": local_handle(), "t": 0.0},
             topic="lifecycle.started")           # a live episode already exists
     w = Worker(open_channel(), now=lambda: 0.0)
     assert w.claimed is False
@@ -545,7 +545,7 @@ def test_the_claim_race_losers_corpse_lands_and_never_speaks_for_the_run(open_ch
             topic="launcher.launched", request_id="loser")
     ch.send({"handle": f"local://{socket.gethostname()}/222"},
             topic="launcher.launched", request_id="winner")
-    ch.send({"handle": f"local://{socket.gethostname()}/222", "attached_at": 0.0},
+    ch.send({"handle": f"local://{socket.gethostname()}/222", "t": 0.0},
             topic="lifecycle.started", request_id="winner")     # the winner claims
     h = _local_handle_for(ch, f"local://{socket.gethostname()}/111", rc=0,
                           launch_id="loser")
@@ -574,7 +574,7 @@ def test_an_unclean_death_beside_a_foreign_claim_stays_on_the_log(open_channel):
     ch = open_channel()
     ch.send({"handle": f"local://{socket.gethostname()}/111"},
             topic="launcher.launched", request_id="crasher")
-    ch.send({"handle": local_handle(), "attached_at": 0.0},
+    ch.send({"handle": local_handle(), "t": 0.0},
             topic="lifecycle.started", request_id="other")
     h = _local_handle_for(ch, f"local://{socket.gethostname()}/111", rc=3,
                           launch_id="crasher")

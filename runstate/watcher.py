@@ -117,6 +117,34 @@ class _NoLivenessProbe:
 _NO_LIVENESS = _NoLivenessProbe()
 
 
+@dataclass(frozen=True)
+class _HeartbeatSeed:
+    """The three staleness fields seeded from the beacon already on the log at
+    registration (observer-clock §5). Seeded together so poll()'s first
+    _note_heartbeat does not mistake the pre-existing beacon for a fresh arrival."""
+    at: float
+    seq: int
+    step: Optional[int]
+
+
+def _heartbeat_seed(hb: Optional[Envelope], now: float) -> _HeartbeatSeed:
+    """Seed from the latest heartbeat, else from ``now``. A missing `t` (an
+    un-migrated old beacon) or a junk-typed `t`/`step` degrades to ``now`` with no
+    step — the same measurement-plane tolerance _note_heartbeat applies: a beacon we
+    cannot date is treated as unwitnessed (fresh now; let the timeout catch a real
+    death), never as a false verdict."""
+    if hb is None:
+        return _HeartbeatSeed(at=now, seq=0, step=None)
+    try:
+        beat = Heartbeat(**hb.body)
+    except TypeError:                    # missing/extra keys (e.g. pre-migration, no `t`)
+        return _HeartbeatSeed(at=now, seq=hb.seq, step=None)
+    at = beat.t if isinstance(beat.t, (int, float)) and not isinstance(beat.t, bool) else now
+    step = beat.step if beat.step is None or (
+        isinstance(beat.step, int) and not isinstance(beat.step, bool)) else None
+    return _HeartbeatSeed(at=float(at), seq=hb.seq, step=step)
+
+
 @dataclass
 class _RunState:
     run_id: str
@@ -166,11 +194,24 @@ class Watcher:
             if isinstance(channel, EpisodeProbe)
             else _NO_LIVENESS
         )
+        # Seed the staleness clock from the beacon ALREADY on the log, so a cold
+        # attach to a run that went quiet long ago reads its true age at once
+        # (observer-clock §5). Three fields must be seeded together, not one: poll()
+        # runs _note_heartbeat FIRST, which upgrades last_heartbeat_at -> now() when
+        # `hb.seq > last_hb_seq` -- so seeding last_heartbeat_at alone (leaving
+        # last_hb_seq=0) lets the pre-existing beacon be mistaken for a fresh arrival
+        # and clobbered, a silent no-op. Seeding last_hb_seq too makes only a GENUINELY
+        # newer beacon upgrade to now() (witnessed, skew-immune). No heartbeat on the
+        # log -> seed now() (the never-beaconed-startup-death catch tier 4 exists for).
+        hb = channel.latest(Topic.LIFECYCLE_HEARTBEAT)
+        seed = _heartbeat_seed(hb, self._now())
         self._runs[run_id] = _RunState(
             run_id=run_id,
             channel=channel,
             handle=handle,
-            last_heartbeat_at=self._now(),
+            last_heartbeat_at=seed.at,
+            last_hb_seq=seed.seq,
+            last_step=seed.step,
             liveness=liveness,
         )
 

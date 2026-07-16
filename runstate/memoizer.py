@@ -176,13 +176,16 @@ def _conforming_point(b: Body) -> bool:
 
 
 def _epoch(channel: Channel) -> float | None:
-    """The run epoch -- the earliest ``lifecycle.started.attached_at`` -- or
-    None when the run has none (never started, or a null or junk-typed
-    ``attached_at``: junk earns no epoch, the measurement rule).
+    """The run epoch -- the earliest ``lifecycle.started.t`` -- or None when the
+    run has none (never started, or a junk-typed ``t`` on a hand-composed/foreign
+    started: junk earns no epoch, the measurement rule). ``t`` is required non-null
+    on a reference-Worker started (observer-clock), so the None path is now only the
+    no-started and foreign-junk cases -- but the guard STAYS: the substrate admits
+    foreign bodies on any topic, and the epoch reader must degrade, not crash.
     The ONE epoch reader ``history`` and ``_elapsed`` share; their null-epoch
     responses differ (raise vs. inert) but the epoch itself cannot."""
     started = channel.read(topics=[Topic.LIFECYCLE_STARTED], limit=1)
-    at = started[0].body.get("attached_at") if started else None
+    at = started[0].body.get("t") if started else None
     if not isinstance(at, (int, float)) or isinstance(at, bool):
         return None
     return float(at)
@@ -222,7 +225,7 @@ def history(channel: Channel, name: str, schedule: Condition) -> list[Body]:
     if epoch is None:
         if references_time(schedule):
             raise ValueError(
-                "time-referencing replay requires a run epoch (started.attached_at)")
+                "time-referencing replay requires a run epoch (started.t)")
         epoch = 0.0
     sub = Subscription(schedule, registered_at=epoch)
     out: list[Body] = []

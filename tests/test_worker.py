@@ -187,7 +187,7 @@ def test_crashed_episodes_undischarged_stop_rearms_on_resume(open_channel):
     orch = open_channel()
     import socket
     orch.send({"handle": f"local://{socket.gethostname()}/2147483646",
-               "attached_at": 0.0},
+               "t": 0.0},
               topic="lifecycle.started")   # crashed: dead pid (THIS host), no stopped
     orch.send({"from": {"step": 8}}, topic="control.stop", request_id="s1")
     with Worker(open_channel(), now=lambda: 0.0) as w:
@@ -200,7 +200,7 @@ def test_stopped_emits_dying_breath(open_channel):
     w = Worker(open_channel(), now=lambda: 0.0)
     w.stopped(completed=True, final_step=500)
     e = open_channel().latest("lifecycle.stopped")
-    assert e.body == {"completed": True, "error": None, "final_step": 500}
+    assert e.body == {"completed": True, "error": None, "final_step": 500, "t": 0.0}
     assert e.request_id is None  # broadcast — every observer sees it
 
 
@@ -211,6 +211,7 @@ def test_stopped_with_error(open_channel):
         "completed": False,
         "error": "boom",
         "final_step": None,
+        "t": 0.0,
     }
 
 
@@ -222,7 +223,7 @@ def test_tick_emits_heartbeat_with_step_and_consumed_seq(open_channel):
     hb = open_channel().latest("lifecycle.heartbeat")
     # consumed_seq is the worker's read position in the inbound control order:
     # after draining, it has processed the subscribe at sub_seq.
-    assert hb.body == {"step": 7, "consumed_seq": sub_seq}
+    assert hb.body == {"step": 7, "consumed_seq": sub_seq, "t": 0.0}
     assert hb.request_id is None
 
 
@@ -502,7 +503,7 @@ def test_constructing_a_worker_emits_started_with_a_handle(open_channel):
     e = open_channel().latest("lifecycle.started")
     assert e is not None
     assert e.body["handle"].startswith("local://")  # self-reported liveness handle
-    assert e.body["attached_at"] == 0.0
+    assert e.body["t"] == 0.0
     assert e.request_id is None
 
 
@@ -519,7 +520,7 @@ def test_steps_drives_ticks_default_preempted(open_channel):
         {"value": 1.0, "step": 1, "t": 0.0},
         {"value": 2.0, "step": 2, "t": 0.0},
     ]
-    assert obs.latest("lifecycle.stopped").body == {"completed": False, "error": None, "final_step": 2}
+    assert obs.latest("lifecycle.stopped").body == {"completed": False, "error": None, "final_step": 2, "t": 0.0}
 
 
 def test_steps_drives_ticks_explicit_completed_claim(open_channel):
@@ -552,6 +553,7 @@ def test_steps_breaks_on_commanded_stop(open_channel):
         "completed": False,
         "error": None,
         "final_step": 2,
+        "t": 0.0,
     }
 
 
@@ -562,7 +564,7 @@ def test_context_manager_reports_errored_on_exception(open_channel):
                 if step == 1:
                     raise ValueError("boom")
     e = open_channel().latest("lifecycle.stopped")
-    assert e.body == {"completed": False, "error": "boom", "final_step": 1}
+    assert e.body == {"completed": False, "error": "boom", "final_step": 1, "t": 0.0}
 
 
 def test_stopped_is_idempotent(open_channel):
@@ -570,13 +572,13 @@ def test_stopped_is_idempotent(open_channel):
     w.stopped(completed=True)
     w.stopped(error="x")  # second call is a no-op
     stops = open_channel().read(topics=["lifecycle.stopped"])
-    assert len(stops) == 1 and stops[0].body == {"completed": True, "error": None, "final_step": None}
+    assert len(stops) == 1 and stops[0].body == {"completed": True, "error": None, "final_step": None, "t": 0.0}
 
 
 def test_second_worker_loses_the_claim_and_does_no_work(open_channel):
     ch = open_channel()
     # a live episode already exists: a started by *our* pid (resolves alive), no stopped
-    ch.send({"handle": local_handle(), "attached_at": 0.0},
+    ch.send({"handle": local_handle(), "t": 0.0},
             topic="lifecycle.started")
     with Worker(open_channel(), now=lambda: 0.0) as w:
         assert w.claimed is False                            # lost: an episode is already live

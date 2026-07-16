@@ -207,15 +207,21 @@ where the basis would matter, so it is not load-bearing now.
 
 ## 6. `freshness` needs no new op
 
-`last_activity(channel)` = **`max(t)` over the ≤3 finalists** `latest(heartbeat)`,
-`latest(stopped)`, `latest(terminated)` — a handful of O(1) `latest()` reads, no full scan,
-no sixth substrate op. *Pin the definition precisely* (the two phrasings in earlier drafts
-were not equivalent under skew): it is the max-`t` **among the latest-by-seq record of each
-of those three topics**, not "the `t` of the single newest-by-seq record" (which differ when
-`t` is non-monotone vs `seq`) and not `max(t)` over the *whole* log (which a single
-fast-clocked record pins into the future forever). Max-among-finalists is the conservative
-choice for its consumer: largest plausible last-activity ⟹ smallest age ⟹ errs toward *not*
-deleting, which is what the GC's grace window (§4, irreversible) wants.
+`last_activity(channel)` = **`max(t)` over the ≤5 finalists** `latest(started)`,
+`latest(heartbeat)`, `latest(stopped)`, `latest(launched)`, `latest(terminated)` — a handful
+of O(1) `latest()` reads, no full scan, no sixth substrate op. *Pin the definition
+precisely* (the two phrasings in earlier drafts were not equivalent under skew): it is the
+max-`t` **among the latest-by-seq record of each of those topics**, not "the `t` of the
+single newest-by-seq record" (which differ when `t` is non-monotone vs `seq`) and not
+`max(t)` over the *whole* log (which a single fast-clocked record pins into the future
+forever). Max-among-finalists is the conservative choice for its consumer: largest plausible
+last-activity ⟹ smallest age ⟹ errs toward *not* deleting, which is what the GC's grace
+window (§4, irreversible) wants.
+
+*(Broadened from `heartbeat`/`stopped`/`terminated` to **all** dated records during
+implementation: a run that `started` or `launched` but has not beaconed yet must still have
+an age, or the GC's "skip homes younger than T" cannot protect a genuinely-recent home. The
+beats-only set left such a run with `last_activity == None`.)*
 
 This is morally what mycooc reached past the API to compute — though not identically:
 mycooc runs `SELECT max(created_at)` over the *whole* log (`run_experiment.py:2395`), the
@@ -306,6 +312,13 @@ your liveness" is the design's standing line for convention opt-outs. Noted, not
     different column, no field collision, no ordering hazard.
   - Quiescence-gated, idempotent, converge-over-passes; committed → run → deleted (the
     `lifecycle-v0.3` precedent). `MemoryChannel` has no persistence — a migration non-issue.
+  - **The migration must be COMPLETE, not cosmetic.** A `t`-less heartbeat is now
+    *malformed* to any reader that parses `Heartbeat(**body)` — including
+    `await_consumed`, whose watermark read skips a malformed beacon (the tolerance split)
+    and, with no timeout, would then *block indefinitely* on a run whose every beacon
+    lacks `t`. In practice this cannot bite a live run (a live worker runs current code
+    and emits `t`; a dead one leaves a terminal `await_consumed` returns on) — but it is
+    why a `t`-less beacon is a real breakage to migrate away, not a soft gap to tolerate.
 - **No envelope change, no substrate op.**
 
 ---

@@ -97,7 +97,7 @@ class Worker:
                 self._lost = True
                 break
             claim = self._ch.send(
-                asdict(Started(handle=local_handle(), attached_at=self._now())),
+                asdict(Started(handle=local_handle(), t=self._now())),
                 topic=Started.TOPIC,
                 # The claim names the launch it answers (ambient; None if no
                 # launcher spawned us). This is what lets a launcher's death
@@ -226,7 +226,7 @@ class Worker:
         self._last_step = step
         self._drain_control(step)
         self._service(step)
-        self._ch.send(asdict(Heartbeat(step=step, consumed_seq=self._cursor)),
+        self._ch.send(asdict(Heartbeat(step=step, consumed_seq=self._cursor, t=self._now())),
                       topic=Heartbeat.TOPIC)
         return self._stop_decision(step)
 
@@ -278,7 +278,7 @@ class Worker:
             if self._subs:
                 return False               # new mail — keep serving
             body = asdict(Stopped(completed=False, error=None,
-                                  final_step=self._last_step))
+                                  final_step=self._last_step, t=self._now()))
             if self._ch.send(body, topic=Stopped.TOPIC,
                              expected_seq=observed) is not None:
                 self._stopped = True       # the idempotent latch; __exit__ no-ops
@@ -300,7 +300,8 @@ class Worker:
         self._stopped = True
         if final_step is None:
             final_step = self._last_step   # auto-fill from the last yielded step
-        body = asdict(Stopped(completed=completed, error=error, final_step=final_step))
+        body = asdict(Stopped(completed=completed, error=error, final_step=final_step,
+                              t=self._now()))
         self._ch.send(body, topic=Stopped.TOPIC)
 
     # ----- internals -----

@@ -54,19 +54,28 @@ class Value:
 
 @dataclass(frozen=True)
 class Started:
-    """Pushed on attach; the worker self-reports its liveness handle (§8)."""
+    """Pushed on attach; the worker self-reports its liveness handle (§8).
+
+    ``t`` is the worker's wall-clock at attach — every lifecycle event record carries
+    a required ``t`` = when the worker emitted it (specs/observer-clock.md). It is also
+    the run epoch (``memoizer._epoch``); it was ``attached_at`` (present-nullable) before
+    the observer-clock harmonization."""
 
     handle: str
-    attached_at: Optional[float]
+    t: float
     TOPIC: ClassVar[str] = Topic.LIFECYCLE_STARTED
 
 
 @dataclass(frozen=True)
 class Heartbeat:
-    """Tick-driven liveness beacon (§7): progress + the consumption watermark."""
+    """Tick-driven liveness beacon (§7): progress + the consumption watermark.
+
+    ``t`` (the worker's wall-clock when it beat) is what lets a third-party observer date
+    the beacon and so answer staleness for a run it did not launch (specs/observer-clock.md)."""
 
     step: Optional[int]
     consumed_seq: int
+    t: float
     TOPIC: ClassVar[str] = Topic.LIFECYCLE_HEARTBEAT
 
 
@@ -80,6 +89,7 @@ class Stopped:
     completed: bool
     error: Optional[str]
     final_step: Optional[int]
+    t: float                       # the worker's wall-clock at the dying breath (§ observer-clock)
     TOPIC: ClassVar[str] = Topic.LIFECYCLE_STOPPED
 
     def __post_init__(self) -> None:
@@ -100,20 +110,25 @@ class Nak:
 
 @dataclass(frozen=True)
 class Launched:
-    """Spawn-intent + the worker's liveness handle (§8)."""
+    """Spawn-intent + the worker's liveness handle (§8). ``t`` is the launcher's
+    wall-clock at spawn (§ observer-clock). Ordered before ``status`` so the required
+    field precedes the defaulted one."""
 
     handle: str
+    t: float
     status: str = "running"
     TOPIC: ClassVar[str] = Topic.LAUNCHER_LAUNCHED
 
 
 @dataclass(frozen=True)
 class Terminated:
-    """The manner of death (§8): exited(exit_code) XOR killed(signal)."""
+    """The manner of death (§8): exited(exit_code) XOR killed(signal). ``t`` is the
+    reaper's wall-clock when it observed the death (§ observer-clock)."""
 
     reason: str  # "exited" | "killed"
     exit_code: Optional[int]
     signal: Optional[int]
+    t: float
     TOPIC: ClassVar[str] = Topic.LAUNCHER_TERMINATED
 
     def __post_init__(self) -> None:

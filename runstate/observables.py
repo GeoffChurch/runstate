@@ -3,9 +3,12 @@
 Observables: pure, body-aware folds ``log -> derived view`` — the questions you
 can ask of a run without disturbing it (the read side of design §7's
 read-vs-subscribe line; reads never pin a worker, subscriptions do). Observe
-*statelessly* here; watch *statefully* with the ``Watcher`` (which adds the one
-non-log-derivable input, arrival time). Not Rx-style observables — pull-side
-pure functions; the push side is the subscription convention.
+*statelessly* here; watch *statefully* with the ``Watcher`` (whose *preferred*
+staleness input is arrival time — skew-immune, but only for a beacon it witnessed;
+since observer-clock the beacon also carries its own ``t``, so ``last_activity`` dates
+a run from the log alone and the Watcher seeds from ``t`` the prefix it did not witness).
+Not Rx-style observables — pull-side pure functions; the push side is the subscription
+convention.
 
 Membership test: stateless, observer-side, derived-never-stored. Needs a
 cursor or a clock? It's the Watcher's. Parses a handle string? It's
@@ -251,6 +254,42 @@ def peek_terminal(channel: Channel) -> Optional[RunResult]:
     else:
         outcome = Outcome.ERRORED
     return RunResult(outcome=outcome, reason=t.reason)
+
+
+_DATED_TOPICS = (
+    Topic.LIFECYCLE_STARTED, Topic.LIFECYCLE_HEARTBEAT, Topic.LIFECYCLE_STOPPED,
+    Topic.LAUNCHER_LAUNCHED, Topic.LAUNCHER_TERMINATED,
+)
+
+
+def last_activity(channel: Channel) -> Optional[float]:
+    """The wall-clock of the run's most recent dated record — ``max(t)`` over the latest
+    ``started`` / ``heartbeat`` / ``stopped`` / ``launched`` / ``terminated``
+    (observer-clock §6) — or None if the run has emitted none of those. The freshness /
+    "when did this last do anything" signal a third-party observer or the store GC's
+    grace window needs (and what mycooc reached past the API to compute with
+    ``SELECT max(created_at)``), now a few O(1) ``latest`` reads.
+
+    **All** dated lifecycle + launcher records, not just the beats: a run that *started*
+    or *launched* but has not beaconed yet must still have an age, or the GC's
+    "skip homes younger than T" cannot protect a genuinely-recent home. ``value`` is
+    excluded — its ``t`` is present-nullable (the data plane), the documented blind spot
+    for a convention-opt-out worker.
+
+    **max-among-the-≤5-finalists**, deliberately: *not* "the ``t`` of the single
+    newest-by-``seq`` record" (which differs under skew, since ``t`` is non-monotone vs
+    ``seq``) and *not* ``max(t)`` over the whole log (which one fast-clocked record would
+    pin into the future forever). Largest plausible last-activity ⟹ smallest age ⟹ errs
+    toward *not* deleting — what the GC's irreversible grace window wants. A measurement
+    fold: it skips a junk/absent ``t`` rather than raising (the tolerance split)."""
+    ts: list[float] = []
+    for topic in _DATED_TOPICS:
+        e = channel.latest(topic)
+        if e is not None:
+            t = e.body.get("t")
+            if isinstance(t, (int, float)) and not isinstance(t, bool):
+                ts.append(float(t))
+    return max(ts) if ts else None
 
 
 def boundary_voided(sub_seq: int, started_seqs: list[int], drainer_started_seq: int) -> bool:
