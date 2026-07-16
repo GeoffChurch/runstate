@@ -1,15 +1,33 @@
 # Spec: control-target (the run's contract, on the log)
 
-**Status:** PROPOSED 2026-07-16. Graduated from
-[`../backlog/third-party-observer.md`](../backlog/third-party-observer.md) item 2 —
-the one item in that ledger that is a **missing basis vector**, not a missing
-surface (two adversaries working different lenses converged on it independently).
-Depends on [`observer-clock.md`](observer-clock.md) (SHIPPED): a time-keyed target
-needs a reliable run epoch, which `started.t`-required is what provides — the
-ledger's "ship item 1 first, alone" was **structurally necessary**, not merely
-prioritization.
+**Status: REWORKING (2026-07-16).** Proposed and **refuted the same day** by a
+four-lens adversarial pass (protocol/basis; build-it-for-real; concurrency/failure;
+consumer/bandit — independent, no shared context). The **diagnosis stands and the
+vector is real**; the **solution below does not ship**. This document is now the
+decision trail: §"The adversarial pass" is what it found, §"What survived" is what
+the rework must keep, and §"The narrowed question" is what the rework must answer.
+The proposed model is preserved verbatim *as the refuted v1* — read it as history,
+not as instruction.
+
+The pass's most instructive result: an adversary **implemented this spec exactly as
+written and the suite went green** — 723 passed vs a 725 baseline, the delta being
+exactly the two tests the migration obsoletes. **The design is implementable, its
+tests pass, and it is wrong.** Green tests do not validate a design whose concerns
+are overloaded.
+
+Graduated from [`../backlog/third-party-observer.md`](../backlog/third-party-observer.md)
+item 2. Depends on [`observer-clock.md`](observer-clock.md) (SHIPPED).
+
+---
 
 ## The problem: the log never says what the run was asked to do
+
+*(This section survives the pass intact. All four lenses affirm the diagnosis; the
+protocol lens explicitly refuted the meta-constraint attack — `control.target` is
+**not** workload-opinion creep, because `step` is already a protocol coordinate
+(`Heartbeat.step`, `observables.progress`, the condition-algebra, `stop{from:{step:N}}`).
+The protocol already holds *how far it got*; *how far it was asked to get* is the same
+coordinate from the other viewpoint.)*
 
 > The log answers **how far it got** (`progress`) and never **how far it was
 > asked to get**.
@@ -17,490 +35,378 @@ prioritization.
 The run's target exists **only** as the caller's `ensure(until=…)` argument,
 injected into the worker as a launch kwarg via `target_key="up_to"` — a hack that
 reaches into the worker function's *signature*, and which `launch_producer` can
-honor for `{"step": N}` **only** (`memoizer.py`: `if list(until.keys()) != ["step"]:
-raise ValueError`). No convention body carries it: `Launched` is `{handle, status, t}`;
-`Started` is `{handle, t}`.
+honor for `{"step": N}` **only**. No convention body carries it.
 
-Consequences, all real:
+Consequences, all real: a **launch-ignorant party cannot say "run to N"**; a
+**controller that dies cannot reconstruct any run's contract**; a **viewer cannot
+show progress-toward-target**; and `ensure` **cannot express a non-step target at
+all**, because the plumbing is a scalar kwarg.
 
-- a **launch-ignorant party cannot say "run to N"** — the TUI, a scheduler that
-  outlives its runs, any third party that attached to a run it did not start;
-- a **controller that dies cannot reconstruct any run's contract** — the target
-  died with its process;
-- a **viewer cannot show progress-toward-target** — it has the numerator and not
-  the denominator;
-- `ensure` **cannot express a non-step target at all** (time, `any`/`all`), because
-  the plumbing is a scalar kwarg.
+**Two consumers independently corroborate that the target is a coordinate, not
+identity** — mycooc's `run_id.py`: *"the target must NOT be part of identity …
+Confirmed target-independent"*; and both wrote step-axis-only decomposers by hand,
+mycooc's under a header that literally reads **"STEP-AXIS ONLY"**. The restriction is
+real and a real consumer documented living with it.
 
-Like the observer clock before it, this is invisible to the party that launched the
-run — that party *knows* what it asked for — and turns fatal the moment a third
-party attaches.
+---
 
-## The model
+## The adversarial pass: what it refuted
 
-> **`control.target {until: <Condition>}` — the run's contract, as a register.**
-> Latest-wins (`channel.latest`), worker-directed, carrying exactly one concern
-> (*how far*) and no launch recipe. **Discharge is derived, never recorded:** the
-> target is met ⟺ `progress + 1 >= N` — the fencepost already documented on
-> `observables.progress`. There is no counter-record, no positional fold, no lease,
-> and no retraction verb.
+Findings are grouped by root cause, not by agent. Every one below is a **reproduction
+or a code reading**, not an argument. Counts note how many independent lenses reached
+it — convergence between agents that shared no context is the strongest signal here.
 
-Three properties make it a register rather than a command-fact:
+### R1 — `ensure` writes a *read window* into a *contract* slot **[blocker · 3 lenses]**
 
-- **latest-wins**: only the newest target is the contract; raising or lowering it is
-  a fresh append that supersedes. No discharge fold — nothing "answers" a target.
-- **cross-episode by construction**: a resumed episode re-drains from `seq 0` and the
-  last target wins, so "resume toward the same (or updated) contract" needs no rule.
-- **derived satisfaction**: met-ness is a fold over `progress`, not a record. So
-  `peek_terminal` is **untouched** — a target adds no terminal tier.
+`ensure(until=…)` is a **read window** ("Return `name`'s series for the window
+`until`"). `control.target{until}` is **the run's contract**. Two concerns. v1 plumbed
+the first into the second (*"`ensure` writes the register before extending, iff it
+differs"*). Reproduced:
 
-### Target and stop are duals, not rivals (the ledger's fate-deciding question)
-
-The ledger posed a dichotomy: either `target{until:{step:N}}` **subsumes**
-`stop{from:{step:N}}` (deleting a primitive — a basis reduction) or the two overlap
-and target **violates orthogonality**. **Both horns are false.** They are
-*near-duals*, each carrying exactly one concern:
-
-| | `control.stop {from: {step: N}}` | `control.target {until: {step: N}}` |
-|---|---|---|
-| kind | **transient** one-shot brake | **durable** standing contract |
-| storage | a **set** — accumulates, OR-joined | a **register** — latest-wins |
-| multi-party | **earliest-wins** (any party may brake) | **latest-wins** (last writer sets the goal) |
-| lifecycle | self-clearing (discharged by its `stopped`) | persists until superseded |
-| role on the axis | a **ceiling** (do not proceed past N) | a **floor** (you must reach at least N) |
-| relaunch | never (a human is driving) | iff **short**; done iff met |
-
-The floor/ceiling asymmetry is the crux: **a target is a floor you can fall short
-of** — which is the entire reason `ensure` exists (detect the shortfall, relaunch).
-A stop is a ceiling you *cannot* fall short of: you hit it or it is moot. "Relaunch
-because the run died at N−5" is essential for a target and meaningless for a stop.
-
-**The constructive subsumption attempt, and why it fails.** The strongest attack is
-not "do they overlap" but *express stop as target*: "stop now" = set target to the
-current frontier; "stop at N" = set target to N. It fails on three counts, the third
-fatal:
-
-1. **Stop-now is coordinate-free; target-now is not.** `stop{}` (no `from`) halts
-   immediately with no read. Target-as-stop must first *read progress* to set
-   `target = frontier`, and that read races the worker. A brake you cannot pull
-   without asking where you are is a worse brake.
-2. **Stops accumulate; targets overwrite.** A brakes at 10, B raises the goal to 20:
-   as stops the brake still fires; as a register B's write silently erases A's brake.
-   "Any party may stop it, and a later benign write cannot un-stop it" is *correct*
-   for a brake; a register gives it away.
-3. **Subsumption corrupts target's single concern.** If stops are spelled as
-   target-writes, the register stops meaning "how far the run was asked to go" and
-   starts also meaning "where someone momentarily braked" — a viewer would show a
-   contract of 100 for a run whose goal is 1000, because someone paused to peek.
-   **The pollution runs opposite to the ledger's worry:** the risk was never target
-   overlapping stop; it is that forcing target to swallow stop would *destroy the
-   very vector being added.*
-
-(3) also kills the *partial* reduction — keep bare stop-now, absorb only conditional
-stop. "Inspect at 100, then continue to 1000" would become lower-to-100 →
-raise-to-1000, and in the window between, the recorded contract lies. **Conditional
-stop earns its place even with target.**
-
-They **compose** without fighting: target is the durable goal; stop is a transient
-brake the next relaunch rides over — precisely `stop-discharge.md`'s own "the stop
-wins once, the relaunch wins thereafter" (S2). Composition-without-collision is the
-serendipity signature that the basis is right.
-
-**The teaching burden this creates, stated loudly:** for *"pause this arm at N, maybe
-resume later"* (the bandit case) the right primitive is **lowering the target**
-(durable, resumable), **not** a stop (one-shot — the next relaunch rides over it). A
-user will reach for `stop` and get transient behavior. **Durable pause = target;
-momentary brake = stop.** This must be taught in the docstrings, not buried here.
-
-### The verdict stays orthogonal
-
-When the worker halts on target-met it emits the **default preempted `stopped`** —
-*identical* to how `steps(1000)` exhaustion already exits today (`__exit__` →
-`stopped(completed=False)`). The worker does **not** distinguish "halted because
-`total` exhausted" from "target met" from "stop fired": all three leave the same
-preempted dying breath, and the *reason* is recovered from the log — the same
-"commandedness is recoverable from the `control.stop` on the log" doctrine (design
-§7 / B′) that already removed `Stopped.reason`.
-
-So **"reached target ✓" is a derivation** (`progress + 1 >= N`), never a record.
-Three payoffs: `peek_terminal` is untouched; a *lowered* target cannot mislabel a
-cut-short run as `completed`; and **bandit-resume stays coherent** — you never resume
-a "completed" run, because target-met is a resumable frontier, not a terminus.
-`completed` remains what it is today: the worker's separate opt-in claim.
-
-## Why this is the canonical form (rubric)
-
-- **Independence (necessity).** Nothing composes it. `progress` says how far it
-  *got*. `Launched`/`Started` carry a handle, not a contract. Stop cannot express it
-  (transient vs durable; see the duality). And the subscription algebra provably
-  cannot: `until` bounds *firing*, not *membership* — **both spellings are refuted
-  with reproductions** in the ledger (a recurring sub never expires → relaunch a
-  finished run forever; a bare one-shot evaporates at step 0 → a crashed run's demand
-  is gone). It is a genuinely missing vector.
-- **Spanning (sufficiency).** With it, a launch-ignorant party can say "run to N" —
-  the persona-defining gap. Nothing out-of-scope rides along: the target is a
-  *coordinate*, not a launch recipe (see A2 below), so no process management enters
-  the protocol.
-- **Canonical form.** A register is the canonical shape for standing configuration
-  (design §4's `latest` projection, already the substrate's own). The bound reuses the
-  **existing condition-algebra** rather than inventing a `Bound`/`Target` type —
-  `schedule.py`'s "kept as the wire dict by design". Satisfaction is derived from
-  `progress` via the **already-documented** window fencepost, not a second
-  arithmetic. Least arbitrary content available.
-- **Orthogonality.** Two clean pairs. *Target vs stop*: durable contract vs transient
-  brake (the table above). *Target vs progress*: **asked** vs **achieved** — the same
-  two-viewpoints discipline that keeps `launcher.*` (external report) orthogonal to
-  `lifecycle.*` (self report).
-- **Serendipity (the payoff).** The `target_key`/`up_to` hack **dies**; `ensure`
-  **generalizes past step-only targets** (the worker evaluates a Condition, so
-  `{time_seconds:S}` and `any`/`all` targets work — the restriction existed *only*
-  because a kwarg must be scalar); `examples/redrive` drops its `REDRIVE_UP_TO` env
-  side-channel (the target is on the log the subprocess already reads); the viewer
-  gets **progress-toward-target** for free; `steps(start=k)`'s `k` becomes derivable
-  from `progress`; and the run-epoch rule gets **promoted to its rightful public
-  home** by acquiring a second consumer (below).
-
-  **And one found by looking at a real consumer, not by reasoning:** injecting the
-  target into the worker's kwargs makes the target's *name* a reserved word in the
-  user's own config namespace. `translation/runner.py` carries an explicit guard —
-  `if "up_to" in cfg: raise ValueError("'up_to' is reserved (injected by
-  ensure_run)")` — against a user config key colliding with the injected target.
-  **With the target on the log, nothing is injected, so the collision class ceases to
-  exist and the guard is deleted outright.** A hazard the hack *created* and the
-  consumer had to defend against by hand.
-
-### Corrected from the ledger: the crash-loop guard
-
-The ledger claims the guard "falls out" for `ensure_served` — *"target unmet ∧
-frontier did not advance ⟹ do not relaunch … which `ensure_served` cannot express
-today"*. **This is over-claimed, and the correction is load-bearing.**
-`ensure_served` gates on **leased demand**, so it drives `serve()` workers — which
-tick **stepless** by construction (`tick(step=None)`), so `progress` is permanently
-`None` (verified: a 3-iteration `serve()` worker yields `progress(channel) → None`,
-`heartbeat.step → None`). **A step frontier can never guard them.**
-
-The accurate, narrower claim: a **target-driven standing daemon** — driving
-`steps()` workers toward a step target, which is what the refuted
-demand-via-`control.subscribe` alternative was reaching for — becomes *expressible*,
-because those workers have a frontier. `ensure_served`'s stepless services need a
-different coordinate entirely (backoff, episode count) and **do not benefit from this
-spec**. Neither the daemon nor that coordinate is in scope here.
-
-## Semantics (scenario matrix)
-
-| scenario | today | this spec |
-|---|---|---|
-| T1: `ensure(until={"step": N})` | scalar `N` injected as the `up_to` kwarg | `control.target{until:{step:N}}` on the log; the worker reads it |
-| T2: `ensure(until={"time_seconds": S})` | **`ValueError`** — the producer translates only `{"step":N}` | works: the worker evaluates the Condition on the run-relative clock |
-| T3: target raised mid-run (100 → 1000) | impossible | the live worker's next drain sees it and keeps going (per-tick) |
-| T4: target lowered mid-run (1000 → 100) | impossible | the live worker halts at 100, preempted, **resumable** (raise to resume) |
-| T5: run dies at N−5 | `ensure` relaunches (it holds `until` in memory) | any party relaunches — the contract is on the log |
-| T6: target met | `steps(total)` exhausts → preempted | halts → preempted, **identical**; "met ✓" is derived |
-| T7: target + a stop at M < N | n/a | stop fires at M (preempted, discharged); the next relaunch rides over it toward N — `stop-discharge` S2, unchanged |
-| T8: resumed episode | `up_to` re-injected by the relauncher | re-drains from `seq 0`; the latest target wins — no rule needed |
-| T9: `{step:N}` target on a **stepless** (`serve()`) worker | n/a | **nak `unsatisfiable`** — the existing "a step threshold is never satisfied for a stepless worker" rule, no new vocabulary |
-| T10: malformed target (`count`, extra key, bad type) | n/a | **nak `malformed`** — parity with subscribe/stop's structural gate |
-
-**The fencepost coincides exactly, by construction.** `steps(total=N)` yields
-`0…N−1`. A target `{step:N}` is the half-open window `[0, N)`, met iff
-`progress + 1 >= N` ⟺ after step `N−1`. **The two drive identically** — which is what
-makes replacing the `total` kwarg with the register a faithful refactor rather than
-an off-by-one migration.
-
-## Design decisions
-
-### D1 — The worker consults the register per-tick (not launch-time translation)
-
-The rejected alternative (**orchestration-only**: dispatchers read the register; the
-producer translates it to a scalar drive-bound at launch) kills the *kwarg injection*
-but keeps a **translation shim in the producer**, which "migrate, never accommodate"
-says to delete rather than preserve. Worse, it forfeits the two headline payoffs:
-
-- **generality** requires the worker to evaluate a *Condition* — the `{"step"}`-only
-  restriction exists precisely because a kwarg must be scalar;
-- **live raise/lower** (bandit) requires a running worker to notice a re-issued target.
-
-Cost is near-zero: `control.target` arrives through the **same `_drain_control` read
-the worker already performs each tick**, and lands in a single slot.
-
-### D2 — Target is a halt condition for both drivers, parallel to stop
-
-`steps(total)` halts when: `total` exhausted **∨** a pending stop fires **∨** target
-met. `serve()` halts when: demand drains to zero (`retire`) **∨** a pending stop
-fires **∨** target met.
-
-This does **not** muddle the "two protocol-visible continuation policies"
-(`specs/service-worker.md`): the *policies* — the launch contract's `total`, the
-log's leased demand — are what make a driver *continue*; a target, like a stop, is a
-*bound* that applies to either. Stop is already a halt condition for both; target
-joins it. Uniformity buys the stepless case for free: a `{step:N}` target on a
-`serve()` worker naks `unsatisfiable` under the **existing** rule (T9), with no
-policy carve-out and no new nak reason.
-
-### D3 — `steps(total)`'s local arg survives
-
-The register is the *orchestrated, updatable* target; `total` is the *local default*
-for a self-directed `for step in w.steps(1000)`, which must not have to send itself a
-control message. They coexist, halting at whichever comes first — exactly the
-coexistence stop already has with `steps(total)`. A run with no target register
-behaves **precisely as it does today**: `steps(None)` remains "step until commanded
-stop", now also "…or until a target is met" — a strict addition.
-
-### D4 — The target's time axis is run-relative, not episode-local
-
-`{time_seconds: S}` means **seconds since the run began** — `now − run_epoch`, where
-the epoch is the first `lifecycle.started`'s `t` — matching `memoizer._elapsed`'s
-gap-inclusive `clock() − epoch`, **not** stop's episode-local `now − registered_at`.
-
-Decisive: a durable contract must span episodes. On episode-local time a 1h target
-restarts its clock on every resume, so a run crashing every 50min **runs forever and
-never converges**. (Stop keeps its episode-local re-anchor — that is its spec'd
-at-least-once posture, and no relaunch flap is reachable through a transient brake.)
-
-**This forces a promotion.** The epoch rule lives today as `memoizer._epoch`
-(private), whose docstring already names itself *"the ONE epoch reader"*. The worker
-is its **second consumer** — the trigger to move it to its rightful home as public
-`observables.run_epoch(channel)`, called by both. Re-deriving it worker-side would be
-exactly the F7 re-derivation smell the codebase already litigated. Definition is
-unchanged and shared verbatim: the **first** `lifecycle.started` by `seq`, its `t`
-(not `min(t)` — matching the existing convention under skew). On a first episode the
-run's epoch is the worker's own `started.t`, already on the log by the time it is read.
-
-**The edge this opens, stated rather than discovered later.** A time-keyed target is
-now evaluated by **two clocks against one epoch**: the worker's (`self._now()`, which
-decides when to *halt*) and `ensure`'s consumer poll-clock (`memoizer._elapsed`, which
-decides when to stop *relaunching*). Skewed apart, they disagree — and the disagreement
-has a shape: a worker whose clock runs **ahead** halts on target-met while `ensure`
-still reads the window open, so `ensure` re-extends, the worker halts again without
-advancing, and the own-spawn no-progress guard raises **`NoProgressError`**. That is
-the guard working — it refuses to spin — but the *diagnosis* is a clock, not a stuck
-worker, so it must be named here. It is **not a regression** (time targets raise
-`ValueError` today, so there is no behavior to preserve) and it is unreachable
-same-host, where both reference launchers put `ensure` and the worker on one clock;
-it bites only a cross-host worker (`PostgresChannel`) on a time-keyed target. Step
-targets — the overwhelmingly common case — are clock-free and wholly unaffected.
-
-### D5 — No retraction verb
-
-Latest-wins with no "clear": you may raise or lower, never remove. Removal has no use
-case — an orchestrated run always has a finite contract, and the unbounded model is
-`serve()` (leased demand), not a target-less `steps()`. This is `stop-discharge`'s A7
-reasoning (no `control.unstop`): do not add a retraction for something that does not
-need one.
-
-### D6 — The convention is renamed `subscription` → `control`
-
-`protocol/subscription-v0.2.schema.json` ("subscription convention") already pins
-`control.stop` — not a subscription — and `control.target` deepens the misnomer. The
-argument is not tidiness but a **rule**: every other convention schema is named after
-its topic family (`lifecycle-*` pins `lifecycle.*`, `launcher-*` pins `launcher.*`,
-`value-*` pins `value`). `subscription` is the **only** one that breaks it. Renaming
-to `control-v0.3.schema.json` restores a rule that holds everywhere else, at the
-cheapest moment it will ever be (the bump is happening anyway). Cost is small and
-fully enumerated: the schema's `$id`/title, one docstring in `schedule.py`,
-`tests/test_schema.py`'s validator, and design-doc prose.
-
-## Where the alternatives fall short
-
-**A1 — Demand-via-`control.subscribe`** (a step-conditioned lease as durable demand,
-a daemon translating `until` into the launch target). **DEAD in both spellings, in
-opposite directions, each reproduced** (ledger): a *recurring* sub (`every` +
-`until:{step:N}`) never expires — `steps(N)` yields `0…N−1` and the expiry gate is
-`step >= N`, so no counter-record is written and demand outlives a *clean completion*
-(a daemon would relaunch a finished run forever); a *bare one-shot* (`until:{step:N}`)
-fires once and evaporates at step 0, so a crashed run's demand is gone and the daemon
-never revives it — the one thing it exists for. `until` bounds **firing**, not
-**membership**. It is also an **audience conflation**: the worker reads the message as
-a sampling schedule while the daemon reads it as a launch order.
-
-**A2 — `control.launch` carrying the launch recipe (cmd/env).** Rejected on the
-**meta-constraint**: it bakes process management into the protocol ("the library
-transports messages, not processes") and turns any channel with write access into a
-**remote-code-execution surface**. The recipe stays in a trusted, off-log table. *(The
-instinct that a message was needed was right; the payload was wrong — it is the
-target, not the recipe.)*
-
-**A3 — A standing daemon as the fix.** `ensure_served` gates on `live_demand ∧ no live
-episode` and **nothing else** — no failure gate (unlike `ensure`, which has both
-`RunFailedError` and `NoProgressError`). Promoting the caller-invoked recipe to an
-unattended daemon converts that into a **crash-loop generator** at poll cadence. Not
-this spec's business; see the correction above for why item 2 does **not** hand
-`ensure_served` a guard.
-
-**A4 — Target as a launch-time kwarg, kept (the status quo).** It *is* the bug: the
-contract lives in the caller's head, dies with the caller's process, and is invisible
-to every third party. It also caps `ensure` at step-only targets forever.
-
-**A5 — A new terminal record for target-met (`lifecycle.target_met`).** Fails
-Independence — met-ness is a pure fold of `progress` against a register already on the
-log, so the record is derivable and therefore redundant. It would also break
-bandit-resume (a terminal you can un-reach by raising the target is not a terminal)
-and add a tier to `peek_terminal` for zero information.
-
-**A6 — Unify stop and target as `control.halt{at: C, verdict: …}`.** Forces one
-storage model on both, but stop genuinely wants a **set** (accumulating, OR-joined)
-and target genuinely wants a **register** (exactly one contract). A verdict parameter
-also cannot express "relaunch if short" — inherent to a floor, meaningless for a
-ceiling. Strictly worse than two primitives.
-
-## Implementation
-
-**Protocol (`protocol/`)** — `git mv subscription-v0.2.schema.json
-control-v0.3.schema.json`; `$id` → `…/control-v0.3.json`; title → "runstate v0.3
-control convention"; add `"control.target"` to the `control.*` topic enum; add a
-`Target` `$def`:
-
-```json
-"Target": {
-  "type": "object", "additionalProperties": false, "required": ["until"],
-  "description": "control.target is the run's contract: a register (latest-wins) carrying how far the run was asked to get. `count` is excluded -- there is no driven count axis.",
-  "properties": {"until": {"$ref": "#/$defs/Condition"}}
-}
+```
+seq  1: [A] control.target{until:{step:1000}}      <- the contract (a TUI; launch-ignorant)
+seq  2: worker claims, drains, _target={step:1000}
+        [B] ensure(producer, "loss", until={"step": 8})   # B only wants 8 points to READ
+seq 13: [B.ensure] control.target{until:{step:8}}  <- "iff it differs" -> WRITE
+seq 14: worker drains, latest-wins -> _target={step:8} -> halts
+RESULT: progress=7, peek_terminal=preempted, latest target={step:8}
 ```
 
-`Condition` (**count-free**) is the right `$ref`, not `UntilCondition`: a count
-threshold is not a drivable target — the schema now enforces at the wire what
-`memoizer._reject_count` enforces in Python. `request_id` stays **optional**
-traceability (as for `stop`): a register is not a correlated operation.
+**Nothing on the log remembers 1000 was ever asked for** — D5 forbids retraction, A5
+forbids a shortfall record, T6 makes the verdict byte-identical to a crash-preempt.
+And it is a **regression**, proven by control arm: today `extend` → `relaunch_if_needed`
+→ live → `foreign_episode`, the kwarg never reaches the live worker, and A's run
+finishes at 999. **v1 converts a per-launch parameter into shared mutable global state
+and has a read-shaped, cache-shaped API write it on every miss.**
 
-**Vocabulary** — `Topic.CONTROL_TARGET = "control.target"` on the closed enum. The
-body stays a **wire dict**, not a dataclass: `control.*` bodies are condition-algebra
-dicts modelled in `schedule.py` (payloads.py's docstring is explicit that the
-schedule is "deliberately NOT here"). Add `malformed_target(body)` beside
-`malformed_stop_trigger`: keys ⊆ `{until}`, `until` required, a count-free Condition.
+Corollary (mycooc): `ensure` writes **before** `extend`, i.e. **upstream of** the
+producer's own `if live_episode(...): return foreign_episode(...)` gate — the gate that
+exists to make a losing dispatcher harmless. A loser now halts the winner's worker
+before politely deferring.
 
-The **unsatisfiability gate is condition-level, not schedule-level**: `is_unsatisfiable`
-takes a *schedule* (`from`/`every`/`until`) and is the wrong shape here. The target's
-`until` is a bare Condition, so the T9 check is `schedule._satisfiable_stepless(until)`
-— which exists and is exactly the rule ("could this ever be satisfied with no step?").
-It is private today; the worker's target branch is its **second consumer**, so promote
-it to a module-public `satisfiable_stepless` rather than reach through the underscore.
+### R2 — No actuator: the Spanning claim is circular **[blocker · 3 lenses]**
 
-**Observables** — promote `memoizer._epoch` → public `observables.run_epoch(channel)`
-(definition verbatim; D4). `memoizer._epoch` becomes a call to it.
+*"With it, a launch-ignorant party can say 'run to N'"* — **only while an episode is
+live.** A live worker is the only thing in the library that reads the register.
+`relaunch_if_needed` doesn't; `ensure` gates on its own in-memory `until`; A2 (recipe
+on the log) is rejected; A3 (daemon) is rejected **and** listed under Non-goals. On a
+cold run the write is inert, and the next real driver overwrites it unread.
 
-**Worker** — `self._target: Condition | None` (a slot, not a set); a
-`Topic.CONTROL_TARGET` branch in `_handle_control` (structural gate → `malformed`
-nak; stepless-unsatisfiable → `unsatisfiable` nak; else assign — latest-wins falls out
-of seq-ordered drain, with **no** discharge floor and **no** positional answer fold);
-`_target_met(step)` applying the window fencepost:
+> The register is **write-effective only in the state where the launching party is
+> already present** — which is the state the spec says doesn't need fixing.
+
+The bandit round-trip inherits this: "raise to resume" has **no resumer**. The
+circularity to break: the persona's gap needs a daemon; A3 refutes the daemon for
+lacking a flap guard; the flap guard was supposed to *be* item 2.
+
+### R3 — The taught park idiom commits the pollution v1 uses to reject subsumption **[blocker · 2 lenses]**
+
+v1 rejects subsumption via objection (3): spelling stops as target-writes makes the
+register mean *"where someone momentarily braked"* as well as *"how far the run was
+asked to go"* — *"the pollution would destroy the very vector being added."* Fifteen
+lines later it teaches: *"for 'pause this arm at N, maybe resume later' the right
+primitive is **lowering the target**."*
+
+**These are the same operation.** After a park, the goal `1000` is **nowhere on the
+log** — verbatim v1's own problem statement (*"a controller that dies cannot
+reconstruct any run's contract"*). No fold recovers it: `latest` gives the park; `max`
+over history is wrong for a legitimate permanent lowering. And objection (1) lands too
+— parking requires reading `progress` then writing the frontier, i.e. *"a brake you
+cannot pull without asking where you are."* Measured: park at 106 while the worker
+advanced to 112 → **recorded contract 106, achieved 112, progress bar 107%**.
+
+**v1 cannot hold that a target-write-to-frontier is pollution in §subsumption and the
+correct idiom in §teaching-burden.**
+
+### R4 — The worker cannot read its contract before it acts **[blocker · 3 lenses]**
+
+Structural: `_drain_control` runs only inside `tick()`, and `tick()` only **after** the
+body executes a step. Two manifestations:
+
+- **Consumers need the scalar before the loop.** 4 of 5 `translation` workers are
+  batch-compute-then-emit: `hyps = translator.translate(..., stop=up_to)` runs *before
+  `runstate.Worker(channel)` is constructed*. `up_to` is a **data-slicing scalar**, not
+  a loop bound. v1's stated migration (`def worker(channel)` + `w.steps()`) is wrong for
+  all of them, and D1's live-retarget payoff is **fatal** there: raising the target
+  mid-run makes `hyps[i]` throw `IndexError` → `errored` → `RunFailedError`. **A third
+  party's benign "run further" kills the run.**
+- **The worker overshoots an already-met target.** Reproduced: episode 1 → progress 4;
+  target `{step:5}` (window `[0,5)`) is MET; episode 2 **runs step 5 anyway** — outside
+  the window — because `_target` is None until the first drain, which is after the first
+  step. Not fixable by moving the check; it needs a prologue drain, or `Worker.target`
+  resolved at claim time from `__init__`'s existing read (the same-read fusion).
+
+Both consumers already hand-wrote the missing primitive. A consumer reaching around the
+vocabulary into the raw log is what this ledger's item 1 calls *"the strongest possible
+evidence of a missing primitive"* — and v1 **deletes both decomposers and provides no
+replacement**.
+
+### R5 — The no-progress guard has **two independent holes** → relaunch storm **[blocker · 2 lenses]**
+
+D4 claimed the clock-skew edge resolves to `NoProgressError` — *"that is the guard
+working."* **The guard does not fire.** Two mechanisms, each verified:
+
+1. **`float("inf")`.** `memoizer.py`'s third clause evaluates `satisfied(until, …,
+   time_seconds=float("inf"), …)`, which is True for any bare time atom or any `any`
+   containing one → `not satisfied(...)` is False → **guard structurally dead**. Verified:
+   ```
+   {'step': 10}                            -> CAN FIRE
+   {'time_seconds': 5}                     -> STRUCTURALLY DEAD
+   {'any': [{'step':100},{'time_seconds':5}]} -> STRUCTURALLY DEAD
+   {'all': [{'step':100},{'time_seconds':5}]} -> CAN FIRE
+   ```
+   That `inf` was safe **only because time targets were impossible**. v1 removes the
+   `ValueError` that made them impossible, converting a dead branch into a live hole
+   **for exactly the target class it newly enables.**
+2. **The `+1` overshoot (R4).** Each relaunch yields one step, so `progress` advances,
+   so `_progress(channel) <= before` is False → guard never fires.
+
+Measured under two rival writers: **373 spawns in 3 seconds**, 748 target records,
+progress creeping ~1/relaunch, no raise. With `LocalLauncher` that is 373 subprocesses.
+And the operator's pause did not hold (pinned at 100, run advanced to 471): **not "last
+writer sets the goal" — the writer with the fastest poll loop wins.**
+
+### R6 — The 2×2 has an empty cell, and it is what the bandit wants **[major · 1 lens, structural]**
+
+v1's own duality table declares **kind** ∈ {transient, durable} × **role** ∈ {ceiling, floor}:
+
+| | ceiling (*do not pass N*) | floor (*reach at least N*) |
+|---|---|---|
+| **transient** | `control.stop` | vacuous |
+| **durable** | **— empty —** | `control.target` |
+
+The **durable ceiling is park/suspend**: *do not proceed past here, across relaunches,
+until I lift it.* That is what the bandit means, what a quota guard means, what an
+operator's "hold this run" means. v1 never names the cell and makes the durable **floor**
+impersonate the durable **ceiling** — R3 is the price. The tell was sitting in D5:
+*"removal has no use case"* is true of a floor and **false of a ceiling** — a park you
+cannot lift is a kill. The teaching burden was not a docstring problem; it was users
+correctly perceiving a missing basis vector and grabbing the nearest wrong one.
+
+### R7 — Write-path rules v1 declared unnecessary **[major · 2 lenses]**
+
+v1: *"no discharge floor and no positional answer fold."* But it **mandates two naks**
+(T9, T10) — and *a nak is an answer*. `stop-discharge`'s unifying drain rule: *"every
+control fact is live until its counter-record, and the worker folds the whole log
+applying counter-records."* Target has counter-records and no fold:
+
+- **Duplicate naks per episode** — 5 episodes → 5 identical naks for one bad target.
+  Verbatim the regression `service-worker.md` shipped the answer fold to kill
+  (*"today's unbounded duplicate-nak growth"*).
+- **Refused, then silently honored.** A `{step:100}` target naked `unsatisfiable` by a
+  `serve()` episode is **honored by the next `steps()` episode** (ran to 99). The
+  requester was told no, and the refusal then took effect. Worse than either policy.
+- **No observer fold.** v1 promotes `_epoch` → `observables.run_epoch` explicitly to
+  avoid the F7 re-derivation smell, then ships **no `observables.target(channel)`** while
+  creating three readers with three rules (worker: nak-aware; `ensure`: raw `latest`;
+  viewer: raw `latest`). They disagree. `undischarged_stops` at least *documents* its
+  over-report; target has no home to document anything in.
+- **`retire()` buries a target.** Its rescue gate is `if self._subs:` — a target is not
+  demand, so a target landing in the death window is drained, assigned, and orphaned as
+  the episode dies 0s into an hour-long contract.
+- **No CAS.** Every other contested claim here is `expected_seq`-arbitrated (birth,
+  death). The one piece of state two parties are *expected* to write is a bare append.
+
+### R8 — The fencepost claim is false at both ends **[major · 2 lenses]**
+
+*"The two drive identically"* holds **iff `start < N`**, and only for N ≥ 1:
+
+```
+   N start |  steps(total=N,start) | steps(start)+target{step:N} | agree
+   5     0 |      n=5  prog=4      |       n=5  prog=4           | YES
+   5     5 |      n=0  prog=None   |       n=1  prog=5           | *** NO ***
+   0     0 |      n=0  prog=None   |       n=1  prog=0           | *** NO ***
+```
+
+`total`'s check is **pre-yield** (`while step < total`); v1's target check is
+**post-tick**. **Two different fenceposts at two different sites, and v1 never noticed
+there are two.** N=0 also contradicts `progress`'s own docstring — v1's cited authority
+— which says *"`N == 0` is trivially reached."* The disagreement set is exactly T8
+(resume) composed with the `steps(start=k)`-from-`progress` claim, producing frontier
+creep: `1001/1000`, `1002/1000`, `1003/1000` …
+
+### R9 — Null-epoch: agreement is not safety **[major · 2 lenses]**
+
+D4's null-epoch rule made the worker and `ensure` **agree** — on `elapsed = 0.0`
+forever. So a time target is never met, `ensure`'s `while not _satisfied(...)` never
+exits, the guard is bypassed (R5), and `ensure` has *"No hang timeout (unchanged)"*.
+**The agreed value is a deadlock.** v1 traced the skew edge and never traced its own
+null-epoch rule to its conclusion. Reachable only because T2 makes time targets possible.
+
+### R10 — "The subscription algebra **provably cannot**" is false **[major · 1 lens, reproduced twice]**
+
+The ledger tested two spellings and generalized to a proof; v1 inherited it. A **third**
+spelling refutes both horns at once — independently re-verified here:
 
 ```python
-def _target_met(self, step: int | None) -> bool:
-    if self._target is None:
-        return False
-    window_step = step + 1 if step is not None else None   # progress+1; None stays None (stepless)
-    return satisfied(self._target, step=window_step,
-                     time_seconds=self._run_elapsed(), count=0)
+{"from": {"step": N-1}, "until": {"count": 1}}
+```
+```
+grammar : LEGAL          unsat@0 : False
+A clean completion : progress=4  live_demand=[]          <- demand CLEARS  (horn 1 dead)
+B crash at step 2  : progress=1  live_demand=['demand']  <- demand SURVIVES (horn 2 dead)
 ```
 
-checked in `steps()` and `serve()` after `tick`. `tick()`'s return and `stop_pending`
-keep meaning **the commanded-stop decision** — target-met is a *distinct* level, so
-the two are not conflated; expose it as a `target_met` property (the `stop_pending`
-shape).
+The conclusion likely still holds — but on reasons v1 never gives: it does not tell the
+**worker** where to halt; it bakes the `N-1` fencepost into the wire (coordinate-dependent
+→ fails Canonical form); it fires a spurious `value` point at `N-1` (a real audience
+conflation, polluting the data plane); raise/lower is unsubscribe+resubscribe, racy.
 
-`_run_elapsed()` is `self._now() - run_epoch(self._ch)` (D4) — worker-side, and
-deliberately **not** named `_elapsed` to avoid colliding with `memoizer._elapsed`,
-the consumer-side reader of the same axis. The epoch is resolved **lazily and
-memoized**: only a time-referencing target ever reads it, so the common step-target
-path adds **zero** I/O, and a step-only worker never touches the clock at all.
+**The honest claim is a split: a missing vector for the worker's durable bound; a
+canonical-form improvement for demand.** This matters because v1's persona argument
+leans entirely on the demand half — the half that is expressible today.
 
-**The null-epoch rule, which must match `memoizer._elapsed` exactly.** `run_epoch`
-returns `Optional[float]` — it yields None for a junk-typed `t` on a hand-composed or
-foreign `started` (the measurement rule: junk earns no epoch). The worker's own claim
-always carries a valid `t`, but the epoch is the **first** started by `seq`, which a
-prior foreign episode may own — so the worker can face a null epoch even though it is
-itself well-formed. It then does what `memoizer._elapsed` already does: **treat
-elapsed as `0.0`, making time-keyed targets inert** (step-keyed targets are
-unaffected). This is not a free choice — the two readers of one axis must agree, or a
-worker and its `ensure` would disagree about whether the same target is met. One rule,
-both sides, spelled once in `run_epoch`'s docstring.
+### R11 — Smaller, but each a real defect
 
-**Memoizer** — `ensure` writes the register before extending, **iff it differs from
-the current latest** (a write per poll-loop iteration would spam the log);
-`_LaunchProducer.extend` drops the kwarg injection *and* the step-only `ValueError`;
-`launch_producer`'s `target_key` param is **deleted**. `ensure(until=…)`'s public
-signature is unchanged — only the plumbing moves. `extend(until)` keeps its parameter
-for custom producers (ray/submitit workers that are not the reference `Worker`).
+- **Latest-wins is asserted, not derived.** Clobbering is charged as a defect against
+  target-as-stop (objection 2) and accepted unargued for target itself. Floors have a
+  join — **max** — under which no party un-satisfies another. The real fork v1 never
+  states: **latest-wins buys *lowering*, and lowering is clobbering.**
+- **`ensure`'s "iff it differs" compares Conditions** — the first site in the codebase
+  to do so, against CLAUDE.md's own rationale that the algebra is *free* precisely
+  *"since conditions are never compared or hashed."* `{"step":1000}` vs
+  `{"all":[{"step":1000}]}` are semantically identical and `!=` by dict equality → two
+  benign parties ping-pong writes through R5.
+- **T9's prescription is literally broken.** `_satisfiable_stepless({'step': 1000})` is
+  `False`, so as written the gate naks **every step target on every worker** — T1, the
+  headline scenario. It needs `step is None and not satisfiable_stepless(until)`, which
+  surfaces the real point: **the worker has no "am I stepless" property**; steppedness is
+  a per-tick coordinate, so refusal depends on *which tick drained it*.
+- **`steps(start=k)` from `progress` is a trap, not a serendipity** *(3 lenses)*. The log
+  frontier is not the checkpoint frontier: crash at 4 → `progress`=4, `ckpt["next"]`=3 →
+  `start=5` **silently skips steps 3–4**. Same class as the resume bug the ledger already
+  fixed in that very example, whose docstring teaches *"Checkpoint what you did, not what
+  you were asked to do."* **Delete the claim.**
+- **`ensure`'s `until` is not the contract for mycooc** — it calls `ensure` once per
+  *milestone* over a ladder, so the register would record where *this chunk* ends; and
+  patience-only variants pass `_UNBOUNDED_STEPS = 10**9`, so the register reads
+  **1,000,000,001 forever**, rendering `151 / 1,000,000,001 = 0.00002%` beside a ✅
+  COMPLETED run. *(Verified in the consumer.)*
+- **mycooc uses neither reference driver** (`main.py`: *"the surgical adoption never calls
+  `w.steps()`"*), and its fencepost differs from `Worker.steps`'s by one (a documented,
+  worker-specific `-1`). D2's "both drivers" covers neither. Its migration is a driver
+  rewrite, not a plumbing deletion — v1 costed it as the latter.
+- **"Progress-toward-target for free" and "generalizes past step-only" are mutually
+  exclusive.** A `Condition` is not a scalar; a bar needs a scalar. There is no
+  denominator for `{"any":[…]}`, and a *time*-target's bar on a **dead** run creeps past
+  100% — item 1's exact bug, one column over, fixable only with `last_activity`, which v1
+  never mentions.
+- **T4's row is impossible as written** — a worker at step 500 whose target drops to 100
+  halts at **500**, not 100.
+- **`target_met` inherits neither of `stop_pending`'s documented caveats** — it reads
+  False pre-drain, and False for a claim loser (where `stop_pending` returns True), so a
+  callback-guest polling it as its sole halt gate never stops.
+- **The schema enforces nothing at runtime** — there is no validator in the library
+  (deliberately: the worker needs no `jsonschema`), so `_reject_count` cannot be deleted
+  and the Canonical-form bullet must not lean on the schema as enforcement.
+- **A second test must be deleted**, not rewritten: `test_launch_producer_rejects_non_step_condition`.
 
-**Examples** — `reuse/driver.py`: drop the `up_to` param, `w.steps(start=start)`.
-`redrive/worker.py`: drop `REDRIVE_UP_TO`; read the target from the log (the
-demonstration that the env side-channel is gone).
+### The through-line
 
-## Migration
+> **v1 reasoned about the register's *read* path and never about its *write* path.**
 
-**No log migration at all.** A run with no `control.target` register behaves exactly
-as today (D3). This spec *adds* a topic; it changes no existing body — unlike
-observer-clock, there is nothing on disk to rewrite.
+The "needs no rule" claim is **half right**: a register genuinely *converges* under
+seq-ordered re-drain (verified). Every blocker lives on the **write** side — who may
+write it (R1, R7's no-CAS), what a write *answers* (R7's naks), what happens to a write
+nobody reads (R2, R7's `retire`). Stop, subscribe, and the time-lease each earned their
+rule from a bug on the **read** path, so v1 checked itself against the wrong three
+precedents. The precedent it needed was this codebase's own: **episodes are CAS-claimed
+at both ends.**
 
-**No consumer schema coupling.** Verified: neither consumer references the schema
-files or `jsonschema` — the stack is validated only by runstate's own
-`tests/test_schema.py`. So the D6 rename has **zero blast radius** outside this repo.
+Underneath it, one sentence: **the register is asked to be three things** — the run's
+*contract* (viewer, third party), the current driver's *read window* (`ensure`, mycooc's
+ladder), and the *park flag* (bandit) — arbitrated by latest-wins among writers with
+contradictory policies. That is an orthogonality violation **inside the primitive**. The
+rubric was run on target-vs-stop and never turned on target itself.
 
-The code migration is the worker-function signature: `def worker(channel, *, up_to)` +
-`w.steps(total=up_to)` → `def worker(channel)` + `w.steps()`. Surveyed against the
-real consumers (read-only), it splits three ways:
+---
 
-- **Forced — `translation`.** `runner.py:32` calls `launch_producer(launcher, variant,
-  target_key="up_to")`; deleting `target_key` breaks it at the call. Its `ensure_run`
-  harness, its worker signatures, and its reserved-kwarg guard all migrate together
-  (the guard is *deleted*, not ported — see Serendipity).
-- **Not forced, but should — `mycooc`.** It has its **own** subprocess producer
-  (`run_experiment.py:498`), so nothing breaks: it may keep plumbing its own `up_to`
-  via env/CLI, with the register on the log beside it. That redundancy is exactly the
-  wart "migrate, never accommodate" forbids — and the block's own header reads
-  *"Phase-4 subprocess producer for `runstate.ensure(until=)` (**STEP-AXIS ONLY**)"*.
-  The restriction this spec lifts is one a real consumer **documented in a comment**
-  because it had to live with it.
-- **Untouched — every self-directed call site.** `examples/minimal/worker.py:19`
-  (`steps(total=50)`), `mycooc/analyze_run.py:1406`, `translation/tests/test_workers.py:58`
-  all pass a *local* total and never see a register. **This is D3 earning its keep**:
-  keeping the local arg is what confines the migration to the orchestrated seam
-  instead of every loop in three repos.
+## What survived (the rework must keep these)
 
-Both consumer repos are read-only and under concurrent development, so **their
-migration requires the owner's explicit authorization**, as the observer-clock one
-did. Per "no legacy compatibility": migrate and delete the old path — no dual-read,
-no `target_key` deprecation shim.
+- **The diagnosis and the vector.** Real, and the meta-constraint attack **does not
+  land**: `step` is already a protocol coordinate, so this is not opinion creep.
+- **The stop/target duality.** The constructive subsumption attack (*express stop as
+  target*) fails on all three counts; count (2) — *"stops accumulate; targets overwrite…
+  a register gives it away"* — is called exactly right, and is the count that indicts R1.
+- **The register's convergence (read path).** Latest-wins genuinely needs no discharge
+  fold; `__init__` is genuinely untouched (no capped-read entry, no floor, no answer fold,
+  no boundary list — the same-read fusion undisturbed); the claim-race loser is safe for
+  free via `_lost`; the death-CAS survives target's naks; **`peek_terminal` really is
+  untouched** (verified byte-identical verdicts). These are real, non-obvious properties
+  of choosing a register.
+- **A5 (no `lifecycle.target_met`)** — *"a terminal you can un-reach by raising the target
+  is not a terminal"* is the argument, not decoration. **A2 (no launch recipe)** — the RCE
+  hazard is real; *"the instinct that a message was needed was right; the payload was
+  wrong"* is the correct diagnosis, and R2 is the unfinished half of that thought: **the
+  message is right and the actuator is missing.**
+- **The verdict stays orthogonal.** Default preempted, no new tier, reason recovered from
+  the log — a clean application of the settled B′ doctrine.
+- **D4's run-relative time axis.** *"On episode-local time a 1h target restarts its clock
+  on every resume, so a run crashing every 50min never converges"* is a proof, not a
+  preference — verified end-to-end across a restart. **Only the null-epoch corner (R9)
+  resolves the wrong way.**
+- **`observables.run_epoch`.** Correct on its own merits, with a genuine second-consumer
+  trigger. **Shipping separately, independent of this spec's fate.**
+- **D6 (`subscription` → `control`).** Right, and argued as a rule (every other convention
+  schema is named for its topic family) rather than tidiness. Zero external blast radius
+  **verified** — neither consumer references the schema files or `jsonschema`.
+- **The `ensure_served` self-correction** — called "the spec at its best": it refuted its
+  own parent ledger, verified the refutation against the code, and narrowed the claim.
+- **The consumer-found wart.** `translation/runner.py`'s hand-written *"'up_to' is
+  reserved"* guard is a hazard the hack created. **`REDRIVE_UP_TO` genuinely dies** — and
+  T2's generality is mechanically real (verified: `ensure(until={"time_seconds": 0.2})`
+  returned 20 points where today it raises).
+- **Live retarget of a running worker** is a genuinely new capability with no substitute
+  (today expressible only by kill-and-relaunch). **It is the real, defensible payoff — and
+  it is not the persona's gap.** Sell it as what it is.
 
-## Non-goals
+---
 
-- **A retraction verb** (D5) and **a target-met terminal record** (A5).
-- **The launch recipe on the log** (A2) — the meta-constraint holds.
-- **A standing daemon**, and **a crash-loop guard for `ensure_served`** — the latter
-  is not derivable from this spec (see the correction), and neither is in scope.
-- **Any change to `peek_terminal`, `RunResult`, or the `Outcome` vocabulary.**
-  Target-met is a derivation, never a verdict.
-- **The emission filter** (`from`/`every` on `ensure`) — still deferred
-  (`../backlog/memoizer-index-algebra.md`). `until` is the run *bound*; this spec
-  moves *that* onto the log and nothing else.
+## The narrowed question the rework must answer
 
-## Tests (TDD targets)
+Item 2 is **three features** wearing one name, and v1's failure is the proof:
 
-- **Schema:** a conforming `control.target` validates; `count` in `until` **rejects**;
-  an extra body key rejects; a missing `until` rejects. `tests/test_schema.py`'s
-  scenario emits `control.target` and validates against `control-v0.3`.
-- **Fencepost equivalence (the load-bearing one):** `target{step:N}` and
-  `steps(total=N)` produce **identical** trajectories (`0…N−1`, `progress = N−1`).
-- **T2 generality (the payoff):** `ensure(until={"time_seconds": S})` works
-  end-to-end — today it raises `ValueError`. Likewise an `any`/`all` target.
-- **T3/T4 live update:** target raised mid-run → the worker continues past the old
-  bound; lowered mid-run → halts at the new one, `preempted`, and a **raise + relaunch
-  resumes** (the bandit round-trip).
-- **T6 verdict:** target-met leaves a `preempted` `stopped` — *not* `completed`; and
-  `peek_terminal` is byte-identical to the `steps(total)`-exhaustion case.
-- **T7 composition:** target `N` + stop at `M < N` → halts at `M`; the stop is
-  discharged; the next relaunch runs to `N` (`stop-discharge` S2 still green).
-- **T8 cross-episode:** a resumed episode drives to the *current* target, including
-  one written while it was down.
-- **T9/T10 naks:** `{step:N}` on a `serve()` worker → `unsatisfiable`; malformed
-  target → `malformed`; both leave the worker running (one bad request is never fatal).
-- **D4 time axis:** a `{time_seconds:S}` target spans episodes — the clock does **not**
-  restart on resume (the regression that would let a crash-looping run never converge).
-- **D4 null epoch:** a junk-`t` foreign `started` at `seq 0` → the worker's time-keyed
-  target is **inert** and its step-keyed target still fires; and the worker's verdict
-  matches `memoizer._elapsed`'s on the same log (the one-rule-both-sides guarantee).
-- **Regression:** `launch_producer` no longer accepts `target_key`;
-  `tests/test_memoizer.py`'s `up_to`-injection test is **rewritten**, not kept beside
-  a shim.
-- **Log hygiene:** `ensure`'s poll loop writes the register **once**, not per iteration.
+1. **The worker's durable bound** — genuinely missing; enables live retarget; needs the
+   worker to *read* its contract before it acts (R4) and a fencepost that is idempotent
+   under resume (R8).
+2. **The observer's contract** — the viewer's denominator. Needs a *stable* meaning no
+   read-window write may perturb (R1), an observer fold that accounts for naks (R7), and
+   an honest answer for runs whose real bound is not a coordinate at all (mycooc's
+   patience, R11).
+3. **Durable demand for a relauncher** — **expressible today** (R10), and blocked not on
+   vocabulary but on an **actuator**: a daemon, which A3 refutes for lacking a flap guard,
+   which was supposed to be item 2. **That circularity must be broken deliberately, not
+   inherited.**
+
+And the structural question R6 forces: **is the missing vector the durable *floor* (goal)
+or the durable *ceiling* (park)** — or both, as two registers? Two clean registers would
+fix R3 (the viewer reads the goal from the floor and *parked* from the ceiling; nothing
+lies), fix the bandit round-trip (park = set ceiling; resume = lift it; the goal is never
+touched), and leave a floor-writer coherent. **Not proposed as the answer** — but
+Spanning requires the cell be named, and v1 shipped without naming it.
+
+---
+
+## The proposed model (REFUTED v1 — preserved as history)
+
+> **`control.target {until: <Condition>}` — the run's contract, as a register.**
+> Latest-wins (`channel.latest`), worker-directed. **Discharge is derived, never
+> recorded:** met ⟺ `progress + 1 >= N`. No counter-record, no positional fold, no
+> lease, no retraction verb.
+
+Decisions as proposed, with their post-pass status:
+
+| | decision | status |
+|---|---|---|
+| **D1** | the worker consults the register per-tick, not launch-time translation | **holds in principle; R4 shows per-tick is not enough** — the contract must be readable *before* the first step |
+| **D2** | target is a halt condition for both drivers, parallel to stop | **refuted in part** — R7 (`retire` buries it), R11 (mycooc uses neither driver) |
+| **D3** | `steps(total)`'s local arg survives | **holds, and is load-bearing** — it confines the migration to the orchestrated seam |
+| **D4** | the time axis is run-relative, forcing `run_epoch`'s promotion | **holds** — except the null-epoch corner (R9) and the guard hole (R5) |
+| **D5** | no retraction verb | **refuted** — cites A7's precedent while lacking A7's premise (a stop self-clears via the `stopped` it requests; a target does not), and R6 shows removal is exactly what a *ceiling* needs |
+| **D6** | rename `subscription` → `control` | **holds; ships independently** |
+
+**Rejected alternatives that survive the pass unchanged:** A1 (demand-via-subscribe —
+now *narrowed* by R10: refuted as canonical form and audience, **not** as impossible);
+A2 (launch recipe → RCE); A3 (standing daemon → crash-loop generator); A5 (a target-met
+terminal record); A6 (unify stop and target under one verb → forces one storage model on
+two that want different ones).

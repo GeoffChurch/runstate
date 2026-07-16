@@ -33,6 +33,17 @@ being written down**; the ones that were not reproducible are not here.
 Meta-lesson, banked: an *imagined* persona finds the gaps you are clever enough to
 imagine. A persona with a keyboard finds the ones you aren't.
 
+**Second meta-lesson, banked 2026-07-16 from item 2's pass:** the build-it adversary
+implemented that spec *exactly as written* and the suite went **green** (723 vs a 725
+baseline — the delta being precisely the tests the migration obsoletes), while three
+other lenses were independently killing the design. **A green suite validates the
+implementation against the spec; it cannot validate the spec.** Item 2's defects were
+all *semantic overload* — one slot meaning three things to three writers — which no test
+derived from the spec can see, because the tests inherit the same overload. Corollary
+for the author: run the rubric on the primitive *itself*, not only against its
+neighbours. Item 2's spec applied the orthogonality test to target-vs-stop with rigor and
+never once turned it on target-vs-target.
+
 ---
 
 ## 1. The observer clock — a dead run reads as `Running`  *(ship FIRST, alone)*
@@ -134,6 +145,61 @@ and a gap filed under the only persona you have will be under-graded for the per
 you don't.** Worth remembering the next time something is filed as "minor · cosmetic".
 
 ## 2. The run's TARGET is not on the log — the missing basis vector
+
+**→ SPEC'D AND REFUTED 2026-07-16, same day (`930dff4` + the rework). The vector is
+REAL and the diagnosis stands; the first solution does not ship. Full decision trail:
+[`../specs/control-target.md`](../specs/control-target.md) (status REWORKING).** A
+four-lens adversarial pass (protocol/basis; build-it-for-real; concurrency/failure;
+consumer/bandit — independent, no shared context) killed `control.target`-as-spec'd on
+five converging blockers. The one-line diagnosis: **the register was asked to be three
+things** — the run's *contract*, `ensure`'s *read window*, and the bandit's *park flag*
+— arbitrated by latest-wins among writers with contradictory policies. The spec
+reasoned about the register's **read** path and never its **write** path. Sharpest
+proof that green tests prove nothing here: an adversary **implemented it exactly as
+written and the suite passed** (723 vs a 725 baseline).
+
+**Three claims in the text below are now KNOWN FALSE — do not inherit them:**
+
+1. **"the crash-loop guard falls out"** — it does **not**, for `ensure_served`. That
+   decider gates on *leased demand*, so it drives `serve()` workers, which tick
+   **stepless** by construction → `progress` is permanently `None` (verified). A step
+   frontier can never guard them. Only a *target-driven daemon over `steps()` workers*
+   gains the guard — and that daemon is the thing A3 refutes.
+2. **The Demand-via-`control.subscribe` refutation below is INCOMPLETE.** It tests two
+   spellings and generalizes to "the algebra cannot express it". A **third** spelling
+   refutes both horns at once (re-verified twice):
+   `{"from": {"step": N-1}, "until": {"count": 1}}` — a clean completion **clears** the
+   demand (killing horn 1) and a crash **preserves** it (killing horn 2). It is
+   schema-legal, registers, and `live_demand` already reads it. The honest claim is a
+   **split**: *a missing vector for the worker's durable bound; a canonical-form
+   improvement for demand* (the `N-1` fencepost is coordinate-dependent on the wire, it
+   fires a spurious `value` point, and it never tells the worker where to halt). **This
+   matters: the persona argument leans on the demand half — the half that is expressible
+   today.**
+3. **"`steps(start=k)`'s `k` becomes derivable from `progress`"** is a **resume bug, not
+   a serendipity** (3 lenses). The log frontier is not the checkpoint frontier: crash at
+   4 → `progress`=4 but `ckpt["next"]`=3 → `start=5` **silently skips steps 3–4**. Same
+   class as the "Two plain bugs" entry below, in the same example, whose docstring
+   already teaches *"Checkpoint what you did, not what you were asked to do."*
+
+**The fate-deciding open question below is ANSWERED: neither horn.** Target does not
+subsume stop, and they do not overlap — they are **near-duals** (transient one-shot
+brake vs durable standing contract; set/earliest-wins vs register/latest-wins). The
+constructive attack (*express stop as target*) fails three ways, the third fatal: it
+would make the register mean "where someone braked" as well as "how far the run was
+asked to go" — **the pollution runs opposite to the worry recorded here.** The risk was
+never target overlapping stop; it is that forcing target to swallow stop destroys the
+vector being added. *(And the spec then walked into exactly that by teaching
+target-lowering as the bandit's park — see the trail.)*
+
+**A structural gap the pass named that this entry never did:** the duality's own 2×2
+(kind {transient, durable} × role {ceiling, floor}) has an **empty cell** — the
+**durable ceiling**, i.e. *park/suspend*. That is what the bandit, a quota guard, and an
+operator's "hold this run" all want, and the spec made the durable *floor* impersonate
+it. Whether the missing vector is the floor (goal), the ceiling (park), or both as two
+registers is **the rework's first question**.
+
+Original entry follows, as filed. —
 
 The run's target exists **only** as the caller's `ensure(until=…)` argument, injected
 into the worker as a launch kwarg via `target_key="up_to"` — a hack that reaches into
@@ -278,8 +344,15 @@ liveness, which item 1 says an observer cannot do.
 
 1. **The observer clock** (item 1) — alone, first, own timeline. Small, urgent, a
    wrong-verdict bug, and every screen is downstream of it.
-2. **The run's target** (item 2) — full spec + adversarial pass; it may delete a
-   primitive, so it gets the treatment.
+2. **The run's target** (item 2) — *"full spec + adversarial pass; it may delete a
+   primitive, so it gets the treatment."* **Done 2026-07-16, and the treatment worked:**
+   the spec converged, the pass refuted it on five converging blockers, and it is back in
+   design (`../specs/control-target.md`, REWORKING). It deletes no primitive — the
+   subsumption question resolved to *near-duals, keep both*. **The rework's own ship
+   order:** (a) `observables.run_epoch` — unconditionally right, shipping alone; (b) name
+   the durable-ceiling cell and decide floor-vs-ceiling-vs-both; (c) break the actuator
+   circularity (the persona's gap needs a daemon; A3 refutes the daemon for lacking a
+   flap guard; the guard was supposed to be item 2) — **before** any further wire design.
 3. **Enumeration / read-only open / cursored folds** (3–5) — each small; take them as
    the build demands them, so the demand is evidence rather than speculation.
 4. **Third-party stop safety** (item 6) — with the control half, after item 1 (a safe
