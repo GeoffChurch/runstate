@@ -12,7 +12,33 @@ requires-python = ">=3.11"
 authors = [
   {name = "Geoffrey Churchill"},
 ]
+keywords = [
+  "orchestration",
+  "control-plane",
+  "machine-learning",
+  "training",
+  "checkpointing",
+  "topic-log",
+  "protocol",
+  "hpc",
+  "slurm",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: System :: Distributed Computing",
+  "Typing :: Typed",
+]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/GeoffChurch/runstate"
+Repository = "https://github.com/GeoffChurch/runstate"
+Issues = "https://github.com/GeoffChurch/runstate/issues"
 
 [project.optional-dependencies]
 postgres = ["psycopg[binary]>=3"]
