@@ -77,8 +77,12 @@ class SqliteChannel(Channel):
     Single-writer-per-run is therefore REQUIRED on NFS, not merely typical.
     """
 
-    def __init__(self, path: str | os.PathLike[str], *,
-                 json_default: Callable[[object], object] | None = None) -> None:
+    def __init__(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        json_default: Callable[[object], object] | None = None,
+    ) -> None:
         self._json_default = json_default
         self._journal_mode = _resolve_journal_mode()
         self._conn = sqlite3.connect(
@@ -115,8 +119,15 @@ class SqliteChannel(Channel):
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
 
-    def send(self, body: Body, *, topic: str, name: str | None = None,
-             request_id: str | None = None, expected_seq: int | None = None) -> int | None:
+    def send(
+        self,
+        body: Body,
+        *,
+        topic: str,
+        name: str | None = None,
+        request_id: str | None = None,
+        expected_seq: int | None = None,
+    ) -> int | None:
         # json_default (sender-side) coerces exotic value payloads on the way out;
         # the stored text is always standard JSON, so any reader uses plain loads.
         body_json = json.dumps(body, default=self._json_default, separators=(",", ":"))
@@ -185,7 +196,9 @@ class SqliteChannel(Channel):
             for t in topics:
                 if t.endswith(".>"):
                     ors.append("topic GLOB ?")
-                    params.append(_escape_glob(t[:-1]) + "*")  # "control.>" -> "control.*"; the prefix is LITERAL
+                    params.append(
+                        _escape_glob(t[:-1]) + "*"
+                    )  # "control.>" -> "control.*"; the prefix is LITERAL
                 else:
                     ors.append("topic = ?")
                     params.append(t)
@@ -195,9 +208,16 @@ class SqliteChannel(Channel):
             params.append(name)
         if request_ids is not None:
             # visibility: the caller's own request_ids PLUS unaddressed broadcasts
-            placeholders = ", ".join("?" * len(request_ids))
-            where.append(f"(request_id IS NULL OR request_id IN ({placeholders}))")
-            params.extend(request_ids)
+            if request_ids:
+                placeholders = ", ".join("?" * len(request_ids))
+                where.append(f"(request_id IS NULL OR request_id IN ({placeholders}))")
+                params.extend(request_ids)
+            else:
+                # zero ids of one's own -> only the broadcasts. Explicit branch:
+                # the "IN ()" the format above would emit happens to parse on
+                # sqlite, but only as a SQLite-specific grammar extension -- not
+                # an idiom to lean on (and other backends must agree).
+                where.append("request_id IS NULL")
         sql = (
             "SELECT seq, topic, name, request_id, body FROM log WHERE "
             + " AND ".join(where)
@@ -234,7 +254,9 @@ class SqliteChannel(Channel):
 
     def last_seq(self) -> int:
         with self._lock:
-            (n,) = self._conn.execute("SELECT COALESCE(MAX(seq), 0) FROM log").fetchone()
+            (n,) = self._conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) FROM log"
+            ).fetchone()
         return int(n)
 
     def close(self) -> None:
