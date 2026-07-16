@@ -39,10 +39,12 @@ from runstate.observables import live_episode
 STAMP_TOPICS = ("lifecycle.heartbeat", "lifecycle.stopped",
                 "launcher.launched", "launcher.terminated")
 
-# Belt beyond the quiescence gate: leave alone any log touched within this window
-# (an extra guard for an actively-developed corpus). WAL-aware — per-commit activity
-# lands in the -wal sidecar and the main .db mtime only moves on checkpoint
-# (docs/backlog/wal-liveness-mtime.md), so recency is the max mtime across siblings.
+# Belt beyond the quiescence gate: leave alone any log written to within this window
+# (an extra guard for an actively-developed corpus). Recency is the log's OWN last-append
+# time -- max(created_at) -- NOT the file mtime: under WAL the main .db mtime lags, and
+# merely OPENING a db to read it touches the -wal/-shm mtimes to ~now (the
+# wal-liveness-mtime.md trap), so an mtime-based check is self-defeating after any scan.
+# created_at is the record's true append clock -- exactly what observer-clock surfaces.
 RECENT_SECONDS = 3600.0
 
 
@@ -50,14 +52,17 @@ def _is_number(v: object) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
+def _last_write(path: Path) -> float:
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as con:
+            row = con.execute("SELECT max(created_at) FROM log").fetchone()
+        return float(row[0]) if row and row[0] is not None else 0.0
+    except (sqlite3.Error, TypeError, ValueError):
+        return 0.0
+
+
 def _recently_written(path: Path, within: float = RECENT_SECONDS) -> bool:
-    newest = 0.0
-    for suffix in ("", "-wal", "-shm"):
-        try:
-            newest = max(newest, (Path(str(path) + suffix)).stat().st_mtime)
-        except OSError:
-            pass
-    return (time.time() - newest) < within
+    return (time.time() - _last_write(path)) < within
 
 
 def is_runstate_log(path: Path) -> bool:
