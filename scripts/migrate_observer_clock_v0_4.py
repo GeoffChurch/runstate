@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 from runstate.channel.sqlite import SqliteChannel
@@ -38,9 +39,25 @@ from runstate.observables import live_episode
 STAMP_TOPICS = ("lifecycle.heartbeat", "lifecycle.stopped",
                 "launcher.launched", "launcher.terminated")
 
+# Belt beyond the quiescence gate: leave alone any log touched within this window
+# (an extra guard for an actively-developed corpus). WAL-aware — per-commit activity
+# lands in the -wal sidecar and the main .db mtime only moves on checkpoint
+# (docs/backlog/wal-liveness-mtime.md), so recency is the max mtime across siblings.
+RECENT_SECONDS = 3600.0
+
 
 def _is_number(v: object) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _recently_written(path: Path, within: float = RECENT_SECONDS) -> bool:
+    newest = 0.0
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            newest = max(newest, (Path(str(path) + suffix)).stat().st_mtime)
+        except OSError:
+            pass
+    return (time.time() - newest) < within
 
 
 def is_runstate_log(path: Path) -> bool:
@@ -78,11 +95,15 @@ def migrate_db(path: Path) -> str:
 
 
 def main(roots: list[str]) -> None:
-    counts = {"migrated": 0, "skipped_live": 0, "clean": 0, "not_a_log": 0}
+    counts = {"migrated": 0, "skipped_live": 0, "skipped_recent": 0, "clean": 0, "not_a_log": 0}
     for root in roots:
         for path in sorted(Path(root).rglob("*.db")):
             if not is_runstate_log(path):
                 counts["not_a_log"] += 1
+                continue
+            if _recently_written(path):
+                counts["skipped_recent"] += 1
+                print(f"  recent (<1h), skipped: {path}")
                 continue
             outcome = migrate_db(path)
             counts[outcome] += 1
