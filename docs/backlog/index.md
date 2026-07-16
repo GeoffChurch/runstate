@@ -221,7 +221,14 @@ reasoning, listed here so they're discoverable as work (cross-ref, not moved):
 
 ## Ecosystem adapters (separate packages)
 
-- **runstate-submitit** — `SubmititLauncher` for SLURM/AWS Batch/local.
+- **[submitit-launcher](submitit-launcher.md)** — `SubmititLauncher` for
+  SLURM/AWS Batch/local. The bring-your-own-launcher **recipe ships now**
+  (`examples/submitit/`, verified on `cluster="local"`); the design entry
+  collects the decisions to promote it to a first-class adapter (in-repo
+  `[submitit]` extra vs separate package; callable-vs-cmd target vs the
+  [launcher-protocol-typing](launcher-protocol-typing.md) finding; Terminated
+  mapping; the `slurm://jobid` handle + `squeue -j` resolve; the requeue ↔
+  `steps(start=)` episode synergy).
 - **runstate-ray** — `RayLauncher` for Ray actors.
 - **runstate-k8s** — `K8sLauncher` for Kubernetes Jobs.
 - **runstate-hydra** — Hydra config + sweep adapter; bridges Hydra multirun into a
