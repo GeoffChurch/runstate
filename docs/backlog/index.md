@@ -164,11 +164,23 @@ backend is the deferred channel-postgres LISTEN/NOTIFY idea. `SubmititLauncher` 
 
 ## Derived tools
 
-- [webapp-viewer](webapp-viewer.md) — fancy webapp: lists active runs, tails their
-  progress, has a per-run stop button. The topic log is non-destructive, so any
-  backend can be tailed by a read-only viewer. FastAPI + WebSockets or SSE.
+- [cockpit](cockpit.md) — **[CONVERGED design 2026-07-16; the project is next]** a
+  control-plane **TUI** in **its own repo**: groups of runs → a status table → act
+  (stop). **No plots** — it shows only what runstate uniquely knows (verdict, progress,
+  freshness, episodes, stops, demand) and does the one thing no tracker can, which is
+  how it clears CLAUDE.md's "not another tracking tool" bar by construction, and dodges
+  the data-plane protocol entirely. Its governing rule — **public API only; every time
+  it can't, that's a finding** — makes it the review's stage 6 with a keyboard,
+  permanently. Predicts item 3 **refuted** (the app owns discovery), item 5 **deferred**
+  (no plots ⇒ no cursors), and item 4's proposed `create=False` **refuted** (candidate
+  replacement: lazy creation). Supersedes the deleted `webapp-viewer.md` (a v0.1
+  artifact).
 - [cli-status](cli-status.md) — terminal status table reading directly from the
-  SqliteChannel `log` table. Maybe `runstate status <root>`.
+  SqliteChannel `log` table. Maybe `runstate status <root>`. **Overlaps [cockpit](cockpit.md)
+  and is in tension with it twice over** — it puts discovery *in* runstate (which the
+  cockpit's resolver predicts is unnecessary) and it reads the `log` table directly
+  (exactly the API-bypass the cockpit's purity rule exists to catch). Reconcile when the
+  cockpit lands: it may simply die.
 - [cli-stop](cli-stop.md) — one-shot CLI: `runstate stop <run_id>` opens the run's
   channel and sends a `control.stop`.
 

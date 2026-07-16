@@ -258,7 +258,8 @@ plan as the remaining work; and the deferred design-§12 items mirrored there).
   the rid is also the run's address; the input-partition policy is
   workload-specific.
 - Pause / Resume / Snapshot / Reconfigure commands.
-- The webapp viewer (`docs/backlog/webapp-viewer.md`).
+- The **cockpit** — a control-plane TUI in its own repo (`docs/backlog/cockpit.md`;
+  design converged 2026-07-16, project next). Status + act, deliberately **no plots**.
 - Open §12 implementation items still on the design's list
   (cursor-persistence efficiency, multi-orchestrator attribution,
   author/provenance; lazy-launch closed 2026-06-11, home-level GC
@@ -282,7 +283,19 @@ plan as the remaining work; and the deferred design-§12 items mirrored there).
   coherent protocol story, not "another tracking tool."
 - **Companion webapp / TUI** built on those protocols.
 
-The discipline: visualization gets its OWN protocol in a **separate project**
+**Order amended 2026-07-16 — the app comes FIRST.** The line above ("built on those
+protocols") implies protocols-then-app. That order is now believed wrong, and the
+correction is the whole lesson of the 2026-07 review: designing a wire surface for an
+imagined consumer is what killed `control.target` in a single day
+(`docs/specs/control-target.md`). Read the bar above as a **shipping** bar, not a
+**building** bar — *ship* only a coherent protocol story, but *build* against what
+already exists and let the protocol be **extracted** from real friction. The first
+artifact is therefore the **cockpit** (`docs/backlog/cockpit.md`): a control-plane TUI
+on runstate's existing surface, **no new protocols, no plots**, governed by one rule —
+*public API only; every time it can't, that's a finding.* The data-plane / viewer-discovery /
+artifact protocols stay speculative until it demands them.
+
+The discipline (unchanged): visualization gets its OWN protocol in a **separate project**
 (not runstate's `protocol/`), distinct from the cooperative-control protocol —
 runstate stays the minimal control protocol + the substrate the data plane rides
 on. Compose, don't conflate.

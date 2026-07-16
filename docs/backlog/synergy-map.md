@@ -128,9 +128,12 @@ basis*, they aren't ergonomic sugar.
   `test_resumed_episode_ignores_prior_episodes_stop` now passes).
 
 **Payoff falls out:** the cli-status / cli-stop one-liners and the
-[webapp-viewer](webapp-viewer.md) become trivial once these readers are public —
-the webapp's "what it requires from the library" list is a subset of them. They
-are also the substrate side of the eventual viewer-discovery protocol (Cluster 4).
+[cockpit](cockpit.md) become trivial once these readers are public — the viewer's
+"what it requires from the library" list is a subset of them. They are also the
+substrate side of the eventual viewer-discovery protocol (Cluster 4). *(Amended
+2026-07-16: the cockpit's converged design predicts the discovery half is **not**
+runstate's — the app owns the layout adapters — so Cluster 4's substrate side may be
+smaller than this line assumes. The build decides.)*
 
 ### Cluster 4 — visualization (long-horizon, frozen)
 
@@ -207,10 +210,13 @@ CLI/webapp tools after Cluster 3's readers are public.
 
 ## Doc hygiene (v0.1→v0.2 staleness, fold in when touched)
 
-- [webapp-viewer](webapp-viewer.md) — written against the dead v0.1 API
-  (`messages` table, `direction='to_orchestrator'`, `control.send_stop`,
-  `role="orchestrator"`, `iter_history()`). Rewrite to the topic-log substrate
-  before picking up.
+- ~~webapp-viewer~~ — **RESOLVED 2026-07-16 by deletion.** It was written against the
+  dead v0.1 API (`messages` table, `direction='to_orchestrator'`, `control.send_stop`,
+  `role="orchestrator"`, `iter_history()`) and is superseded by [cockpit](cockpit.md).
+  *Worth noting how this went: the staleness was correctly catalogued here and the file
+  was left in place for weeks — so the next reader to pick "the viewer" up would have
+  started from a design for a protocol that no longer exists. A hygiene note is not a
+  fix; it only pays off if someone touches the file.*
 - [visualization-story](visualization-story.md) — cites
   `messages-v0.1.schema.json` as "current"; the schema stack is now per-convention
   v0.2.
