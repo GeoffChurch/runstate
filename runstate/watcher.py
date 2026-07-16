@@ -28,7 +28,13 @@ from typing import Optional, Protocol, Union
 
 from .channel import Channel, EpisodeProbe, Envelope
 from .launcher import LaunchHandle
-from .observables import Outcome, RunResult, _verdict_record, verdict_parse, peek_terminal
+from .observables import (
+    Outcome,
+    RunResult,
+    _verdict_record,
+    verdict_parse,
+    peek_terminal,
+)
 from .vocabulary.payloads import Heartbeat, Nak, Topic
 from .vocabulary.schedule import Condition
 
@@ -92,18 +98,21 @@ class _EpisodeLockProbe:
     def verdict(self, now: float) -> Optional[RunResult]:
         started = self._channel.latest(Topic.LIFECYCLE_STARTED)
         if started is None:
-            return None                          # no episode yet -> abstain
-        if started.seq != self._episode_seq:     # a new (or first-seen) episode
+            return None  # no episode yet -> abstain
+        if started.seq != self._episode_seq:  # a new (or first-seen) episode
             self._episode_seq = started.seq
-            self._seen_at = now                  # the birth grace runs from first-sight
+            self._seen_at = now  # the birth grace runs from first-sight
         if self._channel.episode_alive(started.seq):
-            return None                          # alive -> abstain (fall to staleness)
+            return None  # alive -> abstain (fall to staleness)
         if now - self._seen_at > self._grace:
             # lock released past the birth grace -> a definitive cross-host death,
             # where os.kill abstains on a foreign host.
-            return RunResult(outcome=Outcome.PRESUMED_DEAD,
-                             reason="episode_lock_released", run_id=self._run_id)
-        return None                              # within the grace (CAS->hold window)
+            return RunResult(
+                outcome=Outcome.PRESUMED_DEAD,
+                reason="episode_lock_released",
+                run_id=self._run_id,
+            )
+        return None  # within the grace (CAS->hold window)
 
 
 class _NoLivenessProbe:
@@ -158,7 +167,9 @@ class Watcher:
         observe-only). The probe tier is unavailable; staleness still applies."""
         self._track(run_id, channel, None)
 
-    def _track(self, run_id: str, channel: Channel, handle: Optional[LaunchHandle]) -> None:
+    def _track(
+        self, run_id: str, channel: Channel, handle: Optional[LaunchHandle]
+    ) -> None:
         # Resolve the liveness capability ONCE, here at the boundary: a real probe for a
         # lock-capable channel, else the null probe. poll() never re-checks the type.
         liveness: _LivenessProbe = (
@@ -197,7 +208,9 @@ class Watcher:
             r = peek_terminal(st.channel)
             if r is not None:
                 return replace(r, run_id=run_id)
-            return RunResult(outcome=Outcome.PRESUMED_DEAD, reason="probed_dead", run_id=run_id)
+            return RunResult(
+                outcome=Outcome.PRESUMED_DEAD, reason="probed_dead", run_id=run_id
+            )
 
         # tier 3b: the episode-liveness signal (resolved per run at registration; a null
         # probe for backends without the capability). poll() folds an OPAQUE verdict --
@@ -227,7 +240,9 @@ class Watcher:
         return Running(step=st.last_step, beacon_age=beacon_age)
 
     def wait(
-        self, run_id: str, *,
+        self,
+        run_id: str,
+        *,
         on_event: Callable[[str, Envelope], object] | None = None,
         timeout: Optional[float] = None,
     ) -> RunResult:
@@ -256,8 +271,12 @@ class Watcher:
                 raise TimeoutError(f"run {run_id!r} not terminal within {timeout}s")
             self._sleep(self._poll_interval)
 
-    def wait_all(self, *, on_event: Callable[[str, Envelope], object] | None = None,
-                 timeout: Optional[float] = None) -> dict[str, RunStatus]:
+    def wait_all(
+        self,
+        *,
+        on_event: Callable[[str, Envelope], object] | None = None,
+        timeout: Optional[float] = None,
+    ) -> dict[str, RunStatus]:
         """Block until every tracked run is terminal, returning ``{run_id:
         RunStatus}`` total over the tracked set. Uncapped this is a pure
         synchronization (a slow-but-healthy run delays it, by design). With
@@ -293,7 +312,9 @@ class Watcher:
             self._sleep(self._poll_interval)
         return results
 
-    def broadcast(self, name: str, schedule: Condition, *, request_id: str | None = None) -> str:
+    def broadcast(
+        self, name: str, schedule: Condition, *, request_id: str | None = None
+    ) -> str:
         """Fan one ``control.subscribe`` across every tracked run under a single
         shared ``request_id`` (returned). The run_id disambiguates the responses;
         this is the cross-run barrier primitive — no Experiment class. The caller
@@ -305,7 +326,9 @@ class Watcher:
             )
         return rid
 
-    def iter_events(self, timeout: Optional[float] = None) -> Iterator[tuple[str, Envelope]]:
+    def iter_events(
+        self, timeout: Optional[float] = None
+    ) -> Iterator[tuple[str, Envelope]]:
         """Yield ``(run_id, Envelope)`` for envelopes across all tracked runs,
         advancing a per-run cursor independent of the verdict polling. The
         cursor starts at 0: the first drain replays each run's ENTIRE logged
@@ -347,16 +370,24 @@ class Watcher:
                 # measurement — it earns no liveness credit and is skipped
                 # (the next conforming beacon supersedes it).
                 return
-            if step is not None and not (isinstance(step, int) and not isinstance(step, bool)):
+            if step is not None and not (
+                isinstance(step, int) and not isinstance(step, bool)
+            ):
                 return  # wrong-typed step: the same junk-beacon rule
             st.last_heartbeat_at = self._now()
             st.last_step = step
 
 
-def await_consumed(channel: Channel, seq: int, *, request_id: str | None = None,
-                   timeout: float | None = None, poll_interval: float = 0.05,
-                   now: Callable[[], float] = time.time,
-                   sleep: Callable[[float], None] = time.sleep) -> "Nak | RunResult | None":
+def await_consumed(
+    channel: Channel,
+    seq: int,
+    *,
+    request_id: str | None = None,
+    timeout: float | None = None,
+    poll_interval: float = 0.05,
+    now: Callable[[], float] = time.time,
+    sleep: Callable[[float], None] = time.sleep,
+) -> "Nak | RunResult | None":
     """Block until the control request at ``seq`` is ANSWERED or drained.
     Answer-first (specs/service-worker.md): a ``lifecycle.nak`` bearing
     ``request_id`` that *follows* ``seq`` resolves immediately (returns the
@@ -374,11 +405,19 @@ def await_consumed(channel: Channel, seq: int, *, request_id: str | None = None,
     deadline = None if timeout is None else now() + timeout
 
     def _answer() -> "Nak | None":
-        # Positional: only a nak FOLLOWING the request answers it.
+        # Positional: only a nak FOLLOWING the request answers it. request_ids=
+        # pushes the id filter into the backend (audit F9: no per-poll rescan of
+        # every nak); the visibility filter also admits null-id broadcasts,
+        # which answer nothing -- the exact-id check drops them.
         if request_id is None:
             return None
-        naks = [e for e in channel.read(after=seq, topics=[Topic.LIFECYCLE_NAK])
-                if e.request_id == request_id]
+        naks = [
+            e
+            for e in channel.read(
+                after=seq, topics=[Topic.LIFECYCLE_NAK], request_ids=[request_id]
+            )
+            if e.request_id == request_id
+        ]
         return verdict_parse(Nak, naks[-1]) if naks else None
 
     while True:
