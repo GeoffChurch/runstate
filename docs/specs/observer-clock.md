@@ -48,8 +48,11 @@ Worker forgetting to stamp; the `Heartbeat` body has nowhere to put a time.
    column is downstream of a clock the beacon lacks.
 3. **The GC's safety net does not hold.** `./store.md` Recipe 3 gates an *irreversible
    deletion* on "skip homes younger than T", with no clock to compute the age; the
-   fallback (file mtime) is the one `../backlog/wal-liveness-mtime.md` documents as lying
-   under WAL. "When did this home last change?" = `last_activity` (§6). *Scope: this spec
+   fallback (file mtime) is the one `backlog/wal-liveness-mtime.md` documented as lying
+   under WAL *(entry deleted 2026-07-16 — this spec resolved it; git carries it: measured
+   306 s stale on a log 1 s old, because WAL puts commits in the sidecar and the main
+   file's mtime only moves on checkpoint)*. "When did this home last change?" =
+   `last_activity` (§6). *Scope: this spec
    supplies the grace window's **age** (the belt); it does not by itself make the GC safe
    cross-host — the hard gate `live_episode is None` reads conservatively-live for an
    unresolvable foreign handle (`observables.py:145`). That is store.md's concern, not

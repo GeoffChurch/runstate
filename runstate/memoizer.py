@@ -355,6 +355,30 @@ def ensure(producer: Producer, name: str, *, until: Condition, poll_interval: fl
         # the next extend waits on the winner (the foreign_episode posture).
         # A genuinely stuck own spawn has no live episode and still raises; a
         # false-live handle degrades to the conservative wait.
+        #
+        # It is also AXIS-AWARE, and that is what `time_seconds=float("inf")`
+        # below encodes: it asks "could waiting alone satisfy `until` from
+        # here?". If yes, a stalled STEP frontier is not evidence of a stuck
+        # run -- a {time_seconds} chunk legitimately advances 0 steps -- so the
+        # guard stands down rather than false-raise (52f9c49; pinned by
+        # test_ensure_time_milestone_does_not_false_raise_on_zero_step_progress).
+        # The consequence is structural, not incidental: on the time axis
+        # "stuck" is not expressible (time always advances toward a time
+        # target), so **a time-keyed `until` has no no-progress protection at
+        # all** -- neither a bare {time_seconds} nor an `any` containing one.
+        #
+        # THE UNSTATED INVARIANT THAT MAKES THAT SAFE (promoted to prose
+        # 2026-07-16; it had never been written down): *a worker that exits
+        # CLEANLY has made progress, or has left a failure verdict.* An errored
+        # spawn is caught above by RunFailedError; a completed one returns. So
+        # only a clean-preempted-zero-progress loop could spin here, and no
+        # shipped driver produces one -- `steps(total)` exhausting means it ran.
+        # Any future design that makes "clean exit at zero progress" ROUTINE
+        # breaks the invariant and turns this branch into an unbounded relaunch
+        # loop at poll cadence. A worker that halts on a target being met is
+        # exactly such a design: measured at 373 spawns in 3s when one was
+        # prototyped (docs/specs/control-target.md, R5). Re-examine this guard
+        # before shipping any such halt condition.
         if (not isinstance(handle, _ForeignEpisode)
                 and _progress(channel) <= before
                 and not satisfied(until, step=_progress(channel) + 1,

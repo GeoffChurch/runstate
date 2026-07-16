@@ -25,19 +25,17 @@ clusters that unlock each other, with a sequencing — see
 
 ## Next pickups
 
-- **[review-2026-07-agenda](review-2026-07-agenda.md)** — the deliberation ledger
-  for the holistic review's convergent items (8 proposed changes + the dropped
-  ones), each with current-state / improvement / forced amendments / open
-  questions; statuses move PROPOSED → AGREED → SHIPPED as the owner rules.
-- **[launcher-record-identity](../specs/launcher-record-identity.md)** —
-  [wrong-verdict · SHIPPED 2026-07-14, `16c8ede`] a late-landing identityless
-  `launcher.terminated` forged the LIVE run's verdict. Fixed by giving a launch
-  an identity: one correlation id on `launched` + `terminated` + the worker's
-  `started`, with the verdict anchored to the *claimed* episode
-  (launcher-**v0.3**). The spike deleted the reap discipline rather than
-  extending it, and retired the ThreadLauncher single-dispatcher caution.
-  Agenda item 8 (the review's last) — the data migration awaits owner
-  authorization (it writes to translation's logs).
+- **The 2026-07 holistic review is CLOSED (stage 7 synthesis, 2026-07-16).** Its
+  deliberation ledger (`review-2026-07-agenda.md`, 8 items: 7 shipped, 1 dropped)
+  is **pruned per the backlog convention** — git carries the deliberation, the
+  shipped rationale lives in `../specs/`, and the one refutation worth keeping is
+  [`../dead_ends/window-closed.md`](../dead_ends/window-closed.md). What the review
+  *left open* is the two living entries below (third-party-observer;
+  mycooc-migration-audit). Its verified closing facts: the launcher-identity
+  migration is **moot** (2,531 consumer logs scanned — 1,131 `launcher.launched` +
+  1,129 `launcher.terminated`, **every one carrying a `request_id`, zero NULLs**),
+  and `wal-liveness-mtime` is **resolved** by observer-clock's `last_activity`
+  (both entries deleted on resolution).
 - **[third-party-observer](third-party-observer.md)** — [LIVING · opened
   2026-07-14, the review's stage 6 executed adversarially] **the log records what a
   run DID, but not WHEN it did it nor WHAT IT WAS ASKED TO DO** — and neither
@@ -60,12 +58,6 @@ clusters that unlock each other, with a sequencing — see
   (a `{completed:true}` *condition-algebra* term — wrong plane). Surfaced by the
   translation dogfood; **not urgent** (1 repo, 2 instances, 1 already mitigated) —
   promote when a live consumer depends on a post-terminal artifact.
-- **[wal-liveness-mtime](wal-liveness-mtime.md)** — [minor · observability]
-  freshness/liveness read from the main-`.db` mtime is **stale under WAL** (mtime
-  only moves on checkpoint; per-step writes live in the `-wal` sidecar), so a "live
-  pulse" sawtooths on a healthy run. Fixed consumer-side via sidecar-max mtime;
-  optional runstate-side `freshness()` / `last_write_ts` helper so the right thing
-  is the easy thing.
 - **[conventions-hygiene](conventions-hygiene.md)** — only the pid `?start=`
   disambiguator (F9) remains, deferred (rationale in the file); the rest of the
   adversarial orthonormal-basis audit of the L2 conventions resolved, and the basis

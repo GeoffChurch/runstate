@@ -129,7 +129,9 @@ item 2** — conventions version on independent timelines, and this one is small
 urgent, and possibly zero-primitive.
 
 **Prior art — and the lesson in it.** This gap was already filed, on 2026-06-23, as
-[wal-liveness-mtime](wal-liveness-mtime.md): a consumer deriving freshness from the
+`backlog/wal-liveness-mtime.md` *(entry deleted 2026-07-16 on resolution — it asked
+for exactly the freshness helper `last_activity` became; git carries it)*: a consumer
+deriving freshness from the
 `.db` file mtime read *stale on a healthy run* (WAL puts commits in the sidecar; the
 main file's mtime only moves on checkpoint — measured: 306 s stale while the log was
 1 s old), and it proposed exactly option (c) — *"expose a first-class `last_write_ts`
