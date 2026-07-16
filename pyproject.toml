@@ -18,6 +18,9 @@ dependencies = []
 postgres = ["psycopg[binary]>=3"]
 test = ["pytest", "jsonschema", "mypy", "psycopg[binary]>=3"]
 
+[project.scripts]
+runstate = "runstate.cli:main"
+
 [tool.setuptools.packages.find]
 include = ["runstate*"]
 
