@@ -254,8 +254,11 @@ def peek_terminal(channel: Channel) -> Optional[RunResult]:
             outcome = Outcome.COMPLETED
         else:
             outcome = Outcome.PREEMPTED
+        # reason == outcome for this tier, as a PLAIN string (audit V2): reason
+        # is str-typed and user-facing -- an Outcome member here leaks the enum
+        # repr into drivers' output (reason=<Outcome.COMPLETED: 'completed'>).
         return RunResult(
-            outcome=outcome, reason=outcome, error=s.error, final_step=s.final_step
+            outcome=outcome, reason=str(outcome), error=s.error, final_step=s.final_step
         )
     t = verdict_parse(Terminated, record)
     if t.reason == "killed":
@@ -333,7 +336,19 @@ def live_demand(channel: Channel) -> list[Envelope]:
     check, never payloads."""
     pending: dict[str, Envelope] = {}  #  request_id -> the latest unanswered subscribe
     starteds: list[int] = []
-    for e in channel.read():
+    # Only the four topics the fold routes on -- the answer fold's inputs plus
+    # the episode boundaries. An unfiltered read would materialize the whole
+    # log (values + heartbeats dominate it) for a fold that skips them; the
+    # topic filter is index-served on every backend (the same economy as the
+    # Worker's head-first attach, design §12.5).
+    for e in channel.read(
+        topics=[
+            Topic.CONTROL_SUBSCRIBE,
+            Topic.CONTROL_UNSUBSCRIBE,
+            Topic.LIFECYCLE_NAK,
+            Topic.LIFECYCLE_STARTED,
+        ]
+    ):
         if e.topic == Topic.LIFECYCLE_STARTED:
             starteds.append(e.seq)
             continue
