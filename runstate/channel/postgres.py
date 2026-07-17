@@ -257,8 +257,14 @@ class PostgresChannel(Channel):
             params.append(name)
         if request_ids is not None:
             # visibility: the caller's own request_ids PLUS unaddressed broadcasts
-            where.append("(request_id IS NULL OR request_id = ANY(%s))")
-            params.append(list(request_ids))
+            if request_ids:
+                where.append("(request_id IS NULL OR request_id = ANY(%s))")
+                params.append(list(request_ids))
+            else:
+                # zero ids of one's own -> only the broadcasts. Explicit branch:
+                # an empty array parameter's adaptation is driver-dependent, and
+                # every backend must answer this edge identically.
+                where.append("request_id IS NULL")
         sql = (
             "SELECT seq, topic, name, request_id, body FROM log WHERE "
             + " AND ".join(where)
