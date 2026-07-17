@@ -461,9 +461,15 @@ def await_consumed(
         # Positional: only a nak FOLLOWING the request answers it.
         if request_id is None:
             return None
+        # request_ids= pushes the id filter into the backend (audit F9: no
+        # per-poll rescan of every nak); the visibility filter also admits
+        # null-id broadcasts, which answer nothing -- the exact-id check
+        # drops them.
         naks = [
             e
-            for e in channel.read(after=seq, topics=[Topic.LIFECYCLE_NAK])
+            for e in channel.read(
+                after=seq, topics=[Topic.LIFECYCLE_NAK], request_ids=[request_id]
+            )
             if e.request_id == request_id
         ]
         return verdict_parse(Nak, naks[-1]) if naks else None
