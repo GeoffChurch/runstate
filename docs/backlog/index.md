@@ -95,7 +95,11 @@ clusters that unlock each other, with a sequencing — see
   done-ness). Defends the closed `outcome` enum from the recurring
   completion-classification bug class (mycooc 1963732, 8ea82e3). `RunResult.reason`
   stays branched-on-by-nobody by design (a refinement of `outcome`, not a why).
-- **Cross-host liveness for the claim gate** — `live_episode` sits at the probe-only
+- **Cross-host liveness for the claim gate** — elaborated 2026-07-16 into
+  [cross-host-claim-gate](cross-host-claim-gate.md) (DESIGN DELIBERATION, NOT
+  CONVERGED, owner-gated: the two candidate designs analyzed against the
+  invariants each touches, plus the owner-decision list). Summary:
+  `live_episode` sits at the probe-only
   rung, so on a foreign host it goes blind and treats an unresolvable handle as live
   *forever*; a crashed foreign episode blocks the waker and the birth-CAS. The
   observe-then-claim / heartbeat-as-claim-detector approach is **refuted**
@@ -184,15 +188,10 @@ backend is the deferred channel-postgres LISTEN/NOTIFY idea. `SubmititLauncher` 
   keyboard, permanently, and the acceptance test for this ledger's items 2–6. `cockpit.md`
   is now the runstate-facing record (the split rationale + the build's predictions: item 3
   **refuted**, item 5 **deferred**, item 4 **unsettled**, item 6 maybe-dissolved-by-item-1,
-  item 2 the target denominator). Supersedes the deleted `webapp-viewer.md`.
-- **cli-status** — terminal status table reading directly from the
-  SqliteChannel `log` table. Maybe `runstate status <root>`. **Overlaps [cockpit](cockpit.md)
-  and is in tension with it twice over** — it puts discovery *in* runstate (which the
-  cockpit's resolver predicts is unnecessary) and it reads the `log` table directly
-  (exactly the API-bypass the cockpit's purity rule exists to catch). Reconcile when the
-  cockpit lands: it may simply die.
-- **cli-stop** — one-shot CLI: `runstate stop <run_id>` opens the run's
-  channel and sends a `control.stop`.
+  item 2 the target denominator). Supersedes the deleted `webapp-viewer.md`, and
+  absorbed the `cli-status` / `cli-stop` one-liners (the predicted reconciliation:
+  they died into the TUI's status table + stop action — a status/stop terminal
+  tool is that project's, never this repo's).
 
 ## Open implementation items (mirrors design §12)
 
@@ -211,7 +210,11 @@ reasoning, listed here so they're discoverable as work (cross-ref, not moved):
 - **GC / retention policy** (§12.9) — *in-log* retention is full, no GC (the
   precondition `peek_terminal` / resume rely on); *home-level* collection is
   recipe'd (`../specs/store.md` Recipe 3: pointer-rooted mark-and-sweep,
-  selective-prune default). In-log compaction remains future work.
+  selective-prune default). In-log compaction remains future work, elaborated
+  2026-07-16 into [in-log-compaction](in-log-compaction.md) (DESIGN DELIBERATION,
+  NOT CONVERGED, owner-gated: the heartbeat keep-latest candidate, what it does to
+  the contiguous-`seq` contract, why the value plane is never compactable, and the
+  owner-decision list).
 
 ## Deferred from the exogenous-commit audit (2026-06-20)
 
@@ -276,20 +279,11 @@ reasoning, listed here so they're discoverable as work (cross-ref, not moved):
 - **README recipes** — remaining: the synchronous-yield RPC pattern, and
   multi-orchestrator (a launcher + a separate UI sending stops). The
   reuse/divergence-preempt/killed-redrive recipes shipped.
-- **Protocol-implementer's guide** — a doc for someone writing a non-Python
-  implementation (Rust, Go, TS). What conformance means; what tests to write; how to
-  interop with the Python reference. Must collect the audit's harvest of what a
-  non-Python implementer cannot infer without reading the Python: the public
-  raise-contract table (which functions raise what, when — `open_channel`
-  ValueError/ImportError, `attach` KeyError, `Watcher.poll` KeyError, `ensure`
-  TypeError/ValueError/`RunFailedError`/`NoProgressError`), the conformance tier ladder
-  (`in_process`/`cross_process`/`cross_host`), the `RunResult.reason` string
-  vocabulary, the Postgres lock-key constants, the topic-pattern grammar, and the
-  half-open window fencepost (`until={"step": N}` = `[0, N)`, reached iff
-  `progress + 1 >= N`; documented on `observables.progress`).
 - [protocol-algebra](protocol-algebra.md) — the principled constructions behind the
   layer interfaces (L1 free-monoid initiality, L2 designated intro/elim discipline +
   discharge folds = the context Γ, L3 observer-join), each yielding a **decision
   rule**, with retrodictions and the rejected-formalisms negative space. **Placement
-  open** — design appendix vs `overview.md` incorporation; seeds the implementer's
-  guide above.
+  partly resolved (2026-07-16):** the reader-facing seed (the three decision rules +
+  the intro/elim table) now lives in the implementer's guide "why layer" (§7,
+  dated); the **formal** treatment's final home (design appendix vs `overview.md`
+  incorporation) is still open.

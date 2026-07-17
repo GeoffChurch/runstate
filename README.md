@@ -12,7 +12,7 @@ A protocol + reference Python implementation for **cooperative bidirectional con
 
 2. **A reference Python implementation** — the `runstate.channel` substrate (`MemoryChannel` + `SqliteChannel` + the cross-host `PostgresChannel`, the optional `[postgres]` extra), the reference `Worker` loop, and opt-in orchestration helpers (`ThreadLauncher` / `LocalLauncher`, `Watcher`, `sweep`). (On NFS, export `RUNSTATE_SQLITE_JOURNAL_MODE=DELETE` — the default WAL journal needs shared memory a network filesystem can't back.)
 
-The protocol is language-agnostic: any implementation that produces conforming messages can interoperate. The Python library is one such implementation.
+The protocol is language-agnostic: any implementation that produces conforming messages can interoperate. The Python library is one such implementation. Writing another (Rust, Go, TS)? **[docs/implementers-guide.md](docs/implementers-guide.md)** is the language-neutral conformance reference.
 
 ## Quickstart
 
