@@ -37,11 +37,16 @@ def _race_cas(i, root, run_id, backend, journal, fire, result_q):
             os.environ["RUNSTATE_SQLITE_JOURNAL_MODE"] = journal
         ch = locate(run_id, root=root, backend=backend)
         try:
-            fire.wait(timeout=15)               # overlap the check+INSERT windows
-            won = ch.send({"who": i}, topic="lifecycle.started", expected_seq=0) is not None
+            fire.wait(timeout=15)  #              overlap the check+INSERT windows
+            won = (
+                ch.send({"who": i}, topic="lifecycle.started", expected_seq=0)
+                is not None
+            )
         finally:
             ch.close()
-    except BaseException as exc:                 # a loser must get None, never raise (e.g. "database is locked")
+    except (
+        BaseException
+    ) as exc:  #                a loser must get None, never raise (e.g. "database is locked")
         result_q.put(("error", repr(exc)))
         return
     result_q.put(("ok", won))
@@ -58,16 +63,25 @@ def test_cas_admits_one_winner_across_processes(conc_backend):
         pytest.skip("the cross_process racer needs the 'fork' start method")
     n = 8
     ctx = mp.get_context("fork")
-    for trial in range(3):                       # races are flaky; several trials
+    for trial in range(3):  #                      races are flaky; several trials
         run_id = f"{conc_backend.namespace}-race-{trial}"
-        locate(run_id, root=conc_backend.root, backend=conc_backend.backend).close()  # create the file/schema
+        locate(
+            run_id, root=conc_backend.root, backend=conc_backend.backend
+        ).close()  # create the file/schema
         fire = ctx.Barrier(n)
         q = ctx.Queue()
         procs = [
             ctx.Process(
                 target=_race_cas,
-                args=(i, conc_backend.root, run_id, conc_backend.backend,
-                      conc_backend.journal, fire, q),
+                args=(
+                    i,
+                    conc_backend.root,
+                    run_id,
+                    conc_backend.backend,
+                    conc_backend.journal,
+                    fire,
+                    q,
+                ),
             )
             for i in range(n)
         ]
@@ -79,8 +93,12 @@ def test_cas_admits_one_winner_across_processes(conc_backend):
         results = [q.get(timeout=10) for _ in range(n)]
         errors = [r[1] for r in results if r[0] == "error"]
         wins = [r[1] for r in results if r[0] == "ok"]
-        assert not errors, f"[trial {trial}] racers raised (losers must get None): {errors}"
-        assert sum(wins) == 1, f"[trial {trial}] expected exactly 1 winner by return value, got {sum(wins)}"
+        assert (
+            not errors
+        ), f"[trial {trial}] racers raised (losers must get None): {errors}"
+        assert (
+            sum(wins) == 1
+        ), f"[trial {trial}] expected exactly 1 winner by return value, got {sum(wins)}"
         # Harvest the LOG, not just the return values: the original F1 signature is
         # a loser that INSERTS a row but returns None -- a second lifecycle.started
         # the return-count can't see. Exactly one winner must leave exactly one record.
@@ -91,7 +109,8 @@ def test_cas_admits_one_winner_across_processes(conc_backend):
             seed.close()
         assert len(started) == 1, (
             f"[trial {trial}] CAS left {len(started)} lifecycle.started rows "
-            f"(an inserted-but-unacked loser -- the F1 corruption signature)")
+            f"(an inserted-but-unacked loser -- the F1 corruption signature)"
+        )
 
 
 def _claim_then_emit(i, root, run_id, backend, claimed_barrier, results):
@@ -99,13 +118,18 @@ def _claim_then_emit(i, root, run_id, backend, claimed_barrier, results):
     HOLD at a barrier so the winner stays LIVE while the loser claims. Without the hold,
     a fast 1-step winner stops before the loser contends and the loser then legitimately
     starts episode 2 (the run-episodes model: a run hosts many sequential episodes) -- no
-    muzzle to observe. With the hold, the loser always faces a live winner and is muzzled."""
+    muzzle to observe. With the hold, the loser always faces a live winner and is muzzled.
+    """
     ch = locate(run_id, root=root, backend=backend)
-    with Worker(ch, now=lambda: 0.0) as w:       # the claim races here
+    with Worker(ch, now=lambda: 0.0) as w:  #      the claim races here
         results[i] = w.claimed
-        claimed_barrier.wait(timeout=10)         # winner held live until the loser has claimed
+        claimed_barrier.wait(
+            timeout=10
+        )  #        winner held live until the loser has claimed
         for _step in w.steps(total=1):
-            w.set("loss", float(i))              # only the winner runs; the loser's steps() is a no-op
+            w.set(
+                "loss", float(i)
+            )  #             only the winner runs; the loser's steps() is a no-op
 
 
 @pytest.mark.tier("in_process")
@@ -118,19 +142,33 @@ def test_two_workers_racing_the_claim_muzzle_the_loser(conc_backend):
     test (test_worker.py) exercises."""
     n = 2
     old = sys.getswitchinterval()
-    sys.setswitchinterval(1e-9)                  # fine interleaving so the claim's internal race is real
+    sys.setswitchinterval(
+        1e-9
+    )  #                 fine interleaving so the claim's internal race is real
     try:
         for trial in range(5):
             run_id = f"{conc_backend.namespace}-claim-{trial}"
             seed = locate(run_id, root=conc_backend.root, backend=conc_backend.backend)
-            seed.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="obs")
+            seed.send(
+                {"every": {"step": 1}},
+                topic="control.subscribe",
+                name="loss",
+                request_id="obs",
+            )
             seed.close()
             claimed_barrier = threading.Barrier(n)
             results = [None] * n
             threads = [
                 threading.Thread(
                     target=_claim_then_emit,
-                    args=(i, conc_backend.root, run_id, conc_backend.backend, claimed_barrier, results),
+                    args=(
+                        i,
+                        conc_backend.root,
+                        run_id,
+                        conc_backend.backend,
+                        claimed_barrier,
+                        results,
+                    ),
                 )
                 for i in range(n)
             ]
@@ -145,11 +183,16 @@ def test_two_workers_racing_the_claim_muzzle_the_loser(conc_backend):
                 values = check.read(topics=["value"], name="loss")
             finally:
                 check.close()
-            assert results.count(True) == 1, f"[trial {trial}] expected one claimant, got {results}"
-            assert len(started) == 1, f"[trial {trial}] {len(started)} lifecycle.started rows (double-live claim)"
+            assert (
+                results.count(True) == 1
+            ), f"[trial {trial}] expected one claimant, got {results}"
+            assert (
+                len(started) == 1
+            ), f"[trial {trial}] {len(started)} lifecycle.started rows (double-live claim)"
             assert len(values) == 1, (
                 f"[trial {trial}] {len(values)} loss values (the loser was not muzzled): "
-                f"{[v.body for v in values]}")
+                f"{[v.body for v in values]}"
+            )
     finally:
         sys.setswitchinterval(old)
 
@@ -201,9 +244,9 @@ def test_concurrent_cas_admits_exactly_one_winner(open_channel):
         # A loser waits out the winner's write lock (busy_timeout) and reads the
         # new seq; it must come back None, never a "database is locked" error.
         assert not errors, f"[trial {trial}] losing claimants raised: {errors!r}"
-        assert len(winners) == 1, (
-            f"[trial {trial}] expected exactly 1 winner, got {len(winners)}: {results}"
-        )
+        assert (
+            len(winners) == 1
+        ), f"[trial {trial}] expected exactly 1 winner, got {len(winners)}: {results}"
 
 
 def test_shared_handle_concurrent_sends_are_serialized(ch):
@@ -256,9 +299,9 @@ def test_shared_handle_concurrent_sends_are_serialized(ch):
         missing = sorted(s for s in acked if s not in in_log)
         assert not missing, f"[trial {trial}] acknowledged sends erased: {missing}"
         # and nothing landed un-acked (a CAS that inserted but reported None)
-        assert len(in_log) - len_before == len(acked), (
-            f"[trial {trial}] log grew by {len(in_log) - len_before}, acked {len(acked)}"
-        )
+        assert len(in_log) - len_before == len(
+            acked
+        ), f"[trial {trial}] log grew by {len(in_log) - len_before}, acked {len(acked)}"
 
 
 def test_concurrent_writers_produce_unique_contiguous_seqs(tmp_path):

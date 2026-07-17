@@ -39,7 +39,7 @@ class Variant:
 
 def sweep(
     variants: Iterable[Variant],
-    launcher: Any,   # heterogeneous `launch` signatures -> not a typed Protocol (see launcher.py)
+    launcher: Any,  #  heterogeneous `launch` signatures -> not a typed Protocol (see launcher.py)
     *,
     on_event: Callable[[str, Envelope], object] | None = None,
     resume: bool = True,
@@ -53,7 +53,7 @@ def sweep(
     results: list[RunResult] = []
     for v in variants:
         if resume:
-            with launcher.open_channel(v.run_id) as ch:   # close the probe channel
+            with launcher.open_channel(v.run_id) as ch:  #  close the probe channel
                 existing = peek_terminal(ch)
             if existing is not None:
                 result = replace(existing, run_id=v.run_id)

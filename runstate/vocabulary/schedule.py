@@ -22,7 +22,13 @@ threshold or an any/all of them, plus the from/every/until schedule. Kept as the
 dict by design -- no separate Bound/Target type."""
 
 
-def satisfied(cond: Condition, *, step: int | None = None, time_seconds: float = 0.0, count: int = 0) -> bool:
+def satisfied(
+    cond: Condition,
+    *,
+    step: int | None = None,
+    time_seconds: float = 0.0,
+    count: int = 0,
+) -> bool:
     """Is ``cond`` satisfied at coordinates (step, time_seconds, count)?"""
     if "any" in cond:
         return any(
@@ -103,9 +109,13 @@ class Subscription:
             if (step is not None and self._last_step is not None)
             else None
         )
-        assert self._last_elapsed is not None  # set with count on the first fire (count>0 here)
+        assert (
+            self._last_elapsed is not None
+        )  # set with count on the first fire (count>0 here)
         since_elapsed = elapsed - self._last_elapsed
-        return satisfied(self.every, step=since_step, time_seconds=since_elapsed, count=0)
+        return satisfied(
+            self.every, step=since_step, time_seconds=since_elapsed, count=0
+        )
 
     def _expired(self, step: int | None, elapsed: float) -> bool:
         # Post-fire: count-based `until` (the fire that reached the budget), and
@@ -193,6 +203,7 @@ def references_time(schedule: Condition) -> bool:
     *lease*, scoped to a single episode (blunt-but-crisp: no per-atom
     carve-outs). Tolerant: an unparseable schedule is NOT time-referencing
     (the worker naks it, which answers it)."""
+
     def has_time(cond: object) -> bool:
         if not isinstance(cond, dict):
             return False
@@ -201,6 +212,7 @@ def references_time(schedule: Condition) -> bool:
         if "all" in cond and isinstance(cond["all"], list):
             return any(has_time(c) for c in cond["all"])
         return "time_seconds" in cond
+
     if not isinstance(schedule, dict):
         return False
     return any(
@@ -253,8 +265,14 @@ def _malformed_condition(cond: object, *, allow_count: bool, path: str) -> str |
     if not isinstance(cond, dict):
         return f"`{path}` must be a condition object, got {type(cond).__name__}"
     if len(cond) != 1:
-        keys = "step/time_seconds/count/any/all" if allow_count else "step/time_seconds/any/all"
-        return f"`{path}` must carry exactly one condition key ({keys}), got {list(cond)}"
+        keys = (
+            "step/time_seconds/count/any/all"
+            if allow_count
+            else "step/time_seconds/any/all"
+        )
+        return (
+            f"`{path}` must carry exactly one condition key ({keys}), got {list(cond)}"
+        )
     ((key, value),) = cond.items()
     if key in ("any", "all"):
         if not isinstance(value, list) or not value:

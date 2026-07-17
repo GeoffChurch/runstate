@@ -24,14 +24,26 @@ from .envelope import Body, Envelope
 
 
 class MemoryChannel(Channel):
-    def __init__(self, log: list[Envelope] | None = None, lock: threading.Lock | None = None,
-                 *, json_default: Callable[[object], object] | None = None) -> None:
+    def __init__(
+        self,
+        log: list[Envelope] | None = None,
+        lock: threading.Lock | None = None,
+        *,
+        json_default: Callable[[object], object] | None = None,
+    ) -> None:
         self._log: list[Envelope] = log if log is not None else []
         self._lock = lock if lock is not None else threading.Lock()
         self._json_default = json_default
 
-    def send(self, body: Body, *, topic: str, name: str | None = None,
-             request_id: str | None = None, expected_seq: int | None = None) -> int | None:
+    def send(
+        self,
+        body: Body,
+        *,
+        topic: str,
+        name: str | None = None,
+        request_id: str | None = None,
+        expected_seq: int | None = None,
+    ) -> int | None:
         # The json round-trip both validates serializability and snapshots the
         # body to an independent, JSON-safe copy (json_default coerces exotic
         # types on the way out; the stored copy then needs no hook on read).
@@ -83,7 +95,7 @@ class MemoryChannel(Channel):
 
     def last_seq(self) -> int:
         with self._lock:
-            return len(self._log)   # seq is contiguous from 1, so last == count
+            return len(self._log)  #  seq is contiguous from 1, so last == count
 
     def close(self) -> None:
         pass
@@ -91,7 +103,9 @@ class MemoryChannel(Channel):
 
 def _snapshot(e: Envelope) -> Envelope:
     """Return a copy with an independent body, so callers can't mutate the store."""
-    return Envelope(e.seq, e.topic, e.name, e.request_id, json.loads(json.dumps(e.body)))
+    return Envelope(
+        e.seq, e.topic, e.name, e.request_id, json.loads(json.dumps(e.body))
+    )
 
 
 def _topic_match(topic: str, patterns: list[str]) -> bool:

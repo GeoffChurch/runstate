@@ -33,15 +33,23 @@ def _validator(name, version="v0.2"):
 ENVELOPE = _validator("envelope")
 CONVENTIONS = {
     "control.": _validator("subscription"),
-    "lifecycle.": _validator("lifecycle", "v0.4"),   # independently versioned
-    "launcher.": _validator("launcher", "v0.4"),     # (each convention on its own timeline)
+    "lifecycle.": _validator("lifecycle", "v0.4"),  #  independently versioned
+    "launcher.": _validator(
+        "launcher", "v0.4"
+    ),  #    (each convention on its own timeline)
     "value": _validator("value"),
 }
 
 ALL_RESERVED_TOPICS = {
-    "control.subscribe", "control.unsubscribe", "control.stop",
-    "lifecycle.started", "lifecycle.heartbeat", "lifecycle.stopped", "lifecycle.nak",
-    "launcher.launched", "launcher.terminated",
+    "control.subscribe",
+    "control.unsubscribe",
+    "control.stop",
+    "lifecycle.started",
+    "lifecycle.heartbeat",
+    "lifecycle.stopped",
+    "lifecycle.nak",
+    "launcher.launched",
+    "launcher.terminated",
     "value",
 }
 
@@ -69,9 +77,18 @@ def test_every_emitted_envelope_conforms(tmp_path):
     launcher = ThreadLauncher(root=tmp_path)
     obs = launcher.open_channel("run")
     # pre-stage control so the worker drains it on its first tick:
-    obs.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="ok")
-    obs.send({"until": {"count": 0}}, topic="control.subscribe", name="loss", request_id="bad")  # -> nak
-    obs.send({}, topic="control.subscribe", name="loss", request_id="once")  # one-shot ->
+    obs.send(
+        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="ok"
+    )
+    obs.send(
+        {"until": {"count": 0}},
+        topic="control.subscribe",
+        name="loss",
+        request_id="bad",
+    )  # -> nak
+    obs.send(
+        {}, topic="control.subscribe", name="loss", request_id="once"
+    )  # one-shot ->
     # the worker writes its expiry counter-record (a WORKER-authored
     # control.unsubscribe -- specs/service-worker.md), validated like any other
     obs.send({}, topic="control.unsubscribe", request_id="gone")
@@ -80,8 +97,9 @@ def test_every_emitted_envelope_conforms(tmp_path):
     launcher.launch("run", _worker_main).wait()
 
     envelopes = obs.read()
-    assert any(e.topic == "control.unsubscribe" and e.request_id == "once"
-               for e in envelopes)   # the worker-written expiry record is on the log
+    assert any(
+        e.topic == "control.unsubscribe" and e.request_id == "once" for e in envelopes
+    )  #  the worker-written expiry record is on the log
     seen = set()
     for e in envelopes:
         record = asdict(e)
@@ -166,7 +184,9 @@ def test_emitted_malformed_and_unsupported_naks_conform():
     # the two nak reasons the scenario doesn't reach (its "bad" subscribe is
     # unsatisfiable): the structural gate's refusal and the unknown verb
     ch = _open_memory("naks")
-    ch.send({"frm": {"step": 1}}, topic="control.subscribe", name="loss", request_id="bad")
+    ch.send(
+        {"frm": {"step": 1}}, topic="control.subscribe", name="loss", request_id="bad"
+    )
     ch.send({}, topic="control.frobnicate", request_id="odd")
     w = Worker(ch, now=lambda: 0.0)
     w.tick(step=0)
@@ -180,7 +200,14 @@ def test_emitted_malformed_and_unsupported_naks_conform():
 
 
 def _env(topic, body, **extra):
-    return {"seq": 1, "topic": topic, "name": None, "request_id": None, "body": body, **extra}
+    return {
+        "seq": 1,
+        "topic": topic,
+        "name": None,
+        "request_id": None,
+        "body": body,
+        **extra,
+    }
 
 
 def test_envelope_rejects_unknown_top_level_field():
@@ -200,13 +227,18 @@ def test_envelope_structural_constraints():
     with pytest.raises(jsonschema.ValidationError):
         ENVELOPE.validate({**_env("value", {"value": 1}), "seq": 0})  # seq starts at 1
     with pytest.raises(jsonschema.ValidationError):
-        ENVELOPE.validate(_env("", {"value": 1}))                     # empty-string topic
+        ENVELOPE.validate(
+            _env("", {"value": 1})
+        )  #                    empty-string topic
     with pytest.raises(jsonschema.ValidationError):
-        ENVELOPE.validate({**_env("value", {}), "body": [1]})         # non-object body
+        ENVELOPE.validate({**_env("value", {}), "body": [1]})  #        non-object body
 
 
 def test_lifecycle_stopped_rejects_extra_body_field():
-    bad = _env("lifecycle.stopped", {"completed": True, "error": None, "final_step": None, "oops": 1, "t": 0.0})
+    bad = _env(
+        "lifecycle.stopped",
+        {"completed": True, "error": None, "final_step": None, "oops": 1, "t": 0.0},
+    )
     with pytest.raises(jsonschema.ValidationError):
         CONVENTIONS["lifecycle."].validate(bad)
 
@@ -218,47 +250,72 @@ def test_lifecycle_stopped_rejects_extra_body_field():
 def test_value_step_is_present_nullable():
     V = CONVENTIONS["value"]
     V.validate(_env("value", {"value": 1, "step": 5, "t": 0.0}))
-    V.validate(_env("value", {"value": 1, "step": None, "t": 0.0}))  # null when stepless
+    V.validate(
+        _env("value", {"value": 1, "step": None, "t": 0.0})
+    )  # null when stepless
     with pytest.raises(jsonschema.ValidationError):
         V.validate(_env("value", {"value": 1}))  # step omitted -> rejected
 
 
 def test_value_t_is_present_nullable():
     V = CONVENTIONS["value"]
-    V.validate(_env("value", {"value": 1, "step": 0, "t": 2.5}))   # a stamped wall-clock value
-    V.validate(_env("value", {"value": 1, "step": 0, "t": None}))  # unstamped (real-time axis off)
+    V.validate(
+        _env("value", {"value": 1, "step": 0, "t": 2.5})
+    )  #  a stamped wall-clock value
+    V.validate(
+        _env("value", {"value": 1, "step": 0, "t": None})
+    )  # unstamped (real-time axis off)
     with pytest.raises(jsonschema.ValidationError):
         V.validate(_env("value", {"value": 1, "step": 0}))  # t omitted -> rejected
 
 
 def test_value_wrapper_is_closed_and_requires_value():
     V = CONVENTIONS["value"]
-    for bad in ({"value": 1, "step": 0, "t": 0.0, "oops": 1},  # extra field
-                {"step": 0, "t": 0.0}):                        # "value" key missing
+    for bad in (
+        {"value": 1, "step": 0, "t": 0.0, "oops": 1},  # extra field
+        {"step": 0, "t": 0.0},
+    ):  #                       "value" key missing
         with pytest.raises(jsonschema.ValidationError):
             V.validate(_env("value", bad))
 
 
 def test_heartbeat_body_is_pinned():
     L = CONVENTIONS["lifecycle."]
-    L.validate(_env("lifecycle.heartbeat", {"step": None, "consumed_seq": 0, "t": 0.0}))  # stepless
-    for bad in ({"step": 1},                                  # consumed_seq missing
-                {"consumed_seq": 0, "t": 0.0},                          # step omitted (present-nullable)
-                {"step": 1, "consumed_seq": -1, "t": 0.0},              # negative watermark
-                {"step": 1, "consumed_seq": 0, "extra": 1, "t": 0.0}):  # extra field
+    L.validate(
+        _env("lifecycle.heartbeat", {"step": None, "consumed_seq": 0, "t": 0.0})
+    )  # stepless
+    for bad in (
+        {"step": 1},  #                                 consumed_seq missing
+        {
+            "consumed_seq": 0,
+            "t": 0.0,
+        },  #                         step omitted (present-nullable)
+        {"step": 1, "consumed_seq": -1, "t": 0.0},  #             negative watermark
+        {"step": 1, "consumed_seq": 0, "extra": 1, "t": 0.0},
+    ):  # extra field
         with pytest.raises(jsonschema.ValidationError):
             L.validate(_env("lifecycle.heartbeat", bad))
 
 
 def test_stopped_error_and_final_step_present_nullable():
     L = CONVENTIONS["lifecycle."]
-    L.validate(_env("lifecycle.stopped",
-                    {"completed": True, "error": None, "final_step": None, "t": 0.0}))
-    L.validate(_env("lifecycle.stopped",
-                    {"completed": False, "error": "boom", "final_step": 5, "t": 0.0}))
-    for missing in ({"completed": True, "error": None},      # final_step omitted
-                    {"completed": True, "final_step": None, "t": 0.0},  # error omitted
-                    {"completed": True}):                     # both omitted
+    L.validate(
+        _env(
+            "lifecycle.stopped",
+            {"completed": True, "error": None, "final_step": None, "t": 0.0},
+        )
+    )
+    L.validate(
+        _env(
+            "lifecycle.stopped",
+            {"completed": False, "error": "boom", "final_step": 5, "t": 0.0},
+        )
+    )
+    for missing in (
+        {"completed": True, "error": None},  #     final_step omitted
+        {"completed": True, "final_step": None, "t": 0.0},  # error omitted
+        {"completed": True},
+    ):  #                    both omitted
         with pytest.raises(jsonschema.ValidationError):
             L.validate(_env("lifecycle.stopped", missing))
 
@@ -267,8 +324,12 @@ def test_stopped_rejects_completed_with_error():
     # The if-then schema constraint: completed=true => error must be null
     L = CONVENTIONS["lifecycle."]
     with pytest.raises(jsonschema.ValidationError):
-        L.validate(_env("lifecycle.stopped",
-                        {"completed": True, "error": "x", "final_step": None, "t": 0.0}))
+        L.validate(
+            _env(
+                "lifecycle.stopped",
+                {"completed": True, "error": "x", "final_step": None, "t": 0.0},
+            )
+        )
 
 
 def test_started_t_required_non_null_and_hostname_gone():
@@ -276,20 +337,19 @@ def test_started_t_required_non_null_and_hostname_gone():
     # with the other lifecycle event records). A null or omitted t is rejected; a
     # hostname key stays an unknown field (additionalProperties pins the old removal).
     L = CONVENTIONS["lifecycle."]
-    L.validate(_env("lifecycle.started",
-                    {"handle": "local://h/1", "t": 1.5}))
-    for bad in ({"handle": "local://h/1", "t": None},           # t null -> now invalid
-                {"handle": "local://h/1"},                      # t omitted
-                {"handle": "local://h/1", "hostname": None,
-                 "t": 0.0}):                                    # the removed field
+    L.validate(_env("lifecycle.started", {"handle": "local://h/1", "t": 1.5}))
+    for bad in (
+        {"handle": "local://h/1", "t": None},  #          t null -> now invalid
+        {"handle": "local://h/1"},  #                     t omitted
+        {"handle": "local://h/1", "hostname": None, "t": 0.0},
+    ):  #                                   the removed field
         with pytest.raises(jsonschema.ValidationError):
             L.validate(_env("lifecycle.started", bad))
 
 
 def test_started_requires_handle():
     with pytest.raises(jsonschema.ValidationError):
-        CONVENTIONS["lifecycle."].validate(
-            _env("lifecycle.started", {"t": 0.0}))
+        CONVENTIONS["lifecycle."].validate(_env("lifecycle.started", {"t": 0.0}))
 
 
 def test_nak_requires_reason_and_message():
@@ -324,7 +384,11 @@ def test_convention_dataclasses_serialize_to_schema_valid_bodies():
 
 
 def test_launcher_launched_rejects_unknown_status():
-    bad = _env("launcher.launched", {"handle": "local://h/1", "status": "intended"}, request_id="L1")
+    bad = _env(
+        "launcher.launched",
+        {"handle": "local://h/1", "status": "intended"},
+        request_id="L1",
+    )
     with pytest.raises(jsonschema.ValidationError):
         CONVENTIONS["launcher."].validate(bad)
 
@@ -344,22 +408,34 @@ def test_count_grammar_recurses_with_its_slot():
     # UntilCondition's any/all recurse into UntilCondition, so a nested count
     # is grammatical in `until` -- while Condition's recurse count-free.
     C = CONVENTIONS["control."]
-    C.validate(_env("control.subscribe",
-                    {"until": {"any": [{"count": 3}, {"step": 10}]}}, request_id="r"))
+    C.validate(
+        _env(
+            "control.subscribe",
+            {"until": {"any": [{"count": 3}, {"step": 10}]}},
+            request_id="r",
+        )
+    )
     with pytest.raises(jsonschema.ValidationError):
-        C.validate(_env("control.subscribe",
-                        {"from": {"any": [{"count": 3}, {"step": 10}]}}, request_id="r"))
+        C.validate(
+            _env(
+                "control.subscribe",
+                {"from": {"any": [{"count": 3}, {"step": 10}]}},
+                request_id="r",
+            )
+        )
     with pytest.raises(jsonschema.ValidationError):
         C.validate(_env("control.subscribe", {"every": {"count": 2}}, request_id="r"))
 
 
 def test_condition_grammar_rejects_junk():
     C = CONVENTIONS["control."]
-    for bad in ({"from": {"frobnicate": 1}},        # unknown atom
-                {"every": {"any": []}},             # minItems 1
-                {"every": {"all": []}},
-                {"from": {"step": -1}},             # thresholds are >= 0
-                {"from": {"time_seconds": -1}}):
+    for bad in (
+        {"from": {"frobnicate": 1}},  #       unknown atom
+        {"every": {"any": []}},  #            minItems 1
+        {"every": {"all": []}},
+        {"from": {"step": -1}},  #            thresholds are >= 0
+        {"from": {"time_seconds": -1}},
+    ):
         with pytest.raises(jsonschema.ValidationError):
             C.validate(_env("control.subscribe", bad, request_id="r"))
 
@@ -388,7 +464,11 @@ def test_control_stop_takes_only_from():
 def test_well_known_body_shapes_validate():
     # positive coverage for shapes the emitted-bytes scenario doesn't reach
     CONVENTIONS["launcher."].validate(
-        _env("launcher.terminated", {"reason": "killed", "signal": 9, "exit_code": None, "t": 0.0}, request_id="L1")
+        _env(
+            "launcher.terminated",
+            {"reason": "killed", "signal": 9, "exit_code": None, "t": 0.0},
+            request_id="L1",
+        )
     )
     for reason in ("malformed", "unsatisfiable", "unsupported"):
         CONVENTIONS["lifecycle."].validate(
@@ -411,14 +491,22 @@ def test_envelope_rejects_empty_string_ids():
 
 
 def test_terminated_rejects_negative_exit_code():
-    bad = _env("launcher.terminated", {"reason": "exited", "exit_code": -1, "signal": None, "t": 0.0}, request_id="L1")
+    bad = _env(
+        "launcher.terminated",
+        {"reason": "exited", "exit_code": -1, "signal": None, "t": 0.0},
+        request_id="L1",
+    )
     with pytest.raises(jsonschema.ValidationError):
         CONVENTIONS["launcher."].validate(bad)
 
 
 def test_terminated_rejects_signal_zero():
     # signal numbers start at 1; "killed by signal 0" is not a manner of death
-    bad = _env("launcher.terminated", {"reason": "killed", "signal": 0, "exit_code": None, "t": 0.0}, request_id="L1")
+    bad = _env(
+        "launcher.terminated",
+        {"reason": "killed", "signal": 0, "exit_code": None, "t": 0.0},
+        request_id="L1",
+    )
     with pytest.raises(jsonschema.ValidationError):
         CONVENTIONS["launcher."].validate(bad)
 
@@ -426,15 +514,55 @@ def test_terminated_rejects_signal_zero():
 def test_terminated_enforces_reason_field_pairing():
     L = CONVENTIONS["launcher."]
     # present-nullable + reason-coupled: every key present; the inapplicable one null
-    L.validate(_env("launcher.terminated", {"reason": "exited", "exit_code": 0, "signal": None, "t": 0.0}, request_id="L1"))
-    L.validate(_env("launcher.terminated", {"reason": "killed", "signal": 9, "exit_code": None, "t": 0.0}, request_id="L1"))
+    L.validate(
+        _env(
+            "launcher.terminated",
+            {"reason": "exited", "exit_code": 0, "signal": None, "t": 0.0},
+            request_id="L1",
+        )
+    )
+    L.validate(
+        _env(
+            "launcher.terminated",
+            {"reason": "killed", "signal": 9, "exit_code": None, "t": 0.0},
+            request_id="L1",
+        )
+    )
     for bad in (
-        {"reason": "exited", "exit_code": 0, "signal": 9, "t": 0.0},        # exited: signal must be null
-        {"reason": "killed", "signal": 9, "exit_code": 5, "t": 0.0},        # killed: exit_code must be null
-        {"reason": "exited", "exit_code": None, "signal": None, "t": 0.0},  # exited needs a non-null exit_code
-        {"reason": "killed", "exit_code": None, "signal": None, "t": 0.0},  # killed needs a non-null signal
-        {"reason": "exited", "exit_code": 0, "t": 0.0},                     # signal key missing (not omittable)
-        {"reason": "killed", "signal": 9, "t": 0.0},                        # exit_code key missing
+        {
+            "reason": "exited",
+            "exit_code": 0,
+            "signal": 9,
+            "t": 0.0,
+        },  #       exited: signal must be null
+        {
+            "reason": "killed",
+            "signal": 9,
+            "exit_code": 5,
+            "t": 0.0,
+        },  #       killed: exit_code must be null
+        {
+            "reason": "exited",
+            "exit_code": None,
+            "signal": None,
+            "t": 0.0,
+        },  # exited needs a non-null exit_code
+        {
+            "reason": "killed",
+            "exit_code": None,
+            "signal": None,
+            "t": 0.0,
+        },  # killed needs a non-null signal
+        {
+            "reason": "exited",
+            "exit_code": 0,
+            "t": 0.0,
+        },  #                    signal key missing (not omittable)
+        {
+            "reason": "killed",
+            "signal": 9,
+            "t": 0.0,
+        },  #                       exit_code key missing
     ):
         with pytest.raises(jsonschema.ValidationError):
             L.validate(_env("launcher.terminated", bad, request_id="L1"))
@@ -449,11 +577,14 @@ def test_launcher_records_must_name_their_launch():
     L = CONVENTIONS["launcher."]
     for topic, body in (
         ("launcher.launched", {"handle": "local://h/1", "status": "running", "t": 0.0}),
-        ("launcher.terminated", {"reason": "exited", "exit_code": 0, "signal": None, "t": 0.0}),
+        (
+            "launcher.terminated",
+            {"reason": "exited", "exit_code": 0, "signal": None, "t": 0.0},
+        ),
     ):
         L.validate(_env(topic, body, request_id="L1"))
         with pytest.raises(jsonschema.ValidationError):
-            L.validate(_env(topic, body))                  # request_id: null
+            L.validate(_env(topic, body))  #                 request_id: null
     # the id is NOT required elsewhere: a hand-run worker's claim names no launch
     CONVENTIONS["lifecycle."].validate(
         _env("lifecycle.started", {"handle": "local://h/1", "t": 0.0})
@@ -464,19 +595,34 @@ def test_subscribe_requires_request_id():
     schedule = {"every": {"step": 1}}
     # present -> ok
     CONVENTIONS["control."].validate(
-        {"seq": 1, "topic": "control.subscribe", "name": "loss",
-         "request_id": "r", "body": schedule}
+        {
+            "seq": 1,
+            "topic": "control.subscribe",
+            "name": "loss",
+            "request_id": "r",
+            "body": schedule,
+        }
     )
     # missing/null -> rejected (subscribe/unsubscribe are correlated ops)
     with pytest.raises(jsonschema.ValidationError):
         CONVENTIONS["control."].validate(
-            {"seq": 1, "topic": "control.subscribe", "name": "loss",
-             "request_id": None, "body": schedule}
+            {
+                "seq": 1,
+                "topic": "control.subscribe",
+                "name": "loss",
+                "request_id": None,
+                "body": schedule,
+            }
         )
     # stop does NOT require it (and takes only `from`)
     CONVENTIONS["control."].validate(
-        {"seq": 1, "topic": "control.stop", "name": None,
-         "request_id": None, "body": {"from": {"step": 1}}}
+        {
+            "seq": 1,
+            "topic": "control.stop",
+            "name": None,
+            "request_id": None,
+            "body": {"from": {"step": 1}},
+        }
     )
 
 

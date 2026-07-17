@@ -43,11 +43,36 @@ def test_terminated_coupling_rejects_illegal_states():
     Terminated(reason="exited", exit_code=0, signal=None, t=0.0)  # ok
     Terminated(reason="killed", signal=9, exit_code=None, t=0.0)  # ok
     for kwargs in (
-        {"reason": "exited", "exit_code": 0, "signal": 9, "t": 0.0},        # exited + a signal
-        {"reason": "killed", "signal": 9, "exit_code": 5, "t": 0.0},        # killed + an exit_code
-        {"reason": "exited", "exit_code": None, "signal": None, "t": 0.0},  # exited needs exit_code
-        {"reason": "killed", "exit_code": None, "signal": None, "t": 0.0},  # killed needs signal
-        {"reason": "bogus", "exit_code": None, "signal": None, "t": 0.0},   # unknown reason
+        {
+            "reason": "exited",
+            "exit_code": 0,
+            "signal": 9,
+            "t": 0.0,
+        },  #       exited + a signal
+        {
+            "reason": "killed",
+            "signal": 9,
+            "exit_code": 5,
+            "t": 0.0,
+        },  #       killed + an exit_code
+        {
+            "reason": "exited",
+            "exit_code": None,
+            "signal": None,
+            "t": 0.0,
+        },  # exited needs exit_code
+        {
+            "reason": "killed",
+            "exit_code": None,
+            "signal": None,
+            "t": 0.0,
+        },  # killed needs signal
+        {
+            "reason": "bogus",
+            "exit_code": None,
+            "signal": None,
+            "t": 0.0,
+        },  #  unknown reason
     ):
         with pytest.raises(ValueError):
             Terminated(**kwargs)

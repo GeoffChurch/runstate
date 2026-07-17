@@ -33,8 +33,15 @@ class Channel(ABC):
     """A handle on one run's append-only topic log (see the module docstring)."""
 
     @abstractmethod
-    def send(self, body: Body, *, topic: str, name: str | None = None,
-             request_id: str | None = None, expected_seq: int | None = None) -> int | None:
+    def send(
+        self,
+        body: Body,
+        *,
+        topic: str,
+        name: str | None = None,
+        request_id: str | None = None,
+        expected_seq: int | None = None,
+    ) -> int | None:
         """Append ``body`` under ``topic`` (+ optional ``name`` / ``request_id``),
         returning the new ``seq``. With ``expected_seq`` it is a compare-and-append:
         the record lands iff the log's max seq still equals ``expected_seq``; ``None``
@@ -42,9 +49,15 @@ class Channel(ABC):
         was indeterminate (a backend fault) — never a silent loss."""
 
     @abstractmethod
-    def read(self, after: int = 0, *, topics: list[str] | None = None,
-             name: str | None = None, request_ids: list[str] | None = None,
-             limit: int | None = None) -> list[Envelope]:
+    def read(
+        self,
+        after: int = 0,
+        *,
+        topics: list[str] | None = None,
+        name: str | None = None,
+        request_ids: list[str] | None = None,
+        limit: int | None = None,
+    ) -> list[Envelope]:
         """Envelopes with ``seq > after``, in order, filtered by ``topics`` (exact or
         a ``"prefix.>"`` wildcard), ``name``, and ``request_ids`` (which also admits
         unaddressed broadcasts). Non-destructive — cursors are caller-owned."""

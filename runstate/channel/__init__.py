@@ -40,9 +40,13 @@ from .sqlite import SqliteChannel
 _MEMORY_LOGS: dict[tuple[str | None, str], tuple[list[Envelope], threading.Lock]] = {}
 
 
-def open_channel(run_id: str, *, root: str | os.PathLike[str] | None = None,
-                 backend: str = "sqlite",
-                 json_default: Callable[[object], object] | None = None) -> Channel:
+def open_channel(
+    run_id: str,
+    *,
+    root: str | os.PathLike[str] | None = None,
+    backend: str = "sqlite",
+    json_default: Callable[[object], object] | None = None,
+) -> Channel:
     """Locate and open a run's channel.
 
     ``root`` is the directory (sqlite) or namespace (memory) holding runs;
@@ -53,7 +57,9 @@ def open_channel(run_id: str, *, root: str | os.PathLike[str] | None = None,
     """
     if backend == "sqlite":
         if root is None:
-            raise ValueError("the sqlite backend requires a root directory (got root=None)")
+            raise ValueError(
+                "the sqlite backend requires a root directory (got root=None)"
+            )
         return SqliteChannel(Path(root) / f"{run_id}.db", json_default=json_default)
     if backend == "memory":
         key = (None if root is None else os.path.abspath(str(root)), run_id)
@@ -74,5 +80,13 @@ def open_channel(run_id: str, *, root: str | os.PathLike[str] | None = None,
     )
 
 
-__all__ = ["Body", "Channel", "EpisodeHolder", "EpisodeProbe", "Envelope",
-           "MemoryChannel", "SqliteChannel", "open_channel"]
+__all__ = [
+    "Body",
+    "Channel",
+    "EpisodeHolder",
+    "EpisodeProbe",
+    "Envelope",
+    "MemoryChannel",
+    "SqliteChannel",
+    "open_channel",
+]

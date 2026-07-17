@@ -50,7 +50,9 @@ class MalformedRecordError(Exception):
     Callers wanting degradation catch this."""
 
     def __init__(self, seq: int, topic: str, detail: str) -> None:
-        super().__init__(f"uninterpretable record at seq {seq} on topic {topic!r}: {detail}")
+        super().__init__(
+            f"uninterpretable record at seq {seq} on topic {topic!r}: {detail}"
+        )
         self.seq = seq
         self.topic = topic
         self.detail = detail
@@ -73,6 +75,7 @@ class Outcome(StrEnum):
     zero channel migration. The single authoritative home for the vocabulary: peek_terminal,
     the Watcher, sweep, and the memoizer reference these members instead of re-spelling the
     literals (which had drifted into four uncoordinated copies)."""
+
     COMPLETED = "completed"
     PREEMPTED = "preempted"
     ERRORED = "errored"
@@ -140,7 +143,9 @@ def live_episode(channel: Channel) -> Optional[str]:
     try:
         handle = started.body["handle"]
     except KeyError as exc:
-        raise MalformedRecordError(started.seq, started.topic, "missing 'handle'") from exc
+        raise MalformedRecordError(
+            started.seq, started.topic, "missing 'handle'"
+        ) from exc
     if not isinstance(handle, str):
         raise MalformedRecordError(
             started.seq, started.topic, f"handle must be a string, got {handle!r}"
@@ -169,7 +174,8 @@ def _launch_id(e: Envelope) -> str:
     the verdict plane refuses to guess, so it is malformed, loudly."""
     if e.request_id is None:
         raise MalformedRecordError(
-            e.seq, e.topic,
+            e.seq,
+            e.topic,
             "no request_id: a launcher record must name the launch it reports "
             "(launcher-v0.3)",
         )
@@ -198,14 +204,15 @@ def _launcher_terminal(channel: Channel) -> Envelope | None:
     terminal. Like every terminal here, it stands until an episode claims."""
     deaths = channel.read(topics=[Topic.LAUNCHER_TERMINATED])
     for e in deaths:
-        _launch_id(e)   # every death names its launch, or the tier is poisoned
+        _launch_id(e)  #  every death names its launch, or the tier is poisoned
     if not deaths:
         return None
     started = latest_episode(channel)
     if started is None:
         return deaths[-1]
-    return next((e for e in reversed(deaths)
-                 if e.request_id == started.request_id), None)
+    return next(
+        (e for e in reversed(deaths) if e.request_id == started.request_id), None
+    )
 
 
 def _verdict_record(channel: Channel) -> Envelope | None:
@@ -239,13 +246,17 @@ def peek_terminal(channel: Channel) -> Optional[RunResult]:
         return None
     if record.topic == Topic.LIFECYCLE_STOPPED:
         s = verdict_parse(Stopped, record)
-        if s.error is not None:          # NB: `is not None`, not truthiness — "" still errors
+        if (
+            s.error is not None
+        ):  #         NB: `is not None`, not truthiness — "" still errors
             outcome = Outcome.ERRORED
         elif s.completed:
             outcome = Outcome.COMPLETED
         else:
             outcome = Outcome.PREEMPTED
-        return RunResult(outcome=outcome, reason=outcome, error=s.error, final_step=s.final_step)
+        return RunResult(
+            outcome=outcome, reason=outcome, error=s.error, final_step=s.final_step
+        )
     t = verdict_parse(Terminated, record)
     if t.reason == "killed":
         outcome = Outcome.KILLED
@@ -257,8 +268,11 @@ def peek_terminal(channel: Channel) -> Optional[RunResult]:
 
 
 _DATED_TOPICS = (
-    Topic.LIFECYCLE_STARTED, Topic.LIFECYCLE_HEARTBEAT, Topic.LIFECYCLE_STOPPED,
-    Topic.LAUNCHER_LAUNCHED, Topic.LAUNCHER_TERMINATED,
+    Topic.LIFECYCLE_STARTED,
+    Topic.LIFECYCLE_HEARTBEAT,
+    Topic.LIFECYCLE_STOPPED,
+    Topic.LAUNCHER_LAUNCHED,
+    Topic.LAUNCHER_TERMINATED,
 )
 
 
@@ -292,7 +306,9 @@ def last_activity(channel: Channel) -> Optional[float]:
     return max(ts) if ts else None
 
 
-def boundary_voided(sub_seq: int, started_seqs: list[int], drainer_started_seq: int) -> bool:
+def boundary_voided(
+    sub_seq: int, started_seqs: list[int], drainer_started_seq: int
+) -> bool:
     """The episode-boundary discharge (specs/time-lease-boundary.md): a
     time-referencing subscribe is voided iff a ``lifecycle.started`` other
     than the draining episode's own follows it — equivalently, a ``started``
@@ -315,7 +331,7 @@ def live_demand(channel: Channel) -> list[Envelope]:
     one public home of the rule the worker's refold and the relaunch decider
     both consume. Value-blind: it reads schedule *shape* for the time-atom
     check, never payloads."""
-    pending: dict[str, Envelope] = {}   # request_id -> the latest unanswered subscribe
+    pending: dict[str, Envelope] = {}  #  request_id -> the latest unanswered subscribe
     starteds: list[int] = []
     for e in channel.read():
         if e.topic == Topic.LIFECYCLE_STARTED:
@@ -329,9 +345,13 @@ def live_demand(channel: Channel) -> list[Envelope]:
             pending.pop(e.request_id, None)
     latest = starteds[-1] if starteds else 0
     return sorted(
-        (e for e in pending.values()
-         if not (references_time(e.body)
-                 and boundary_voided(e.seq, starteds, latest))),
+        (
+            e
+            for e in pending.values()
+            if not (
+                references_time(e.body) and boundary_voided(e.seq, starteds, latest)
+            )
+        ),
         key=lambda e: e.seq,
     )
 
@@ -354,8 +374,9 @@ def undischarged_stops(channel: Channel) -> list[Envelope]:
     listed until the next ``stopped`` discharges everything (conservative:
     never under-reports)."""
     stopped = channel.latest(Topic.LIFECYCLE_STOPPED)
-    return channel.read(after=stopped.seq if stopped is not None else 0,
-                        topics=[Topic.CONTROL_STOP])
+    return channel.read(
+        after=stopped.seq if stopped is not None else 0, topics=[Topic.CONTROL_STOP]
+    )
 
 
 def progress(channel: Channel) -> Optional[int]:

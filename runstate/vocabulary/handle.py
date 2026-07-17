@@ -26,7 +26,7 @@ def _parse_local(handle: str) -> tuple[str, int] | None:
     disambiguator of conventions-hygiene F9 lands here)."""
     if not isinstance(handle, str) or not handle.startswith("local://"):
         return None
-    host, sep, pid_s = handle[len("local://"):].rpartition("/")
+    host, sep, pid_s = handle[len("local://") :].rpartition("/")
     if not sep:
         return None
     try:
@@ -61,11 +61,11 @@ def resolve(handle: str) -> bool | None:
         return None
     host, pid = parsed
     if host != socket.gethostname():
-        return None   # not OUR pid table; never a false dead/alive
+        return None  #  not OUR pid table; never a false dead/alive
     try:
         os.kill(pid, 0)
         return True
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True   # exists, not ours
+        return True  #  exists, not ours

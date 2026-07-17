@@ -95,7 +95,9 @@ def test_hold_episode_and_episode_alive_agree(pg_ready):
         started_seq = holder.send({}, topic="lifecycle.started", expected_seq=0)
         assert observer.episode_alive(started_seq) is False  # not held yet
         holder.hold_episode(started_seq)
-        assert observer.episode_alive(started_seq) is True   # held -> alive, synchronously
+        assert (
+            observer.episode_alive(started_seq) is True
+        )  #  held -> alive, synchronously
     finally:
         observer.close()
         holder.close()  # clean disconnect releases the session lock
@@ -117,11 +119,14 @@ def test_lock_answers_liveness_where_resolve_abstains(pg_ready):
     ch = PostgresChannel(pg_ready, run_id=run_id)
     holder = PostgresChannel(pg_ready, run_id=run_id)
     try:
-        started_seq = ch.send({"handle": foreign, "t": None},
-                              topic="lifecycle.started", expected_seq=0)
+        started_seq = ch.send(
+            {"handle": foreign, "t": None}, topic="lifecycle.started", expected_seq=0
+        )
         holder.hold_episode(started_seq)
-        assert ch.episode_alive(started_seq) is True   # the lock answers where resolve can't
-        holder.close()                                  # release
+        assert (
+            ch.episode_alive(started_seq) is True
+        )  #  the lock answers where resolve can't
+        holder.close()  #                                 release
         assert _poll_until(lambda: ch.episode_alive(started_seq), False)
     finally:
         ch.close()
@@ -141,10 +146,14 @@ def test_sigkill_releases_episode_lock(pg_ready):
     )
     proc.start()
     try:
-        assert _poll_until(lambda: ch.episode_alive(started_seq), True), "child never acquired"
+        assert _poll_until(
+            lambda: ch.episode_alive(started_seq), True
+        ), "child never acquired"
         proc.kill()  # SIGKILL -- no clean disconnect
         proc.join(timeout=10)
-        assert _poll_until(lambda: ch.episode_alive(started_seq), False), "lock not released on kill"
+        assert _poll_until(
+            lambda: ch.episode_alive(started_seq), False
+        ), "lock not released on kill"
     finally:
         if proc.is_alive():
             proc.kill()
@@ -172,7 +181,7 @@ def test_worker_holds_episode_lock_after_claiming(pg_ready):
         w = Worker(wch, now=lambda: 0.0)
         assert w.claimed
         started_seq = obs.latest("lifecycle.started").seq
-        assert obs.episode_alive(started_seq) is True   # the worker holds it
+        assert obs.episode_alive(started_seq) is True  #  the worker holds it
     finally:
         obs.close()
         wch.close()  # releases the lock
@@ -201,7 +210,8 @@ def test_watcher_lock_held_is_alive(pg_ready):
 def test_watcher_observed_run_presumed_dead_via_lock_past_grace(pg_ready):
     """The motivating path: an ``observe()``-d (handle-free) cross-host run whose lock
     is not held reads inconclusive WITHIN the birth grace (the CAS->hold_episode
-    window) but PRESUMED_DEAD past it -- a definitive death where os.kill can't reach."""
+    window) but PRESUMED_DEAD past it -- a definitive death where os.kill can't reach.
+    """
     from runstate.channel.postgres import PostgresChannel
     from runstate.observables import Outcome, RunResult
     from runstate.watcher import Watcher
@@ -209,12 +219,14 @@ def test_watcher_observed_run_presumed_dead_via_lock_past_grace(pg_ready):
     run_id = f"wdead-{uuid.uuid4()}"
     obs = PostgresChannel(pg_ready, run_id=run_id)
     try:
-        obs.send({}, topic="lifecycle.started", expected_seq=0)  # started, but NO lock held
+        obs.send(
+            {}, topic="lifecycle.started", expected_seq=0
+        )  # started, but NO lock held
         clock = {"t": 0.0}
         w = Watcher(now=lambda: clock["t"], episode_grace=1.0)
         w.observe(run_id, obs)
-        assert w.poll(run_id).done is False              # within grace -> inconclusive
-        clock["t"] = 1.5                                 # past the birth grace
+        assert w.poll(run_id).done is False  #             within grace -> inconclusive
+        clock["t"] = 1.5  #                                past the birth grace
         r = w.poll(run_id)
         assert isinstance(r, RunResult)
         assert r.outcome == Outcome.PRESUMED_DEAD
@@ -236,17 +248,21 @@ def test_watcher_staleness_floor_is_not_vetoed_by_a_held_lock(pg_ready):
     holder = PostgresChannel(pg_ready, run_id=run_id)
     try:
         s = obs.send({}, topic="lifecycle.started", expected_seq=0)
-        holder.hold_episode(s)                                       # lock HELD (alive)
+        holder.hold_episode(s)  #                                      lock HELD (alive)
         obs.send({"step": 0, "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat")
         clock = {"t": 0.0}
         w = Watcher(now=lambda: clock["t"], heartbeat_timeout=1.0)
         w.observe(run_id, obs)
-        w.poll(run_id)                                              # note the beacon at t=0
-        clock["t"] = 2.0                                            # beacon now stale
+        w.poll(
+            run_id
+        )  #                                             note the beacon at t=0
+        clock["t"] = 2.0  #                                           beacon now stale
         r = w.poll(run_id)
         assert isinstance(r, RunResult)
         assert r.outcome == Outcome.PRESUMED_DEAD
-        assert r.reason == "heartbeat_stale"                        # floor wins over the held lock
+        assert (
+            r.reason == "heartbeat_stale"
+        )  #                       floor wins over the held lock
     finally:
         holder.close()
         obs.close()
@@ -290,6 +306,7 @@ def test_unconditional_contention_produces_unique_contiguous_seqs(pg_ready):
     writers, n = 4, 50
     chans = [PostgresChannel(pg_ready, run_id=run_id) for _ in range(writers)]
     try:
+
         def hammer(c):
             for i in range(n):
                 c.send({"i": i}, topic="value", name="x")
@@ -301,8 +318,8 @@ def test_unconditional_contention_produces_unique_contiguous_seqs(pg_ready):
             t.join()
         total = writers * n
         seqs = sorted(e.seq for e in chans[0].read())
-        assert len(seqs) == total                       # no lost writes
-        assert seqs == list(range(1, total + 1))        # unique + contiguous
+        assert len(seqs) == total  #                      no lost writes
+        assert seqs == list(range(1, total + 1))  #       unique + contiguous
     finally:
         for c in chans:
             c.close()
@@ -317,9 +334,11 @@ def test_cas_wedged_writer_raises_not_false_loss(pg_ready):
 
     run_id = f"wedge-{uuid.uuid4()}"
     ch = PostgresChannel(pg_ready, run_id=run_id)
-    seed = ch.send({}, topic="value", name="seed")          # seq 1
-    ch._conn.execute("SET lock_timeout = '300ms'")          # keep the wedge wait test-sized
-    wedger = psycopg.connect(pg_ready)                      # autocommit=False
+    seed = ch.send({}, topic="value", name="seed")  #         seq 1
+    ch._conn.execute(
+        "SET lock_timeout = '300ms'"
+    )  #         keep the wedge wait test-sized
+    wedger = psycopg.connect(pg_ready)  #                     autocommit=False
     try:
         wedger.execute(  # an uncommitted (run, seed+1) holds the PK index slot
             "INSERT INTO log (run_id, seq, topic, name, request_id, body, created_at)"
@@ -346,13 +365,13 @@ def test_unconditional_send_bound_exhaustion_raises(pg_ready, monkeypatch):
     real_execute = ch._conn.execute
 
     def always_conflict(sql, *a, **k):
-        if "INSERT" in sql and "COALESCE(MAX" in sql:       # the unconditional append
+        if "INSERT" in sql and "COALESCE(MAX" in sql:  #      the unconditional append
             raise psycopg.errors.UniqueViolation("simulated persistent contention")
         return real_execute(sql, *a, **k)
 
     monkeypatch.setattr(ch._conn, "execute", always_conflict)
     try:
         with pytest.raises(RuntimeError, match="exhausted"):
-            ch.send({}, topic="value", name="x")            # unconditional
+            ch.send({}, topic="value", name="x")  #           unconditional
     finally:
         ch.close()

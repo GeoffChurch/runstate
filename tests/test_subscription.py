@@ -21,7 +21,7 @@ def test_from_step_fires_once_at_that_step():
 
 def test_every_step_recurs_from_registration():
     sub = Subscription({"every": {"step": 10}}, registered_at=0.0)
-    assert sub.tick(step=0, now=0.0).fire          # first fire at the next safe point
+    assert sub.tick(step=0, now=0.0).fire  #         first fire at the next safe point
     assert not sub.tick(step=5, now=0.0).fire
     d = sub.tick(step=10, now=0.0)
     assert d.fire and not d.expired
@@ -45,10 +45,10 @@ def test_every_whichever_first_steps_or_seconds():
     sub = Subscription(
         {"every": {"any": [{"step": 10}, {"time_seconds": 60}]}}, registered_at=0.0
     )
-    assert sub.tick(step=0, now=0.0).fire           # first fire
-    assert not sub.tick(step=5, now=30.0).fire      # 5 steps, 30s since last
-    assert sub.tick(step=5, now=60.0).fire          # 60s since last -> fire
-    assert sub.tick(step=15, now=60.0).fire         # 10 steps since last -> fire
+    assert sub.tick(step=0, now=0.0).fire  #          first fire
+    assert not sub.tick(step=5, now=30.0).fire  #     5 steps, 30s since last
+    assert sub.tick(step=5, now=60.0).fire  #         60s since last -> fire
+    assert sub.tick(step=15, now=60.0).fire  #        10 steps since last -> fire
 
 
 def test_every_delta_is_measured_from_last_fire_not_registration():

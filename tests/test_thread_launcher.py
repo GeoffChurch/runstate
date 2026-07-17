@@ -106,35 +106,43 @@ def test_a_claim_losers_clean_exit_does_not_forge_the_winners_verdict(tmp_path):
 
     def winner(channel):
         claim_now.wait(20)
-        with Worker(channel) as w:              # wins the CAS
+        with Worker(channel) as w:  #             wins the CAS
             winner_claimed.set()
-            release_winner.wait(20)             # ...and is still alive at the end
+            release_winner.wait(20)  #            ...and is still alive at the end
             for _ in w.steps(1):
                 pass
 
     def loser(channel):
         winner_claimed.wait(20)
-        with Worker(channel) as w:              # loses the CAS
+        with Worker(channel) as w:  #             loses the CAS
             assert not w.claimed
             for _ in w.steps(3):
                 pass
-        loser_done.set()                        # returns cleanly -> Terminated(exited, 0)
+        loser_done.set()  #                       returns cleanly -> Terminated(exited, 0)
 
-    hw = launcher.launch("collide", winner)     # launched FIRST...
-    hl = launcher.launch("collide", loser)      # ...but claims after this launch
+    hw = launcher.launch("collide", winner)  #    launched FIRST...
+    hl = launcher.launch("collide", loser)  #     ...but claims after this launch
     claim_now.set()
     assert loser_done.wait(20) and hl.wait() is None
     ch = launcher.open_channel("collide")
 
     starteds = ch.read(topics=["lifecycle.started"])
-    assert len(starteds) == 1                             # exactly one claim
-    assert starteds[0].request_id == hw.launch_id         # it names the launch it answers
-    assert starteds[0].seq > ch.read(topics=["launcher.launched"])[-1].seq   # after BOTH launches
+    assert len(starteds) == 1  #                            exactly one claim
+    assert (
+        starteds[0].request_id == hw.launch_id
+    )  #        it names the launch it answers
+    assert (
+        starteds[0].seq > ch.read(topics=["launcher.launched"])[-1].seq
+    )  #  after BOTH launches
 
     terms = ch.read(topics=["launcher.terminated"])
-    assert [t.request_id for t in terms] == [hl.launch_id]   # the loser's corpse, honestly recorded
-    assert peek_terminal(ch) is None                         # ...and the winner runs on
+    assert [t.request_id for t in terms] == [
+        hl.launch_id
+    ]  #  the loser's corpse, honestly recorded
+    assert peek_terminal(ch) is None  #                        ...and the winner runs on
 
     release_winner.set()
     hw.wait()
-    assert peek_terminal(ch).outcome == "preempted"          # now the winner's own verdict
+    assert (
+        peek_terminal(ch).outcome == "preempted"
+    )  #         now the winner's own verdict
