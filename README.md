@@ -16,6 +16,8 @@ The protocol is language-agnostic: any implementation that produces conforming m
 
 ## Quickstart
 
+Install: `pip install -e .` (Python ≥ 3.11, stdlib-only core; add `.[postgres]` for the cross-host backend, `.[test]` for the suite).
+
 The worker drives a normal loop; `runstate.Worker` drains control, services subscriptions, and emits the lifecycle beacons:
 
 ```python
@@ -25,7 +27,10 @@ import runstate
 with runstate.Worker(runstate.attach()) as w:
     for step in w.steps(total=1000):
         w.set("loss", train_one_step())   # reported to whoever subscribed
+    w.stopped(completed=True)   # finished the whole budget -> claim completion
 ```
+
+(Falling off the `with` block *without* the claim also emits a clean `lifecycle.stopped`, but as the resumable default — `outcome` reads `preempted`. `completed` is the worker's opt-in claim of *intrinsic, permanent* completion; a resumable or chunked worker deliberately never claims it.)
 
 The orchestrator spawns it, subscribes, and watches it to a terminal result:
 
@@ -43,6 +48,8 @@ with runstate.LocalLauncher(root="/tmp/runs") as launcher, \
 ```
 
 A runnable version is in `examples/minimal/` (`python examples/minimal/driver.py`).
+
+**Runs are episodic.** A `run_id` names a durable log, not a process: a worker *episode* (`started … stopped`) can end, and a later episode can attach to the **same** log and resume — which is how relaunch-to-extend, launch-on-demand, and reconnect all fall out. Two rules every consumer needs: episode-scoped state (the live handle/pid, current status) is read from the **latest** `lifecycle.started`, never the first — `runstate.latest_episode` / `live_episode` own that rule — and a terminal verdict stands only until a new episode claims (`peek_terminal` is episode-aware). The full model: [docs/overview.md](docs/overview.md).
 
 ## Recipes
 
@@ -87,7 +94,7 @@ for _ in range(budget):                          # the retry budget lives here, 
 - **Not a tracker.** Use wandb / TensorBoard / MLflow for one-way metric logging and visualization. `runstate` is the *control-plane* counterpart.
 - **Not a workflow engine.** No DAG, no retry logic, no scheduler. Compose those at your application layer.
 
-The control-plane / tracker split is a current division of labor, not a permanent one. Long-term, runstate could own a data-plane visualization protocol too (richer event types, viewer-side discovery) and become a one-stop shop. See `docs/backlog/`.
+The control-plane / tracker split is a current division of labor, not a permanent one. Long-term, a **separate viz project built on runstate** could own the data-plane protocols (richer event types, viewer-side discovery, artifacts) and make the pair a one-stop shop — runstate itself stays the minimal control protocol the data plane rides on; those protocols never land in this repo's `protocol/`. See `docs/backlog/visualization-story.md`.
 
 ## Positioning
 
@@ -117,3 +124,5 @@ The substrate is the `Channel` (a durable per-run topic log). The protocol defin
 **v0.2 is implemented** in `runstate/` — the topic-log substrate, the conventions, the orchestration helpers, and the JSON Schema stack with conformance tests. See `docs/design-v0.2.md` for the rationale and `docs/design-v0.2-exploration.md` for the decision trail. (The earlier v0.1 pull-first command/event model was superseded by this redesign.)
 
 **v0.3 (in progress, on `master`):** the convention bodies are typed frozen dataclasses in `runstate/vocabulary/`; `value` events carry an absolute wall-clock `value.t`; a `run_id()` *recipe* documents reuse-by-content-hash (`docs/specs/run-id-recipe.md`); the **run-episodes** scoped primitive landed — a `run_id` hosts multiple resumable episodes (relaunch-to-extend), with the single-spawn guard implemented as a worker self-claim (`docs/specs/run-episodes.md`); and the **memoizer** that consumes it shipped — `history()` replays a schedule over the logged `value` points (passive, channel-only), and `ensure(producer, name, until={"step": N})` serves the logged prefix on a hit or relaunches-to-extend and waits on a miss, with the `launch_producer` seam + the `relaunch_if_needed` helper (`docs/specs/memoizer.md`). The **service worker** shipped next (`docs/specs/service-worker.md`): leased demand — `serve()`/`retire()`/`pinned`, the careful death (episodes CAS-claimed at both ends), expiry counter-records under the positional answer fold (`live_demand`); `examples/monitor/` is the on-demand dogfood. **Lazy-launch** shipped next (`docs/specs/lazy-launch.md`): `ensure_served`, the leased-demand waker — demand-first, no flap policy, loser corpses disciplined; `examples/monitor/` now runs the whole loop twice (demand → wake → serve → lapse → retire → re-demand → re-wake). Then the two dissolutions that closed the arc (`docs/specs/derived-runs.md`, `docs/specs/store.md`): the *function producer* needs no new surface (a derived run is an ordinary one-step run behind `ensure`; the named `Producer` Protocol stays deferred on evidence), and the relational-layer **Store** ships as recipes over the existing basis — the rid is the run's *address* (content-addressed placement; reuse-by-hash dissolves into `ensure` against the one home), membership is a cell pointer, provenance is the child's birth record — plus one helper, `foreign_episode` (the producer gate's foreign half). See `docs/backlog/index.md` "Start here". Full v0.3 trail: `docs/design-v0.3-exploration.md`.
+
+**Shipped since (June–July 2026):** the cross-host **`PostgresChannel`** backend (`docs/specs/channel-postgres.md`) — one shared `log` table with `PRIMARY KEY (run_id, seq)` as the cross-host CAS arbiter (cross-host single-spawn + control fall out of it, claim model unchanged), a session advisory lock as a Watcher-consumed liveness capability, and the repo's first CI workflow running the suite against a real server. The 2026-07 holistic review then landed: `last_seq()` — the substrate's fifth op, the CAS's read half (worker attach on a 10⁶-envelope log: 3.4 s → 1.5 ms); `Worker.emit` — the unconditional broadcast-value verb beside the demand-sampled `set`; typed `RunFailedError` / `NoProgressError`; `undischarged_stops` — the stop fold's observer home; `lifecycle`-v0.3 (the dead `hostname` field dropped); and **launch identity** (`docs/specs/launcher-record-identity.md`) — one correlation id per launch, on `launched` + `terminated` and re-emitted on the worker's `started`, anchoring the verdict to the *claimed* episode so a late reap or a claim-race loser's clean exit can no longer forge it. Then the **observer clock** shipped (`docs/specs/observer-clock.md`; `lifecycle`-/`launcher`-v0.4): a required wall-clock `t` dates every `lifecycle.*` / `launcher.*` record, a cold-attaching `Watcher` seeds its staleness clock from the beacon already on the log, and `last_activity` dates a run from the log alone — the first item of the standing third-party-observer thread (`docs/backlog/third-party-observer.md`: what the log doesn't tell a party that didn't launch the run).
