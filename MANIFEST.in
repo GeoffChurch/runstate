@@ -1,0 +1,21 @@
+# sdist contents beyond the package itself. The wheel is unaffected -- these
+# trees live OUTSIDE the `runstate` package, so they ship in the source
+# distribution only (the schemas-in-the-wheel question is deferred to the
+# stability contract: docs/backlog/release-and-stability-contract.md).
+
+include CHANGELOG.md
+include LICENSE
+
+# The wire-authoritative source of truth travels with the source.
+recursive-include protocol *.json
+
+# The design record and the runnable examples. (Migration scripts are deleted
+# on convergence per the develop-by-migration doctrine -- git carries them --
+# so there is nothing under scripts/ to ship.)
+recursive-include docs *.md
+recursive-include examples *.py
+
+# Never ship build/cache droppings.
+global-exclude *.py[cod]
+global-exclude __pycache__
+prune **/__pycache__

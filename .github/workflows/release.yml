@@ -1,0 +1,100 @@
+# Release to PyPI -- INERT until the owner acts.
+#
+# This workflow does nothing until BOTH of these happen:
+#   (a) the owner creates the `runstate` project on PyPI and adds a
+#       trusted-publisher binding for it (PyPI -> Publishing -> "Add a new
+#       pending publisher": owner=GeoffChurch, repo=runstate,
+#       workflow=release.yml, environment=pypi). Trusted publishing means NO
+#       API token / secret is stored anywhere -- PyPI mints a short-lived
+#       OIDC credential from the `id-token: write` permission below.
+#   (b) someone pushes a version tag, e.g. `git tag v0.3.0 && git push --tags`.
+#       The tag is the ONLY trigger; nothing publishes on a branch push or PR.
+#
+# Until (a) is done the `publish` job's upload step fails (no publisher bound),
+# which is the intended safety interlock -- there is no way to publish by
+# accident. The package version comes from `pyproject.toml`; the build job
+# REFUSES a tag that doesn't match it (PyPI is a one-way door: a mismatched tag
+# would burn pyproject's version -- and a dev version is invisible to default
+# pip resolution, so the workflow would go green while the package can't even
+# be installed). The version story itself is owner-gated -- see
+# docs/backlog/release-and-stability-contract.md.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  # The full suite must pass on the tagged commit before anything is built.
+  # Mirrors .github/workflows/tests.yml (the Postgres backend tier included).
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: runstate_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # a DIRECT endpoint (not a transaction-mode pooler): the session advisory
+      # lock and the per-connection session state depend on one stable backend.
+      RUNSTATE_TEST_PG_DSN: postgresql://postgres:postgres@localhost:5432/runstate_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .[test]
+      # SERIAL on purpose: the shared `log` table + the session-end connection-leak
+      # check are xdist-unsafe. Per-test uuid run_ids isolate the data.
+      - name: pytest (serial)
+        run: pytest tests/
+      - name: mypy --strict
+        run: mypy
+
+  # Build the sdist + wheel on the tagged commit.
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: tag matches pyproject version
+        run: |
+          v="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          test "refs/tags/v$v" = "$GITHUB_REF" || { echo "::error::tag $GITHUB_REF_NAME does not match pyproject version $v"; exit 1; }
+      - run: pip install build
+      - name: build sdist + wheel
+        run: python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # Publish to PyPI via trusted publishing (OIDC). No secrets: the
+  # `id-token: write` permission is what PyPI's pending-publisher binding trusts.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # REQUIRED for trusted publishing; nothing else is granted.
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
