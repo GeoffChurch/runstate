@@ -296,6 +296,21 @@ the API **cannot distinguish "no run" from "empty run"** without stepping outsid
 `os.path.exists`. (mycooc, again, went around: raw `sqlite3` with `mode=ro`.) Wanted:
 `open_channel(..., create=False)`, or a read-only mode.
 
+**Sharper still, and not captured above: the open is *mutative* on a foreign file, not
+merely creative on a missing one.** `SqliteChannel.__init__` runs `executescript(_SCHEMA)`
+— `CREATE TABLE IF NOT EXISTS log …` — unconditionally at open (`channel/sqlite.py:120`,
+`_SCHEMA` `:53-66`), so a stale/GC'd pointer that resolves to a **foreign *valid* sqlite
+db** (someone else's `.db`, not a runstate log) is **silently schema-mutated** — a `log`
+(and `sqlite_sequence`) table written into a file we do not own — then read at
+`last_seq() == 0` and **misrendered as an empty run** (verified). This is the residual that
+`create=False` *uniquely* fixes: **`stat-before-open` cannot catch it** — the file exists,
+and the mutation happens *at open* — so the app-side candidate above covers only the
+missing-pointer phantom, never the foreign-valid-db mutation. (A corrupt / non-sqlite file
+instead raises `sqlite3.DatabaseError` at the `PRAGMA`, before `executescript` — a viewer's
+open-guard renders it `unreadable`, no mutation.) The **runstate-tui cockpit's glob
+resolver is the concrete second consumer** that hits this — the demand this ledger said to
+wait for.
+
 ## 5. The folds have no cursor
 
 `value_series(channel)` and `progress(channel)` take no `after=`. But the measured
