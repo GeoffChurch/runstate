@@ -5,7 +5,7 @@ control, subscription, lifecycle, launcher) and reference **orchestration**
 helpers (launchers, Watcher, sweep). See docs/design-v0.2.md.
 
 The names re-exported here are the public surface; everything else lives under
-the submodules (runstate.channel, runstate.schedule, ...).
+the submodules (runstate.channel, runstate.vocabulary, ...).
 """
 
 import os
