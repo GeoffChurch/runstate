@@ -244,6 +244,31 @@ The `EpisodeHolder` / `EpisodeProbe` Protocols and the `isinstance`-dispatch sit
 **psycopg-free module** (`channel/base.py`, `watcher`), so `import runstate` works without
 the extra (guarded by a CI job that imports without it).
 
+## Convention-bump migrations on the shared table
+
+The develop-by-migration doctrine (offline scripts, committed → run to
+convergence → deleted; the lifecycle-v0.3 and observer-clock-v0.4 precedents) has
+only ever had a sqlite corpus to run against — no Postgres corpus exists outside
+CI as of 2026-07-16. When one appears, the observer-clock (v0.4) pass has a known
+head start, preserved here from the deleted sqlite script's docstring (PR #2)
+because it otherwise exists nowhere in the tree:
+
+```sql
+UPDATE log SET body = jsonb_set(body::jsonb, '{t}', to_jsonb(created_at))::text
+ WHERE topic IN ('lifecycle.heartbeat','lifecycle.stopped',
+                 'launcher.launched','launcher.terminated')
+   AND NOT (body::jsonb ? 't') AND run_id = %s;   -- plus the started rename
+```
+
+…run per **quiescent** run (`live_episode(ch) is None`), the same gate-then-stamp
+shape as the sqlite walk. It was deliberately not shipped as a `--dsn` variant of
+that script: the per-run quiescence gate + the shared-table scoping don't stay a
+one-liner — every run on the one `log` table needs its own gate-then-UPDATE,
+where the sqlite pass gets per-run isolation for free from one-file-per-run.
+(A migration deliberately rewrites the stored body, so the `body`-stays-`text`
+rule — never mutate a row on a read path — is not in tension with the
+`::jsonb` round-trip here.)
+
 ## Deferred / rejected-for-now
 
 - **Cross-host auto-relaunch — the "co-arbiter" — rejected for v1 (and as the default
