@@ -1,9 +1,15 @@
 # Run episodes (a `run_id` hosts many worker episodes)
 
-**Status:** design direction, not built. Unifies three deferred items into one
-model: lazy-launch (§12.1), the lifeline service-worker, and the
-"completed-but-extendable" gap surfaced by mycooc (see the cli-status /
-Store backlog and the mycooc adoption assessment).
+**Status:** SHIPPED across the June 2026 arc — kept as the unifying design
+direction that produced the thread. The episode primitive + worker self-claim +
+autonomous-extend graduated to [`../specs/run-episodes.md`](../specs/run-episodes.md)
+(2026-06-01); the service/lifeline policy to
+[`../specs/service-worker.md`](../specs/service-worker.md) (2026-06-10);
+lazy-launch (§12.1) to [`../specs/lazy-launch.md`](../specs/lazy-launch.md)
+(2026-06-11). The sections below predate those specs and defer to them where
+they differ. Originally: unifies three deferred items into one model —
+lazy-launch (§12.1), the lifeline service-worker, and the
+"completed-but-extendable" gap surfaced by mycooc.
 
 ## The idea
 
@@ -89,30 +95,50 @@ resume (and can even read its own past emissions from the log); mint a fresh
 `run_id` → a fresh run. The reference `Worker` is a fake loop with no checkpoint;
 a real worker owns resume.
 
-## Built vs. not
+## Built vs. not (settled 2026-07-16: all built)
 
-- **Built:** stable `run_id`→channel (durable, liveness-agnostic); the worker
-  tracks `_subs`; register-before-reap is the loop invariant.
-- **Not built:** lazy-launch-on-demand + the single-spawn guard (§12.1); the
-  lifeline reap (stop on zero subs); episode-aware `peek_terminal`/liveness;
-  worker resume (out of scope — worker's job, but the convention needs writing).
+- Stable `run_id`→channel (durable, liveness-agnostic); the worker tracks
+  `_subs`; register-before-reap as the loop invariant — the original "built"
+  set.
+- The single-spawn guard (§12.1) — shipped as the worker self-claim (birth-CAS,
+  2026-06-01); lazy-launch-on-demand as `ensure_served` beside
+  `relaunch_if_needed` (`../specs/lazy-launch.md`, 2026-06-11).
+- The lifeline reap (stop on zero subs) — shipped as `serve()`/`retire()` + the
+  expiry counter-records (`../specs/service-worker.md`, 2026-06-10).
+- Episode-aware `peek_terminal`/liveness — shipped 2026-06-01
+  (`../specs/run-episodes.md` Decision 2), later sharpened by launch identity
+  (`../specs/launcher-record-identity.md`, 2026-07-14).
+- Worker resume — stays the worker's job by design; the convention is written
+  up (`../specs/run-id-recipe.md` "Extendable runs" + `Worker.steps(start=)`).
 
 ## Open questions
 
-- Episode boundaries in the schema/conventions: is "episode" implicit (a
-  `started` after a `stopped`) or does it earn an explicit marker / id?
+- ~~Episode boundaries in the schema/conventions: is "episode" implicit (a
+  `started` after a `stopped`) or does it earn an explicit marker / id?~~
+  **Answered 2026-06-01** (`../specs/run-episodes.md` Decision 1): implicit — a
+  read-side derivation over the existing log; explicit ids stay the named
+  future refinement, homed in `observables.latest_episode`.
 - ~~Does the lifeline ref-count live in the reference `Worker` as an opt-in *mode*,
   or in a separate service-worker recipe? (Keep autonomous runs unaffected.)~~
   **Answered 2026-06-10** ([service-worker](../specs/service-worker.md)):
   neither — **opt-in by verb** (`serve()`/`retire()`/`pinned` in the reference
   Worker; no flag, no second loop class); autonomous runs are unaffected *by
   construction* (no term couples their life to observation).
-- How does episode-aware liveness interact with `RunResult` for a run that has
-  finished its *last* episode vs. is between episodes (idle, may relaunch)?
-- Artifact/checkpoint location convention: a launcher-provided workdir keyed by
-  `run_id`? (Stays app/convention-level; runstate transports messages, not files.)
-- mycooc is the validating use case for the autonomous-extend half; an on-demand
-  metric/inference server is the validating use case for the service half.
+- ~~How does episode-aware liveness interact with `RunResult` for a run that has
+  finished its *last* episode vs. is between episodes (idle, may relaunch)?~~
+  **Answered 2026-06-01** (`../specs/run-episodes.md` Decision 2): the two are
+  *identical on the log*, inherently — no "done forever" concept; which it is
+  is the caller's policy.
+- ~~Artifact/checkpoint location convention: a launcher-provided workdir keyed by
+  `run_id`?~~ (Stays app/convention-level; runstate transports messages, not
+  files.) **Answered at the recipe level 2026-06-11** (`../specs/store.md`
+  Recipe 1): under content-addressed placement `RUNSTATE_CHANNEL_ROOT` *is* the
+  run's home, so a spawned worker derives its checkpoint dir from env — custody
+  falls out of placement, still never a runstate mechanism.
+- ~~mycooc is the validating use case for the autonomous-extend half; an on-demand
+  metric/inference server is the validating use case for the service half.~~
+  **Both landed**: mycooc (autonomous-extend via `ensure`, phases 1–7) and
+  `examples/monitor/` (the service half, dogfooded end-to-end twice).
 - **Control cursor across episodes.** ~~A fresh episode's worker drains
   `control.*` from `seq` 0, which correctly *re-derives standing subscriptions*
   but would also *replay one-shot commands* (a prior episode's `control.stop` →

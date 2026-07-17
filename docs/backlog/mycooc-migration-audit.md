@@ -176,6 +176,16 @@ is ~2 per `ensure()` call. Kept as written, with this correction attached, becau
 misreading is instructive: **a correction placed below a finding does not retract the
 finding — readers quote the headline.**
 
+**Partially closed 2026-07-17.** What has shipped since the filing: `Channel` is a
+context manager and `channel/base.py` documents the ownership contract (the "at
+minimum" ask); `sweep` closes its resume-probe channels; and the two deciders
+(`relaunch_if_needed` / `ensure_served`) now `with`-scope their probe handles —
+load-bearing for a standing activator loop, which probes every cycle. Still open,
+deliberately: the two remaining asks — cache the connection in
+`_LaunchProducer.channel` (the headline's named offender) and a `Watcher.close()`
+— stay nice-to-have ergonomics, not a leak, on the strength of the bounded-growth
+measurement above. Close them if a long-lived consumer ever measures otherwise.
+
 ## F5 (MED — missing primitive) — no first-class reader for the historical value series
 
 **Resolved 2026-06-10** (`../specs/observables.md`) — shipped as the
@@ -258,12 +268,25 @@ function — *before* the disambiguator forces a breaking change on consumers.
 
 ## F9 (LOW — ergonomics) — `await_consumed` rescans all naks each poll
 
+**Resolved 2026-07-17** — the nak read now passes `request_ids=[request_id]`,
+pushing the id filter into the backend; the exact-id check stays on top because
+the visibility filter also admits null-id broadcasts, which answer nothing.
+
 `watcher.py` `await_consumed` does `channel.read(topics=["lifecycle.nak"])` then
 filters by `request_id` in Python — re-scanning every nak ever written on each
 poll. The substrate already supports `request_ids=[...]`; pass it. Perf/ergonomics,
 not correctness.
 
 ## F10 (DOCS) — the episode model + the resumable-must-be-preempted discipline are under-documented
+
+**Resolved 2026-07-17** — (b) the discipline now lives in the `ensure` and
+`Worker.stopped` docstrings (a per-chunk `completed` claim truncates the
+drive), and the README quickstart demonstrates the claim with the default
+spelled out beside it. (a) the consumer-facing episode rule now lives in the
+README ("Runs are episodic": read the *latest* `started`, never the first;
+terminals stand until a new claim) beside `docs/overview.md`'s existing
+episode mental-model; `observables.latest_episode` remains the rule's one
+code home.
 
 - The **consumer-facing** episode rule ("a channel hosts many episodes; always
   read the *latest* `started`, never the oldest; statuses/pids are
@@ -292,5 +315,10 @@ not correctness.
    sections above; `current_episode` shipped renamed as `latest_episode`).
    mycooc deletes `channel_read.py` + the `_channel_*` helpers in one sweep
    (its checklist: `mycooc/docs/backlog/infrastructure/runstate-adoption-sweep.md`).
-   The remaining open findings here are F4 (channel lifecycle/close) and the
-   F9/F10 minors.
+   Since closed: F9 (the nak read's `request_ids=` push-down) and F10 (the
+   discipline promoted into the `ensure`/`Worker.stopped` docstrings; the
+   episode rule surfaced in the README's "Runs are episodic" note), both
+   2026-07-17. F4 is **partially closed** (context-manager channels, the
+   ownership contract, `with`-scoped decider probes; the two ergonomic asks
+   left open on the bounded-growth measurement). The file stays as the ledger
+   of runstate's first end-to-end consumer exercise.

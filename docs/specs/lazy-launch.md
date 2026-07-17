@@ -171,6 +171,12 @@ recipe documented here only.
 
 ## Tests (TDD targets; the backends where applicable)
 
+*(2026-07-16 note: the reap-discipline rows below describe the DELETED
+mechanism — `launcher-record-identity.md` (2026-07-14) superseded it, per the
+corpse note above. The shipped pins now assert the opposite surface: the
+loser's corpse IS recorded and speaks for nobody — see
+`tests/test_service_worker.py` and `tests/test_thread_launcher.py`.)*
+
 - `ensure_served`: launches when demand ∧ no live episode; `None` when no
   demand (even with no episode); `None` when already served (live episode);
   demand that is boundary-voided or answered does not wake (it consumes

@@ -44,12 +44,13 @@ clusters that unlock each other, with a sequencing — see
   is the one the TUI/viz work depends on. Headline: a run dead 21 days reads as
   `Running(beacon_age=9.5e-06)`, because no liveness record carries a clock. Six
   items + the ship order; each graduates to its own spec.
-- **[mycooc-migration-audit](mycooc-migration-audit.md)** — remaining findings from
-  the mycooc migration (runstate's first end-to-end consumer): **F4** (channel
-  lifecycle / `close` contract), and the **F9/F10** minors (`await_consumed`
-  nak-rescan; under-documented episode + resumable-must-be-`preempted` rules). The
-  CAS-atomicity bug (F1), the lost/clobbered `control.stop` (F2/F3), and the reader
-  gaps (F5–F8) all shipped.
+- **[mycooc-migration-audit](mycooc-migration-audit.md)** — the ledger of the
+  mycooc migration (runstate's first end-to-end consumer), now essentially
+  closed: F1–F3 and F5–F8 shipped across June; the **F9/F10** minors resolved
+  2026-07-17 (`await_consumed`'s `request_ids=` push-down; the episode +
+  resumable-must-be-`preempted` rules surfaced where consumers read); **F4**
+  partially closed (`with`-scoped decider probes + the ownership contract; the
+  two ergonomic asks left open on the bounded-growth measurement).
 - **[ensure-await-completion](ensure-await-completion.md)** —
   `ensure(await_complete=True)`: gate on the producer's `completed` verdict, not the
   step/time window — for a consumer that depends on a post-terminal off-channel
@@ -123,7 +124,7 @@ clusters that unlock each other, with a sequencing — see
   `launch` signatures: a callable `target` vs a `cmd`). Split the uniform
   `open_channel` from the per-launcher `launch` (helpers take a launch thunk). Interim:
   `launcher: Any` in the four helpers.
-- **protocol-async-api** — wrap the JSON Schema in AsyncAPI for
+- **protocol-async-api** (inline; no file) — wrap the JSON Schema in AsyncAPI for
   a richer spec format (multi-channel, lifecycle events). Defer until the v0.2
   protocol grows enough to justify the layer.
 - **Reconfigure command** — typed orchestrator-to-worker command for mid-flight
@@ -211,9 +212,6 @@ reasoning, listed here so they're discoverable as work (cross-ref, not moved):
   unpaced* worker (a realistic paced worker never starved it, and the conformance
   suite runs clean under DELETE); take it up across read **and** unconditional-write
   if a realistic contention case ever reproduces it.
-- **`reason=str(outcome)` (V2)** — `peek_terminal`'s lifecycle tier assigns an
-  `Outcome` to the `str`-typed `RunResult.reason`; harmless (StrEnum is a str) and
-  tested.
 - **`Topic` placement (V3)** — `Topic` lives in `vocabulary/payloads.py` (a body
   module) though it is routing vocabulary; a `vocabulary/topics.py` would be the
   orthogonal home. Marginal.
@@ -236,8 +234,11 @@ reasoning, listed here so they're discoverable as work (cross-ref, not moved):
 
 ## Tactical
 
-- **Windows support** — currently Unix-only (uses `fcntl.flock`). Add `portalocker`
-  as an optional dep for cross-platform file locking.
+- **Windows support** — untested, unclaimed. The old rationale ("uses
+  `fcntl.flock`") died with the v0.1 file backend — v0.2 holds no file locks
+  (sqlite serializes internally; memory uses a threading lock). The actual
+  suspects now: the `os.kill(pid, 0)` handle-probe semantics, the signal-based
+  `Terminated(killed, signal=-rc)` mapping, and the fork-only concurrency tests.
 - **xxhash** — faster file hashing for the reference `run_id()` recipe; stdlib
   SHA-256 is fine until codebase sizes get unwieldy.
 - **Schema codegen for other languages** — Rust types via `quicktype` /
