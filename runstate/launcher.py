@@ -226,10 +226,13 @@ class _LocalHandle:
         if self._reaped or rc is None:
             return
         self._reaped = True
+        t = time.time()  # the reaper's clock, at the reaped death: one reap, one t,
+        #                  bound when the death is OBSERVED, not after the branch
+        #                  decides how to describe it (observer-clock §3)
         if rc < 0:  # died from signal -rc
-            body = asdict(Terminated(reason="killed", signal=-rc, exit_code=None, t=time.time()))
+            body = asdict(Terminated(reason="killed", signal=-rc, exit_code=None, t=t))
         else:
-            body = asdict(Terminated(reason="exited", exit_code=rc, signal=None, t=time.time()))
+            body = asdict(Terminated(reason="exited", exit_code=rc, signal=None, t=t))
         self.channel.send(body, topic=Terminated.TOPIC, request_id=self.launch_id)
 
 

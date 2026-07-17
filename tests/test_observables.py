@@ -23,6 +23,16 @@ from runstate.observables import (
 from runstate.vocabulary.handle import local_handle
 
 
+def test_last_activity_never_reads_value_records(open_channel):
+    # value.t is the DATA plane's clock (present-nullable), a different concern:
+    # freshness reads only the beacon/terminal records. The blind spot is
+    # DOCUMENTED (observables.py) -- i.e. an accepted design decision, and this
+    # is its trip-wire: "fixing" it must fail a test, not slip in.
+    ch = open_channel()
+    ch.send({"value": 1.0, "step": 0, "t": 999.0}, topic="value", name="loss")
+    assert last_activity(open_channel()) is None
+
+
 def test_last_activity_is_the_newest_dated_record(open_channel):
     ch = open_channel()
     assert last_activity(open_channel()) is None                       # nothing dated yet
