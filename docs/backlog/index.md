@@ -164,19 +164,16 @@ backend is the deferred channel-postgres LISTEN/NOTIFY idea. `SubmititLauncher` 
 
 ## Derived tools
 
-- [cockpit](cockpit.md) — **[CONVERGED design 2026-07-16; the project is next]** a
-  control-plane **TUI** in **its own repo**: groups of runs → a status table → act
-  (stop). **No plots** — it shows only what runstate uniquely knows (verdict, progress,
-  freshness, episodes, stops, demand) and does the one thing no tracker can, which is
-  how it clears CLAUDE.md's "not another tracking tool" bar by construction, and dodges
-  the data-plane protocol entirely. Its governing rule — **public API only; every time
-  it can't, that's a finding** — makes it the review's stage 6 with a keyboard,
-  permanently. Predicts item 3 **refuted** (the app owns discovery), item 5 **deferred**
-  (no plots ⇒ no cursors). Item 4 is **UNSETTLED**: the cockpit's first refutation of it
-  (lazy creation) was **itself refuted** by a two-lens pass — `channel/base.py` defines
-  the log as the container, so create-on-open is the abstraction's ontology, not a leak.
-  `create=False` is the candidate, graded **minor**. Supersedes the deleted
-  `webapp-viewer.md` (a v0.1 artifact).
+- [cockpit](cockpit.md) — **[MOVED 2026-07-17 → `GeoffChurch/runstate-tui`]** a
+  control-plane **TUI** (its own private repo): groups of runs → a status table → act
+  (stop). **No plots** — shows only what runstate uniquely knows (verdict, progress,
+  freshness, episodes, stops, demand) and does the one thing no tracker can, which clears
+  the "not another tracking tool" bar and dodges the data-plane protocol entirely. Its rule
+  — **public API only; every gap is a finding** — makes it the review's stage 6 with a
+  keyboard, permanently, and the acceptance test for this ledger's items 2–6. `cockpit.md`
+  is now the runstate-facing record (the split rationale + the build's predictions: item 3
+  **refuted**, item 5 **deferred**, item 4 **unsettled**, item 6 maybe-dissolved-by-item-1,
+  item 2 the target denominator). Supersedes the deleted `webapp-viewer.md`.
 - **cli-status** — terminal status table reading directly from the
   SqliteChannel `log` table. Maybe `runstate status <root>`. **Overlaps [cockpit](cockpit.md)
   and is in tension with it twice over** — it puts discovery *in* runstate (which the
