@@ -284,6 +284,52 @@ def test_broadcast_fans_subscription_with_shared_request_id():
 # ----- round-2 review fixes -----
 
 
+def test_cold_attach_without_timeout_reports_the_seeded_step():
+    # no timeout: still Running, but the snapshot reflects the seeded beacon --
+    # the cold observer sees where the run got to. (The seeded age itself is
+    # pinned by test_cold_attach_reads_true_age_from_the_beacon_t; this pins the
+    # STEP half: dropping the last_step seed regresses Running.step to None,
+    # observer-clock §5.)
+    ch = open_channel("cold2", root=None, backend="memory")
+    ch.send({"handle": "local://h/1", "t": 100.0}, topic="lifecycle.started")
+    ch.send({"step": 41, "consumed_seq": 0, "t": 100.0}, topic="lifecycle.heartbeat")
+    w = Watcher(now=lambda: 1000.0)   # no heartbeat_timeout
+    w.observe("cold2", ch)
+    s = w.poll("cold2")
+    assert s.done is False
+    assert s.step == 41   # seeded from the prefix beacon
+
+
+def test_future_dated_seeded_beacon_reads_conservative_live():
+    # a future-dated beacon (worker clock ahead of ours) yields a NEGATIVE age --
+    # the one unambiguous "my cross-clock estimate is broken" signal. It lands
+    # conservative-LIVE via the existing path, the safe direction (observer-clock
+    # §5): no special handling -- an abs(beacon_age) "fix" here would turn the
+    # broken-estimate signal into a spurious presumed_dead.
+    ch = open_channel("future", root=None, backend="memory")
+    ch.send({"handle": "local://h/1", "t": 5000.0}, topic="lifecycle.started")
+    ch.send({"step": 5, "consumed_seq": 0, "t": 5000.0}, topic="lifecycle.heartbeat")
+    w = Watcher(now=lambda: 1000.0, heartbeat_timeout=30)
+    w.observe("future", ch)   # beacon t=5000 is ahead of now=1000
+    s = w.poll("future")
+    assert s.done is False   # negative age -> not stale (conservative)
+    assert s.beacon_age == -4000.0
+
+
+def test_cold_attach_junk_t_beacon_falls_back_to_now_seed():
+    # a junk/unmigrated t on the newest beacon earns no seed: fall back to now()
+    # (measurement-plane tolerance), exactly the pre-clock behavior -- so a cold
+    # attach to a junk beacon reads Running until the timeout elapses from NOW.
+    clock = [1000.0]
+    ch = open_channel("junkseed", root=None, backend="memory")
+    ch.send({"step": 5, "consumed_seq": 0}, topic="lifecycle.heartbeat")   # no t (unmigrated)
+    w = Watcher(now=lambda: clock[0], heartbeat_timeout=30)
+    w.observe("junkseed", ch)   # seed falls back to now()=1000
+    assert w.poll("junkseed").done is False   # not stale: seeded at now(), not an old t
+    clock[0] = 1031
+    assert w.poll("junkseed").outcome == "presumed_dead"   # 31s from the now()-seed
+
+
 def test_staleness_clock_resets_on_each_new_beacon():
     # the central property: a worker that keeps beaconing is NOT declared dead,
     # however long since registration -- each new beacon restarts the clock.
