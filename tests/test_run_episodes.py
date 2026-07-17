@@ -31,17 +31,23 @@ def test_relaunch_extends_one_series(tmp_path):
     # low seq on the shared log; both episodes' workers start with _cursor=0 and
     # will drain it on their first tick, re-registering a fresh Subscription.
     ch0 = launcher.open_channel(rid)
-    ch0.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="obs")
+    ch0.send(
+        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="obs"
+    )
 
     # episode 1: run to step 5
-    launcher.launch(rid, _cell,
-                    kwargs={"run_id": rid, "target": 5, "ckpt_dir": str(tmp_path)}).wait()
+    launcher.launch(
+        rid, _cell, kwargs={"run_id": rid, "target": 5, "ckpt_dir": str(tmp_path)}
+    ).wait()
 
     # episode 2: extend to step 10 (resumes from the checkpoint at step 5)
-    launcher.launch(rid, _cell,
-                    kwargs={"run_id": rid, "target": 10, "ckpt_dir": str(tmp_path)}).wait()
+    launcher.launch(
+        rid, _cell, kwargs={"run_id": rid, "target": 10, "ckpt_dir": str(tmp_path)}
+    ).wait()
 
     ch = launcher.open_channel(rid)
     steps = [v.body["step"] for v in ch.read(topics=["value"])]
-    assert steps == list(range(10))         # one continuous run-absolute series, no gaps/dups
+    assert steps == list(
+        range(10)
+    )  #        one continuous run-absolute series, no gaps/dups
     assert runstate.peek_terminal(ch).outcome == "preempted"

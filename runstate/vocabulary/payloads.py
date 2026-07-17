@@ -30,6 +30,7 @@ class Topic(StrEnum):
     body-bearing topic's ``<Payload>.TOPIC`` is a typed alias of that same member
     (``Stopped.TOPIC is Topic.LIFECYCLE_STOPPED``). Every internal emit/read site
     routes on ``Topic.X`` / ``<Payload>.TOPIC``, never a bare literal."""
+
     VALUE = "value"
     LIFECYCLE_STARTED = "lifecycle.started"
     LIFECYCLE_HEARTBEAT = "lifecycle.heartbeat"
@@ -48,7 +49,9 @@ class Value:
 
     value: Any
     step: Optional[int]  # present-nullable: null when the worker is stepless
-    t: Optional[float]  # absolute wall-clock seconds (the real-time axis); null = unstamped
+    t: Optional[
+        float
+    ]  # absolute wall-clock seconds (the real-time axis); null = unstamped
     TOPIC: ClassVar[str] = Topic.VALUE
 
 
@@ -71,7 +74,8 @@ class Heartbeat:
     """Tick-driven liveness beacon (§7): progress + the consumption watermark.
 
     ``t`` (the worker's wall-clock when it beat) is what lets a third-party observer date
-    the beacon and so answer staleness for a run it did not launch (specs/observer-clock.md)."""
+    the beacon and so answer staleness for a run it did not launch (specs/observer-clock.md).
+    """
 
     step: Optional[int]
     consumed_seq: int
@@ -89,14 +93,16 @@ class Stopped:
     completed: bool
     error: Optional[str]
     final_step: Optional[int]
-    t: float                       # the worker's wall-clock at the dying breath (§ observer-clock)
+    t: float  #                      the worker's wall-clock at the dying breath (§ observer-clock)
     TOPIC: ClassVar[str] = Topic.LIFECYCLE_STOPPED
 
     def __post_init__(self) -> None:
         # completed ⟹ error is None: keeps the two content fields non-overlapping, so
         # `error is not None` ⟺ errored holds globally (mirrors Terminated's exited-XOR-killed).
         if self.completed and self.error is not None:
-            raise ValueError("a completed stop cannot carry an error (completed ⟹ error is None)")
+            raise ValueError(
+                "a completed stop cannot carry an error (completed ⟹ error is None)"
+            )
 
 
 @dataclass(frozen=True)
@@ -137,9 +143,15 @@ class Terminated:
         # exist in Python either. (Validation-only -- safe on a frozen dataclass.)
         if self.reason == "exited":
             if not isinstance(self.exit_code, int) or self.signal is not None:
-                raise ValueError("exited requires a non-null exit_code and a null signal")
+                raise ValueError(
+                    "exited requires a non-null exit_code and a null signal"
+                )
         elif self.reason == "killed":
             if not isinstance(self.signal, int) or self.exit_code is not None:
-                raise ValueError("killed requires a non-null signal and a null exit_code")
+                raise ValueError(
+                    "killed requires a non-null signal and a null exit_code"
+                )
         else:
-            raise ValueError(f"reason must be 'exited' or 'killed', got {self.reason!r}")
+            raise ValueError(
+                f"reason must be 'exited' or 'killed', got {self.reason!r}"
+            )

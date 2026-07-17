@@ -72,8 +72,16 @@ def test_latest_returns_most_recent_for_topic_and_name(ch):
 
 
 def test_latest_by_topic_only(ch):
-    ch.send({"completed": True, "error": None, "final_step": None, "t": 0.0}, topic="lifecycle.stopped")
-    assert ch.latest("lifecycle.stopped").body == {"completed": True, "error": None, "final_step": None, "t": 0.0}
+    ch.send(
+        {"completed": True, "error": None, "final_step": None, "t": 0.0},
+        topic="lifecycle.stopped",
+    )
+    assert ch.latest("lifecycle.stopped").body == {
+        "completed": True,
+        "error": None,
+        "final_step": None,
+        "t": 0.0,
+    }
     assert ch.latest("lifecycle.started") is None
 
 
@@ -106,9 +114,13 @@ def test_wildcard_prefix_is_literal_not_metacharacters(ch):
     # not let its metacharacters leak into topic matching.
     for topic in ("a?b.x", "aXb.x", "a_b.x", "a%b.x", "a*b.x", "a[b.x"):
         ch.send({}, topic=topic)
-    for pattern, hit in (("a?b.>", "a?b.x"), ("a_b.>", "a_b.x"),
-                         ("a%b.>", "a%b.x"), ("a*b.>", "a*b.x"),
-                         ("a[b.>", "a[b.x")):
+    for pattern, hit in (
+        ("a?b.>", "a?b.x"),
+        ("a_b.>", "a_b.x"),
+        ("a%b.>", "a%b.x"),
+        ("a*b.>", "a*b.x"),
+        ("a[b.>", "a[b.x"),
+    ):
         assert [e.topic for e in ch.read(topics=[pattern])] == [hit]
 
 
@@ -165,12 +177,14 @@ def test_body_is_an_immutable_snapshot(ch):
 def test_send_expected_seq_appends_on_match_rejects_on_mismatch(ch):
     s1 = ch.send({"value": 1, "step": 0, "t": 0.0}, topic="value", name="loss")
     # CAS with the correct last seq -> appends, returns the new seq
-    s2 = ch.send({"value": 2, "step": 1, "t": 0.0}, topic="value", name="loss",
-                 expected_seq=s1)
+    s2 = ch.send(
+        {"value": 2, "step": 1, "t": 0.0}, topic="value", name="loss", expected_seq=s1
+    )
     assert s2 == s1 + 1
     # CAS with a stale last seq -> rejected (no append), returns None
-    rejected = ch.send({"value": 3, "step": 2, "t": 0.0}, topic="value", name="loss",
-                       expected_seq=s1)
+    rejected = ch.send(
+        {"value": 3, "step": 2, "t": 0.0}, topic="value", name="loss", expected_seq=s1
+    )
     assert rejected is None
     assert [e.body["value"] for e in ch.read(topics=["value"])] == [1, 2]
 
@@ -206,7 +220,9 @@ def test_init_retries_busy_wal_conversion(tmp_path, monkeypatch):
             return self._real.execute(sql, *args)
 
     monkeypatch.setattr(
-        sqlite_mod.sqlite3, "connect", lambda *a, **k: _BusyWalConn(real_connect(*a, **k))
+        sqlite_mod.sqlite3,
+        "connect",
+        lambda *a, **k: _BusyWalConn(real_connect(*a, **k)),
     )
     ch = sqlite_mod.SqliteChannel(tmp_path / "run.db")  # must not raise
     try:
@@ -329,8 +345,16 @@ def test_read_result_is_independent_of_storage(ch):
 def test_channels_on_the_same_run_share_the_log(open_channel):
     worker = open_channel()
     observer = open_channel()
-    worker.send({"completed": True, "error": None, "final_step": None, "t": 0.0}, topic="lifecycle.stopped")
-    assert observer.latest("lifecycle.stopped").body == {"completed": True, "error": None, "final_step": None, "t": 0.0}
+    worker.send(
+        {"completed": True, "error": None, "final_step": None, "t": 0.0},
+        topic="lifecycle.stopped",
+    )
+    assert observer.latest("lifecycle.stopped").body == {
+        "completed": True,
+        "error": None,
+        "final_step": None,
+        "t": 0.0,
+    }
     assert [e.topic for e in observer.read()] == ["lifecycle.stopped"]
 
 

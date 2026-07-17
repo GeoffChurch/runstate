@@ -16,13 +16,16 @@ dependencies = []
 
 [project.optional-dependencies]
 postgres = ["psycopg[binary]>=3"]
-test = ["pytest", "jsonschema", "mypy", "psycopg[binary]>=3"]
+test = ["pytest", "jsonschema", "mypy", "black", "psycopg[binary]>=3"]
 
 [tool.setuptools.packages.find]
 include = ["runstate*"]
 
 [tool.setuptools.package-data]
 runstate = ["py.typed"]
+
+[tool.black]
+target-version = ["py311", "py312", "py313"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

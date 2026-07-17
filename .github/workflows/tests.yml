@@ -41,6 +41,8 @@ jobs:
         run: pytest tests/
       - name: mypy --strict
         run: mypy
+      - name: black --check
+        run: black --check runstate/ tests/
 
   # `import runstate` must work WITHOUT the optional psycopg extra; the postgres
   # locator branch must fail with a clear, actionable message (not a raw ImportError).

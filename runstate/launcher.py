@@ -112,15 +112,23 @@ class _ThreadHandle:
 
 
 class ThreadLauncher:
-    def __init__(self, *, root: str | os.PathLike[str] | None = None, backend: str = "memory") -> None:
+    def __init__(
+        self, *, root: str | os.PathLike[str] | None = None, backend: str = "memory"
+    ) -> None:
         self._root = root
         self._backend = backend
 
     def open_channel(self, run_id: str) -> Channel:
         return open_channel(run_id, root=self._root, backend=self._backend)
 
-    def launch(self, run_id: str, target: Callable[..., object], *,
-               args: tuple[Any, ...] = (), kwargs: dict[str, Any] | None = None) -> _ThreadHandle:
+    def launch(
+        self,
+        run_id: str,
+        target: Callable[..., object],
+        *,
+        args: tuple[Any, ...] = (),
+        kwargs: dict[str, Any] | None = None,
+    ) -> _ThreadHandle:
         """Run ``target(channel, *args, **kwargs)`` on a thread for ``run_id``.
 
         Brackets the work with launcher.launched / launcher.terminated. Returns
@@ -141,14 +149,20 @@ class ThreadLauncher:
         channel = self.open_channel(run_id)
         handle = local_handle()
         launch_id = new_launch_id()
-        channel.send(asdict(Launched(handle=handle, t=time.time())), topic=Launched.TOPIC,
-                     request_id=launch_id)
+        channel.send(
+            asdict(Launched(handle=handle, t=time.time())),
+            topic=Launched.TOPIC,
+            request_id=launch_id,
+        )
         state = _ThreadState()
 
         def _terminated(exit_code: int) -> None:
             channel.send(
-                asdict(Terminated(reason="exited", exit_code=exit_code, signal=None,
-                                  t=time.time())),
+                asdict(
+                    Terminated(
+                        reason="exited", exit_code=exit_code, signal=None, t=time.time()
+                    )
+                ),
                 topic=Terminated.TOPIC,
                 request_id=launch_id,
             )
@@ -165,8 +179,12 @@ class ThreadLauncher:
 
         thread = threading.Thread(target=_run, daemon=True)
         h = _ThreadHandle(
-            run_id=run_id, channel=channel, handle=handle, _thread=thread,
-            _state=state, launch_id=launch_id,
+            run_id=run_id,
+            channel=channel,
+            handle=handle,
+            _thread=thread,
+            _state=state,
+            launch_id=launch_id,
         )
         thread.start()
         return h
@@ -248,7 +266,9 @@ class LocalLauncher:
     fire-and-forget split).
     """
 
-    def __init__(self, *, root: str | os.PathLike[str], backend: str = "sqlite") -> None:
+    def __init__(
+        self, *, root: str | os.PathLike[str], backend: str = "sqlite"
+    ) -> None:
         self._root = root
         self._backend = backend
         self._handles: list[_LocalHandle] = []
@@ -256,8 +276,9 @@ class LocalLauncher:
     def open_channel(self, run_id: str) -> Channel:
         return open_channel(run_id, root=self._root, backend=self._backend)
 
-    def launch(self, run_id: str, cmd: list[str] | str, *,
-               env: dict[str, str] | None = None) -> _LocalHandle:
+    def launch(
+        self, run_id: str, cmd: list[str] | str, *, env: dict[str, str] | None = None
+    ) -> _LocalHandle:
         channel = self.open_channel(run_id)
         launch_id = new_launch_id()
         child_env = {
@@ -272,10 +293,18 @@ class LocalLauncher:
         }
         proc = subprocess.Popen(cmd, env=child_env)
         handle = f"local://{socket.gethostname()}/{proc.pid}"
-        channel.send(asdict(Launched(handle=handle, t=time.time())), topic=Launched.TOPIC,
-                     request_id=launch_id)
-        h = _LocalHandle(run_id=run_id, channel=channel, handle=handle, _proc=proc,
-                         launch_id=launch_id)
+        channel.send(
+            asdict(Launched(handle=handle, t=time.time())),
+            topic=Launched.TOPIC,
+            request_id=launch_id,
+        )
+        h = _LocalHandle(
+            run_id=run_id,
+            channel=channel,
+            handle=handle,
+            _proc=proc,
+            launch_id=launch_id,
+        )
         self._handles.append(h)
         return h
 
@@ -296,8 +325,9 @@ class LocalLauncher:
         self.reap()  # best-effort; don't block or kill stragglers
 
 
-def relaunch_if_needed(launcher: Any, run_id: str, target: object,
-                       **launch_kwargs: object) -> LaunchHandle | None:
+def relaunch_if_needed(
+    launcher: Any, run_id: str, target: object, **launch_kwargs: object
+) -> LaunchHandle | None:
     """Launch ``target`` into ``run_id`` only if no episode is currently live --
     a launcher-agnostic, best-effort single-spawn guard composed over a log read
     (``live_episode``) + ``launch``. Returns the new LaunchHandle, or None if a
@@ -319,8 +349,9 @@ def relaunch_if_needed(launcher: Any, run_id: str, target: object,
     return handle
 
 
-def ensure_served(launcher: Any, run_id: str, target: object,
-                  **launch_kwargs: object) -> LaunchHandle | None:
+def ensure_served(
+    launcher: Any, run_id: str, target: object, **launch_kwargs: object
+) -> LaunchHandle | None:
     """Wake a service iff there is live leased demand and no live episode —
     ``relaunch_if_needed``'s leased-demand sibling (two demand durabilities,
     two deciders — specs/lazy-launch.md). Returns the new LaunchHandle, or

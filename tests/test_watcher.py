@@ -48,7 +48,10 @@ def test_poll_none_while_running_then_terminal(tmp_path):
     s = w.poll("r")
     assert s.done is False  # the Running arm of RunStatus
     assert s.step == 0  # carries the live snapshot from the heartbeat fold
-    ch.send({"completed": True, "error": None, "final_step": 5, "t": 0.0}, topic="lifecycle.stopped")
+    ch.send(
+        {"completed": True, "error": None, "final_step": 5, "t": 0.0},
+        topic="lifecycle.stopped",
+    )
     r = w.poll("r")
     assert r.done is True
     assert r.outcome == "completed"
@@ -73,7 +76,10 @@ def test_presumed_dead_via_probe(tmp_path):
 def test_clean_stop_beats_probe(tmp_path):
     # even if the handle says dead, a terminal record wins (it just exited)
     ch = open_channel("r", root=tmp_path, backend="sqlite")
-    ch.send({"completed": True, "error": None, "final_step": None, "t": 0.0}, topic="lifecycle.stopped")
+    ch.send(
+        {"completed": True, "error": None, "final_step": None, "t": 0.0},
+        topic="lifecycle.stopped",
+    )
     w = Watcher()
     w.add(FakeHandle(run_id="r", channel=ch, alive=False))
     assert w.poll("r").outcome == "completed"
@@ -117,9 +123,9 @@ def test_cold_attach_reads_true_age_from_the_beacon_t():
     ch = open_channel("cold", root=None, backend="memory")
     ch.send({"handle": "local://h/1", "t": 100.0}, topic="lifecycle.started")
     ch.send({"step": 5, "consumed_seq": 0, "t": 100.0}, topic="lifecycle.heartbeat")
-    w = Watcher(now=lambda: 1000.0, heartbeat_timeout=30)   # 900s after the last beacon
+    w = Watcher(now=lambda: 1000.0, heartbeat_timeout=30)  #  900s after the last beacon
     w.observe("cold", ch)
-    r = w.poll("cold")                                      # stale on the FIRST poll
+    r = w.poll("cold")  #                                     stale on the FIRST poll
     assert r.done is True
     assert r.outcome == "presumed_dead" and r.reason == "heartbeat_stale"
 
@@ -134,12 +140,22 @@ def test_cold_attach_then_a_fresh_beacon_upgrades_to_witnessed():
     clock = [1000.0]
     w = Watcher(now=lambda: clock[0], heartbeat_timeout=30)
     w.observe("warm", ch)
-    assert w.poll("warm").done is True                     # seeded old -> stale
-    ch.send({"step": 6, "consumed_seq": 0, "t": 200.0},    # a NEW beacon (t=200, far in the past)
-            topic="lifecycle.heartbeat")
-    assert w.poll("warm").done is False                    # witnessed at now()=1000 -> fresh, not t=200
+    assert w.poll("warm").done is True  #                    seeded old -> stale
+    ch.send(
+        {
+            "step": 6,
+            "consumed_seq": 0,
+            "t": 200.0,
+        },  #   a NEW beacon (t=200, far in the past)
+        topic="lifecycle.heartbeat",
+    )
+    assert (
+        w.poll("warm").done is False
+    )  #                   witnessed at now()=1000 -> fresh, not t=200
     clock[0] = 1040
-    assert w.poll("warm").done is True                     # 40s since that witnessed arrival -> stale
+    assert (
+        w.poll("warm").done is True
+    )  #                    40s since that witnessed arrival -> stale
 
 
 # ----- wait(): loop poll() until terminal -----
@@ -183,7 +199,10 @@ def test_iter_events_streams_then_continues_from_cursor():
     w = Watcher()
     w.observe("r", ch)
     ch.send({"a": 1}, topic="value", name="x")
-    ch.send({"completed": True, "error": None, "final_step": None, "t": 0.0}, topic="lifecycle.stopped")
+    ch.send(
+        {"completed": True, "error": None, "final_step": None, "t": 0.0},
+        topic="lifecycle.stopped",
+    )
     first = list(w.iter_events(timeout=0))
     assert [(rid, e.topic) for rid, e in first] == [
         ("r", "value"),
@@ -255,7 +274,9 @@ def test_wait_all_capped_reports_pending_as_running():
         poll_interval=1.0,
     )
     w.observe("a", a)
-    a.send({"step": 7, "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat")  # alive, never terminal
+    a.send(
+        {"step": 7, "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat"
+    )  # alive, never terminal
     res = w.wait_all(timeout=5.0)
     assert set(res) == {"a"}  # total over tracked runs
     s = res["a"]
@@ -293,11 +314,11 @@ def test_cold_attach_without_timeout_reports_the_seeded_step():
     ch = open_channel("cold2", root=None, backend="memory")
     ch.send({"handle": "local://h/1", "t": 100.0}, topic="lifecycle.started")
     ch.send({"step": 41, "consumed_seq": 0, "t": 100.0}, topic="lifecycle.heartbeat")
-    w = Watcher(now=lambda: 1000.0)   # no heartbeat_timeout
+    w = Watcher(now=lambda: 1000.0)  #  no heartbeat_timeout
     w.observe("cold2", ch)
     s = w.poll("cold2")
     assert s.done is False
-    assert s.step == 41   # seeded from the prefix beacon
+    assert s.step == 41  #  seeded from the prefix beacon
 
 
 def test_future_dated_seeded_beacon_reads_conservative_live():
@@ -310,9 +331,9 @@ def test_future_dated_seeded_beacon_reads_conservative_live():
     ch.send({"handle": "local://h/1", "t": 5000.0}, topic="lifecycle.started")
     ch.send({"step": 5, "consumed_seq": 0, "t": 5000.0}, topic="lifecycle.heartbeat")
     w = Watcher(now=lambda: 1000.0, heartbeat_timeout=30)
-    w.observe("future", ch)   # beacon t=5000 is ahead of now=1000
+    w.observe("future", ch)  #  beacon t=5000 is ahead of now=1000
     s = w.poll("future")
-    assert s.done is False   # negative age -> not stale (conservative)
+    assert s.done is False  #  negative age -> not stale (conservative)
     assert s.beacon_age == -4000.0
 
 
@@ -322,12 +343,14 @@ def test_cold_attach_junk_t_beacon_falls_back_to_now_seed():
     # attach to a junk beacon reads Running until the timeout elapses from NOW.
     clock = [1000.0]
     ch = open_channel("junkseed", root=None, backend="memory")
-    ch.send({"step": 5, "consumed_seq": 0}, topic="lifecycle.heartbeat")   # no t (unmigrated)
+    ch.send(
+        {"step": 5, "consumed_seq": 0}, topic="lifecycle.heartbeat"
+    )  #  no t (unmigrated)
     w = Watcher(now=lambda: clock[0], heartbeat_timeout=30)
-    w.observe("junkseed", ch)   # seed falls back to now()=1000
-    assert w.poll("junkseed").done is False   # not stale: seeded at now(), not an old t
+    w.observe("junkseed", ch)  #  seed falls back to now()=1000
+    assert w.poll("junkseed").done is False  #  not stale: seeded at now(), not an old t
     clock[0] = 1031
-    assert w.poll("junkseed").outcome == "presumed_dead"   # 31s from the now()-seed
+    assert w.poll("junkseed").outcome == "presumed_dead"  #  31s from the now()-seed
 
 
 def test_staleness_clock_resets_on_each_new_beacon():
@@ -397,7 +420,10 @@ def test_wait_does_a_final_drain_after_terminal():
     # an envelope arriving right as the terminal verdict is reached must still
     # reach on_event (a final drain after done), not be cut off.
     ch = open_channel("r", root=None, backend="memory")
-    ch.send({"completed": True, "error": None, "final_step": None, "t": 0.0}, topic="lifecycle.stopped")
+    ch.send(
+        {"completed": True, "error": None, "final_step": None, "t": 0.0},
+        topic="lifecycle.stopped",
+    )
     w = Watcher()
     w.observe("r", ch)
     seen = []
@@ -406,7 +432,10 @@ def test_wait_does_a_final_drain_after_terminal():
         seen.append(e.topic)
         if e.topic == "lifecycle.stopped" and len(seen) == 1:
             # trailing envelope appears after the drain that delivered the stop
-            ch.send({"reason": "exited", "exit_code": 0, "signal": None, "t": 0.0}, topic="launcher.terminated")
+            ch.send(
+                {"reason": "exited", "exit_code": 0, "signal": None, "t": 0.0},
+                topic="launcher.terminated",
+            )
 
     w.wait("r", on_event=on_event)
     assert "launcher.terminated" in seen
@@ -417,15 +446,23 @@ def test_wait_does_a_final_drain_after_terminal():
 
 def test_await_consumed_returns_none_when_accepted(open_channel):
     ch = open_channel()
-    s = ch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r")
+    s = ch.send(
+        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r"
+    )
     ch.send({"step": 0, "consumed_seq": s, "t": 0.0}, topic="lifecycle.heartbeat")
     assert await_consumed(open_channel(), s, request_id="r") is None
 
 
 def test_await_consumed_returns_the_nak_when_refused(open_channel):
     ch = open_channel()
-    s = ch.send({"until": {"step": 0}}, topic="control.subscribe", name="loss", request_id="r")
-    ch.send({"reason": "unsatisfiable", "message": "no fires"}, topic="lifecycle.nak", request_id="r")
+    s = ch.send(
+        {"until": {"step": 0}}, topic="control.subscribe", name="loss", request_id="r"
+    )
+    ch.send(
+        {"reason": "unsatisfiable", "message": "no fires"},
+        topic="lifecycle.nak",
+        request_id="r",
+    )
     ch.send({"step": 0, "consumed_seq": s, "t": 0.0}, topic="lifecycle.heartbeat")
     nak = await_consumed(open_channel(), s, request_id="r")
     assert nak is not None and nak.reason == "unsatisfiable"
@@ -433,26 +470,37 @@ def test_await_consumed_returns_the_nak_when_refused(open_channel):
 
 def test_await_consumed_times_out_if_not_consumed(open_channel):
     import pytest
+
     ch = open_channel()
-    s = ch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r")
+    s = ch.send(
+        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r"
+    )
     with pytest.raises(TimeoutError):
         await_consumed(open_channel(), s, request_id="r", timeout=0.0, now=lambda: 0.0)
 
 
-def test_await_consumed_blocks_below_watermark_then_returns_when_it_advances(open_channel):
+def test_await_consumed_blocks_below_watermark_then_returns_when_it_advances(
+    open_channel,
+):
     # a heartbeat exists but BELOW the watermark -> must keep waiting, not return early
     ch = open_channel()
-    s = ch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r")
+    s = ch.send(
+        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r"
+    )
     ch.send({"step": 0, "consumed_seq": s - 1, "t": 0.0}, topic="lifecycle.heartbeat")
     advanced = {"done": False}
 
     def driver_sleep(_):  # on the first poll, advance consumed_seq to s
         if not advanced["done"]:
             advanced["done"] = True
-            ch.send({"step": 1, "consumed_seq": s, "t": 0.0}, topic="lifecycle.heartbeat")
+            ch.send(
+                {"step": 1, "consumed_seq": s, "t": 0.0}, topic="lifecycle.heartbeat"
+            )
 
     assert await_consumed(open_channel(), s, request_id="r", sleep=driver_sleep) is None
-    assert advanced["done"]  # it actually blocked until the watermark advanced (not a premature return)
+    assert advanced[
+        "done"
+    ]  # it actually blocked until the watermark advanced (not a premature return)
 
 
 def test_await_consumed_resolves_a_nak_before_the_watermark(open_channel):
@@ -460,9 +508,14 @@ def test_await_consumed_resolves_a_nak_before_the_watermark(open_channel):
     # lands, the worker dies, no heartbeat ever carries the watermark; the
     # waiter must not deadlock on a question the log already answers.
     ch = open_channel()
-    s = ch.send({"until": {"step": 0}}, topic="control.subscribe", name="loss", request_id="r")
-    ch.send({"reason": "unsatisfiable", "message": "no fires"}, topic="lifecycle.nak",
-            request_id="r")
+    s = ch.send(
+        {"until": {"step": 0}}, topic="control.subscribe", name="loss", request_id="r"
+    )
+    ch.send(
+        {"reason": "unsatisfiable", "message": "no fires"},
+        topic="lifecycle.nak",
+        request_id="r",
+    )
     nak = await_consumed(open_channel(), s, request_id="r", timeout=1.0)
     assert nak is not None and nak.reason == "unsatisfiable"
 
@@ -470,8 +523,12 @@ def test_await_consumed_resolves_a_nak_before_the_watermark(open_channel):
 def test_await_consumed_ignores_an_earlier_nak_for_the_same_id(open_channel):
     # positional: a nak that PRECEDES the request answers nothing.
     ch = open_channel()
-    ch.send({"reason": "malformed", "message": "old"}, topic="lifecycle.nak", request_id="r")
-    s = ch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r")
+    ch.send(
+        {"reason": "malformed", "message": "old"}, topic="lifecycle.nak", request_id="r"
+    )
+    s = ch.send(
+        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r"
+    )
     ch.send({"step": 0, "consumed_seq": s, "t": 0.0}, topic="lifecycle.heartbeat")
     assert await_consumed(open_channel(), s, request_id="r") is None
 
@@ -480,9 +537,15 @@ def test_await_consumed_resolves_refused_by_death(open_channel):
     # a terminal stopped FOLLOWS the request with no later episode: no worker
     # will ever drain it -- return the terminal RunResult instead of blocking.
     from runstate import RunResult
+
     ch = open_channel()
-    s = ch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r")
-    ch.send({"completed": False, "error": None, "final_step": 3, "t": 0.0}, topic="lifecycle.stopped")
+    s = ch.send(
+        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r"
+    )
+    ch.send(
+        {"completed": False, "error": None, "final_step": 3, "t": 0.0},
+        topic="lifecycle.stopped",
+    )
     r = await_consumed(open_channel(), s, request_id="r", timeout=1.0)
     assert isinstance(r, RunResult) and r.outcome == "preempted"
 
@@ -491,8 +554,12 @@ def test_await_consumed_typed_error_on_malformed_nak(open_channel):
     # the nak parse is on the verdict plane: an uninterpretable answer raises
     # the typed MalformedRecordError, not a bare TypeError from Nak(**body).
     ch = open_channel()
-    s = ch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r")
-    nak_seq = ch.send({"reason": "malformed"}, topic="lifecycle.nak", request_id="r")  # no message
+    s = ch.send(
+        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r"
+    )
+    nak_seq = ch.send(
+        {"reason": "malformed"}, topic="lifecycle.nak", request_id="r"
+    )  # no message
     with pytest.raises(MalformedRecordError) as ei:
         await_consumed(open_channel(), s, request_id="r", timeout=1.0)
     assert ei.value.seq == nak_seq
@@ -503,9 +570,15 @@ def test_await_consumed_keeps_waiting_when_death_precedes_the_request(open_chann
     # the request landed AFTER the death: it correctly awaits the next episode
     # (lazy-launch's case) -- a timeout, never refused-by-death.
     import pytest
+
     ch = open_channel()
-    ch.send({"completed": False, "error": None, "final_step": 3, "t": 0.0}, topic="lifecycle.stopped")
-    s = ch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r")
+    ch.send(
+        {"completed": False, "error": None, "final_step": 3, "t": 0.0},
+        topic="lifecycle.stopped",
+    )
+    s = ch.send(
+        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r"
+    )
     with pytest.raises(TimeoutError):
         await_consumed(open_channel(), s, request_id="r", timeout=0.0, now=lambda: 0.0)
 
@@ -528,8 +601,11 @@ def test_await_consumed_ignores_junk_heartbeat_watermark(open_channel):
     # a junk beacon is no watermark evidence: keep waiting (timeout), never a
     # bare TypeError from Heartbeat(**body).
     import pytest
+
     ch = open_channel()
-    s = ch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r")
+    s = ch.send(
+        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r"
+    )
     ch.send({"beat": "junk"}, topic="lifecycle.heartbeat")
     with pytest.raises(TimeoutError):
         await_consumed(open_channel(), s, request_id="r", timeout=0.0, now=lambda: 0.0)

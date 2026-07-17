@@ -12,10 +12,22 @@ import os
 from collections.abc import Callable
 
 from .channel import Body, Channel, Envelope, open_channel
-from .launcher import (Launcher, LaunchHandle, LocalLauncher, ThreadLauncher,
-                       ensure_served, relaunch_if_needed)
-from .memoizer import (NoProgressError, RunFailedError, ensure,
-                       foreign_episode, history, launch_producer)
+from .launcher import (
+    Launcher,
+    LaunchHandle,
+    LocalLauncher,
+    ThreadLauncher,
+    ensure_served,
+    relaunch_if_needed,
+)
+from .memoizer import (
+    NoProgressError,
+    RunFailedError,
+    ensure,
+    foreign_episode,
+    history,
+    launch_producer,
+)
 from .observables import (
     MalformedRecordError,
     Outcome,
@@ -46,9 +58,13 @@ from .watcher import Running, RunStatus, Watcher, await_consumed
 from .worker import Worker
 
 
-def attach(run_id: str | None = None, *, root: str | os.PathLike[str] | None = None,
-           backend: str | None = None,
-           json_default: Callable[[object], object] | None = None) -> Channel:
+def attach(
+    run_id: str | None = None,
+    *,
+    root: str | os.PathLike[str] | None = None,
+    backend: str | None = None,
+    json_default: Callable[[object], object] | None = None,
+) -> Channel:
     """Worker-side: open the channel for the run this process was launched into.
 
     A Launcher sets ``RUNSTATE_RUN_ID`` / ``RUNSTATE_CHANNEL_ROOT`` /

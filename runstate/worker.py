@@ -33,7 +33,8 @@ from .observables import boundary_voided, live_episode
 @dataclass
 class PendingStop:
     """A drained, undischarged commanded stop -- the request half of a stop pair,
-    live until the next ``lifecycle.stopped`` discharges it (specs/stop-discharge.md)."""
+    live until the next ``lifecycle.stopped`` discharges it (specs/stop-discharge.md).
+    """
 
     request_id: str | None
     from_: Condition | None
@@ -45,7 +46,9 @@ class Worker:
         self._ch = channel
         self._now = now
         self._values: dict[str, object] = {}
-        self._subs: dict[str, tuple[str | None, Subscription]] = {}  # request_id -> (name, sub)
+        self._subs: dict[str, tuple[str | None, Subscription]] = (
+            {}
+        )  # request_id -> (name, sub)
         # Drained, undischarged commanded stops: (request_id, from_, registered_at).
         # A stop is the request half of a request/outcome pair -- live until the
         # next lifecycle.stopped discharges it (specs/stop-discharge.md).
@@ -56,7 +59,7 @@ class Worker:
         # Attaching CAS-claims the episode: a worker that loses (a live episode
         # already exists) sets _lost and exits without acting on the channel.
         self._lost = False
-        self._started_seq = None       # this episode's own claim, once won
+        self._started_seq = None  #      this episode's own claim, once won
         while True:
             # HEAD-FIRST (§4): read the head the claim will assert, then compute
             # the folds from topic-filtered reads CAPPED at it. CAS success at
@@ -66,10 +69,18 @@ class Worker:
             # O(lifecycle + control) instead of O(N_total) (which measured
             # ~3.4 s and ~0.8 GB transient on a 10^6-envelope log; §12.5).
             last = self._ch.last_seq()
-            envs = [e for e in self._ch.read(topics=[
-                        Topic.LIFECYCLE_STOPPED, Topic.LIFECYCLE_STARTED,
-                        Topic.CONTROL_UNSUBSCRIBE, Topic.LIFECYCLE_NAK])
-                    if e.seq <= last]
+            envs = [
+                e
+                for e in self._ch.read(
+                    topics=[
+                        Topic.LIFECYCLE_STOPPED,
+                        Topic.LIFECYCLE_STARTED,
+                        Topic.CONTROL_UNSUBSCRIBE,
+                        Topic.LIFECYCLE_NAK,
+                    ]
+                )
+                if e.seq <= last
+            ]
             # The discharge floor: the latest lifecycle.stopped already on the
             # log. Every control.stop below it is answered (discharged) by that
             # stopped -- its designated counter-record -- so the drain skips it
@@ -85,7 +96,8 @@ class Worker:
             self._answers: dict[str, list[int]] = {}
             for e in envs:
                 if e.request_id is not None and e.topic in (
-                    Topic.CONTROL_UNSUBSCRIBE, Topic.LIFECYCLE_NAK
+                    Topic.CONTROL_UNSUBSCRIBE,
+                    Topic.LIFECYCLE_NAK,
                 ):
                     self._answers.setdefault(e.request_id, []).append(e.seq)
             # Prior episodes' boundaries, for the time-lease discharge
@@ -130,7 +142,7 @@ class Worker:
         if exc_type is not None:
             self.stopped(error=str(exc), final_step=self._last_step)
         else:
-            self.stopped(final_step=self._last_step)   # default: no claim -> preempted
+            self.stopped(final_step=self._last_step)  #  default: no claim -> preempted
 
     def steps(self, total: int | None = None, *, start: int = 0) -> Iterator[int]:
         """Drive the worker over a loop. Yields each step; after the body it
@@ -149,7 +161,9 @@ class Worker:
         while total is None or step < total:
             self._last_step = step
             yield step
-            if self.tick(step):    # truthy -> a commanded stop triggered; stop at this safe point
+            if self.tick(
+                step
+            ):  #   truthy -> a commanded stop triggered; stop at this safe point
                 return
             step += 1
 
@@ -167,7 +181,7 @@ class Worker:
         i = 0
         while True:
             yield i
-            if self.tick(step=None):     # commanded stop triggered
+            if self.tick(step=None):  #    commanded stop triggered
                 return
             if not self._subs and self.retire():
                 return
@@ -226,8 +240,10 @@ class Worker:
         self._last_step = step
         self._drain_control(step)
         self._service(step)
-        self._ch.send(asdict(Heartbeat(step=step, consumed_seq=self._cursor, t=self._now())),
-                      topic=Heartbeat.TOPIC)
+        self._ch.send(
+            asdict(Heartbeat(step=step, consumed_seq=self._cursor, t=self._now())),
+            topic=Heartbeat.TOPIC,
+        )
         return self._stop_decision(step)
 
     @property
@@ -274,19 +290,32 @@ class Worker:
                         except Exception as exc:
                             self._nak(e.request_id, "malformed", str(exc))
                 observed = tail[-1].seq
-                continue   # re-read: the drain may have appended answers
+                continue  #  re-read: the drain may have appended answers
             if self._subs:
-                return False               # new mail — keep serving
-            body = asdict(Stopped(completed=False, error=None,
-                                  final_step=self._last_step, t=self._now()))
-            if self._ch.send(body, topic=Stopped.TOPIC,
-                             expected_seq=observed) is not None:
-                self._stopped = True       # the idempotent latch; __exit__ no-ops
+                return False  #              new mail — keep serving
+            body = asdict(
+                Stopped(
+                    completed=False,
+                    error=None,
+                    final_step=self._last_step,
+                    t=self._now(),
+                )
+            )
+            if (
+                self._ch.send(body, topic=Stopped.TOPIC, expected_seq=observed)
+                is not None
+            ):
+                self._stopped = True  #      the idempotent latch; __exit__ no-ops
                 return True
             # CAS lost: something landed after `observed` — loop re-reads.
 
-    def stopped(self, *, completed: bool = False, error: str | None = None,
-                final_step: int | None = None) -> None:
+    def stopped(
+        self,
+        *,
+        completed: bool = False,
+        error: str | None = None,
+        final_step: int | None = None,
+    ) -> None:
         """Emit the cooperative dying breath (lifecycle.stopped). Its existence = a
         clean, resumable halt. ``completed=True`` is the opt-in completion claim; the
         default (completed=False, no error) projects to ``preempted``; an ``error``
@@ -299,9 +328,12 @@ class Worker:
             return
         self._stopped = True
         if final_step is None:
-            final_step = self._last_step   # auto-fill from the last yielded step
-        body = asdict(Stopped(completed=completed, error=error, final_step=final_step,
-                              t=self._now()))
+            final_step = self._last_step  #  auto-fill from the last yielded step
+        body = asdict(
+            Stopped(
+                completed=completed, error=error, final_step=final_step, t=self._now()
+            )
+        )
         self._ch.send(body, topic=Stopped.TOPIC)
 
     # ----- internals -----
@@ -349,7 +381,9 @@ class Worker:
                 # is guaranteed to evaluate cleanly at every safe point.
                 self._nak(e.request_id, "malformed", problem)
             elif is_unsatisfiable(e.body, step=step):
-                self._nak(e.request_id, "unsatisfiable", "schedule can produce no fires")
+                self._nak(
+                    e.request_id, "unsatisfiable", "schedule can produce no fires"
+                )
             else:
                 self._subs[e.request_id] = (
                     e.name,
@@ -393,8 +427,14 @@ class Worker:
             request_id=request_id,
         )
 
-    def _send_value(self, name: str | None, value: object, *,
-                    step: int | None, request_id: str | None) -> None:
+    def _send_value(
+        self,
+        name: str | None,
+        value: object,
+        *,
+        step: int | None,
+        request_id: str | None,
+    ) -> None:
         try:
             self._ch.send(
                 asdict(Value(value=value, step=step, t=self._now())),
@@ -429,7 +469,9 @@ class Worker:
                 # stopped completing stop -- lands on the log before memory
                 # changes, so a crash between the two re-derives correctly
                 # (specs/service-worker.md).
-                self._ch.send({}, topic=Topic.CONTROL_UNSUBSCRIBE, request_id=request_id)
+                self._ch.send(
+                    {}, topic=Topic.CONTROL_UNSUBSCRIBE, request_id=request_id
+                )
                 del self._subs[request_id]
 
     def _stop_decision(self, step: int | None) -> bool:
@@ -444,6 +486,8 @@ class Worker:
         now = self._now()
         return any(
             stop.from_ is None
-            or satisfied(stop.from_, step=step, time_seconds=now - stop.registered_at, count=0)
+            or satisfied(
+                stop.from_, step=step, time_seconds=now - stop.registered_at, count=0
+            )
             for stop in self._pending_stops
         )

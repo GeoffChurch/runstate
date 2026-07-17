@@ -153,8 +153,13 @@ class PostgresChannel(Channel):
     Watcher). ``__init__`` only probes for the table -- ``ensure_schema(dsn)`` must have
     run first (the DDL is concurrency-unsafe; it lives out of the hot path)."""
 
-    def __init__(self, dsn: str, run_id: str, *,
-                 json_default: Callable[[object], object] | None = None) -> None:
+    def __init__(
+        self,
+        dsn: str,
+        run_id: str,
+        *,
+        json_default: Callable[[object], object] | None = None,
+    ) -> None:
         self._run_id = run_id
         self._json_default = json_default
         self._lock = threading.Lock()
@@ -170,13 +175,26 @@ class PostgresChannel(Channel):
                 "runstate.channel.postgres.ensure_schema(dsn) first"
             )
 
-    def send(self, body: Body, *, topic: str, name: str | None = None,
-             request_id: str | None = None, expected_seq: int | None = None) -> int | None:
+    def send(
+        self,
+        body: Body,
+        *,
+        topic: str,
+        name: str | None = None,
+        request_id: str | None = None,
+        expected_seq: int | None = None,
+    ) -> int | None:
         # json_default (sender-side) coerces exotic value payloads on the way out;
         # the stored text is always standard JSON, so any reader uses plain loads.
         body_json = json.dumps(body, default=self._json_default, separators=(",", ":"))
-        params = {"run": self._run_id, "topic": topic, "name": name,
-                  "rid": request_id, "body": body_json, "expected": expected_seq}
+        params = {
+            "run": self._run_id,
+            "topic": topic,
+            "name": name,
+            "rid": request_id,
+            "body": body_json,
+            "expected": expected_seq,
+        }
         with self._lock:
             if expected_seq is not None:
                 # Compare-and-append. A UniqueViolation means a rival committed
@@ -207,11 +225,19 @@ class PostgresChannel(Channel):
                 f"{_SEND_RETRY_BOUND} retries under contention"
             )
 
-    def read(self, after: int = 0, *, topics: list[str] | None = None,
-             name: str | None = None, request_ids: list[str] | None = None,
-             limit: int | None = None) -> list[Envelope]:
+    def read(
+        self,
+        after: int = 0,
+        *,
+        topics: list[str] | None = None,
+        name: str | None = None,
+        request_ids: list[str] | None = None,
+        limit: int | None = None,
+    ) -> list[Envelope]:
         if topics is not None and not topics:
-            return []  # "among these zero topics": vacuously none (no empty OR-clause SQL)
+            return (
+                []
+            )  # "among these zero topics": vacuously none (no empty OR-clause SQL)
         where = ["run_id = %s", "seq > %s"]
         params: list[Any] = [self._run_id, after]
         if topics is not None:
@@ -219,7 +245,9 @@ class PostgresChannel(Channel):
             for t in topics:
                 if t.endswith(".>"):
                     ors.append("topic LIKE %s")
-                    params.append(_escape_like(t[:-1]) + "%")  # "control.>" -> "control.%"
+                    params.append(
+                        _escape_like(t[:-1]) + "%"
+                    )  # "control.>" -> "control.%"
                 else:
                     ors.append("topic = %s")
                     params.append(t)
@@ -285,7 +313,9 @@ class PostgresChannel(Channel):
         the whole point. Taken *after* the claim: a signal, not a gate."""
         key_str = _episode_key_str(self._run_id, started_seq)
         with self._lock:
-            self._conn.execute("SELECT pg_advisory_lock(hashtextextended(%s, 0))", (key_str,))
+            self._conn.execute(
+                "SELECT pg_advisory_lock(hashtextextended(%s, 0))", (key_str,)
+            )
             held = self._conn.execute(_EPISODE_HELD_BY_ME, {"s": key_str}).fetchone()
         if not (held and held[0]):
             raise RuntimeError(
