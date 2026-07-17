@@ -10,7 +10,9 @@ and the docstrings are authoritative where this page lags.
 every name in `runstate.__all__` appears on this page.*
 
 Reading order for newcomers is [`guide.md`](guide.md); the model is
-[`overview.md`](overview.md).
+[`overview.md`](overview.md). Writing a **non-Python** implementation? See
+[`implementers-guide.md`](implementers-guide.md) — the language-neutral
+conformance reference (this page is the Python surface).
 
 ---
 
