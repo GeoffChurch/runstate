@@ -319,7 +319,10 @@ class Worker:
         """Emit the cooperative dying breath (lifecycle.stopped). Its existence = a
         clean, resumable halt. ``completed=True`` is the opt-in completion claim; the
         default (completed=False, no error) projects to ``preempted``; an ``error``
-        projects to ``errored``. Idempotent — first writer wins. A claim-race
+        projects to ``errored``. A resumable/chunked worker leaves the claim
+        unset on a pause: claiming ``completed`` per chunk reads as done-done
+        and silently truncates a consumer like ``ensure`` (the worker contract,
+        specs/preempted-vs-completed.md). Idempotent — first writer wins. A claim-race
         LOSER may not act on the channel, explicit calls included — else the
         minimal example's ``w.stopped(completed=True)`` idiom would, in a
         double-spawn, write a completed claim onto the winner's live log

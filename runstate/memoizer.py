@@ -338,6 +338,10 @@ def ensure(
     producing the missing suffix on a miss. Window-closed (or worker-declared
     ``completed``) -> a pure log read; else ``producer.extend(until)`` and wait,
     re-driving ``preempted`` and raising on a failure outcome or no progress.
+    The worker contract rides on that split: a resumable/chunked producer stops
+    ``preempted`` (the default) per chunk -- a per-chunk ``completed`` claim
+    ends the drive early with the truncated series
+    (specs/preempted-vs-completed.md).
 
     `up_to=N` is `until={"step":N}` (the half-open window `[0, N)`). Time is the
     consumer's poll-clock; the generalization to the emission filter
