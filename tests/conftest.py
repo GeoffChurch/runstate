@@ -76,11 +76,15 @@ def ch(request, tmp_path, monkeypatch):
     mints a unique uuid run_id per test (the shared ``log`` table has no per-test
     freshness -- uuid isolation stands in for ``tmp_path``'s)."""
     if request.param == "postgres":
+        # Resolve pg_ready FIRST: its pg_dsn dependency SKIPs when
+        # RUNSTATE_TEST_PG_DSN is unset -- before anything imports psycopg. The
+        # import below coming first turned "no postgres here" into 22 collection
+        # ERRORs on a machine without the [postgres] extra, where open_channel /
+        # conc_backend (which already resolve the fixture first) skip cleanly.
+        dsn = request.getfixturevalue("pg_ready")
         from runstate.channel.postgres import PostgresChannel
 
-        channel = PostgresChannel(
-            request.getfixturevalue("pg_ready"), run_id=f"ch-{uuid.uuid4()}"
-        )
+        channel = PostgresChannel(dsn, run_id=f"ch-{uuid.uuid4()}")
     elif request.param.startswith("sqlite"):
         monkeypatch.setenv(
             "RUNSTATE_SQLITE_JOURNAL_MODE",
