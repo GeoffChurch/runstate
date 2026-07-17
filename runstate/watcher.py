@@ -127,6 +127,14 @@ class _HeartbeatSeed:
     step: Optional[int]
 
 
+def _is_beacon_step(step: object) -> bool:
+    """A conforming heartbeat step: None (stepless) or a real int (bool excluded).
+    The one definition of the step-junk rule the beacon seed (``_heartbeat_seed``)
+    and the witnessed-beacon upgrade (``_note_heartbeat``) both apply -- two
+    inlined spellings of one rule is how they drift apart."""
+    return step is None or (isinstance(step, int) and not isinstance(step, bool))
+
+
 def _heartbeat_seed(hb: Optional[Envelope], now: float) -> _HeartbeatSeed:
     """Seed from the latest heartbeat, else from ``now``. A missing `t` (an
     un-migrated old beacon) or a junk-typed `t`/`step` degrades to ``now`` with no
@@ -140,8 +148,7 @@ def _heartbeat_seed(hb: Optional[Envelope], now: float) -> _HeartbeatSeed:
     except TypeError:                    # missing/extra keys (e.g. pre-migration, no `t`)
         return _HeartbeatSeed(at=now, seq=hb.seq, step=None)
     at = beat.t if isinstance(beat.t, (int, float)) and not isinstance(beat.t, bool) else now
-    step = beat.step if beat.step is None or (
-        isinstance(beat.step, int) and not isinstance(beat.step, bool)) else None
+    step = beat.step if _is_beacon_step(beat.step) else None
     return _HeartbeatSeed(at=float(at), seq=hb.seq, step=step)
 
 
@@ -388,7 +395,7 @@ class Watcher:
                 # measurement — it earns no liveness credit and is skipped
                 # (the next conforming beacon supersedes it).
                 return
-            if step is not None and not (isinstance(step, int) and not isinstance(step, bool)):
+            if not _is_beacon_step(step):
                 return  # wrong-typed step: the same junk-beacon rule
             st.last_heartbeat_at = self._now()
             st.last_step = step
