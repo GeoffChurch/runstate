@@ -66,9 +66,13 @@ Secondary members that complete the capability:
 - [ensure-redrive-recoverable-terminations](ensure-redrive-recoverable-terminations.md)
   needs a discriminator between "recoverable stop" and "fatal error" — exactly
   what a **`lifecycle.stopped.reason` vocabulary recipe** supplies
-  (resumable-`timed_out` vs fatal-`crashed`). Build them together.
+  (resumable-`timed_out` vs fatal-`crashed`). Build them together. *(Both since
+  resolved: ensure-redrive 2026-06-27 as G1 + the caller recipe with `ensure`
+  unchanged; the reason register recipe 2026-07-11 into
+  `../specs/completed-opt-in.md` — a shape, no vocabulary.)*
 - **channel-postgres** LISTEN/NOTIFY is the natural substrate for
-  *wake-on-subscribe* (push beats polling for a lazy-launched worker).
+  *wake-on-subscribe* (push beats polling for a lazy-launched worker). *(The
+  backend has since shipped; LISTEN/NOTIFY stays deferred in its spec.)*
 
 **Payoff:** one coherent capability — on-demand compute / inference-server /
 metric-server — out of ~6 deferred items, each making the others exercised
@@ -217,8 +221,8 @@ CLI/webapp tools after Cluster 3's readers are public.
   was left in place for weeks — so the next reader to pick "the viewer" up would have
   started from a design for a protocol that no longer exists. A hygiene note is not a
   fix; it only pays off if someone touches the file.*
-- [visualization-story](visualization-story.md) — cites
-  `messages-v0.1.schema.json` as "current"; the schema stack is now per-convention
-  v0.2.
-- [run-episodes](run-episodes.md) "Built vs not" — lists episode-aware
-  `peek_terminal`/liveness as not built; it shipped 2026-06-01 (per [index](index.md)).
+- ~~[visualization-story](visualization-story.md)~~ — **folded**: the v0.1 schema
+  citation was shed in the 2026-07 measurement updates.
+- ~~[run-episodes](run-episodes.md)~~ — **folded 2026-07-17**: the status and
+  "Built vs not" now reflect the shipped arc (specs run-episodes /
+  service-worker / lazy-launch; the open questions answered in place).

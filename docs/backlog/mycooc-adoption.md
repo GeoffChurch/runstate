@@ -47,8 +47,9 @@ the wiring plan's requirements.
   (`../specs/completed-opt-in.md`, "Recipe: the completion-reason register"): mycooc's
   own `emit_completion_reason` shape blessed as the pattern (shape + the two safety
   rules its scars taught), no vocabulary.
-- **Per-run `runstate status` CLI — still backlog** ([cli-status](cli-status.md));
-  the *matrix* status stays app-side, as judged in May.
+- **Per-run `runstate status` CLI — still backlog** (cli-status, an inline
+  entry in [index.md](index.md) → Derived tools); the *matrix* status stays
+  app-side, as judged in May.
 
 ## The store-shaped recon (2026-06-11)
 
@@ -128,7 +129,8 @@ What mycooc actually has today where a Store would sit — file:line refs into
 2. **completion-reason register recipe** — SHIPPED 2026-07-11
    (`../specs/completed-opt-in.md`); the shape (not a vocabulary), never an
    `outcome` enum expansion.
-3. **Per-run `runstate status <run_id>` CLI** ([cli-status](cli-status.md)).
+3. **Per-run `runstate status <run_id>` CLI** (cli-status, an inline entry in
+   [index.md](index.md) → Derived tools).
 
 Stays in mycooc (orchestration policy / workload-specific): the smoke gate,
 the no-progress guard, the retry/resume policy table, `--diff`/Cohen's d,
