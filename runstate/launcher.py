@@ -337,9 +337,9 @@ def relaunch_if_needed(
     ``launch_kwargs`` is splatted into ``launch`` (launcher-specific, as sweep
     does): e.g. ``kwargs={...}`` for ThreadLauncher, ``env={...}`` for
     LocalLauncher."""
-    channel = launcher.open_channel(run_id)
-    if live_episode(channel) is not None:
-        return None
+    with launcher.open_channel(run_id) as channel:  # a probe handle: close it
+        if live_episode(channel) is not None:
+            return None
     # `launcher` is intentionally `Any`: the two reference launchers have
     # genuinely different `launch` signatures (a callable `target` + args/kwargs
     # vs a `cmd` + env), so no single typed Protocol method admits both. We keep
@@ -367,11 +367,11 @@ def ensure_served(
     arbitrates any double-spawn; the loser exits before acting, and the reap
     discipline keeps its corpse off the verdict plane. Never ``Watcher.add()``
     the returned handle (it may lose the claim race); ``observe()`` the run."""
-    channel = launcher.open_channel(run_id)
-    if not live_demand(channel):
-        return None
-    if live_episode(channel) is not None:
-        return None
+    with launcher.open_channel(run_id) as channel:  # a probe handle: close it
+        if not live_demand(channel):
+            return None
+        if live_episode(channel) is not None:
+            return None
     # `launcher` is intentionally `Any`: the two reference launchers have
     # genuinely different `launch` signatures (a callable `target` + args/kwargs
     # vs a `cmd` + env), so no single typed Protocol method admits both. We keep
