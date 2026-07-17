@@ -2,7 +2,7 @@
 
 A protocol + reference Python implementation for **cooperative bidirectional control** between an orchestrator and a long-running scientific worker.
 
-> **New here?** Read **[docs/overview.md](docs/overview.md)** — a guided tour of the whole system: what it does, how you interface with it, and why each layer and component exists.
+> **New here?** To *understand* the system, read **[docs/overview.md](docs/overview.md)** — a guided tour: what it does, how you interface with it, and why each layer and component exists. To *integrate* your training loop, read **[docs/guide.md](docs/guide.md)** — a task-oriented 15-minute how-to (with **[docs/api.md](docs/api.md)** as the public-surface reference).
 
 ## What it is
 
