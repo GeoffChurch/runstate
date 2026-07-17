@@ -1,0 +1,5 @@
+# git blame: ignore these bulk-mechanical commits (GitHub honors this file
+# automatically; locally: git config blame.ignoreRevsFile .git-blame-ignore-revs)
+
+# style: adopt black -- one tree-wide pass (runstate/ + tests/)
+d4a63655348b82a386b1bc084d438c76efa537d6
