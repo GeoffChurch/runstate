@@ -154,6 +154,17 @@ def test_read_request_ids_filter_includes_unaddressed_broadcasts(ch):
     assert bodies == [{"v": 1}, {"v": 3}]
 
 
+def test_read_with_empty_request_ids_returns_only_broadcasts(ch):
+    # request_ids=[] means "zero ids of my own": visibility admits ONLY the
+    # unaddressed broadcasts, identically on every backend. Pinned explicitly --
+    # sqlite's empty "IN ()" is a SQLite-only grammar extension and an empty
+    # array parameter's adaptation is driver-dependent, so the backends carry
+    # an explicit branch instead of leaning on either.
+    ch.send({"v": 1}, topic="value", name="loss", request_id="r1")
+    s2 = ch.send({"v": 2}, topic="value", name="loss")  # broadcast
+    assert [e.seq for e in ch.read(request_ids=[])] == [s2]
+
+
 def test_read_limit(ch):
     for i in range(5):
         ch.send({"i": i}, topic="value", name="loss")

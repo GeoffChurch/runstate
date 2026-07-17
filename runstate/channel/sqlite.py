@@ -210,9 +210,16 @@ class SqliteChannel(Channel):
             params.append(name)
         if request_ids is not None:
             # visibility: the caller's own request_ids PLUS unaddressed broadcasts
-            placeholders = ", ".join("?" * len(request_ids))
-            where.append(f"(request_id IS NULL OR request_id IN ({placeholders}))")
-            params.extend(request_ids)
+            if request_ids:
+                placeholders = ", ".join("?" * len(request_ids))
+                where.append(f"(request_id IS NULL OR request_id IN ({placeholders}))")
+                params.extend(request_ids)
+            else:
+                # zero ids of one's own -> only the broadcasts. Explicit branch:
+                # the "IN ()" the format above would emit happens to parse on
+                # sqlite, but only as a SQLite-specific grammar extension -- not
+                # an idiom to lean on (and other backends must agree).
+                where.append("request_id IS NULL")
         sql = (
             "SELECT seq, topic, name, request_id, body FROM log WHERE "
             + " AND ".join(where)
