@@ -22,7 +22,7 @@ import threading
 import pytest
 
 from runstate import Worker
-from runstate.channel import open_channel as locate
+from runstate.channel import create_channel as locate
 
 
 def _race_cas(i, root, run_id, backend, journal, fire, result_q):
@@ -203,7 +203,7 @@ def test_two_workers_racing_the_claim_muzzle_the_loser(conc_backend):
 # the deterministic CAS conformance + fault-injection (the flakiness firewall).
 
 
-def test_concurrent_cas_admits_exactly_one_winner(open_channel):
+def test_concurrent_cas_admits_exactly_one_winner(open_run):
     """A concurrent multi-handle CAS must admit exactly one winner.
 
     ``send(expected_seq=)`` is the primitive the run-episodes self-claim and the
@@ -215,7 +215,7 @@ def test_concurrent_cas_admits_exactly_one_winner(open_channel):
     only *sometimes* admits >1 winner.
     """
     n = 8
-    seed = open_channel()
+    seed = open_run()
     for trial in range(10):
         log = seed.read()
         last = log[-1].seq if log else 0  # each trial's winner advances this
@@ -225,7 +225,7 @@ def test_concurrent_cas_admits_exactly_one_winner(open_channel):
 
         def claim(i):
             try:
-                ch = open_channel()
+                ch = open_run()
                 barrier.wait(timeout=10)  # line up so the check+INSERT windows overlap
                 results[i] = ch.send(
                     {"who": i}, topic="lifecycle.started", expected_seq=last

@@ -1,4 +1,4 @@
-# `Launcher` Protocol: separate the uniform `open_channel` from the per-launcher `launch`
+# `Launcher` Protocol: separate the uniform `create_channel`/`attach_channel` from the per-launcher `launch`
 
 **Status:** forward-looking; surfaced by the mypy adoption. The interim is
 `launcher: Any` in the four orchestration helpers (`relaunch_if_needed`,
@@ -6,8 +6,8 @@
 
 ## The finding
 
-The `Launcher` Protocol (`open_channel` + `launch`) **cannot be structurally
-typed**: the two reference launchers have genuinely disjoint `launch` signatures,
+The `Launcher` Protocol (`create_channel` + `attach_channel` + `launch`) **cannot be
+structurally typed**: the two reference launchers have genuinely disjoint `launch` signatures,
 driven by their bodies —
 
 - `ThreadLauncher.launch` *calls* `target` → needs `target: Callable`;
@@ -33,7 +33,8 @@ The `Launcher` Protocol's `launch` is the fiction (its own docstring says "launc
 target is launcher-specific by nature"). A clean model **separates the uniform part
 from the variant part**:
 
-- `Launcher` = just `open_channel(run_id) -> Channel` (genuinely uniform, typeable).
+- `Launcher` = just the uniform locators `create_channel(run_id)` /
+  `attach_channel(run_id) -> Channel` (genuinely uniform, typeable).
 - `launch` becomes per-launcher; the orchestration helpers take a **pre-bound launch
   thunk** (`Callable[[], LaunchHandle]`) — or are otherwise parameterized by *how* to
   launch — rather than a launcher whose `launch` they call polymorphically.

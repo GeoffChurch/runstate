@@ -75,7 +75,7 @@ def _worker_main(channel):
 
 def test_every_emitted_envelope_conforms(tmp_path):
     launcher = ThreadLauncher(root=tmp_path)
-    obs = launcher.open_channel("run")
+    obs = launcher.create_channel("run")
     # pre-stage control so the worker drains it on its first tick:
     obs.send(
         {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="ok"
@@ -118,9 +118,9 @@ def test_every_emitted_envelope_conforms(tmp_path):
 
 
 def _open_memory(run_id):
-    from runstate.channel import open_channel
+    from runstate.channel import create_channel
 
-    return open_channel(run_id, root=None, backend="memory")
+    return create_channel(run_id, root=None, backend="memory")
 
 
 def _validate(envelope):

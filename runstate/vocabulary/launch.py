@@ -13,7 +13,7 @@ ended" — first-party to the launcher, about its own child — and a cold-log
 reader can still say whose death it was, forever.
 
 The id reaches the worker **ambiently**, the same way the run id does
-(``attach``): ``RUNSTATE_LAUNCH_ID`` in the child's environment (the
+(``current_channel``): ``RUNSTATE_LAUNCH_ID`` in the child's environment (the
 cross-process, interop-relevant half — another language's launcher sets the
 same variable), or a ContextVar bound around the target (the in-process half —
 a thread launcher has no environment to inject into, and its threads share one

@@ -30,7 +30,7 @@ def test_relaunch_extends_one_series(tmp_path):
     # Pre-stage the loss subscription before episode 1. The subscribe lives at a
     # low seq on the shared log; both episodes' workers start with _cursor=0 and
     # will drain it on their first tick, re-registering a fresh Subscription.
-    ch0 = launcher.open_channel(rid)
+    ch0 = launcher.create_channel(rid)
     ch0.send(
         {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="obs"
     )
@@ -45,7 +45,7 @@ def test_relaunch_extends_one_series(tmp_path):
         rid, _cell, kwargs={"run_id": rid, "target": 10, "ckpt_dir": str(tmp_path)}
     ).wait()
 
-    ch = launcher.open_channel(rid)
+    ch = launcher.attach_channel(rid)
     steps = [v.body["step"] for v in ch.read(topics=["value"])]
     assert steps == list(
         range(10)

@@ -13,31 +13,31 @@ from runstate.launcher import relaunch_if_needed
 from runstate.vocabulary.handle import local_handle
 
 
-def test_history_replays_schedule_over_logged_points(open_channel):
-    ch = open_channel()
+def test_history_replays_schedule_over_logged_points(open_run):
+    ch = open_run()
     for step in range(10):
         ch.send(
             {"value": float(step), "step": step, "t": float(step)},
             topic="value",
             name="loss",
         )
-    got = history(open_channel(), "loss", {"every": {"step": 3}})
+    got = history(open_run(), "loss", {"every": {"step": 3}})
     assert [b["step"] for b in got] == [0, 3, 6, 9]
 
 
-def test_history_returns_empty_for_empty_series(open_channel):
+def test_history_returns_empty_for_empty_series(open_run):
     # no value points for "loss" yet (run not started / wrong name) -> empty, no error
-    assert history(open_channel(), "loss", {"every": {"step": 1}}) == []
+    assert history(open_run(), "loss", {"every": {"step": 1}}) == []
 
 
-def test_history_filters_by_name_and_respects_until(open_channel):
-    ch = open_channel()
+def test_history_filters_by_name_and_respects_until(open_run):
+    ch = open_run()
     for step in range(6):
         ch.send(
             {"value": float(step), "step": step, "t": 0.0}, topic="value", name="loss"
         )
         ch.send({"value": -1.0, "step": step, "t": 0.0}, topic="value", name="acc")
-    got = history(open_channel(), "loss", {"every": {"step": 1}, "until": {"step": 4}})
+    got = history(open_run(), "loss", {"every": {"step": 1}, "until": {"step": 4}})
     assert [b["step"] for b in got] == [
         0,
         1,
@@ -46,31 +46,31 @@ def test_history_filters_by_name_and_respects_until(open_channel):
     ]  #           name=loss only; until step 4
 
 
-def test_history_collapses_re_emission_taking_the_latest(open_channel):
+def test_history_collapses_re_emission_taking_the_latest(open_run):
     # A resumed episode re-emits the checkpoint overlap; history collapses by step,
     # taking the latest (highest-seq) record -- the as-resumed / continuing branch.
     # (docs/backlog/value-plane-divergence-resolution.md)
-    ch = open_channel()
+    ch = open_run()
     ch.send({"value": 1.0, "step": 0, "t": 0.0}, topic="value", name="loss")
     ch.send({"value": 2.0, "step": 1, "t": 0.0}, topic="value", name="loss")
     ch.send(
         {"value": 1.0, "step": 0, "t": 9.0}, topic="value", name="loss"
     )  #  identical re-emit -> collapses
     assert [
-        b["step"] for b in history(open_channel(), "loss", {"every": {"step": 1}})
+        b["step"] for b in history(open_run(), "loss", {"every": {"step": 1}})
     ] == [0, 1]
     ch.send(
         {"value": 99.0, "step": 1, "t": 9.0}, topic="value", name="loss"
     )  # DIVERGENT re-emit (a resume)
-    got = history(open_channel(), "loss", {"every": {"step": 1}})
+    got = history(open_run(), "loss", {"every": {"step": 1}})
     assert [(b["step"], b["value"]) for b in got] == [
         (0, 1.0),
         (1, 99.0),
     ]  #     take-the-latest by seq
 
 
-def test_history_time_schedule_is_run_relative_to_the_run_epoch(open_channel):
-    ch = open_channel()
+def test_history_time_schedule_is_run_relative_to_the_run_epoch(open_run):
+    ch = open_run()
     ch.send(
         {"handle": "local://h/1", "t": 1000.0}, topic="lifecycle.started"
     )  #                         run epoch = 1000.0
@@ -81,15 +81,15 @@ def test_history_time_schedule_is_run_relative_to_the_run_epoch(open_channel):
             name="loss",
         )  #                    absolute t
     # "every 2 seconds" run-relative: t-epoch in {0,2,4} -> steps 0,2,4
-    got = history(open_channel(), "loss", {"every": {"time_seconds": 2}})
+    got = history(open_run(), "loss", {"every": {"time_seconds": 2}})
     assert [b["step"] for b in got] == [0, 2, 4]
 
 
-def test_history_skips_nonconforming_value_records(open_channel):
+def test_history_skips_nonconforming_value_records(open_run):
     # The substrate admits foreign bodies on any topic; junk on `value` with a
     # matching name is not a point in the series -- skipped, as the observables'
     # measurement folds skip it (the tolerance split).
-    ch = open_channel()
+    ch = open_run()
     ch.send({"value": 0.0, "step": 0, "t": 0.0}, topic="value", name="loss")
     ch.send(
         {"note": "junk"}, topic="value", name="loss"
@@ -107,43 +107,43 @@ def test_history_skips_nonconforming_value_records(open_channel):
         {"value": 4.0, "step": 2, "t": True}, topic="value", name="loss"
     )  #    bool is not a t
     ch.send({"value": 5.0, "step": 2, "t": 0.0}, topic="value", name="loss")
-    got = history(open_channel(), "loss", {"every": {"step": 1}})
+    got = history(open_run(), "loss", {"every": {"step": 1}})
     assert [(b["step"], b["value"]) for b in got] == [(0, 0.0), (2, 5.0)]
 
 
-def test_history_conforming_stepless_point_still_raises(open_channel):
+def test_history_conforming_stepless_point_still_raises(open_run):
     # A CONFORMING point with `step` present-and-null is a real domain error
     # (history is a stepped-trajectory reader), never junk to skip.
-    ch = open_channel()
+    ch = open_run()
     ch.send({"value": 1.0, "step": None, "t": 0.0}, topic="value", name="loss")
     with pytest.raises(ValueError, match="stepped emission"):
-        history(open_channel(), "loss", {"every": {"step": 1}})
+        history(open_run(), "loss", {"every": {"step": 1}})
 
 
-def test_history_time_schedule_requires_a_run_epoch(open_channel):
+def test_history_time_schedule_requires_a_run_epoch(open_run):
     # No epoch -> no run-relative clock to anchor a time-referencing replay:
     # raise, never anchor at 0.0 (absolute value.t would satisfy untils
     # instantly). Step-only schedules never touch the epoch.
-    ch = open_channel()
+    ch = open_run()
     ch.send({"value": 0.0, "step": 0, "t": 1000.0}, topic="value", name="loss")
     with pytest.raises(ValueError, match="run epoch"):  #       no started record
-        history(open_channel(), "loss", {"every": {"time_seconds": 2}})
+        history(open_run(), "loss", {"every": {"time_seconds": 2}})
     ch.send({"handle": "local://h/1", "t": None}, topic="lifecycle.started")
     with pytest.raises(ValueError, match="run epoch"):  #       null t
-        history(open_channel(), "loss", {"every": {"time_seconds": 2}})
-    got = history(open_channel(), "loss", {"every": {"step": 1}})
+        history(open_run(), "loss", {"every": {"time_seconds": 2}})
+    got = history(open_run(), "loss", {"every": {"step": 1}})
     assert [b["step"] for b in got] == [0]
 
 
-def test_history_null_t_points_are_inert_for_time_conditions(open_channel):
+def test_history_null_t_points_are_inert_for_time_conditions(open_run):
     # t=None -> the run-relative clock cannot advance at that point: time-keyed
     # conditions see it at the epoch (inert); step conditions are unaffected.
-    ch = open_channel()
+    ch = open_run()
     ch.send({"handle": "local://h/1", "t": 1000.0}, topic="lifecycle.started")
     ch.send({"value": 0.0, "step": 0, "t": 1000.0}, topic="value", name="loss")
     ch.send({"value": 1.0, "step": 1, "t": None}, topic="value", name="loss")
     ch.send({"value": 2.0, "step": 2, "t": 1002.0}, topic="value", name="loss")
-    got = history(open_channel(), "loss", {"every": {"time_seconds": 2}})
+    got = history(open_run(), "loss", {"every": {"time_seconds": 2}})
     assert [b["step"] for b in got] == [0, 2]
 
 
@@ -178,7 +178,7 @@ def test_launch_producer_extend_injects_target_and_runs():
     for _ in range(
         400
     ):  #                                   wait for the episode to finish
-        if launcher.open_channel("exp").latest("lifecycle.stopped") is not None:
+        if launcher.attach_channel("exp").latest("lifecycle.stopped") is not None:
             break
         _t.sleep(0.005)
     assert (
@@ -188,13 +188,13 @@ def test_launch_producer_extend_injects_target_and_runs():
 
 def test_relaunch_if_needed_noops_when_a_live_episode_exists():
     launcher = runstate.ThreadLauncher()
-    ch = launcher.open_channel("r")
+    ch = launcher.create_channel("r")
     # fake a live episode: a started by OUR pid (resolve() -> alive), no stopped
     ch.send({"handle": local_handle(), "t": 0.0}, topic="lifecycle.started")
     h = relaunch_if_needed(launcher, "r", lambda channel, **_: None, kwargs={})
     assert h is None
     assert (
-        launcher.open_channel("r").read(topics=["launcher.launched"]) == []
+        launcher.attach_channel("r").read(topics=["launcher.launched"]) == []
     )  # no spawn
 
 
@@ -218,7 +218,7 @@ def _producer(launcher, tmp_path, run_id="exp"):
         run_id, _cell, {"kwargs": {"run_id": run_id, "ckpt_dir": str(tmp_path)}}
     )
     # pre-stage the loss subscription on the shared log; each episode drains it
-    launcher.open_channel(run_id).send(
+    launcher.create_channel(run_id).send(
         {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="obs"
     )
     return launch_producer(launcher, variant)  #  target_key="up_to"
@@ -229,11 +229,11 @@ def test_ensure_cold_miss_then_hit(tmp_path):
     producer = _producer(launcher, tmp_path)
     series = ensure(producer, "loss", until={"step": 5})
     assert [b["step"] for b in series] == [0, 1, 2, 3, 4]
-    launched = len(launcher.open_channel("exp").read(topics=["launcher.launched"]))
+    launched = len(launcher.attach_channel("exp").read(topics=["launcher.launched"]))
     series2 = ensure(producer, "loss", until={"step": 5})  #    hit: no relaunch
     assert [b["step"] for b in series2] == [0, 1, 2, 3, 4]
     assert (
-        len(launcher.open_channel("exp").read(topics=["launcher.launched"])) == launched
+        len(launcher.attach_channel("exp").read(topics=["launcher.launched"])) == launched
     )
 
 
@@ -274,7 +274,7 @@ def test_ensure_raises_when_run_makes_no_progress(tmp_path):
             # This keeps ensure looping so the no-progress guard fires.
 
     variant = runstate.Variant("exp", stuck, {"kwargs": {}})
-    launcher.open_channel("exp").send(
+    launcher.create_channel("exp").send(
         {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="obs"
     )
     producer = launch_producer(launcher, variant)
@@ -306,7 +306,7 @@ def test_ensure_redrives_within_one_call_to_reach_target(tmp_path):
     variant = runstate.Variant(
         "exp", chunked, {"kwargs": {"run_id": "exp", "ckpt_dir": str(tmp_path)}}
     )
-    launcher.open_channel("exp").send(
+    launcher.create_channel("exp").send(
         {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="obs"
     )
     producer = launch_producer(launcher, variant)
@@ -314,7 +314,7 @@ def test_ensure_redrives_within_one_call_to_reach_target(tmp_path):
         producer, "loss", until={"step": 7}
     )  # 0..2, re-drive 3..5, re-drive 6
     assert [b["step"] for b in series] == [0, 1, 2, 3, 4, 5, 6]
-    assert len(launcher.open_channel("exp").read(topics=["launcher.launched"])) >= 3
+    assert len(launcher.attach_channel("exp").read(topics=["launcher.launched"])) >= 3
 
 
 def test_ensure_surfaces_a_die_before_attach_without_hanging():
@@ -339,7 +339,7 @@ def test_ensure_redrives_when_extend_noops_onto_a_live_episode(tmp_path):
     # raise "no progress" (foreign handles are exempt from the guard).
     launcher = runstate.ThreadLauncher()
     rid = "exp"
-    seed = launcher.open_channel(rid)
+    seed = launcher.create_channel(rid)
     # a live foreign episode (started by our pid -> resolve() alive, no stopped),
     # having emitted loss 0,1 and beaconed step 1
     seed.send({"handle": local_handle(), "t": 0.0}, topic="lifecycle.started")
@@ -376,7 +376,7 @@ def test_ensure_redrives_when_extend_noops_onto_a_live_episode(tmp_path):
     def driver_sleep(_):
         if not ended["done"]:
             ended["done"] = True
-            launcher.open_channel(rid).send(
+            launcher.attach_channel(rid).send(
                 {"completed": False, "error": None, "final_step": 1, "t": 0.0},
                 topic="lifecycle.stopped",
             )
@@ -532,7 +532,7 @@ def test_ensure_preempted_that_reaches_up_to_uses_progress_hit(tmp_path):
     # The worker stops preempted (no self-completion claim) but reaches step 4 (up_to-1)
     assert [b["step"] for b in series] == [0, 1, 2, 3, 4]
     # The channel has a stopped record
-    stopped = launcher.open_channel("exp").latest("lifecycle.stopped")
+    stopped = launcher.attach_channel("exp").latest("lifecycle.stopped")
     assert stopped is not None
     # ensure returned via the progress hit (existing behavior unbroken)
 
@@ -910,7 +910,7 @@ def test_derived_run_dissolution_pin(tmp_path):
 
     series = ensure(producer, "pair_metrics", until={"step": 1})
     assert [(b["step"], b["value"]) for b in series] == [(0, 0.42)]  #  non-empty
-    ch = launcher.open_channel(rid)
+    ch = launcher.attach_channel(rid)
     assert len(ch.read(topics=["lifecycle.started"])) == 1
 
     series2 = ensure(producer, "pair_metrics", until={"step": 1})  #    cache hit
@@ -928,7 +928,7 @@ def _pin_producer(launcher, ckpt_dir, rid, *, stage_subscription=True):
     most once (two drivers share ONE log -- double-staging would
     double-register the demand)."""
     if stage_subscription:
-        launcher.open_channel(rid).send(
+        launcher.create_channel(rid).send(
             {"every": {"step": 1}},
             topic="control.subscribe",
             name="loss",
@@ -963,7 +963,7 @@ def test_store_pin_reuse_is_extend_across_drivers(tmp_path):
 
     dbs = sorted((tmp_path / "runs").rglob("*.db"))
     assert dbs == [home / f"{rid}.db"]  #                   one home, one log
-    episodes = driver_b.open_channel(rid).read(topics=["lifecycle.started"])
+    episodes = driver_b.attach_channel(rid).read(topics=["lifecycle.started"])
     assert len(episodes) == 2  #                            A's prefix + B's extension
 
 
@@ -988,7 +988,7 @@ def test_store_pin_latecomer_waits_on_live_foreign_episode():
     history once the winner delivers."""
     launcher = runstate.ThreadLauncher()
     rid = "exp"
-    ch = launcher.open_channel(rid)
+    ch = launcher.create_channel(rid)
     ch.send(
         {"handle": local_handle(), "t": 0.0}, topic="lifecycle.started"
     )  #           the live foreign winner (our pid)
@@ -1037,7 +1037,7 @@ def test_store_pin_latecomer_recovers_when_foreign_winner_dies_recordless(tmp_pa
 
     launcher = runstate.ThreadLauncher()
     rid = "exp"
-    ch = launcher.open_channel(rid)
+    ch = launcher.create_channel(rid)
     ch.send(
         {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="obs"
     )
@@ -1094,14 +1094,14 @@ def test_foreign_episode_helper_tracks_live_episode():
 
 
 def test_ensure_collision_skips_no_progress_raise_when_foreign_episode_lives(
-    open_channel,
+    open_run,
 ):
     # the claim-window collision (red-team P1): the own spawn died recordless
     # with zero progress, but a LIVE foreign episode holds the claim -- the
     # run isn't "stuck", someone else owns it. The claim-aware guard skips the
     # raise; ensure re-enters and waits on the winner. The genuinely-stuck
     # case (no live episode) still raises -- pinned by the no-progress tests.
-    ch = open_channel()
+    ch = open_run()
     calls = []
 
     class _DeadHandle:
@@ -1144,15 +1144,15 @@ def test_ensure_collision_skips_no_progress_raise_when_foreign_episode_lives(
 
 
 @pytest.mark.parametrize("junk", [{"j": 1}, "garbage", "3.5", True, [1]])
-def test_history_junk_epoch_reads_as_no_epoch(open_channel, junk):
+def test_history_junk_epoch_reads_as_no_epoch(open_run, junk):
     # a junk-typed t earns no epoch (the measurement rule):
     # time-referencing replay raises the typed complaint -- never an untyped
     # float() TypeError -- and step-only replay is unaffected.
-    ch = open_channel()
+    ch = open_run()
     ch.send({"handle": "local://h/1", "t": junk}, topic="lifecycle.started")
     ch.send({"value": 1.0, "step": 0, "t": 5.0}, topic="value", name="loss")
     with pytest.raises(ValueError, match="epoch"):
-        history(open_channel(), "loss", {"every": {"time_seconds": 1}})
+        history(open_run(), "loss", {"every": {"time_seconds": 1}})
     assert [
-        b["step"] for b in history(open_channel(), "loss", {"every": {"step": 1}})
+        b["step"] for b in history(open_run(), "loss", {"every": {"step": 1}})
     ] == [0]

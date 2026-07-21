@@ -14,7 +14,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from .channel import Envelope
+from .channel import Envelope, RunNotFound
 from .observables import Outcome, RunResult, peek_terminal
 from .watcher import Watcher
 
@@ -53,8 +53,16 @@ def sweep(
     results: list[RunResult] = []
     for v in variants:
         if resume:
-            with launcher.open_channel(v.run_id) as ch:  #  close the probe channel
-                existing = peek_terminal(ch)
+            # A probe of a run a PRIOR sweep may have finished -- so attach, don't
+            # birth: a never-launched variant has no run yet (RunNotFound), which
+            # is exactly "not finished -> launch it". Attaching (not creating) also
+            # keeps this resume check from fabricating a phantom empty <rid>.db for
+            # every unfinished variant (the old creating-open harm).
+            try:
+                with launcher.attach_channel(v.run_id) as ch:  # close the probe channel
+                    existing = peek_terminal(ch)
+            except RunNotFound:
+                existing = None
             if existing is not None:
                 result = replace(existing, run_id=v.run_id)
                 results.append(result)

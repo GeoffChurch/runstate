@@ -107,7 +107,7 @@ Costs accepted, eyes open:
 - Cross-host without a shared FS: the gate is per-host (the named
   residue above).
 
-Library scope ≈ zero: placement is policy over `open_channel(run_id,
+Library scope ≈ zero: placement is policy over `create_channel(run_id,
 root)`; runstate ships a recipe (root layout + shard scheme + the GC
 sketch); the substrate is untouched. Sub-decisions taken with E:
 cell-dir-with-pointer (not bare symlink); shard `rid[:2]`.

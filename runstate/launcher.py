@@ -27,7 +27,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional, Protocol
 
-from .channel import Channel, open_channel
+from .channel import Channel, RunNotFound, attach_channel, create_channel
 from .vocabulary.payloads import Launched, Terminated
 from .vocabulary.handle import local_handle
 from .vocabulary.launch import LAUNCH_ID_ENV, launch_scope, new_launch_id
@@ -55,13 +55,18 @@ class LaunchHandle(Protocol):
 
 class Launcher(Protocol):
     """Spawn a worker into a run and bracket it with launcher.launched /
-    launcher.terminated. ``open_channel`` is uniform; ``launch``'s *target* is
+    launcher.terminated. The two locators are uniform — ``create_channel`` (the
+    launch flow *births* the run) and ``attach_channel`` (the deciders' probe,
+    reading an existing run and treating ``RunNotFound`` as "not launched yet");
+    each binds the launcher's own ``root``/``backend``. ``launch``'s *target* is
     launcher-specific by nature — an in-process callable for ThreadLauncher, a
     subprocess command for LocalLauncher — since how the worker receives its
-    channel (passed directly vs re-derived via ``attach``) differs in kind.
+    channel (passed directly vs re-derived via ``current_channel``) differs in
+    kind.
     """
 
-    def open_channel(self, run_id: str) -> Channel: ...
+    def create_channel(self, run_id: str) -> Channel: ...
+    def attach_channel(self, run_id: str) -> Channel: ...
     def launch(self, run_id: str, target: object, **kwargs: object) -> LaunchHandle: ...
 
 
@@ -118,8 +123,11 @@ class ThreadLauncher:
         self._root = root
         self._backend = backend
 
-    def open_channel(self, run_id: str) -> Channel:
-        return open_channel(run_id, root=self._root, backend=self._backend)
+    def create_channel(self, run_id: str) -> Channel:
+        return create_channel(run_id, root=self._root, backend=self._backend)
+
+    def attach_channel(self, run_id: str) -> Channel:
+        return attach_channel(run_id, root=self._root, backend=self._backend)
 
     def launch(
         self,
@@ -146,7 +154,7 @@ class ThreadLauncher:
         forging the winner's verdict (specs/launcher-record-identity.md).
         """
         kwargs = kwargs or {}
-        channel = self.open_channel(run_id)
+        channel = self.create_channel(run_id)
         handle = local_handle()
         launch_id = new_launch_id()
         channel.send(
@@ -258,7 +266,7 @@ class LocalLauncher:
     """Spawn workers as local subprocesses (the full handle story, §8).
 
     ``launch`` runs a command with ``RUNSTATE_*`` injected; the child calls
-    ``runstate.attach()`` to re-derive the same run's channel — so the backend
+    ``runstate.current_channel()`` to re-derive the same run's channel — so the backend
     must be cross-process durable (sqlite, the default; memory would not be
     shared across processes). As a context manager, best-effort reaps any
     finished children on exit (it does not block on or kill stragglers — that
@@ -273,13 +281,16 @@ class LocalLauncher:
         self._backend = backend
         self._handles: list[_LocalHandle] = []
 
-    def open_channel(self, run_id: str) -> Channel:
-        return open_channel(run_id, root=self._root, backend=self._backend)
+    def create_channel(self, run_id: str) -> Channel:
+        return create_channel(run_id, root=self._root, backend=self._backend)
+
+    def attach_channel(self, run_id: str) -> Channel:
+        return attach_channel(run_id, root=self._root, backend=self._backend)
 
     def launch(
         self, run_id: str, cmd: list[str] | str, *, env: dict[str, str] | None = None
     ) -> _LocalHandle:
-        channel = self.open_channel(run_id)
+        channel = self.create_channel(run_id)
         launch_id = new_launch_id()
         child_env = {
             **os.environ,
@@ -337,9 +348,14 @@ def relaunch_if_needed(
     ``launch_kwargs`` is splatted into ``launch`` (launcher-specific, as sweep
     does): e.g. ``kwargs={...}`` for ThreadLauncher, ``env={...}`` for
     LocalLauncher."""
-    with launcher.open_channel(run_id) as channel:  # a probe handle: close it
-        if live_episode(channel) is not None:
-            return None
+    try:
+        with launcher.attach_channel(run_id) as channel:  # a probe handle: close it
+            if live_episode(channel) is not None:
+                return None
+    except RunNotFound:
+        # No records yet: the exact old empty-channel read (last_seq()==0 ->
+        # live_episode is None) -> nothing live -> fall through and launch.
+        pass
     # `launcher` is intentionally `Any`: the two reference launchers have
     # genuinely different `launch` signatures (a callable `target` + args/kwargs
     # vs a `cmd` + env), so no single typed Protocol method admits both. We keep
@@ -367,11 +383,17 @@ def ensure_served(
     arbitrates any double-spawn; the loser exits before acting, and the reap
     discipline keeps its corpse off the verdict plane. Never ``Watcher.add()``
     the returned handle (it may lose the claim race); ``observe()`` the run."""
-    with launcher.open_channel(run_id) as channel:  # a probe handle: close it
-        if not live_demand(channel):
-            return None
-        if live_episode(channel) is not None:
-            return None
+    try:
+        with launcher.attach_channel(run_id) as channel:  # a probe handle: close it
+            if not live_demand(channel):
+                return None
+            if live_episode(channel) is not None:
+                return None
+    except RunNotFound:
+        # No records yet: the exact old empty-channel read had no demand recorded
+        # (`not live_demand` -> return None). A run with no records has no leased
+        # demand, so there is nothing to serve -> None, never a phantom launch.
+        return None
     # `launcher` is intentionally `Any`: the two reference launchers have
     # genuinely different `launch` signatures (a callable `target` + args/kwargs
     # vs a `cmd` + env), so no single typed Protocol method admits both. We keep

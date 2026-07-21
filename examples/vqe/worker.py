@@ -22,7 +22,7 @@ lesson). Budget exhaustion deliberately claims nothing: the run_id excludes
 the budget (the extend axis), so "did what was asked" is a resumable pause --
 ``preempted`` -- not intrinsic completion (docs/specs/preempted-vs-completed.md).
 
-Launched by driver.py; runnable by hand too (``attach()`` reads RUNSTATE_*).
+Launched by driver.py; runnable by hand too (``current_channel()`` reads RUNSTATE_*).
 """
 
 import json
@@ -79,7 +79,7 @@ def main():
     ckpt = Path(os.environ["RUNSTATE_CHANNEL_ROOT"]) / (
         os.environ["RUNSTATE_RUN_ID"] + ".ckpt.json"
     )
-    with runstate.Worker(runstate.attach()) as w:
+    with runstate.Worker(runstate.current_channel()) as w:
         if ckpt.exists():
             state = json.loads(ckpt.read_text())
             start, params = state["next"], state["params"]

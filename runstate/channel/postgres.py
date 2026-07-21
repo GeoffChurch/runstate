@@ -23,7 +23,7 @@ from typing import Any
 
 import psycopg
 
-from .base import Channel
+from .base import Channel, RunNotFound
 from .envelope import Body, Envelope
 
 # A fixed key for the schema-provisioning advisory lock: the 8 ASCII bytes of
@@ -158,6 +158,7 @@ class PostgresChannel(Channel):
         dsn: str,
         run_id: str,
         *,
+        create: bool = True,
         json_default: Callable[[object], object] | None = None,
     ) -> None:
         self._run_id = run_id
@@ -174,6 +175,18 @@ class PostgresChannel(Channel):
                 "the postgres 'log' table is absent; call "
                 "runstate.channel.postgres.ensure_schema(dsn) first"
             )
+        if not create:
+            # Attach (create=False): the constructor above is already non-creating
+            # (it only probes for the shared *table*). Existence is per-run: no
+            # rows WHERE run_id=X == the run doesn't exist. This is the semantic
+            # sqlite/memory now conform to -- postgres embodies it natively.
+            row = self._conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) FROM log WHERE run_id = %s",
+                [run_id],
+            ).fetchone()
+            if not row or row[0] == 0:
+                self._conn.close()
+                raise RunNotFound(f"run {run_id!r} has no records (postgres backend)")
 
     def send(
         self,

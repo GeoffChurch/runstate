@@ -13,8 +13,9 @@ primitive.
 A `run_id` is a **durable log hosting multiple worker *episodes*.** Episode 1
 attaches → `started … stopped`; later, episode 2 attaches to the *same* `run_id`
 (same channel/log) → `started … stopped`, resuming from the run-keyed state it
-left behind. Rests on a shipped property: `open_channel(run_id, root)` is
-deterministic + durable + liveness-agnostic.
+left behind. Rests on a shipped property: the locators
+(`create_channel`/`attach_channel`) map `(run_id, root)` deterministically to one
+durable, liveness-agnostic channel.
 
 It dissolves two deferred items: **completed-but-extendable** (a `stopped` ends *an
 episode*, not the *run*; extending = a new episode appending to the same log — no

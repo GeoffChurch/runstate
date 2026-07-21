@@ -47,12 +47,12 @@ except ImportError:
 # --------------------------------------------------------------------------- #
 def _worker_main(total: int) -> None:
     """A normal runstate worker, identical in spirit to
-    examples/minimal/worker.py -- ``attach()`` finds the run, ``Worker`` drains
-    control and beacons lifecycle, the loop reports ``loss``. Only the launcher
-    changed; the worker code did not."""
+    examples/minimal/worker.py -- ``current_channel()`` finds the run, ``Worker``
+    drains control and beacons lifecycle, the loop reports ``loss``. Only the
+    launcher changed; the worker code did not."""
     import math
 
-    with runstate.Worker(runstate.attach()) as w:
+    with runstate.Worker(runstate.current_channel()) as w:
         for step in w.steps(total=total):
             w.set("loss", max(0.01, 5.0 * (0.97**step)))
         w.stopped(completed=True)  # finished the budget -> claim completion
@@ -62,8 +62,8 @@ def _entrypoint(
     run_id: str, root: str, backend: str, launch_id: str, total: int
 ) -> None:
     """What submitit runs in the job. It sets the ``RUNSTATE_*`` env (exactly as
-    ``LocalLauncher`` does for its subprocess child) so the worker's ``attach()``
-    meets the same log, and ``RUNSTATE_LAUNCH_ID`` so the ``Worker``'s
+    ``LocalLauncher`` does for its subprocess child) so the worker's
+    ``current_channel()`` meets the same log, and ``RUNSTATE_LAUNCH_ID`` so the ``Worker``'s
     ``lifecycle.started`` names the launch it answers
     (specs/launcher-record-identity.md)."""
     os.environ["RUNSTATE_RUN_ID"] = run_id
@@ -130,7 +130,7 @@ class SubmititHandle:
 
 
 class SubmititLauncher:
-    """A ``Launcher`` over submitit. ``open_channel`` is uniform (as in the
+    """A ``Launcher`` over submitit. The channel locators are uniform (as in the
     reference launchers); ``launch`` submits the worker to the executor, mints
     the launch id, and records ``launcher.launched`` (the spawn + the handle).
     The worker function is fixed here; the loop budget ``total`` is the
@@ -144,8 +144,11 @@ class SubmititLauncher:
         # cluster="slurm" on a real cluster; "local" runs a subprocess here.
         self._executor = submitit.AutoExecutor(folder=folder, cluster=cluster)
 
-    def open_channel(self, run_id: str) -> runstate.Channel:
-        return runstate.open_channel(run_id, root=self._root, backend=self._backend)
+    def create_channel(self, run_id: str) -> runstate.Channel:
+        return runstate.create_channel(run_id, root=self._root, backend=self._backend)
+
+    def attach_channel(self, run_id: str) -> runstate.Channel:
+        return runstate.attach_channel(run_id, root=self._root, backend=self._backend)
 
     def launch(self, run_id: str, total: int) -> SubmititHandle:
         launch_id = new_launch_id()
@@ -155,7 +158,7 @@ class SubmititLauncher:
         handle_str = (
             f"slurm://{job.job_id}"  # resolve() abstains -> heartbeat/handle tiers
         )
-        channel = self.open_channel(run_id)
+        channel = self.create_channel(run_id)
         channel.send(
             asdict(Launched(handle=handle_str, t=time.time())),
             topic=Launched.TOPIC,
@@ -177,7 +180,7 @@ def main() -> None:
     print(f"[driver] run_id={run_id} root={root}")
 
     # Subscribe BEFORE launch so the worker picks it up on its first tick.
-    ch = launcher.open_channel(run_id)
+    ch = launcher.create_channel(run_id)
     ch.send(
         {"every": {"step": 1}},
         topic=runstate.Topic.CONTROL_SUBSCRIBE,

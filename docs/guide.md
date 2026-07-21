@@ -34,8 +34,8 @@ Memory backend (tests / single-process orchestration).
 
 Your training script becomes a **worker**. Three lines wrap an existing loop:
 
-- `runstate.attach()` opens this run's channel (it reads the `RUNSTATE_*` env
-  vars a launcher set — see §3);
+- `runstate.current_channel()` opens this run's channel (it reads the `RUNSTATE_*`
+  env vars a launcher set — see §3);
 - `with runstate.Worker(channel) as w:` drains control requests, services
   subscriptions, and emits the lifecycle beacons for you;
 - inside the loop, `w.steps(total=N)` yields each step and, after your body,
@@ -50,7 +50,7 @@ import runstate
 
 
 def main():
-    channel = runstate.attach()  # reads RUNSTATE_* set by the launcher
+    channel = runstate.current_channel()  # reads RUNSTATE_* set by the launcher
     with runstate.Worker(channel) as w:
         for step in w.steps(total=50):
             loss = max(0.01, 5.0 * (0.97**step) + math.sin(step * 0.2) * 0.1)
@@ -91,7 +91,7 @@ deliberately never claims `completed`.
 Nothing spawns your worker for you — runstate ships **no `Orchestrator` class**.
 You write a small script that composes a launcher, a subscription, and a
 watcher. The reference `LocalLauncher` spawns the worker as a subprocess and
-injects the `RUNSTATE_*` env that `attach()` reads.
+injects the `RUNSTATE_*` env that `current_channel()` reads.
 
 The skeleton (the full runnable version is `examples/minimal/driver.py`):
 
@@ -99,7 +99,7 @@ The skeleton (the full runnable version is `examples/minimal/driver.py`):
 import runstate
 
 with runstate.LocalLauncher(root="/tmp/runs") as launcher:
-    ch = launcher.open_channel("run-1")
+    ch = launcher.create_channel("run-1")
     # Subscribe BEFORE launch so the worker picks it up on its first tick:
     ch.send(
         {"every": {"step": 1}},  # the schedule (condition-algebra, below)

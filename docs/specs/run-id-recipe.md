@@ -13,7 +13,7 @@ hide the partition choice and risk silently omitting an output-determining file.
 
 ```python
 import json, hashlib
-from runstate import open_channel, peek_terminal
+from runstate import attach_channel, peek_terminal, RunNotFound
 
 def run_id(inputs: dict) -> str:                # inputs = everything that
     canon = json.dumps(inputs, sort_keys=True, allow_nan=False)   # determines output
@@ -27,11 +27,15 @@ def hash_code(paths) -> str:                    # your partition: which files co
     return h.hexdigest()
 
 rid = run_id({**config, "seed": seed, "code": hash_code(my_files)})
-prior = peek_terminal(open_channel(rid, root=ROOT))
+try:
+    with attach_channel(rid, root=ROOT) as ch:   # existing-only: never fabricates rid
+        prior = peek_terminal(ch)
+except RunNotFound:
+    prior = None                                 # no such run yet
 if prior is not None and prior.outcome == "completed":
     ...   # reuse
 else:
-    ...   # launch into rid
+    ...   # launch into rid (create_channel births it)
 
 # Or for a sweep: key each Variant by run_id and call sweep(resume=True) — it
 # already skips any run with a terminal record, so that *is* reuse-by-hash.

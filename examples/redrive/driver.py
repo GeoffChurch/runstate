@@ -38,7 +38,7 @@ class SubprocessProducer:
 
     @property
     def channel(self):
-        return self._launcher.open_channel(self.run_id)
+        return self._launcher.attach_channel(self.run_id)
 
     def extend(self, until):
         return runstate.relaunch_if_needed(
@@ -63,7 +63,7 @@ def main():
         state.mkdir()
         with runstate.LocalLauncher(root=root) as launcher:
             # subscribe before launch so the worker reports loss every step
-            launcher.open_channel(rid).send(
+            launcher.create_channel(rid).send(
                 {"every": {"step": 1}}, topic=runstate.Topic.CONTROL_SUBSCRIBE,
                 name="loss", request_id="obs",
             )

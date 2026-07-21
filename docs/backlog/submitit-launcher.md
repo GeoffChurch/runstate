@@ -14,7 +14,7 @@ The README claims you can "spawn however you want — submitit, ray — and talk
 the protocol." `examples/submitit/` *is* that claim, executed: a ~50-line
 `SubmititLauncher` / `SubmititHandle` implementing runstate's
 `Launcher` / `LaunchHandle` protocol, with the submitted function setting the
-`RUNSTATE_*` env (and `RUNSTATE_LAUNCH_ID`) so the worker's `attach()` meets the
+`RUNSTATE_*` env (and `RUNSTATE_LAUNCH_ID`) so the worker's `current_channel()` meets the
 same log. That the recipe is short and needs no library change is the evidence
 that the protocol boundary is in the right place. Promoting it to a shipped
 adapter is a separate, deliberate decision — below.
@@ -48,8 +48,8 @@ launchers' `launch` signatures are already disjoint (`target: Callable` vs
 `cmd: list[str]`), so `launch` cannot be structurally typed, and the four helpers
 take `launcher: Any`. A `SubmititLauncher.launch` adds a callable-plus-resources
 signature — it does **not** worsen the finding (the helpers already accept `Any`),
-but it is the concrete third case that would drive the proposed split (uniform
-`open_channel` + a per-launcher launch thunk). The recipe sidesteps it by fixing
+but it is the concrete third case that would drive the proposed split (the uniform
+`create_channel`/`attach_channel` + a per-launcher launch thunk). The recipe sidesteps it by fixing
 the worker callable and taking `total` as the config; a first-class adapter must
 decide whether `launch` takes an arbitrary callable (needs cloudpickle — the
 recipe relies on it) or a cmd (submitit can run one via

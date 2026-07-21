@@ -23,7 +23,7 @@ def main():
     crashed = state / f"{rid}.crashed"
 
     start = json.loads(ckpt.read_text())["next"] if ckpt.exists() else 0
-    with runstate.Worker(runstate.attach()) as w:
+    with runstate.Worker(runstate.current_channel()) as w:
         for step in w.steps(start=start, total=up_to):
             w.set("loss", 5.0 * math.exp(-0.3 * step))
             if step % 3 == 2:                       # checkpoint the frontier every 3 steps

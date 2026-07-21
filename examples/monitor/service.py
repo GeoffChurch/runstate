@@ -32,7 +32,7 @@ def _mem_available_frac():
 
 
 def main():
-    channel = runstate.attach()  # reads RUNSTATE_* set by the launcher
+    channel = runstate.current_channel()  # reads RUNSTATE_* set by the launcher
     with runstate.Worker(channel) as w:
         for _ in w.serve():      # stepless ticks; exits at zero demand
             w.set("load1", os.getloadavg()[0])

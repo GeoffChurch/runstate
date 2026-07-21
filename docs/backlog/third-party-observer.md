@@ -268,8 +268,9 @@ orthogonality. Settle that before writing code. Full spec + adversarial pass.
 ## 3. Run enumeration — there is no surface at all
 
 Nothing in the library enumerates runs (no `list_runs`, no `SELECT DISTINCT run_id`,
-no directory walk). `open_channel` locates *a* run by id; the Channel surface is
-per-run. But a viewer's first screen is *"what runs exist?"*.
+no directory walk). The locators (`attach_channel`/`create_channel`) locate *a* run
+by id; the Channel surface is per-run. But a viewer's first screen is *"what runs
+exist?"*.
 
 Worse, the answer is **filesystem-shaped and `PostgresChannel` is not**: every
 Postgres op is scoped `WHERE run_id = %s`, there are no roots, no directories, no
@@ -289,7 +290,16 @@ explicitly rather than re-deriving each time.
 
 ## 4. There is no read-only open
 
-`open_channel` **creates**: opening a nonexistent run fabricates `<rid>.db`, `-wal`
+**→ SHIPPED. Spec: [`../specs/channel-locators.md`](../specs/channel-locators.md).**
+The creating `open_channel` was split into two total locators — `attach_channel`
+(existing-only; raises `RunNotFound`, never creates *or* mutates a backing store)
+and `create_channel` (the one explicitly-named birth) — plus the worker's ambient
+`current_channel`. `attach_channel` is the read-only-safe open the cockpit's glob
+resolver wanted: a stale/GC'd pointer raises `RunNotFound` instead of fabricating a
+phantom, and a foreign valid sqlite db is left byte-identical (the sharp PR #14 harm,
+pinned). The problem statement below is the decision trail that drove it.
+
+`open_channel` **created**: opening a nonexistent run fabricated `<rid>.db`, `-wal`
 and `-shm` (verified). For a viewer that means resolving a stale/GC'd pointer
 **manufactures a phantom empty run** and pollutes a content-addressed store — and that
 the API **cannot distinguish "no run" from "empty run"** without stepping outside it to
@@ -372,6 +382,8 @@ liveness, which item 1 says an observer cannot do.
    flap guard; the guard was supposed to be item 2) — **before** any further wire design.
 3. **Enumeration / read-only open / cursored folds** (3–5) — each small; take them as
    the build demands them, so the demand is evidence rather than speculation.
+   **Read-only open (item 4) shipped** (`../specs/channel-locators.md`): the
+   `attach_channel`/`create_channel` split, driven by the cockpit's glob resolver.
 4. **Third-party stop safety** (item 6) — with the control half, after item 1 (a safe
    stop needs a true status).
 

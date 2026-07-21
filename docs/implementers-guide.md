@@ -528,9 +528,10 @@ against `runstate/` at 2026-07-16.)
 
 | entry point | raises | when |
 |---|---|---|
-| `open_channel` | `ValueError` | `backend="sqlite"` with `root=None`; `backend="postgres"` with `root=None`; an unknown backend string |
-| `open_channel` | `ImportError` | `backend="postgres"` without `psycopg` installed (message names `pip install runstate[postgres]`) |
-| `attach` | `KeyError` | `run_id` omitted **and** `RUNSTATE_RUN_ID` unset (then propagates `open_channel`'s `ValueError`/`ImportError`) |
+| `attach_channel` / `create_channel` | `ValueError` | `backend="sqlite"` with `root=None`; `backend="postgres"` with `root=None`; an unknown backend string |
+| `attach_channel` / `create_channel` | `ImportError` | `backend="postgres"` without `psycopg` installed (message names `pip install runstate[postgres]`) |
+| `attach_channel` | `RunNotFound` | the run has no records (a missing, empty, or foreign store) — the non-mutating open's absence signal |
+| `current_channel` | `KeyError` | `RUNSTATE_RUN_ID` unset (then propagates `create_channel`'s `ValueError`/`ImportError`) |
 | `Watcher.poll` | `KeyError` | `run_id` was never `add()`/`observe()`-tracked |
 | `ensure` | `ValueError` | `until` contains a `count` atom (no driven count axis); the default launch-producer got a non-`{"step": N}` `until` |
 | `ensure` | `TypeError` | `producer.extend(until)` returned `None` (the seam contract requires a liveness handle) |
@@ -550,13 +551,14 @@ has **no** "divergent re-emission" raise: since G1
 ([`backlog/value-plane-divergence-resolution.md`](backlog/value-plane-divergence-resolution.md),
 shipped 2026-06-27) it **collapses take-the-latest by `seq`**. (3)
 `PostgresChannel.__init__` raises **`RuntimeError`** ("call `ensure_schema(dsn)`
-first") if the shared `log` table is absent — so `open_channel(backend="postgres")`
-can surface a `RuntimeError` indirectly, in addition to the `ValueError`/
-`ImportError` above.
+first") if the shared `log` table is absent — so `create_channel` /
+`attach_channel` with `backend="postgres"` can surface a `RuntimeError` indirectly,
+in addition to the `ValueError`/`ImportError` above.
 
-Only three of these exception types are part of the exported surface
+Four of these exception types are part of the exported surface
 (`runstate.__all__`): **`MalformedRecordError`**, **`RunFailedError`**,
-**`NoProgressError`**. The rest are Python builtins.
+**`NoProgressError`**, and **`RunNotFound`** (a `LookupError` subclass — the
+non-mutating-open absence signal). The rest are Python builtins.
 
 ### 4.2 The conformance tier ladder (`tests/conftest.py`)
 
@@ -714,9 +716,11 @@ its layout. Everything here is the storage contract, not an API.
 
 A launcher sets these in the worker's environment; a second-language launcher
 sets the **same** variables. In the reference they are read at three sites:
-`attach()` reads the first three (explicit arguments override —
-`runstate/__init__.py:attach`), `vocabulary/launch.py` reads
-`RUNSTATE_LAUNCH_ID`, and `channel/sqlite.py` reads the journal-mode knob:
+`current_channel()` reads the first three from the env and delegates to
+`create_channel` (`runstate/__init__.py:current_channel`; the explicit locators
+`create_channel` / `attach_channel` take `run_id`/`root`/`backend` as arguments
+instead), `vocabulary/launch.py` reads `RUNSTATE_LAUNCH_ID`, and
+`channel/sqlite.py` reads the journal-mode knob:
 
 | variable | meaning | default |
 |---|---|---|
@@ -740,7 +744,7 @@ many NFS mounts, so the birth-claim CAS can admit two winners and
 ### 5.2 The SQLite layout (`runstate/channel/sqlite.py`)
 
 **One file per run.** The per-run locator is **`<root>/<run_id>.db`**
-(`channel/__init__.py:open_channel`). The `log` table DDL and index, verbatim:
+(`channel/__init__.py:_locate`). The `log` table DDL and index, verbatim:
 
 ```sql
 CREATE TABLE IF NOT EXISTS log (
@@ -813,7 +817,7 @@ CREATE INDEX IF NOT EXISTS idx_log_run_topic_seq ON log (run_id, topic, seq);
 
 ### 5.4 The memory backend
 
-In-process only (`in_process` tier). `open_channel(backend="memory")` shares a
+In-process only (`in_process` tier). `create_channel(backend="memory")` shares a
 log across handles in **one process** via a registry keyed by `(root, run_id)`
 (`channel/__init__.py:_MEMORY_LOGS`). Not cross-process — it exists for tests and
 single-process orchestration. Nothing to interop with across implementations.
@@ -825,7 +829,7 @@ single-process orchestration. Nothing to interop with across implementations.
 A new implementation reproduces the shape of the Python suite ([`../tests/`](../tests/)):
 
 - **Backend conformance, parametrized over every backend**
-  (`tests/test_channel.py` via the `ch` / `open_channel` fixtures in
+  (`tests/test_channel.py` via the `ch` / `open_run` fixtures in
   `conftest.py`, parametrized `[memory, sqlite, sqlite:delete, postgres]`). Every
   backend must pass **independently**: append/read/latest/last_seq; **contiguous
   1-based `seq`**; the value-snapshot-at-`send` immutability; the topic-pattern
