@@ -74,6 +74,28 @@ clusters that unlock each other, with a sequencing — see
   not-in-the-wheel question. Six decision points, each with a recommendation;
   nothing ruled. Blocks the first `pip install runstate`.
 
+## Filed from the runstate-tui cockpit build (GitHub issues)
+
+The cockpit is [the acceptance test for this ledger](cockpit.md); building it surfaced three
+upstream asks. They live as GitHub issues (the **inbox**); each graduates to a design entry here —
+with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
+
+- **[#15](https://github.com/GeoffChurch/runstate/issues/15) — `read()` query layer** (`filter=`,
+  `before=`/`max_seq=`, windowing): push filter / scrollback / search into the substrate (SQL
+  `WHERE`, pg full-text, sqlite FTS5) instead of the O(all-records) client-side scan every consumer
+  reimplements. The drill-down's filter/search rest on it, and a future multi-frontend daemon
+  exposes it as thin RPC. Bounds are **seq-only, never on `t`** (t is never an ordering key).
+- **[#16](https://github.com/GeoffChurch/runstate/issues/16) — change-notification (poll → push)**:
+  a `wait_for_change()` / `subscribe(after)` primitive so consumers react to new commits instead of
+  per-tick `last_seq()` polling — pg `LISTEN/NOTIFY`, sqlite WAL/inotify. The push upgrade of the
+  watermark/delta model; same idea as the channel-postgres deferred "low-latency push" note below.
+- **[#17](https://github.com/GeoffChurch/runstate/issues/17) — liveness / `conflicted` as an
+  observable**: expose the atomic live/stale/dead/conflicted verdict (corroborated by `resolve()` +
+  `launcher.terminated`) as a Watcher method, so a daemon + TUI + Emacs share **one** verdict rather
+  than each re-deriving it (the §3.2/§12 "verdicts live upstream" rule). The 2026-07 cockpit
+  red-team showed pure-log conflict detection is unreliable — the naive triggers fire on ordinary
+  crash+relaunch. Downstream *representation* stays tui-side (`runstate-tui` `liveness-overlay.md`).
+
 ## Long-term ambition
 
 - [visualization-story](visualization-story.md) — a **separate project** on top of
@@ -166,7 +188,7 @@ clusters that unlock each other, with a sequencing — see
 - **channel-postgres — SHIPPED** (`../specs/channel-postgres.md`): the cross-host backend.
   Claim = the uniform shared-log CAS (cross-host single-spawn + control fall out of it);
   liveness = the advisory lock as a Watcher-consumed signal, *not* a claim arbiter. Still
-  open (deferred in the spec): low-latency push (LISTEN/NOTIFY), cross-host auto-relaunch
+  open (deferred in the spec): low-latency push (LISTEN/NOTIFY — issue #16), cross-host auto-relaunch
   (the rejected co-arbiter — see "Cross-host liveness for the claim gate" above), sharding,
   HA.
 - **channel-redis** — a Redis backend; an alternative to Postgres for cross-host scenarios
