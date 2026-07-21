@@ -21,10 +21,10 @@ Install: `pip install -e .` (Python ≥ 3.11, stdlib-only core; add `.[postgres]
 The worker drives a normal loop; `runstate.Worker` drains control, services subscriptions, and emits the lifecycle beacons:
 
 ```python
-# worker.py — launched into a run; attach() reads RUNSTATE_* from the env
+# worker.py — launched into a run; current_channel() reads RUNSTATE_* from the env
 import runstate
 
-with runstate.Worker(runstate.attach()) as w:
+with runstate.Worker(runstate.current_channel()) as w:
     for step in w.steps(total=1000):
         w.set("loss", train_one_step())   # reported to whoever subscribed
     w.stopped(completed=True)   # finished the whole budget -> claim completion
@@ -38,7 +38,7 @@ The orchestrator spawns it, subscribes, and watches it to a terminal result:
 import runstate
 
 with runstate.LocalLauncher(root="/tmp/runs") as launcher, \
-        launcher.open_channel("run-1") as ch:   # the channel is a context manager
+        launcher.create_channel("run-1") as ch:   # birth the run's channel (a context manager)
     ch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="me")
     handle = launcher.launch("run-1", ["python", "worker.py"])
 
@@ -116,7 +116,7 @@ The control-plane / tracker split is a current division of labor, not a permanen
    │                 ▼
    │            web UI, plots
    ▼
- your training loop  ← uses runstate.attach + Worker
+ your training loop  ← uses runstate.current_channel + Worker
 ```
 
 The substrate is the `Channel` (a durable per-run topic log). The protocol defines the conventions over it. The library ships the reference `Worker`, launchers, and `Watcher` for producing/consuming them.

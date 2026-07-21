@@ -79,7 +79,11 @@ Both explicit locators are thin wrappers over a private
 
 `attach_channel` = `_locate(create=False)`:
 
-- **sqlite**: `sqlite3.connect("file:{path}?mode=rw", uri=True)` — raises
+- **sqlite**: `sqlite3.connect(f"file:{pathname2url(str(path))}?mode=rw", uri=True)`
+  — the path is percent-encoded (`urllib.request.pathname2url`) so a `?`/`#`/`%` in
+  a root or run_id is a literal filename character, not URI syntax, matching the
+  create path's literal-path file identity (a reimplementer that interpolates the
+  raw path mis-parses any such run and falsely reports `RunNotFound`). Raises
   `OperationalError` on a missing file (never creates); **skip** both
   `PRAGMA journal_mode=` and `executescript` (both mutate); probe
   `SELECT COALESCE(MAX(seq),0) FROM log`. A missing file *or* "no such table: log"

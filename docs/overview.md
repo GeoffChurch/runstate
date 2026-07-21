@@ -53,8 +53,8 @@ Three entry points, one per role. (The two canonical code snippets live in the
 README's Quickstart, and `examples/minimal/` is the runnable, tested version —
 code is kept in those two places only, so it can't drift.)
 
-- **Worker side** — wrap your loop. `attach()` finds the run's channel (from
-  the `RUNSTATE_*` env a launcher set); `with Worker(attach()) as w:` drains
+- **Worker side** — wrap your loop. `current_channel()` finds the run's channel (from
+  the `RUNSTATE_*` env a launcher set); `with Worker(current_channel()) as w:` drains
   control, services subscriptions, and beacons lifecycle while you iterate
   `w.steps(...)` and report values by cadence owner: `w.emit(...)` logs a
   point unconditionally (worker-chosen cadence — the series `ensure`/`history`
@@ -64,8 +64,9 @@ code is kept in those two places only, so it can't drift.)
   channel and spawns the worker; a `control.subscribe` requests a value series;
   `Watcher.wait(...)` streams events and folds liveness into the terminal
   `RunResult` verdict (the closed `outcome` enum).
-- **Observer side** — open the channel and tail it read-only; the worker never
-  knows (`open_channel(run_id, root=...)` + `read(after=cursor)`).
+- **Observer side** — attach to the existing channel and tail it read-only; the
+  worker never knows (`attach_channel(run_id, root=...)` — which raises
+  `RunNotFound` rather than fabricating a run, never mutates it — + `read(after=cursor)`).
 
 A participant that wants none of the helpers talks the protocol directly:
 `send`/`read`/`latest` plus the conventions below.
@@ -292,7 +293,7 @@ or orchestrator can ignore it and compose `send`/`read`/`latest` directly.
   `Watcher` below.
 - **`Launcher` / `LaunchHandle`** (Protocols) + **`ThreadLauncher`** (in-process;
   tests / single-process orchestration) and **`LocalLauncher`** (subprocess;
-  injects `RUNSTATE_*` so the child's `attach()` meets the same log). A launcher
+  injects `RUNSTATE_*` so the child's `current_channel()` meets the same log). A launcher
   does the irreducible job — spawn + emit handle — and returns; *watching/reaping
   is a separable role*.
 - **`Watcher`** — the stateful failure detector. `add(handle)` or `observe(run_id,

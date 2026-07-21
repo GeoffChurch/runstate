@@ -25,10 +25,13 @@ inputs: the demand fold, and the deletion of all flap policy). Closes design
 >
 > ```python
 > def ensure_served(launcher, run_id, target, **launch_kwargs):
->     channel = launcher.open_channel(run_id)
->     if not live_demand(channel):          # leased demand, boundary-aware
->         return None
->     if live_episode(channel) is not None: # someone already serving
+>     try:
+>         with launcher.attach_channel(run_id) as channel:  # existing-only probe
+>             if not live_demand(channel):          # leased demand, boundary-aware
+>                 return None
+>             if live_episode(channel) is not None: # someone already serving
+>                 return None
+>     except RunNotFound:                           # no records yet -> no demand
 >         return None
 >     return launcher.launch(run_id, target, **launch_kwargs)
 > ```

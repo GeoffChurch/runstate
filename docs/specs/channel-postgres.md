@@ -236,10 +236,11 @@ critical path — a BO launches a fresh trial).
 
 ## Locator + dependency
 
-`open_channel(run_id, root=<DSN>, backend="postgres")` — `root` is the connection string (or
-`RUNSTATE_PG_DSN`), a **direct or session-pooled** endpoint. Dependency: `psycopg` v3 as an
-optional `runstate[postgres] = ["psycopg[binary]"]` extra; `open_channel`'s `"postgres"`
-branch imports it lazily and raises a clear *"pip install runstate[postgres]"* on absence.
+`create_channel` / `attach_channel` `(run_id, root=<DSN>, backend="postgres")` — `root` is the
+connection string (or `RUNSTATE_PG_DSN`), a **direct or session-pooled** endpoint. Dependency:
+`psycopg` v3 as an optional `runstate[postgres] = ["psycopg[binary]"]` extra; the locators'
+`"postgres"` branch imports it lazily and raises a clear *"pip install runstate[postgres]"* on
+absence.
 The `EpisodeHolder` / `EpisodeProbe` Protocols and the `isinstance`-dispatch sites live in a
 **psycopg-free module** (`channel/base.py`, `watcher`), so `import runstate` works without
 the extra (guarded by a CI job that imports without it).
@@ -308,7 +309,7 @@ and the instance is a fleet-wide SPOF — the honest cost of one shared total or
 ## Tests
 
 **Isolation is real fixture work, not "almost all tests already exist."** A shared `log`
-table has none of `tmp_path`'s per-test freshness. The Postgres `ch` / `open_channel`
+table has none of `tmp_path`'s per-test freshness. The Postgres `ch` / `open_run`
 fixtures mint a **unique uuid `run_id` per test** (transparent to test *bodies*, which don't
 pass run_ids); the two `conc_backend` concurrency tests that build their own run_ids
 (`race-{trial}`, `claim-{trial}`) take a per-test uuid **namespace** (test-body edits). With

@@ -22,8 +22,9 @@ as terminal. Generalize that:
 > **same** `run_id` (same channel, same log) → `started … stopped`, resuming from
 > the run-keyed state it left behind.
 
-This rests on a property runstate already has: `open_channel(run_id, root)` is
-deterministic (same `run_id` → same channel), and the channel is **durable and
+This rests on a property runstate already has: the locators
+(`create_channel`/`attach_channel`) map `(run_id, root)` deterministically (same
+`run_id` → same channel), and the channel is **durable and
 worker-liveness-agnostic** — you can address a run before any worker exists, and
 messages wait in the log until a worker attaches and drains them.
 

@@ -158,7 +158,7 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
 - [launcher-protocol-typing](launcher-protocol-typing.md) — the `Launcher` Protocol's
   `launch` can't be structurally typed (the two reference launchers have disjoint
   `launch` signatures: a callable `target` vs a `cmd`). Split the uniform
-  `open_channel` from the per-launcher `launch` (helpers take a launch thunk). Interim:
+  `create_channel`/`attach_channel` from the per-launcher `launch` (helpers take a launch thunk). Interim:
   `launcher: Any` in the four helpers.
 - **protocol-async-api** (inline; no file) — wrap the JSON Schema in AsyncAPI for
   a richer spec format (multi-channel, lifecycle events). Defer until the v0.2
@@ -209,7 +209,8 @@ backend is the deferred channel-postgres LISTEN/NOTIFY idea. `SubmititLauncher` 
   — **public API only; every gap is a finding** — makes it the review's stage 6 with a
   keyboard, permanently, and the acceptance test for this ledger's items 2–6. `cockpit.md`
   is now the runstate-facing record (the split rationale + the build's predictions: item 3
-  **refuted**, item 5 **deferred**, item 4 **unsettled**, item 6 maybe-dissolved-by-item-1,
+  **refuted**, item 5 **deferred**, item 4 **shipped** (`../specs/channel-locators.md` — the
+  read-only `attach_channel`/`create_channel` split), item 6 maybe-dissolved-by-item-1,
   item 2 the target denominator). Supersedes the deleted `webapp-viewer.md`, and
   absorbed the `cli-status` / `cli-stop` one-liners (the predicted reconciliation:
   they died into the TUI's status table + stop action — a status/stop terminal

@@ -42,8 +42,11 @@ The substrate + opt-in conventions + reference orchestration, in
 - **`channel/`** — the substrate. `Envelope` (the log record, in
   `channel/envelope.py`), `MemoryChannel` + `SqliteChannel` + the cross-host
   `PostgresChannel` (the three backends; Postgres is the optional `[postgres]`
-  extra — `docs/specs/channel-postgres.md`), `open_channel` (locate/open a run's
-  channel), and the opt-in capability Protocols `EpisodeHolder`/`EpisodeProbe` in
+  extra — `docs/specs/channel-postgres.md`), the two locators `attach_channel`
+  (existing-only; raises `RunNotFound`, never creates or mutates) + `create_channel`
+  (open-or-create birth) splitting on creation policy so observing a run never
+  mutates it (`docs/specs/channel-locators.md`), and the opt-in capability
+  Protocols `EpisodeHolder`/`EpisodeProbe` in
   `channel/base.py` (a backend's connection-bound liveness signal off the five-op
   base, isinstance-detected; the Watcher consumes it). A per-run append-only
   **topic log** of envelopes `{seq, topic, name?, request_id?, body}`; the
@@ -95,9 +98,10 @@ The substrate + opt-in conventions + reference orchestration, in
   (`poll`/`wait`/`wait_all`/`iter_events`/`broadcast`) + `RunStatus`
   (`Running | RunResult`).
 - **`sweep.py`** — sequential multi-run helper (`sweep` + `Variant`).
-- **`__init__.py`** — `attach()` (worker-side Channel factory reading
+- **`__init__.py`** — `current_channel()` (worker-side Channel factory reading
   `RUNSTATE_RUN_ID` / `RUNSTATE_CHANNEL_ROOT` / `RUNSTATE_CHANNEL_BACKEND`
-  from env) + the public re-exports.
+  from env, delegating to `create_channel` so a launcher-less direct run still
+  births) + the public re-exports.
 
 No `Orchestrator` class. There **is** a reference `Launcher` Protocol +
 launchers, but they're opt-in helpers — users can spawn however they want
@@ -201,7 +205,8 @@ add or change a convention body.
 **Add a new Channel backend:**
 1. Implement the Channel surface in `runstate/channel/<name>.py`
    (import `Envelope` from `.envelope`, not the package `__init__`).
-2. Add a `"<name>"` branch in `runstate/channel/__init__.py:open_channel`.
+2. Add a `"<name>"` branch in `runstate/channel/__init__.py:_locate` (the private
+   backend dispatch both `attach_channel` and `create_channel` wrap).
 3. Parametrize the conformance tests over the new backend in
    `tests/conftest.py`.
 4. Declare the backend's concurrency tier (`in_process` / `cross_process` /
@@ -228,11 +233,12 @@ plan as the remaining work; and the deferred design-§12 items mirrored there).
 
 **Shipped in v0.2 (this effort):**
 - Topic-log substrate: Channel surface + `MemoryChannel` + `SqliteChannel`
-  + `Envelope` + `open_channel`; thread-safe in-process sharing.
+  + `Envelope` + the `attach_channel`/`create_channel` locators; thread-safe
+  in-process sharing.
 - The conventions: cooperative-control (`control.subscribe`/`unsubscribe`/
   `stop` + the condition-algebra), lifecycle (started/heartbeat/stopped/
   nak), launcher (launched/terminated), `value`.
-- The reference `Worker` loop + `attach()`.
+- The reference `Worker` loop + `current_channel()`.
 - Orchestration (Layer 3): `Launcher`/`LaunchHandle` Protocols,
   `ThreadLauncher`, `LocalLauncher`, `Watcher` (4 liveness tiers,
   `RunStatus`), `peek_terminal`/`RunResult`, `sweep`.

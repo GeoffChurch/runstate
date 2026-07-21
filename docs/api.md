@@ -62,7 +62,7 @@ into. A launcher sets `RUNSTATE_RUN_ID` / `RUNSTATE_CHANNEL_ROOT` /
 `RUNSTATE_CHANNEL_BACKEND` in the worker's environment; `current_channel` reads
 them and delegates to `create_channel` (open-or-create, so a launcher-less direct
 run still births). See [environment variables](#environment-variables) below.
-Raises `KeyError` if `RUNSTATE_RUN_ID` is unset. **Replaces `attach()`.**
+Raises `KeyError` if `RUNSTATE_RUN_ID` is unset.
 
 ### `RunNotFound`
 
