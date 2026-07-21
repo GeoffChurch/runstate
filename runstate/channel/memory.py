@@ -9,7 +9,7 @@ A shared ``log`` list may be passed in so that several MemoryChannels act as
 multiple readers/writers of the *same* run (the in-memory analogue of several
 SqliteChannels on one file). Instances that share a log MUST also share a
 ``lock`` so the ``seq`` read-modify-write stays atomic across them — the
-registry in ``open_channel`` co-locates one lock per shared log; a standalone
+registry in ``_locate`` co-locates one lock per shared log; a standalone
 ``MemoryChannel()`` gets its own.
 """
 

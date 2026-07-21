@@ -450,11 +450,11 @@ class Worker:
             # surfaced clearly at the point we try to report it (not the
             # opaque json error) -- and fatal: a broken reporting path
             # should stop the run, not silently drop the metric. The
-            # escape hatch is json_default on attach()/open_channel().
+            # escape hatch is json_default on current_channel()/create_channel().
             raise TypeError(
                 f"value for {name!r} ({type(value).__name__}) is not "
                 f"JSON-serializable; pass json_default to "
-                f"attach()/open_channel() to coerce it"
+                f"current_channel()/create_channel() to coerce it"
             ) from exc
 
     def _service(self, step: int | None) -> None:

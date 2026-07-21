@@ -128,8 +128,10 @@ class _LaunchProducer:
     @property
     def channel(self) -> Channel:
         # cheap: the backends share the backing store, so a fresh read view per
-        # access is fine (and is what `ensure` wants as the log grows).
-        return self._launcher.open_channel(self._variant.run_id)
+        # access is fine (and is what `ensure` wants as the log grows). The
+        # producer BIRTHS/extends the run, so this is create_channel (not attach):
+        # the first access may precede any record.
+        return self._launcher.create_channel(self._variant.run_id)
 
     def extend(self, until: Condition) -> LiveHandle:
         """Trigger production toward `until`: relaunch iff not already live,

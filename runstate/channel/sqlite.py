@@ -14,8 +14,9 @@ import threading
 import time
 from collections.abc import Callable
 from typing import Any
+from urllib.request import pathname2url
 
-from .base import Channel
+from .base import Channel, RunNotFound
 from .envelope import Body, Envelope
 
 # WAL is the default: on a local filesystem it keeps the log readable while a
@@ -81,18 +82,22 @@ class SqliteChannel(Channel):
         self,
         path: str | os.PathLike[str],
         *,
+        create: bool = True,
         json_default: Callable[[object], object] | None = None,
     ) -> None:
         self._json_default = json_default
         self._journal_mode = _resolve_journal_mode()
-        self._conn = sqlite3.connect(
-            str(path), isolation_level=None, check_same_thread=False
-        )
         # ONE handle may be shared across threads (ThreadLauncher hands the same
         # instance to the worker thread and the orchestrator's Watcher), and the
         # sqlite3 module mis-handles concurrent statement use on one connection
         # even when compiled threadsafe — so every connection touch is serialized.
         self._lock = threading.Lock()
+        if not create:
+            self._open_existing(path)
+            return
+        self._conn = sqlite3.connect(
+            str(path), isolation_level=None, check_same_thread=False
+        )
         # WAL conversion races at db birth: it takes a SHARED->EXCLUSIVE lock
         # escalation that sqlite exempts from the busy handler (deadlock-prone
         # path), so when several fresh connections collide -- the multi-claimant
@@ -118,6 +123,50 @@ class SqliteChannel(Channel):
         # norm, so outside a genuine multi-claimant race this never engages.
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
+
+    def _open_existing(self, path: str | os.PathLike[str]) -> None:
+        """Attach to an EXISTING file (``create=False``): open read-write but
+        create nothing and mutate nothing, then probe for records.
+
+        ``mode=rw`` (URI form) raises ``OperationalError`` on a missing file and
+        births no ``.db`` — unlike the default ``connect`` (``mode=rwc``). The
+        path is percent-encoded via ``pathname2url`` so a ``?``/``#``/``%`` in a
+        root or run_id is a literal filename character, not URI syntax (the
+        create path passes the literal path, so attach must match its file
+        identity). We also SKIP both ``PRAGMA journal_mode=`` (WAL conversion
+        writes the file header) and ``executescript(_SCHEMA)`` (writes tables) --
+        either would mutate a *foreign* valid sqlite db that a stale pointer
+        resolved to (the PR #14 harm). ``busy_timeout`` is per-connection and
+        writes nothing, so it is fine. A real WAL run stays writable through this
+        handle without the journal_mode pragma (the persisted header is
+        inherited). Then existence is "a run is its records": a missing file /
+        ``no such table: log`` (foreign db) ``OperationalError``, or
+        ``MAX(seq) == 0`` (empty run), raises ``RunNotFound``; a genuine
+        ``sqlite3.DatabaseError`` (corrupt / non-sqlite) is NOT a miss and
+        propagates (closing the connection first, so no probe path leaks it)."""
+        try:
+            self._conn = sqlite3.connect(
+                f"file:{pathname2url(str(path))}?mode=rw",
+                uri=True,
+                isolation_level=None,
+                check_same_thread=False,
+            )
+        except sqlite3.OperationalError as exc:  # unable to open: the file is absent
+            raise RunNotFound(f"run has no records at {path}") from exc
+        try:
+            self._conn.execute("PRAGMA busy_timeout=5000")
+            (n,) = self._conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) FROM log"
+            ).fetchone()
+        except sqlite3.OperationalError as exc:  # no such table: log -> foreign db
+            self._conn.close()
+            raise RunNotFound(f"run has no records at {path}") from exc
+        except BaseException:  # corrupt/non-sqlite (DatabaseError) &c: don't leak the conn
+            self._conn.close()
+            raise
+        if n == 0:
+            self._conn.close()
+            raise RunNotFound(f"run has no records at {path}")
 
     def send(
         self,

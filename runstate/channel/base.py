@@ -9,7 +9,7 @@ any other handle on the same run. Many handles coexist on one run (the worker, a
 observer, a Watcher), each opened and closed independently; the log and every
 other handle outlive any one of them.
 
-So ``with open_channel(...) as ch:`` scopes the *handle*, not the *run*: the
+So ``with create_channel(...) as ch:`` scopes the *handle*, not the *run*: the
 context manager closes this handle at block exit, while the run's log persists.
 Use-after-close is a backend error (a closed SQLite connection raises), not
 defined behavior.
@@ -27,6 +27,19 @@ from abc import ABC, abstractmethod
 from typing import Protocol, runtime_checkable
 
 from .envelope import Body, Envelope
+
+
+class RunNotFound(LookupError):
+    """A run with **no records** was asked to be attached to.
+
+    The uniform absence signal across backends: a run *is* its records (an
+    append-only log has no existence independent of them), so a nonexistent run
+    and an empty run are the same miss. Raised by ``attach_channel`` (the
+    non-creating locator) — never by ``create_channel`` (which births). A
+    ``LookupError`` because that is exactly what this is: the lookup found no
+    run. Callers that treat "no run yet" as "proceed" (the launch deciders)
+    catch it; a birth site that leaks it fails loudly rather than manufacturing
+    a phantom empty run (docs/specs/channel-locators.md)."""
 
 
 class Channel(ABC):

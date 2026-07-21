@@ -11,7 +11,14 @@ the submodules (runstate.channel, runstate.vocabulary, ...).
 import os
 from collections.abc import Callable
 
-from .channel import Body, Channel, Envelope, open_channel
+from .channel import (
+    Body,
+    Channel,
+    Envelope,
+    RunNotFound,
+    attach_channel,
+    create_channel,
+)
 from .launcher import (
     Launcher,
     LaunchHandle,
@@ -58,40 +65,37 @@ from .watcher import Running, RunStatus, Watcher, await_consumed
 from .worker import Worker
 
 
-def attach(
-    run_id: str | None = None,
-    *,
-    root: str | os.PathLike[str] | None = None,
-    backend: str | None = None,
+def current_channel(
     json_default: Callable[[object], object] | None = None,
 ) -> Channel:
-    """Worker-side: open the channel for the run this process was launched into.
+    """Worker-side: open (or birth) the channel for the run this process was
+    launched into.
 
     A Launcher sets ``RUNSTATE_RUN_ID`` / ``RUNSTATE_CHANNEL_ROOT`` /
-    ``RUNSTATE_CHANNEL_BACKEND`` in the worker's environment; ``attach()`` reads
-    them. Explicit arguments override the environment. Mirrors how the
-    orchestrator named the run, so both ends meet on the same log. ``json_default``
-    is a sender-side ``json.dumps`` hook for coercing exotic value payloads
-    (e.g. numpy scalars / tensors) the worker reports.
+    ``RUNSTATE_CHANNEL_BACKEND`` in the worker's environment; ``current_channel``
+    reads them and delegates to ``create_channel`` (open-or-create, so a
+    launcher-less direct run still births its own log). Mirrors how the
+    orchestrator named the run, so both ends meet on the same log.
+    ``json_default`` is a sender-side ``json.dumps`` hook for coercing exotic
+    value payloads (e.g. numpy scalars / tensors) the worker reports.
 
     A launcher also sets ``RUNSTATE_LAUNCH_ID`` (the launch's correlation id);
     the ``Worker`` re-emits it on its ``lifecycle.started`` so its claim names
     the launch it answers — read by ``vocabulary/launch.py``, not here, since it
     identifies the *episode*, not the channel.
     """
-    if run_id is None:
-        run_id = os.environ["RUNSTATE_RUN_ID"]
-    if root is None:
-        root = os.environ.get("RUNSTATE_CHANNEL_ROOT")
-    if backend is None:
-        backend = os.environ.get("RUNSTATE_CHANNEL_BACKEND", "sqlite")
-    return open_channel(run_id, root=root, backend=backend, json_default=json_default)
+    run_id = os.environ["RUNSTATE_RUN_ID"]
+    root = os.environ.get("RUNSTATE_CHANNEL_ROOT")
+    backend = os.environ.get("RUNSTATE_CHANNEL_BACKEND", "sqlite")
+    return create_channel(run_id, root=root, backend=backend, json_default=json_default)
 
 
 __all__ = [
     # substrate
-    "open_channel",
-    "attach",
+    "attach_channel",
+    "create_channel",
+    "current_channel",
+    "RunNotFound",
     "Channel",
     "Body",
     "Envelope",
