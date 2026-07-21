@@ -7,8 +7,10 @@ import runstate
 _API_DOC = Path(__file__).resolve().parent.parent / "docs" / "api.md"
 
 EXPECTED = {
-    "open_channel",
-    "attach",
+    "attach_channel",
+    "create_channel",
+    "current_channel",
+    "RunNotFound",
     "Channel",
     "Body",
     "Envelope",

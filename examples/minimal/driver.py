@@ -6,7 +6,7 @@ stop if loss diverged (it doesn't, in this example). Then it waits for the
 terminal RunResult.
 
 runstate ships NO Orchestrator class -- this is application code composing the
-substrate (open_channel / control.* sends) with the reference orchestration
+substrate (create_channel / control.* sends) with the reference orchestration
 helpers (LocalLauncher, Watcher). Adapt it freely.
 """
 
@@ -27,7 +27,7 @@ def main():
     with runstate.LocalLauncher(root=root) as launcher:
         # Subscribe BEFORE launch so the worker picks it up on its first tick:
         # report `loss` every step, correlated by request_id "driver".
-        ch = launcher.open_channel(run_id)
+        ch = launcher.create_channel(run_id)
         ch.send(
             {"every": {"step": 1}},
             topic=runstate.Topic.CONTROL_SUBSCRIBE,

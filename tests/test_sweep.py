@@ -6,6 +6,9 @@ path, on_event streaming, resume (skip runs that already finished), and
 stop_on_failure (halt on the first failed outcome).
 """
 
+import pytest
+
+from runstate import RunNotFound
 from runstate.launcher import ThreadLauncher
 from runstate.sweep import Variant, sweep
 from runstate.watcher import Watcher
@@ -75,8 +78,9 @@ def test_sweep_stop_on_failure_halts(tmp_path):
     assert [r.run_id for r in results] == ["a", "b"]
     assert results[0].outcome == "completed"
     assert results[1].outcome == "errored"
-    # "c" was never launched
-    assert launcher.open_channel("c").read() == []
+    # "c" was never launched: with no records it has no existence -> RunNotFound
+    with pytest.raises(RunNotFound):
+        launcher.attach_channel("c")
 
 
 def test_sweep_does_not_halt_on_clean_commanded_stop(tmp_path):

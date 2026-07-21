@@ -58,7 +58,7 @@ def pg_ready(pg_dsn):
 
 @pytest.fixture(autouse=True)
 def _reset_memory_registry():
-    """open_channel(..., backend="memory") shares logs through a process-global
+    """create_channel(..., backend="memory") shares logs through a process-global
     registry keyed by (root, run_id); clear it between tests so a reused run_id
     can't leak one test's log into the next."""
     from runstate.channel import _MEMORY_LOGS
@@ -79,7 +79,7 @@ def ch(request, tmp_path, monkeypatch):
         # Resolve pg_ready FIRST: its pg_dsn dependency SKIPs when
         # RUNSTATE_TEST_PG_DSN is unset -- before anything imports psycopg. The
         # import below coming first turned "no postgres here" into 22 collection
-        # ERRORs on a machine without the [postgres] extra, where open_channel /
+        # ERRORs on a machine without the [postgres] extra, where open_run /
         # conc_backend (which already resolve the fixture first) skip cleanly.
         dsn = request.getfixturevalue("pg_ready")
         from runstate.channel.postgres import PostgresChannel
@@ -102,16 +102,17 @@ def ch(request, tmp_path, monkeypatch):
 
 
 @pytest.fixture(params=["memory", "sqlite", "sqlite:delete", "postgres"])
-def open_channel(request, tmp_path, monkeypatch):
-    """Factory: each call opens a handle on the SAME run, so several handles
-    (e.g. a worker and a separate observer, or N racing claimants) share one
-    log. Delegates to the real ``runstate.channel.open_channel`` rather than
-    hand-constructing backends, so handles share exactly what the library
-    shares (separate sqlite connections on one file; the registry-co-located
-    memory log + lock; one shared postgres ``log`` table) and the fixture can't
-    drift from the locator. sqlite runs under both journal modes (WAL and the
-    NFS-safe DELETE); postgres mints one uuid run_id all handles share."""
-    from runstate.channel import open_channel as locate
+def open_run(request, tmp_path, monkeypatch):
+    """Factory: each call opens (birthing on first) a handle on the SAME run, so
+    several handles (e.g. a worker and a separate observer, or N racing
+    claimants) share one log. Delegates to the real
+    ``runstate.channel.create_channel`` rather than hand-constructing backends,
+    so handles share exactly what the library shares (separate sqlite
+    connections on one file; the registry-co-located memory log + lock; one
+    shared postgres ``log`` table) and the fixture can't drift from the locator.
+    sqlite runs under both journal modes (WAL and the NFS-safe DELETE); postgres
+    mints one uuid run_id all handles share."""
+    from runstate.channel import create_channel as locate
 
     if request.param == "postgres":
         root = request.getfixturevalue("pg_ready")  # the DSN; schema ensured

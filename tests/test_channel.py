@@ -353,9 +353,9 @@ def test_read_result_is_independent_of_storage(ch):
     assert ch.latest("value", "loss").body == {"v": 1}
 
 
-def test_channels_on_the_same_run_share_the_log(open_channel):
-    worker = open_channel()
-    observer = open_channel()
+def test_channels_on_the_same_run_share_the_log(open_run):
+    worker = open_run()
+    observer = open_run()
     worker.send(
         {"completed": True, "error": None, "final_step": None, "t": 0.0},
         topic="lifecycle.stopped",

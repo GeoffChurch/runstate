@@ -30,7 +30,7 @@ from runstate import (
     Topic,
     ensure_served,
     live_demand,
-    open_channel,
+    create_channel,
     peek_terminal,
 )
 
@@ -60,7 +60,7 @@ def watch_until_idle(ch, launcher):
 def main():
     root = tempfile.mkdtemp(prefix="runstate-monitor-")   # off the repo tree (was ./.runs)
     launcher = LocalLauncher(root=root)
-    with open_channel(RUN, root=root) as ch, launcher:    # the channel is a context manager
+    with create_channel(RUN, root=root) as ch, launcher:    # the channel is a context manager
         # ----- episode 1 -----
         demand(ch, "dash-1")
         print("[driver] demand pre-staged; live:",

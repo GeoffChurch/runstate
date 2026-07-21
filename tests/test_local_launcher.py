@@ -1,7 +1,7 @@
 """LocalLauncher: the subprocess reference launcher (docs/design-v0.2.md §8-9).
 
 Spawns the worker as a child process with RUNSTATE_* in its environment; the
-child calls runstate.attach() to re-derive the same run's channel (sqlite, so
+child calls runstate.current_channel() to re-derive the same run's channel (sqlite, so
 the log is shared cross-process). Realizes the full handle story the in-proc
 ThreadLauncher could only stub: a real child pid, resolvable and killable.
 Brackets the run with launcher.launched / launcher.terminated, the latter
@@ -16,12 +16,12 @@ from runstate.observables import peek_terminal
 # A worker that re-derives its channel from the environment and records a value.
 WORKER = (
     "import runstate;"
-    "ch = runstate.attach();"
+    "ch = runstate.current_channel();"
     "ch.send({'value': 0.5}, topic='value', name='loss')"
 )
 
 # A worker that blocks until killed.
-BLOCKER = "import time, runstate; runstate.attach(); time.sleep(30)"
+BLOCKER = "import time, runstate; runstate.current_channel(); time.sleep(30)"
 
 
 def test_subprocess_attaches_to_same_run_and_is_reaped(tmp_path):
@@ -29,7 +29,7 @@ def test_subprocess_attaches_to_same_run_and_is_reaped(tmp_path):
         h = launcher.launch("run-1", [sys.executable, "-c", WORKER])
         assert h.wait() == 0  # block until the child exits, and reap
 
-    ch = launcher.open_channel("run-1")
+    ch = launcher.attach_channel("run-1")
     # the child attached and wrote on the SAME run's log (cross-process)
     assert ch.latest("value", "loss").body["value"] == 0.5
 
@@ -51,7 +51,7 @@ def test_handle_is_alive_then_terminate_records_killed(tmp_path):
         h.wait()
         assert h.is_alive() is False
 
-    ch = launcher.open_channel("run-2")
+    ch = launcher.attach_channel("run-2")
     term = ch.latest("launcher.terminated")
     assert term.body["reason"] == "killed"
     assert term.body["signal"] == 15  # SIGTERM
@@ -64,5 +64,5 @@ def test_reap_is_idempotent(tmp_path):
         h.wait()
         h.wait()  # second reap must not emit a second launcher.terminated
 
-    ch = launcher.open_channel("run-3")
+    ch = launcher.attach_channel("run-3")
     assert len(ch.read(topics=["launcher.terminated"])) == 1

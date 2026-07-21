@@ -27,7 +27,7 @@ def _train(channel):
 
 def test_subscription_serviced_end_to_end(tmp_path):
     launcher = ThreadLauncher(root=tmp_path)
-    obs = launcher.open_channel("run")
+    obs = launcher.create_channel("run")
     # Pre-register a per-step subscription so the worker picks it up on its first
     # control drain — deterministic, no timing race.
     obs.send(
@@ -54,7 +54,7 @@ def test_subscription_serviced_end_to_end(tmp_path):
 
 def test_commanded_stop_end_to_end(tmp_path):
     launcher = ThreadLauncher(root=tmp_path)
-    obs = launcher.open_channel("run2")
+    obs = launcher.create_channel("run2")
     obs.send({"from": {"step": 2}}, topic="control.stop", request_id="obs-1")
 
     launcher.launch("run2", _train).wait()

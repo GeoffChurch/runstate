@@ -20,30 +20,55 @@ conformance reference (this page is the Python surface).
 
 The opinion-free topic-log transport.
 
-### `open_channel`
+Opening a run splits on **creation policy** into two total locators plus the
+worker's ambient factory, so birth is always explicitly named and observing a run
+never mutates it (docs/specs/channel-locators.md).
+
+### `attach_channel`
 
 ```python
-open_channel(run_id: str, *, root=None, backend="sqlite", json_default=None) -> Channel
+attach_channel(run_id: str, *, root=None, backend="sqlite", json_default=None) -> Channel
 ```
 
-Locate and open a run's channel. `root` is the directory (sqlite) or namespace
-(memory) holding runs; `run_id` selects one. Repeated calls on the same
-`(root, run_id)` share the run's log, so an orchestrator and a worker name the
-run the same way. `json_default` is a sender-side `json.dumps` hook for coercing
-exotic value payloads. Backends: `"memory"`, `"sqlite"` (default), `"postgres"`
+Attach to an **existing** run's channel; raise `RunNotFound` if it has no records
+— never creating or mutating any backing store (the foreign-db-safe open), yet
+**writable** (an attached handle reads *and* writes, so the stop path attaches
+then sends). `root` is the directory (sqlite) or namespace (memory) holding runs;
+`run_id` selects one. Repeated calls on the same `(root, run_id)` share the run's
+log. `json_default` is a sender-side `json.dumps` hook for coercing exotic value
+payloads.
+
+### `create_channel`
+
+```python
+create_channel(run_id: str, *, root=None, backend="sqlite", json_default=None) -> Channel
+```
+
+Open-or-create (birth) a run's channel; idempotent via the birth-CAS. The one
+side-effecting locator — creation is *always* this explicitly-named call, never a
+default of attaching. `root` / `run_id` / `json_default` and the backend set are
+as for `attach_channel`. Backends: `"memory"`, `"sqlite"` (default), `"postgres"`
 (the `[postgres]` extra). Raises `ValueError` on a bad backend/root and
 `ImportError` (with an install hint) if `backend="postgres"` without psycopg.
 
-### `attach`
+### `current_channel`
 
 ```python
-attach(run_id=None, *, root=None, backend=None, json_default=None) -> Channel
+current_channel(json_default=None) -> Channel
 ```
 
-Worker-side: open the channel for the run this process was launched into. A
-launcher sets the environment; `attach()` reads it (explicit arguments
-override). See [environment variables](#environment-variables) below. Raises
-`KeyError` if `run_id` is omitted and `RUNSTATE_RUN_ID` is unset.
+Worker-side: open (or birth) the channel for the run this process was launched
+into. A launcher sets `RUNSTATE_RUN_ID` / `RUNSTATE_CHANNEL_ROOT` /
+`RUNSTATE_CHANNEL_BACKEND` in the worker's environment; `current_channel` reads
+them and delegates to `create_channel` (open-or-create, so a launcher-less direct
+run still births). See [environment variables](#environment-variables) below.
+Raises `KeyError` if `RUNSTATE_RUN_ID` is unset. **Replaces `attach()`.**
+
+### `RunNotFound`
+
+The uniform absence signal (a `LookupError`): `attach_channel` raises it when a
+run has no records, so a nonexistent and an empty run are identically "no run"
+(docs/specs/channel-locators.md).
 
 ### `Channel`
 
@@ -121,20 +146,23 @@ dying breath CAS'd against the drained log).
 ## Launchers
 
 Opt-in orchestration: spawn a worker and bracket it with
-`launcher.launched` / `launcher.terminated`. `open_channel` is uniform;
+`launcher.launched` / `launcher.terminated`. The channel locators are uniform;
 `launch`'s target is launcher-specific (a callable vs a command).
 
 ### `Launcher`
 
 ```python
 launch(run_id: str, target: object, **kwargs) -> LaunchHandle
-open_channel(run_id: str) -> Channel
+create_channel(run_id: str) -> Channel
+attach_channel(run_id: str) -> Channel
 ```
 
-Protocol: spawn a worker into a run. `launch`'s target is launcher-specific by
-nature — an in-process callable for `ThreadLauncher`, a subprocess command for
-`LocalLauncher` — since how the worker receives its channel (passed directly vs
-re-derived via `attach`) differs in kind.
+Protocol: spawn a worker into a run. The two channel methods bind the launcher's
+`root` / `backend` — `create_channel` for the launch flow (births the run),
+`attach_channel` for probes (the deciders catch `RunNotFound`). `launch`'s target
+is launcher-specific by nature — an in-process callable for `ThreadLauncher`, a
+subprocess command for `LocalLauncher` — since how the worker receives its channel
+(passed directly vs re-derived via `current_channel`) differs in kind.
 
 ### `LaunchHandle`
 
@@ -172,8 +200,8 @@ reap() -> None
 ```
 
 Spawn workers as local subprocesses (the full handle story). `launch` runs a
-command with `RUNSTATE_*` injected; the child calls `runstate.attach()` to
-re-derive the same run's channel — so the backend must be cross-process durable
+command with `RUNSTATE_*` injected; the child calls `runstate.current_channel()`
+to re-derive the same run's channel — so the backend must be cross-process durable
 (sqlite, the default). As a context manager, best-effort reaps finished children
 on exit (it does not block on or kill stragglers — that stays the caller's choice
 via `wait` / `terminate`).
@@ -631,7 +659,7 @@ deliberate version bump (never silent).
 
 ## Environment variables
 
-`attach()` (and `LocalLauncher`, which sets them for the child) reads:
+`current_channel()` (and `LocalLauncher`, which sets them for the child) reads:
 
 | variable | meaning | default |
 |---|---|---|
@@ -653,8 +681,9 @@ The public exception types and when they raise:
 - **`NoProgressError`** — `ensure`'s own spawn died without advancing the step
   frontier and no live episode owns the run.
 
-Builtin exceptions from the public functions: `open_channel` raises `ValueError`
-(bad backend) / `ImportError` (postgres without psycopg); `attach` raises
-`KeyError` (unset `RUNSTATE_RUN_ID`); `Watcher.poll` raises `KeyError` (untracked
-run); `ensure` raises `TypeError` / `ValueError` (bad `until`); `Worker.emit`
-raises `ValueError` (before the first tick / stepless).
+Builtin exceptions from the public functions: `attach_channel` raises
+`RunNotFound` (no such run) — `create_channel` raises `ValueError` (bad backend) /
+`ImportError` (postgres without psycopg); `current_channel` raises `KeyError`
+(unset `RUNSTATE_RUN_ID`); `Watcher.poll` raises `KeyError` (untracked run);
+`ensure` raises `TypeError` / `ValueError` (bad `until`); `Worker.emit` raises
+`ValueError` (before the first tick / stepless).

@@ -14,7 +14,7 @@ import runstate
 
 
 def main():
-    channel = runstate.attach()  # reads RUNSTATE_* set by the launcher
+    channel = runstate.current_channel()  # reads RUNSTATE_* set by the launcher
     with runstate.Worker(channel) as w:
         for step in w.steps(total=50):
             # "training step" -- just simulate a decaying loss.

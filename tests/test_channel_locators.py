@@ -141,3 +141,46 @@ def test_attach_roundtrips_uri_reserved_chars(tmp_path, run_id):
     ch = attach_channel(run_id, root=str(tmp_path), backend="sqlite")
     assert ch.last_seq() == 1
     ch.close()
+
+
+# ----- create_channel sharing / isolation / dispatch (migrated from the old
+# locator test file: the registry-co-location + backend-dispatch ladder) -----
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+def test_create_channel_shares_run_by_id(backend, tmp_path):
+    """Repeated create_channel on the same (root, run_id) share the run's log, so
+    an orchestrator and a worker name the run the same way."""
+    a = create_channel("run-1", root=tmp_path, backend=backend)
+    b = create_channel("run-1", root=tmp_path, backend=backend)
+    a.send({"v": 1}, topic="value", name="loss")
+    assert [e.body for e in b.read()] == [{"v": 1}]
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+def test_create_channel_distinct_runs_are_isolated(backend, tmp_path):
+    a = create_channel("run-a", root=tmp_path, backend=backend)
+    b = create_channel("run-b", root=tmp_path, backend=backend)
+    a.send({"v": 1}, topic="value", name="loss")
+    assert b.read() == []
+
+
+def test_create_channel_unknown_backend_raises(tmp_path):
+    with pytest.raises(ValueError):
+        create_channel("r", root=tmp_path, backend="nope")
+
+
+def test_memory_root_none_is_not_the_string_none():
+    # None is a registry sentinel, never str()'d into the namespace "None"
+    a = create_channel("reg-none", backend="memory")
+    b = create_channel("reg-none", root="None", backend="memory")
+    a.send({"v": 1}, topic="value", name="x")
+    assert b.read() == []
+
+
+def test_memory_root_spellings_of_one_path_share(tmp_path):
+    # memory mirrors sqlite's identity: two spellings of one location = one log
+    a = create_channel("reg-path", root=str(tmp_path), backend="memory")
+    b = create_channel("reg-path", root=str(tmp_path) + "/.", backend="memory")
+    a.send({"v": 1}, topic="value", name="x")
+    assert [e.body for e in b.read()] == [{"v": 1}]

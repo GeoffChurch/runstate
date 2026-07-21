@@ -60,7 +60,7 @@ def main():
     print(f"[driver] exact ground energy {exact:.4f}")
 
     with runstate.LocalLauncher(root=root) as launcher:
-        ch = launcher.open_channel(rid)
+        ch = launcher.create_channel(rid)
         series = runstate.value_series(ch)
         energies = dict(series.get("energy", {}))
         # Replay guard for the register too: on resume, the worker's first

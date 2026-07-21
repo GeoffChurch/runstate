@@ -24,7 +24,7 @@ def test_launch_runs_target_and_brackets_with_launcher_lifecycle(tmp_path):
     h.wait()
 
     assert len(seen) == 1
-    ch = launcher.open_channel("run-1")
+    ch = launcher.attach_channel("run-1")
     topics = [e.topic for e in ch.read()]
     # launched brackets the work, terminated closes it
     assert topics[0] == "launcher.launched"
@@ -66,7 +66,7 @@ def test_errored_target_records_nonzero_exit(tmp_path):
     h.wait()
 
     assert isinstance(h.exception, RuntimeError)
-    ch = launcher.open_channel("run-3")
+    ch = launcher.attach_channel("run-3")
     term = ch.latest("launcher.terminated")
     assert term.body["exit_code"] == 1
     assert term.body["reason"] == "exited"
@@ -124,7 +124,7 @@ def test_a_claim_losers_clean_exit_does_not_forge_the_winners_verdict(tmp_path):
     hl = launcher.launch("collide", loser)  #     ...but claims after this launch
     claim_now.set()
     assert loser_done.wait(20) and hl.wait() is None
-    ch = launcher.open_channel("collide")
+    ch = launcher.attach_channel("collide")
 
     starteds = ch.read(topics=["lifecycle.started"])
     assert len(starteds) == 1  #                            exactly one claim
