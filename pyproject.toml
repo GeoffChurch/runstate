@@ -45,7 +45,18 @@ postgres = ["psycopg[binary]>=3"]
 # examples/vqe only; the other examples are stdlib+runstate. qiskit needs
 # numpy 2.x -- prefer a fresh venv (see examples/vqe/vqe.py's module note).
 examples = ["qiskit>=1.0"]
-test = ["pytest", "jsonschema", "mypy", "black", "psycopg[binary]>=3"]
+# black and mypy are PINNED, not floored, because their OUTPUT is the pass condition of a
+# CI gate (`black --check`, `mypy --strict`): a new release can turn master red with no
+# code change and nobody to blame. The other three are ordinary floors -- a new pytest
+# does not silently redefine what passing means. Bump these two deliberately, re-running
+# both gates in the same commit.
+test = [
+    "pytest",
+    "jsonschema",
+    "mypy==2.3.0",
+    "black==26.5.1",
+    "psycopg[binary]>=3",
+]
 
 [tool.setuptools.packages.find]
 include = ["runstate*"]
