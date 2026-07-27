@@ -44,8 +44,11 @@ jobs:
       - name: black --check
         run: black --check runstate/ tests/
 
-  # `import runstate` must work WITHOUT the optional psycopg extra; the postgres
-  # locator branch must fail with a clear, actionable message (not a raw ImportError).
+  # `import runstate` must work WITHOUT the optional psycopg extra. The assertions live in
+  # tests/test_psycopg_free.py so they are ordinary, tool-visible test code (inlined here
+  # they were invisible to black, mypy, grep and the suite -- which is how a deleted symbol
+  # sat in this file for six days). This job's own job is the part a meta_path blocker
+  # cannot simulate: a genuinely bare install, proving the PACKAGING has no hard dep.
   import-without-psycopg:
     runs-on: ubuntu-latest
     steps:
@@ -53,25 +56,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -e .   # NO extras -> psycopg is absent
-      - name: import is psycopg-free
-        run: |
-          python -c "
-          import sys, runstate
-          from runstate import Worker, Watcher
-          from runstate.channel import open_channel, Channel, EpisodeHolder, EpisodeProbe
-          assert 'psycopg' not in sys.modules, 'importing runstate pulled in psycopg'
-          print('import runstate is psycopg-free')
-          "
-      - name: postgres locator raises a clear install hint
-        run: |
-          python -c "
-          from runstate.channel import open_channel
-          try:
-              open_channel('r', root='postgresql://x', backend='postgres')
-          except ImportError as e:
-              assert 'pip install runstate[postgres]' in str(e), e
-              print('clear error:', e)
-          else:
-              raise SystemExit('expected ImportError without psycopg')
-          "
+      # NO extras -> psycopg is absent. pytest is the only addition and pulls nothing.
+      - run: pip install -e . pytest
+      - name: the public surface is psycopg-free
+        run: pytest tests/test_psycopg_free.py -v

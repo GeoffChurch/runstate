@@ -56,9 +56,10 @@ def test_history_collapses_re_emission_taking_the_latest(open_run):
     ch.send(
         {"value": 1.0, "step": 0, "t": 9.0}, topic="value", name="loss"
     )  #  identical re-emit -> collapses
-    assert [
-        b["step"] for b in history(open_run(), "loss", {"every": {"step": 1}})
-    ] == [0, 1]
+    assert [b["step"] for b in history(open_run(), "loss", {"every": {"step": 1}})] == [
+        0,
+        1,
+    ]
     ch.send(
         {"value": 99.0, "step": 1, "t": 9.0}, topic="value", name="loss"
     )  # DIVERGENT re-emit (a resume)
@@ -233,7 +234,8 @@ def test_ensure_cold_miss_then_hit(tmp_path):
     series2 = ensure(producer, "loss", until={"step": 5})  #    hit: no relaunch
     assert [b["step"] for b in series2] == [0, 1, 2, 3, 4]
     assert (
-        len(launcher.attach_channel("exp").read(topics=["launcher.launched"])) == launched
+        len(launcher.attach_channel("exp").read(topics=["launcher.launched"]))
+        == launched
     )
 
 
@@ -1153,6 +1155,6 @@ def test_history_junk_epoch_reads_as_no_epoch(open_run, junk):
     ch.send({"value": 1.0, "step": 0, "t": 5.0}, topic="value", name="loss")
     with pytest.raises(ValueError, match="epoch"):
         history(open_run(), "loss", {"every": {"time_seconds": 1}})
-    assert [
-        b["step"] for b in history(open_run(), "loss", {"every": {"step": 1}})
-    ] == [0]
+    assert [b["step"] for b in history(open_run(), "loss", {"every": {"step": 1}})] == [
+        0
+    ]

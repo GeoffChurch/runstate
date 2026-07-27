@@ -3,3 +3,6 @@
 
 # style: adopt black -- one tree-wide pass (runstate/ + tests/)
 d4a63655348b82a386b1bc084d438c76efa537d6
+
+# style: black -- restore the format gate to green (six drifted files)
+30dc6505acbb97608f3e30b9122e2137534983ab

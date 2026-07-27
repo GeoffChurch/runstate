@@ -29,7 +29,9 @@ def loc(request, tmp_path):
     if backend == "postgres":
         dsn = os.environ.get("RUNSTATE_TEST_PG_DSN")
         if not dsn:
-            pytest.skip("RUNSTATE_TEST_PG_DSN unset; skipping the postgres locator tests")
+            pytest.skip(
+                "RUNSTATE_TEST_PG_DSN unset; skipping the postgres locator tests"
+            )
         from runstate.channel.postgres import ensure_schema
 
         ensure_schema(dsn)
@@ -102,7 +104,9 @@ def test_attach_leaves_foreign_sqlite_byte_identical(tmp_path):
     """The PR #14 harm, pinned (sqlite): attaching where a stale pointer resolves
     to a FOREIGN valid sqlite db must not create, schema-mutate, or WAL-sidecar
     it. The file stays byte-identical and no -wal/-shm appears."""
-    foreign = tmp_path / "ghost.db"  # attach("ghost", root=tmp_path) -> tmp_path/ghost.db
+    foreign = (
+        tmp_path / "ghost.db"
+    )  # attach("ghost", root=tmp_path) -> tmp_path/ghost.db
     conn = sqlite3.connect(str(foreign))
     conn.execute("CREATE TABLE unrelated (x INTEGER)")
     conn.execute("INSERT INTO unrelated VALUES (1)")
