@@ -421,6 +421,25 @@ def ensure(
             )
             and live_episode(channel) is None
         ):
+            # TEMPORARY INSTRUMENTATION (issue #12) -- revert before merge.
+            # The guard cannot tell "our spawn is stuck" from "our spawn lost the claim
+            # and the winner then finished". Dump the log so the next CI failure reports
+            # WHAT it saw rather than only that it raised.
+            import sys as _sys
+
+            print("\n=== issue-12 dump ===", file=_sys.stderr)
+            print(f"  handle={handle!r} type={type(handle).__name__}", file=_sys.stderr)
+            print(f"  before={before} progress={_progress(channel)}", file=_sys.stderr)
+            print(
+                f"  until={until} terminal={peek_terminal(channel)}", file=_sys.stderr
+            )
+            for _e in channel.read():
+                print(
+                    f"  seq{_e.seq:>3} {_e.topic:<22} name={_e.name!r:<8} "
+                    f"rid={_e.request_id!r:<38} {_e.body}",
+                    file=_sys.stderr,
+                )
+            print("=== end issue-12 dump ===\n", file=_sys.stderr)
             raise NoProgressError(
                 producer.run_id, progress=progress(channel), until=until
             )
