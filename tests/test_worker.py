@@ -665,12 +665,8 @@ def test_second_worker_loses_the_claim_and_does_no_work(open_run):
         )  #                           lost: an episode is already live
         for step in w.steps(total=3):
             w.set("loss", float(step))  #                      body must not run
-    assert (
-        open_run().read(topics=["value"]) == []
-    )  #      the loser emitted no values
-    assert (
-        len(open_run().read(topics=["lifecycle.started"])) == 1
-    )  # no second started
+    assert open_run().read(topics=["value"]) == []  #      the loser emitted no values
+    assert len(open_run().read(topics=["lifecycle.started"])) == 1  # no second started
 
 
 def test_claim_losers_bare_tick_appends_nothing(open_run):
@@ -753,9 +749,7 @@ def test_emit_updates_the_register_a_subscription_samples(open_run):
     w.tick(step=0)  #                      a safe point, as inside steps()'s body
     w.emit("loss", 0.7)
     w.tick(step=1)  #                      the subscription fires, samples the register
-    samples = [
-        e for e in open_run().read(topics=["value"]) if e.request_id == "obs"
-    ]
+    samples = [e for e in open_run().read(topics=["value"]) if e.request_id == "obs"]
     assert samples and samples[-1].body["value"] == 0.7
 
 

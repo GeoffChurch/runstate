@@ -35,9 +35,7 @@ def test_last_activity_never_reads_value_records(open_run):
 
 def test_last_activity_is_the_newest_dated_record(open_run):
     ch = open_run()
-    assert (
-        last_activity(open_run()) is None
-    )  #                      nothing dated yet
+    assert last_activity(open_run()) is None  #                      nothing dated yet
     ch.send({"handle": "local://h/1", "t": 10.0}, topic="lifecycle.started")
     assert (
         last_activity(open_run()) == 10.0
@@ -201,9 +199,7 @@ def test_a_late_reap_is_attributed_to_its_own_episode_post_hoc(open_run):
         topic="launcher.terminated",
         request_id="L1",
     )
-    assert (
-        peek_terminal(open_run()).outcome == "killed"
-    )  #      ep2's, not the newest
+    assert peek_terminal(open_run()).outcome == "killed"  #      ep2's, not the newest
 
 
 def test_a_claim_losers_clean_exit_does_not_complete_the_run(open_run):
@@ -236,9 +232,7 @@ def test_a_hand_run_workers_episode_has_no_launcher_verdict(open_run):
     ch.send(
         {"handle": local_handle(), "t": 1.0}, topic="lifecycle.started"
     )  #                            hand-run: no launch id
-    assert (
-        peek_terminal(open_run()) is None
-    )  #                  ...and now L1 does not
+    assert peek_terminal(open_run()) is None  #                  ...and now L1 does not
 
 
 def test_live_episode_running_then_none_when_stopped(open_run):
@@ -252,9 +246,7 @@ def test_live_episode_running_then_none_when_stopped(open_run):
         {"completed": True, "error": None, "final_step": 1, "t": 0.0},
         topic="lifecycle.stopped",
     )
-    assert (
-        live_episode(open_run()) is None
-    )  #                     stopped -> not live
+    assert live_episode(open_run()) is None  #                     stopped -> not live
 
 
 def test_peek_terminal_is_episode_aware(open_run):
@@ -616,9 +608,7 @@ def test_undischarged_stops_pending_until_the_next_stopped(open_run):
         {"completed": False, "error": None, "final_step": 3, "t": 0.0},
         topic="lifecycle.stopped",
     )
-    assert (
-        undischarged_stops(open_run()) == []
-    )  #           ONE stopped discharges ALL
+    assert undischarged_stops(open_run()) == []  #           ONE stopped discharges ALL
     s3 = ch.send({}, topic="control.stop", request_id="b")
     assert [e.seq for e in undischarged_stops(open_run())] == [s3]
 

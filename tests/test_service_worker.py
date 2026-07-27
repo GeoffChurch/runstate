@@ -139,9 +139,9 @@ def test_stepless_step_only_every_fires_once_then_expires(open_run):
     w.tick(step=None)
     w.tick(step=None)
     assert len(open_run().read(topics=["value"])) == 1
-    assert [
-        u.request_id for u in open_run().read(topics=["control.unsubscribe"])
-    ] == ["r1"]
+    assert [u.request_id for u in open_run().read(topics=["control.unsubscribe"])] == [
+        "r1"
+    ]
 
 
 def test_stepless_every_with_a_time_arm_recurs(open_run):
@@ -306,9 +306,9 @@ def test_serve_full_lifecycle(open_run):
     assert len(open_run().read(topics=["value"])) >= 1
     stops = open_run().read(topics=["lifecycle.stopped"])
     assert len(stops) == 1  #                      retire's breath; __exit__ no-ops
-    assert [
-        u.request_id for u in open_run().read(topics=["control.unsubscribe"])
-    ] == ["r1"]
+    assert [u.request_id for u in open_run().read(topics=["control.unsubscribe"])] == [
+        "r1"
+    ]
 
 
 def test_serve_exits_on_commanded_stop(open_run):

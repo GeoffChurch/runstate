@@ -161,7 +161,9 @@ class SqliteChannel(Channel):
         except sqlite3.OperationalError as exc:  # no such table: log -> foreign db
             self._conn.close()
             raise RunNotFound(f"run has no records at {path}") from exc
-        except BaseException:  # corrupt/non-sqlite (DatabaseError) &c: don't leak the conn
+        except (
+            BaseException
+        ):  # corrupt/non-sqlite (DatabaseError) &c: don't leak the conn
             self._conn.close()
             raise
         if n == 0:
