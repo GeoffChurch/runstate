@@ -59,19 +59,23 @@ jobs:
           python -c "
           import sys, runstate
           from runstate import Worker, Watcher
-          from runstate.channel import open_channel, Channel, EpisodeHolder, EpisodeProbe
+          from runstate.channel import attach_channel, create_channel, Channel, EpisodeHolder, EpisodeProbe
           assert 'psycopg' not in sys.modules, 'importing runstate pulled in psycopg'
           print('import runstate is psycopg-free')
           "
       - name: postgres locator raises a clear install hint
         run: |
           python -c "
-          from runstate.channel import open_channel
-          try:
-              open_channel('r', root='postgresql://x', backend='postgres')
-          except ImportError as e:
-              assert 'pip install runstate[postgres]' in str(e), e
-              print('clear error:', e)
-          else:
-              raise SystemExit('expected ImportError without psycopg')
+          from runstate.channel import attach_channel, create_channel
+          # BOTH locators, since the psycopg import lives in the backend dispatch they
+          # share: neither the attach path nor the birth path may reach Postgres without
+          # the extra, and each must say so actionably.
+          for locate in (attach_channel, create_channel):
+              try:
+                  locate('r', root='postgresql://x', backend='postgres')
+              except ImportError as e:
+                  assert 'pip install runstate[postgres]' in str(e), e
+                  print('clear error from', locate.__name__ + ':', e)
+              else:
+                  raise SystemExit('expected ImportError without psycopg: ' + locate.__name__)
           "
