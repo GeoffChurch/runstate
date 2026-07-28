@@ -1,4 +1,5 @@
 import json
+import os
 import pytest
 from pathlib import Path
 import runstate
@@ -199,6 +200,28 @@ def test_relaunch_if_needed_noops_when_a_live_episode_exists():
     )  # no spawn
 
 
+def _checkpoint(path, payload):
+    """Publish a checkpoint ATOMICALLY: temp file + ``os.replace``, so a concurrent
+    reader sees either the old content or the new one -- never the empty file
+    ``write_text`` briefly leaves behind (it truncates before it fills).
+
+    Load-bearing, not hygiene (#12). ``lifecycle.stopped`` is the gate
+    ``relaunch_if_needed`` reads, and it lands when the ``with`` block exits -- BEFORE
+    this write completes. So the next episode can be spawned mid-write, and with a
+    plain ``write_text`` it reads ``""`` and dies on ``json.loads`` before it ever
+    constructs a ``Worker``: zero progress, no ``lifecycle.started``, which ``ensure``'s
+    guard can only report as "made no progress".
+
+    Fixing the ORDER instead (checkpoint inside the ``with``) does not work: it puts
+    slow, GIL-releasing file I/O ahead of ``lifecycle.stopped``, which widens the
+    window in which ``ensure`` returns before that record exists -- measured at 6/12
+    failures in test_ensure_preempted_that_reaches_up_to_uses_progress_hit, against
+    0/12 here. Atomicity is the property that was missing; the order was fine."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload))
+    os.replace(tmp, path)  # atomic within a directory
+
+
 def _cell(channel, *, run_id, up_to, ckpt_dir):
     """A resumable worker: reads its run_id-keyed checkpoint, continues the
     run-absolute step, checkpoints the new frontier. Subscription-gated.
@@ -211,7 +234,7 @@ def _cell(channel, *, run_id, up_to, ckpt_dir):
     with runstate.Worker(channel, now=lambda: 0.0) as w:
         for step in w.steps(start=start, total=up_to):
             w.set("loss", float(step))
-    ckpt.write_text(json.dumps({"next": up_to}))
+    _checkpoint(ckpt, {"next": up_to})
 
 
 def _producer(launcher, tmp_path, run_id="exp"):
@@ -303,7 +326,7 @@ def test_ensure_redrives_within_one_call_to_reach_target(tmp_path):
             if stop >= up_to:
                 w.stopped(completed=True)  #  reached the full target -> intrinsic done
             # else: fall off -> default preempted (more to do)
-        ckpt.write_text(json.dumps({"next": stop}))
+        _checkpoint(ckpt, {"next": stop})  # atomic -- see `_checkpoint` (#12)
 
     variant = runstate.Variant(
         "exp", chunked, {"kwargs": {"run_id": "exp", "ckpt_dir": str(tmp_path)}}
