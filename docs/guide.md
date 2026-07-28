@@ -173,18 +173,33 @@ checkpoint records **the frontier — the work actually done — never the targe
 This is the load-bearing half of `examples/reuse/`'s resumable cell:
 
 ```python
+def checkpoint(path, payload):        # publish ATOMICALLY -- see below
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload))
+    os.replace(tmp, path)
+
 ckpt = Path(ckpt_dir) / f"{run_id}.json"
 start = json.loads(ckpt.read_text())["next"] if ckpt.exists() else 0
 with runstate.Worker(channel) as w:
     for step in w.steps(start=start, total=up_to):
         w.set("loss", 5.0 * math.exp(-lr * step))
-        ckpt.write_text(json.dumps({"next": step + 1}))  # this step is done
+        checkpoint(ckpt, {"next": step + 1})  # this step is done
 ```
 
 Why the frontier and not the target: a cooperative `control.stop` can cut the
 loop short. A checkpoint written *after* the loop as `{"next": up_to}` would
 claim work that never happened — the next episode resumes past the gap, does
 nothing, and a consumer raises `NoProgressError`.
+
+Why **atomically**, and not a plain `write_text`: `write_text` is
+open-truncate → write → close, so mid-write the file *exists and is empty*. Two
+readers can land there. A worker killed mid-write leaves a truncated checkpoint
+that no later episode can parse — the resume this whole section is about. And a
+resumed episode spawned in that instant reads `""` and dies **before it
+attaches**, so it never writes `lifecycle.started`: from the outside that is a
+launch that made no progress, and the confusing report you get is
+`NoProgressError`, not a parse error. `os.replace` is atomic within a directory,
+so every reader sees either the previous frontier or the new one.
 
 ### Reuse by content-addressed `run_id`
 

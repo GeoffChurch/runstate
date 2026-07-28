@@ -9,9 +9,24 @@ ThreadLauncher + the memory backend, so the whole demo is self-contained.
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 
 import runstate
+
+
+def checkpoint(path, payload):
+    """Publish the frontier ATOMICALLY: temp file, then ``os.replace`` into position.
+
+    ``write_text`` truncates before it fills, so mid-write the file exists and is EMPTY.
+    A worker that dies there leaves a checkpoint the resume cannot parse, and a resumed
+    episode spawned in that instant reads it and dies before it even attaches -- which
+    surfaces as a confusing "made no progress" rather than a parse error. ``os.replace``
+    is atomic within a directory: readers see the old frontier or the new one.
+    """
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload))
+    os.replace(tmp, path)
 
 
 def run_id(inputs: dict) -> str:
@@ -34,7 +49,7 @@ def train(channel, *, run_id, up_to, ckpt_dir, lr):
     with runstate.Worker(channel) as w:
         for step in w.steps(start=start, total=up_to):
             w.set("loss", 5.0 * math.exp(-lr * step))
-            ckpt.write_text(json.dumps({"next": step + 1}))   # this step is done
+            checkpoint(ckpt, {"next": step + 1})              # this step is done
 
 
 def producer_for(launcher, ckpt_dir, *, lr):

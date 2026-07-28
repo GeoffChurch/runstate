@@ -39,6 +39,19 @@ import vqe
 A_GAIN, C_GAIN, STABILITY, ALPHA, GAMMA = 2.0, 0.2, 8.0, 0.602, 0.101
 
 
+def checkpoint(path, payload):
+    """Publish the frontier ATOMICALLY: temp file, then ``os.replace`` into position.
+
+    ``write_text`` truncates before it fills, so mid-write the file exists and is EMPTY.
+    This worker can be preempted between QPU polls, and losing the params to a torn
+    write costs the whole optimisation run, not just one iteration. ``os.replace`` is
+    atomic within a directory: a resume reads the old frontier or the new one.
+    """
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload))
+    os.replace(tmp, path)
+
+
 def perturbation(seed, k, n):
     """The iteration's Rademacher direction, deterministic in (seed, k) so a
     resumed episode replays the same direction sequence."""
@@ -104,7 +117,7 @@ def main():
             params = [t - a_k * grad * d for t, d in zip(params, delta)]
             w.emit("energy", float((e_plus + e_minus) / 2.0))  # the cached series
             w.set("job_seconds", time.monotonic() - began)  # demand-sampled register
-            ckpt.write_text(json.dumps({"next": step + 1, "params": params}))
+            checkpoint(ckpt, {"next": step + 1, "params": params})
         # No completed claim: budget-done is a pause on the extend axis (see
         # module docstring); leaving the block emits the preempted dying breath.
 

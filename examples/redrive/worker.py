@@ -15,6 +15,19 @@ from pathlib import Path
 import runstate
 
 
+def checkpoint(path, payload):
+    """Publish the frontier ATOMICALLY: temp file, then ``os.replace`` into position.
+
+    ``write_text`` truncates before it fills, so a death mid-write -- exactly what this
+    example simulates -- can leave a TRUNCATED checkpoint the resume cannot parse,
+    turning a crash-once demo into a crash-forever one. ``os.replace`` is atomic within
+    a directory: a reader sees the previous frontier or the new one, never a half-file.
+    """
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload))
+    os.replace(tmp, path)
+
+
 def main():
     up_to = int(os.environ["REDRIVE_UP_TO"])       # the step target, plumbed by the producer
     state = Path(os.environ["REDRIVE_STATE"])      # checkpoint + crash-marker dir
@@ -27,7 +40,7 @@ def main():
         for step in w.steps(start=start, total=up_to):
             w.set("loss", 5.0 * math.exp(-0.3 * step))
             if step % 3 == 2:                       # checkpoint the frontier every 3 steps
-                ckpt.write_text(json.dumps({"next": step + 1}))
+                checkpoint(ckpt, {"next": step + 1})
             if step == 4 and not crashed.exists():  # first attempt only: crash, leaving the ckpt behind the frontier
                 crashed.write_text("1")
                 os._exit(1)                         # recordless death -> ERRORED with error=None
