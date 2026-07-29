@@ -133,7 +133,17 @@ def latest_episode(channel: Channel) -> Envelope | None:
 def live_episode(channel: Channel) -> Optional[str]:
     """Handle of the currently-live episode, or None: the latest episode
     (``latest_episode``) with no following ``stopped`` whose worker resolves
-    alive (a started-then-crashed episode resolves dead -> not live)."""
+    alive (a started-then-crashed episode resolves dead -> not live).
+
+    THE LAUNCHER TIER DOES NOT PARTICIPATE. Only a later ``lifecycle.stopped``
+    and a ``resolve()``-dead handle release a claim; a ``launcher.terminated``
+    never does, however well correlated, because it is not an eliminator for
+    ``lifecycle.started``. ``peek_terminal`` reads it and this does not, so a run
+    can be a KILLED *verdict* and a held *claim* at once -- deliberate (the claim
+    gate takes definitive evidence, not a third party's report), and the reason a
+    consumer with a stranded foreign-host claim cannot clear it by writing a
+    death record. Stated because its absence sent one downstream repo at the
+    wrong plane for a week."""
     started = latest_episode(channel)
     if started is None:
         return None
