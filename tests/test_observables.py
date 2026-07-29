@@ -673,3 +673,73 @@ def test_live_episode_foreign_host_episode_reads_live(open_run):
         {"handle": "local://otherhost/2147483646", "t": 0.0}, topic="lifecycle.started"
     )
     assert live_episode(open_run()) == "local://otherhost/2147483646"
+
+
+# --- the claim gate's precedence: a definitive probe outranks a record ----------------
+#
+# specs/launcher-record-identity.md pins the converse ("the live-guard must never be
+# resolve()-based -- a probe voiding a *true* verdict is worse than the forgery"). What
+# nothing asserted is the direction that admits a SECOND WRITER. Reproduced 2026-07-28:
+# a patch routing live_episode through the launcher tier passed the whole suite
+# unchanged while revoking a live worker's claim, and a standing driver loop then
+# span 201 spawns in 3s (cf. specs/control-target.md R5's 373-in-3s).
+
+
+def test_a_death_record_never_revokes_a_claim_whose_probe_says_alive(open_run):
+    ch = open_run()
+    live = local_handle()  #                    THIS process, so resolve() -> True
+    ch.send({"handle": live}, topic="launcher.launched", request_id="L1")
+    ch.send({"handle": live, "t": 0.0}, topic="lifecycle.started", request_id="L1")
+    # A well-formed death, correctly correlated to the claim -- the shape a wrapper
+    # (sbatch / srun / `nohup ... &`) produces when it exits while the worker it
+    # spawned runs on, since the worker inherits RUNSTATE_LAUNCH_ID.
+    ch.send(
+        {"reason": "killed", "exit_code": None, "signal": 9, "t": 1.0},
+        topic="launcher.terminated",
+        request_id="L1",
+    )
+    assert peek_terminal(open_run()).outcome == "killed"  # the VERDICT plane may say so
+    assert live_episode(open_run()) == live  #              the CLAIM plane must not
+
+
+def test_a_malformed_stop_is_repairable_by_appending_a_good_one(open_run):
+    # The stop tier parses only `latest`, so a later well-formed record supersedes a
+    # poisoned one. Consumers depend on this: an append-only repair is the ONLY way to
+    # revive a channel bricked by a bad write, and a downstream repair tool exists that
+    # does exactly this. A fold that grew a full-history parse would silently take the
+    # property away. (The launcher tier does not share it -- a known asymmetry.)
+    ch = open_run()
+    ch.send({"handle": "local://otherhost/1", "t": 0.0}, topic="lifecycle.started")
+    ch.send(
+        {"completed": False, "error": None, "final_step": 1, "t": 1.0, "note": "junk"},
+        topic="lifecycle.stopped",
+    )
+    with pytest.raises(MalformedRecordError):
+        peek_terminal(open_run())
+    ch.send(
+        {"completed": False, "error": None, "final_step": 1, "t": 2.0},
+        topic="lifecycle.stopped",
+    )
+    assert peek_terminal(open_run()).outcome == "preempted"
+
+
+def test_live_episode_ignores_a_launcher_death_that_peek_terminal_honours(open_run):
+    # CHARACTERISATION, not an endorsement. The two folds have non-nested eliminator
+    # sets: peek_terminal reads the launch-correlated `terminated`; live_episode reads
+    # only `stopped` + resolve(). So a provably-dead run reads as still-claimed, and
+    # relaunch_if_needed / ensure_served / the attach-CAS all refuse to act on it.
+    #
+    # Nothing in docs/ defends the omission and issue #17 asks for it to change. DELETE
+    # this test when that is ruled -- it exists so the change is deliberate rather than
+    # discovered, which twice cost a reviewer real effort.
+    ch = open_run()
+    dead = "local://otherhost/1"  #             resolve() abstains: not our pid table
+    ch.send({"handle": dead}, topic="launcher.launched", request_id="L1")
+    ch.send({"handle": dead, "t": 0.0}, topic="lifecycle.started", request_id="L1")
+    ch.send(
+        {"reason": "killed", "exit_code": None, "signal": 9, "t": 1.0},
+        topic="launcher.terminated",
+        request_id="L1",
+    )
+    assert peek_terminal(open_run()).outcome == "killed"
+    assert live_episode(open_run()) == dead  #  the divergence, pinned

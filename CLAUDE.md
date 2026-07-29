@@ -124,6 +124,15 @@ ask: does the protocol itself need to recognize it (the way
 `control.*` drives the worker loop)? If not, it's a user-defined dict under
 `topic="value"` — keep it out of the conventions.
 
+**Count before designing for a consumer.** Before proposing a change on a
+downstream repo's behalf, query that repo's actual logs — never reason from the
+shape of its architecture. Measured 2026-07-28: a fix routed through the
+`launcher.*` plane was proposed three times for one consumer and was structurally
+inapplicable every time, because its 1,457 `lifecycle.started` records carry
+**zero** launch ids (it spawns with a bare `subprocess.Popen`, so no launcher
+record can ever speak for a claim of its). Three rounds of principled argument
+reached the wrong answer; one census settled it in seconds.
+
 **The `additionalProperties: false` in the schemas is load-bearing.** It
 means a future protocol version can't silently add fields; adding a field
 to a well-known body is a deliberate convention-version bump. Each
