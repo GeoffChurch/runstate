@@ -133,7 +133,17 @@ def latest_episode(channel: Channel) -> Envelope | None:
 def live_episode(channel: Channel) -> Optional[str]:
     """Handle of the currently-live episode, or None: the latest episode
     (``latest_episode``) with no following ``stopped`` whose worker resolves
-    alive (a started-then-crashed episode resolves dead -> not live)."""
+    alive (a started-then-crashed episode resolves dead -> not live).
+
+    THE LAUNCHER TIER DOES NOT PARTICIPATE. Only a later ``lifecycle.stopped``
+    and a ``resolve()``-dead handle release a claim; a ``launcher.terminated``
+    never does, however well correlated, because it is not an eliminator for
+    ``lifecycle.started``. ``peek_terminal`` reads it and this does not, so a run
+    can be a KILLED *verdict* and a held *claim* at once -- deliberate (the claim
+    gate takes definitive evidence, not a third party's report), and the reason a
+    consumer with a stranded foreign-host claim cannot clear it by writing a
+    death record. Stated because its absence sent one downstream repo at the
+    wrong plane for a week."""
     started = latest_episode(channel)
     if started is None:
         return None
@@ -201,15 +211,26 @@ def _launcher_terminal(channel: Channel) -> Envelope | None:
 
     If nothing ever claimed, the launcher's records stand alone: that is the
     null-worker startup crash, whose ``terminated`` is its ONLY possible
-    terminal. Like every terminal here, it stands until an episode claims."""
-    deaths = channel.read(topics=[Topic.LAUNCHER_TERMINATED])
-    for e in deaths:
-        _launch_id(e)  #  every death names its launch, or the tier is poisoned
-    if not deaths:
-        return None
+    terminal. Like every terminal here, it stands until an episode claims.
+
+    THE CLAIM IS THE BOUNDARY. A death that speaks for *this* episode can only
+    follow the claim it answers -- nothing exits before it claimed -- so records
+    at or before ``started`` are out of scope, and the read is windowed to the
+    suffix. That is not an optimization bolted on: reading beyond the boundary
+    lets a malformed record from a dead past poison the live present PERMANENTLY,
+    because an append-only log cannot retract it, where a windowed fold is
+    superseded by the next claim. Correlation still does the attributing (a reap
+    lands arbitrarily late, so position never attributes); the window only bounds
+    what must be *interpretable*."""
     started = latest_episode(channel)
     if started is None:
-        return deaths[-1]
+        deaths = channel.read(topics=[Topic.LAUNCHER_TERMINATED])
+        for e in deaths:
+            _launch_id(e)  #  every death names its launch, or the tier is poisoned
+        return deaths[-1] if deaths else None
+    deaths = channel.read(after=started.seq, topics=[Topic.LAUNCHER_TERMINATED])
+    for e in deaths:
+        _launch_id(e)  #      every death names its launch, or the tier is poisoned
     return next(
         (e for e in reversed(deaths) if e.request_id == started.request_id), None
     )

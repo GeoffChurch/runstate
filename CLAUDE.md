@@ -139,6 +139,15 @@ Count *files*, not paths: the first attempt at that census reported 1,457 becaus
 a recursive glob followed the consumer's cell→home symlinks and visited every db
 twice. A rule about checking your facts is worth exactly as much as its own facts.
 
+**Bound a fold to the window its question is about.** The claim is a Markov
+boundary: given the latest `lifecycle.started`, everything before it is
+conditionally independent of that episode's liveness and verdict
+(`design-v0.2.md` §14). So an episode-scoped fold reads only the suffix at or
+after the claim. Only a fold whose question **is** the whole log — a series
+replay — may scan it, and never on a polled path. An unbounded fold fails twice
+from one cause: it slows as a run ages, and a malformed record from a dead past
+poisons the live present permanently, since an append-only log cannot retract it.
+
 **The `additionalProperties: false` in the schemas is load-bearing.** It
 means a future protocol version can't silently add fields; adding a field
 to a well-known body is a deliberate convention-version bump. Each
