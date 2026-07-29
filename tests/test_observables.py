@@ -743,3 +743,56 @@ def test_live_episode_ignores_a_launcher_death_that_peek_terminal_honours(open_r
     )
     assert peek_terminal(open_run()).outcome == "killed"
     assert live_episode(open_run()) == dead  #  the divergence, pinned
+
+
+# --- the claim is the boundary: the launcher tier reads only the suffix -------------
+#
+# A death that speaks for THIS episode can only follow the claim it answers, so records
+# at or before it are out of scope. Windowing the read is what makes the tier repairable
+# (a poisoned record from a dead past cannot reach the live present) and what keeps its
+# cost flat -- measured 3461 us -> 92 us at 1000 prior deaths.
+
+
+def test_a_malformed_death_before_the_claim_does_not_poison_the_tier(open_run):
+    # Unattributable death (no request_id), then a fresh claim. The bad record is a fact
+    # about a past the current episode cannot have participated in, and an append-only
+    # log can never retract it -- so letting it raise would brick the verdict plane for
+    # this run forever. Contrast the stop tier, which is repairable by appending.
+    ch = open_run()
+    ch.send(
+        {"reason": "exited", "exit_code": 0, "signal": None, "t": 0.0},
+        topic="launcher.terminated",
+    )
+    ch.send({"handle": "local://h/2"}, topic="launcher.launched", request_id="L2")
+    ch.send(
+        {"handle": "local://h/2", "t": 1.0}, topic="lifecycle.started", request_id="L2"
+    )
+    assert peek_terminal(open_run()) is None  # not MalformedRecordError
+
+
+def test_a_death_before_the_claim_cannot_speak_for_it_even_on_a_reused_id(open_run):
+    # Correlation alone is not enough when an id repeats (a scheduler that reuses a job
+    # id across a requeue, if a consumer derives launch ids from one). Position and
+    # identity together: the death named THIS id, but it happened before THIS claim, so
+    # it belongs to the previous episode. Without the window the run reads KILLED and
+    # live at once -- a self-contradiction the boundary removes.
+    ch = open_run()
+    for pid, at in ((1, 0.0), (2, 2.0)):
+        if pid == 2:  # the first episode's death lands before the second claims
+            ch.send(
+                {"reason": "killed", "exit_code": None, "signal": 9, "t": 1.0},
+                topic="launcher.terminated",
+                request_id="SHARED",
+            )
+        ch.send(
+            {"handle": f"local://h/{pid}"},
+            topic="launcher.launched",
+            request_id="SHARED",
+        )
+        ch.send(
+            {"handle": f"local://h/{pid}", "t": at},
+            topic="lifecycle.started",
+            request_id="SHARED",
+        )
+    assert peek_terminal(open_run()) is None  #      no verdict: the new episode runs
+    assert live_episode(open_run()) == "local://h/2"  # and it holds the claim
