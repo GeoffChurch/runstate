@@ -125,13 +125,19 @@ ask: does the protocol itself need to recognize it (the way
 `topic="value"` — keep it out of the conventions.
 
 **Count before designing for a consumer.** Before proposing a change on a
-downstream repo's behalf, query that repo's actual logs — never reason from the
-shape of its architecture. Measured 2026-07-28: a fix routed through the
-`launcher.*` plane was proposed three times for one consumer and was structurally
-inapplicable every time, because its 1,457 `lifecycle.started` records carry
-**zero** launch ids (it spawns with a bare `subprocess.Popen`, so no launcher
-record can ever speak for a claim of its). Three rounds of principled argument
-reached the wrong answer; one census settled it in seconds.
+downstream repo's behalf, query *that repo's* actual logs — never reason from the
+shape of its architecture, and never generalize from a sibling. Measured
+2026-07-28: a fix routed through the `launcher.*` plane was proposed three times
+for one consumer and was structurally inapplicable every time, because its 785
+`lifecycle.started` records carry **zero** launch ids (it spawns with a bare
+`subprocess.Popen`, so no launcher record can ever speak for a claim of its) —
+while a sibling repo by the same author was fully launcher-instrumented, 1,142
+claims with 1,142 ids. Three rounds of principled argument reached the wrong
+answer; one census settled it in seconds.
+
+Count *files*, not paths: the first attempt at that census reported 1,457 because
+a recursive glob followed the consumer's cell→home symlinks and visited every db
+twice. A rule about checking your facts is worth exactly as much as its own facts.
 
 **The `additionalProperties: false` in the schemas is load-bearing.** It
 means a future protocol version can't silently add fields; adding a field
