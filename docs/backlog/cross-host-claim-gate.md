@@ -331,6 +331,79 @@ Nothing below is ruled; these are the decisions a spec must force.
    lock — and a second interop constant a non-Python implementation must
    reproduce.
 
+## 8. The trigger has fired (2026-07-29) — a field-built Candidate B, and a decomposition
+
+**Fact, not proposal.** The revival trigger below is met. `GeoffChurch/mycooc` needs
+cross-host re-claim and has built one: `scripts/reclaim_experiment.py` is Candidate B —
+definitive out-of-band evidence, then a record — living outside the library because there
+was nothing here to use. It cost ~20 GPU-hours before it existed (two jobs, 8h + 12h, zero
+cells) and the failure recurred three times.
+
+It deviates from §4.2 in two ways this entry never priced:
+
+- **A third authority class.** §4.2 assumes the Postgres advisory lock as the evidence.
+  mycooc is sqlite-on-NFS and its evidence is **scheduler accounting** (`sacct` terminal
+  state). Neither the lock nor a probe; a fourth party's ledger.
+- **No designated eliminator, so it impersonates.** §4.2:215 says a new eliminator "must be
+  designated deliberately (a `lifecycle.evicted`? a `launcher.terminated` written by a
+  non-parent?)". None was, so it writes `lifecycle.stopped` — the only eliminator that
+  exists — i.e. it forges the worker's dying breath. That forgery is **forced, not sloppy**:
+  `live_episode` reads only a later `stopped` and a `resolve()`-dead handle, so no death
+  record on the launcher plane can release a claim, however well correlated (verified;
+  now stated in `live_episode`'s docstring).
+
+### 8.1 A field-tested rule: a heuristic may VETO, never AUTHORISE
+
+mycooc's `correlation_refusal` gates on *(claim host ∈ job NodeList)* ∧ *(claim `t` ∈ job
+window ± 300 s)*, failing closed on any missing fact. Its premise is right and belongs in
+any spec here: **terminal-ness alone authorises nothing — it says a job died, not that THIS
+claim was its doing.**
+
+Its correlator is not sound, and its own logs are the disproof: 9 different-experiment
+overlaps on shared nodes, the longest 3.75 h. A *(node × window)* rectangle is not
+injective — backfill starts the next job on a freed node in seconds, a multi-node job's id
+covers every one of its nodes, and short-name matching collapses `n07.clusterA` with
+`n07.clusterB`. mycooc has accepted this and demoted the check to a **pre-filter that can
+refuse but never authorise**. That rule generalises past SLURM and is the most durable
+artefact this exchange produced.
+
+### 8.2 Proposed decomposition of §7's hardest question — UNTESTED, attack before use
+
+§4.2 calls "who may write it, and on what evidence" the design's hardest open question.
+Three propositions are being conflated in it:
+
+| | question | structure |
+|---|---|---|
+| **Strength** | how strongly does this show the run is dead? | the existing liveness **poset** (`channel-postgres.py`: "liveness = a poset the Watcher combines"); combines by **join** — take the strongest tier, fall back gracefully |
+| **Relevance** | is this evidence about *this claim at all*? | an **admissibility gate upstream of** the poset; combines by **meet** — every fact must agree, a missing one refuses |
+| **Authority** | may this party record it? | **not an order.** Nothing on the log can rank it; the log cannot prove a writer consulted `sacct` rather than guessing |
+
+Consequences if the decomposition holds:
+
+- **Relevance can only subtract**, which is why 8.1's veto/authorise rule is forced rather
+  than chosen: establishing that evidence is *about* a claim says nothing about its
+  strength. Admission grants standing, not weight.
+- **Correlation must NOT become a fifth liveness tier.** A meet-combining gate placed inside
+  a join-combining poset can be out-voted by a weaker tier — the same shape as the
+  already-rejected "a record overrides a definitive probe" (pinned by
+  `tests/test_observables.py::test_a_death_record_never_revokes_a_claim_whose_probe_says_alive`).
+- **Stop trying to prove authority; record aim instead.** An eviction record can name the
+  claim it evicts, and a reader can check the named claim is the claim present. That is not
+  proof of good evidence, but it makes a wrong eviction *attributable* rather than anonymous
+  — the same move `launcher-record-identity.md` made for deaths.
+- **Add atomicity to aim.** `send(expected_seq=)` makes the eviction land on exactly the
+  claim that was inspected, or not at all — closing the window between reading liveness and
+  writing the release (mycooc's tool spans it with a 60 s `sacct` shell-out).
+
+The two orders agree on one thing worth keeping: **⊥ never authorises an irreversible act.**
+`resolve()` maps abstention to conservatively-alive; the relevance gate maps unknown to
+refuse. Different orders, same discipline at the bottom.
+
+*Status: 8.1 is field-tested and its disproof is measured. 8.2 is a framing produced in
+review and NOT yet adversarially tested — in the same review five confident structural
+arguments were falsified by measurement, including two of the reviewer's own. Treat it as a
+decomposition to attack, not a ruling.*
+
 ## Revival trigger
 
 Revisit when a concrete consumer needs **cross-host auto-relaunch** (re-claiming a
