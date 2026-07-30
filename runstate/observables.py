@@ -416,12 +416,24 @@ def undischarged_stops(channel: Channel) -> list[Envelope]:
 
 
 def progress(channel: Channel) -> Optional[int]:
-    """Max step the trajectory reached, from the DENSE axis (the heartbeat
+    """The CURRENT episode's step frontier, from the DENSE axis (the heartbeat
     beats every tick regardless of emission): the latest
-    ``lifecycle.heartbeat.step`` and the latest ``lifecycle.stopped.final_step``,
-    whichever is greater; None if neither axis has a value yet. The frontier
-    of two registers — under an episode rewind the latest heartbeat already
-    reflects the resumed branch.
+    ``lifecycle.heartbeat.step`` and **this episode's** ``lifecycle.stopped``
+    (``_episode_stopped``, not a bare ``latest``), whichever is greater; None if
+    neither axis has a value yet.
+
+    NOT "max the trajectory ever reached", and the difference is the whole point:
+    a *prior* episode's ``final_step`` is not this episode's frontier. Reading it
+    positionally reported a preempted episode-1 terminal while episode 2 was still
+    climbing, which closed the window early and made ``ensure`` return a series
+    spliced across both episodes **as complete** — no error, no re-drive.
+    Episode-scoping only the ``stopped`` register suffices: the heartbeat register
+    is self-correcting, since the latest beat already belongs to the live episode.
+
+    It follows that this value may DECREASE across an episode boundary. That is
+    correct, not a defect to smooth over: a resumed episode genuinely rolled the
+    frontier back, and those steps must be recomputed. A monotone watermark here
+    would re-open the splice it just closed.
 
     THE WINDOW FENCEPOST (the one home for the rule a second implementation and
     a viewer both need): a target ``until={"step": N}`` is the **half-open**
@@ -435,7 +447,7 @@ def progress(channel: Channel) -> Optional[int]:
     hb = channel.latest(Topic.LIFECYCLE_HEARTBEAT)
     if hb is not None and is_step(hb.body.get("step")):
         steps.append(hb.body["step"])
-    stopped = channel.latest(Topic.LIFECYCLE_STOPPED)
+    stopped = _episode_stopped(channel)
     if stopped is not None and is_step(stopped.body.get("final_step")):
         steps.append(stopped.body["final_step"])
     return max(steps) if steps else None
