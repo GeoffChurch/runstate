@@ -123,7 +123,15 @@ touch the epoch.)*
 - **The poll-clock is dense, monotone, gap-inclusive, and needs no wire change.** `ensure` is a
   *consumer*; reading its *own* wall-clock while polling is exactly what `:156` blesses (not a
   worker stamping a body — that would be a substrate concern). It advances every poll regardless of
-  emission, so the livelock is structurally impossible.
+  emission, so the **emission** livelock above is structurally impossible.
+- **One livelock it does not close: the epochless log.** `_elapsed` is `clock() − _epoch(channel)`,
+  and `_epoch` is None until a `lifecycle.started` lands — on that path `_elapsed` returns `0.0`,
+  not an advancing value. So a `{time_seconds}` target on a log where no spawn ever *claims* is
+  unsatisfiable **forever**: the poll-clock advances, the coordinate does not. Measured at ~97k
+  re-drives in seconds, with the caller's `sleep` seam never reached. The dense-clock argument
+  closes the sparse-*stamp* hole; it does not close the missing-*epoch* hole. What to do about it
+  is open — mirroring `history`'s raise is refuted (cold-log time targets are shipped and tested),
+  and anchoring the clock at first poll is untested.
 
 The **read-side** `history` keeps `value.t − epoch` (a *replay* needs the recorded stamp; the live
 drive does not). Drive-side and read-side time can differ by ≤ one poll interval at the boundary —

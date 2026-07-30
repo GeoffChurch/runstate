@@ -25,13 +25,13 @@ relaunch + resume. [G1](value-plane-divergence-resolution.md) makes the resumed 
 re-emission safe (take-the-latest), so the re-call cannot poison reuse.
 
 ```python
-from runstate import ensure, peek_terminal, Outcome
+from runstate import ensure, peek_terminal, Outcome, RunFailedError, NoProgressError
 
 for _ in range(budget):                       # the caller owns the budget...
     try:
         series = ensure(producer, name, until=until)   # auto-continues preemptions; raises on a death
         break
-    except RuntimeError:
+    except (RunFailedError, NoProgressError):  # both derive from Exception, NOT RuntimeError
         r = peek_terminal(producer.channel)
         # the worker that wrote Stopped(error=...) self-diagnosed fatal -> don't retry;
         # a non-self-diagnosed death (killed / recordless exit) with progress -> resumable.
@@ -43,8 +43,9 @@ else:
 ```
 
 (Verified by `tests/test_memoizer.py::test_ensure_killed_resumes_on_caller_re_call_take_the_latest`:
-the first call fails fast on a kill; the re-call resumes and take-the-latest absorbs a divergent
-overlap.)
+the first call fails fast on a kill — asserted as `RunFailedError`, which is what makes the catch
+above correct — and the re-call resumes, take-the-latest absorbing a divergent overlap. The
+`NoProgressError` arm of that `except` is **not** covered by this test.)
 
 ## Why this shape
 
