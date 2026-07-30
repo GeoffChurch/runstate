@@ -340,6 +340,23 @@ def test_progress_from_stopped_final_step(open_run):
     assert progress(open_run()) == 12
 
 
+def test_progress_ignores_a_previous_episode_terminal(open_run):
+    # A resumed run: episode 1 was preempted at step 5, episode 2 claimed and has
+    # only reached step 3. `progress` must report the CURRENT episode's frontier --
+    # reading episode 1's `final_step` makes `ensure` treat the window as closed and
+    # return a series spliced across two episodes, as complete (runstate#33).
+    ch = open_run()
+    ch.send({"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started")
+    ch.send({"step": 5, "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat")
+    ch.send(
+        {"completed": False, "error": None, "final_step": 5, "t": 0.0},
+        topic="lifecycle.stopped",
+    )
+    ch.send({"handle": "local://h/2", "t": 1.0}, topic="lifecycle.started")
+    ch.send({"step": 3, "consumed_seq": 0, "t": 1.0}, topic="lifecycle.heartbeat")
+    assert progress(open_run()) == 3
+
+
 def test_progress_is_the_max_of_both_axes(open_run):
     # frontier of the two registers: a prior episode's stopped may be ahead of
     # the live episode's heartbeat (extend resumed earlier) -- max wins.
