@@ -106,6 +106,12 @@ class Worker:
                 e.seq for e in envs if e.topic == Topic.LIFECYCLE_STARTED
             ]
             if live_episode(self._ch) is not None:
+                # ORDER IS LOAD-BEARING, and a consumer depends on it off-repo:
+                # this precedes the claim send, so a loser has no claim of its
+                # own on the log. That is what makes "a clean exit always leaves
+                # a stopped, and the one path that skips the write also leaves
+                # nothing for a death to attach to" true. Moving the claim above
+                # this check breaks that reasoning silently.
                 self._lost = True
                 break
             claim = self._ch.send(
