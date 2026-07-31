@@ -1,16 +1,21 @@
 #!/bin/sh
-# The two gates that are effectively free (~0.4s together). The suite is in
-# pre-push instead, at ~9s.
+# The full CI gate set, locally, before every commit: ~9.4s, almost all of it
+# pytest.
 #
 # These exist because the formatter gate is the one that gets skipped: it is
 # easy to run the checks, then add code, then commit without re-running them.
 # CI catches it, but a red CI on a green-looking branch costs a round trip.
 #
+# WEAKER than CI in one respect: without RUNSTATE_TEST_PG_DSN the ~215 Postgres
+# tests skip here and CI runs them, so a green hook does not imply a green CI.
+#
 # Bypass with `git commit --no-verify`.
 . "$(git rev-parse --show-toplevel)/scripts/githooks/_common.sh"
 echo "pre-commit:"
 rc=0
-run_gate "black" black --check runstate/ tests/ || rc=1
-run_gate "mypy"  mypy  --strict runstate       || rc=1
+run_gate "black"  black  --check runstate/ tests/ || rc=1
+run_gate "mypy"   mypy   --strict runstate        || rc=1
+run_gate "pytest" pytest tests/ -q                || rc=1
+[ -n "$RUNSTATE_TEST_PG_DSN" ] || echo "  note  postgres suite skipped locally; CI runs it"
 [ $rc -eq 0 ] || echo "  (fix, or re-run with --no-verify)"
 exit $rc
