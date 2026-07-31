@@ -296,6 +296,33 @@ def peek_terminal(channel: Channel) -> Optional[RunResult]:
     return RunResult(outcome=outcome, reason=t.reason)
 
 
+def worker_completed(result: Optional[RunResult]) -> bool:
+    """Did the WORKER declare the work finished? ``Outcome.COMPLETED`` has two
+    sources, and only one of them is a statement about the *work*:
+
+    - the worker's own ``lifecycle.stopped(completed=True)`` -- ``reason`` is
+      ``"completed"`` (``peek_terminal`` synthesizes it from the outcome);
+    - a reaped ``launcher.terminated(exited, exit_code=0)`` -- ``reason`` is
+      ``"exited"``, a fact about a PROCESS.
+
+    The two are not confusable, and that is enforced on both sides:
+    ``Terminated.reason`` is pinned to ``exited``/``killed``
+    (launcher-v0.4, ``additionalProperties: false``), and ``Stopped`` carries no
+    ``reason`` field at all -- a hand-composed record spelling either the other
+    way raises ``MalformedRecordError`` before it reaches here.
+
+    Ask this, not ``outcome == COMPLETED``, wherever the question is "is the
+    work done?" rather than "did a process exit cleanly?". An ``sbatch`` exits 0
+    at *submit* time and a wrapper can exit 0 while its worker runs on: both
+    read COMPLETED on the launcher tier while the work is unfinished or not yet
+    begun."""
+    return (
+        result is not None
+        and result.outcome == Outcome.COMPLETED
+        and result.reason == str(Outcome.COMPLETED)
+    )
+
+
 _DATED_TOPICS = (
     Topic.LIFECYCLE_STARTED,
     Topic.LIFECYCLE_HEARTBEAT,

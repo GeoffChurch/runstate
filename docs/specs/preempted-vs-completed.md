@@ -40,8 +40,16 @@ existed — it treated the two identically (re-drive). The fix is to consult it.
 
 `ensure` is satisfied (returns the `history` read) when **either**:
 1. `_progress(channel) >= up_to - 1` (the caller's bound is reached), **or**
-2. the latest terminal has `outcome == "completed"` (the producer declared itself done —
-   the early-completion / convergence case).
+2. the latest terminal is a **worker-declared** completion — `worker_completed(result)`, i.e.
+   `outcome == "completed"` **and** `reason == "completed"` (the producer declared itself
+   done — the early-completion / convergence case).
+
+   The second conjunct is load-bearing and was missing until runstate#30. `Outcome.COMPLETED`
+   also arises on the **launcher** tier, from a `launcher.terminated(exited, exit_code=0)`
+   stamped `reason == "exited"` — a fact about a *process*. An `sbatch` exits 0 at *submit*
+   time and a wrapper can exit 0 while its worker runs on, so trusting that made `ensure`
+   return an empty or truncated series, silently. This spec argued for the distinction below
+   ("a launcher sees only an exit code") while its own predicate erased it.
 
 It re-drives only `preempted` terminals (resumable), and still raises on `_FAILURES`. When
 (2) fires short of `up_to`, `ensure` returns the *available* (shorter) trajectory — the
@@ -50,7 +58,7 @@ re-driving, a check like:
 
 ```python
 result = peek_terminal(channel)
-if result is not None and result.outcome == "completed":
+if worker_completed(result):               # NOT `outcome == COMPLETED`: see above
     return history(channel, name, dense)   # producer is done, even short of up_to
 ```
 
@@ -91,8 +99,10 @@ cooperative stop (completed or preempted). Only the consumer-side `RunResult.out
 
 ## It generalizes
 
-The unifying invariant: **`ensure` re-drives iff (request unmet) AND (last terminal is
-`preempted`); it is satisfied iff request-met OR `completed`.** `"completed"` reads as "the
+The unifying invariant: **`ensure` re-drives iff (request unmet) AND the last terminal is not
+a worker-declared completion; it is satisfied iff request-met OR worker-declared `completed`.**
+A launcher-tier `COMPLETED` satisfies nothing — it re-drives, and raises `RecordlessExitError`
+at the fixed point where a full cycle left the frontier unmoved. `"completed"` reads as "the
 producer has produced everything it will, this episode," which is right across the worker
 taxonomy:
 

@@ -1,10 +1,12 @@
 import json
 import os
+import time
 import pytest
 from pathlib import Path
 import runstate
 from runstate.memoizer import (
     NoProgressError,
+    RecordlessExitError,
     RunFailedError,
     ensure,
     history,
@@ -1181,3 +1183,136 @@ def test_history_junk_epoch_reads_as_no_epoch(open_run, junk):
     assert [b["step"] for b in history(open_run(), "loss", {"every": {"step": 1}})] == [
         0
     ]
+
+
+def _reaped_exit0(rid, *, claimed, steps=(), handle="local://nohost/999999", epoch=0.0):
+    """A run reaped with a clean exit code and NO worker verdict."""
+    launcher = runstate.ThreadLauncher()
+    ch = launcher.create_channel(rid)
+    ch.send(
+        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="o"
+    )
+    ch.send({"handle": handle, "t": 0.0}, topic="launcher.launched", request_id="L1")
+    if claimed:
+        ch.send(
+            {"handle": handle, "t": epoch}, topic="lifecycle.started", request_id="L1"
+        )
+        for step in steps:
+            ch.send(
+                {"value": float(step), "step": step, "t": 0.0},
+                topic="value",
+                name="loss",
+            )
+            ch.send(
+                {"step": step, "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat"
+            )
+    ch.send(
+        {"reason": "exited", "exit_code": 0, "signal": None, "t": 1.0},
+        topic="launcher.terminated",
+        request_id="L1",
+    )
+    return ch
+
+
+class _CountingProducer:
+    def __init__(self, run_id, channel, handle=None):
+        self.run_id, self._ch, self._handle, self.extends = run_id, channel, handle, 0
+
+    @property
+    def channel(self):
+        return self._ch
+
+    def extend(self, until):
+        self.extends += 1
+        if self.extends > 500:
+            raise AssertionError("unbounded re-drive")
+        from runstate.memoizer import foreign_episode
+
+        return foreign_episode(self._ch) if self._handle is None else self._handle
+
+
+def test_ensure_does_not_short_circuit_on_a_launcher_exit0():
+    # An sbatch exits 0 at SUBMIT time, long before anything claims. Reading
+    # that as COMPLETED made ensure return an empty series with no error.
+    ch = _reaped_exit0("queued", claimed=False)
+    p = _CountingProducer("queued", ch)
+    with pytest.raises(RecordlessExitError):
+        ensure(p, "loss", until={"step": 50})
+    assert p.extends == 1
+
+
+def test_ensure_recordless_exit0_does_not_truncate_silently():
+    # A worker that skips its context manager exits 0 mid-series: the launcher
+    # reaps it, no lifecycle.stopped is ever written, and short-circuiting on
+    # the exit code returned the partial series as if it were the answer.
+    ch = _reaped_exit0("mid", claimed=True, steps=(0, 1, 2))
+    p = _CountingProducer("mid", ch)
+    with pytest.raises(RecordlessExitError) as exc:
+        ensure(p, "loss", until={"step": 50})
+    assert exc.value.progress == 2
+    assert p.extends == 1
+
+
+@pytest.mark.parametrize(
+    "until",
+    [{"time_seconds": 1000.0}, {"any": [{"step": 50}, {"time_seconds": 1000.0}]}],
+    ids=["bare-time", "any-with-time"],
+)
+def test_ensure_recordless_exit0_is_bounded_on_every_axis(until):
+    # REGRESSION PIN. The no-progress guard is axis-aware and stands down when
+    # waiting alone could satisfy `until`, so a time-keyed target has no
+    # no-progress protection at all -- measured at 20,001 re-drives before the
+    # recordless-exit bound existed. The bound is the fixed point, not a count.
+    # a NEAR-NOW epoch: with t=0.0 the elapsed clock is ~1.8e9s, the window is
+    # already closed, and ensure returns before the loop -- a false green that
+    # would pass without the bound existing at all.
+    ch = _reaped_exit0("axis", claimed=True, steps=(0,), epoch=time.time())
+    p = _CountingProducer("axis", ch)
+    with pytest.raises(RecordlessExitError):
+        ensure(p, "loss", until=until, sleep=lambda _: None)
+    assert p.extends == 1
+
+
+def test_ensure_conforming_worker_never_reaches_the_recordless_bound():
+    # Stop-tier precedence: a worker that declared itself done is unaffected,
+    # even though its launcher also reaped it with exit 0.
+    ch = _reaped_exit0("ok", claimed=True, steps=(0, 1, 2))
+    ch.send(
+        {"completed": True, "error": None, "final_step": 2, "t": 3.0},
+        topic="lifecycle.stopped",
+    )
+    p = _CountingProducer("ok", ch)
+    assert [b["step"] for b in ensure(p, "loss", until={"step": 50})] == [0, 1, 2]
+    assert p.extends == 0
+
+
+def test_ensure_rewake_across_a_recordless_exit0_still_succeeds():
+    # ANTI-OVER-BOUND PIN. A recordless exit-0 is not fatal on its own -- a
+    # re-drive that actually delivers must still win. The bound fires only at
+    # the fixed point, where a full cycle moved nothing.
+    ch = _reaped_exit0("rewake", claimed=True, steps=(0,))
+
+    class Delivering(_CountingProducer):
+        def extend(self, until):
+            self.extends += 1
+            for step in (1, 2):
+                self._ch.send(
+                    {"value": float(step), "step": step, "t": 0.0},
+                    topic="value",
+                    name="loss",
+                )
+                self._ch.send(
+                    {"step": step, "consumed_seq": 0, "t": 0.0},
+                    topic="lifecycle.heartbeat",
+                )
+            self._ch.send(
+                {"completed": True, "error": None, "final_step": 2, "t": 4.0},
+                topic="lifecycle.stopped",
+            )
+            from runstate.memoizer import foreign_episode
+
+            return foreign_episode(self._ch)
+
+    p = Delivering("rewake", ch)
+    assert [b["step"] for b in ensure(p, "loss", until={"step": 3})] == [0, 1, 2]
+    assert p.extends == 1
