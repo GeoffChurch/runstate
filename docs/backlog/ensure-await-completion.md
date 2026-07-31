@@ -35,7 +35,8 @@ first-class affordance is a step (or time) window, which is a different thing.
 ## The distinction (already latent in the design)
 
 `preempted-vs-completed.md` (Change A, shipped) already made
-`outcome == "completed"` a **sufficient early-return** for `ensure`: it returns
+a **worker-declared** `completed` a **sufficient early-return** for `ensure` (the
+launcher tier's exit-code COMPLETED is not — runstate#30): it returns
 when **window-closed OR the producer declared `completed`** (`memoizer.py:233-234,
 258-259`). The verdict plane (`peek_terminal → Outcome.COMPLETED`) is already
 computed and already consulted.
@@ -56,7 +57,7 @@ def reached(ch):
     # window-close OR worker-declared completion. await_complete keeps `until`
     # as the drive-target ONLY — completion is then the sole return trigger.
     result = peek_terminal(ch)
-    if result is not None and result.outcome == Outcome.COMPLETED:
+    if worker_completed(result):  # not `outcome == COMPLETED` -- runstate#30
         return True
     if await_complete:
         if result is not None and result.outcome == Outcome.PREEMPTED:

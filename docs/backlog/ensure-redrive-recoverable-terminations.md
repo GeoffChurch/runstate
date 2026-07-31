@@ -25,13 +25,16 @@ relaunch + resume. [G1](value-plane-divergence-resolution.md) makes the resumed 
 re-emission safe (take-the-latest), so the re-call cannot poison reuse.
 
 ```python
-from runstate import ensure, peek_terminal, Outcome, RunFailedError, NoProgressError
+from runstate import (ensure, peek_terminal, Outcome,
+                      RunFailedError, NoProgressError, RecordlessExitError)
 
 for _ in range(budget):                       # the caller owns the budget...
     try:
         series = ensure(producer, name, until=until)   # auto-continues preemptions; raises on a death
         break
-    except (RunFailedError, NoProgressError):  # both derive from Exception, NOT RuntimeError
+    except (RunFailedError, NoProgressError, RecordlessExitError):  # all derive
+        # from Exception, NOT RuntimeError. RecordlessExitError is a SIBLING of
+        # RunFailedError (its result.outcome is COMPLETED), so it needs naming.
         r = peek_terminal(producer.channel)
         # the worker that wrote Stopped(error=...) self-diagnosed fatal -> don't retry;
         # a non-self-diagnosed death (killed / recordless exit) with progress -> resumable.
