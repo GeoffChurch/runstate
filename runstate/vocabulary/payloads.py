@@ -55,6 +55,31 @@ class Value:
     TOPIC: ClassVar[str] = Topic.VALUE
 
 
+def _require(field: str, value: object, *, kind: str, optional: bool) -> None:
+    """Type-check one verdict-plane field. The dataclasses already enforce
+    *constraints* (``completed ⟹ error is None``, ``reason ∈ {exited, killed}``)
+    but Python does not enforce the annotations, so a junk-typed field used to
+    sail through ``verdict_parse`` -- and ``peek_terminal`` would hand back a
+    ``RunResult`` whose ``final_step`` was a string, while ``progress`` skipped
+    the same record as junk. That inverts the documented split: verdict folds
+    refuse to guess, measurement folds degrade.
+
+    ``bool`` is excluded from the numeric kinds deliberately -- JSON ``true`` is
+    not a step and not a clock (mirrors ``observables.is_step``)."""
+    if value is None:
+        if optional:
+            return
+        raise ValueError(f"{field} is required, got None")
+    ok = {
+        "str": isinstance(value, str),
+        "bool": isinstance(value, bool),
+        "int": isinstance(value, int) and not isinstance(value, bool),
+        "number": isinstance(value, (int, float)) and not isinstance(value, bool),
+    }[kind]
+    if not ok:
+        raise ValueError(f"{field} must be {kind}, got {value!r}")
+
+
 @dataclass(frozen=True)
 class Started:
     """Pushed on attach; the worker self-reports its liveness handle (§8).
@@ -97,6 +122,10 @@ class Stopped:
     TOPIC: ClassVar[str] = Topic.LIFECYCLE_STOPPED
 
     def __post_init__(self) -> None:
+        _require("completed", self.completed, kind="bool", optional=False)
+        _require("error", self.error, kind="str", optional=True)
+        _require("final_step", self.final_step, kind="int", optional=True)
+        _require("t", self.t, kind="number", optional=False)
         # completed ⟹ error is None: keeps the two content fields non-overlapping, so
         # `error is not None` ⟺ errored holds globally (mirrors Terminated's exited-XOR-killed).
         if self.completed and self.error is not None:
@@ -138,9 +167,16 @@ class Terminated:
     TOPIC: ClassVar[str] = Topic.LAUNCHER_TERMINATED
 
     def __post_init__(self) -> None:
+        _require("reason", self.reason, kind="str", optional=False)
+        _require("exit_code", self.exit_code, kind="int", optional=True)
+        _require("signal", self.signal, kind="int", optional=True)
+        _require("t", self.t, kind="number", optional=False)
         # Structural coupling: the schema enforces exited(exit_code) XOR
         # killed(signal) on the wire; mirror it here so an illegal object can't
         # exist in Python either. (Validation-only -- safe on a frozen dataclass.)
+        # The isinstance checks below stay: they carry the XOR, not the types --
+        # and note `isinstance(True, int)` is True, which is why bools are
+        # excluded above rather than here.
         if self.reason == "exited":
             if not isinstance(self.exit_code, int) or self.signal is not None:
                 raise ValueError(

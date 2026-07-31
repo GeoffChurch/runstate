@@ -841,3 +841,55 @@ def test_worker_completed_splits_the_two_completed_sources(open_run):
     )
     assert worker_completed(peek_terminal(open_run())) is True
     assert worker_completed(None) is False
+
+
+@pytest.mark.parametrize(
+    "body, bad",
+    [
+        (
+            {"completed": False, "error": None, "final_step": "seven", "t": 0.0},
+            "final_step",
+        ),
+        ({"completed": "yes", "error": None, "final_step": 2, "t": 0.0}, "completed"),
+        ({"completed": False, "error": 17, "final_step": 2, "t": 0.0}, "error"),
+        ({"completed": False, "error": None, "final_step": 2, "t": "noon"}, "t"),
+        (
+            {"completed": False, "error": None, "final_step": True, "t": 0.0},
+            "final_step",
+        ),
+    ],
+    ids=["step-str", "completed-str", "error-int", "t-str", "step-bool"],
+)
+def test_a_verdict_fold_refuses_a_junk_typed_field(open_run, body, bad):
+    # The dataclasses enforced CONSTRAINTS but not their own annotations, so a
+    # junk-typed field sailed through verdict_parse: peek_terminal handed back a
+    # RunResult whose final_step was a string while progress skipped the same
+    # record as junk -- the documented split exactly backwards (verdict folds
+    # refuse to guess; measurement folds degrade).
+    ch = open_run()
+    ch.send({"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started")
+    ch.send(body, topic="lifecycle.stopped")
+    with pytest.raises(MalformedRecordError, match=bad):
+        peek_terminal(open_run())
+    # The measurement fold degrades rather than raising -- and note it reads the
+    # SAME record happily whenever the junk is in a field it does not consult.
+    assert progress(open_run()) == (None if bad == "final_step" else 2)
+
+
+def test_a_junk_typed_launcher_death_is_refused_too(open_run):
+    # JSON `true` is not an exit code: isinstance(True, int) is True, so the XOR
+    # check alone let a bool through and `exit_code == 0` then read False.
+    ch = open_run()
+    ch.send(
+        {"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started", request_id="L1"
+    )
+    ch.send(
+        {"handle": "local://h/1", "t": 0.0}, topic="launcher.launched", request_id="L1"
+    )
+    ch.send(
+        {"reason": "exited", "exit_code": True, "signal": None, "t": 0.0},
+        topic="launcher.terminated",
+        request_id="L1",
+    )
+    with pytest.raises(MalformedRecordError, match="exit_code"):
+        peek_terminal(open_run())
