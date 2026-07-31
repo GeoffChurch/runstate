@@ -201,7 +201,17 @@ pip install -e .[test]              # + jsonschema for the schema tests
 pytest tests/                       # run all tests (~700, ~9s; +Postgres if a DSN is set)
 pytest tests/test_channel.py -v     # one module
 pytest tests/test_schema.py -v      # emitted messages conform to the schema stack
+
+git config core.hooksPath scripts/githooks   # opt in to the local gates (per clone)
 ```
+
+The pre-commit hook runs the whole CI gate set -- `black --check`,
+`mypy --strict`, `pytest` -- in ~9.4 s, almost all of it the suite. It exists
+because the formatter gate is the one that gets skipped: run the checks, add
+code, commit, and CI goes red on a branch that looked green. `--no-verify`
+bypasses it. It is a *weaker* gate than CI in one respect: without
+`RUNSTATE_TEST_PG_DSN` the ~215 Postgres tests skip locally and CI runs them, so
+green here does not imply green there.
 
 The Channel conformance tests and the substrate-level convention tests are
 parametrized over the backends (`memory` + `sqlite` always, and `postgres` when
