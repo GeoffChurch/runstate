@@ -16,6 +16,7 @@ from runstate.observables import (
     live_demand,
     live_episode,
     peek_terminal,
+    worker_completed,
     progress,
     undischarged_stops,
     value_series,
@@ -813,3 +814,26 @@ def test_a_death_before_the_claim_cannot_speak_for_it_even_on_a_reused_id(open_r
         )
     assert peek_terminal(open_run()) is None  #      no verdict: the new episode runs
     assert live_episode(open_run()) == "local://h/2"  # and it holds the claim
+
+
+def test_worker_completed_splits_the_two_completed_sources(open_run):
+    # COMPLETED has two sources and only one speaks for the WORK. The worker's
+    # own stopped(completed=True) does; a reaped launcher.terminated(exited, 0)
+    # is a fact about a PROCESS -- an sbatch exits 0 at submit time.
+    ch = open_run()
+    ch.send({"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started", request_id="L1")
+    ch.send({"handle": "local://h/1", "t": 0.0}, topic="launcher.launched", request_id="L1")
+    ch.send(
+        {"reason": "exited", "exit_code": 0, "signal": None, "t": 1.0},
+        topic="launcher.terminated",
+        request_id="L1",
+    )
+    assert peek_terminal(open_run()).outcome == "completed"  # the launcher tier
+    assert worker_completed(peek_terminal(open_run())) is False
+
+    ch.send(
+        {"completed": True, "error": None, "final_step": 2, "t": 2.0},
+        topic="lifecycle.stopped",
+    )
+    assert worker_completed(peek_terminal(open_run())) is True
+    assert worker_completed(None) is False

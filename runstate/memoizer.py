@@ -22,6 +22,7 @@ from .observables import (
     is_step,
     live_episode,
     peek_terminal,
+    worker_completed,
     progress,
 )
 
@@ -39,6 +40,45 @@ class RunFailedError(Exception):
         super().__init__(f"run {run_id!r} failed: {result.outcome}/{result.reason}")
         self.run_id = run_id
         self.result = result
+
+
+class RecordlessExitError(Exception):
+    """``ensure``'s run was reaped with a clean exit code but left no worker
+    verdict, and a full drive cycle did not move the frontier.
+
+    A ``launcher.terminated(exited, exit_code=0)`` is a fact about a PROCESS,
+    not about the work: an ``sbatch`` exits 0 at *submit* time, and a worker
+    that skips its context manager exits 0 mid-series. Short-circuiting on it
+    returns whatever happens to be logged -- an empty series for the first, a
+    truncated one for the second, silently in both cases. So ``ensure``
+    re-drives instead, and raises at the FIXED POINT: one full cycle against
+    the same recordless death that left ``progress`` where it was. Identical
+    inputs, identical outputs -- another lap can only reproduce them, so this
+    is the log's own arithmetic and not a lap count or a clock.
+
+    SIBLING of ``RunFailedError``, deliberately not a subclass:
+    ``result.outcome`` here is ``COMPLETED``, and ``RunFailedError.result`` is
+    documented as a *failure* verdict -- subclassing would make that field lie.
+    Callers catching only ``(NoProgressError, RunFailedError)`` must add this
+    name. ``result`` is the observation at raise time."""
+
+    def __init__(
+        self,
+        run_id: str,
+        result: RunResult,
+        *,
+        progress: int | None,
+        until: Condition,
+    ) -> None:
+        super().__init__(
+            f"run {run_id!r} was reaped {result.reason!r} with no worker verdict "
+            f"and made no progress toward {until} (progress={progress}); the "
+            f"exit code describes the process, not the work"
+        )
+        self.run_id = run_id
+        self.result = result
+        self.progress = progress
+        self.until = until
 
 
 class NoProgressError(Exception):
@@ -353,9 +393,7 @@ def ensure(
     channel = producer.channel
     dense: Condition = {"every": {"step": 1}, "until": until}
     result = peek_terminal(channel)
-    if _satisfied(channel, until, clock=clock) or (
-        result is not None and result.outcome == Outcome.COMPLETED
-    ):
+    if _satisfied(channel, until, clock=clock) or worker_completed(result):
         return history(channel, name, dense)
 
     while not _satisfied(channel, until, clock=clock):
@@ -368,7 +406,7 @@ def ensure(
                 "when an episode is already live (specs/store.md Recipe 2)"
             )
         while not _satisfied(channel, until, clock=clock):
-            if not handle.is_alive():
+            if not handle.is_alive() or peek_terminal(channel) is not None:
                 handle.wait()
                 break
             sleep(poll_interval)
@@ -377,8 +415,16 @@ def ensure(
         result = peek_terminal(channel)
         if result is not None and result.outcome in _FAILURES:
             raise RunFailedError(producer.run_id, result)
-        if result is not None and result.outcome == Outcome.COMPLETED:
+        if worker_completed(result):
             return history(channel, name, dense)
+        if (
+            result is not None
+            and result.outcome == Outcome.COMPLETED
+            and _progress(channel) <= before
+        ):
+            raise RecordlessExitError(
+                producer.run_id, result, progress=progress(channel), until=until
+            )
         # The no-progress guard is OWN-SPAWN-scoped: a foreign episode ending
         # without progress is no evidence a relaunch would spin (we never
         # launched) -- re-drive it, the lazy-launch re-wake posture. And it is

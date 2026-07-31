@@ -29,6 +29,7 @@ from .launcher import (
 )
 from .memoizer import (
     NoProgressError,
+    RecordlessExitError,
     RunFailedError,
     ensure,
     foreign_episode,
@@ -44,6 +45,7 @@ from .observables import (
     live_demand,
     live_episode,
     peek_terminal,
+    worker_completed,
     progress,
     undischarged_stops,
     value_series,
@@ -115,6 +117,7 @@ __all__ = [
     "Outcome",
     "MalformedRecordError",
     "peek_terminal",
+    "worker_completed",
     "last_activity",
     "latest_episode",
     "live_demand",
@@ -131,6 +134,7 @@ __all__ = [
     "foreign_episode",
     "RunFailedError",
     "NoProgressError",
+    "RecordlessExitError",
     "relaunch_if_needed",
     "ensure_served",
     # convention vocabulary

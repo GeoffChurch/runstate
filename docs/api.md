@@ -315,6 +315,24 @@ The record-based verdict (a clean `lifecycle.stopped`, or a reaped
 `presumed_dead`) is the stateful Watcher's job. **Episode-aware: a terminal
 stands until a new episode claims.**
 
+### `worker_completed`
+
+```python
+worker_completed(result: RunResult | None) -> bool
+```
+
+Did the **worker** declare the work finished? `Outcome.COMPLETED` has two
+sources and only one is a statement about the *work*: the worker's own
+`lifecycle.stopped(completed=True)` (`reason == "completed"`), and a reaped
+`launcher.terminated(exited, exit_code=0)` (`reason == "exited"`) — a fact
+about a **process**. The two cannot be confused: `Terminated.reason` is pinned
+to `exited`/`killed` and `Stopped` carries no `reason` at all, so a record
+spelling either the other way raises `MalformedRecordError` first.
+
+Ask this, not `outcome == COMPLETED`, wherever the question is "is the work
+done?" rather than "did a process exit cleanly?" — an `sbatch` exits 0 at
+*submit* time, and a wrapper can exit 0 while its worker runs on.
+
 ### `last_activity`
 
 ```python
@@ -529,6 +547,25 @@ NoProgressError(run_id: str, *, progress: int | None, until: Condition)
 episode owns the run — relaunching would spin, so refuse. A foreign episode's
 no-progress death re-drives instead (the guard is own-spawn-scoped), and a live
 foreign claim skips the raise (claim-aware).
+
+### `RecordlessExitError`
+
+```python
+RecordlessExitError(run_id: str, result: RunResult, *, progress: int | None, until: Condition)
+```
+
+The run was reaped with a clean exit code but left **no worker verdict**, and a
+full drive cycle did not move the frontier. A `launcher.terminated(exited,
+exit_code=0)` describes a process, not the work, so `ensure` re-drives rather
+than returning the empty or truncated series that short-circuiting on it would
+produce — then raises at the **fixed point**: one cycle against the same
+recordless death that left `progress` unchanged. Identical inputs, identical
+outputs, so another lap can only reproduce them; the bound is the log's own
+arithmetic, not a lap count or a clock.
+
+**Sibling of `RunFailedError`, not a subclass** — `result.outcome` here is
+`COMPLETED`, and `RunFailedError.result` is documented as a *failure* verdict.
+Callers catching only `(NoProgressError, RunFailedError)` must add this name.
 
 ## Convention vocabulary
 
