@@ -192,6 +192,11 @@ def _launch_id(e: Envelope) -> str:
     return e.request_id
 
 
+# DOWNSTREAM DEPENDENCY: a consumer's argument that a wrapper cannot forge a
+# COMPLETED verdict for a live worker rests on this correlation — a loser's
+# ``terminated`` carries the loser's launch id and can never be attributed to the
+# winner's claim. Correlating on anything weaker, or dropping the requirement that
+# the claim name its launch, silently breaks that argument off-repo.
 def _launcher_terminal(channel: Channel) -> Envelope | None:
     """The launcher tier's verdict record (specs/launcher-record-identity.md).
 
@@ -428,7 +433,10 @@ def progress(channel: Channel) -> Optional[int]:
     climbing, which closed the window early and made ``ensure`` return a series
     spliced across both episodes **as complete** — no error, no re-drive.
     Episode-scoping only the ``stopped`` register suffices: the heartbeat register
-    is self-correcting, since the latest beat already belongs to the live episode.
+    is self-correcting, since the latest beat already belongs to the live episode
+    — under the design's single-writer premise. A displaced worker that keeps
+    beating violates that premise and drives this frontier (runstate#32); the
+    remedy is upstream, at the claim, not a second scope here.
 
     It follows that this value may DECREASE across an episode boundary. That is
     correct, not a defect to smooth over: a resumed episode genuinely rolled the
@@ -484,9 +492,15 @@ def value_series(channel: Channel) -> dict[str, dict[int, Any]]:
     concurrent subscriptions duplicate samples differing only in
     ``request_id``), so the fold is the substrate's register projection
     (design §4 ``latest``) lifted pointwise: last-write-wins by ``seq`` per
-    (name, step) cell. Under an episode rewind the rewritten steps last-win
-    and the orphaned branch drops out — the as-resumed trajectory, with the
-    raw events still on the log for forensics. Inner dicts are step-sorted.
+    (name, step) cell. Under an episode rewind the OVERLAPPED steps last-win. The
+    abandoned branch does **not** drop out: a resumed episode need not rewrite
+    every cell below its own frontier — a coarser stride, or a metric it stops
+    emitting — so the earlier episode's values survive at the cells the resumed
+    one never revisited, and a caller can receive a series no single execution
+    produced. This is a **convergent merge** (last-write-wins per cell), not a
+    consistent snapshot; projecting one lineage needs a fork point, which the
+    log does not carry. The raw events stay on the log for forensics. Inner
+    dicts are step-sorted.
 
     Pure and cache-free: the fold inherits the scope of the read view it is
     given (visibility/enforcement compose upstream — design §6); ``request_id``
