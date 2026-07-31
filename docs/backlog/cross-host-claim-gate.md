@@ -214,6 +214,24 @@ What it touches:
   intro/elim discipline ([protocol-algebra](protocol-algebra.md) L2) says must be
   designated deliberately (a `lifecycle.evicted`? a `launcher.terminated` written
   by a non-parent? each has a cost).
+- **Two further costs of its absence, measured 2026-07-31.** Both are paid today
+  because `lifecycle.stopped` is the only eliminator, so a third party must write
+  one:
+  - **It swallows pending stops** (runstate#39). The discharge fold is
+    author-blind *and* body-blind, so an eviction answers every `control.stop`
+    on the log. 11 of 37 real stops were discharged this way. Scoping the
+    discharge is **dead** — measured, 9 test failures across three properties,
+    including resurrecting the bug `stop-discharge.md` was written to fix — and
+    no record-free fix exists: every envelope field plus `consumed_seq` was
+    refuted against the corpus. A designated eliminator fixes it with **zero
+    change to the discharge fold**, because a record that asserts no effect
+    discharges nothing.
+  - **It corrupts freshness.** `lifecycle.stopped` is in `_DATED_TOPICS`, so an
+    evictor's `t` becomes the run's `last_activity` permanently: a run whose
+    worker last spoke 480 s ago reads 5 s fresh, and a viewer's staleness
+    threshold flips it from stale to live with no issue raised.
+    **Design constraint: the eliminator must be undated / excluded from
+    `_DATED_TOPICS`,** or this ships with the fix.
 - **Who is allowed to write it, and on what evidence.** The force-claim's
   authority is the Postgres lock (definitive) — but the record then lives on the
   log for backends that have no lock, so a reader on any backend trusts it. That
