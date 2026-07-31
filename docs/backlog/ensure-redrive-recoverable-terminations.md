@@ -91,3 +91,56 @@ no thrash-visibility machinery, and a cleaner scope boundary.
 A public `extend_once` + channel-bound `satisfied` + the formalized "primitive basis" + the
 own-loop recipe (for exotic *stop* policies). `history` stays exported; the rest stays internal
 until a consumer needs to compose its own drive loop.
+
+## Bounds that were rejected, and the arithmetic that killed them
+
+Recorded here rather than in a plan, because the plan that produced them was superseded before it
+shipped and these are the parts worth keeping. **Do not re-propose without new evidence.**
+
+**One knob cannot serve both loops.** A spawn storm needs a **count** bound — every iteration costs
+a subprocess. A hang needs a **duration** bound — iterations are free. A duration safe against the
+worst legitimate silence is orders of magnitude too large to contain a storm: a caller guard
+validated at 0.42 s of quiet, against measured worst legitimate silence of 64 min on run channels
+and 151 min on dispatcher channels, is not a bound on anything.
+
+- **`max_extends`** (a reset-keyed extend ceiling) — blind by construction to the `+1`-step-per-
+  relaunch storm (`specs/control-target.md` R5) *with* the reset, and false-fires on the documented
+  chunked-producer contract *without* it. Caught between blind and wrong. It also false-fires on a
+  healthy worker that ticks steplessly, because the step frontier is the wrong reset key.
+- **`stall_timeout`** (a log-silence deadline) — *admissible*, unlike the refuted staleness tier:
+  the constraint is one-sided (the hang lasts forever, so any finite value strictly improves) and
+  `ensure` writes nothing, so a raise cannot admit a second writer. Rejected on the arithmetic
+  above, not on inadmissibility.
+
+**The general rule, which is why this keeps recurring:** a threshold encodes workload knowledge the
+protocol does not have — and once the log is remote, topology knowledge too. The same conclusion
+that killed the staleness tier (`dead_ends/failure-detector.md`), reached from a second direction.
+A bound derived from the log's own facts is admissible; a number the library picks is not. This is
+what `RecordlessExitError`'s fixed point satisfies and what every knob above fails.
+
+## Open: `_elapsed` on a log with no epoch
+
+`_elapsed` returns `0.0` while `_epoch(channel)` is None, so a time-keyed `until` on a log where no
+spawn ever claims is unsatisfiable **forever**. Mirroring `history`'s raise is refuted — cold-log
+time targets are shipped and tested. Record the blast radius accurately: raising *unconditionally*
+breaks **16** tests, but a **faithful** gate (raise only when the schedule references time) breaks
+**3**. Implementation trap: `references_time` is subscription-shaped and walks `from`/`every`/
+`until`, so `references_time(until)` returns False for a bare `{"time_seconds": …}` — it must be
+called as `references_time({"until": until})`. Getting that wrong is a silent no-op that passes the
+suite.
+
+## Still unbounded (measured on master after `RecordlessExitError` shipped)
+
+The recordless-exit fixed point bounds every shape where a launcher wrote `exited/0`. What survives
+is the case with **no terminal record at all**:
+
+| shape | behaviour |
+|---|---|
+| own spawn dies, no launcher record, step axis | unbounded (5,001 extends before a test cap) |
+| same, time axis | unbounded |
+| stranded foreign claim, no launcher record | hangs |
+| either of the above **+ `launcher.terminated(exited, 0)`** | `RecordlessExitError`, 1 extend |
+
+The bound needs a log fact and these shapes have none. A designated claim eliminator
+(`cross-host-claim-gate.md` §4.2) would supply exactly that fact, so this may resolve there rather
+than needing its own mechanism.
