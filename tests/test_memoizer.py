@@ -1189,13 +1189,23 @@ def _reaped_exit0(rid, *, claimed, steps=(), handle="local://nohost/999999", epo
     """A run reaped with a clean exit code and NO worker verdict."""
     launcher = runstate.ThreadLauncher()
     ch = launcher.create_channel(rid)
-    ch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="o")
+    ch.send(
+        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="o"
+    )
     ch.send({"handle": handle, "t": 0.0}, topic="launcher.launched", request_id="L1")
     if claimed:
-        ch.send({"handle": handle, "t": epoch}, topic="lifecycle.started", request_id="L1")
+        ch.send(
+            {"handle": handle, "t": epoch}, topic="lifecycle.started", request_id="L1"
+        )
         for step in steps:
-            ch.send({"value": float(step), "step": step, "t": 0.0}, topic="value", name="loss")
-            ch.send({"step": step, "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat")
+            ch.send(
+                {"value": float(step), "step": step, "t": 0.0},
+                topic="value",
+                name="loss",
+            )
+            ch.send(
+                {"step": step, "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat"
+            )
     ch.send(
         {"reason": "exited", "exit_code": 0, "signal": None, "t": 1.0},
         topic="launcher.terminated",
@@ -1287,10 +1297,13 @@ def test_ensure_rewake_across_a_recordless_exit0_still_succeeds():
             self.extends += 1
             for step in (1, 2):
                 self._ch.send(
-                    {"value": float(step), "step": step, "t": 0.0}, topic="value", name="loss"
+                    {"value": float(step), "step": step, "t": 0.0},
+                    topic="value",
+                    name="loss",
                 )
                 self._ch.send(
-                    {"step": step, "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat"
+                    {"step": step, "consumed_seq": 0, "t": 0.0},
+                    topic="lifecycle.heartbeat",
                 )
             self._ch.send(
                 {"completed": True, "error": None, "final_step": 2, "t": 4.0},

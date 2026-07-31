@@ -821,8 +821,12 @@ def test_worker_completed_splits_the_two_completed_sources(open_run):
     # own stopped(completed=True) does; a reaped launcher.terminated(exited, 0)
     # is a fact about a PROCESS -- an sbatch exits 0 at submit time.
     ch = open_run()
-    ch.send({"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started", request_id="L1")
-    ch.send({"handle": "local://h/1", "t": 0.0}, topic="launcher.launched", request_id="L1")
+    ch.send(
+        {"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started", request_id="L1"
+    )
+    ch.send(
+        {"handle": "local://h/1", "t": 0.0}, topic="launcher.launched", request_id="L1"
+    )
     ch.send(
         {"reason": "exited", "exit_code": 0, "signal": None, "t": 1.0},
         topic="launcher.terminated",
