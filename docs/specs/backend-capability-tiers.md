@@ -66,8 +66,13 @@ the *worker*.
 **The change:** on the read that `tick()` already performs, compare `latest_episode().seq` to
 `self._started_seq`. If it moved, this worker has been displaced: set `_lost`, stop.
 
-- **Cost: 4.08 µs** on a 200k-record log — one indexed seek, the *same* seek the fence's subquery
-  performed. Paid **per tick**, not per write.
+- **Cost — and revision 3's first draft got this wrong.** `tick()` → `_drain_control()` reads only
+  `topics=["control.>"]`; it never touches `lifecycle.started`. A separate `latest_episode()` call
+  is **a second read per tick**, which on Postgres is a second network round trip, not the 4.08 µs
+  a local seek measures. The check must instead **fold into the drain's existing read** —
+  `topics=["control.>", "lifecycle.started"]`, dispatched by topic — which is genuinely one round
+  trip. Subtlety: `_cursor` is published as `consumed_seq` on every heartbeat, so it must keep
+  advancing on control records **only**, or that observable silently changes meaning.
 - **It yields detection, not silent dropping.** The worker stops — which also stops it writing the
   checkpoint the fence could never protect (refutation 2 above).
 - **No substrate change, no signature change, no capability, no schema.** It respects the layering
