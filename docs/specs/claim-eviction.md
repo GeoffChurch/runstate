@@ -198,18 +198,48 @@ correctness limit, not a cost one, and it is the kind that survives "old logs do
 Schema: `protocol/lifecycle-v0.4.schema.json` → **v0.5**, adding `lifecycle.evicted` to the topic
 enum and its body, replacing v0.4 rather than accumulating beside it.
 
-## 10. Open, and to be measured before building
+## 10. The cost of the third read — MEASURED
 
-1. **`live_episode` gains a third read** (`latest_episode` + `latest(STOPPED)` + `latest(EVICTED)`),
-   and it is a per-run-per-tick fold in the cockpit. **Unmeasured.** Two cost claims in this area
-   have already shipped into docs while being wrong; measure this one against a real Postgres before
-   the spec is called done, and record the number here.
-2. **Where `evict_claim` lives.** `observables.py` is folds-only today — every function in it reads.
+`live_episode` goes from two reads (`latest(STARTED)`, `latest(STOPPED)`) to three, on a fold the
+cockpit runs per run per tick. Measured against sqlite and a real Postgres, median of 400 calls,
+with **no eviction on the log** — the common case, and the one that decides this, since it is a
+`latest` on a topic with zero records:
+
+| backend | today | with eviction | delta | ratio |
+|---|---|---|---|---|
+| sqlite | 8.5 µs | 10.3 µs | **+1.8 µs** | 1.21× |
+| postgres (unix socket) | 100.9 µs | 153.7 µs | **+48 µs** | 1.52× |
+
+**Flat in log size** from 3 to 20,001 records, on both backends — the read is index-served, as the
+`(topic, seq)` index predicts.
+
+The delta is **exactly one round trip**, and the decomposition says so rather than leaving it as an
+inference. On Postgres: a bare `SELECT 1` is 37.0 µs, one `latest()` is 45.6 µs, two are 87.1 µs,
+three are 132.6 µs. So **81% of each read is pure round trip** and the marginal cost of this design
+is one RTT — not 48 µs. On a unix socket that is 48 µs; over the SSH tunnel to a cluster login node
+that mycooc's deployment plans, it is the *tunnel's* RTT. At 100 runs and 1 Hz: +0.18 ms/frame on
+sqlite and +4.8 ms/frame on local Postgres (both fine against a 1000 ms frame), but +500 ms/frame at
+a 5 ms tunnel RTT, which is not.
+
+**The mitigation makes this a net win, and it is #15.** One query returning latest-per-topic over a
+topic *set* — the richer `read` that #15 proposes — answers all three topics in **73.4 µs**, which
+is *cheaper than today's two separate reads at 87.1 µs*. So `live_episode` **with** the eviction
+check, batched, is ~16% faster than `live_episode` **without** it today, and the gap widens with
+RTT because it removes two round trips instead of adding one.
+
+That is the honest conclusion: the third read is affordable everywhere runstate runs today
+(sqlite, and Postgres on a socket), it is the tunnel deployment that would feel it, and the fix is
+already an open issue that this design gives a concrete reason to take.
+
+## 11. Still open
+
+1. **Where `evict_claim` lives.** `observables.py` is folds-only today — every function in it reads.
    A writer may not belong there. Cheap to decide, but decide deliberately rather than by drift.
-3. **Whether `evictor` should be structured** (a scheme, like handles are) rather than free text.
+2. **Whether `evictor` should be structured** (a scheme, like handles are) rather than free text.
    YAGNI says free text; the handle precedent says otherwise. Nothing folds on it either way.
+3. **Whether to sequence #15 first** if the tunnel deployment lands before this does.
 
-## 11. Test plan
+## 12. Test plan
 
 - **Fold isolation, one test per non-change** — after an eviction: `peek_terminal is None`,
   `progress` unchanged, `undischarged_stops` still returns the pending stop, `last_activity`
