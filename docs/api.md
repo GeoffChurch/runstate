@@ -143,6 +143,18 @@ or on a stepless worker**. `stopped(completed=True)` is the opt-in completion
 claim; the default projects to `preempted`. `retire()` is the careful death (the
 dying breath CAS'd against the drained log).
 
+**What the episode claim guarantees — and where it stops.** The birth CAS gives
+**at most one claimant at the instant of claiming**. It does *not* give
+single-writer over time: nothing revokes a claim once won, and nothing stops a
+worker whose claim was displaced after it started. A displaced worker keeps
+writing, and its records are honest reports of what it did — never assertions
+that it still holds the claim. Do not read them as authority, and do not expect
+runstate to have silenced them. Three attempts to extend the guarantee past that
+instant — a lock-as-arbiter, an epoch fence in the substrate, and a per-tick
+self-check in the worker — are refuted in `specs/write-authority.md`; read it
+before proposing a fourth. Single-writer over time, where you need it, comes from
+whatever spawns the workers.
+
 ## Launchers
 
 Opt-in orchestration: spawn a worker and bracket it with
