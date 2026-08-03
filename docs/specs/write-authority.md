@@ -143,7 +143,10 @@ still would not reach the artifact plane for the single-step workers that domina
   cannot declare one. This stands on its own — and is the only surviving fragment of this file's
   original title.
 - **The `(topic, name, seq)` index (#19).** `name` is a post-filter today; the miss path measures
-  ~3000× better with the index, and `SELECT DISTINCT name` becomes a covering scan.
+  ~1800× better on sqlite (10.7 ms → 0.006 ms) and 2504 → 4 shared buffers on Postgres. It is an
+  **addition**, not a replacement: with it alone, the name-less `latest(topic)` regresses ~2000×.
+  `SELECT DISTINCT name` becomes a covering scan **on sqlite only** — Postgres has no loose index
+  scan and stays a parallel seq scan.
 
 ## Note on baselines — resolved
 
