@@ -205,6 +205,21 @@ pytest tests/test_schema.py -v      # emitted messages conform to the schema sta
 git config core.hooksPath scripts/githooks   # opt in to the local gates (per clone)
 ```
 
+**Run the Postgres suite locally.** Without a DSN, **~240 tests silently skip** -- every test of the
+CAS under real cross-process contention, the advisory-lock probe, and the shared-table paths. A
+throwaway server takes seconds (conda ships the binaries):
+
+```bash
+initdb -D /tmp/rs-pg -U "$USER" --auth-local=trust
+pg_ctl -D /tmp/rs-pg -l /tmp/rs-pg.log \
+       -o "-k /tmp/rs-pgsock -p 55432 -c listen_addresses=''" start
+createdb -h /tmp/rs-pgsock -p 55432 runstate_test
+export RUNSTATE_TEST_PG_DSN="postgresql:///runstate_test?host=/tmp/rs-pgsock&port=55432"
+```
+
+The socket directory **must be a short path** -- the sun_path limit is 107 bytes and a scratchpad
+path blows it (`Unix-domain socket path ... is too long`). 781/215 without the DSN, 1020/1 with it.
+
 The pre-commit hook runs the whole CI gate set -- `black --check`,
 `mypy --strict`, `pytest` -- in ~9.4 s, almost all of it the suite. It exists
 because the formatter gate is the one that gets skipped: run the checks, add

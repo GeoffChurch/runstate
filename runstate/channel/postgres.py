@@ -123,6 +123,7 @@ WITH k(v) AS (SELECT hashtextextended(%(s)s, 0))
 SELECT EXISTS (
     SELECT 1 FROM pg_locks, k
     WHERE locktype = 'advisory' AND granted AND objsubid = 1
+      AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
       AND classid = ((k.v >> 32) & 4294967295)::oid
       AND objid   = (k.v & 4294967295)::oid
 )

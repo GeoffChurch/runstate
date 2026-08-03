@@ -375,3 +375,57 @@ def test_unconditional_send_bound_exhaustion_raises(pg_ready, monkeypatch):
             ch.send({}, topic="value", name="x")  #           unconditional
     finally:
         ch.close()
+
+
+def test_episode_alive_ignores_a_lock_in_another_database(pg_ready):
+    """`pg_locks` is CLUSTER-wide. Without a `database =` predicate an advisory lock
+    taken on the same key in any other database of the same cluster satisfies every
+    other filter, so a run with no worker at all reads ALIVE.
+
+    The sibling probe `_EPISODE_HELD_BY_ME` is immune only incidentally -- it adds
+    `pid = pg_backend_pid()`, and a pid implies a session implies a database. This
+    one had no such scoping (runstate#44).
+
+    Skips when the test role cannot CREATEDB; the cluster-wide fact is what makes
+    the second database necessary and it cannot be simulated within one.
+    """
+    import psycopg
+
+    from runstate.channel.postgres import PostgresChannel, _episode_key_str
+
+    other_db = f"rs_other_{uuid.uuid4().hex[:12]}"
+    admin = psycopg.connect(pg_ready, autocommit=True)
+    try:
+        try:
+            admin.execute(f'CREATE DATABASE "{other_db}"')
+        except psycopg.errors.InsufficientPrivilege:
+            pytest.skip("test role cannot CREATEDB")
+    finally:
+        admin.close()
+
+    run_id = f"crossdb-{uuid.uuid4()}"
+    ch = PostgresChannel(pg_ready, run_id=run_id)
+    stranger = None
+    try:
+        started_seq = ch.send({}, topic="lifecycle.started", expected_seq=0)
+        assert ch.episode_alive(started_seq) is False  # nobody holds it
+
+        # A stranger in ANOTHER database takes the very same advisory key.
+        other_dsn = psycopg.conninfo.make_conninfo(pg_ready, dbname=other_db)
+        stranger = psycopg.connect(other_dsn, autocommit=True)
+        key = _episode_key_str(run_id, started_seq)
+        stranger.execute("SELECT pg_advisory_lock(hashtextextended(%s, 0))", (key,))
+
+        assert ch.episode_alive(started_seq) is False  # still nobody in OUR database
+
+        ch.hold_episode(started_seq)  # and the real holder still reads alive
+        assert ch.episode_alive(started_seq) is True
+    finally:
+        if stranger is not None:
+            stranger.close()
+        ch.close()
+        admin = psycopg.connect(pg_ready, autocommit=True)
+        try:
+            admin.execute(f'DROP DATABASE IF EXISTS "{other_db}" WITH (FORCE)')
+        finally:
+            admin.close()
