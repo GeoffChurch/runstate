@@ -1,148 +1,103 @@
-# Spec: the required backend core, and a declared capability antichain
+# Spec: write authority belongs to the Worker, not the substrate
 
-**Status:** PROPOSED, not converged. **Revision 2** — revision 1 proposed promoting the Postgres
-advisory lock to a claim arbiter; that is refuted below and the proposal has changed shape. What
-survives is the diagnosis that something is mislayered; what changed is *which* thing.
+**Status:** PROPOSED. **Revision 3.** Revisions 1 and 2 both proposed moving something *into* the
+substrate; both are refuted below. The diagnosis survived all three revisions and the remedy got
+smaller each time — it is now about five lines, in the library.
 
-## What revision 1 got wrong, recorded so it is not re-proposed
+## The diagnosis (unchanged across three revisions)
 
-Revision 1 argued that **writer-liveness** was mislayered and should be surrendered to the backend,
-with the advisory lock arbitrating the claim where available. Three refutations, in ascending order
-of severity:
-
-1. **The repo already forbids the move, in the spec for the very backend it relied on.**
-   `channel-postgres.md`: *"the advisory lock is a **liveness signal**, not a claim gate… **Pushing
-   liveness into the claim path is the one thing that breaks this layering.**"* And
-   `HANDOFF-2026-07-27` line 424 already answered the layer question: *"**Q1 (layer). Neither.**
-   … relocating the inference does not fix a gate that needs definitive evidence."*
-2. **P3's "definitive — never unknown" condition is unachievable**, and is already violated in
-   shipped code. A worker inside a legitimately long step is reaped by `idle_session_timeout` and
-   reads dead — a *false death verdict on a healthy run*, where today the same event causes only a
-   revocable stale reading. `hold_episode` runs *after* the CAS, so a live claimed episode reads dead
-   inside that window; `watcher.py` papers over it with `episode_grace = 5.0`, which is exactly the
-   species of wall-clock mechanism the promotion was sold as eliminating. And the advisory key space
-   is one flat unnamespaced `int8` shared by every application on the cluster — runstate does not own
-   it and cannot.
-3. **The proposed cheap fence does not fence.** Revision 1 conjectured that requiring the claim's
-   lock in the writing session gives fencing for free. Measured: the naive form *corrupts the log* —
-   a failed check inside the aggregate's `WHERE` filters every row, `MAX(seq)` goes NULL, and the
-   insert lands at **seq = 1**, rewinding the frontier, which is the exact #32 failure it was added
-   to prevent. Worse, correctly formulated it still cannot fence: **a released lock is
-   indistinguishable from a lock never taken**, so it admits every stale writer at precisely the
-   moment the false release it exists to survive occurs. *Fencing needs a monotone epoch; a lock is
-   a boolean.*
-
-## The diagnosis that survives
-
-Something **is** mislayered, and it is not liveness. It is **write authority**.
-
-Issue #32 states it exactly: *"The CAS guarantees at most one claimant **at the instant of
+Issue #32, in its own words: *"The CAS guarantees at most one claimant **at the instant of
 claiming**; nothing extends that to write authority over time."*
 
-Safety is *one writer over time*. The current required backend contract delivers only the first
-instant of it. Everything else — the eliminator, the epoch carrier debate, the staleness tier, the
-handle-scheme question, eight refuted fixes — is an attempt to reconstruct, above the storage, a
-guarantee the storage stopped providing one instant after the claim.
+Safety is *one writer over time*. The claim CAS delivers only its first instant. Eight refuted
+fixes — the eliminator's authority question, the epoch-carrier debate, the staleness tier, the
+handle-scheme question — are attempts to reconstruct a guarantee that stops one instant after the
+claim.
 
-## The proposal
+## Revision 1: promote the advisory lock to a claim arbiter — REFUTED
 
-**Required of every backend.** Not a ladder — a floor. Safety must be uniform, so nothing here is
-opt-in:
+`channel-postgres.md` forbids it in the spec for the backend revision 1 relied on: *"**Pushing
+liveness into the claim path is the one thing that breaks this layering**."* And "definitive, never
+unknown" is unachievable — a worker inside a long step is reaped by `idle_session_timeout` and reads
+dead, a *false death verdict on a healthy run*.
 
-- **ordered contiguous append** — a total order per run;
-- **compare-and-append** (`send(expected_seq=)`) — at most one claimant at the claiming instant;
-- **epoch-fenced append** — *new* — the store rejects a write whose declared epoch is behind the
-  run's latest `lifecycle.started`.
+## Revision 2: epoch-fenced append in the required tier — REFUTED, five ways
 
-The third is the missing half of safety. Its arbiter is the claim's `seq`, which is already on the
-log, already monotone, and already contiguous by the substrate's own guarantee. Measured cost:
+The cost claims held (sqlite 1.008×, postgres 1.044×, memory free, all re-measured). Cost was never
+the objection.
 
-| backend | cost | plan |
-|---|---|---|
-| postgres | **1.09×** | Index Only Scan Backward, 5 buffers, 0.004 ms |
-| sqlite | **0.99×** (free) | SEARCH USING COVERING INDEX |
-| memory | free | an integer compare inside the existing lock |
+1. **A floor with an opt-out is not a floor.** A writer omitting `epoch=` reproduces #32
+   byte-for-byte. Revision 2 said "nothing here is opt-in" and, three lines later, "a third-party
+   writer simply omits `epoch=`." The "the CAS is equally opt-in" defence fails: the CAS has **two**
+   sites, both inside the library, on writes whose entire purpose is arbitration — partial CAS is
+   coherent because the sites that use it are the sites that *have a contest*.
+2. **It guards the log, not the run's outputs.** Measured: with the fence, the log says B owns the
+   run and A contributed nothing, while the **checkpoint on disk reads `A@step5`**. The fence makes
+   the log *disagree with the artifact*, where today it at least records the interleaving.
+3. **The residue is a zombie.** A's writes are silently dropped but `A.claimed=True`,
+   `A._lost=False`. Not "a wasted spawn" — a worker that still believes it is authoritative.
+4. **The birth CAS cannot be fenced, and it is the write that moves the fence.** Any actor that can
+   append can land a `lifecycle.started` and seize the epoch. Measured *new* harm: a forged claim
+   **permanently and silently mutes the live worker** — it ran seven more steps and contributed zero
+   records, with a ghost holding the claim and no eliminator possible. Today that forgery is
+   survivable. And `retire()`'s death-CAS is mutually exclusive with a fence, so the blessed
+   careful-death path still forges `preempted` through the library's own API.
+5. **It breaks opinion-freeness and fails L1.** The fence makes the substrate route on
+   `topic == 'lifecycle.started'`; `channel-postgres.md` records that *"convention knowledge … stays
+   in the worker, never the substrate."* And `protocol-algebra.md` L1: *"`send` / `read` / `latest` /
+   CAS is **complete**; anything else proposed for the Channel surface gets reclassified or rejected
+   by this rule"* — a new atomic transition *"must justify itself the way the CAS did, contract and
+   conformance tests included."* Revision 2 was 148 lines of prose.
 
-It needs no session, no connection binding, no wall clock, and no liveness oracle. It survives the
-holder's death *because the arbiter is a log record, not substrate state* — the property that
-`time-lease-boundary.md` establishes as the cure for standing state that cannot be re-derived. A
-third-party writer that holds no claim simply omits `epoch=`, exactly as it already omits
-`expected_seq=`.
+Adjacent prior art, worth reading before proposing this again: `stop-discharge.md` records
+**"A2 — episode-start fencing … the first-proposed fix — REFUTED"**. That refutation targets the
+*stop-discharge* problem rather than write authority, and its closing line — fencing answers *"who
+may act"* — is arguably a point in the fence's favour for *this* problem. It is cited here as
+context, not as the refutation.
 
-**Declared capabilities — an antichain, not a ladder.** The repo already retired the ladder framing:
-`channel-postgres.md` records that the Watcher's two probes are *"an **antichain** (incomparable
-preconditions)"* and that *"the earlier 'unique minimum / composes for free' claim is **retired**."*
-A single-host `flock` backend would have a liveness probe and fail cross-host visibility; a
-cross-host backend may lack name indexing. These are incomparable, so they are named, not ranked:
+## Revision 3: detect displacement in the Worker
 
-- **`WriterLivenessProbe`** — may vote **dead only**, never grants a claim. This is exactly its
-  current standing (`EpisodeProbe`, "never a claim arbiter"), and revision 2 **keeps it there**. It
-  is a recovery-latency optimisation, not a safety mechanism.
-- **`ChangeNotify`** — push in place of polling (#16). Genuinely storage-only; a consumer cannot
-  synthesise it cleanly.
-- **`QueryPushdown`** — windowed/filtered reads evaluated by the store (#15).
-- **`NameIndexed`** — see below.
+The fence tried to stop a displaced worker's *writes*. The cheaper and more complete move is to stop
+the *worker*.
 
-**Declaration must be real.** Today "tiers" live in a dict in `tests/conftest.py` keyed on fixture
-parameter names; nothing under `runstate/` knows about them, and a third-party backend cannot
-declare anything — it raises `KeyError`. A capability set belongs on the Channel class, with the
-conformance suite gating on what the backend declares.
+`Worker._lost` is assigned in exactly one place — inside the attach loop — so a worker displaced
+**after** claiming can never learn it. That is the actual gap, and it is in the library.
 
-## Ship independently: the `(topic, name, seq)` index (#19)
+**The change:** on the read that `tick()` already performs, compare `latest_episode().seq` to
+`self._started_seq`. If it moved, this worker has been displaced: set `_lost`, stop.
 
-Measured on a 200k-row sqlite log. The plan is `SEARCH USING INDEX idx_log_topic_seq (topic=?)` in
-every case — `name` is a post-filter:
+- **Cost: 4.08 µs** on a 200k-record log — one indexed seek, the *same* seek the fence's subquery
+  performed. Paid **per tick**, not per write.
+- **It yields detection, not silent dropping.** The worker stops — which also stops it writing the
+  checkpoint the fence could never protect (refutation 2 above).
+- **No substrate change, no signature change, no capability, no schema.** It respects the layering
+  that both earlier revisions violated.
+- It does not need to be enforced against a hostile writer, because it is not enforcement — it is a
+  worker learning a fact about itself that the log already carries.
 
-| | today | with `(topic, name, seq)` |
-|---|---|---|
-| hit | 5.2 µs | 22.2 µs |
-| **miss** | **28,506 µs** | **10.1 µs** |
-| named-but-early | 29,820 µs | 5.1 µs |
+**What it does not do:** stop a worker that never ticks again, or one that ignores `_lost`. Write
+authority against a *hostile* writer remains unsolved, and on this evidence should stay that way —
+see the exit below.
 
-A ~3000× fix on the miss path, and it makes `SELECT DISTINCT name` a covering-index scan, closing
-the deferred metric-name picker in the same change. Uncontroversial, unrelated to everything above,
-and sitting in the open-issue list.
+## Still standing, independent of all of the above
 
-## What must not move down
+- **The designated eliminator** (`cross-host-claim-gate.md` §4.2, undated per #42), with **aim +
+  `expected_seq`** per §8.2. Fixes #39 with zero change to the discharge fold, fixes #42, and removes
+  the forced forgery that creates #32's precondition. Already the live thread.
+- **Declaration must be real.** "Tiers" live in a dict in `tests/conftest.py` keyed on fixture
+  parameter names; nothing under `runstate/` knows about capabilities, so a third-party backend
+  cannot declare one. This stands on its own.
+- **The `(topic, name, seq)` index (#19).** `name` is a post-filter today; the miss path measures
+  ~3000× better with the index, and `SELECT DISTINCT name` becomes a covering scan.
 
-`ensure`, the folds, the vocabulary and the condition algebra are substrate-independent, and are
-where this library's value is. Revision 1 asserted this and then violated it: a liveness answer lives
-in a connection table that no fold can read, no cold reader can replay, and no second-language
-implementation can reproduce. The epoch fence has the opposite property by construction — its
-arbiter is a record on the log.
+## The exit, if revision 3 is also refuted
 
-## Corrected numbers
+Document that runstate provides single-writer **at the claiming instant only**, and say so in
+`docs/api.md` rather than implying more. One honest line beats a floor with an opt-out.
 
-Revision 1 overstated its own case; the corrections are smaller but the argument survives them.
+## Note on baselines
 
-- `resolve()` is **12** code lines, not 32 (the module is 57; 32 counted docstrings).
-- The consumer workaround is **517 raw / 227 executable**, of which ~**396 raw / 170 executable**
-  would actually die. Two of the four named are misattributed: the repair tool's *first* documented
-  cause was a torn WAL-on-NFS write, and `_terminal_since` fixes an episode-scoping gap in
-  `peek_terminal` that is runstate's own. All of it is one consumer's; the other three contribute
-  zero.
-- The dissolution claim was too strong on #39 and #42: PR #41's scan names **two** third-party
-  writers — a reclaim tool *and* a parent-process crash backstop. A liveness probe removes the first
-  only, and the discharge fold is author-blind *and* body-blind regardless.
-- Of 7–8 stranded claims in the corpus, **one** is foreign-host.
-
-## Open questions
-
-1. **Does the epoch fence belong in `Channel.send`'s signature or a capability?** It is proposed as
-   required, which means a signature change on every backend. Is that the right cost?
-2. **What is the epoch for a writer with no claim** — a third-party `control.stop`, an observer's
-   `control.subscribe`? Proposed: omit it, as `expected_seq=` is omitted. Confirm nothing then needs
-   fencing that should have it.
-3. **Does the fence interact with the birth CAS?** The claim itself is a write; it cannot be fenced
-   against an epoch that does not yet exist.
-4. **Is `WriterLivenessProbe` worth keeping at all** given #44 (the probe is not database-scoped) and
-   the flat key space? It may be a recovery optimisation with a correctness footgun attached.
-5. **Should `ChangeNotify` and `QueryPushdown` be specified here or in their own issues?** They are
-   named for completeness; neither is designed.
-
-## What would make this wrong
-
-If the epoch fence cannot be expressed on a backend without per-write cost that the value plane
-cannot absorb, the required tier stays as it is and write authority remains unsolved — in which case
-the honest position is that runstate provides single-writer *at the claiming instant only*, and says
-so in the API docs rather than implying more.
+Two independent reviews measured different suite totals (1020/1 vs 980/3) against nominally the same
+tree. Unexplained. Anyone quoting a suite number should say which commit and whether
+`RUNSTATE_TEST_PG_DSN` was set — without it ~220–240 tests skip, including every test of the CAS
+under real cross-process contention.
