@@ -49,6 +49,25 @@ _CREATE_INDEX = (
     "CREATE INDEX IF NOT EXISTS idx_log_run_topic_seq ON log (run_id, topic, seq)"
 )
 
+# latest(topic, name=) adds AND name=%s, which the index above cannot serve: it
+# seeks on (run_id, topic) and then SORTS the partition to answer ORDER BY seq
+# DESC (#19). Measured on 300k value records: 2504 shared buffers through a
+# top-N heapsort, vs 4 through an Index Only Scan Backward with this index; an
+# absent name costs the same 2504 today and 3 with it.
+#
+# An ADDITION, never a replacement -- `name` sits between the equality prefix
+# and the sort key, so this index cannot answer the name-less latest(topic).
+#
+# Unlike sqlite, Postgres self-migrates: ensure_schema runs at orchestration
+# startup and CREATE INDEX IF NOT EXISTS reaches every existing row. (Not
+# CONCURRENTLY: it cannot run inside the advisory-lock transaction above. On a
+# large live deployment, build it out-of-band first -- the IF NOT EXISTS here
+# then finds it and does nothing.)
+_CREATE_NAME_INDEX = (
+    "CREATE INDEX IF NOT EXISTS idx_log_run_topic_name_seq"
+    " ON log (run_id, topic, name, seq)"
+)
+
 
 def ensure_schema(dsn: str) -> None:
     """Provision the shared ``log`` table, once, cross-host-safely.
@@ -65,6 +84,7 @@ def ensure_schema(dsn: str) -> None:
         conn.execute("SELECT pg_advisory_xact_lock(%s)", (_SCHEMA_LOCK_KEY,))
         conn.execute(_CREATE_TABLE)
         conn.execute(_CREATE_INDEX)
+        conn.execute(_CREATE_NAME_INDEX)
 
 
 # The CAS: insert at seq=expected+1 iff the run's current max is still expected.

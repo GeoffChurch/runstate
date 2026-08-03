@@ -383,3 +383,50 @@ def test_sqlite_latest_uses_the_topic_index_not_a_scan(tmp_path):
     detail = " ".join(str(row[-1]) for row in plan)
     assert "idx_log_topic_seq" in detail
     assert "SCAN" not in detail.upper()
+
+
+def test_sqlite_latest_with_name_uses_the_name_index_not_a_partition_walk(tmp_path):
+    # latest(topic, name=) must SEEK on the name, not post-filter it: a rare,
+    # early-only or not-yet-emitted name otherwise walks the whole topic
+    # partition on every call, forever (#19).
+    from runstate.channel.sqlite import SqliteChannel
+
+    ch = SqliteChannel(tmp_path / "run.db")
+    plan = ch._conn.execute(
+        "EXPLAIN QUERY PLAN SELECT seq FROM log WHERE topic = ? AND name = ?"
+        " ORDER BY seq DESC LIMIT 1",
+        ("value", "loss"),
+    ).fetchall()
+    detail = " ".join(str(row[-1]) for row in plan)
+    assert "idx_log_topic_name_seq" in detail
+    assert "topic=? AND name=?" in detail  # the name is IN the seek, not after it
+    assert "SCAN" not in detail.upper()
+
+
+def test_sqlite_name_index_does_not_displace_the_topic_index(tmp_path):
+    # The two indexes are an ADDITION, not a replacement. (topic, name, seq)
+    # cannot serve the name-less latest(topic) -- `name` sits between the
+    # equality prefix and the sort key, so ORDER BY seq falls back to a temp
+    # B-tree (measured ~2000x worse on 300k records). latest(topic) runs on
+    # every Watcher poll, so dropping (topic, seq) would be a severe regression
+    # that only shows up under load.
+    from runstate.channel.sqlite import SqliteChannel
+
+    ch = SqliteChannel(tmp_path / "run.db")
+    names = {
+        r[0]
+        for r in ch._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='log'"
+        )
+    }
+    assert {"idx_log_topic_seq", "idx_log_topic_name_seq"} <= names
+
+    plan = " ".join(
+        str(row[-1])
+        for row in ch._conn.execute(
+            "EXPLAIN QUERY PLAN SELECT seq FROM log WHERE topic = ?"
+            " ORDER BY seq DESC LIMIT 1",
+            ("value",),
+        )
+    )
+    assert "TEMP B-TREE" not in plan.upper()  # the tell that the sort is unserved

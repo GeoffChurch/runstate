@@ -64,6 +64,17 @@ CREATE TABLE IF NOT EXISTS log (
 -- Watcher poll (twice, for stopped/terminated, which usually don't exist yet).
 -- Without this it's a full table scan per poll; the index makes it a seek.
 CREATE INDEX IF NOT EXISTS idx_log_topic_seq ON log (topic, seq);
+-- latest(topic, name=) adds AND name=?, which the index above CANNOT serve: it
+-- seeks on topic, then walks the partition backwards post-filtering the name,
+-- so a rare / early-only / not-yet-emitted name pays the whole partition on
+-- every call, forever (#19).
+--
+-- An ADDITION, never a replacement. Measured on 300k value records: with
+-- (topic, name, seq) ALONE, latest(topic) regresses 0.005ms -> 10.5ms (~2000x),
+-- because `name` sits between the equality prefix and the sort key so ORDER BY
+-- seq falls back to a temp B-tree. Both indexes; both are hot paths. The
+-- (topic, seq) guard in tests/test_channel.py pins that.
+CREATE INDEX IF NOT EXISTS idx_log_topic_name_seq ON log (topic, name, seq);
 """
 
 
