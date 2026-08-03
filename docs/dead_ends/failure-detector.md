@@ -6,6 +6,13 @@ over-scoped. The live work moves to the corrected path (see *Where it goes inste
 Recorded here so the approach isn't re-attempted. The full original design is in git
 history (was `../backlog/failure-detector.md`).
 
+**Re-proposed standalone and re-refuted 2026-08-03.** The **per-tick supersession self-check**
+below was proposed again on its own merits — not as observe-then-claim's bound — as a fix for #32.
+Points 1 and 6 transferred verbatim and held; the other four do not transfer. Measurement and four
+further refutations (it stops one step body too late, `retire()`/`stopped()` never detect, it breaks
+`_lost`'s ordering invariant, and it grows every tick's read without bound) are in
+`../specs/write-authority.md`. Read that before proposing it a third time.
+
 ## What it proposed
 
 Recast "cross-host liveness for the claim gate" as: liveness is the **keystone failure
