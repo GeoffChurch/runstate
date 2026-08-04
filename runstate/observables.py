@@ -439,8 +439,20 @@ def undischarged_stops(channel: Channel) -> list[Envelope]:
     gate refusing work on "pending" may be gating on a not-yet-due stop. And
     **naked stops over-report**: a malformed stop was refused by the worker
     (never in its pending set), but no nak discharges a stop — it stays
-    listed until the next ``stopped`` discharges everything (conservative:
-    never under-reports)."""
+    listed until the next ``stopped`` discharges everything.
+
+    IT DOES UNDER-REPORT, and this docstring claimed otherwise until measured.
+    The discharge is **author-blind AND body-blind**: *any* record on
+    ``lifecycle.stopped``, written by anyone, well-formed or not, discharges
+    every pending stop. So a third party releasing a stranded claim — the only
+    way to release one today — silently answers commands it never carried out,
+    and this fold then reports nothing pending (runstate#39). Measured on the
+    real corpus: 11 of 37 stops were discharged by a record the worker did not
+    write, 6 of them by a *malformed* one that simultaneously raises
+    ``MalformedRecordError`` from ``peek_terminal``. No harm had landed — in
+    every case the halt was already served exogenously — but the mechanism is
+    live, and a consumer gating "refuse the next chunk" on this fold is
+    deciding on it."""
     stopped = channel.latest(Topic.LIFECYCLE_STOPPED)
     return channel.read(
         after=stopped.seq if stopped is not None else 0, topics=[Topic.CONTROL_STOP]
