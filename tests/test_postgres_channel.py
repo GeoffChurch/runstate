@@ -52,6 +52,51 @@ def test_ensure_schema_creates_log_table(pg_dsn):
         assert c.execute("select to_regclass('log')").fetchone()[0] == "log"
 
 
+def test_ensure_schema_creates_both_indexes(pg_dsn):
+    """Both, not one. ``(run_id, topic, name, seq)`` serves latest(topic, name=)
+    -- measured 2504 shared buffers through a top-N heapsort vs 4 through an
+    Index Only Scan Backward (#19) -- but it cannot serve the name-less
+    latest(topic), because ``name`` sits between the equality prefix and the
+    sort key. Unlike sqlite, ensure_schema reaches rows that already exist, so
+    this is also the Postgres side of the migration."""
+    from runstate.channel.postgres import ensure_schema
+
+    ensure_schema(pg_dsn)
+    with psycopg.connect(pg_dsn) as c:
+        names = {
+            r[0]
+            for r in c.execute(
+                "select indexname from pg_indexes where tablename = 'log'"
+            )
+        }
+    assert {"idx_log_run_topic_seq", "idx_log_run_topic_name_seq"} <= names
+
+
+def test_latest_with_name_is_index_served_not_sorted(pg_ready):
+    """The #19 property itself: the name participates in the seek. Without the
+    index the planner sorts the whole (run_id, topic) partition, so a rare,
+    early-only or absent name pays that on every call, forever."""
+    run = f"idx-{uuid.uuid4().hex[:8]}"
+    with psycopg.connect(pg_ready) as c:
+        c.execute(
+            "insert into log (run_id, seq, topic, name, request_id, body, created_at)"
+            " select %s, g, 'value', 'm'||(g %% 40), null, '{}', 0.0"
+            " from generate_series(1, 5000) g",
+            (run,),
+        )
+        c.execute("analyze log")
+        plan = "\n".join(
+            r[0]
+            for r in c.execute(
+                "explain select seq from log where run_id = %s and topic = 'value'"
+                " and name = 'm7' order by seq desc limit 1",
+                (run,),
+            )
+        )
+    assert "idx_log_run_topic_name_seq" in plan
+    assert "Sort" not in plan  # the tell that the partition is being ordered
+
+
 # ===================== the liveness lock (cycle 4) =====================
 # claim = the uniform CAS; the advisory lock is a Watcher-consumed liveness SIGNAL,
 # never a claim arbiter. These pin the signal itself (the Watcher wiring is cycle 5).
