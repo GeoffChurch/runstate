@@ -1,14 +1,78 @@
-# Spec: `lifecycle.evicted` — a designated eliminator for the episode claim
+# `lifecycle.evicted` — a designated eliminator for the episode claim
 
-**Status:** PROPOSED, **revision 2**. Retires #39 and #42 (both measured to flip) and removes #32's
-*precondition*.
+**Status: DEFERRED — the design is sound; the purchase does not justify it yet.** Kept as a worked
+design, because the day it *is* justified this is where to start. Not in `../specs/`: nothing here
+ships.
 
-Revision 1 blessed evicting a *live* claim as "correct and intended." That was wrong, and §2 records
-why. The record itself is unchanged; three mechanical corrections follow from the error — a probe
-veto, a range read, and an honest §2.
+**What the measurement changed.** The mechanics were prototyped twice and work — #39 and #42 both
+flip. The *value* does not hold up:
 
-**Reviewability caveat:** `write-authority.md`, which §2 leans on, is on PR #43 and not on master.
-Land it first, or §2 cannot be checked against the tree.
+- **#39 is real but confined.** Corpus scan over 1,933 openable logs in four repos: the harm fired
+  **6 times, in 2 runs, from one experiment and one tool**. The whole corpus holds 49
+  `control.stop` records. Nothing shows an operator was surprised.
+- **#42 is display-only.** `runstate-tui/runstate_tui/fold.py:74` is the **one** production read of
+  `last_activity` anywhere. It picks between `Status.live()` and `Status.stale()` — both absent from
+  `types.py`'s `_STATUS_SEVERITY` (so both are `Severity.OK`) and from `pool.py`'s `_EVICT_KINDS`.
+  It changes a string and a colour. In #42's own repro the branch is unreachable regardless: the
+  forged `stopped` makes `peek_terminal` non-`None`, so the fold returns on the terminal arm first.
+- **#32 loses its precondition, not its defect.** Unchanged from revision 2.
+- **Atomicity was never a purchase.** `mycooc/scripts/reclaim_experiment.py:312` **already** writes
+  with `expected_seq=claim_seq`. §4's atomicity contribution is deployed today.
+- **The one adopting site gives something up.** That tool deliberately argues for the `preempted`
+  projection (*"Setting `error` would project to ERRORED and mark the cell failed"*). Under
+  `evicted`, `peek_terminal` returns `None` instead — harmless there, but a behaviour change to
+  accept, not a free swap.
+
+**Both defects close with ~6 lines in the consumer, using records legal today** — measured end to
+end. In `reclaim_experiment.py`: stamp the sacct job End time instead of `time.time()` (**#42**);
+and read `undischarged_stops` before the CAS, re-`send`ing each `control.stop` after it (**#39**).
+No new topic, no schema bump, no fold case, no `live_episode` change. A stop landing after a worker
+attaches is an ordinary live stop the drain takes on the next tick.
+
+**Revive when** a *second independent consumer* needs it, or a third party appears that **cannot fix
+its own writer**. Today's only beneficiary is one tool in one repo we own.
+
+**The precedent bar, checked.** L2's decision rule admits the *type*, but this repo is **0-for-2** on
+minting a reserved topic as a second eliminator — `lifecycle.expired` proposed and rejected twice
+(L2's quotient argument; `../specs/service-worker.md`'s canonical-form argument). The
+counter-precedent in this design's favour — the time-lease second eliminator — **added no topic**;
+it reused the episode boundary. There is no precedent here for what this would do.
+
+## The Postgres advisory lock as an eviction veto — REFUTED, do not re-propose
+
+Floated as a cheaper answer to §4's cross-host blind spot: `PostgresChannel` implements
+`EpisodeProbe.episode_alive`, which asks the **server** whether the episode's advisory lock is held —
+unforgeable, and cross-host where `resolve()` abstains. Wire it into `live_episode` as a veto
+(*refuse to release while the lock is held*), on the argument that vetoing is safe where the
+previously-refuted arbiter form was not.
+
+**It fails on the most ordinary path, measured.** `Worker.__exit__` does not close the channel
+(`worker.py:145-151`), and `hold_episode` pins the lock to *that channel's connection*
+(session-scoped, by design). So after a clean `stopped(completed=True)`, `episode_alive` is **still
+True** until the process exits. Under the veto a **cleanly completed run reads LIVE** — a brand-new
+false-alive wedging `relaunch_if_needed`, `ensure_served` and `ensure`.
+
+The direction argument was incomplete rather than wrong: it reasoned only about the probe's *error*
+modes, never the case where the probe is **correct** and the veto is still wrong. `episode_alive`
+answers *"a session that once claimed this episode is still connected"* — strictly weaker than *"the
+episode is live."* As a Watcher signal a stale True only delays a verdict; as a release gate it
+**inverts a correct answer**. Same word, different object — structurally the error that produced
+revision 1.
+
+The narrow form (veto only the eviction branch) survives that but fails on its own terms: the
+documented hazard that keeps a lock spuriously held — a hard partition, released only when TCP
+keepalive fires — is *the same event that strands the claim*, so the veto refuses to evict exactly
+the case the feature exists for, making Postgres **worse** than sqlite here. It is also
+un-appealable, needs `isinstance(channel, EpisodeProbe)` inside `observables.py` (the layering
+`../specs/channel-postgres.md` forbids by name), and costs **69.0 µs** against `live_episode`'s whole 95.0 µs.
+
+**What survives:** the same probe in the *evictor's* hand rather than the fold — `evict_claim()`
+consulting `episode_alive` before it writes. Advisory, retryable, overridable, bounded by the CAS,
+and it keeps the lock out of `live_episode` entirely. That version is genuinely veto-never-arbiter.
+
+---
+
+Everything below is the design as it stood at revision 2, unchanged.
 
 ## 1. The problem
 
@@ -44,7 +108,7 @@ use."* That question is what has blocked this three times.
 
 **Revision 1 claimed it dissolves. It does not — it splits, and the halves have opposite answers.**
 
-The dissolution argument ran: `write-authority.md` settles that the claim never conferred write
+The dissolution argument ran: `../specs/write-authority.md` settles that the claim never conferred write
 authority past its first instant, therefore a wrong eviction removes nothing that existed. The
 premise is true. The inference is false, and the gap is the one that has now killed three designs in
 a row: **it is a statement about the log, and the harm is off-log.** Consumers use the claim as the
@@ -119,7 +183,7 @@ tail it inspected or not at all. This closes the read-liveness-then-write window
 tool spans it with a 60-second `sacct` shell-out, during which the run can legitimately restart.
 
 Together these make a wrong eviction *attributable and bounded* rather than anonymous and total —
-the same move `launcher-record-identity.md` made for death records.
+the same move `../specs/launcher-record-identity.md` made for death records.
 
 **The probe veto.** An eviction releases the claim only where the handle probe does **not** say
 definitively alive. `resolve()` returns True (same-host, pid alive), False (same-host, dead), or
@@ -256,7 +320,7 @@ Here **four of the five folds must distinguish**: `peek_terminal` no verdict, `p
 frontier, the discharge no answer, `_DATED_TOPICS` no date. That consumers cannot quotient these is
 the point; that today they are forced to is the defect.
 
-**`service-worker.md`'s canonical-form argument — this one lands, and is a real cost.** A shipped
+**`../specs/service-worker.md`'s canonical-form argument — this one lands, and is a real cost.** A shipped
 spec rejects a `lifecycle.expired` event for different reasons:
 
 > a second counter-record kind for one fact — the fold grows a case, the lifecycle schema bumps, and
@@ -280,7 +344,7 @@ present.
 ## 8. What this does not do
 
 - **It does not extend write authority**, and does not claim to. #32's other half — a genuinely
-  displaced worker that keeps writing — is settled as out of scope in `write-authority.md`.
+  displaced worker that keeps writing — is settled as out of scope in `../specs/write-authority.md`.
 - **It does not fix NFS.** The sqlite-on-NFS CAS can still admit two winners; that is a backend
   contract issue, addressed by deploying Postgres.
 - **It grants nobody the right to evict.** Anyone who can append can already forge a `stopped`
@@ -306,9 +370,9 @@ enum and its body, replacing v0.4 rather than accumulating beside it.
 
 **That is a doc-wide edit, not a file rename.** Priced, because revision 1 undercounted it: **two**
 conformance assertions, not one — `test_schema.py` and `test_implementers_guide.py`, the latter
-requiring a valid `lifecycle.evicted` example in `docs/implementers-guide.md`. Plus
+requiring a valid `lifecycle.evicted` example in `../implementers-guide.md`. Plus
 `test_public_api.py::test_public_surface_is_stable`, `test_api_doc_covers_the_public_surface`,
-`docs/api.md`, and 11 `lifecycle-v0.4` references across `api.md`, `implementers-guide.md`,
+`../api.md`, and 11 `lifecycle-v0.4` references across `../api.md`, `../implementers-guide.md`,
 `CHANGELOG.md`, `README.md`, `CLAUDE.md`, and `release-and-stability-contract.md`. And
 `live_episode`'s own docstring, which currently states the *opposite* of what this ships (*"Only a
 later `lifecycle.stopped` and a `resolve()`-dead handle release a claim"*).
