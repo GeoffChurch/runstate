@@ -108,5 +108,5 @@ in `../backlog/machine-partitioned-logs.md`. Do it once; it decides both.
 ## Where it goes instead
 
 `../backlog/machine-partitioned-logs.md` — the workspace form, with the CAS retained as the fence.
-The claim plane's live thread is unaffected and stays `../specs/claim-eviction.md` plus
+The claim plane's live thread is unaffected and stays `../backlog/claim-eviction.md` plus
 `cross-host-claim-gate.md`.

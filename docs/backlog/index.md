@@ -109,7 +109,7 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
 ## Protocol extensions (control plane)
 
 - **`lifecycle.stopped` unbundling** — [lifecycle-stopped-unbundling](lifecycle-stopped-unbundling.md).
-  The dying breath does five jobs and only ever all five. `../specs/claim-eviction.md` unbundles job 1
+  The dying breath does five jobs and only ever all five. `claim-eviction.md` unbundles job 1
   (claim release); a second consumer wants job 4 (stop discharge) alone, which that design correctly
   refuses. Two instances is the point to decide between one-eliminator-per-job, one record with an
   explicit job set, or stopping at one. **Resolve the cheap question first**: whether a third party has

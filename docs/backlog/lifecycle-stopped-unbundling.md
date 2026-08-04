@@ -4,7 +4,7 @@
 frontier, discharges pending `control.stop`s, and dates the run's freshness. It is the only record
 that does any of them, so anyone who wants *one* must assert all five.
 
-`../specs/claim-eviction.md` unbundles job 1 (claim release) and argues that case at length. This
+`claim-eviction.md` unbundles job 1 (claim release) and argues that case at length. This
 entry exists because a **second** party wants a **different** single job, which the eviction design
 explicitly refuses to give it — and two instances is the point at which "one record per need" should
 be checked against "unbundle the bundle."
@@ -37,6 +37,11 @@ Three shapes, and the choice is not obvious:
 
 ## What would settle it
 
+- **The corpus says wait.** Measured across 1,933 openable logs in four repos: the job-1 case
+  (#39) fired **6 times, in 2 runs, from one experiment and one tool**, and the whole corpus holds
+  49 `control.stop` records. `claim-eviction.md` is deferred on exactly that evidence. If the
+  motivating instance is one tool we own, the second instance being *another* tool we own is not a
+  pattern either — it is the same tool-shaped problem twice.
 - **A third instance.** Whether a consumer ever wants job 2, 3, or 5 alone. If none does in
   practice, (3) is right and this entry should be deleted.
 - **Whether job 4 has a legitimate third-party author at all.** Job 1 does — a stranded claim
@@ -50,6 +55,6 @@ and if it lands the way it looks, this entry closes without a protocol change.
 
 ## Related
 
-- `../specs/claim-eviction.md` — job 1, the design in flight
+- `claim-eviction.md` — job 1, the design in flight
 - `../specs/stop-discharge.md` — the positional rule job 4 implements
 - `protocol-algebra.md` L2 — intro/eliminator discipline, and the standing bar for a new eliminator

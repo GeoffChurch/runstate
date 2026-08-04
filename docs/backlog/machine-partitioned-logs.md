@@ -101,7 +101,7 @@ exceeds the eviction design plus an honest documented gap.
 
 ## Relationship to the live claim work
 
-**Complementary, not alternative.** `../specs/claim-eviction.md` is still needed: within a single
+**Complementary, not alternative.** `claim-eviction.md` is still needed: within a single
 partition a claim can still strand, and a third party still needs a record that releases it without
 forging a verdict. This does not obviate that design; it would close the blind spot the design
 documents and cannot itself fix.
