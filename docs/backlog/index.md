@@ -110,16 +110,15 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
 
 - **A halt that survives an episode boundary** — [run-scoped-halt](run-scoped-halt.md). `control.stop`
   is an **episode**-scoped request; a consumer reads it as a **run**-scoped halt, and they diverge at
-  the boundary. Measured with no third party at all: an operator halts a run, an ordinary live worker
-  honours the stop, the discharge fires correctly — and the run is claimable again and a new episode
-  claims it. The discharge rule is right and must not be reopened (`../specs/stop-discharge.md`
-  symptom 1, committed-RED test). Boundary, checkable rather than tasteful: runstate **never spawns on
-  its own initiative** (`ensure` calls a consumer-implemented `Producer` seam; `relaunch_if_needed`
-  takes the launcher as an argument), so the *policy* is the consumer's and a `control.halt` verb
-  would put scheduling into the protocol — but the *fact* wants the log, which alone orders it against
-  the claim and makes it observable. Proposed: a **recipe, not a verb**, copying the shipped
-  completion-reason register. Attack §5 first — it deliberately inverts that recipe's "episode-scope
-  the read" rule. Also why `claim-eviction.md` would not have fixed #39.
+  the boundary. Measured with no third party: an operator halts a run, an ordinary live worker honours
+  the stop, the discharge fires correctly — and the run is claimable again and a new episode claims it.
+  The discharge rule is right and must not be reopened. **Open need, no mechanism**: a value-plane
+  register recipe was proposed and refuted — it designed the read path and asserted the write path,
+  which is the exact inversion that killed `../specs/control-target.md` (measured there: *373 spawns in
+  3 seconds*, and *"not last writer sets the goal — the writer with the fastest poll loop wins"*). The
+  concept is already named as R6's **durable ceiling**, the one empty cell in the control 2×2, and A7
+  already assigned it a home. Design the **write path first**. Also why `claim-eviction.md` would not
+  have fixed #39.
 - **`lifecycle.stopped` unbundling** — [lifecycle-stopped-unbundling](lifecycle-stopped-unbundling.md).
   The dying breath does five jobs and only ever all five. `claim-eviction.md` unbundles job 1
   (claim release); a second consumer wants job 4 (stop discharge) alone, which that design correctly
