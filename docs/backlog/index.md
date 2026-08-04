@@ -108,6 +108,16 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
 
 ## Protocol extensions (control plane)
 
+- **A halt that survives an episode boundary** — [run-scoped-halt](run-scoped-halt.md). `control.stop`
+  is an **episode**-scoped request; a consumer reads it as a **run**-scoped halt, and they diverge at
+  the boundary. Measured with no third party at all: an operator halts a run, an ordinary live worker
+  honours the stop, the discharge fires correctly — and the run is immediately claimable again and a
+  new episode claims it. The discharge rule is right and must not be reopened (`../specs/stop-discharge.md`
+  symptom 1, committed-RED test); what is missing is a record for the *other* thing a user means.
+  Decide first: **must an operator halt a run from a machine without the consumer's scheduling state?**
+  If yes, a consumer-local flag cannot do it and this needs a standing `control.halt` with an explicit
+  eliminator. This is also why `claim-eviction.md` would not have fixed #39.
+
 - **`lifecycle.stopped` unbundling** — [lifecycle-stopped-unbundling](lifecycle-stopped-unbundling.md).
   The dying breath does five jobs and only ever all five. `claim-eviction.md` unbundles job 1
   (claim release); a second consumer wants job 4 (stop discharge) alone, which that design correctly
