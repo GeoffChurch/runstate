@@ -67,6 +67,32 @@ rule the folds are built on.
 arbitration; it does not arbitrate. The proposal needed it to replace the claim, and nothing in the
 field supports that because nothing in the field does it.
 
+## Copy-on-write does not rescue it — and a tree makes the real problem worse
+
+The obvious refinement is a **lazy, tree-shaped log**: a parent pointer instead of a byte copy, so
+forking is O(1). Recorded because it will be re-proposed, and because it does kill one real
+objection.
+
+- **Storage cost — genuinely fixed.** O(log size) per resumption was a fair objection; CoW removes
+  it. Credit where due.
+- **Fork count — softened, not removed.** Cheap in bytes; the count still drives read traversal and
+  discovery. It converts a storage problem into a traversal problem.
+- **The root error — untouched.** Whether branching can arbitrate is a *semantics* question. Making
+  branching cheap does not make it a fence.
+- **The fork trigger — untouched.** You still decide *when* to fork, and under fork-on-resume that
+  decision is "should I resume?" — the liveness judgment the scheme claimed to dissolve.
+- **The `seq` problem — worse, not better.** A composite `(branch, seq)` key fixes collisions, but
+  collisions were the *symptom*. The disease is that the protocol is **positional** — L2: *"a
+  standing fact's eliminator must follow it by `seq`."* A tree gives only a **partial** order, so
+  "follows by `seq`" is undefined across branches. The composite key restores uniqueness and removes
+  comparability, and comparability is what the semantics rest on. Which is exactly what the sweep
+  found in the field: a partial order from DAG reachability, and *"a total order only where a single
+  serialization point exists."*
+
+**That partial-order gate applies to any log-splitting scheme**, the surviving machine-partitioned
+form included. It is enumerable — L2 lists exactly four positional rules — and the evaluation lives
+in `../backlog/machine-partitioned-logs.md`. Do it once; it decides both.
+
 ## What survives (genuine — keep)
 
 - **Containment is a real and separate goal from arbitration.** "Make a wrong fence decision

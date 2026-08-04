@@ -43,15 +43,42 @@ exist. The partition is by *writer*, not by *location*.
 **Bounded by machines, not resumptions** — which is far fewer files than fork-on-resume, and the
 count does not grow with a long-running run that resumes many times on one node.
 
-## What has to be answered
+## The gate: does a partial order still carry the protocol?
 
-1. **Sequence identity.** `seq` is an autoincrement and the protocol is *positional* — intro/elim
-   pairs are paired by `seq` order (`protocol-algebra.md` L2). Two partitions minting the same seq
-   breaks that. Dolt hit exactly this with per-branch `AUTO_INCREMENT`
-   (`../dead_ends/log-forking.md`). Options: a composite `(partition, seq)`, a partition-tagged
-   range, or a rule that ordering is only ever *within* a partition — the last would need every
-   cross-partition fold re-derived, which may be the real cost of the whole idea.
-2. **Which folds are cross-partition, and what do they mean then?** `latest_episode`,
+**Answer this before anything else. It decides this idea and log-forking together, so it is worth
+doing once, properly.**
+
+`seq` collisions across partitions look like an implementation detail with an obvious fix — a
+composite `(partition, seq)` key, which is what Dolt landed on and what the Postgres backend already
+does with `(run_id, seq)`. But the collision is the symptom. The disease is that **the protocol is
+positional**: `protocol-algebra.md` L2 requires that *"a standing fact's eliminator must **follow it
+by `seq`**."*
+
+Split the log and the order becomes **partial**. "Follows by `seq`" is defined within a partition
+and undefined across them. A composite key restores *uniqueness* and removes *comparability* —
+and comparability is what the semantics are built on. This is also what makes it a law rather than
+an accident: the prior-art sweep found those systems get a partial order from DAG reachability and
+*"a total order only where a single serialization point exists"* (`../dead_ends/log-forking.md`).
+Everyone who branches has paid this.
+
+It is bounded and cheap to evaluate, because L2 enumerates the positional rules and there are
+**four**:
+
+| rule | the question across partitions |
+|---|---|
+| `control.stop` ↔ next `lifecycle.stopped` | does a stop on partition A get discharged by a stopped on B? |
+| `control.subscribe` ↔ next unsubscribe-or-nak bearing its `request_id` | may the answer land on a different partition than the request? |
+| time-referencing subscribe ↔ next episode boundary | is a boundary on another partition a boundary for this lease? |
+| episode terminality ↔ no opener following the terminal | what is "following" when the opener is elsewhere? |
+
+Four questions of one shape. If the honest answer to most of them is "this needs a cross-partition
+tiebreak," then that tiebreak is a new total order in disguise, and both this idea and forking cost
+far more than they look. **Note this gate applies equally to any log-splitting scheme — it is the
+shared crux, not a discriminator between them.**
+
+## What else has to be answered
+
+1. **Which folds are cross-partition, and what do they mean then?** `latest_episode`,
    `live_episode`, `peek_terminal`, `last_activity`, `value_series`, `progress`. Some are
    naturally a union (freshness = max); some are not (which episode is "latest" across partitions
    with no shared order?).
