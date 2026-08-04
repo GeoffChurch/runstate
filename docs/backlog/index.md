@@ -108,6 +108,22 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
 
 ## Protocol extensions (control plane)
 
+- **`lifecycle.stopped` unbundling** — [lifecycle-stopped-unbundling](lifecycle-stopped-unbundling.md).
+  The dying breath does five jobs and only ever all five. `../specs/claim-eviction.md` unbundles job 1
+  (claim release); a second consumer wants job 4 (stop discharge) alone, which that design correctly
+  refuses. Two instances is the point to decide between one-eliminator-per-job, one record with an
+  explicit job set, or stopping at one. **Resolve the cheap question first**: whether a third party has
+  any legitimate business discharging an operator's halt — if not, this closes with a consumer change
+  and no protocol change.
+- **One log file per writing machine** — [machine-partitioned-logs](machine-partitioned-logs.md).
+  The surviving half of log-forking (`../dead_ends/log-forking.md`). Forking cannot *arbitrate*
+  writers — a CAS on a single mutable pointer does, which is what the birth claim already is — but it
+  can **contain** a wrong arbitration. Partition by writing machine and the fork boundary lands exactly
+  where `resolve()` stops answering (same host: probe works, arbitrate; foreign host: probe abstains,
+  so share nothing). Closes the blind spot `claim-eviction.md` documents and cannot fix. Open: seq
+  identity across partitions (positional pairing breaks — Dolt hit this), which folds are unions and
+  what they mean, and whether it fixes the splice or relocates it.
+
 - **completion-reason register recipe — SHIPPED 2026-07-11** as a section in
   `../specs/completed-opt-in.md` ("Recipe: the completion-reason register"): a
   value-plane register carrying *why* a run stopped, blessing the SHAPE only (no

@@ -45,3 +45,16 @@ the summary — enough to recognize the idea when it comes back wearing a new ha
   is the fencepost's **placement** (two sites — pre-yield vs post-tick — diverging at
   `N = 0` and on resume-into-a-met-target), which the helper would not have caught, since
   both sites would have called it with different coordinates.
+- [log-forking](log-forking.md) — **REFUTED 2026-08-04** (two prior-art sweeps + one mechanical hit).
+  Resumption *copies* the log so a wrongly-resumed run cannot corrupt the incumbent's — claiming to
+  convert the irreversible resume decision into a reversible one, and to dissolve double-live, the
+  lineage problem and the episode epoch with it. Died because **it mistook the workspace for the
+  fence**: no distributed log branches to arbitrate a suspected-dead writer ("a road that does not
+  appear on the map"), and the versioned-data systems that *do* branch (Dolt, Iceberg, Datomic) all
+  arbitrate with **CAS on a single mutable pointer** and branch only for isolation/audit — which means
+  the field converged on exactly the mechanism runstate's birth CAS already is. Mechanically, forked
+  autoincrement counters collide (Dolt's own `AUTO_INCREMENT` scar), and `seq` order is what every
+  intro/eliminator pair is defined by. Read this before proposing any fork/branch/copy-the-log scheme
+  — but note the split: **containment is a live goal**, and the workspace form survives in
+  `../backlog/machine-partitioned-logs.md`.
+
