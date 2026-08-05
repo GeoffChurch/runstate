@@ -780,3 +780,46 @@ def test_emit_unserializable_value_raises_naming_the_metric(open_run):
     w.tick(step=0)
     with pytest.raises(TypeError, match="loss"):
         w.emit("loss", object())
+
+
+# ---------------------------------------------------------------------------
+# A worker past its own dying breath may not act on the channel -- the same
+# rule as a claim-race loser. `stopped()` already latched; the write paths did
+# not, so a post-terminal emit landed ABOVE the successor's claim and won the
+# cell under take-the-latest. No third party, no displacement, in contract.
+# ---------------------------------------------------------------------------
+
+
+def test_a_post_terminal_emit_does_not_overwrite_the_successors_cell(tmp_path):
+    from runstate.channel import create_channel
+    from runstate.observables import value_series
+
+    root = str(tmp_path)
+    ch = create_channel("r", root=root, backend="sqlite")
+    a = Worker(ch)
+    for step in a.steps(total=2):
+        a.emit("loss", 100.0 + step)
+    a.stopped(final_step=1)
+
+    b = Worker(create_channel("r", root=root, backend="sqlite"))
+    assert b.claimed
+    b.tick(1)
+    b.emit("loss", 101.0)
+
+    a.emit("loss", -999.0)  # episode 1, already terminal
+    assert value_series(ch)["loss"][1] == 101.0  # the successor's value stands
+
+
+def test_a_post_terminal_tick_touches_nothing_and_says_stop(tmp_path):
+    from runstate.channel import create_channel
+    from runstate.vocabulary.payloads import Topic
+
+    ch = create_channel("r", root=str(tmp_path), backend="sqlite")
+    w = Worker(ch)
+    w.tick(0)
+    w.stopped(final_step=0)
+    before = ch.last_seq()
+
+    assert w.tick(1) is True  # already stopped -> stop at this safe point
+    assert ch.last_seq() == before  # and wrote nothing
+    assert ch.latest(Topic.LIFECYCLE_HEARTBEAT).body["step"] == 0

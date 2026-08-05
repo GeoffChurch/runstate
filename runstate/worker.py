@@ -214,8 +214,17 @@ class Worker:
         Raises ValueError before the first tick or on a stepless worker: a
         ``step=None`` point would permanently poison ``history()`` for the
         name (the log is append-only); genuinely stepless or caller-clocked
-        points use raw ``channel.send`` deliberately."""
-        if self._lost:
+        points use raw ``channel.send`` deliberately.
+
+        A worker that has written its dying breath may not act on the channel
+        either -- the same rule as a claim-race loser, for the same reason.
+        ``stopped`` is the terminal, and a later episode's claim sits above it,
+        so a post-terminal ``emit`` lands in the SUCCESSOR's window and wins its
+        cell under take-the-latest. Measured: a legitimate episode 2 emitting
+        101.0 at step 1, overwritten by episode 1's post-terminal -999.0. No
+        third party and no displacement required -- ``stopped()`` already
+        latches, and this closes the same latch over the write paths."""
+        if self._lost or self._stopped:
             return
         if self._last_step is None:
             raise ValueError(
@@ -240,8 +249,10 @@ class Worker:
         A claim-race LOSER may not act on the channel, explicit calls included
         (see ``stopped``): a loser's tick touches nothing and returns True —
         stop at this safe point; ``claimed`` tells a lost claim from a
-        commanded stop."""
-        if self._lost:
+        commanded stop. A worker past its own dying breath likewise touches
+        nothing and returns True: it has already stopped, and its heartbeat
+        would date a run whose successor owns the beacon plane."""
+        if self._lost or self._stopped:
             return True
         self._last_step = step
         self._drain_control(step)
