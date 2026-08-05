@@ -66,7 +66,9 @@ wider.
 - appends are atomic; the order is total;
 - `send(expected_seq=)` admits exactly one winner at that seq.
 
-That is the entire list. It is why the substrate is four operations.
+That is the entire list, and it is why the *required* substrate is four operations. (Two more —
+`hold_episode` / `episode_alive` — exist as optional capability protocols off the base ABC, for
+backends that can offer a session-bound liveness signal. They are a signal, never a claim gate.)
 
 **Recorded** — true if the writer was honest. Who claimed, what was requested, what was observed,
 what the verdict was. Every topic has a declared writer and reader; nothing checks that a writer
