@@ -1,110 +1,151 @@
 # The layers
 
-What runstate is internally, and — the practical payoff — **where a new thing goes**.
-Companion to `positioning.md`, which answers the same question from outside.
+A map of runstate's internal structure. Companion to `positioning.md`, which answers the same
+question from outside.
+
+**Numbering note.** `backlog/protocol-algebra.md` also uses L1/L2/L3, for *different* things — its
+L1 is the free monoid (this doc's layer 0), its L2 the elimination discipline, its L3 the two
+observers. This doc uses bare numbers and always cites the other by name ("protocol-algebra's L2").
+
+**This doc is a map, not a decision procedure.** An earlier revision ended with a five-step "where
+does a new thing go" test; it is deleted and the reason is recorded at the end, because the reason
+is more useful than the test was.
 
 ## The stack
 
 | | layer | contents | note |
 |---|---|---|---|
-| **L0** | **Substrate** | `send` / `read` / `latest` / `last_seq`, and CAS via `send(expected_seq=)` | the only **enforced** layer |
-| **L1** | **Content** | `value` — `(name, step) → body`. Open, app-owned `name` axis, no obligation | |
-| **L2** | **Selection** | the condition algebra — `Condition`, `satisfied`, `Subscription`, `history` | **a library, not a protocol** |
-| **L3** | **Identity** | `lifecycle.started` / `stopped` — the claim, episodes | where *who produced it* enters |
-| **L4** | **Detection** | `lifecycle.heartbeat`, `launcher.launched` / `terminated` | exists because L3 can fail to arrive |
-| **L5** | **Control** | `control.stop` (linear), `control.subscribe` / `unsubscribe` (affine), `lifecycle.nak` | addressed to a producer ⇒ presupposes L3 |
-| **L6** | **Materialization** | `ensure` — *"I want this content; produce what is missing"* | demand-first; composes L2 + L3 |
-| **L7** | **Planning** | dependency graph, scheduling policy | **not runstate.** The consumer's (mycooc's rungraph) |
+| **0** | **Substrate** | `send` / `read` / `latest` / `last_seq`, CAS via `send(expected_seq=)` | the only layer whose guarantees survive an uncooperative writer |
+| **1** | **Content** | `value` — `(name, step) → body`. Open, app-owned `name` axis | |
+| **2** | **Selection** | the condition algebra: `vocabulary/schedule.py` | **a library, not a protocol** — imports nothing |
+| **3** | **Identity** | `lifecycle.started` / `stopped` — the claim, episodes | where *who produced it* enters |
+| **4** | **Detection** | `lifecycle.heartbeat`, `launcher.launched` / `terminated` | see the caveat below — the heartbeat is not only detection |
+| **5** | **Control** | `control.stop` (linear), `control.subscribe` / `unsubscribe` (affine), `lifecycle.nak` | addressed to a producer ⇒ presupposes layer 3 |
+| **6** | **Materialization** | `ensure`, `history` — *"I want this content; produce what is missing"* | composes 2 + 3 |
+| **7** | **The declarative graph** | dependencies *between* runs | **not runstate** — see the L7 caveat |
 
-## Three properties worth defending
+### Known layering violations
 
-**L0 is the only thing enforced.** Appends are atomic, the order is total, and a CAS admits exactly
-one winner at a seq. Everything above is *recorded* — true only if the writer was honest. Most
-design errors in this repo's history are a layer-above-zero fact mistaken for an L0 guarantee;
-`positioning.md` keeps the running list.
+The stack is a map of intent; the code has three edges that cross it, and a doc that hid them would
+be worse than useless.
 
-**L2 is a library and should stay one.** `vocabulary/schedule.py` imports *nothing* — not `Channel`,
-not `Topic`, nothing from runstate at all. It defines no records and carries no obligations. It is
-reusable by anything slicing any indexed data, and the memoizer replays schedules over logged values
-without reading a single `control.subscribe` record. (Its home under `vocabulary/` is a slight
-misnomer: it is not vocabulary, it is algebra.)
+| edge | site |
+|---|---|
+| 4 → 5, read | `launcher.py:388` — `ensure_served` gates a spawn on `live_demand`, the `control.subscribe` fold |
+| 4 → 5, **write** | `watcher.py:380` — `Watcher.broadcast` *emits* `Topic.CONTROL_SUBSCRIBE`. Detection writing control |
+| 4 → 5, read | `watcher.py:471,488` — `await_consumed` reads `lifecycle.nak` and `Heartbeat.consumed_seq` |
 
-**L4 exists entirely because L3 can fail to arrive.** A worker that is SIGKILLed writes no
-`stopped`. Every detection primitive is a hedge against that missing self-report, which is why there
-are *two independent witnesses* — `lifecycle.*` is the self-report, `launcher.*` the external one,
-and `protocol-algebra.md` L3 keeps them as independent partial observers joined only at the verdict.
-This is the cleanest justification for that part of the reserved set: each member is there because
-something can fail to arrive.
+All three run through the `Watcher`, which is the honest signal: it is not a layer member (below).
 
-## The seam: time couples information to process
+## Three properties, stated correctly
 
-L2 is beneath L3 — by import graph, not aspiration — with exactly **one** coupling, and it is
-instructive:
+**Layer 0 is the only layer whose guarantees survive a writer who declines the library.** This is
+*not* "there is no enforcement above 0" — there is, and it is load-bearing: payload `__post_init__`
+refusals (`Stopped(completed=True, error='x')` raises), the `Worker`'s total refusal to touch the
+channel after losing a claim, `emit`'s stepless guard, the verdict folds refusing to guess. All of
+it is local and bypassable by one raw `send`, and the JSON schemas are a **conformance test, not a
+runtime gate** — nothing under `runstate/` imports `jsonschema`.
 
-- **Step-indexed selection is intrinsic to the information.** Step 400 means the same thing
-  regardless of which process computed it, or how many attempts it took.
-- **Time-indexed selection is not.** It needs the run epoch, which is `lifecycle.started.t` — a fact
-  about a *process*. `memoizer._epoch` is the whole coupling; step-only schedules never touch it.
+**The condition algebra is a library and should stay one.** `vocabulary/schedule.py` imports
+*nothing* — not `Channel`, not `Topic`. No records, no obligations, reusable by anything slicing
+indexed data. **`history` is not part of it**: it is a *replay* of the algebra that reads
+`lifecycle.started` for its epoch and ships in `memoizer.py`. It belongs to layer 6.
 
-So if you are looking for the line between "the information" and "the run that produced it," it is
-the clock.
+**Layer 4 is where evidence about a run arrives from outside its own report — but the heartbeat is
+multiplexed across three planes**, and calling it detection is a post-hoc story:
+
+- `t` dates the beacon — detection, the story that holds;
+- `step` is the **dense progress axis** — `observables.progress` folds it and `ensure`'s loop
+  condition depends on it. A layer-6 dependency;
+- `consumed_seq` is the **control-acceptance watermark** — written from `Worker._cursor`, polled by
+  `watcher.await_consumed` to answer "has my control request been drained?" A layer-5 dependency.
+
+protocol-algebra records this under *"standing counterexamples against over-formalizing"*: **"the
+heartbeat is deliberately *enriched* (`{step, consumed_seq}`), not Unit/terminal."** The `launcher.*`
+pair *is* purely "because the self-report can fail to arrive." The heartbeat is not.
+
+## The seam: what couples selection to identity
+
+Layer 2 sits beneath layer 3 by import graph. The coupling is **two mechanisms and one gap** — not,
+as an earlier revision claimed, a single epoch lookup.
+
+1. **The epoch anchor.** `memoizer._epoch` reads `lifecycle.started.t`; a time-referencing `history`
+   with no `started` **raises**. Measured: same six `value` records, same schedule, `started.t=1000`
+   → steps `[3,4,5]`; `started.t=1003` → `[]`.
+2. **The boundary eliminator** — the stronger one. `references_time` × `boundary_voided`: an
+   **identity record destroys a selection registration**. Measured: a time-referencing subscribe
+   survives one `lifecycle.started` and is eliminated by the second; the step-only equivalent
+   survives both.
+3. **The gap: `count`.** `satisfied()` has *three* coordinates, and `count` is per-`Subscription`,
+   so it is episode-local for exactly the reason time is — but `references_time` does not see it, so
+   it gets no boundary discharge. Measured over three 3-step episodes: `until={"count":5}` fires
+   `[3,3,3]` (budget resets each episode); the time equivalent fires `[3,0,0]`.
+
+So the honest statement is not "time couples information to process" but: **only `step` is intrinsic
+to the information. `time_seconds` and `count` are both measured from a registration that can
+outlive the episode receiving it — and only one of them is discharged at the boundary.**
 
 ## Is subscription more primitive than lifecycle?
 
-Half yes, and the true half already ships.
+Half yes. **Demand-as-algebra is beneath** (layer 2, zero imports, already shipped).
+**Demand-as-request is above** (layer 5) and structurally must be: a subscription is *addressed to a
+producer*, so publishing one presupposes something to receive it.
 
-- **Demand-as-algebra is beneath lifecycle** (L2). Already realized.
-- **Demand-as-request is above it** (L5), and structurally must be: a subscription is *addressed to
-  a producer*, so publishing one presupposes something to receive it.
-
-Push the information-first view all the way and you land on a **content-addressed build system**:
+Push the information-first view all the way and you land on a content-addressed build system:
 `ensure` is `make`, the content-addressed run id is the hash, reuse is a cache hit. Much of that is
-already absorbed — `specs/run-id-recipe.md` makes identity content-derived, and
-`backlog/store-deliberation.md` records the prior art converging the same way (Iceberg/Delta:
-facts-in-band plus a derived index plus a catalog that only enumerates roots).
+absorbed already — `specs/run-id-recipe.md` makes identity content-derived, and
+`backlog/store-deliberation.md` records the prior art converging the same way.
 
-What a build system adds beyond that is **L7** — a declarative dependency graph and the ability to
-*plan* production. That belongs to the consumer, because planning is scheduling and scheduling is
-not runstate's. Whether a *graph* protocol is generic enough to bless is genuinely open; unlike a
-halt, it is not enforcement, so the usual objection does not apply.
+## The layer-7 caveat
 
-## Where does a new thing go?
+**runstate does schedule.** `sweep.py` is a sequential scheduler with a `resume` policy that reads
+`peek_terminal` and a `stop_on_failure` policy, calling `launcher.launch()` in the loop.
+`Watcher.broadcast` is the cross-run barrier ("no Experiment class"). `ensure` is a one-node planner:
+read-first, produce-on-miss, re-drive `preempted`, refuse on no progress.
 
-The decision procedure, in order. Most proposals die at step 1 or 2.
+The line runstate does not cross is the **declarative graph** — dependencies *between* runs — not
+planning as such. Saying "planning is scheduling and scheduling is not runstate's" is false in this
+repo, and `backlog/run-scoped-halt.md` already corrected the same overreach once.
 
-1. **Does it need to be *enforced*, or only *recorded*?** Enforcement is not available above L0, and
-   L0 is complete (`protocol-algebra.md` L1: `send`/`read`/`latest`/CAS). If your thing only works
-   when someone obeys it, it belongs to whatever spawns the workers — not here.
-2. **Can a tool that knows nothing about the project act on it?** If no, it goes on the open `name`
-   axis (L1) as a value or a register, and the reserved vocabulary does not grow. This is the test
-   the closed set actually encodes, and it is why the set is small: *generic* things are rare, not
-   because control is special. "Switch the optimizer to TPE" is control-shaped and fails this test.
-3. **Does it carry an obligation — must someone eventually discharge it?** If yes, it needs a
-   designated eliminator and a declared multiplicity (`protocol-algebra.md` L2), and it cannot live
-   in the value plane, which is defined as the no-obligation case. If no, a value register is the
-   blessed shape (`specs/completed-opt-in.md` has the worked recipe).
-4. **Is it push or pull?** Push is linear — it must be consumed exactly once (`control.stop` ↔ the
-   next `stopped`). Pull is affine — it may stand forever unconsumed (`control.subscribe` ↔
-   `unsubscribe`). The split is not stipulated; it falls out of what each verb means.
-5. **Can more than one party write it?** Then *you* own the arbitration. `send(expected_seq=)` is
-   available to your protocols, not just runstate's. Skipping this is what refuted
-   `specs/control-target.md`: measured, **373 spawns in 3 seconds**, and *"not 'last writer sets the
-   goal' — the writer with the fastest poll loop wins."*
+## What the stack does not place
 
-## Building protocols on values
+Recorded because the gaps are informative, not because the map should grow to cover them.
 
-The open axis is the extension mechanism, and it is sufficient — a documented convention over
-`value` records is a complete protocol. Two shipped examples: the completion-reason register
-(`specs/completed-opt-in.md`) and mycooc's `input_provenance`.
+- **`RunResult` / the verdict lattice** — joins layer 3 (`stopped`) and layer 4 (`terminated`), then
+  adds `PRESUMED_DEAD`, which comes from *neither*: it is the `Watcher` inferring from an **absence**
+  of records. A verdict backed by no record fits no row. protocol-algebra's L3 gives it a home
+  ("the canonical projection of their join, at the edge"); this stack has no edge.
+- **`Watcher`** — spans 3, 4 and 5, and is the only **stateful** thing in the library (cursors, a
+  staleness clock). "Stateful observer" is a category the stack lacks, and `observables.py`'s own
+  docstring draws the line the stack does not: *needs a cursor or a clock? it's the Watcher's*. All
+  three layering violations above are Watcher edges.
+- **Channel locators** — `create_channel` / `attach_channel` / `RunNotFound`, the layout, the root
+  env var. Addressing and birth-vs-attach are not among layer 0's four operations.
+- **`EpisodeHolder` / `EpisodeProbe`** — a fifth and sixth backend operation, deliberately off the
+  base ABC. So "layer 0 is four operations" holds only of the *required* tier, and the episode lock
+  is a detection concern implemented at layer 0.
+- **`store` recipes** — content-addressed placement, dedup, membership, GC grace. Neither layer 6
+  nor "not runstate."
+- **`Producer`** — a *seam* between layer 6 and a launcher. The stack has no row for seams.
 
-Practical notes:
+## Why there is no decision procedure here
 
-- **A command is a fact about desired state.** "Switch to TPE" becomes "`requested_optimizer` is
-  TPE" — a register the worker reads and reconciles against. The value plane carries control with no
-  command semantics needed.
-- **Registers are stepless.** `step: null` keeps them out of the step-indexed metric folds
-  (`_value_points` skips them), so they do not pollute `value_series` or name enumeration. Note
-  `history(ch, <register-name>, …)` **raises** — a register is not a series.
-- **Obligations are yours.** If your fact needs clearing, nothing in runstate will notice that it
-  has not been. That is not a gap to be filled by declaration — a declaration would not clear it
-  either — it is the same boundary as everywhere else here.
+An earlier revision ended with five steps for placing a new concept. It was tested by running it
+over the vocabulary that actually shipped, and it **routed 6 of the 10 reserved topics into the
+value plane** — including `lifecycle.stopped`, `launcher.terminated` and `control.unsubscribe`.
+
+One bug caused five of the six: it asked *"does this message carry an obligation?"* where
+protocol-algebra's L2 asks it of a **pair** — *"a new convention message must arrive as an intro/elim
+**pair** with a designated discharge (multiplicity declared), **or** be a pure value carrying no
+obligation."* Eliminators never carry obligations, so a per-message reading silently deletes every
+elim half.
+
+It also **blessed the eviction of a live claim** — which passes all five steps and was refuted after
+three revisions — because no step asked what a record *causes off-log*. And it admitted a
+`control.halt` verb that `backlog/run-scoped-halt.md` rules out by name.
+
+The corrected version would have been protocol-algebra's L2 restated, plus `positioning.md`'s
+recorded-vs-enforced caveat, plus the minimality rule that rejected `lifecycle.expired` twice — i.e.
+a second, worse copy of three documents that already exist. **The decision rule lives in
+protocol-algebra's L2. Go there.** What this map adds is only *where things sit*, and the honest
+lesson is that a map does not become a procedure by being drawn carefully.
