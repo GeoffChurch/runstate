@@ -57,4 +57,17 @@ the summary — enough to recognize the idea when it comes back wearing a new ha
   intro/eliminator pair is defined by. Read this before proposing any fork/branch/copy-the-log scheme
   — but note the split: **containment is a live goal**, and the workspace form survives in
   `../backlog/machine-partitioned-logs.md`.
+- [per-episode-loglets](per-episode-loglets.md) — **REFUTED 2026-08-05** (measured). One loglet per
+  episode, with `(episode, seq)` as a total order: claimed to dodge the partial-order gate, to supply
+  the fencing asymmetry runstate lacks, and to fix the value plane structurally. Died on a **dilemma
+  with only two arms**: with per-segment `seq` it *destroys the birth CAS* (measured — two workers
+  each win a claim, because a CAS arbitrates only writers sharing a frontier, and
+  `PRIMARY KEY (run_id, seq)` **is** the arbiter); with global `seq` and `segment` as a label,
+  `open_segment()` allocates nothing `latest_episode().seq` does not, so it is the birth CAS
+  relabelled. The fenced variant is *worse than today* — a seizure mutes the live worker while adding
+  **zero records**, where a forged claim at least leaves a readable one. Kafka's `InitProducerId` is
+  safe because a **broker** issues the epoch; renaming an append does not create a broker. Read before
+  proposing any segment/loglet/sub-log scheme — and note the two keepers: a total order that
+  *disagrees with append order* is worse than an honestly partial one, and the real defect it found is
+  fixed by **correlation, not segmentation** (`../backlog/episode-correlation.md`).
 

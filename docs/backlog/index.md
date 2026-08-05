@@ -108,18 +108,16 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
 
 ## Protocol extensions (control plane)
 
-- **One loglet per episode** — [per-episode-loglets](per-episode-loglets.md). **UNATTACKED, written to
-  be refuted.** A third point on the log-splitting axis whose other two are settled
-  (`../dead_ends/log-forking.md` REFUTED; [machine-partitioned-logs](machine-partitioned-logs.md)
-  gated), and it appears to dodge both: episodes are creation-ORDERED where machine partitions are
-  concurrent, so `(episode, seq)` is a total order and the partial-order gate does not apply. Claims
-  to supply the fencing asymmetry `../specs/write-authority.md` says is missing (opening a segment is
-  not an append) and to fix #32's value-plane splice structurally (take-the-latest resolves by global
-  `seq` today, so a displaced worker can win a cell). **Attack the asymmetry first**: Kafka's
-  `InitProducerId` is safe because a *broker* issues the epoch, and runstate has no broker — if anyone
-  may open a segment, that is the birth-CAS problem verbatim. Note `../specs/run-episodes.md` already
-  declines "explicit episode-ids" as a non-goal.
-
+- **A record names the claim it answers** — [episode-correlation](episode-correlation.md). The
+  surviving half of `../dead_ends/per-episode-loglets.md`. Every read-side attribution in the value
+  and verdict planes is **positional**, and position misattributes a displaced worker's late write:
+  measured, a dead episode's record wins a `(name, step)` cell, `peek_terminal` forges COMPLETED, and
+  `ensure` returns a truncated series with no re-drive and no error. Resolving "by episode" read-side
+  does NOT fix it (attribution is itself positional — measured broken). Stamping the record with the
+  writer's own claim `seq` does, with no substrate change — the pattern
+  `../specs/launcher-record-identity.md` already shipped one tier up (*"Position cannot do this
+  job"*). **Owed before building:** a corpus census, since claim-eviction was deferred on exactly
+  that bar; and a joint decision with the designated-eliminator thread, which it overlaps.
 - **A halt that survives an episode boundary** — [run-scoped-halt](run-scoped-halt.md). `control.stop`
   is an **episode**-scoped request; a consumer reads it as a **run**-scoped halt, and they diverge at
   the boundary. Measured with no third party: an operator halts a run, an ordinary live worker honours
