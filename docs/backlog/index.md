@@ -108,6 +108,18 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
 
 ## Protocol extensions (control plane)
 
+- **One loglet per episode** — [per-episode-loglets](per-episode-loglets.md). **UNATTACKED, written to
+  be refuted.** A third point on the log-splitting axis whose other two are settled
+  (`../dead_ends/log-forking.md` REFUTED; [machine-partitioned-logs](machine-partitioned-logs.md)
+  gated), and it appears to dodge both: episodes are creation-ORDERED where machine partitions are
+  concurrent, so `(episode, seq)` is a total order and the partial-order gate does not apply. Claims
+  to supply the fencing asymmetry `../specs/write-authority.md` says is missing (opening a segment is
+  not an append) and to fix #32's value-plane splice structurally (take-the-latest resolves by global
+  `seq` today, so a displaced worker can win a cell). **Attack the asymmetry first**: Kafka's
+  `InitProducerId` is safe because a *broker* issues the epoch, and runstate has no broker — if anyone
+  may open a segment, that is the birth-CAS problem verbatim. Note `../specs/run-episodes.md` already
+  declines "explicit episode-ids" as a non-goal.
+
 - **A halt that survives an episode boundary** — [run-scoped-halt](run-scoped-halt.md). `control.stop`
   is an **episode**-scoped request; a consumer reads it as a **run**-scoped halt, and they diverge at
   the boundary. Measured with no third party: an operator halts a run, an ordinary live worker honours
