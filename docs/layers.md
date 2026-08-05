@@ -85,6 +85,36 @@ So the honest statement is not "time couples information to process" but: **only
 to the information. `time_seconds` and `count` are both measured from a registration that can
 outlive the episode receiving it — and only one of them is discharged at the boundary.**
 
+## Correspondences
+
+What each layer is an instance of. Useful for orienting someone who knows one of these fields, and
+for noticing when a proposal is re-deriving something with a name.
+
+| layer | it is an instance of |
+|---|---|
+| **0** | a write-ahead log / Kafka partition. The CAS is **optimistic concurrency control**; Herlihy puts compare-and-swap at consensus number ∞, which is why protocol-algebra notes a linearizable CAS is already consensus-complete |
+| **1** | a sparse relation — a Datomic datom minus the entity; Prometheus's `(metric, t) → value` but indexed by **step**, not time |
+| **2** | a **free term algebra** (protocol-algebra says so, and that it is deliberately *not* a normal form). Shape-wise, stream windowing — Flink/Beam windows, SQL `OVER` |
+| **3** | **fencing epochs**, and a lease *without expiry*. Nearest live analogues: a ZooKeeper ephemeral znode; Erlang's registered name surviving a restart — identity outliving the process holding it |
+| **4** | **Chandra–Toueg failure detectors** (the ◊P the dead-end doc names). Two independent witnesses ≈ a liveness probe plus a controller reaper |
+| **5** | **linear/affine logic** (Girard), with Γ as the literal linear context. `request_id` + `nak` is the **correlation identifier** pattern |
+| **6** | `make` / Nix / Bazel — content-addressed build; `ensure` is cache-hit-or-produce |
+| **7** | Nix derivations, Airflow/Dagster DAGs |
+
+Cross-cutting, and these are the load-bearing ones:
+
+- **Event sourcing + CQRS.** Append-only records plus folds *is* event sourcing; the fold-vs-query
+  duality is CQRS. Folds are catamorphisms over the free monoid of layer 0.
+- **Advisory vs mandatory locking (POSIX `flock`).** The sharpest analogy for
+  `positioning.md`'s recorded-vs-enforced boundary: **the claim is `flock`** — a record everyone
+  *agrees* to check, which stops nobody who declines. It is exactly why evicting a live claim spawns
+  a second worker while revoking no authority.
+- **CRDT join-semilattices.** protocol-algebra already frames Γ that way for the multi-writer case,
+  and `RunResult` is a join into a closed verdict lattice.
+- **Fencing tokens (Kleppmann).** "One winner at an instant, no protection afterwards" is the
+  textbook problem and fencing is the textbook answer — see `specs/write-authority.md` for why that
+  answer is not available here.
+
 ## Is subscription more primitive than lifecycle?
 
 Half yes. **Demand-as-algebra is beneath** (layer 2, zero imports, already shipped).

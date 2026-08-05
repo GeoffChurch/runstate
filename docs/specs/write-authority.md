@@ -133,6 +133,51 @@ contracts and callers can tell the two apart), the same check in `retire()` and 
 second cursor so the read does not grow with episode count. That is no longer five lines, and it
 still would not reach the artifact plane for the single-step workers that dominate the consumers.
 
+## Why fencing tokens are not available here — the birth record is the price
+
+"One winner at an instant, no protection afterwards" is the textbook problem, and **fencing** is the
+textbook answer (Kleppmann; Kafka's producer epoch; ZooKeeper zxid; Raft terms). Revision 2 was that
+answer, and its fourth refutation — *the birth CAS cannot be fenced, and it is the write that moves
+the fence* — reads like an implementation accident. It is not. Stating it once, so a fourth attempt
+does not begin with "surely we can fence the claim too."
+
+**In every working fencing system, acquisition is a different KIND of operation from the writes it
+protects.** Kafka's `InitProducerId` bumps the epoch server-side and is not itself a `produce`;
+ZooKeeper session establishment is not a znode write. That asymmetry breaks the circularity: the
+operation that acquires the token cannot be fenced, and needs no fencing, because it is not on the
+protected path.
+
+Here, **acquiring the claim IS an append.** `lifecycle.started` is a record, indistinguishable at the
+substrate from any other — which is exactly what makes it observable, orderable against everything
+else, and uniform across backends. Fencing it would require one of:
+
+- **a fifth substrate operation** (`claim() -> epoch`, distinct from `send`), which must justify
+  itself against `../backlog/protocol-algebra.md` L1's completeness rule the way the CAS did; or
+- **the substrate routing on `topic == 'lifecycle.started'`** to refuse direct appends — which
+  `channel-postgres.md` forbids by name: *"convention knowledge … stays in the worker, never the
+  substrate."*
+
+So the trade is explicit: **birth-as-record** (observable, orderable, backend-uniform, opinion-free)
+versus **fenceable-claim** (enforcing, requires substrate opinion). runstate took the first
+deliberately. The birth record is layer 3 of `../layers.md` — the identity primitive without which
+there are no episodes and no run outliving its processes, which is the library's whole contribution.
+
+**And the residual harm is smaller than it looks, because two of the three planes already declare
+their model:**
+
+- **The claim plane** gives one claimant at the claiming instant — stated above and in `../api.md`.
+- **The value plane** resolves a duplicate `(name, step)` by **last-write-wins at read time**
+  (`memoizer.py`, and `value_series` likewise). Two writers at one cell is *resolved*, not corrupt:
+  the divergence raise was deliberately deleted
+  (`../backlog/value-plane-divergence-resolution.md`) because its stickiness permanently blocked
+  reuse. What remains is a silently interleaved series — a real cost, but a declared one.
+- **The artifact plane** was never runstate's (`run-episodes.md` Non-goals: *"runstate gives no
+  directory"*), and it is where a double-live worker's actual damage lands.
+
+The summary: fencing would protect the plane whose consistency model is already declared, cannot
+protect the plane where the harm is, and would cost the property that makes the claim a first-class
+observable fact. **Out of scope for a reason, not for lack of trying.**
+
 ## Still standing, independent of all of the above
 
 - **The designated eliminator** (`cross-host-claim-gate.md` §4.2, undated per #42), with **aim +

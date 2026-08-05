@@ -52,7 +52,9 @@ Honest cases, because a positioning doc that never says "use the other thing" is
   its place when the unit of work is long-running, resumable, expensive to restart, and needs
   watching *while it runs*.
 - **You need to enforce anything** → runstate enforces exactly one thing (see below). Anything else
-  belongs to whatever spawns the workers.
+  belongs to whatever spawns the workers. In particular **fencing tokens are not available**, and
+  `specs/write-authority.md` explains why that is structural rather than unfinished: acquiring the
+  claim is itself an append, so there is no un-fenceable acquisition operation to hang a token on.
 
 ## What runstate guarantees, exactly
 
@@ -72,6 +74,11 @@ told the truth.
 
 **Never** — stop a process, start a process, own a directory, schedule anything, or enforce anything
 over time.
+
+The sharpest analogy is **POSIX advisory locking**: the claim is `flock` — a record everyone agrees
+to check, which stops nobody who declines. `layers.md` collects the rest (event sourcing + CQRS for
+the fold structure, Chandra–Toueg failure detectors for the liveness tier, linear/affine logic for
+the control verbs, `make`/Nix for `ensure`).
 
 The recurring design error, in this repo's own history, is mistaking a **recorded** fact for an
 **enforced** one:
