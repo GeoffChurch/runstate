@@ -52,6 +52,28 @@ docstring is the argument:
 the lifecycle and value tiers. `cross-host-claim-gate.md` §8.2 is already heading the same way:
 *"Stop trying to prove authority; record aim instead."*
 
+## Prior art — attribution was proposed and refuted, and this must answer it
+
+`value-plane-divergence-resolution.md` records: *"An earlier draft proposed **attribution + an
+'authoritative attempt' default**; a code-grounded red-team refuted it — it added machinery to
+resolve **a case that cannot arise**."* And in its rejected-alternatives list: *"Attribution + a
+fork-surface (tag each value with its attempt) … Defer until one does (YAGNI). **Take-the-latest
+needs no attribution.**"*
+
+That is this proposal, refuted. **The reason it may not reach this case** — and the burden is on
+this entry to show it, not to assume it:
+
+> on atomic-CAS backends (memory, single-host sqlite) the worker birth-CAS **muzzles the
+> double-spawn loser**, so no value-emitting double-live occurs; it can only occur on NFS.
+
+The refutation reasons about a **double-spawn loser** — a worker that *lost* the birth CAS, whose
+`_lost` is True and which therefore writes nothing. Correct about that case. The harm measured above
+is a **displaced** worker: it *won* its claim legitimately and was displaced afterwards, so `_lost`
+stays False and it keeps writing. That is #32, filed after this refutation was written.
+
+So the two are about different routes to the same symptom — but "different route" is exactly the kind
+of technicality that rescues a bad idea, and it should be attacked as such rather than accepted.
+
 ## What it costs, and what it does not fix
 
 - **A schema bump.** `lifecycle-v0.4` → `v0.5` and `value-v0.2` → `v0.3`; both are
@@ -61,6 +83,11 @@ the lifecycle and value tiers. `cross-host-claim-gate.md` §8.2 is already headi
   refinement **if** provenance/correlation ever needs them; **no scoped consumer does**."* That
   census is now stale in one direction (a harm exists) and unmeasured in the other. The *other* half
   of that non-goal — a "done/sealed" marker — is principled and stays declined.
+- **Old logs cannot be fixed, only new ones.** Recorded objection: stamping a claim epoch onto
+  existing records *"can only be derived positionally — i.e. from exactly the inference the field
+  exists to replace — so migrated values are a guess precisely in the case the field is for."* A
+  **correctness** objection, not a cost one. So the corpus census measures a harm the fix cannot
+  retroactively repair.
 - **It does not reach the artifact plane.** Per `../specs/write-authority.md`, this makes the log
   stop lying; the checkpoint a displaced worker wrote is still on disk, and that is where the real
   damage lands.
