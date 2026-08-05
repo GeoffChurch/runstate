@@ -23,7 +23,8 @@ wrong layer.
 
 ## The rule
 
-> **A time-referencing registration is a contract with one living episode.**
+> **A registration referencing an EPISODE-LOCAL coordinate is a contract with
+> one living episode.**
 > A `control.subscribe` whose schedule references the time axis
 > (`time_seconds` anywhere in `from`/`every`/`until`) is **discharged by the
 > next episode boundary after it** — pairing-by-`seq`'s fourth instance, and
@@ -57,6 +58,31 @@ schedule containing *any* time atom is episode-scoped *in toto*: a time
 atom's meaning (seconds since registration) cannot be honestly reconstructed
 across a boundary, and partially reconstructing the step arms of a mixed
 schedule would silently change its meaning — blunt-but-crisp wins.
+
+## Amendment — `count` is the second episode-local coordinate
+
+The rule shipped testing only `time_seconds`, via `references_time`. But the
+disease this spec diagnoses — state that *"lives only in the worker's memory,
+dies with it, and resurrects at zero in the next episode"* — is equally true of
+`count`: `Subscription.__init__` sets `self.count = 0`, and a resumed episode
+refunds the whole budget. Measured before the fix: `until={"count": 5}` fired
+3+3+3 across three episodes where the time equivalent correctly fired 3+0+0.
+
+The predicate is now `references_episode_local` (`time_seconds` OR `count`), and
+`_EPISODE_LOCAL_ATOMS` names the category. `step` is deliberately excluded: it is
+run-absolute (`steps(start=k)` emits run-absolute steps), so it survives a
+boundary intact.
+
+`references_time` survives as a **separate, narrower** predicate. The two
+questions are not the same and diverge exactly on `count`: `memoizer.history`
+asks *"does the time axis need anchoring to `started.t`?"* — and a count-only
+schedule is a lease that needs no epoch. Conflating them was what hid the gap.
+
+**The road not taken:** `count` *could* be re-derived from the log (unlike
+elapsed time, the fires are countable), making a count lease genuinely survive.
+Declined: that is a per-atom carve-out, which the rule above forbids by name,
+and a schedule mixing both atoms would then carry two incompatible survival
+rules.
 
 ## What it buys
 

@@ -36,7 +36,7 @@ from typing import Any, Optional, TypeVar
 from .channel import Channel, Envelope
 from .vocabulary.payloads import Stopped, Terminated, Topic
 from .vocabulary.handle import resolve
-from .vocabulary.schedule import references_time
+from .vocabulary.schedule import references_episode_local
 
 _T = TypeVar("_T")
 
@@ -417,7 +417,8 @@ def live_demand(channel: Channel) -> list[Envelope]:
             e
             for e in pending.values()
             if not (
-                references_time(e.body) and boundary_voided(e.seq, starteds, latest)
+                references_episode_local(e.body)
+                and boundary_voided(e.seq, starteds, latest)
             )
         ),
         key=lambda e: e.seq,
