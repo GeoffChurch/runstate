@@ -37,11 +37,11 @@ Three shapes, and the choice is not obvious:
 
 ## What would settle it
 
-- **The corpus says wait.** Measured across 1,933 openable logs in four repos: the job-1 case
-  (#39) fired **6 times, in 2 runs, from one experiment and one tool**, and the whole corpus holds
-  49 `control.stop` records. `claim-eviction.md` is deferred on exactly that evidence. If the
-  motivating instance is one tool we own, the second instance being *another* tool we own is not a
-  pattern either — it is the same tool-shaped problem twice.
+- **A corpus count, which settles nothing on its own.** Across 1,933 openable logs the job-1 case
+  (#39) fired 6 times, in 2 runs, from one tool. Recorded for **priority**, not as an argument —
+  `../../CLAUDE.md`: *a census bounds applicability and cost, never soundness*, and this count is
+  biased low by the consumer machinery already written to avoid the problem. It does not tell you
+  whether the bundle is the defect.
 - **A third instance.** Whether a consumer ever wants job 2, 3, or 5 alone. If none does in
   practice, (3) is right and this entry should be deleted.
 - **Whether job 4 has a legitimate third-party author at all.** Job 1 does — a stranded claim

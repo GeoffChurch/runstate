@@ -1,42 +1,47 @@
 # `lifecycle.evicted` — a designated eliminator for the episode claim
 
-**Status: DEFERRED — the design is sound; the purchase does not justify it yet.** Kept as a worked
-design, because the day it *is* justified this is where to start. Not in `../specs/`: nothing here
-ships.
+**Status: DEFERRED — not refuted.** The design is sound. What is unsettled is whether the purchase
+justifies a permanent vocabulary entry, and that question is **not** answered by how often the harm
+has fired in one author's four repos (`../../CLAUDE.md`: *a census bounds applicability and cost —
+never soundness*). Kept as a worked design, and the day it is justified this is where to start.
+Not in `../specs/`: nothing here ships.
 
-**What the measurement changed.** The mechanics were prototyped twice and work — #39 and #42 both
-flip. The *value* does not hold up:
+## What holds by argument — these survive any corpus
 
-- **#39 is real but confined.** Corpus scan over 1,933 openable logs in four repos: the harm fired
-  **6 times, in 2 runs, from one experiment and one tool**. The whole corpus holds 49
-  `control.stop` records. Nothing shows an operator was surprised.
-- **#42 is display-only.** `runstate-tui/runstate_tui/fold.py:74` is the **one** production read of
-  `last_activity` anywhere. It picks between `Status.live()` and `Status.stale()` — both absent from
-  `types.py`'s `_STATUS_SEVERITY` (so both are `Severity.OK`) and from `pool.py`'s `_EVICT_KINDS`.
-  It changes a string and a colour. In #42's own repro the branch is unreachable regardless: the
-  forged `stopped` makes `peek_terminal` non-`None`, so the fold returns on the terminal arm first.
-- **#32 loses its precondition, not its defect.** Unchanged from revision 2.
-- **Atomicity was never a purchase.** `mycooc/scripts/reclaim_experiment.py:312` **already** writes
-  with `expected_seq=claim_seq`. §4's atomicity contribution is deployed today.
+- **#42's harm does not exist as described.** In its own repro the branch is **unreachable**: the
+  forged `stopped` makes `peek_terminal` non-`None`, so `fold.py` returns on the terminal arm before
+  ever evaluating staleness. This is a refutation, found empirically but *logical* in form.
+- **Atomicity was never a purchase.** `mycooc/scripts/reclaim_experiment.py` **already** writes with
+  `expected_seq=claim_seq`. §4's atomicity contribution ships today.
 - **The one adopting site gives something up.** That tool deliberately argues for the `preempted`
   projection (*"Setting `error` would project to ERRORED and mark the cell failed"*). Under
-  `evicted`, `peek_terminal` returns `None` instead — harmless there, but a behaviour change to
-  accept, not a free swap.
+  `evicted`, `peek_terminal` returns `None` — a behaviour change to accept, not a free swap.
+- **Both defects close with ~6 lines in the consumer**, using records legal today, measured end to
+  end. That is an argument about *where the fix belongs*, not about how often it is needed.
+- **#32 loses its precondition, not its defect.**
+- **The precedent bar.** This repo is 0-for-2 on minting a reserved topic as a second eliminator
+  (`lifecycle.expired`, rejected twice — L2's quotient argument, and `../specs/service-worker.md`'s
+  canonical-form argument). The counter-precedent in this design's favour — the time-lease second
+  eliminator — **added no topic**; it reused the episode boundary.
 
-**Both defects close with ~6 lines in the consumer, using records legal today** — measured end to
-end. In `reclaim_experiment.py`: stamp the sacct job End time instead of `time.time()` (**#42**);
-and read `undischarged_stops` before the CAS, re-`send`ing each `control.stop` after it (**#39**).
-No new topic, no schema bump, no fold case, no `live_episode` change. A stop landing after a worker
-attaches is an ordinary live stop the drain takes on the next tick.
+## What is priority information only — demoted, and load-bearing on nothing
 
-**Revive when** a *second independent consumer* needs it, or a third party appears that **cannot fix
-its own writer**. Today's only beneficiary is one tool in one repo we own.
+A corpus scan over 1,933 openable logs found the #39 harm fired **6 times, in 2 runs, from one
+experiment and one tool**, and the corpus holds 49 `control.stop` records in total; #42's affected
+value has one production reader. Those are **counts**, and this entry previously leaned on them as
+though they settled the question. They do not, for the reasons now recorded in `../../CLAUDE.md` —
+most sharply, that the count is biased low in proportion to the 361 lines of consumer machinery
+already written to avoid the problem.
 
-**The precedent bar, checked.** L2's decision rule admits the *type*, but this repo is **0-for-2** on
-minting a reserved topic as a second eliminator — `lifecycle.expired` proposed and rejected twice
-(L2's quotient argument; `../specs/service-worker.md`'s canonical-form argument). The
-counter-precedent in this design's favour — the time-lease second eliminator — **added no topic**;
-it reused the episode boundary. There is no precedent here for what this would do.
+## Revive when — logical triggers, not usage counts
+
+- the category error itself is shown to produce an **unrecoverable** outcome (as opposed to one a
+  consumer can repair, which is today's case); **or**
+- a party appears that **cannot fix its own writer** — a third party whose forgery is not
+  correctable at its source; **or**
+- a second job of the five acquires a legitimate third-party author, making the bundle's
+  five-in-one shape the defect rather than one instance of it
+  (`lifecycle-stopped-unbundling.md`).
 
 ## The Postgres advisory lock as an eviction veto — REFUTED, do not re-propose
 

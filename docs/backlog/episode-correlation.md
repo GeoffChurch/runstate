@@ -1,6 +1,7 @@
 # A record names the claim it answers
 
-**Status:** harm measured, **consumer census owed**. The surviving half of
+**Status:** harm measured and reproduced; **soundness unsettled** — it must answer a prior
+refutation (below). The surviving half of
 `../dead_ends/per-episode-loglets.md`. Not to be built alongside the designated-eliminator thread —
 they overlap and should be decided together.
 
@@ -86,21 +87,28 @@ of technicality that rescues a bad idea, and it should be attacked as such rathe
 - **Old logs cannot be fixed, only new ones.** Recorded objection: stamping a claim epoch onto
   existing records *"can only be derived positionally — i.e. from exactly the inference the field
   exists to replace — so migrated values are a guess precisely in the case the field is for."* A
-  **correctness** objection, not a cost one. So the corpus census measures a harm the fix cannot
-  retroactively repair.
+  **correctness** objection, not a cost one: whatever the fix is worth, it is worth it only
+  forward.
 - **It does not reach the artifact plane.** Per `../specs/write-authority.md`, this makes the log
   stop lying; the checkpoint a displaced worker wrote is still on disk, and that is where the real
   damage lands.
 
 ## What is owed before building
 
-1. **The census.** `CLAUDE.md`'s *"count before designing for a consumer"* applies. A harm has been
-   measured; a *frequency* has not. `claim-eviction.md` was deferred on exactly this bar — a
-   corpus scan over 1,933 logs — and this proposal has had one hand-run repro. Run the same scan:
-   how many real logs contain a `(name, step)` cell won by a record from a superseded episode?
-2. **Decide it against the eliminator, not beside it.** Both are answers to "a third party or a
+1. **Answer the prior refutation** (above). This is the soundness question and it comes first: is
+   "displaced worker ≠ double-spawn loser" a real distinction, or a technicality rescuing an idea a
+   code-grounded red-team already killed? No count settles this.
+2. **Measure the cost, not the incidence.** An incident census is the wrong instrument here
+   (`../../CLAUDE.md`: *a census bounds applicability and cost — never soundness*), and it is biased
+   low in exact proportion to the consumer machinery already written to avoid the problem. The
+   informative measure is **how many lines of consumer code exist solely to route around this gap,
+   and which gap each routes around** — `reclaim_experiment.py` (361), `correlation_refusal`,
+   `repair_malformed_stopped.py`, `_SyncHandle`, the claim-guard suite. That is a direct read on what
+   the gap costs, immune to the mitigation bias, and it points the opposite way from an incident
+   count.
+3. **Decide it against the eliminator, not beside it.** Both are answers to "a third party or a
    displaced worker says something it should not." Two mechanisms for one problem is what
    `protocol-algebra.md` L2's minimality rule exists to prevent.
-3. **Which planes.** The value plane is where the harm was measured. The verdict plane gets fixed by
+4. **Which planes.** The value plane is where the harm was measured. The verdict plane gets fixed by
    the same stamp and is arguably more important (it is what truncates `ensure`). The beacon plane
    would too. Scope deliberately rather than stamping everything.
