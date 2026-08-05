@@ -108,7 +108,7 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
 
 ## Protocol extensions (control plane)
 
-- **A record names the claim it answers** — [episode-correlation](episode-correlation.md). The
+- **`lifecycle.stopped` does not name the claim it eliminates** — [episode-correlation](episode-correlation.md). The
   surviving half of `../dead_ends/per-episode-loglets.md`. Every read-side attribution in the value
   and verdict planes is **positional**, and position misattributes a displaced worker's late write:
   measured, a dead episode's record wins a `(name, step)` cell, `peek_terminal` forges COMPLETED, and
@@ -116,8 +116,9 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
   does NOT fix it (attribution is itself positional — measured broken). Stamping the record with the
   writer's own claim `seq` does, with no substrate change — the pattern
   `../specs/launcher-record-identity.md` already shipped one tier up (*"Position cannot do this
-  job"*). **Owed before building:** a corpus census, since claim-eviction was deferred on exactly
-  that bar; and a joint decision with the designated-eliminator thread, which it overlaps.
+  job"*). **GATED on claim-eviction**: under the aim rule a third-party unaimed `stopped` releases
+  nothing, which is today's only release mechanism, and `ensure` has no hang timeout (measured: the
+  suite hangs, 48 further failures). They must land in one window.
 - **A halt that survives an episode boundary** — [run-scoped-halt](run-scoped-halt.md). `control.stop`
   is an **episode**-scoped request; a consumer reads it as a **run**-scoped halt, and they diverge at
   the boundary. Measured with no third party: an operator halts a run, an ordinary live worker honours
