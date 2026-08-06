@@ -72,11 +72,56 @@ incr_assert(env(42, value, "loss", null, _{value:0.31, step:41, t:_})).
 That is the demand-driven streaming of `demand-driven-reads.md` §1, with the engine doing the
 propagation rather than a hand-rolled watermark.
 
-**Answer subsumption — verify before relying on it.** XSB has `lattice/1` and `po/1` answer-
-subsumption modes. SWI's mode-directed tabling has `min`/`max`/`sum`/`-`, and `lattice/1` support
-should be confirmed rather than assumed. If it is absent, the LWW fold is still expressible as `max`
-above, and only the *domain*-ordered subsumption (interval containment and similar) would need a
-different encoding.
+**Greedy answer subsumption is UNSOUND, in every mode of both engines. Measured.**
+
+`:- table p(max)` and friends do not preserve least-fixed-point semantics. Reproduced on
+SWI-Prolog 10.0.0 and XSB 5.0 (both built here), against the counterexample in the sole user comment
+on SWI's mode-directed-tabling page:
+
+```prolog
+p(0).  p(1).
+p(2) :- p(X), X = 1.
+p(3) :- p(X), X = 0.     % p(1) subsumes p(0) BEFORE this clause is tried
+```
+
+| engine | plain tabling (LFP) | mode-directed |
+|---|---|---|
+| SWI 10.0.0 | `3` | `max` → **2** · `po(gt)` → **[2]** · `lattice(join/3)` → **[2]** |
+| XSB 5.0 | `[0,1,2,3]` | `lattice(join/3)` → **[2]** |
+
+The result is *scheduling-dependent*: had `p(3)`'s body consumed the table while it still held `0`,
+`p(3)` would derive. That is what makes it unsound rather than merely surprising.
+
+**There is no sound mode to fall back on.** The literature is
+[Tabling with Sound Answer Subsumption](https://arxiv.org/abs/1608.00787) (Vandenbroucke, Piróg,
+Desouter, Schrijvers, TPLP 2016), and it supplies **no fix** — it gives a *correctness condition*
+telling you when greedy subsumption happens to be safe. Its own conclusion:
+
+> The verification of correctness does constitute a **non-trivial effort**. Hence, manually proving
+> the correctness condition for realistically sized programs could be **unfeasible in practice**.
+> Ideally we would have an automated analysis … This is future work.
+
+That was 2016 and the analysis does not appear to exist.
+
+**So the constraint on this probe, demonstrated rather than argued:**
+
+> **Aggregated tables must not be recursive.** The two sound options are aggregate-at-the-end (plain
+> tabling + `aggregate/3` — correct, but forgoes the incremental benefit that motivates subsumption
+> at all) or keep the aggregation non-recursive.
+
+`cell/3` above is safe **because** it derives from `env/5` facts only — there is no fixpoint for the
+join to be premature about. That is not incidental; it is the reason the fold is correct, and it
+must survive any refactor.
+
+**Where it would bite this project.** A bandit computing "best config so far" and feeding that back
+into which configs to run next is precisely `p(2) :- p(X), …` over a max-aggregated table. That is
+the demand-driven layer's natural shape, so this is a live hazard rather than a curiosity.
+
+**Two incidental engine findings.** XSB rejects `p(max)` outright (*"Non predicate specification …
+Ignored!"*) and then proceeds **untabled**, so the recursion diverges — a silent downgrade to a
+non-terminating program. And XSB cannot aggregate a 1-ary predicate at all: the subsumed value must
+be a separate argument from the key. SWI additionally requires the moded argument to be *unbound at
+call time*, so `cell(N, S, _-V)` raises and you must bind then destructure.
 
 ## 4. The validation harness
 
