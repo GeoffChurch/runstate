@@ -108,6 +108,16 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
   resembling one. Read-only; the substrate, the claim and liveness are explicitly out, and **every
   refutation in this repo is language-independent**, so none is retired by it. Artifact is a separate
   package.
+- **If built today: relational, demand-driven, identity in columns** —
+  [if-built-today](if-built-today.md). The honest answer to *"from scratch, and is append-only
+  load-bearing?"* — mostly **no**. Most of this repo's defects are self-inflicted by **positional
+  inference**: episodes derived by position, terminals paired by position, stops discharged by
+  position. The forged verdict, the claim cascade, the unaimed heartbeat, #39 and the whole
+  `episode-aim` cluster all become a column or an FK. The claim becomes
+  `CREATE UNIQUE INDEX … WHERE status='live'`. What it does **not** solve is the inherent residue,
+  which is the tell that the residue is real: cross-host liveness, the artifact plane, enforcement.
+  Names the two boundaries as the actual design question — the querier's interface and the handler's
+  — with the run born at the second, and the halt dissolving into *withdrawing demand*.
 - **The relation as interface: demand-driven reads** —
   [demand-driven-reads](demand-driven-reads.md). A target rather than a defect. A bandit or Bayesian
   optimiser does not want `start`/`stop`; it wants to query a mostly-unmaterialised relation
