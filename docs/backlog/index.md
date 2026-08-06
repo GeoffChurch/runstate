@@ -108,17 +108,17 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
 
 ## Protocol extensions (control plane)
 
-- **`lifecycle.stopped` does not name the claim it eliminates** — [episode-correlation](episode-correlation.md). The
-  surviving half of `../dead_ends/per-episode-loglets.md`. Every read-side attribution in the value
-  and verdict planes is **positional**, and position misattributes a displaced worker's late write:
-  measured, a dead episode's record wins a `(name, step)` cell, `peek_terminal` forges COMPLETED, and
-  `ensure` returns a truncated series with no re-drive and no error. Resolving "by episode" read-side
-  does NOT fix it (attribution is itself positional — measured broken). Stamping the record with the
-  writer's own claim `seq` does, with no substrate change — the pattern
-  `../specs/launcher-record-identity.md` already shipped one tier up (*"Position cannot do this
-  job"*). **GATED on claim-eviction**: under the aim rule a third-party unaimed `stopped` releases
-  nothing, which is today's only release mechanism, and `ensure` has no hang timeout (measured: the
-  suite hangs, 48 further failures). They must land in one window.
+- **A lifecycle record that speaks for an episode must name it** — [episode-aim](episode-aim.md).
+  **The cluster**, co-gated with [claim-eviction](claim-eviction.md). The launcher and control tiers
+  already aim; the lifecycle tier aims only where it *answers a request*, so the two records that
+  speak for an episode without naming it — `stopped` and `heartbeat` — are exactly the two that get
+  misattributed. Three measured defects, one field (`claim_seq`, required, `lifecycle-v0.5`): a
+  forged verdict silently truncating `ensure`; a **claim cascade** where one forgery makes a
+  displaced worker's own honest dying breath release the live successor's claim (B and C both live);
+  and an unaimed heartbeat moving `progress` 0 → 500. **Gated**: an unaimed `stopped` then releases
+  nothing, which is today's only release mechanism — measured, `ensure` hangs at 60s plus 48
+  failures — so this restates claim-eviction's justification as structural (*a third party needs a
+  legal verb*) rather than incident-count-based. Unattacked as a unit; §"Attack this" lists five.
 - **A halt that survives an episode boundary** — [run-scoped-halt](run-scoped-halt.md). `control.stop`
   is an **episode**-scoped request; a consumer reads it as a **run**-scoped halt, and they diverge at
   the boundary. Measured with no third party: an operator halts a run, an ordinary live worker honours
