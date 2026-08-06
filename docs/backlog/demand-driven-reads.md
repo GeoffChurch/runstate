@@ -99,7 +99,44 @@ Making the lattice a **parameter of the read** recovers, with no substrate chang
 | identity (no compression) | the full answer set |
 | "are there incomparable elements?" | divergence inspection |
 
-That last row un-defers something deliberately deferred.
+**But it is two independent choices, not one, and conflating them is how you ship a median that
+silently returns whatever survived compression.**
+
+**Axis 1 — how much state may the summary hold?** This is a property of the *aggregation*, and the
+boundary is old. Gray et al.'s data-cube taxonomy names three classes:
+
+| class | example | may the free multiset be collapsed? |
+|---|---|---|
+| **distributive** | `max`, `sum`, `count`, LWW-by-`seq` | yes — a one-element carrier suffices |
+| **algebraic** | mean | yes, to *bounded* state (`sum`, `count`) plus a finalisation step |
+| **holistic** | **median**, mode, rank | **no** — the free commutative monoid must survive to read-out |
+
+The statistical form of the same boundary is **Pitman–Koopman–Darmois** (Darmois 1935, Koopman 1936,
+Pitman 1936; sufficiency itself is Fisher, 1922): a sufficient statistic whose dimension stays
+bounded as the sample grows exists *iff* the family is exponential. The mean is one; the median is
+not, which is why it needs the order statistics — i.e. the whole multiset. Stated as factorisation:
+every aggregation is a function on the free commutative monoid, and the question is whether it
+factors through a **small** quotient.
+
+**So "identity (no compression)" in the table above is not a nicety — it is *required* for any
+holistic aggregate.** A median over seeds cannot use a collapsing lattice at all.
+
+**Axis 2 — may the program consume from the summary recursively?** This is a property of the
+*program*, not the aggregation, and it is **orthogonal to axis 1**. `max` is maximally distributive
+— associative, commutative, idempotent, one-element carrier — and greedy subsumption over it still
+loses the least fixed point, measured on both SWI 10 and XSB 5
+(`prolog-query-layer.md` §3), because the rule `p(3) :- p(X), X = 0` needs an **element**, not the
+aggregate. The recursion demanded the free monoid even though the aggregation did not.
+
+So: a median fails axis 1 regardless of any program; `max` passes axis 1 and fails axis 2. The
+literature for axis 2 is `Tabling with Sound Answer Subsumption` (TPLP 2016), which supplies a
+correctness *condition* and no fix.
+
+**Design consequence.** The read parameter carries both: a Gray class (bounding what the summary may
+hold) and a recursion discipline (whether derived queries may consume it). Today's LWW fold is
+*distributive, non-recursive* — the safe corner of both axes, which is exactly why it is correct.
+
+That last row of the table un-defers something deliberately deferred.
 `value-plane-divergence-resolution.md` deleted the divergence raise (sticky; it blocked reuse
 permanently) and parked *"attribution + a fork-surface … a forensic affordance **no consumer has
 asked for**. Defer until one does."* **A bandit that must distinguish "loss at step 60" from "two
