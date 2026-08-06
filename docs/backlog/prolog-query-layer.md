@@ -1,18 +1,39 @@
 # A Prolog query layer over the log — spec for a probe
 
-**Status:** spec for an experiment, not a proposal to adopt. The artifact is a **separate package**
-(`docs/design-v0.2.md` is explicit that a richer read/viewer protocol belongs in its own project on
-runstate, never in this repo's `protocol/`). Nothing here changes runstate.
+**Status: RETARGETED.** The original probe — port runstate's folds to SWI and differential-test them
+— would measure the case where tabling has no edge. **Do not run it as specced.** §0 says what to
+point it at instead; the engine findings in §3 stand regardless and are the reason.
 
-**Why do it.** `demand-driven-reads.md` describes a target — the relation as interface, incremental
-tabling with answer subsumption — argued entirely on paper. This is the cheapest test of it, and
-unlike another design round **it cannot be refuted by something already written in the repo**: either
-the folds come out shorter and clearer as tabled predicates, or they do not.
+The artifact remains a **separate package** (`docs/design-v0.2.md` is explicit that a richer
+read/viewer protocol belongs in its own project on runstate, never in this repo's `protocol/`).
+Nothing here changes runstate.
 
-**The validating idea:** runstate's folds are already the reference semantics. Port them to SWI, run
-both against the same logs, and diff. **The Python folds are the oracle.**
+## 0. Why the original target is wrong, and what to point at instead
 
-## 1. The fact base
+Strip out answer subsumption (unsound, §3) and take tabling's remaining benefits one at a time:
+
+| benefit | worth it here? |
+|---|---|
+| memoisation | trivial elsewhere. No. |
+| **termination for recursive definitions** | genuinely hard to hand-roll — but **measured: `observables.py` has 20 functions and *zero* recursive ones.** Nothing to protect. |
+| **incremental re-derivation** | **degenerates.** Its machinery exists to handle *retraction*; an append-only log has none, so "incremental" reduces to processing the suffix after a watermark — which is `read(after=cursor)`, already in the substrate and already used by `Worker._cursor` and the `Watcher`. |
+| WFS / three-valued | the four-state cell projection is a short fold. No. |
+| declarative query, unification | real — but the competitor is **SQL, not Python**. The logs already live in sqlite/Postgres, where relational query and aggregation pushdown are already available. |
+
+Every fold is a **single-pass window over one log**. Porting them is a lateral move.
+
+**Where tabling would genuinely earn its place is the dependency graph** — transitive closure,
+"every run blocked on an incomplete producer", demand-driven materialisation over a DAG. That is
+`mycooc/rungraph`, which is **layer 7 of `../layers.md` and explicitly not runstate's**.
+
+**Retargeted probe:** point it at the rungraph, not the folds. `next_claimable` is the oracle, its
+four predicates over a config DAG are the test, and it has no substrate concerns at all — a smaller,
+cheaper experiment that actually discriminates.
+
+**The validating idea, unchanged and reusable:** the existing implementation is the reference
+semantics. Port, run both against the same inputs, diff. **The Python side is the oracle.**
+
+## 1. The fact base (as sketched for the original target; the shape carries over)
 
 `Envelope` is a flat 5-tuple (`channel/envelope.py`), so the fact shape is direct:
 
@@ -26,7 +47,7 @@ env(3, 'lifecycle.heartbeat', null,   null, _{step:0, consumed_seq:0, t:1001.0})
 SWI reads the dumped JSONL directly with `json_read_dict/2` — no conversion step, and the body stays
 an opaque dict exactly as the substrate treats it.
 
-## 2. The folds to port
+## 2. The folds to port — *superseded by §0*, kept because the impure/pure split is informative
 
 Seven of the eight are **pure functions of the log** and port directly. One is not, and that is
 informative rather than awkward.
