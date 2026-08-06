@@ -98,6 +98,20 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
 
 ## Long-term ambition
 
+- **The relation as interface: demand-driven reads** —
+  [demand-driven-reads](demand-driven-reads.md). A target rather than a defect. A bandit or Bayesian
+  optimiser does not want `start`/`stop`; it wants to query a mostly-unmaterialised relation
+  `(config, step, metric) → value` and be handed values as they arrive. Framed as **incremental
+  tabling with answer subsumption**: the residual query (what the cache lacks) goes to a handler
+  verbatim, so the cache is logically removable. Episodes do **not** dissolve into it — the claim
+  becomes the cache's concurrency control, episodes make a fill restartable, and negative caching is
+  required or the system livelocks. **Two pieces are buildable now, read-side, no protocol change:**
+  parameterising the value fold's lattice (LWW today; subsumptive, full-set and divergence-inspection
+  as instances — which un-defers the fork-surface now that a consumer exists), and the four-state
+  cell projection (unknown / success / failure / impossible, all already derivable — `COMPLETED` vs
+  `PREEMPTED` *is* impossible-vs-unknown on the step axis). Blocker for the rest: residual
+  subtraction that preserves query *structure*, which is what #15 would have to become.
+
 - [visualization-story](visualization-story.md) — a **separate project** on top of
   runstate owns the data-plane / viewer protocols (richer event types: Histogram,
   Image, Tensor; viewer-discovery; artifact-storage) + a companion webapp/TUI —
