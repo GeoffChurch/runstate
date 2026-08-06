@@ -98,6 +98,16 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
 
 ## Long-term ambition
 
+- **A Prolog query layer over the log — spec for a probe** —
+  [prolog-query-layer](prolog-query-layer.md). The cheapest test of the entry below, and unlike
+  another design round **it cannot be refuted by something already in the repo**. Port the folds to
+  SWI as tabled predicates and differential-test against the Python folds, which are the oracle;
+  harvest the corpus from the existing suite, which `test_schema.py` already does the shape of. The
+  showcase is that last-write-wins is *literally* mode-directed `max` over `Seq-Value` — revision-at-
+  head lexicographic order — and `peek_terminal` becomes a real lattice join rather than a function
+  resembling one. Read-only; the substrate, the claim and liveness are explicitly out, and **every
+  refutation in this repo is language-independent**, so none is retired by it. Artifact is a separate
+  package.
 - **The relation as interface: demand-driven reads** —
   [demand-driven-reads](demand-driven-reads.md). A target rather than a defect. A bandit or Bayesian
   optimiser does not want `start`/`stop`; it wants to query a mostly-unmaterialised relation
