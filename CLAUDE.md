@@ -139,6 +139,30 @@ Count *files*, not paths: the first attempt at that census reported 1,457 becaus
 a recursive glob followed the consumer's cell→home symlinks and visited every db
 twice. A rule about checking your facts is worth exactly as much as its own facts.
 
+**But a census bounds APPLICABILITY and COST — never soundness.** That census
+settled whether a mechanism *could work at all* for a consumer: a structural
+fact. It is a different and much weaker move to count how *often* a harm fires
+and conclude a design is not worth building. Three reasons the count is biased
+low, in this corpus specifically:
+
+- It is four projects by one author, using the library the ways it currently
+  supports. Not a sample of the design space.
+- It is biased against finding harm **in exact proportion to how much consumer
+  machinery already exists to prevent it** — `reclaim_experiment.py` is 361
+  lines, plus `correlation_refusal`, `repair_malformed_stopped.py`, `_SyncHandle`
+  and a claim-guard suite. A low incident count may be measuring successful
+  mitigation, i.e. evidence the gap was expensive, not that it was small.
+- A log census sees only harms *detectable in a log*. A silently spliced series,
+  or an `ensure` that truncated and looked like a legitimate early stop, leave no
+  countable trace.
+
+So: a census may **defer** a proposal, or show a mechanism **inapplicable**. It
+may never **refute** a design — refutation is an argument. When a review returns
+both kinds of finding, separate them: *"the harm does not exist as described"*
+(e.g. a branch proven unreachable) is a refutation that happens to have been
+found empirically; *"the harm is rare here"* is priority information only.
+Revival triggers should likewise be logical, not usage counts.
+
 **Bound a fold to the window its question is about.** The claim is a Markov
 boundary: given the latest `lifecycle.started`, everything before it is
 conditionally independent of that episode's liveness and verdict

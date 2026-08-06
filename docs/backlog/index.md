@@ -108,6 +108,44 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
 
 ## Protocol extensions (control plane)
 
+- **`lifecycle.stopped` does not name the claim it eliminates** — [episode-correlation](episode-correlation.md). The
+  surviving half of `../dead_ends/per-episode-loglets.md`. Every read-side attribution in the value
+  and verdict planes is **positional**, and position misattributes a displaced worker's late write:
+  measured, a dead episode's record wins a `(name, step)` cell, `peek_terminal` forges COMPLETED, and
+  `ensure` returns a truncated series with no re-drive and no error. Resolving "by episode" read-side
+  does NOT fix it (attribution is itself positional — measured broken). Stamping the record with the
+  writer's own claim `seq` does, with no substrate change — the pattern
+  `../specs/launcher-record-identity.md` already shipped one tier up (*"Position cannot do this
+  job"*). **GATED on claim-eviction**: under the aim rule a third-party unaimed `stopped` releases
+  nothing, which is today's only release mechanism, and `ensure` has no hang timeout (measured: the
+  suite hangs, 48 further failures). They must land in one window.
+- **A halt that survives an episode boundary** — [run-scoped-halt](run-scoped-halt.md). `control.stop`
+  is an **episode**-scoped request; a consumer reads it as a **run**-scoped halt, and they diverge at
+  the boundary. Measured with no third party: an operator halts a run, an ordinary live worker honours
+  the stop, the discharge fires correctly — and the run is claimable again and a new episode claims it.
+  The discharge rule is right and must not be reopened. **Open need, no mechanism**: a value-plane
+  register recipe was proposed and refuted — it designed the read path and asserted the write path,
+  which is the exact inversion that killed `../specs/control-target.md` (measured there: *373 spawns in
+  3 seconds*, and *"not last writer sets the goal — the writer with the fastest poll loop wins"*). The
+  concept is already named as R6's **durable ceiling**, the one empty cell in the control 2×2, and A7
+  already assigned it a home. Design the **write path first**. Also why `claim-eviction.md` would not
+  have fixed #39.
+- **`lifecycle.stopped` unbundling** — [lifecycle-stopped-unbundling](lifecycle-stopped-unbundling.md).
+  The dying breath does five jobs and only ever all five. `claim-eviction.md` unbundles job 1
+  (claim release); a second consumer wants job 4 (stop discharge) alone, which that design correctly
+  refuses. Two instances is the point to decide between one-eliminator-per-job, one record with an
+  explicit job set, or stopping at one. **Resolve the cheap question first**: whether a third party has
+  any legitimate business discharging an operator's halt — if not, this closes with a consumer change
+  and no protocol change.
+- **One log file per writing machine** — [machine-partitioned-logs](machine-partitioned-logs.md).
+  The surviving half of log-forking (`../dead_ends/log-forking.md`). Forking cannot *arbitrate*
+  writers — a CAS on a single mutable pointer does, which is what the birth claim already is — but it
+  can **contain** a wrong arbitration. Partition by writing machine and the fork boundary lands exactly
+  where `resolve()` stops answering (same host: probe works, arbitrate; foreign host: probe abstains,
+  so share nothing). Closes the blind spot `claim-eviction.md` documents and cannot fix. Open: seq
+  identity across partitions (positional pairing breaks — Dolt hit this), which folds are unions and
+  what they mean, and whether it fixes the splice or relocates it.
+
 - **completion-reason register recipe — SHIPPED 2026-07-11** as a section in
   `../specs/completed-opt-in.md` ("Recipe: the completion-reason register"): a
   value-plane register carrying *why* a run stopped, blessing the SHAPE only (no
