@@ -109,16 +109,16 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
 ## Protocol extensions (control plane)
 
 - **A lifecycle record that speaks for an episode must name it** — [episode-aim](episode-aim.md).
-  **The cluster**, co-gated with [claim-eviction](claim-eviction.md). The launcher and control tiers
-  already aim; the lifecycle tier aims only where it *answers a request*, so the two records that
-  speak for an episode without naming it — `stopped` and `heartbeat` — are exactly the two that get
-  misattributed. Three measured defects, one field (`claim_seq`, required, `lifecycle-v0.5`): a
-  forged verdict silently truncating `ensure`; a **claim cascade** where one forgery makes a
-  displaced worker's own honest dying breath release the live successor's claim (B and C both live);
-  and an unaimed heartbeat moving `progress` 0 → 500. **Gated**: an unaimed `stopped` then releases
-  nothing, which is today's only release mechanism — measured, `ensure` hangs at 60s plus 48
-  failures — so this restates claim-eviction's justification as structural (*a third party needs a
-  legal verb*) rather than incident-count-based. Unattacked as a unit; §"Attack this" lists five.
+  **Revision 2, attacked.** The launcher and control tiers aim; the lifecycle tier aims only where it
+  *answers a request*, so `stopped` and `heartbeat` — the two records that speak for an episode
+  without naming it — are exactly the two that get misattributed. `claim_seq`, **well-aimed** (no
+  `started` between it and the record). Fixes a forged verdict truncating `ensure`, an unaimed
+  heartbeat moving `progress`, and the **claim cascade** — which nothing else on the table reaches,
+  because it is driven by a displaced worker's *own honest* dying breath. Aim buys
+  **non-transferability, never forgery resistance** (a forger reads the aim in one call — measured),
+  so the #39 closure and the co-gate on claim-eviction are both **withdrawn**. Open before building:
+  the **startless run**, where aim is undefined and a live consumer depends on it. Heartbeat folds
+  need latest-then-verify or they cost 2124×.
 - **A halt that survives an episode boundary** — [run-scoped-halt](run-scoped-halt.md). `control.stop`
   is an **episode**-scoped request; a consumer reads it as a **run**-scoped halt, and they diverge at
   the boundary. Measured with no third party: an operator halts a run, an ordinary live worker honours

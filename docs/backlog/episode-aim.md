@@ -1,172 +1,203 @@
 # A lifecycle record that speaks for an episode must name it
 
-**Status:** PROPOSED, **unattacked as a unit**. Supersedes `episode-correlation.md`, which proposed
-the same mechanism for one defect and mislocated it. The three defects below are one defect, and the
-mechanism is one field.
+**Status:** PROPOSED, **revision 2** — attacked as a unit, and three of revision 1's load-bearing
+claims failed under construction. The mechanism survives and is the only thing on the table that
+fixes the claim cascade. Its *case* needed rebuilding.
 
-**This is a cluster.** It is co-gated with `claim-eviction.md` and touches
-`lifecycle-stopped-unbundling.md`. Deciding any of them alone reproduces exactly the redundancy
-`protocol-algebra.md` L2's minimality rule exists to prevent — and shipping this one alone hangs the
-suite (§5, measured).
+Revision 1 claimed aim closes #39's forgery route (it does not), specified a discharge predicate
+that **regresses `stop-discharge.md` S3**, and co-gated this on `claim-eviction.md` on two arguments
+that both fail. It also priced the change at `+18/−11`; corrected, it is **`+181/−24`**.
 
 ## The rule
 
 > **Every `lifecycle.*` record that speaks for an episode carries `claim_seq` — the `seq` of the
-> `lifecycle.started` it speaks for.** Readers attribute by that, never by position.
+> `lifecycle.started` it speaks for.** A record is **well-aimed** iff no `lifecycle.started` lies
+> between its `claim_seq` and its own `seq` — equivalently, *its author was still the latest claimant
+> when it wrote*. Readers attribute by that, never by position.
 
-`value` is the deliberate exception (§6).
+`value` is the deliberate exception (§7).
 
-## Why: the tier is inconsistent, and the inconsistency is the bug
+## What aim buys, exactly — and what it does not
 
-The launcher and control tiers already aim. The lifecycle tier aims only where it *answers a
-request*, and not where it **reports** or **eliminates**:
+**It buys non-transferability.** A record cannot speak for a claim that is not the one it named. That
+closes the **misattribution** route: records that are *honest but late*.
 
-| record | aims at | |
+**It does not buy forgery resistance, and cannot.** Aim is a consistency check between a record's
+declared claim and its log position — **a forger controls both.** Measured:
+
+```
+operator halt pending: [3]
+forger reads latest_episode(ch).seq = 1        <- one call, the whole cost of "aim" to a forger
+forged stopped is WELL-AIMED: claim_seq=1
+  -> any aim filter accepts it; the discharge fires exactly as today; live_episode -> None
+```
+
+This is not hypothetical. The one real forger in the corpus **already holds the value**:
+`mycooc/scripts/reclaim_experiment.py:299` reads `claim_seq = ch.last_seq()` on the line after
+`live_episode(ch)`. Migrating it to a stamped forgery is one keyword argument.
+
+**So: #39's forgery route does not close here. It closes on the eviction half alone**, and revision
+1's claim to the contrary is withdrawn.
+
+## Why: the tier is inconsistent
+
+The launcher and control tiers aim. The lifecycle tier aims only where it *answers a request* —
+never where it **reports** or **eliminates** — so the two records that speak for an episode without
+naming it, `stopped` and `heartbeat`, are exactly the two that get misattributed.
+`_launcher_terminal` states the principle one tier up (*"Position cannot do this job"*), and
+`../specs/write-authority.md` rev 4 withdrew the invariant positional pairing depended on without
+the lifecycle tier being revisited.
+
+## The defects it does fix — measured against a full prototype
+
+| defect | with aim |
+|---|---|
+| forged verdict truncates `ensure` | `peek_terminal → None`, `progress → 0` — **fixed** |
+| **the claim cascade** (a displaced worker's own honest dying breath releases the live successor's claim) | `C claimed: False` (was `True`) — **fixed** |
+| unaimed heartbeat moves the frontier | `progress` stays 0, `last_activity` unmoved — **fixed** |
+
+**The cascade is why this is not subsumed by `claim-eviction.md`.** Under eviction alone the reclaim
+tool writes `evicted`, B legitimately claims, and **A's own honest `lifecycle.stopped` still lands
+above B's claim and still releases it positionally.** The cascade is driven by an honest record, so
+no third-party verb can reach it. The two mechanisms address different halves; no L2 minimality
+problem.
+
+## The predicate — "names the live claim" is WRONG and regresses S3
+
+Revision 1 said *"a `stopped` that names no live claim discharges nothing."* Measured:
+
+```
+ep1 claim@1, control.stop@2, ep1's terminal, ep2 resumes
+  literal rule ("names the live claim") : floor 0   <- the discharged stop reads PENDING again
+  well-aimed rule                       : floor 4
+  ep2 would re-honour the discharged halt under the literal rule: True
+```
+
+That is `../specs/stop-discharge.md` symptom 1 verbatim — `test_resumed_episode_ignores_prior_episodes_stop`,
+the committed-RED test the discharge rule exists to keep green. **Use the well-aimed predicate.**
+
+Consequence to state plainly: legitimate supersession between drain and dying breath leaves the stop
+pending, and the successor re-honours it. That is `stop-discharge.md`'s declared
+at-least-once-toward-an-idempotent-effect posture, so it is acceptable — but it is a semantic change.
+
+## The folds — six sites, and the terminal selector fractures twice
+
+`_episode_stopped`, `live_episode`, `progress` (heartbeat axis), `last_activity`,
+`_discharge_floor`/`undischarged_stops`, **and `Watcher._note_heartbeat`** — which revision 1
+omitted. Left unaimed, tier 4 reads a displaced worker's beacon as liveness while `last_activity`
+reads stale: two liveness surfaces disagreeing.
+
+**Fracture 1 — verdict loudness vs measurement tolerance.** One helper serves `peek_terminal`
+(strict) and `progress` (tolerant) today because it only *positions*; parsing happens downstream.
+Once selection reads the body it cannot serve both — aim-filter-first produced **36 measured
+`DID NOT RAISE MalformedRecordError`**, the verdict plane silently ignoring a broken record, which
+`observables.py` forbids. Split into `_episode_stopped` (tolerant) and `_verdict_stopped` (strict).
+
+**Fracture 2 — append-only repairability.** A forward parse-the-whole-window shape bricks the channel
+permanently and breaks `mycooc/scripts/repair_malformed_stopped.py`. `test_observables.py` pins this:
+*"an append-only repair is the ONLY way to revive a channel bricked by a bad write … A fold that grew
+a full-history parse would silently take the property away."* The selector must scan **newest-first**:
+raise on a record naming *no* claim, skip one naming a *prior* claim, parse-and-return the first
+naming *this* claim.
+
+## Cost — the heartbeat fold as specified is unshippable
+
+Revision 1 priced nothing. `latest(HEARTBEAT)` is O(1) and index-served; *"the latest heartbeat naming
+this claim"* is a range read over **every beat of the episode**:
+
+| beats | `progress` today | `progress` aimed |
 |---|---|---|
-| `lifecycle.started` | its launch (`request_id`) | ✅ |
-| `lifecycle.nak` | the request it refuses | ✅ |
-| `launcher.launched` / `terminated` | their launch | ✅ |
-| `control.subscribe` / `unsubscribe` / `stop` | their request | ✅ |
-| **`lifecycle.stopped`** | — | ❌ |
-| **`lifecycle.heartbeat`** | — | ❌ |
-| `value` | — | deliberate, declared |
+| sqlite 10 000 | 11.0 µs | **23 368.6 µs (2124×)** |
+| postgres 10 000 | 132.5 µs | **26 105.4 µs (197×)** |
 
-So the two records that speak *for an episode* without naming it are exactly the two that are
-misattributed. `_launcher_terminal`'s docstring already states the principle, one tier up:
+Linear and unbounded. `progress` is per-tick under `ensure`; `last_activity` is per-run-per-frame in
+`runstate-tui`. At 100 runs × 1 Hz that is 2.3 s/frame against a 1000 ms budget.
 
-> the only death that can speak for the run is the death of *the launch that claim answered* — found
-> by correlation id. **Position cannot do this job**: a reap is a reader-side observation that lands
-> arbitrarily late … Both forgeries die by construction here.
+**Mandatory mitigation, in the spec and not left to the implementer: latest-then-verify.** Take
+`latest(topic)`, check its `claim_seq`, range-scan only on a miss — **16.9 µs flat (sqlite), 177.7 µs
+(postgres)**. The common case, a live worker beating for itself, never scans. Terminal folds are free
+(`live_episode` 8.2 µs flat: it windows a topic with almost no records).
 
-`../specs/launcher-record-identity.md` made this move once. `../specs/write-authority.md` revision 4
-then withdrew the invariant positional pairing depended on (*"single-writer holds at the claiming
-instant only"*), and the lifecycle tier was never revisited.
+## The startless run — unanswered, and it breaks a consumer
 
-## The three defects, all measured
+Aim is undefined on a run that never claimed. Both genuine (c)-class test failures are this shape,
+and it is live: `mycooc/run_experiment.py::resume_fanout` writes a stop on a never-started run, and
+its own docstring says why — *"A stop staged on a run that never ran has nothing to discharge it…
+Without this the request set is permanently unclaimable after a `--stop`."*
 
-**1. A forged verdict truncates `ensure` silently.** A displaced worker's honest `stopped` lands
-after the successor's claim, so `peek_terminal` reads it as the successor's terminal:
+Under aim that stop is undischargeable by any third party. It still converges — the next episode
+drains it, blips, and its well-aimed terminal discharges it — so the cost is **one mandatory wasted
+episode per staged stop**, not permanent unclaimability. Either aim is optional-when-no-claim-exists
+(which reopens "unstamped is strictly more powerful") or the consumer changes. **Decide before
+building.**
 
-```
-peek_terminal -> RunResult(outcome=COMPLETED, final_step=1)   # successor still running
-ensure(until={"step": 100}) -> 3 points, NO re-drive, NO error
-```
+## The suite — 15 real failures, not 48
 
-**2. The claim plane cascades — the severe one.** From **one** third-party forged `stopped`, the
-displaced worker's own honest dying breath releases the *live successor's* claim:
+Revision 1's 48 was counted against un-migrated fixtures. With a positional backfill — the one-time
+offline pass `../specs/launcher-record-identity.md` shipped — it is **17 distinct, 2 harness
+artifacts, 15 real**, and **no hangs**:
 
-```
-B claimed: True          <- legitimate successor
-A.stopped()              <- A's OWN honest dying breath
-  -> live_episode = None <- B's claim RELEASED
-C claimed: True          <- B and C both live, from one forgery
-```
+- **(a) encoding the old body shape — expected: 13.** Exact-body equality where `{'claim_seq': 1}` is
+  the only diff, plus the v0.5 schema examples.
+- **(b) incidental breakage: 0.**
+- **(c) real consumers of positional attribution: 2** — both the startless-run shape above.
 
-The outcome `claim-eviction.md` and mycooc's own ruling both name as the worst available: *"a false
-positive admits a second writer onto a live run, which is worse than the stranded claim it would
-fix."* A bypass of the single-spawn guard, not a resolution policy.
+And the hang revision 1 attributed to the release half is the **heartbeat** axis: the first hang has
+*no `lifecycle.stopped` at all*, only unstamped beats, so `progress` pins at `None` and `ensure`'s
+poll-wait never terminates. With beats stamped, `test_memoizer` is 93/93 and `test_watcher` 65/65.
+**The terminal half fails loudly**; only the beacon half fails silently.
 
-**3. An unaimed heartbeat moves the frontier and the clock.**
+## The co-gate is withdrawn
 
-```
-successor B is at step 0;  progress = 0
-A (displaced) ticks step 500 -> progress = 500     <- A's beacon moved it
-```
+Revision 1 gated this on `claim-eviction.md` on two arguments, both now false: that aim closes #39
+(it does not), and that *"once `stopped` requires aim, a third party needs a legal verb to release a
+claim at all"* (it does not — the stamped forgery above drives `live_episode` to `None`).
 
-`last_activity` is dated by it too.
+**Decide `claim-eviction.md` on its own merits.** Its restated justification in that entry must be
+corrected too.
 
-## The mechanism — one field
+## Migration — the objection revision 1 dropped, reinstated and corrected
 
-`claim_seq: int`, non-null, on `Stopped` and `Heartbeat`. The worker already holds it
-(`Worker._started_seq`). Folds attribute by aim:
-
-- `_episode_stopped` / `live_episode` — a terminal ends the claim it names, not the claim it follows;
-- `progress` (heartbeat axis) and `last_activity` — a beacon reports for the claim it names;
-- `_discharge_floor` / `undischarged_stops` — **a `stopped` that names no live claim discharges
-  nothing**, which closes the forgery route of #39 with the same field and no second one.
-
-Prototyped for defects 1–2 (aim on `stopped` only): 4 files, +18/−11; verdict and claim planes both
-correct, `ensure` re-drives.
-
-**Required, not optional.** `lifecycle-v0.4` → **v0.5**, `claim_seq` non-null, so an unaimed record
-is loudly malformed rather than silently inert. A `stamped → attribute; unstamped → positional`
-branch would be worse than useless: it makes an unstamped record strictly **more** powerful than a
-stamped one (it would release any claim, forever) and makes forgery easier by omission.
-
-## The sequencing gate — measured, and it is hard
-
-**This cannot ship before a legal third-party release exists.** Under the aim rule an unaimed
-`lifecycle.stopped` releases nothing — and that is today's *only* claim-release mechanism for a
-stranded claim. `ensure` has no hang timeout:
+Revision 1 headed this *"precedent exists and shipped"* and concluded *"already-broken logs stay
+broken."* Both understate. The recorded objection was: a backfill *"can only be derived positionally
+— i.e. from exactly the inference the field exists to replace — so migrated values are a guess
+precisely in the case the field is for."* Measured on an un-migrated log:
 
 ```
-tests/test_memoizer.py -- HANGS (60s timeout, exit 143)
-  first hang: test_ensure_redrives_when_extend_noops_onto_a_live_episode
-Rest of suite: 48 failures across 3 files (baseline 814 passed / 0 failed)
+UNSTAMPED beats: last_activity = 1000.0   (want 2002.0 -- reads 1000s STALE)
+UNSTAMPED beats: progress      = None     (want 2)
 ```
 
-The failure mode is a **silent infinite hang**, not a loud error.
+So it is not *already-broken logs stay broken* — it is **every** log: unmigrated, the verdict plane
+raises and the measurement plane goes blind; migrated, the stamps are a positional guess in exactly
+the displacement case the field exists for. The precedent (a one-time offline pass over a quiescent
+log) is still the right shape; the honesty is that it cannot be correct, only uniform.
 
-**This reframes `claim-eviction.md`, and improves its case.** Its old justification was *"it fixes
-#39 and #42"* — both of which the census then showed to be small. Its real justification is now
-structural: **once `stopped` requires aim, a third party needs a legal verb to release a claim at
-all.** That argument does not depend on any incident count.
+## What it still does not fix
 
-Note the eliminator's own record must carry `claim_seq` too — it already specifies exactly that
-(*"the `lifecycle.started` this evicts — the AIM"*), so the two halves are one rule.
+- **#39 entirely** — forgery route closes on eviction; the honest-worker route is `run-scoped-halt.md`.
+- **The value plane** — declared *"a convergent merge (last-write-wins per cell), not a consistent
+  snapshot."*
+- **The artifact plane**, where a double-live worker's real damage lands.
+- **Authentication.** Aim is checkable; authorship is not. *Name what you act on, not who you are.*
 
-## What this does NOT fix
+## The unbundling thread — sharpened, not subsumed
 
-- **The honest-worker route of #39.** A worker whose own `stopped` discharges a stop it never
-  drained is still discharging it. That is not a forgery — it is the run-scoped-vs-episode-scoped
-  mismatch, filed separately as `run-scoped-halt.md`. Aim closes the *forgery* route only.
-- **The value plane.** Deliberate: `value_series`'s docstring declares *"a **convergent merge**
-  (last-write-wins per cell), not a consistent snapshot"*, and `write-authority.md` calls it
-  *"resolved, not corrupt … a declared cost."* Stamping values was proposed and dropped; asking for
-  a different winner there is a request to change the consistency model, not a bug report.
-- **The artifact plane.** This makes the log stop lying. The checkpoint a displaced worker wrote is
-  still on disk, and that is where the real damage lands (`write-authority.md`).
-- **Authentication.** A forger can stamp any epoch. Aim is *checkable* (does the named claim exist,
-  and is it in force?); authorship is not. **Name what you act on, not who you are** — which is
-  precisely why the launcher tier used correlation ids rather than an author field, and why no
-  record here carries one.
+`lifecycle-stopped-unbundling.md` asked whether job 4 has a legitimate third-party author. Aim
+answers it in the direction that makes the bundle **worse**: `resume_fanout` goes from *"forge all
+five to get job 4"* to **cannot get job 4 at all** on its real target shape. Aim adds no record and no
+eliminator, so there is no minimality problem — but that entry must be updated, not closed.
 
-## Migration — precedent exists and shipped
+## Build order
 
-`launcher-record-identity.md` did exactly this backfill: a one-time offline pass stamping synthetic
-ids positionally, *"applied ONCE, over a whole quiescent log rather than live against a moving one,
-which is what made it wrong"*, reporting genuinely-ambiguous dbs by path.
+1. **The `stopped` half.** Well-aimed predicate; split the selector strict/tolerant; scan
+   newest-first.
+2. **The `heartbeat` half**, only with latest-then-verify specified, and the fold list extended to
+   `Watcher._note_heartbeat`.
+3. **Answer the startless run** first — it is the one open design question and it has a live consumer.
 
-The half that does **not** transfer: launcher ambiguity is detectable; a forged `stopped` is
-*"byte-indistinguishable from a real one"*, so there is no report-the-ambiguous pass. Already-broken
-logs stay broken — acceptable per the owner's standing directive, and the point of `claim_seq`
-being required is that the breakage is loud.
+## A trap worth recording
 
-## Attack this before building
-
-Unattacked **as a unit** — the halves were reviewed against different questions.
-
-1. **Does one field really cover three folds?** The discharge filter is asserted, not prototyped.
-   Does *"a `stopped` naming no live claim discharges nothing"* break any legitimate case — in
-   particular a worker whose claim was legitimately superseded between drain and dying breath?
-2. **Is the heartbeat aim right for `last_activity`?** A displaced worker's beacon *is* activity, of
-   a dead episode. Filtering it may make a genuinely-running process read stale. Progress and
-   freshness may want different answers from the same field.
-3. **Does `retire()`'s death-CAS interact?** It already CASes with `expected_seq=observed`;
-   `stopped()` appends unguarded. That asymmetry is undocumented and may compose badly with aim.
-4. **Is the sequencing gate the only one?** 48 failures were counted; they were not classified. Some
-   may be tests encoding the old semantics (fine) and some may be real consumers of positional
-   attribution (not fine).
-5. **Does it subsume or duplicate the unbundling thread?** If `stopped` names both its claim and
-   (implicitly, via the discharge filter) its stops, is the five-job bundle still the defect
-   `lifecycle-stopped-unbundling.md` describes, or has aim dissolved it?
-
-## Related
-
-- `claim-eviction.md` — co-gated; its justification is restated by §5
-- `lifecycle-stopped-unbundling.md` — see attack 5
-- `run-scoped-halt.md` — owns the honest-worker route of #39
-- `../specs/launcher-record-identity.md` — the shipped precedent, one tier up
-- `../specs/write-authority.md` — why the invariant this replaces was withdrawn
-- `value-plane-divergence-resolution.md` — the declared exception; its residual list needs amending
-  to include the forged-`stopped` route
+`uv run pytest` **in a git worktree resolves `runstate` from conda site-packages, not the worktree.**
+A full classification run against the unmodified main repo looked clean. Set `PYTHONPATH` and assert
+`runstate.__file__` in-process — the same shadowing trap this repo has hit repeatedly, in a new form.
