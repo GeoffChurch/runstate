@@ -665,3 +665,57 @@ def test_double_waker_race_losers_corpse_does_not_forge_the_verdict(tmp_path):
     assert {t.request_id for t in terms} == {h1.launch_id, h2.launch_id}
     assert claim in (h1.launch_id, h2.launch_id)  #      the claim names its launch
     assert peek_terminal(ch).outcome == "preempted"  #   the winner's own verdict
+
+
+# ---------------------------------------------------------------------------
+# The lease predicate catches `count`, not only `time_seconds`
+# (specs/time-lease-boundary.md). Both coordinates are measured FROM THE
+# REGISTRATION and live only in the Subscription object, so both resurrect at
+# zero in the next episode -- the spec's stated disease. `step` is run-absolute
+# and must NOT be caught.
+# ---------------------------------------------------------------------------
+
+
+def test_count_is_episode_local_like_time_and_step_is_not():
+    from runstate.vocabulary.schedule import (
+        references_episode_local,
+        references_time,
+    )
+
+    lease_count = {"every": {"step": 1}, "until": {"count": 5}}
+    lease_time = {"every": {"step": 1}, "until": {"time_seconds": 5}}
+    durable = {"every": {"step": 1}, "until": {"step": 100}}
+
+    # the LEASE question -- both relative coordinates, never step
+    assert references_episode_local(lease_count) is True
+    assert references_episode_local(lease_time) is True
+    assert references_episode_local(durable) is False
+    # nested through any/all
+    assert references_episode_local({"until": {"any": [{"step": 9}, {"count": 2}]}})
+
+    # the ANCHORING question is NOT the same question -- they diverge on count:
+    # a count-only schedule is a lease but needs no run epoch.
+    assert references_time(lease_count) is False
+    assert references_time(lease_time) is True
+
+
+def test_a_count_lease_does_not_refund_its_budget_each_episode(tmp_path):
+    """The gap this closes: a count budget used to reset at every episode
+    boundary, so `until={"count": N}` fired N times PER EPISODE instead of
+    being discharged like its time-referencing twin."""
+    from runstate.channel import create_channel
+    from runstate.observables import live_demand
+
+    ch = create_channel("r", root=str(tmp_path), backend="sqlite")
+    sub = ch.send(
+        {"every": {"step": 1}, "until": {"count": 5}},
+        topic="control.subscribe",
+        name="loss",
+        request_id="lease",
+    )
+    assert [e.seq for e in live_demand(ch)] == [sub]
+
+    ch.send({"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started")
+    assert [e.seq for e in live_demand(ch)] == [sub]  # its own episode: still live
+    ch.send({"handle": "local://h/2", "t": 1.0}, topic="lifecycle.started")
+    assert live_demand(ch) == []  # discharged by the boundary, like a time lease

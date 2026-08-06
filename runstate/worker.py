@@ -24,7 +24,7 @@ from .vocabulary.schedule import (
     is_unsatisfiable,
     malformed_schedule,
     malformed_stop_trigger,
-    references_time,
+    references_episode_local,
     satisfied,
 )
 from .observables import boundary_voided, live_episode
@@ -371,7 +371,7 @@ class Worker:
                 # history, never again input (the positional answer fold).
                 return
             elif (
-                references_time(e.body)
+                references_episode_local(e.body)
                 and self._started_seq is not None
                 and boundary_voided(e.seq, self._started_seqs, self._started_seq)
             ):

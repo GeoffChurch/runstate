@@ -195,31 +195,72 @@ def _conjunctive_corner(cond: Condition) -> Corner | None:
     return None  # count (not a `from` key) or unknown -> punt
 
 
-def references_time(schedule: Condition) -> bool:
-    """Does the schedule contain a ``time_seconds`` atom anywhere in
-    ``from``/``every``/``until``? The episode-scoping predicate
-    (specs/time-lease-boundary.md): a time atom's meaning — seconds since
-    registration — is episode-local, so any schedule containing one is a
-    *lease*, scoped to a single episode (blunt-but-crisp: no per-atom
-    carve-outs). Tolerant: an unparseable schedule is NOT time-referencing
-    (the worker naks it, which answers it)."""
+def _references_atom(schedule: Condition, keys: frozenset[str]) -> bool:
+    """Does the schedule mention any atom in ``keys``, anywhere in
+    ``from``/``every``/``until`` (descending through ``any``/``all``)?
+    Tolerant: an unparseable schedule references nothing (the worker naks it,
+    which answers it)."""
 
-    def has_time(cond: object) -> bool:
+    def hit(cond: object) -> bool:
         if not isinstance(cond, dict):
             return False
         if "any" in cond and isinstance(cond["any"], list):
-            return any(has_time(c) for c in cond["any"])
+            return any(hit(c) for c in cond["any"])
         if "all" in cond and isinstance(cond["all"], list):
-            return any(has_time(c) for c in cond["all"])
-        return "time_seconds" in cond
+            return any(hit(c) for c in cond["all"])
+        return bool(keys & cond.keys())
 
     if not isinstance(schedule, dict):
         return False
     return any(
-        has_time(schedule.get(k))
+        hit(schedule.get(k))
         for k in ("from", "every", "until")
         if schedule.get(k) is not None
     )
+
+
+# The two coordinates whose meaning is RELATIVE TO THE REGISTRATION, so a worker
+# that did not receive the registration cannot reconstruct them: `time_seconds`
+# (seconds since) and `count` (fires since). Both live only in the Subscription
+# object -- `self.count = 0`, `registered_at` -- and so resurrect at zero in the
+# next episode. `step` is NOT one: it is run-absolute (`steps(start=k)` emits
+# run-absolute steps), so it survives an episode boundary intact.
+_EPISODE_LOCAL_ATOMS = frozenset({"time_seconds", "count"})
+
+
+def references_episode_local(schedule: Condition) -> bool:
+    """Is this schedule a **lease** — scoped to the one episode that received it
+    (specs/time-lease-boundary.md)?
+
+    True iff it references a coordinate whose meaning is relative to the
+    registration, so a later episode would silently re-anchor it: the spec's
+    disease is that such state *"lives only in the worker's memory, dies with
+    it, and resurrects at zero in the next episode."* That is true of
+    ``time_seconds`` AND of ``count``; the original predicate tested only the
+    former, so a ``{"until": {"count": N}}`` lease got its budget refunded every
+    episode (measured: fires 3+3+3 across three episodes where the time
+    equivalent correctly fires 3+0+0).
+
+    Blunt-but-crisp, as the spec chose: no per-atom carve-outs. ``count`` COULD
+    instead be re-derived from the log (unlike elapsed time, the fires are
+    countable) — declined deliberately, because a carve-out is exactly what the
+    rule forbids and a schedule mixing both atoms would then have two
+    incompatible survival rules.
+
+    NOT the same question as ``references_time``, which asks whether the time
+    axis needs anchoring. They diverge on ``count``: a count-only schedule is a
+    lease but needs no epoch."""
+    return _references_atom(schedule, _EPISODE_LOCAL_ATOMS)
+
+
+def references_time(schedule: Condition) -> bool:
+    """Does the schedule need the run epoch — i.e. does it contain a
+    ``time_seconds`` atom anywhere in ``from``/``every``/``until``?
+
+    The *anchoring* question, used by ``memoizer.history`` to decide whether a
+    replay requires ``lifecycle.started.t``. For the *episode-scoping* question
+    (which also catches ``count``) use ``references_episode_local``."""
+    return _references_atom(schedule, frozenset({"time_seconds"}))
 
 
 def malformed_schedule(body: Condition) -> str | None:
