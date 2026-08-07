@@ -25,13 +25,21 @@ None of them arise when episode identity is a **column** rather than an inferenc
 ## The schema
 
 ```sql
-episode (episode_id PK, run_id, handle, status,
-         started_at, ended_at)          -- status: live|completed|preempted|errored|killed
-cell    (key JSONB, episode_id FK, value JSONB, revision)   -- every episode's values retained
-demand  (query JSONB, guard JSONB, requester)
+value_cell  (key JSONB, value JSONB, ...)      -- semilattice A: flat-ish, ACC
+status_cell (key JSONB, attempt INT, state)    -- semilattice B: lex, attempt at the head
+demand      (query JSONB, guard JSONB, requester)
 ```
 
-**`cell.key` is a domain-supplied record, not fixed axes.** An earlier draft wrote
+**One semilattice per table, and that is the organising rule.** A table is a set of cells sharing a
+value domain *and its join*. Values and handler-status need **different** joins, so they are
+different tables — and once that is the rule, "how many tables" is open: artifacts, configs,
+provenance, each with its own order.
+
+Making the join per-*table* rather than per-*row* is the same move as types being per-column: the
+evaluator can then reason about a whole table being monotone under a known join, which per-row
+functions would destroy.
+
+**`key` is a domain-supplied record, not fixed axes.** An earlier draft wrote
 `(run_id, metric, step)` — that is the ML case baked into the schema, and it is the same
 workload-words-in-the-protocol mistake this repo exists to avoid. A stepless producer has no step; a
 non-sweep has no config axis; another domain has axes nobody here has thought of. The system
@@ -108,6 +116,56 @@ schema must state and enforce. It is the first invariant to write down, and the 
 `episode_event` table. Cells are immutable by construction. Everything else is better as rows whose
 updates are joins.
 
+## The two semilattices, and the constraint on both
+
+**Values and handler-status are different semilattices**, and the reason they must be split is not
+taste: **status cycles and values do not.** A value goes `⊥ → 0.2` and stays; a handler goes
+`not running → running → OOM'd → running → done`. A cycle cannot live in a monotone order without
+smuggling, and an earlier draft of this design smuggled it — writing `⊥ ⊑ OOM ⊑ 0.2` as though the
+two were one chain. They are not; that was a state machine wearing an order.
+
+This is the split `../backlog/protocol-algebra.md` L3 already made — *"fold observers separately;
+join only at the verdict"* — rediscovered from the algebra.
+
+**Status is monotone only when indexed by attempt.** `status(key, attempt) → state`, lexicographic
+with `attempt` at the head. Attempt 1 failed *stays* failed forever; attempt 2 is a new row. The
+cycle lives in the *sequence of attempts*, never in a single fact. Note where that lands: the
+attempt index is `episode_id`, so the status table **is** the episode table — the same schema
+reached from the algebra rather than from the defect list.
+
+**Values need not be flat.** Non-zero-arity constructors are fine where a value genuinely refines
+over time (`f(⊥)` ⊑ `f(a)`), and nothing forces an initial algebra of uninterpreted functions — any
+semilattice will do.
+
+**But not any semilattice.** The requirement is the **ascending chain condition**: no infinite
+ascending chains. That is what makes a cell settle after a *bounded* climb, which is what makes a
+watch terminate, which is what makes every demand finite and therefore linear (§"On append-only").
+Finite-depth terms satisfy ACC; successive refinement of a real number does not, and would silently
+cost the finiteness result. **ACC is the constraint to state per table**, and "flat" is just its
+easiest instance.
+
+**Consequence worth having: threshold reads become deterministic.** With status out of the value
+domain, values are pairwise incomparable — exactly the incompatibility structure LVars require. So
+"block until settled, deterministically" is available *and* retry is available, which the merged
+version could not give you at once.
+
+**Multi-table queries are then required** — the four-state projection (unknown / success / failure /
+impossible) is a join across value and status. That is fine and standard: **the product of
+semilattices is a semilattice**, componentwise, so a multi-table result lives in the product and
+stays monotone.
+
+*Terminology hazard:* relational **⋈** and lattice **⊔** are both called "join" and appear in the
+same sentence constantly here. Worth naming them differently in any implementation.
+
+**And a design rule that makes flatness usually right anyway: structure goes in the key, not the
+value.** A partially-known record (`{loss: 0.2, acc: ⊥}`) becomes two cells keyed by metric, not one
+cell with a structured order. Reach for constructors only where the *same* cell genuinely refines.
+
+**Where `never` goes:** it is a **value**, not a status — a fact about the cell ("no value will ever
+exist here"), not about an attempt. Pushing a concrete value onto a `never` cell joins to `⊤`, which
+is correct: a contradiction, not a revision. And the four-state projection makes visible what the
+merged version hid — **failure is a statement about an attempt, not about the cell.**
+
 ## The honest cost
 
 A **rewrite, not a refactor**, with three consumers on the current API. And it trades a design whose
@@ -141,11 +199,11 @@ push (cell, v)       →  handler deposits; the value order resolves
 
 Three operations and one guard combinator. What each piece is doing:
 
-- **`?` is a value, not a status channel.** Every cell defaults to it; a query returns whatever is
-  there, `?` included. So **read-only is the default and demand is opt-in**, and status, admission
-  control and the read-vs-demand distinction are all answered by one construct. The value domain is
-  a short chain — `?` ⊑ failure ⊑ value — with `never` for definitively-absent, and incomparable
-  successes resolved by the revision order.
+- **`?` is a value, not an out-of-band status.** Every cell defaults to it; a query returns whatever
+  is there, `?` included. So **read-only is the default and demand is opt-in**, and admission control
+  and the read-vs-demand distinction are both answered by one construct. Note `?` is `⊥` of the
+  *value* semilattice — handler status is a different table with a different order
+  (§"The two semilattices").
 - **`read` is `force` minus the demand-producing effect.** That is the rigorous difference. A
   *watcher* is `read(cell, while <it is ?>)`: one-shot, terminating, and satisfied by *someone else's*
   forcing.
