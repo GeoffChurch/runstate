@@ -158,10 +158,25 @@ an *exact* read. Closing the tail is freezing. That literature's one nondetermin
 **freeze-after-write race**, which cannot arise here because **one handler owns a cell** via the
 claim — a second job for the claim, and a reason it survives into this design.
 
-**What is lost without ACC is only optimisation.** A cell that never settles means a
-`read(Q, while settled)` that never fires and never GCs — the **liveness** problem, not a lattice
-problem, and better named than legislated away. And the evaluator's dormancy GC gets weaker, since it
-cannot always prove a guard permanently false. Neither is a correctness issue.
+**`settled` is coatomicity**, i.e. *maximal below ⊤* — and those coincide, so this is a clean
+definition that generalises past Herbrand. Two things it does not give for free: **decidability is
+separate** (an arbitrary lattice has no general procedure for "is anything strictly between x and
+⊤"), and **a dense domain has no coatoms at all** — which is the definition reporting the truth,
+since nothing in it ever settles. The *representation* decides settleability: a real as a digit list
+is settleable, as a Dedekind cut it is not.
+
+**GC quality is a property of the table's semilattice, not of the framework.** In a **Herbrand
+semilattice, coatomicity *is* groundness** — decidable by a traversal — so the evaluator always knows
+exactly when a standing query is dead and reclaims it immediately: **perfect GC**. Other lattices may
+have their own efficient coatomicity procedures and get perfect or near-perfect GC too; the ones that
+do not simply reclaim later. So "which semilattice" is also a GC decision, and Herbrand's appeal is
+that its decision procedure is trivial.
+
+**What is lost in a longer-refining domain is only *when*, never *whether*.** Groundness (or the
+table's equivalent) is always checkable, and checking always tells you whether you may conclude
+"permanently false." A domain that refines longer just spends longer un-reclaimable. A cell that
+*never* settles means a `read(Q, while settled)` that never fires — the **liveness** problem, not a
+lattice problem, and better named than legislated away.
 
 **Consequence worth having: threshold reads become deterministic.** With status out of the value
 domain, values are pairwise incomparable — exactly the incompatibility structure LVars require. So
@@ -239,3 +254,55 @@ Three operations and one guard combinator. What each piece is doing:
 
 The two boundaries are **dual session types**: the querier's side is *send query, receive cells*; the
 handler's is *receive residual, send cells*.
+
+### The internalised form: demand is a derived relation
+
+The surface syntax above is **sugar**. Internalised, this is **magic sets** — the classical
+transformation that turns bottom-up evaluation into demand-driven evaluation by introducing `demand`
+predicates that propagate:
+
+```
+demand(X, T)  :- grid(X), Q'(X, T).          -- a demand rule; the guard is a CONJUNCT
+value(X, V)   :- demand(X, T), handler(X, V). -- production is gated on demand
+```
+
+**The guard is subsumed.** `force(Q, while Q')` *is* `demand(X) :- Q(X), Q'(X)`. There is no `while`
+combinator, no second concept, and no separate notion of a demand being "active" — activity is just
+whether `demand(X)` is derivable now. That collapse is the main argument for the internalised form.
+
+**The duality is the standard one.** Magic sets propagate **demand backward along the very rules that
+propagate values forward** — bottom-up simulation of top-down evaluation. So `read` and `force` are
+not two operations that happen to be dual; they are one rule set traversed in two directions, which
+is why the two boundaries come out as dual session types.
+
+**Recursive demand is the mechanism, not a footgun.** `demand(Y) :- demand(X), needs(X, Y)` is a
+handler forcing its dependencies, and demand propagating from a goal to its subgoals is the entire
+point of the transformation. An earlier draft proposed a blanket "guards may not force" rule; that
+was an artefact of treating guards as a separate combinator, and it would have banned the dependency
+graph — the case it most needs to allow.
+
+**What replaces the prohibition is the classical safety condition:** demand rules must be
+**range-restricted** (every head variable bound by a positive body literal over a finite relation) and
+**stratified**. Both decidable. And note what plays the finiteness role — **the grid**, introduced
+earlier for the LEFT JOIN, reappears as the safety witness that keeps demand bounded over an
+unbounded cell space. Same object, second job. It follows that *"what is the grid"* is a first-class
+question rather than a query detail.
+
+**Withdrawal needs an axis.** Pure Datalog is monotone, so once `demand(X)` is derived it can never
+be retracted — which would make dormancy impossible. Two ways out: stratified negation
+(`demand(X) :- grid(X), not halted(X)`), or **index demand by round** — `demand(X, T)`, where
+withdrawal is simply "not derived at T+1," monotone *in the relation*. The second is the same move
+that fixed the watcher and the LWW sidecar: add the axis, recover monotonicity.
+
+**Three levels, and where to stop.** Level 0 keeps `read`/`force` external over a pure query. Level 1
+adds per-subexpression annotation so one query may read some cells and force others — which earns its
+place, because a handler wanting to *force* its own steps while only *reading* a prerequisite
+checkpoint is otherwise two round trips and a race. Level 2 is data-dependent forcing ("force one more
+step of whichever arm looks best"), which is a bandit iteration as a single expression evaluated
+where the data lives.
+
+Level 2 is the canonical form and it is what makes the guard disappear. It also puts **policy in the
+query language** — "force whichever is best" is the optimiser's job — against this repo's recurring
+rule to *bless the shape, never the vocabulary*, and it owes totality guarantees and a cost model
+that level 1 does not. The honest position: level 1 is the safe stopping point, level 2 is where the
+structure actually wants to go, and level 1 is an *extension point* for it rather than an obstacle.
