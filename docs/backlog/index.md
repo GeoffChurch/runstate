@@ -98,6 +98,40 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
 
 ## Long-term ambition
 
+- **A Prolog query layer over the log — spec for a probe** —
+  [prolog-query-layer](prolog-query-layer.md). The cheapest test of the entry below, and unlike
+  another design round **it cannot be refuted by something already in the repo**. Port the folds to
+  SWI as tabled predicates and differential-test against the Python folds, which are the oracle;
+  harvest the corpus from the existing suite, which `test_schema.py` already does the shape of. The
+  showcase is that last-write-wins is *literally* mode-directed `max` over `Seq-Value` — revision-at-
+  head lexicographic order — and `peek_terminal` becomes a real lattice join rather than a function
+  resembling one. Read-only; the substrate, the claim and liveness are explicitly out, and **every
+  refutation in this repo is language-independent**, so none is retired by it. Artifact is a separate
+  package.
+- **If built today: relational, demand-driven, identity in columns** —
+  [if-built-today](if-built-today.md). The honest answer to *"from scratch, and is append-only
+  load-bearing?"* — mostly **no**. Most of this repo's defects are self-inflicted by **positional
+  inference**: episodes derived by position, terminals paired by position, stops discharged by
+  position. The forged verdict, the claim cascade, the unaimed heartbeat, #39 and the whole
+  `episode-aim` cluster all become a column or an FK. The claim becomes
+  `CREATE UNIQUE INDEX … WHERE status='live'`. What it does **not** solve is the inherent residue,
+  which is the tell that the residue is real: cross-host liveness, the artifact plane, enforcement.
+  Names the two boundaries as the actual design question — the querier's interface and the handler's
+  — with the run born at the second, and the halt dissolving into *withdrawing demand*.
+- **The relation as interface: demand-driven reads** —
+  [demand-driven-reads](demand-driven-reads.md). A target rather than a defect. A bandit or Bayesian
+  optimiser does not want `start`/`stop`; it wants to query a mostly-unmaterialised relation
+  `(config, step, metric) → value` and be handed values as they arrive. Framed as **incremental
+  tabling with answer subsumption**: the residual query (what the cache lacks) goes to a handler
+  verbatim, so the cache is logically removable. Episodes do **not** dissolve into it — the claim
+  becomes the cache's concurrency control, episodes make a fill restartable, and negative caching is
+  required or the system livelocks. **Two pieces are buildable now, read-side, no protocol change:**
+  parameterising the value fold's lattice (LWW today; subsumptive, full-set and divergence-inspection
+  as instances — which un-defers the fork-surface now that a consumer exists), and the four-state
+  cell projection (unknown / success / failure / impossible, all already derivable — `COMPLETED` vs
+  `PREEMPTED` *is* impossible-vs-unknown on the step axis). Blocker for the rest: residual
+  subtraction that preserves query *structure*, which is what #15 would have to become.
+
 - [visualization-story](visualization-story.md) — a **separate project** on top of
   runstate owns the data-plane / viewer protocols (richer event types: Histogram,
   Image, Tensor; viewer-discovery; artifact-storage) + a companion webapp/TUI —
@@ -108,17 +142,17 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
 
 ## Protocol extensions (control plane)
 
-- **`lifecycle.stopped` does not name the claim it eliminates** — [episode-correlation](episode-correlation.md). The
-  surviving half of `../dead_ends/per-episode-loglets.md`. Every read-side attribution in the value
-  and verdict planes is **positional**, and position misattributes a displaced worker's late write:
-  measured, a dead episode's record wins a `(name, step)` cell, `peek_terminal` forges COMPLETED, and
-  `ensure` returns a truncated series with no re-drive and no error. Resolving "by episode" read-side
-  does NOT fix it (attribution is itself positional — measured broken). Stamping the record with the
-  writer's own claim `seq` does, with no substrate change — the pattern
-  `../specs/launcher-record-identity.md` already shipped one tier up (*"Position cannot do this
-  job"*). **GATED on claim-eviction**: under the aim rule a third-party unaimed `stopped` releases
-  nothing, which is today's only release mechanism, and `ensure` has no hang timeout (measured: the
-  suite hangs, 48 further failures). They must land in one window.
+- **A lifecycle record that speaks for an episode must name it** — [episode-aim](episode-aim.md).
+  **Revision 2, attacked.** The launcher and control tiers aim; the lifecycle tier aims only where it
+  *answers a request*, so `stopped` and `heartbeat` — the two records that speak for an episode
+  without naming it — are exactly the two that get misattributed. `claim_seq`, **well-aimed** (no
+  `started` between it and the record). Fixes a forged verdict truncating `ensure`, an unaimed
+  heartbeat moving `progress`, and the **claim cascade** — which nothing else on the table reaches,
+  because it is driven by a displaced worker's *own honest* dying breath. Aim buys
+  **non-transferability, never forgery resistance** (a forger reads the aim in one call — measured),
+  so the #39 closure and the co-gate on claim-eviction are both **withdrawn**. Open before building:
+  the **startless run**, where aim is undefined and a live consumer depends on it. Heartbeat folds
+  need latest-then-verify or they cost 2124×.
 - **A halt that survives an episode boundary** — [run-scoped-halt](run-scoped-halt.md). `control.stop`
   is an **episode**-scoped request; a consumer reads it as a **run**-scoped halt, and they diverge at
   the boundary. Measured with no third party: an operator halts a run, an ordinary live worker honours
