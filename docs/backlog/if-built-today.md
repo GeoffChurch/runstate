@@ -137,12 +137,31 @@ reached from the algebra rather than from the defect list.
 over time (`f(⊥)` ⊑ `f(a)`), and nothing forces an initial algebra of uninterpreted functions — any
 semilattice will do.
 
-**But not any semilattice.** The requirement is the **ascending chain condition**: no infinite
-ascending chains. That is what makes a cell settle after a *bounded* climb, which is what makes a
-watch terminate, which is what makes every demand finite and therefore linear (§"On append-only").
-Finite-depth terms satisfy ACC; successive refinement of a real number does not, and would silently
-cost the finiteness result. **ACC is the constraint to state per table**, and "flat" is just its
-easiest instance.
+**The constraint is not ACC.** An earlier draft required the *ascending chain condition* (no infinite
+ascending chains) and derived from it that watches terminate and "every demand is finite therefore
+linear." **That derivation is broken**: linearity is about how many times a demand is *consumed*, not
+how much it *produces*. A demand consumed once that streams forever is still linear. Finiteness was
+smuggled in and was never needed.
+
+What is actually required is weaker and sufficient:
+
+> **a decidable, monotone `settled` predicate** — monotone (once settled, always) and upward-closed
+> (settled elements are maximal).
+
+ACC implies it; the converse does not. So values may refine indefinitely provided completion is
+*recognisable*: `[3,1,4|T]` with `T` unbound is unsettled, `T = []` makes it ground, and groundness
+is decidable by traversal and monotone. That is the signal, and it costs no lattice condition.
+
+**The mechanism has a name: `freeze`** (LVish — Kuper, Turon, Krishnaswami, Newton, *"Freeze After
+Writing"*). An LVar grows monotonically under threshold reads; freezing makes it maximal and licenses
+an *exact* read. Closing the tail is freezing. That literature's one nondeterminism source is a
+**freeze-after-write race**, which cannot arise here because **one handler owns a cell** via the
+claim — a second job for the claim, and a reason it survives into this design.
+
+**What is lost without ACC is only optimisation.** A cell that never settles means a
+`read(Q, while settled)` that never fires and never GCs — the **liveness** problem, not a lattice
+problem, and better named than legislated away. And the evaluator's dormancy GC gets weaker, since it
+cannot always prove a guard permanently false. Neither is a correctness issue.
 
 **Consequence worth having: threshold reads become deterministic.** With status out of the value
 domain, values are pairwise incomparable — exactly the incompatibility structure LVars require. So
