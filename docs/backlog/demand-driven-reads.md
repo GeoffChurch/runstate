@@ -52,6 +52,11 @@ ability to ship the residual to where the data lives — which is **#15** (push 
 substrate), and the serialisable-DSL question, restated as one problem: *make the query a value you
 can subtract from and transport.*
 
+**The internalised answer is magic sets** — demand as a derived relation, where the residual is not
+computed and shipped but *derived in place* by demand rules. See `if-built-today.md`
+§"The internalised form", which also covers why the guard disappears under it and what the safety
+condition is.
+
 ## 3. Over-filling is forced, not optional
 
 `loss@100` is **not computable** without 1…99, and they share a checkpoint. The handler's natural
