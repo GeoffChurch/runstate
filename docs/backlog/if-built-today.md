@@ -1,308 +1,452 @@
-# If built today: relational, demand-driven, identity in columns
+# If built today: a monotone store of terms, geometric logic, demand as an unsatisfied existential
 
-**Status:** a target sketch, written after a session in which eleven-plus mechanisms were refuted.
-It is not a plan to rewrite; it is the honest answer to *"what would this look like from scratch,
-and is append-only load-bearing?"* — and the answer to the second half is **no: the load-bearing
-property is monotonicity, and append-only was only one way to get it** (§"On append-only").
+**Status:** a target sketch. Not a plan to rewrite — the honest answer to *"what would this look like
+from scratch, and is append-only load-bearing?"*
+
+The answer to the second half is **no**. The load-bearing property is **monotonicity**; append-only was
+one way to get it, and there is a theorem saying so (§"CALM").
 
 ## The headline
 
-**Most of this repo's defects are self-inflicted by positional inference over an append-only log.**
-Episodes are derived by reading position. Terminals pair to claims by position. Stops discharge by
-position. Every one of those is a bug source, and the bugs are not exotic:
+**Attribution defects die under this treatment. Forgery defects do not.** Measured against a schema
+built verbatim from the design, one of three named defects dies and two survive unchanged.
 
-| defect | cause | under a schema |
+Attribution defects come from inferring identity by *position* in a total order. Making identity
+**data** — something the record carries — deletes them. Forgery defects come from the absence of write
+authority, which no representation changes: every forged write in the tests was a **legal** write under
+this design's own rules, because the design keeps *"cooperative, no enforcement."*
+
+| defect | class | fixed by identity-as-data? |
 |---|---|---|
-| forged verdict silently truncating `ensure` | terminal paired to a claim **by position** | `episode_id` FK |
-| the **claim cascade** — one forgery, unbounded double-live | release inferred **by position** | `status` column |
-| unaimed heartbeat moving `progress` 0 → 500 | beacon attributed **by position** | `episode_id` FK |
-| #39, the swallowed operator halt | discharge **by position**, author- and body-blind | `discharged_by` FK |
-| the whole `episode-aim.md` cluster | re-adding the identity position lost | free |
-| the run-scoped halt problem | a stop scoped to an *episode* because that is what position gives | a `halt` row |
+| unaimed heartbeat moving `progress` 0 → 500 | attribution | **yes** |
+| a displaced worker's own terminal read as the run's verdict | attribution | **yes** |
+| #39, the swallowed operator halt — discharge is author- and body-blind | attribution | **yes** |
+| forged verdict silently truncating `ensure` | forgery | no |
+| the claim cascade — one forgery, unbounded double-live | forgery | no |
 
-None of them arise when episode identity is a **column** rather than an inference.
+The corpus measures the attribution side as real: **11 of 37 stops discharged by a record the worker
+did not write, 6 of them malformed**. That is the case for the rewrite. It is a narrow case, and
+stating it narrowly is the point.
 
-## The schema
+## CALM: why monotonicity, and not merely for tidiness
 
-```sql
-value_cell  (key JSONB, value JSONB, ...)      -- semilattice A: flat-ish, ACC
-status_cell (key JSONB, attempt INT, state)    -- semilattice B: lex, attempt at the head
-demand      (query JSONB, guard JSONB, requester)
+**Consistency As Logical Monotonicity** (Hellerstein 2010; proved by Ameloot, Neven & Van den Bussche
+2013): *a query has a coordination-free distributed implementation **iff** it is monotone.*
+
+That converts a preference into a requirement. If a querier is far from the data — another host,
+another datacentre, another planet — then:
+
+- **monotone** ⟹ information flows one way, no ownership protocol, no consensus, no round trips,
+- **non-monotone** ⟹ you must know you have seen everything, which costs a coordination round.
+
+Two scoping notes that stop this being over-read. It is a **safety** statement: a lost demand and a
+slow handler leave a querier in byte-identical states, so *liveness* still needs an acknowledgement, and
+a bounded reconnect still needs a cursor. And it applies to the **answer** relation; demand is control
+(§"Demand is control").
+
+## The model: a store of terms, one operation
+
+```
+post(c)        -- add a constraint to the store
 ```
 
-**One semilattice per table, and that is the organising rule.** A table is a set of cells sharing a
-value domain *and its join*. Values and handler-status need **different** joins, so they are
-different tables — and once that is the rule, "how many tables" is open: artifacts, configs,
-provenance, each with its own order.
+Agents post. A **querier** and a **handler** are not different kinds of thing; they are agents posting
+different constraints.
 
-Making the join per-*table* rather than per-*row* is the same move as types being per-column: the
-evaluator can then reason about a whole table being monotone under a known join, which per-row
-functions would destroy.
+**There is no "cell."** The store is a growing set of atoms in relations. `loss(60, 0.5)` and
+`loss(60, 0.4)` are two atoms, both true, and nothing combines them — a reader asking `loss(60, V)`
+gets two answers. Everything that looks like combination is one of two things: **set semantics**
+collapsing identical atoms, or **one atom refining** as a variable inside it is bound. Two posts never
+merge; one post gets more instantiated.
 
-**`key` is a domain-supplied record, not fixed axes.** An earlier draft wrote
-`(run_id, metric, step)` — that is the ML case baked into the schema, and it is the same
-workload-words-in-the-protocol mistake this repo exists to avoid. A stepless producer has no step; a
-non-sweep has no config axis; another domain has axes nobody here has thought of. The system
-**indexes and compares the key but never interprets it** — the opaque-`body` principle applied to
-the key. JSONB with a GIN index costs nothing for this.
+That is what makes monotonicity free rather than argued for.
 
-`run_id` survives on `episode` only because production is per-run; it is the *handler's* concept
-(§"The two boundaries"), and content-addressing it from config is what makes it a cache key.
+**An unsatisfied existential is demand.** Posting `loss(60, V)` with `V` fresh asserts *"there is a
+loss at step 60, and it is V"* — since `V` is unconstrained, it asserts only **existence**, and making
+an unsatisfied existential true is exactly production. Three concepts fuse:
 
-**The claim becomes a declaration**, not a protocol:
+| was | is |
+|---|---|
+| the `?` sentinel | an unbound variable |
+| `⊥` — no information yet | an unbound variable |
+| "this is demanded" | an existential not yet satisfied |
 
-```sql
-CREATE UNIQUE INDEX one_live ON episode(run_id) WHERE status = 'live';
+So there is no `demand` predicate at the surface, no `while` combinator, and no watcher concept. A
+watch is a posted term with a free variable; bindings arrive as they are learned.
+
+**Ground vs free is the whole modality.** A ground post is an assertion. A post with free variables is
+a call yielding a stream of bindings — Prolog's `p(a).` versus `?- p(X)`, unified under "post and let
+the store reconcile."
+
+**Streaming is constraint propagation to aliases**, not separate machinery. A reader's variable is
+unified into the term, so refinement propagates along the alias with no subscriber registry at all.
+Appends ride it too when a growing set is an open-tailed list: adding a member binds the tail, settling
+closes it. The one place it does not reach is a *replicated multi-writer set* — a list fixes an
+insertion order and `[a,b|T]` does not unify with `[b,a|T']`, so nodes that saw different arrival
+orders build non-unifiable lists. There, new members need a standing-call registry: ordinary tabling.
+
+**There is no `read`, and no syntactic substitute for one.** A tempting test — *"does the posted term
+have a free variable in key position?"* — cannot carry the distinction. It is not invariant under
+rewriting (`loss(S,V) ∧ S=60` would classify opposite to the identical `loss(60,V)`), and it
+presupposes a key/value split no term carries: `verdict(Outcome, FinalStep)` has two value positions,
+`provenance(key, Prid, Sha)` has two key positions, and nothing in either term says which. What two
+verbs were really buying was **a declaration of intent that survives rewriting**, and a syntactic
+property of a term cannot replace that.
+
+Consequently **admission control needs an explicit mechanism**, and the natural signal is a *quantity*
+rather than a flag: how many atoms does this posted term denote? That is layer 7's to meter; the
+substrate's job is to make demand visible to it.
+
+**Terms, not blobs**, because the engine must traverse a term to match a pattern. That is the whole
+argument, and it is enough — it is **not** an indexing argument. Measured on 200k rows, a JSONB key
+with a btree expression index runs the central range query in **0.085 ms** against a positional term
+layout's **0.089 ms**: the term buys nothing, the btree does. Worse, positional indexing over
+*heterogeneous* terms is not merely slow but wrong — with `loss(Config,Step)`,
+`grad(Config,Layer,Step)` and `ckpt(Run,Config,Shard,Step)` the step axis sits at three different
+positions, and an axis-blind positional range returned **132,879 rows against a correct 91,500**.
+
+## The one rule
+
+> **Threshold claims are always available. Exact claims require settledness.**
+
+A rule body may claim `V ⊒ t` — *"the value carries at least this much information."* Monotone by
+construction: values only go up, so once true, always true.
+
+**And exact equality is not lost, it is a threshold at the right place.** For a ground `a`, `↑a = {a}`,
+so `V ⊒ a` *is* `V = a`. What is inexpressible is equality against a **non-ground** term — *"V is
+exactly this partial term and no more instantiated"* — which requires ruling out further instantiation,
+i.e. negation. Exactness is available precisely where it is meaningful: at maximal elements.
+
+**Settledness is groundness. Always, and at every level.** A value is settled when its term is ground; a
+query is settled when the term representing its answer set is ground — closing the open tail of the
+branch list. Same test, different subject. There is no producer verb and no `freeze`: closing a tail is
+an ordinary post of the terminating constructor. Consequently there is no freeze-after-write race,
+because there is no freeze.
+
+It follows that **nothing may derive settledness from demand going quiet.** Demand disappearing grounds
+nothing, so it cannot produce settledness — and the discipline that enforces this is ordinary ownership:
+only whoever is producing the answers may close the tail. A reclaimer must never bind it.
+
+**Matching a non-ground pattern is a threshold claim** — the ordinary case, not an exotic one. A body
+literal `loss(60, f(X))` with `X` free claims *"the value is known to be an `f`-term."* It suspends
+until that threshold is reached, then binds `X`. Once reached it stays reached and `X` can only refine,
+so the whole thing is monotone. If the term holds `f(Y)` with `Y` unbound, `X` aliases `Y` and later
+bindings propagate — the same mechanism, not an exception to it.
+
+That is why "threshold claims only" costs so little. On an **algebraic** domain the compact elements are
+the finite partial terms and the sets `↑p` form a **basis of the Scott topology** — verified
+exhaustively for terms, `Flat`, `Set` and products. So *matching against a pattern is exactly asking a
+basic open*, and every observable property is an arbitrary union of such matches: finite `∧`, arbitrary
+`∨`. That is geometric logic again, and it means the restriction is a **basis**, not a limit.
+
+The distinction to keep is **matching versus unification**: matching is one-way (the pattern's
+variables bind, the term's do not) and is a *read*; unification is two-way and is a *post*. Rule bodies
+match; agents post. That recovers `ask` and `tell` as a property of *position* rather than as two
+operations.
+
+**And it is not `var/1` in disguise**, though the objection is fair — instantiation tests are the
+classic non-logical family, and `V ⊒ f(⊥)` *is* asking how far a term is instantiated. But that family
+splits along the line already drawn: `nonvar` and `ground` are **monotone** (false, then true, never
+back), `var` is **antitone**.
+
+> You may test that instantiation has **reached** a threshold. You may never test that it has not.
+
+which is precisely why `var/1` is non-logical and `ground/1` is not. It also means a rule whose body
+fails to match must simply *not fire* — never take an else-branch — and with no negation there is no
+else-branch to take. Failure of a match is unobservable, so the order in which matches succeed cannot
+be detected: derivation *times* differ, the answer set does not.
+
+## Geometric logic, which is what this language is
+
+The derivation language is **geometric logic**: finite ∧, arbitrary ∨, ∃. **No ¬, no →, no ∀.**
+
+Every restriction arrived at here independently is one of its clauses:
+
+| decided here | geometric logic |
+|---|---|
+| definite clauses, no negation | no ¬ |
+| carry all branches rather than backtrack | **arbitrary ∨** |
+| conjuncts filter branches (the list-monad bind) | frame distributivity, `a ∧ ⋁bᵢ = ⋁(a ∧ bᵢ)` |
+| threshold claims only | **opens** |
+| monotone ⟺ coordination-free (CALM) | Scott-continuity |
+| settled = ground = maximal; exact claims only there | total elements of a domain |
+| negation confined to reports | **closed** sets — refutable, not affirmable |
+
+The shape has a reason rather than an axiom (Vickers, *Topology via Logic*): **an open set is an
+affirmable property** — confirmable in finite time from finite information, never refutable from it.
+You may conjoin *finitely many* observations, because each takes finite time; you may disjoin
+*arbitrarily many*, because any one suffices. That is a frame, and it is exactly this design's
+constraint set.
+
+**Why `¬` had to go.** To affirm `φ` you need a finite observation. To affirm `¬φ` you must rule out
+*ever* affirming `φ`, which is a survey of everything there is. That survey **is** the coordination
+round CALM prices. So "no negation," "opens are affirmable," and "monotone ⟺ coordination-free" are one
+fact in three vocabularies — and reports are where that cost is paid, which is why they belong next to
+the data.
+
+**The derivation/report split is the open/closed split.** Derivation affirms; reporting refutes. They
+cannot mix for the same reason the complement of an open is not open.
+
+| | negation? | may feed demand? |
+|---|---|---|
+| **derivation** — what to produce | no; geometric | yes |
+| **reporting** — what is missing, what is best, what diverged | **yes, inherently** | **no** |
+
+`argmax` is therefore not expressible in derivation, so a bandit's one non-monotone step is forced to
+the boundary. Its monotone half stays inside: `beaten(A) :- value(A,V), value(A2,V2), V2 > V` only ever
+grows.
+
+**One exception is real and does not repair.** The **residual** is a negation-bearing message
+(`Q ∧ ¬E`) sent to a handler that produces from it, which is feeding demand by definition. It is benign
+where re-production is idempotent. So the split is a discipline with one named exception, not a
+structural guarantee.
+
+## No functional dependency, and why
+
+The tempting move is to declare a relation functional — *"for each key, exactly one value"* — so the
+store can combine posts and compress. It should be resisted, and the reason is not the one it first
+appears to be.
+
+**It is not a syntactic problem.** `p(X,Y) ∧ p(X,Y') ⊢ Y = Y'` is a perfectly good geometric sequent:
+geometric antecedent, atomic consequent. The `∀` and `→` live at the sequent level, which geometric
+theories permit.
+
+**The problem is what asserting it does to a store that must accept what it is given.** A store holding
+`loss(60,0.5)` and `loss(60,0.4)` is then not a *model* of its own theory. There are three responses and
+none survives:
+
+| | |
+|---|---|
+| refuse the second post | order-dependent — whoever arrives first wins, and the store's contents depend on timing |
+| derive the consequence | `0.5 = 0.4`, so the theory is inconsistent, so everything follows |
+| record both and note the violation | fine — but then it was never an axiom |
+
+Only the third works, and it is not a functional dependency at all: it is an **observation**. So:
+
+> **Functionality is something a reader may ask about, never something the store asserts.**
+
+And the affirmable half is the negative one. *"This relation is not functional at this key"* is a
+positive existential over a growing set — monotone, geometric, decidable:
+
+```
+conflicted(K) :- loss(K,V1), loss(K,V2), V1 ⊔ V2 undefined.
 ```
 
-Two concurrent inserts; one wins on unique violation. That *is* the birth CAS, and
-`../specs/write-authority.md` largely evaporates — a displaced worker's cells still carry its own
-`episode_id`, so they are attributed correctly with no aim rule, no schema bump, no migration.
+*"This relation is functional here"* is its complement, hence closed, hence a report or a claim about a
+settled relation. That asymmetry is structural, not stipulated: the well-formed region is a **lower
+set**, so its complement is an **upper set**, so **conflict is affirmable and consistency is not.** You
+may react to a conflict the instant one exists; you may never conclude there is none from partial
+information.
 
-The rest follows: the four-state cell projection is a join on `status`; stop discharge is an explicit
-FK; `ensure` is the LEFT-JOIN-over-a-grid of `demand-driven-reads.md` with NULLs as the gap.
+It also explains why *non-joinability* is the right test rather than joinability: non-joinability is
+stable (`f(a)` and `g(b)` clash and always will) where joinability is not (`f(X)` and `f(a)` join until
+`X ↦ b`). Verified: zero counterexamples to stability across terms, `Flat` and `Lex`, under all
+refinements. And the clash test itself is genuinely geometric — a finite disjunction over positions and
+symbol pairs, each conjunct a threshold claim, agreeing with the unifier on every case tested. No
+metalevel test is smuggled into the derivation layer.
 
-## What survives from runstate — all the good ideas
+**Two consequences of having no functional dependency.**
 
-- **The run as a durable identity outliving its processes.** The actual contribution, now *explicit*
-  rather than derived.
+*No `⊤`, and none needed.* A per-relation top is what a collapse would land on, and a top necessarily
+satisfies every threshold — that is what being the top means — so one disagreement would fire every rule
+mentioning the relation. Keeping the atoms apart is what keeps the top out of reach. A "broken" flag is
+the same defect wearing different clothes: discarding values and recording a bit is the one operation
+that moves *down*, and it retracts — every rule that fired on `loss(60, f(X))` must un-fire.
+
+*Nothing needs broadcasting.* Ask whether a reader who already got `f(a)` must be told when `g(b)`
+arrives. A **threshold** claim is still true — somebody did post `f(a)`, and a later post does not
+unpost it. An **exact** claim was never legitimate on an unsettled term. **No legitimate claim is
+invalidated by a conflict**, so there is nothing to push and no registry of past contributors to keep.
+The store owes a queryable predicate, not a notification.
+
+**And conflict is reachable without forgery**, which is why it has to be designed for rather than
+assumed away: two honest producers differing by one ulp (`0.30000000000000004` vs `0.3`) do not
+reconcile. `mycooc/analyze_run.py` already hand-rolls a guard against exactly this — *"a crash-retry
+episode fills gaps instead of re-emitting, so recompute jitter can never poison the log with divergent
+same-cell values."*
+
+**What this costs: compression.** With nothing combining, the store grows with every distinct post.
+Duplicates collapse by set semantics and terms may share structure physically, but there is no *logical*
+compression, and there cannot be without the declaration this section rejects. That is the price, and it
+is the same trade as choosing a free join: pay storage, keep monotonicity.
+
+## Types: many-sorted, per functor, structural
+
+Each functor declares the sorts of its arguments and its result. The signature belongs to the
+**program**, never to the data — no type is inferred from whoever posts first, which would make the type
+check a first-writer-wins register decided by arrival order.
+
+**Sorts are per functor and there is no untyped escape hatch.** A single flat relation —
+`value(Name, V, Step)` for every metric — looks like it buys an open namespace, and it is unsound:
+one functor has one signature, so every value position shares a sort, so `value(loss, X, S)` and
+`value(converged, X, S)` may share `X`. That aliases a float slot to a bool slot with nothing to object,
+and binding `X` silently gives `converged` the value `0.5`. Per-functor signatures reject it at the
+alias: `loss/2` and `converged/2` give `X` two different sorts.
+
+So a consumer with thirty metrics declares thirty signatures. That is a schema, and it is what catches
+the measured case of one name carrying `None` under one flag and a nested record under another.
+
+With a static signature a type conflict **is not expressible at runtime**. It is a program that does not
+typecheck, caught twice: locally before anything is sent, and again on receipt, because at an
+honour-system boundary a peer's message is never trusted. Neither check coordinates, and the reason is
+precise: **a type error is a property of the message alone** — no store state is consulted — so
+rejecting it is order-independent. That is exactly what a *value* conflict is not, which is why one is
+checked at the door and the other is recorded and observed.
+
+Agreeing the signature is deployment, not runtime. **The residual is real:** if signatures were
+themselves data, posted like anything else, the problem returns unchanged. Keep them in the program.
+
+### Orders are read-side
+
+With nothing combining in the store, an order is not a storage type — it is how a **read** aggregates
+what it finds. That moves the whole table off the safety path and onto the cost path:
+
+| aggregation | note |
+|---|---|
+| last-write-wins | `argmax` over `seq`; a report |
+| `max` / `min` | a report. On a **dense** carrier the only compact element is `⊥`, so `↑c` is not a basis and the affirmable claim is strict `⊐`, not `⊒` |
+| set union | the identity read — everything, no compression, and the only option for a **holistic** aggregate (median, percentile), where Gray et al.'s taxonomy says no bounded *exact* summary exists. Bounded *approximate* ones do: a 200-bucket sketch reproduced a 2000-sample bootstrap CI to **1.07% of its width** |
+| "must all agree" | the `conflicted` predicate above — **16 hand-rolled guard sites in the corpus**, the one primitive visibly missing |
+| lexicographic | fine as a *selection* order, and dangerous as a *combining* one: with `attempt` at the head, `(1,running)` and `(1,crashed)` have least upper bound `(2,⊥)` — it **fabricates attempt 2**, silently, in a design about attribution. Nothing combines here, so this is a hazard avoided rather than managed |
+
+**Where the narrowing (Smyth) construction goes.** The three powerdomains are the three ways to make "a
+set of possibilities" into a domain: **Hoare/lower** (ordered by inclusion — *may* — accumulation),
+**Smyth/upper** (reverse inclusion — *must* — narrowing), **Plotkin/convex** (both). Putting the upper
+one on the *value* side is a category error: read extensionally as a set of facts it is antitone, so a
+rule body binding a variable to a member is non-monotone, which breaks CALM at exactly the point CALM is
+load-bearing. Its natural home is **demand** (*must* produce). That is open. And on a continuous carrier
+it has no representable bottom and narrowing never reaches a singleton — measured to stall at 54
+bisections — so settledness there arrives by naming the value, not by narrowing toward it.
+
+**Terminology hazard.** Relational **⋈** and lattice **⊔** are both called "join," as are the lattice
+join and the powerdomain pair. Name them differently in any implementation.
+
+## Demand is control
+
+Demand is not monotone: a lease expires, a querier withdraws, an operator halts a run. That is fine, and
+it is worth saying why rather than listing it as a leak.
+
+**Nothing derived becomes false; some things never get derived.** A withdrawn demand means a term is not
+produced, so a reader's threshold claim never fires — it suspends forever. That is a **liveness**
+failure, not a safety one. Two replicas with different demand produce different *subsets*; every atom
+either of them holds is correct, and atoms are still only ever added. CALM is about replicas disagreeing
+on an answer, and they do not.
+
+All three mechanisms are control: resource management, a querier changing its mind, and somebody
+deliberately stopping a machine. The logic never had jurisdiction over any of them, any more than it can
+stop you pulling the power. What it does owe is the liveness back-channel named in §"CALM" — a lost
+demand and a slow handler are indistinguishable — and the settledness footgun in §"The one rule".
+
+## What the substrate is for — three jobs, one not commodity
+
+- **persistence** — a store dies with its process, and runstate's whole contribution is durable identity
+  outliving processes,
+- **indexing**,
+- **liveness resolution** — an OS probe. `live_episode` calls `resolve()`, and it is why a crashed claim
+  holder does not strand the run forever. **A probe is neither persistence nor indexing**, and it is the
+  honest answer to *"why this library rather than Postgres plus a type discipline."*
+
+Note what the other two are not: per-position term indexing over heterogeneous terms is not a database
+feature, and neither is unification. The buildable object is closer to **a Prolog with a durable fact
+base and a pid probe** than to a schema. Coherent to want; large to build.
+
+CCP (`ask`/`tell` over a monotone store) is the right model for the *semantics*; CHR is the right model
+for the *execution*, where simplification keeps the store small without losing anything, provided the
+body entails the head. One caution: CHR's store is a multiset, and idempotence is what makes one-way
+replication safe — use set semantics.
+
+## What is checked, and what is the requester's
+
+| | who |
+|---|---|
+| exact claims only on ground terms | **checked** |
+| sorts | **checked**, statically, at both ends |
+| finiteness of what you asked for | **the requester's obligation** |
+| admission control | the consumer's — layer 7 |
+| reclamation | policy, behind one interface |
+
+**Finiteness is not a decidability claim.** Range-restriction over a grid looks like one and is not: it
+is a syntactic test over a relation *asserted* finite, it does not make one finite, and *"is this
+derived relation finite"* is undecidable. A run whose length is decided by convergence has no step grid
+known in advance. The guarantee is *what you asked for is what you get*.
+
+**Reclamation is evolvable policy behind a fixed mechanism** — a lease, a budget, a settled extent, an
+explicit guard, a user-supplied proof of an implicit guard, or eventually theorems about queries. Build
+it as one injected interface. The hard constraint: **reclamation must not depend on receiving a
+message**, because the requester may crash and the link may be long — the same argument that makes
+`resolve()` probe a pid rather than trust a dying process to announce itself.
+
+**The residual is not a blocker.** Ship `Q ∧ ¬E` with `E` the finite finished set and **do not
+normalise**: `Q`'s structure survives intact, and `E` need not cross the link at all, since the handler
+is near the data. What it *is* is a report, with the exception noted above.
+
+## What survives from runstate
+
+- **The run as a durable identity outliving its processes.** The actual contribution, now explicit.
 - **Content-addressed run ids.** Becomes the cache key, unchanged.
-- **The verdict as a join of two partial observers.** A status column plus a join.
-- **Cooperative, no enforcement.** Unchanged.
+- **The verdict as a join of two partial observers** — and it is a *report*, which is why it may use the
+  narrowing reading that derivation may not.
+- **Cooperative, no enforcement.** Load-bearing for the headline.
+- **`never` is a value, not a status** — a fact about the world, not about an attempt.
+- **Status cycles; values do not.** `running → OOM → running` cannot live in a monotone order, so the
+  attempt index goes in the term and the cycle lives in the *sequence of attempts*, never in one fact.
+- **Structure goes in the key, not the value.**
 
-## What it does NOT solve — the inherent residue
+## What it does NOT solve
 
-Exactly what stayed hard all session, which is the tell that it is real:
-
-- **Cross-host liveness.** No schema answers *"is that worker on `ai05` alive?"* You still need a
-  handle and a probe, and it still abstains off-host.
-- **The artifact plane.** Checkpoints on a filesystem remain unmodelled, and remain where a
-  double-live worker's real damage lands.
-- **Enforcement.** Still honour-system — though row permissions *could* enforce, which a log never
-  could.
-
-## On append-only — the real property is MONOTONICITY
-
-Append-only is not the load-bearing thing. **Monotonicity is**, and append-only was merely one way to
-obtain it. That distinction is what makes dropping the log safe, and it is a much stronger claim than
-"transactions handle crash-safety."
-
-Three places monotonicity — not the log — did the work:
-
-1. **Incremental tabling's hard part is invalidation.** An append-only log has no retraction, so a
-   derived table only ever *extends*: the semi-naive case, free, with none of the incremental
-   machinery (`prolog-query-layer.md`).
-2. **A resumed episode overwriting a cell looks like retraction and is not.** It is a **join** with a
-   later element under the LWW order. Monotone — which is precisely why last-write-wins was the right
-   resolution rather than the divergence raise that got deleted.
-3. **Every demand is finite, therefore linear.** A cell settles after a bounded climb
-   (`?` → failure → value), so a watch terminates and the whole linear/affine/exponential question
-   dissolves. Nothing needs duplicating, so `!` has no work; nothing may-or-may-not be consumed, so
-   affine has none.
-
-**A schema keeps monotonicity by other means** — the value order on cells — so the log's contribution
-was a *means*, not an end. And its unique cost stands: the total order it bought is exactly what made
-identity positional.
-
-### The design rule that falls out, and where a rewrite would go wrong
-
-> **Every mutation must be a join.**
-
-An in-place overwrite that loses information, a status regressing, a cell reverting to `?` — each
-breaks the property everything else rests on. This is the one thing the log gave for free and a
-schema must state and enforce. It is the first invariant to write down, and the first to test.
-
-**Keep append-only where history is the point** — episode status transitions want an
-`episode_event` table. Cells are immutable by construction. Everything else is better as rows whose
-updates are joins.
-
-## The two semilattices, and the constraint on both
-
-**Values and handler-status are different semilattices**, and the reason they must be split is not
-taste: **status cycles and values do not.** A value goes `⊥ → 0.2` and stays; a handler goes
-`not running → running → OOM'd → running → done`. A cycle cannot live in a monotone order without
-smuggling, and an earlier draft of this design smuggled it — writing `⊥ ⊑ OOM ⊑ 0.2` as though the
-two were one chain. They are not; that was a state machine wearing an order.
-
-This is the split `../backlog/protocol-algebra.md` L3 already made — *"fold observers separately;
-join only at the verdict"* — rediscovered from the algebra.
-
-**Status is monotone only when indexed by attempt.** `status(key, attempt) → state`, lexicographic
-with `attempt` at the head. Attempt 1 failed *stays* failed forever; attempt 2 is a new row. The
-cycle lives in the *sequence of attempts*, never in a single fact. Note where that lands: the
-attempt index is `episode_id`, so the status table **is** the episode table — the same schema
-reached from the algebra rather than from the defect list.
-
-**Values need not be flat.** Non-zero-arity constructors are fine where a value genuinely refines
-over time (`f(⊥)` ⊑ `f(a)`), and nothing forces an initial algebra of uninterpreted functions — any
-semilattice will do.
-
-**The constraint is not ACC.** An earlier draft required the *ascending chain condition* (no infinite
-ascending chains) and derived from it that watches terminate and "every demand is finite therefore
-linear." **That derivation is broken**: linearity is about how many times a demand is *consumed*, not
-how much it *produces*. A demand consumed once that streams forever is still linear. Finiteness was
-smuggled in and was never needed.
-
-What is actually required is weaker and sufficient:
-
-> **a decidable, monotone `settled` predicate** — monotone (once settled, always) and upward-closed
-> (settled elements are maximal).
-
-ACC implies it; the converse does not. So values may refine indefinitely provided completion is
-*recognisable*: `[3,1,4|T]` with `T` unbound is unsettled, `T = []` makes it ground, and groundness
-is decidable by traversal and monotone. That is the signal, and it costs no lattice condition.
-
-**The mechanism has a name: `freeze`** (LVish — Kuper, Turon, Krishnaswami, Newton, *"Freeze After
-Writing"*). An LVar grows monotonically under threshold reads; freezing makes it maximal and licenses
-an *exact* read. Closing the tail is freezing. That literature's one nondeterminism source is a
-**freeze-after-write race**, which cannot arise here because **one handler owns a cell** via the
-claim — a second job for the claim, and a reason it survives into this design.
-
-**`settled` is coatomicity**, i.e. *maximal below ⊤* — and those coincide, so this is a clean
-definition that generalises past Herbrand. Two things it does not give for free: **decidability is
-separate** (an arbitrary lattice has no general procedure for "is anything strictly between x and
-⊤"), and **a dense domain has no coatoms at all** — which is the definition reporting the truth,
-since nothing in it ever settles. The *representation* decides settleability: a real as a digit list
-is settleable, as a Dedekind cut it is not.
-
-**GC quality is a property of the table's semilattice, not of the framework.** In a **Herbrand
-semilattice, coatomicity *is* groundness** — decidable by a traversal — so the evaluator always knows
-exactly when a standing query is dead and reclaims it immediately: **perfect GC**. Other lattices may
-have their own efficient coatomicity procedures and get perfect or near-perfect GC too; the ones that
-do not simply reclaim later. So "which semilattice" is also a GC decision, and Herbrand's appeal is
-that its decision procedure is trivial.
-
-**What is lost in a longer-refining domain is only *when*, never *whether*.** Groundness (or the
-table's equivalent) is always checkable, and checking always tells you whether you may conclude
-"permanently false." A domain that refines longer just spends longer un-reclaimable. A cell that
-*never* settles means a `read(Q, while settled)` that never fires — the **liveness** problem, not a
-lattice problem, and better named than legislated away.
-
-**Consequence worth having: threshold reads become deterministic.** With status out of the value
-domain, values are pairwise incomparable — exactly the incompatibility structure LVars require. So
-"block until settled, deterministically" is available *and* retry is available, which the merged
-version could not give you at once.
-
-**Multi-table queries are then required** — the four-state projection (unknown / success / failure /
-impossible) is a join across value and status. That is fine and standard: **the product of
-semilattices is a semilattice**, componentwise, so a multi-table result lives in the product and
-stays monotone.
-
-*Terminology hazard:* relational **⋈** and lattice **⊔** are both called "join" and appear in the
-same sentence constantly here. Worth naming them differently in any implementation.
-
-**And a design rule that makes flatness usually right anyway: structure goes in the key, not the
-value.** A partially-known record (`{loss: 0.2, acc: ⊥}`) becomes two cells keyed by metric, not one
-cell with a structured order. Reach for constructors only where the *same* cell genuinely refines.
-
-**Where `never` goes:** it is a **value**, not a status — a fact about the cell ("no value will ever
-exist here"), not about an attempt. Pushing a concrete value onto a `never` cell joins to `⊤`, which
-is correct: a contradiction, not a revision. And the four-state projection makes visible what the
-merged version hid — **failure is a statement about an attempt, not about the cell.**
+- **Cross-host liveness.** You still need a handle and a probe, and it still abstains off-host — and
+  that abstention must not become a stored verdict.
+- **The artifact plane.** Checkpoints on a filesystem remain unmodelled, and remain where a double-live
+  worker's real damage lands.
+- **Enforcement.** Still honour-system. This is why forgery defects survive.
+- **The halt does not dissolve.** Self-withdrawal is free — scope a posted demand to its subscription
+  and disconnecting ends it, with no authority question because you own your own connection. But the
+  measured case is an **operator** stopping a run a **scheduler** relaunches, i.e. withdrawing *someone
+  else's* demand. That needs a write and an authority rule, and always did.
 
 ## The honest cost
 
-A **rewrite, not a refactor**, with three consumers on the current API. And it trades a design whose
-failure modes are now intimately known for one whose failure modes would have to be learned. The
-DB-shaped ones are well-trodden — migrations, connection lifetime, transaction scope — but not free.
+A **rewrite, not a refactor**, with consumers on the current API. It trades a design whose failure modes
+are intimately known for one whose failure modes would have to be learned. And storage grows, since
+nothing combines.
 
-## The two boundaries, which are the real design question
-
-The system is defined by its edges, and everything above is interior:
-
-1. **The querier's interface** — what a bandit or optimiser sees. Cells, streamed, with status; and
-   *withdrawing demand* rather than a stop verb (see below).
-2. **The handler's interface** — what receives the residual query and produces cells.
-
-**The run is born at boundary 2.** The query layer speaks *cells*; the handler is what decides a
-cell-range maps to one worker with one checkpoint. So "run" is the handler's concept, "cell" is the
-querier's, and the system between them owns only the cache and the demand.
-
-**And the halt dissolves.** If production is demand-driven, a run runs *because someone wants cells*.
-Stopping it is **withdrawing the demand** — which is naturally run- or demand-scoped, exactly the
-scope `run-scoped-halt.md` concluded was right, and needs no record, no verb, and no discharge rule.
-The existing `serve` / `retire` / `live_demand` machinery is already this shape.
-
-### The interface, as far as it has been reasoned
+**No fold ports as-is.** Measured across the whole of `observables.py`: 13 of 16 fold readings are
+non-monotone, and the operator responsible is `latest` = `argmax(seq)`, which appears six times directly
+plus three `[-1]`/`reversed` and three `max(…)` in 551 lines. Each becomes **dual plus subtraction** —
+the monotone half derived inside, one complementation performed outside:
 
 ```
-read (Q, while Q')   →  stream of cells          -- creates NO demand
-force(Q, while Q')   →  stream of cells          -- creates demand for the `?`s
-push (cell, v)       →  handler deposits; the value order resolves
+inside   discharged(C) :- stop(C), stopped(S), S > C.
+outside  unhandled = stops − discharged
 ```
 
-Three operations and one guard combinator. What each piece is doing:
+All nine duals (`superseded`, `ended`, `discharged`, `answered`, `reached`, …) measured monotone, so the
+inside half is where the work is and the outside half is a subtraction. That is the same discipline as
+*fold the observers separately, join only at the verdict* — but it is eight rewrites, and none of them
+is mechanical.
 
-- **`?` is a value, not an out-of-band status.** Every cell defaults to it; a query returns whatever
-  is there, `?` included. So **read-only is the default and demand is opt-in**, and admission control
-  and the read-vs-demand distinction are both answered by one construct. Note `?` is `⊥` of the
-  *value* semilattice — handler status is a different table with a different order
-  (§"The two semilattices").
-- **`read` is `force` minus the demand-producing effect.** That is the rigorous difference. A
-  *watcher* is `read(cell, while <it is ?>)`: one-shot, terminating, and satisfied by *someone else's*
-  forcing.
-- **`push` is not overwrite.** The handler deposits; the order decides. Pushing information-decreasing
-  values is a no-op semantically (it is the join) and a handler bug operationally. Two incomparable
-  successes have exactly two principled resolutions — add a top (`⊤` = conflict) or take the powerset
-  (branch) — which are the two standard lattice completions.
-- **Handlers both `push` what they produce and `force` what they depend on.** The second is what
-  turns this from a two-party protocol into a build graph.
-- **`while Q'` is a stopping condition, not a modality selector.** All demands are linear (see
-  monotonicity above). The guard also gives *dormancy* for free — a consumed watcher cannot revive, a
-  guarded one can — and needs no reification, since over a monotone store an antitone guard is
-  provably dead once false, which the evaluator can reclaim as an optimisation.
+## Open
 
-The two boundaries are **dual session types**: the querier's side is *send query, receive cells*; the
-handler's is *receive residual, send cells*.
+1. **Whether the upper (Smyth) powerdomain belongs on the demand side.** It is the *must* construction
+   and demand is a *must*; suggestive and unworked.
+2. **How much a quotient of the term algebra buys.** Imposing equations makes the join E-unification,
+   which is well-defined only for unitary or finitary theories; in the finitary case it lands in a set
+   of most-general unifiers rather than one term.
+3. **Where the query language stops.** It need not be decided up front. What constrains it is
+   **pushdown**: the more expressive the language, the less of it runs where the data lives, and
+   locality is what CALM makes non-negotiable.
+4. **Whether a partially-narrowed value may be streamed.** Safe under exactly one discipline — consumers
+   may make threshold claims, never membership claims — which is §"The one rule" applied in flight.
 
-### The internalised form: demand is a derived relation
+## Related
 
-The surface syntax above is **sugar**. Internalised, this is **magic sets** — the classical
-transformation that turns bottom-up evaluation into demand-driven evaluation by introducing `demand`
-predicates that propagate:
-
-```
-demand(X, T)  :- grid(X), Q'(X, T).          -- a demand rule; the guard is a CONJUNCT
-value(X, V)   :- demand(X, T), handler(X, V). -- production is gated on demand
-```
-
-**The guard is subsumed.** `force(Q, while Q')` *is* `demand(X) :- Q(X), Q'(X)`. There is no `while`
-combinator, no second concept, and no separate notion of a demand being "active" — activity is just
-whether `demand(X)` is derivable now. That collapse is the main argument for the internalised form.
-
-**The duality is the standard one.** Magic sets propagate **demand backward along the very rules that
-propagate values forward** — bottom-up simulation of top-down evaluation. So `read` and `force` are
-not two operations that happen to be dual; they are one rule set traversed in two directions, which
-is why the two boundaries come out as dual session types.
-
-**Recursive demand is the mechanism, not a footgun.** `demand(Y) :- demand(X), needs(X, Y)` is a
-handler forcing its dependencies, and demand propagating from a goal to its subgoals is the entire
-point of the transformation. An earlier draft proposed a blanket "guards may not force" rule; that
-was an artefact of treating guards as a separate combinator, and it would have banned the dependency
-graph — the case it most needs to allow.
-
-**What replaces the prohibition is the classical safety condition:** demand rules must be
-**range-restricted** (every head variable bound by a positive body literal over a finite relation) and
-**stratified**. Both decidable. And note what plays the finiteness role — **the grid**, introduced
-earlier for the LEFT JOIN, reappears as the safety witness that keeps demand bounded over an
-unbounded cell space. Same object, second job. It follows that *"what is the grid"* is a first-class
-question rather than a query detail.
-
-**Withdrawal needs an axis.** Pure Datalog is monotone, so once `demand(X)` is derived it can never
-be retracted — which would make dormancy impossible. Two ways out: stratified negation
-(`demand(X) :- grid(X), not halted(X)`), or **index demand by round** — `demand(X, T)`, where
-withdrawal is simply "not derived at T+1," monotone *in the relation*. The second is the same move
-that fixed the watcher and the LWW sidecar: add the axis, recover monotonicity.
-
-**Three levels, and where to stop.** Level 0 keeps `read`/`force` external over a pure query. Level 1
-adds per-subexpression annotation so one query may read some cells and force others — which earns its
-place, because a handler wanting to *force* its own steps while only *reading* a prerequisite
-checkpoint is otherwise two round trips and a race. Level 2 is data-dependent forcing ("force one more
-step of whichever arm looks best"), which is a bandit iteration as a single expression evaluated
-where the data lives.
-
-Level 2 is the canonical form and it is what makes the guard disappear. It also puts **policy in the
-query language** — "force whichever is best" is the optimiser's job — against this repo's recurring
-rule to *bless the shape, never the vocabulary*, and it owes totality guarantees and a cost model
-that level 1 does not. The honest position: level 1 is the safe stopping point, level 2 is where the
-structure actually wants to go, and level 1 is an *extension point* for it rather than an obstacle.
+- `demand-driven-reads.md` — the consumer-facing target. **Stale**: it still describes a
+  LEFT-JOIN-over-a-grid, `?` as a value, `read`/`force` as verbs, and LISTEN/NOTIFY. Its §5a taxonomy
+  survives, with the Pitman–Koopman–Darmois paragraph corrected to Gray's holistic class.
+- `prolog-query-layer.md` §3 — the measured answer-subsumption results, reinterpreted: the defect is an
+  exact claim on an unsettled term, not aggregation-in-recursion, and it does not arise here because
+  nothing aggregates at write time.
+- `../specs/write-authority.md` — unchanged by any of this; a unique constraint is test-and-set
+  (consensus 2), where `send(expected_seq=)` is compare-and-swap (consensus ∞).
+- `../layers.md`, `../positioning.md` — where this sits.
+- Vickers, *Topology via Logic* — opens as affirmable properties; the source of the geometric framing.
