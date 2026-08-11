@@ -93,29 +93,42 @@ other, and which neighbour spends it is decided by arrival order. Two replicas t
 stores and give different answers, neither more right than the other.
 
 **How much order-dependence costs is a known quantity: it is greedy graph colouring.** For **linear**
-terms — no repeated variables — a term is a partial assignment, two terms merge iff they agree where
-both are defined, and consistency is **pairwise**: if `A,B` agree and `B,C` agree and `A,C` agree then
-`A∪B∪C` is well defined. So a mergeable group is exactly a **clique** in the compatibility graph `G`,
-and greedy merging — put each arriving term in the first blob it fits, else start a new one — is
-**first-fit colouring of the complement `Ḡ`**, since a colour class in `Ḡ` is a clique in `G`.
+terms — no repeated variables — a term is a variable-disjoint partial function from paths to symbols,
+so two terms merge iff they agree where both are defined and consistency is **pairwise**: a union of
+partial functions is a function iff they are pairwise compatible. A mergeable group is therefore exactly
+a **clique** in the compatibility graph `G`.
+
+Greedy merging — put each arriving term in the first blob it fits, else start a new one — is then
+**first-fit colouring of the complement `Ḡ`**, since a colour class in `Ḡ` is a clique in `G`. That
+identification needs a second lemma, which is easy to miss: first-fit tests a candidate against *every
+member* of a colour class, whereas blob-merging tests it against the blob's **merged term**. Those
+coincide for linear terms, because the merge's domain is the union of the members' domains and its
+values are inherited — measured, 26,612 pairs and 0 disagreements. For non-linear terms they do **not**
+(321 disagreements in 6,441), which is a second reason the model is linear-only.
 
 All three cases then come off the shelf:
 
 | | value | |
 |---|---|---|
-| **best** | `χ(Ḡ)`, the clique cover number | the optimal ordering — NP-hard to find |
-| **worst** | `Γ(Ḡ)`, the **Grundy number** | the most parts first-fit can be made to produce |
-| **average** | ≈ **2×** optimum on random instances | greedy on a random order uses `~n/log_b n` colours against `~n/(2 log_b n)` |
+| **best** | `χ(Ḡ)`, the clique cover number | the optimal ordering — NP-hard to find, and not merely by analogy: **every** graph is realisable as the conflict graph of linear terms (one position per edge, `u ↦ 0`, `v ↦ 1`, wildcards elsewhere), so the optimum *is* graph colouring |
+| **worst** | `Γ(Ḡ)`, the **Grundy number** | the most parts first-fit can be made to produce, definitionally |
+| **average** | → 2× optimum **asymptotically** | Grimmett–McDiarmid gives greedy `~n/log_b n` against Bollobás's `χ ~ n/(2 log_b n)` — but that is an Erdős–Rényi asymptotic and it converges glacially. Measured, the ratio is **1.04–1.20** up to n=24 with exact `χ`, and **1.21–1.32** up to n=500, on ER and on real term-conflict graphs alike |
 
-**The gap is not a constant factor.** On the crown graph — `K_{n,n}` minus a perfect matching —
-`χ = 2`, but first-fit on the interleaved order `u₁,v₁,u₂,v₂,…` uses `n` colours. One arrival order
-gives 2 blobs where another gives `n`.
+**The gap is not a constant factor, and it is reachable at ordinary arity.** On the crown graph —
+`K_{n,n}` minus a perfect matching — `χ = 2`, but first-fit on the interleaved order `u₁,v₁,u₂,v₂,…`
+uses `n` colours. The naive term realisation would need arity `n`, which would make the blow-up an
+artefact of absurd width; it does not. Taking a Sperner antichain `T₁…Tₙ ⊆ [k]` and setting `uᵢ = a` on
+`Tᵢ`, `vᵢ = b` off `Tᵢ`, needs only `k ≈ ⌈log₂ n⌉` positions — measured, a **12-position functor gives
+`χ = 2` against 924 first-fit blobs.**
+
+So the average row and the crown row are not the same kind of statement: the crown is a real separation
+at realistic arity, and the `2×` is an asymptote nothing at reachable sizes approaches.
 
 Two caveats. Refusing to merge when *two* candidates match — a tempting way to buy determinism — is
 strictly worse on size than first-fit, because it adds a part exactly where first-fit would have merged.
-And **non-linear terms break the model**: with a repeated variable, pairwise consistency no longer
-implies joint (`f(X,X)`, `f(a,Y)`, `f(Z,b)` are pairwise mergeable and jointly contradictory), so the
-clique picture is a lower bound on the difficulty rather than the answer.
+And **non-linear terms break the model** at both lemmas: with a repeated variable, pairwise consistency
+no longer implies joint (`f(X,X)`, `f(a,Y)`, `f(Z,b)` are pairwise mergeable and jointly contradictory),
+so the clique picture is a lower bound on the difficulty rather than the answer.
 
 **The canonical alternative is order-free and unbounded.** Replace each **maximal consistent subset** by
 its mgu: a function of the whole set, so no ordering enters. Its size is the number of maximal cliques,
@@ -144,7 +157,8 @@ watch is a posted term with a free variable; bindings arrive as they are learned
 
 **Answers stream individually, and completeness is a separate posted fact.** A querier posts a pattern
 and receives matching atoms one at a time; there is no answer *object* anywhere. Closure is the atom
-`closed(Q, p)` — *"producer p will send no more for Q"* — delivered like any other fact.
+`closed(Q, p)` — *"producer p will send no more for Q"*, where `Q` is **p's own extent** rather than any
+asker's question (§"CWA is a posted fact") — delivered like any other fact.
 
 That is worth stating because packaging the answers into a growing term is a tempting and dead end.
 Nothing bindable is unordered: a set term is ground, so adding to it is not a binding but a different
@@ -186,6 +200,20 @@ Completeness is **two facts, and you need both**:
 |---|---|---|
 | per producer | `closed(Q, p)` — *"p will send no more for Q"* | one agent |
 | the scope | *"no further producer will appear for Q"* | the world |
+
+**`Q` here is the producer's own extent, not the asker's question**, and getting that backwards breaks
+everything. An extent is what `p` was responsible for; a question is what somebody happened to ask at a
+moment. Closure over an extent is durable and **transfers to every subsumed question** — if `p` will send
+no more for `loss(S,V) ∧ S ≤ 1000`, it will send no more for `S ≤ 200`, and a querier who turns up
+tomorrow inherits that without `p` having to still exist to say so. Closure over the *asker's* question
+settles that question and nothing else, so tomorrow's querier needs a note only a departed process could
+write, and the run stops outliving its processes — which is the one thing this design is for.
+
+Two notes that follow. A producer which cannot name its extent in advance — one training until
+convergence, say — closes the **unconstrained** `loss(S,V)`: *"I am done with all of it"*, which is
+honest and works. And whether a claimed extent is *true* is unenforceable like everything else here: a
+producer that claims the whole axis and emits half of it is a forgery, and forgery survives (§"The
+headline").
 
 Together they make settledness a `∀` over a **known finite** set, i.e. a finite conjunction — and that
 is exactly when `¬∃` becomes affirmable, because *"no answer arrived"* is then decidable by inspecting
@@ -230,6 +258,120 @@ cache** — without it the producer re-runs on every call, and a run here is a s
 semantics rather than housekeeping: where re-production is not bit-identical, removing it changes the
 answer set outright and flips `conflicted(K)` from false to true. An optimisation may not change the
 answer set; this one does.
+
+**But it is not a memo *table*, and reading it as one imports a mechanism this design does not need.**
+The store **is** the cache, and presence is checked **per atom** — a lookup in the index, not a hit-or-miss
+verdict on a whole call. Two problems that look serious under the call-keyed reading evaporate under the
+per-atom one:
+
+- *"Do I already have an answer?"* keyed on **answers** is right for a ground demand and wrong for a
+  pattern — one answer arriving for `loss(S,V)` would make the whole range look served. Per atom, the
+  producer walks its extent, finds step 0 present, and carries on to step 1.
+- Keyed on **calls**, two demands that overlap without either containing the other — `0..100` and
+  `50..150` — each miss and each run in full, so the overlap is produced twice. Per atom, the second
+  producer skips what is there and runs on `101..150`.
+
+**So what the producer is handed is a residual, not a verdict**: the call *minus what is already
+present*, which is `Q ∧ ¬E` with `E` finite — the same construction §"What is checked" describes for the
+handler, applied one level earlier. It need not be materialised; walking the extent and skipping
+present atoms computes it incrementally.
+
+**And that removes a mechanism rather than adding one.** A demand entirely covered by another has an
+**empty residual** and costs nothing, without anybody detecting that it was subsumed — so containment
+compaction is unnecessary on the production path, and with it the whole question of how expensively
+`n` demands can be compacted against each other. Compaction still earns its place in **notification**,
+where the job is which of ten thousand standing cursors to walk when an atom lands; that is about who
+gets told, not about what gets built.
+
+What survives is the concurrent case: two producers serving overlapping demands can each produce an atom
+before either sees the other's output. That is **single-spawn**, the one irreducibly coordinating
+requirement, and it is priced there rather than here.
+
+One representation note. Per-atom is the *semantics*; over a wide axis, *"what is present"* is naturally
+stored compressed — intervals, runs — so that computing a residual does not mean walking a billion steps
+to find the gaps. Same split as everywhere else here: meaning per atom, storage as dense as it likes.
+
+### Where the closure rules come from: the valuation reading
+
+The rules above are easier to justify than to state, and the justification is a semantic model rather
+than a second syntax. Geometric logic remains what you *write*; this is what the writing *means*.
+
+**Two levels, and they are different kinds of object.** Using one word for both is what makes `unknown`
+look ambiguous.
+
+| | what it holds | is `unknown` a value? |
+|---|---|---|
+| a producer's **stance** on an atom | *I produce it* / *I might* / *I will not* | **yes** — *"I might"* is a genuine third position, not ignorance about a `Bool` |
+| **global knowledge** of an atom | derived from the stances | **no** — it is a *partial* map to `Bool`, and `unknown` is absence from its domain |
+
+So globally, every ground atom simply **has** a truth value, and what is partial is our knowledge of it:
+`unknown` means the variable is **unbound** — nobody has determined it — which is the same hole as
+everywhere else here, and fits the reading in which everything is ground up front. Locally, three
+stances, and the middle one is a position rather than a hole.
+
+**Each level climbs its own flat order.** A producer goes *might* → *produce* or *might* → *will not*,
+and both are gains, the two outcomes incomparable. Global knowledge goes undefined → `true` or
+undefined → `false`, likewise. Neither ever descends.
+
+**The aggregation is what maps one level to the other**: `true` if **any** producer produces it, `false`
+if **every** producer refuses, `unknown` otherwise. As a computation that is `max` over `{-1, 0, 1}`,
+but that chain is the *aggregation*, not an order anything travels along — read as an information order
+it would make closing look like a *loss*, which it is not. The aggregate is monotone in the flat orders:
+nothing un-produces, nothing un-refuses, so global knowledge only ever climbs.
+
+**The unanimity requirement is then a consequence, not a rule.** Global `false` needs *every* producer to
+refuse, which is a universal over the producer set, which is unaffirmable while that set is open. The
+two-level closure is not a design decision; it is what this aggregation forces.
+
+**`closed(Q,p)` is a Clark completion**, scoped to one producer and one extent: everything in `Q`'s
+extent that `p` has not marked `true` becomes `false` *from `p`*. Worth naming, because completion is
+exactly the operation that turns *"not derived"* into *"false"* — it is what licenses negation-as-failure
+wherever that is licensed at all.
+
+**A demand is a valuation on the same space with the same two truth values — just a total one, with no
+holes.** Every atom is either asked about or not. Truth is the *partial* version of the same thing, with
+`unknown` meaning undefined. So an answer is truth **restricted** to where the demand holds: a valuation
+of the same type as truth, saying nothing about what was not asked, which is exactly right — not asking
+teaches you nothing.
+
+Note it is restriction and **not conjunction**, and the difference is the bug we already fixed once:
+`v ∧ false = false`, so conjoining would turn *"not asked"* into *"false"* and assert absence across
+everything nobody enquired about. Masking gives `unknown` there. One operation apart.
+
+**Streams need no concept at this level.** A producer's contribution is a valuation that climbs; the
+"stream" is the climbing, not an object — which is why answers stream individually and no answer term
+exists anywhere.
+
+**And restriction is not a poor relation of conjunction; it is the sheaf map.** Since a demand set is a
+union of `↑p` it is **open**, so a local view is truth restricted to an open — an agent is an **open
+subspace**, and its view is a *section*. Truth is then a **sheaf** over the space of ground atoms, and
+three things stop needing separate arguments:
+
+- **Geometric logic becomes forced rather than chosen.** Agents are open subspaces, the maps between
+  them are inclusions, and geometric logic is exactly what transports along those. §"CALM" argues this
+  from coordination; here it falls out of the architecture.
+- **`conflicted(K)` is failure of the gluing condition.** Sheaf gluing requires sections to agree on
+  overlaps; two producers disagreeing at one atom is an **incompatible family** — local sections that
+  cannot be assembled into a global one. That is a better account of conflict than "two atoms with no
+  upper bound," and it is the same fact.
+- **Lagged replication stops being an optimisation.** A local store *is* the demanded fragment by
+  definition; lag is a section not yet extended.
+
+The semantics is therefore defined **as if demand were the only channel between an agent and the world**.
+That is a statement about meaning, not a prohibition: anything arriving unbidden is a cache warm-up with
+no semantic status, so an implementation may broadcast freely without the model noticing.
+
+**And the treatment stays uniform right up into the question.** A demand whose extent is itself partial —
+`loss(S,V) ∧ S ≤ N` with `N` unbound — is a query with a hole, sharpening as somebody binds `N`. Nothing
+here needs it and nothing forbids it; it is worth noticing because it is the same *"a hole is an open
+question"* move one level up, and a framing that had to make an exception there would be the wrong
+framing.
+
+**Two cautions.** A valuation over all ground atoms is an infinite object: this is semantics, not a
+storage proposal, and the store is its sparse, mostly-`unknown` representation. And valuations into a
+chain under pointwise operations form a complete distributive lattice, which *has* implication whether
+anyone wants it or not — the same caution as the frame (§"The demand language"), with the same answer:
+the model may support it, the syntax does not write it.
 
 **Ground vs free is the whole modality.** A ground post is an assertion. A post with free variables is
 a call yielding a stream of bindings — Prolog's `p(a).` versus `?- p(X)`, unified under "post and let
@@ -484,8 +626,26 @@ one functor has one signature, so every value position shares a sort, so `value(
 and binding `X` silently gives `converged` the value `0.5`. Per-functor signatures reject it at the
 alias: `loss/2` and `converged/2` give `X` two different sorts.
 
-So a consumer with thirty metrics declares thirty signatures. That is a schema, and it is what catches
-the measured case of one name carrying `None` under one flag and a nested record under another.
+**But the partition is by *sort*, not by name, and that is far cheaper than it first looks.** Measured
+over 821 real logs: 24 distinct value names, **none carrying more than one sort** (21 `float`, 3 `dict`),
+and no new names appearing in the corpus's second half. So the entire measured value plane is **two**
+relations —
+
+```
+metric(Name, Float, Step)        event(Name, Json, Step)
+```
+
+— both fixed shapes with the name as **data**. The aliasing objection above never arises, because the
+float and non-float partitions are separated by *relation* rather than by name: `metric(loss, X, S)` and
+`metric(acc, X, S)` may share `X` and both are floats, while `converged` lives in the other relation
+where no alias can reach it.
+
+A consumer therefore declares one signature per value *sort*, not one per metric — two, on this corpus,
+against the twenty-four names. And the case that motivates the rule is a genuine one: `mycooc`'s
+`permutation` carries `None` under one flag and a nested record under another, in **source** at
+`analyze_run.py:1160-1179`. Note what kind of case that is: an Option sort declared inside one function,
+which is exactly what deploy-time codegen emits. It does not appear in the corpus — 0 of 24 names show
+sort drift — so it is a hazard the rule forecloses rather than damage the rule repairs.
 
 **Wrappers recover what the flat relation was for, as schema rather than machinery.** Per-functor sorts
 make `loss/2` and `accuracy/2` different relations, so *"every metric"* would be `∃F. F(S,V)` — not
@@ -530,7 +690,7 @@ no answer **on a chain**, and off one it synthesizes values nobody posted:
 | aggregation | note |
 |---|---|
 | last-write-wins | `argmax` over `seq`; a report |
-| `max` / `min` | a report. On a **dense** carrier the only compact element is `⊥`, so `↑c` is not a basis and the affirmable claim is strict `⊐`, not `⊒` |
+| `max` / `min` | a report. On a **dense** carrier the only compact element is `⊥`, so `↑c` is not a basis and the affirmable claim is strict `⊐`, not `⊒` — which is to say: **ask open intervals, never points** (below) |
 | set union | the identity read — everything, no compression, and the only option for a **holistic** aggregate (median, percentile), where Gray et al.'s taxonomy says no bounded *exact* summary exists. Bounded *approximate* ones do: a 200-bucket sketch reproduced a 2000-sample bootstrap CI to **1.07% of its width** |
 | "must all agree" | the `conflicted` predicate above — **16 hand-rolled guard sites in the corpus**, the one primitive visibly missing |
 | lexicographic | fine as a *selection* order, and dangerous as a *combining* one: with `attempt` at the head, `(1,running)` and `(1,crashed)` have least upper bound `(2,⊥)` — it **fabricates attempt 2**, silently, in a design about attribution. Nothing combines here, so this is a hazard avoided rather than managed |
@@ -543,6 +703,18 @@ rule body binding a variable to a member is non-monotone, which breaks CALM at e
 load-bearing. Its natural home is **demand** (*must* produce). That is open. And on a continuous carrier
 it has no representable bottom and narrowing never reaches a singleton — bisection converges without
 terminating — so settledness there arrives by naming the value, not by narrowing toward it.
+
+**Continuous carriers are restricted, not broken: ask open intervals, never points.** Nothing settles at
+a point on a dense carrier — bisection narrows forever and can never confirm exact equality — which is
+why `↑c` stops being a basis there. But an **open interval** is affirmable: *"is `S` in `(0.4, 0.6)`?"*
+becomes true the moment narrowing puts the domain inside it, even though `S` itself never settles. So:
+
+> **On a continuous carrier, settle the *question*, not the *value*.**
+
+Thresholds fire, standing queries die, GC reclaims — everything the dense case appeared to lose. And it
+pairs with the other axis rather than being a special case: `↑c` is the open question on the
+**instantiatedness** order, an open interval is the open question on the **value** order. Same
+discipline, two axes, and a point is not an open question on either.
 
 **Terminology hazard.** Relational **⋈** and lattice **⊔** are both called "join," as are the lattice
 join and the powerdomain pair. Name them differently in any implementation.
@@ -567,16 +739,48 @@ demand and a slow handler are indistinguishable — and the settledness footgun 
 
 - A **fact** is a ground term: a maximal element, a **point**.
 - A **demand** is a pattern, and a pattern denotes `↑p`. Finite partial terms are exactly the **compact**
-  elements, and `↑c` for compact `c` is a **Scott-open**. So a demand *is* a basic open.
+  elements, and in an algebraic domain `c` is compact *iff* `↑c` is Scott-open. So a demand *is* a basic
+  open — with two exceptions the rest of this doc already names: on a **dense carrier** the only compact
+  element is `⊥`, and a **disequality** constraint denotes no open at all, since `X ≠ Y` is not
+  upward-closed (two unbound variables may yet be identified).
 - Satisfaction is `x ∈ U` — the pairing between a space and its frame, the same shape as a vector
   against a covector.
 
+**A pattern and its grounding are interchangeable**, which is what makes extents work at all. The
+maximal elements of `↑p` are exactly `p`'s ground instances — its *grounding*, in the CSP sense, possibly
+infinite — and over a signature rich enough that every partial term has ground instances (any infinite
+Herbrand universe), distinct opens have distinct groundings. So nothing operational separates the
+pattern from the set it names, and **subsumption of patterns is inclusion of groundings**: `q ⊑ p` iff
+`ground(q) ⊆ ground(p)`. That is the one-line reason closure over an extent transfers to every subsumed
+question, and it is also the contravariance of §"Demand subsumption" seen extensionally.
+
+The caveat is where the richness fails: with only constants in the signature, `f(X)` and `f(a)` can have
+the same grounding while `↑f(X) ⊋ ↑f(a)`. Nothing in this design has a signature that poor, but the
+correspondence is a fact about the universe, not about the topology.
+
+**And the quantifier lives in the relation, never in the term.** A term with holes uniformly denotes a
+set; what you do with the set is the predicate's business. `closed(Q,p)` reads *universally* over `Q`'s
+grounding (none of them will come from `p`); a posted answer reads *existentially* (this one fact lies
+somewhere in that set, described as far as it is known); a posted demand asks for the members. One
+representation, three roles, no modality — which is why a **partially instantiated answer** needs no
+special case: it is an answer about what is known and a question about what is not, simultaneously,
+because a hole *is* an open question wherever it appears.
+
 That is Stone duality (`Loc ≃ Frm^op`), not the sense of "polarity" in which positives and negatives
-cancel. But the proof-theoretic sense of polarity *is* apt, and says the same thing twice over:
-**geometric logic is essentially the positive fragment** (`∧`, `∨`, `∃` are positive; `→`, `∀`, `¬` are
-negative), and **a fact is data where a demand is a continuation** — *"I want this"* being a computation
-waiting on a value. It is also why the querier's and handler's interfaces keep coming out as dual
-session types: the same duality, seen a third way.
+cancel. But the proof-theoretic sense of polarity *is* apt: **geometric logic is essentially the positive
+fragment** (`∧`, `∨`, `∃` are positive; `→`, `∀`, `¬` are negative), and **a fact is data where a demand
+is a continuation** — *"I want this"* being a computation waiting on a value. It is also why the
+querier's and handler's interfaces keep coming out as dual session types: the same duality, seen a third
+way.
+
+**Polarity should not be asked to carry more than that, though.** It assigns the connectives and it
+gives the data/continuation reading, and it explains **neither** restriction the design actually leans
+on: focusing makes `∧⁺` positive with no cardinality condition, so nothing in polarity says why `∧` must
+be **finite** while `∨` may be **arbitrary**. That asymmetry is **left-exactness** — inverse images
+preserve *finite* limits and *all* colimits — a different fact wearing the same word. (Under the
+colimit-is-positive heuristic, `∧` is a limit and would read negative, which is the tell.) A geometric
+*theory* is also axiomatised by sequents `∀x̄(φ ⊢ ψ)`, so the positive claim is about **formulas**, with
+one negative shell around positive cores.
 
 **Where it should live: the term level, not the logic.** Two sorts — `Point` for ground facts, `Open` for
 patterns — with the pairing between them. Geometric logic over a two-sorted signature is unchanged
@@ -601,32 +805,182 @@ first subsumed does not.
 
 | | monotone? | where |
 |---|---|---|
-| the **demand relation** — *"this was wanted; this depends on that"* | yes, accumulates | internalised, a fact about an `Open` |
+| the **demand relation** — *"this was wanted"* | yes, accumulates | internalised, a fact about an `Open` |
 | the **live subscription** — *"someone is listening now"* | no, revocable | control, outside the store |
 
-Production is triggered by the subscription; the internalised demand is a durable record for reasoning —
-dependency graphs, admission analysis, *"what has ever been asked of this producer."* That makes
-*"what is demanded"* an ordinary query rather than a snapshot the core layer has to inject, while
-leaving the non-monotone half exactly where this section already puts it.
+Production is triggered by the subscription; the internalised demand is a durable record of *"what has
+ever been asked of this producer."* That makes *"what is demanded"* an ordinary query rather than a
+snapshot the core layer has to inject, while leaving the non-monotone half where this section puts it.
+
+**It does not carry a dependency graph, and nothing here needs one.** When a handler serving `report`
+posts a pattern for `loss`, the store cannot tell that from an unrelated querier asking for losses —
+symmetric roles means indistinguishable, and indistinguishable means no edge. Nor is it recoverable from
+ordering: if two handlers both need `loss`, the demand is posted **once** and the second is a cache hit,
+so the second edge was never an event. That looks alarming until you ask what would use it:
+
+| candidate use | why it does not need the edge |
+|---|---|
+| **admission control** | reads *what is demanded now* — the live subscription set, already available. What a graph adds is *prediction* ("granting this will pull in that"), which is a convenience |
+| **cancellation** | when a handler's own demand goes away it stops, and stopping drops its sub-demands. Each agent knows its own reasons because it is the one that has them; the cascade is agent-local |
+| **provenance** — *"why is this job running?"* | a log question, answerable from agent-local traces |
+| **cycle detection** — A needs B needs A | the only real one, and without it you hang, which finiteness already makes the requester's problem |
+
+The build-system analogy does not force it either: Shake, Bazel and Nix use their graph for
+**invalidation** and scheduling, and with no retraction there is nothing to invalidate.
+
+So the graph is a convenience, not a repair — and if it is ever wanted, the cheap form is **structural
+rather than instance-level**. A handler declares `needs(report, loss)` once, alongside its sorts: one
+edge however many times anyone asks, no demand identity, and no per-agent "which request am I serving"
+state, which is exactly what symmetric roles was buying. Recording *instance* lineage — *"this posting
+caused that one"* — would be monotone and therefore useless for admission anyway, since it accumulates
+what was **ever** wanted while admission needs what is wanted **now**.
+
+**And `needs` posted at runtime is legal, with one interesting collision.** It is a fact rather than a
+signature, so a producer that loads a rule and gains a capability may simply post the corresponding
+edge. But if it has already posted `closed(Q, p)` and the new capability falls inside `Q`, producing
+anything there contradicts its own closure — and under a closed world others may already have concluded
+those atoms `false`. No new machinery is needed to catch that: it is the same **detectable contradiction**
+as a producer appearing after the producer set was closed. Gain capabilities before you close, not
+after; break the rule and the store can tell.
 
 Concretely a subscription is a **cursor into a per-functor term index** — walk the trie with your
 pattern, get notified when new leaves appear beneath it. That keeps `post` the only store-mutating
 operation: reading is walking the index, and a standing call is the evaluator remembering where you
 were walking.
 
-**Internalising does not put `→` within reach, and the reason says what to guard instead.** Opens form a
-**frame**, and a frame necessarily *has* implication: completeness forces `a → b = ⋁{c : c ∧ a ≤ b}` to
-exist. But having it mathematically is not being able to write it. That definition needs a
-**comprehension** — the family is carved out by a condition — whereas geometric logic's arbitrary `∨`
-ranges over a **given** index family, never one a predicate selects. Nor can the condition be smuggled
-in as a conjunct instead: `c ∧ a ≤ b` is entailment, and internalising entailment as a formula *is*
-implication. The bootstrap is circular, so `→` stays unreachable and the guardrail stays syntactic.
+### The demand language: constraints from a fixed domain
+
+Talking *about* demands means handling the holes in a pattern, and there are exactly three ways to do
+it — which is the whole design space:
+
+| | the holes are | who may make a new demand *shape*, and when |
+|---|---|---|
+| **adornments** | **erased** into a finite tag (*"argument 2 is bound"*), the bound values becoming ordinary arguments | the compiler, at program-write time |
+| **exponentials** | **delegated** to the metalanguage: a pattern *is* a map `Point → Ω` | anyone, at runtime, by abstraction |
+| **quotation** | **represented** as a term denoting its own syntax, plus a `denote` relation | anyone, at runtime, by building a term |
+
+Erase, delegate, or represent — and the axis underneath is *when the demand vocabulary is fixed*.
+Everything else follows from that.
+
+**Take the middle road: CLP.** A demand carries constraints from a **fixed domain**, with a solver
+deciding satisfiability. `loss(V,S), S ≤ 100` has shape *"range constraint"* and data `100`. This is the
+CLP(X) schema: pick a constraint domain, and the constraint is an ordinary positive literal in the body,
+so the logic is untouched and stays first-order and decidable. Adornments are the degenerate case where
+X is bare equality; ordinary logic programming is CLP over the Herbrand domain.
+
+**Propagate, never label.** A propagator narrows domains by local reasoning; when narrowing cannot decide
+a question, the usual fallback is *search* — try a value, propagate, backtrack. Don't. Answer
+**undecided**, which is `unknown`, and let the caller suspend until enough arrives for propagation to
+decide. That is the threshold discipline already in force, applied to the solver, and it removes four
+hazards at once:
+
+| hazard | why it goes |
+|---|---|
+| a timeout read as *"not entailed"* | no search, so no budget to exhaust; *undecided* is an honest answer, not a masked failure |
+| hypotheticals reaching the store | no labelling, so nothing conditional is ever asserted |
+| solver isolation | nothing to isolate — and measurement shows the obvious boundary does not work anyway, since copying a term copies its suspended goals |
+| the bigger store deriving **fewer** facts | nothing depends on a budget |
+
+What it costs is **incompleteness**: entailments a search would have found go unreported, so a demand
+that *is* subsumed may not be recognised and redundant work happens. That is the right trade —
+incompleteness costs work, search costs soundness. And it draws a clean line: propagation's narrowing is
+**real information**, monotone, and *should* wake the streaming aliases; labelling's is **conditional**
+and must never reach them.
+
+**And then the solver is not a component at all — it is producers.** A propagator watches, derives and
+posts; with labelling banned that is *all* it does, so it is an ordinary agent. Propagation is ordinary
+rules — `in(S,[50,100]) :- leq(S,100), geq(S,50)` — positive, monotone, with the relation of derived
+bounds accumulating while the tightest bound narrows, which is the shape everything else here has.
+Entailment checking is an ordinary query. Fixpoint is what the evaluator does anyway. So *"which
+constraint domain"* is not a separate decision; it is *"which rules do you write"*, and they run where
+the data is, which is the pushdown requirement satisfied for free.
+
+Specification and implementation stay independent, as everywhere else here: a propagator-producer may
+run bounds consistency or AC-3 internally and post what it derives, because sound propagation only ever
+removes values that appear in no solution — its narrowings are entailed, so posting them is posting
+derivable facts. Three things follow. Such a producer **demands** the constraints it needs and **posts**
+the narrowings, symmetric with any other agent. Several propagators over the same constraints
+**compose without coordination**, since all their narrowings are entailed and the tightest is a read.
+And a propagator that derives *less* than the rules would is simply incomplete, which is safe — under an
+open world that is "not yet known", and later propagation may still add it.
+
+`all_different` is worth checking because it looks like it should fail: it does not. Disequality is legal
+as a **posted constraint**, and narrowing from it (`X ≠ 3` with `X ∈ {2,3,4}` gives `X ∈ {2,4}`) is
+positive derivation. Only the *state test* — *"are these currently different?"* — is forbidden, and
+propagation never needs it.
+
+**It does not threaten monotonicity, and the discipline that protects it is the one already in force.**
+The constraint store only accumulates, so it grows in the information order. The *solution set* shrinks,
+which is the narrowing direction and antitone as a relation — so the rule is exactly §"The one rule"
+again: **entailment claims are monotone, membership claims on the solution set are not.** *"The store
+entails `S ≤ 100`"* is affirmable and permanent; *"5 is still possible"* is neither. Disequality is the
+sharp case: `X ≠ Y` is fine as a posted constraint and as an entailment, and not as a test of the
+current state, since two unbound variables may yet be identified.
+
+**Imposing equations is a special case, not a separate mechanism.** Quotienting the term algebra by a
+theory `E` is CLP where the constraint domain is E-equality; the join becomes E-unification, which is
+well behaved only for unitary or finitary theories, and in the finitary case lands in a *set* of
+most-general unifiers rather than one term.
+
+**The boundary worth stating.** Everything stays first-order while the constraint *vocabulary* is fixed
+— arbitrary data in a fixed set of shapes. Opening it, so that a demand's shape is itself computed at
+runtime, buys **reflection** and its costs. What genuinely needs it is the system reasoning about
+itself: demands about demands, or producers advertising *"I serve any pattern of this shape."* Nothing
+this design requires does, so the vocabulary should stay closed.
+
+**And exponentials are the wrong escape from that boundary**, tempting as they look. Finite limits,
+exponentials and `Ω` together *are* an elementary topos, so they give power objects, power objects give
+comprehension (as separation, which is exactly the form `{c : c ∧ a ≤ b}` needs), and comprehension is
+the one thing standing between this logic and `a → b`, hence `¬a = a → ⊥`.
+
+Worse, **inverse images of geometric morphisms preserve finite limits and all colimits but need not
+preserve exponentials** — witness `Δ : Set → Sh(X)` for `X` a convergent sequence, where
+`Δ(2^ℕ) ≇ Δ(2)^{Δ(ℕ)}`. Two precisions, because the loose version of this is wrong: *base change* in
+the usual slice sense (`f^* : E/Y → E/X`) **does** preserve exponentials, toposes being locally
+cartesian closed; and the inverse-image failure is not universal either, holding for finite exponents
+and for locally connected morphisms. The conclusion needs only that it fails **in general** — so
+"geometric logic with exponentials" is not a richer geometric logic; it is not geometric.
+
+That is also the honest form of the intuition that this sits at a sweet spot, with the honesty mattering
+in both halves. Geometric logic is *characterised* by the preservation property rather than chosen and
+found convenient — as a theorem about **functors** (a functor between Grothendieck toposes is geometric
+iff it preserves finite limits and small colimits), and about **formulas in the forward direction**;
+any formula-level converse holds only up to logical equivalence, since `¬⊥` is preserved and is not
+geometric. And geometric theories are those with classifying toposes — a surjection **up to Morita
+equivalence**, non-canonical in one direction, since every Grothendieck topos classifies *infinitely
+many* geometric theories and two theories share one exactly when they are Morita-equivalent.
+
+Neither qualification damages the use made of them: step outside and the preservation **theorem** fails,
+and that is the half that is unconditional. The absence of `→`, `∀` and `¬` is the price of transport,
+not an oversight.
+
+**Internalising does not put `→` within reach, and the argument for that should be the semantic one.**
+Opens form a **frame**, and a frame necessarily *has* implication: completeness forces
+`a → b = ⋁{c : c ∧ a ≤ b}` to exist. But it is not *definable* in this logic, and the one-step reason is
+the invariance everything else here rests on —
+
+> **Frame homomorphisms preserve finite `∧` and arbitrary `∨`, and do not preserve `→`.** Only
+> `h(a → b) ≤ h(a) → h(b)` holds, and it is strict: take `O(ℝ) → 2` at the point `0`, with
+> `a = ℝ∖{0}` and `b = ∅`. Then `a → b = int({0}) = ∅`, so `h(a→b) = ⊥`, while `h(a) = h(b) = ⊥` gives
+> `h(a) → h(b) = ⊤`.
+
+Every geometric formula's interpretation *is* preserved; `→` is not; therefore no geometric formula
+defines it. That needs no survey of dodges, and it makes the guardrail **semantic** rather than
+syntactic — which matters, because a syntactic guardrail is only as strong as nobody adding a
+term-former.
+
+The syntactic argument is also sound and worth keeping as the operational reading: naming
+`⋁{c : c ∧ a ≤ b}` needs a **comprehension**, and geometric `∨` ranges over a **given** index family,
+never one a predicate selects; nor can the condition be smuggled in as a conjunct, since `c ∧ a ≤ b` is
+entailment and internalising entailment as a formula *is* implication. One repair: comprehension yields
+`→` only *together with* an arbitrary `∨`, which this design supplies — so the danger is contingent on a
+feature we have, not structural.
 
 What that identifies is the thing actually worth guarding — not internalisation, but **comprehension**.
-Any construct that forms a family of opens by a predicate over opens puts implication one line away, and
-with it `¬a = a → ⊥`. A user who enumerates a finite family by hand and disjoins whichever members
-satisfy some condition has merely written a fixed formula, which is monotone and transports; the danger
-lies only in a join whose family is *recomputed as the frame grows*.
+And it sharpens what a hand-written approximation is: a user who enumerates a finite family and disjoins
+whichever members satisfy some condition has written a geometric formula that *happens* to equal `a → b`
+in one frame and **stops equalling it after base change**. The slogan is not *"`→` is unwritable"* but
+**"`→` is not uniformly definable."**
 
 ## What the substrate is for — four jobs, two not commodity
 
@@ -763,9 +1117,11 @@ reintroduces a bug the fold exists to prevent.
 
 1. **Whether the upper (Smyth) powerdomain belongs on the demand side.** It is the *must* construction
    and demand is a *must*; suggestive and unworked.
-2. **How much a quotient of the term algebra buys.** Imposing equations makes the join E-unification,
-   which is well-defined only for unitary or finitary theories; in the finitary case it lands in a set
-   of most-general unifiers rather than one term.
+2. **Which propagation rules**, which is what *"which constraint domain"* turns into once the solver is
+   producers (§"The demand language"). Equality modulo a theory, finite domains and linear arithmetic
+   are all candidates; the corpus has not been surveyed for what it would actually use. Note the
+   question is no longer *decidability* of a domain — propagate-never-label needs no completeness from
+   one — but which narrowings are worth deriving.
 3. **Where the query language stops.** It need not be decided up front. What constrains it is
    **pushdown**: the more expressive the language, the less of it runs where the data lives, and
    locality is what CALM makes non-negotiable.
@@ -778,7 +1134,12 @@ reintroduces a bug the fold exists to prevent.
    becomes **local**, so caching is best-effort, and two agents demanding the same cell without having
    replicated each other's answer both run the six-hour job. That is precisely single-spawn, the one
    irreducibly coordinating requirement, and CALM says it must cost a round.
-6. **What `conflicted(K)` means when single-spawn did not hold.** Duplicate production plus re-production
+6. **Whether demand should be the only interconnect, and not merely the only one that means anything.**
+   The semantics already reads that way (§"Where the closure rules come from"). Making it architectural
+   — a local view receives *nothing* it did not ask for — would bound coordination by the number of live
+   channels, since the demands would be the only edges in the system. It would also forbid unsolicited
+   broadcast, which is a real affordance worth keeping, so the two readings should probably stay apart.
+7. **What `conflicted(K)` means when single-spawn did not hold.** Duplicate production plus re-production
    jitter yields two slightly different atoms, which is a *correct* report of a real disagreement that
    the system itself caused. So `conflicted` cannot be read as "something is wrong" without knowing
    whether one producer was guaranteed. Measured counterweight: 0 of 3,165 numeric re-productions
