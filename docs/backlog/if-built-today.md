@@ -157,8 +157,8 @@ watch is a posted term with a free variable; bindings arrive as they are learned
 
 **Answers stream individually, and completeness is a separate posted fact.** A querier posts a pattern
 and receives matching atoms one at a time; there is no answer *object* anywhere. Closure is the atom
-`closed(Q, p)` — *"producer p will send no more for Q"*, where `Q` is **p's own extent** rather than any
-asker's question (§"CWA is a posted fact") — delivered like any other fact.
+`closed(Q, p)` — *"producer p will send no more for Q"*, where `Q` is whatever `p` is **actually
+finished with** (§"CWA is a posted fact") — delivered like any other fact.
 
 That is worth stating because packaging the answers into a growing term is a tempting and dead end.
 Nothing bindable is unordered: a set term is ground, so adding to it is not a binding but a different
@@ -201,19 +201,69 @@ Completeness is **two facts, and you need both**:
 | per producer | `closed(Q, p)` — *"p will send no more for Q"* | one agent |
 | the scope | *"no further producer will appear for Q"* | the world |
 
-**`Q` here is the producer's own extent, not the asker's question**, and getting that backwards breaks
-everything. An extent is what `p` was responsible for; a question is what somebody happened to ask at a
-moment. Closure over an extent is durable and **transfers to every subsumed question** — if `p` will send
-no more for `loss(S,V) ∧ S ≤ 1000`, it will send no more for `S ≤ 200`, and a querier who turns up
-tomorrow inherits that without `p` having to still exist to say so. Closure over the *asker's* question
-settles that question and nothing else, so tomorrow's querier needs a note only a departed process could
-write, and the run stops outliving its processes — which is the one thing this design is for.
+**`closed(Q,p)` is a statement about `p`, not about the world**, and every confusion here comes from
+reading it the other way. It says *"I will produce nothing further in `Q`"* — not *"nothing in `Q`
+exists"*. A producer closing the whole unbounded `loss(S,V)` after converging at step 400 is telling the
+plain truth about itself; whether step 500 is genuinely absent is the **aggregate's** business, and needs
+every producer to refuse plus the scope closed. Local stance, global knowledge — the two levels of
+§"Where the closure rules come from", one of which this is.
 
-Two notes that follow. A producer which cannot name its extent in advance — one training until
-convergence, say — closes the **unconstrained** `loss(S,V)`: *"I am done with all of it"*, which is
-honest and works. And whether a claimed extent is *true* is unenforceable like everything else here: a
-producer that claims the whole axis and emits half of it is a forgery, and forgery survives (§"The
-headline").
+**`closed` is the quantified form of `never`** — the same stance at a different granularity. `never(a)`
+says nothing goes at one atom; `closed(Q,p)` says nothing further goes anywhere in `ground(Q)`. Two forms
+exist only because a region can be **infinite**: a producer that converged at step 400 is asserting
+`never` about infinitely many atoms, and a quantified statement is the only finite way to say it. So
+there is one concept here, not two.
+
+**And it means *determination*, not abstention:**
+
+> **`closed(Q,p)`: "I have determined that nothing further goes in `Q`."** Not *"I am not going to look."*
+
+That distinction decides every case. A converged producer closing the unbounded pattern **has** determined
+it — the run ended at 400, so there is no loss at 500. A producer asked for `0..100` that closes `0..1000`
+has determined **nothing** about `101..1000`; it is abstaining and calling it refusal. So: while running,
+close what you were asked for, because that is what you have determined; at convergence or exit, close the
+unconstrained pattern. Closures **accumulate** — the closed region only grows, and a querier arriving
+after `p` exits inherits every closure `p` posted, with subsumption working inside them.
+
+**This is load-bearing for the aggregation, not a nicety.** Global `false` holds iff *every* producer
+refuses — which is sound only if refusal means determination. A producer that merely is not looking must
+hold **might**, or one idle agent silently converts an `unknown` into a `false` across the whole system:
+
+| stance | means |
+|---|---|
+| **produce** | I have it |
+| **might** | I have determined neither way — *including "I am not looking"* |
+| **will not** | **I have determined there is nothing here** |
+
+Abstention lives in the middle row, and every failure this design has had in this area was something
+belonging there being posted as *will not*.
+
+**The obligation is on the producer, and breaking it is detectable.** Producing inside a region you have
+closed contradicts your own assertion, which the store can catch like any other contradiction. That is
+the whole enforcement story, and it is the usual one here.
+
+**A solver's licence to close is unsatisfiability.** A propagator that proves a region has no solutions
+has determined it is empty, and may close it; closing a region it has *not* proved empty asserts a
+determination it does not have, and is unsound. That is not a solver-specific rule — it is the general
+one, with "determined" instantiated for that kind of producer. Note also that unsatisfiability needs no
+vocabulary of its own: it is **grounds for `closed`**, not a third kind of absence.
+
+Two refuted framings, recorded so they are not rediscovered:
+
+- **Closure over a fixed *extent* — everything `p` was ever responsible for — rather than over what it
+  has finished.** Tempting because one closure then covers every future question. But under
+  demand-gating a producer emits only what was asked, so an extent-closure asserts refusal over regions
+  it may still be asked about; produce there later and it has broken its word. Naming the finished region
+  costs nothing and cannot be wrong.
+- **"A producer that claims the whole axis and emits half of it is a forgery."** This indicts every
+  honest producer: under demand-gating *every* producer emits a fraction of what it could. The defect
+  was never dishonesty, it was closing more than you are done with.
+
+**And one distinction worth keeping separate**, because conflating them makes a correct answer look like
+a failure: *"no more answers will arrive for this query"* (the stream is complete — scope closure gives
+it) is not *"for every atom in the query I know true or false"* (knowledge is complete — needs a closure
+covering each atom). A query over a region nobody ever asked about has a complete **stream** and
+incomplete **knowledge**, and reporting `unknown` there is right rather than broken.
 
 Together they make settledness a `∀` over a **known finite** set, i.e. a finite conjunction — and that
 is exactly when `¬∃` becomes affirmable, because *"no answer arrived"* is then decidable by inspecting
@@ -542,6 +592,21 @@ positive existential over a growing set — monotone, geometric, decidable:
 ```
 conflicted(K) :- loss(K,V1), loss(K,V2), V1 ⊔ V2 undefined.
 ```
+
+**And it is broader than two incomparable values.** Once *will not* means **determination** (§"CWA is a
+posted fact"), a producer's closure refuted by another's output is a genuine disagreement about the
+world. So a conflict is **any two non-`might` stances that disagree**:
+
+| | produce(w), `w ≠ v` incomparable | will not |
+|---|---|---|
+| **produce(v)** | conflict | **conflict** |
+| **will not** | **conflict** | agree |
+| **might** | — | — |
+
+`might` conflicts with nothing, which is right — abstention is compatible with every outcome, and it is
+the same row that carries *"I am not looking."* The off-diagonal cells are the ones an earlier draft
+missed: there, one producer determined a region empty and another produced inside it, and the aggregate
+returned `true` in silence.
 
 *"This relation is functional here"* is its complement, hence closed, hence a report or a claim about a
 settled relation. That asymmetry is structural, not stipulated: the well-formed region is a **lower
@@ -876,10 +941,28 @@ hazards at once:
 
 | hazard | why it goes |
 |---|---|
-| a timeout read as *"not entailed"* | no search, so no budget to exhaust; *undecided* is an honest answer, not a masked failure |
 | hypotheticals reaching the store | no labelling, so nothing conditional is ever asserted |
 | solver isolation | nothing to isolate — and measurement shows the obvious boundary does not work anyway, since copying a term copies its suspended goals |
-| the bigger store deriving **fewer** facts | nothing depends on a budget |
+
+**Banning labelling does not by itself delete the budget, and an early draft claimed it did.** Measured
+in `clpfd` with no labelling anywhere, `X in 1..N, Y in 1..N, X #> Y, Y #> X` — two variables, two
+constraints, obviously unsatisfiable — costs **989 inferences at N=10 and 4,550,534 at N=10⁵**, because
+bounds propagation raises each bound by one per step. Linear in the numeric magnitude of the domain, i.e.
+exponential in its encoding. Worse, on a step axis (`0..sup`: bounded below, unbounded above) the same
+ascent has no ceiling to hit and does not terminate at all; with no bounds either side it terminates
+instantly and concludes nothing.
+
+**But that is an algorithm mismatch, not a property of the problem.** `X > Y > X` is a system of
+**difference constraints**, decided in polynomial time by negative-cycle detection — `O(V·E)`,
+**independent of domain magnitude**, and fine unbounded. A propagator-producer may run Bellman–Ford
+instead of generic interval narrowing, exactly as §"the solver is producers" allows any sound backend:
+its narrowings are entailed either way. The ping-pong appears only when a generic propagator is pointed
+at a class that has a specialised procedure.
+
+So the rule needs no repair, but the open question it leaves does (§Open): for classes **with** a cheap
+decision procedure, use it, and unsatisfiability becomes a fact rather than a cost. For richer classes —
+general linear integer constraints are NP-hard — propagate as far as is cheap and report **undecided**,
+which is the rule as stated.
 
 What it costs is **incompleteness**: entailments a search would have found go unreported, so a demand
 that *is* subsumed may not be recognised and redundant work happens. That is the right trade —
@@ -1056,7 +1139,10 @@ is near the data. What it *is* is a report, with the exception noted above.
 - **The verdict as a join of two partial observers** — and it is a *report*, which is why it may use the
   narrowing reading that derivation may not.
 - **Cooperative, no enforcement.** Load-bearing for the headline.
-- **`never` is a value, not a status** — a fact about the world, not about an attempt.
+- **`never` as a determination rather than a status** — though it survives as `closed` over a singleton
+  region (§"CWA is a posted fact"), since a producer can only post its own stance; the *"fact about the
+  world"* reading is the **aggregate**, which needs every producer to refuse and therefore is not
+  something anyone posts.
 - **Status cycles; values do not.** `running → OOM → running` cannot live in a monotone order, so the
   attempt index goes in the term and the cycle lives in the *sequence of attempts*, never in one fact.
 - **Structure goes in the key, not the value.**
@@ -1117,11 +1203,13 @@ reintroduces a bug the fold exists to prevent.
 
 1. **Whether the upper (Smyth) powerdomain belongs on the demand side.** It is the *must* construction
    and demand is a *must*; suggestive and unworked.
-2. **Which propagation rules**, which is what *"which constraint domain"* turns into once the solver is
-   producers (§"The demand language"). Equality modulo a theory, finite domains and linear arithmetic
-   are all candidates; the corpus has not been surveyed for what it would actually use. Note the
-   question is no longer *decidability* of a domain — propagate-never-label needs no completeness from
-   one — but which narrowings are worth deriving.
+2. **Which constraint domain — *and which algorithm for it*.** The two are not separable: measured, a
+   generic bounds propagator on difference constraints ping-pongs (Θ of the domain magnitude, and
+   non-terminating on a half-bounded axis) where negative-cycle detection decides the same system in
+   `O(V·E)` regardless of magnitude. So the question is not decidability of a domain, nor completeness of
+   a propagator, but whether the pair is matched. For a step axis the answer is difference constraints
+   with cycle detection, and the hazard does not arise. The corpus has not been surveyed for what else it
+   would want.
 3. **Where the query language stops.** It need not be decided up front. What constrains it is
    **pushdown**: the more expressive the language, the less of it runs where the data lives, and
    locality is what CALM makes non-negotiable.
