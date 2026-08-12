@@ -484,12 +484,20 @@ the line everything else here splits along:
 
 | | what it means | where it lives |
 |---|---|---|
-| **knowledge** complete over a finite `Q` | every atom of `ground(Q)` has status `⊒ {t}` or `⊒ {f}` | a finite conjunction of readable up-sets — **derivable** |
+| **knowledge** complete for `Q` | every atom of `ground(Q)` has status `⊒ {t}` or `⊒ {f}` | affirmable by exhibiting a **finite cover** of `Q` by posted records — **derivable** |
 | **stream** complete for `Q` | no further answer will arrive, from anybody | **exhaustion**, hence control (§"CWA is a posted fact") |
 
-Only the first is a question the logic can answer, and answering it needs no exhaustion: a finite region
-whose every atom has been determined is settled whether or not anyone is still working on it. The second
-is a fact about processes, and the logic never had jurisdiction over those.
+Only the first is a question the logic can answer, and answering it needs no exhaustion: a region whose
+every atom has been determined is settled whether or not anybody is still working on it. The second is a
+fact about processes, and the logic never had jurisdiction over those.
+
+**`ground(Q)` need not be finite; the *cover* must be.** That is the ordinary geometric condition rather
+than a new one — the conjunction runs over the records exhibited, not over the atoms they cover, so a
+single `absent` claim settles an infinite region in one observation. Which is exactly why the quantified
+form exists at all (`:219`): requiring a finite region would make quantifying pointless. A region
+determined only atom-by-atom, with no quantified claim anywhere, is not affirmable — and is not complete
+either, so nothing is lost. (Finiteness of what you *asked for* is a separate obligation with a separate
+owner, §"What is checked".)
 
 **There is still no producer verb and no `freeze`**, though the reason has changed: it used to be that
 closing a tail is an ordinary post of the terminating constructor, and it is now that `absent(Q,p)` is an
