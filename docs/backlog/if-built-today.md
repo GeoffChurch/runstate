@@ -908,7 +908,7 @@ Production is triggered by the subscription; the internalised demand is a durabl
 ever been asked of this producer."* That makes *"what is demanded"* an ordinary query rather than a
 snapshot the core layer has to inject, while leaving the non-monotone half where this section puts it.
 
-**It does not carry a dependency graph, and nothing here needs one.** When a handler serving `report`
+**It does not carry a dependency graph, and the logical layer needs none.** When a handler serving `report`
 posts a pattern for `loss`, the store cannot tell that from an unrelated querier asking for losses —
 symmetric roles means indistinguishable, and indistinguishable means no edge. Nor is it recoverable from
 ordering: if two handlers both need `loss`, the demand is posted **once** and the second is a cache hit,
@@ -919,10 +919,16 @@ so the second edge was never an event. That looks alarming until you ask what wo
 | **admission control** | reads *what is demanded now* — the live subscription set, already available. What a graph adds is *prediction* ("granting this will pull in that"), which is a convenience |
 | **cancellation** | when a handler's own demand goes away it stops, and stopping drops its sub-demands. Each agent knows its own reasons because it is the one that has them; the cascade is agent-local |
 | **provenance** — *"why is this job running?"* | a log question, answerable from agent-local traces |
-| **cycle detection** — A needs B needs A | the only real one, and without it you hang, which finiteness already makes the requester's problem |
+| **cycle detection** — A needs B needs A | without it you hang, which finiteness already makes the requester's problem |
+| **taint** — *"which conclusions rest on a premise that has since become `{t,f}`?"* | agent-local again: the agent that fired the rule is the one that read the disputed premise, and can record that it did |
+| **reclamation reachability** — *"is this atom re-derivable, so may I evict it?"* | this one **does** need a graph — and it is the reclamation layer's, not the logic's (§"What is checked") |
 
-The build-system analogy does not force it either: Shake, Bazel and Nix use their graph for
-**invalidation** and scheduling, and with no retraction there is nothing to invalidate.
+**The build-system analogy needs restating, because the old form of it was wrong.** Shake, Bazel and Nix
+use their graph for **invalidation**, and an earlier draft concluded that with no retraction there is
+nothing to invalidate. Two things escape that argument. A premise can climb `{f} → {t,f}`, which retracts
+nothing and still leaves a conclusion standing on disputed ground — a *taint* question, not an
+invalidation one. And **Nix keeps its graph despite never invalidating anything**, because deletion needs
+**reachability**. Neither reopens the edge inside the logic; both land in the layer below it.
 
 So the graph is a convenience, not a repair — and if it is ever wanted, the cheap form is **structural
 rather than instance-level**. A handler declares `needs(report, loss)` once, alongside its sorts: one
@@ -1158,6 +1164,26 @@ explicit guard, a user-supplied proof of an implicit guard, or eventually theore
 it as one injected interface. The hard constraint: **reclamation must not depend on receiving a
 message**, because the requester may crash and the link may be long — the same argument that makes
 `resolve()` probe a pid rather than trust a dying process to announce itself.
+
+**And reclaiming a derived truth is eviction, not retraction.** The line is re-derivability: an atom a
+rule can recompute from premises still present costs only time to lose, so deleting it changes what is
+*stored* and not what is *true*. What the reclamation layer owes is therefore a **caching invariant** —
+anything evicted must be re-derivable on demand — which keeps the *observable* store monotone while the
+stored one is not. Same split as §"the store is the cache", one layer down, and it is why this layer sits
+**below** the logic while being free to **read** from it.
+
+Deciding what qualifies is reachability, and the tiers are not in the order storage cost suggests:
+
+| | cost to lose | evictable? |
+|---|---|---|
+| a **derived** atom | recompute | freely, while its premises survive |
+| a **produced** base fact | a six-hour job — *if the producer still lives* | at a price, and only then |
+| an **absence** claim | possibly **unrecoverable** | no |
+
+The last row is the surprise. `absent(Q,p)` is a determination made at a moment, and a fresh producer may
+have no way to re-make it; evicting one descends the status `{f} → ∅`, which is the single descent this
+design does not permit. So the cheapest-looking records in the store are the ones that must never be
+collected — and *"assuming the producers are still there"* is the clause the whole tiering turns on.
 
 **The residual is not a blocker.** Ship `Q ∧ ¬E` with `E` the finite settled set and **do not
 normalise**: `Q`'s structure survives intact, and `E` need not cross the link at all, since the handler
