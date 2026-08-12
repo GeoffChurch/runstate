@@ -157,8 +157,8 @@ watch is a posted term with a free variable; bindings arrive as they are learned
 
 **Answers stream individually, and completeness is a separate posted fact.** A querier posts a pattern
 and receives matching atoms one at a time; there is no answer *object* anywhere. Closure is the atom
-`closed(Q, p)` — *"producer p will send no more for Q"*, where `Q` is whatever `p` is **actually
-finished with** (§"CWA is a posted fact") — delivered like any other fact.
+`absent(Q, p)` — *"producer p has determined there is nothing in Q"*, where `Q` is whatever `p` has
+**actually determined** (§"CWA is a posted fact") — delivered like any other fact.
 
 That is worth stating because packaging the answers into a growing term is a tempting and dead end.
 Nothing bindable is unordered: a set term is ground, so adding to it is not a binding but a different
@@ -169,18 +169,18 @@ redelivering every message does not repair it. (A node merely *lagging* on an or
 fine — lag and divergence are different failures.) A shared tail is also a lossy CAS: once one producer
 binds `T = []`, another's next answer is rejected outright. One tail *per producer* fixes all of that,
 since each stream is then single-writer — but it is machinery for nothing, because **no rule ever
-observes absence** (§ below), and `closed(Q,p)` beats `T = []` anyway by being attributable.
+observes absence** (§ below), and `absent(Q,p)` beats `T = []` anyway by being attributable.
 
 A set term with an unbound "rest" would sidestep the ordering, and costs more than it saves: union
 modulo associativity, commutativity and idempotence is **finitary rather than unitary**, so the join of
 two such terms is a *set* of most-general unifiers rather than one term, and matching modulo ACI is
 NP-hard.
 
-**So absence needs no representation until somebody closes the world.** *"Nothing is there yet, so
-produce it"* looks like it needs `¬∃` — and under an **open** world that is not merely banned but
-unknowable, since you can never say *no answer exists*, only *no answer has arrived*. It turns out
-nothing needs it, because production is **demand-gated**: a producer runs because somebody asked, never
-because something was found missing, so no rule mentions absence at all.
+**So inferred absence needs no representation at all.** *"Nothing is there yet, so produce it"* looks
+like it needs `¬∃` — and under an **open** world that is not merely banned but unknowable, since you can
+never say *no answer exists*, only *no answer has arrived*. It turns out nothing needs it, because
+production is **demand-gated**: a producer runs because somebody asked, never because something was found
+missing, so no rule infers absence at all.
 
 And "demand-gated" needs no machinery either. **A demand is a posted pattern; a producer is an agent
 that watches for patterns it can serve, computes, and posts atoms that unify with them.** There is no
@@ -189,64 +189,74 @@ that watches for patterns it can serve, computes, and posts atoms that unify wit
 this design has no cells. A producer needing something of its own just posts a pattern too, which makes
 it a querier; the roles stay symmetric all the way down.
 
-Under a **closed** world `¬∃` becomes an ordinary negative fact you may affirm. Which regime you are in
-is a choice somebody makes and posts.
+What *is* representable is **asserted** absence — a producer stating what it determined. That is an
+ordinary positive fact, affirmable by exhibiting it, and it needs no closed world to license it (§ below).
+The distinction is the whole of this design's negative story: absence you **inferred from silence** is
+unaffirmable and stays so; absence somebody **posted** is data.
 
-### CWA is a posted fact, and it has scopes
+### CWA is a posted fact, and it names its author
 
-Completeness is **two facts, and you need both**:
+**Two different claims were sharing one predicate**, and every confusion in this area comes from that:
 
-| level | the fact | what it is about |
-|---|---|---|
-| per producer | `closed(Q, p)` — *"p will send no more for Q"* | one agent |
-| the scope | *"no further producer will appear for Q"* | the world |
+| claim | says | who can honestly post it | licenses |
+|---|---|---|---|
+| **absence** — `absent(Q, p)` | *"there is nothing in `Q`"* | whoever **determined** it | the status `{f}` across `ground(Q)` |
+| **exhaustion** — `done(Q, p)` | *"`p` will send no more for `Q`"* | `p`, **and any observer with a liveness probe** | nothing; it is a reason to stop waiting |
 
-**`closed(Q,p)` is a statement about `p`, not about the world**, and every confusion here comes from
-reading it the other way. It says *"I will produce nothing further in `Q`"* — not *"nothing in `Q`
-exists"*. A producer closing the whole unbounded `loss(S,V)` after converging at step 400 is telling the
-plain truth about itself; whether step 500 is genuinely absent is the **aggregate's** business, and needs
-every producer to refuse plus the scope closed. Local stance, global knowledge — the two levels of
-§"Where the closure rules come from", one of which this is.
+The test that separates them: **could a third party post this knowing only that the process died?**
+Exhaustion, yes. Absence, no — a dead producer's silence is not evidence about the world. That is the
+launcher-versus-lifecycle split this library already has, kept orthogonal for exactly this reason, and
+collapsing the two is what made a single closure look as though it needed a universal over the producer
+set before it could mean anything.
 
-**`closed` is the quantified form of `never`** — the same stance at a different granularity. `never(a)`
-says nothing goes at one atom; `closed(Q,p)` says nothing further goes anywhere in `ground(Q)`. Two forms
-exist only because a region can be **infinite**: a producer that converged at step 400 is asserting
+**Absence is what the rest of this section is about.** Exhaustion is not a logical fact: it is an
+observation about a process, and §"Two layers" is where observations about processes come in.
+
+**`absent` is the quantified form of `never`** — the same determination at a different granularity.
+`never(a)` says nothing goes at one atom; `absent(Q,p)` says nothing goes anywhere in `ground(Q)`. Two
+forms exist only because a region can be **infinite**: a producer that converged at step 400 is asserting
 `never` about infinitely many atoms, and a quantified statement is the only finite way to say it. So
 there is one concept here, not two.
 
 **And it means *determination*, not abstention:**
 
-> **`closed(Q,p)`: "I have determined that nothing further goes in `Q`."** Not *"I am not going to look."*
+> **`absent(Q,p)`: "I have determined that nothing goes in `Q`."** Not *"I am not going to look."*
 
-That distinction decides every case. A converged producer closing the unbounded pattern **has** determined
-it — the run ended at 400, so there is no loss at 500. A producer asked for `0..100` that closes `0..1000`
-has determined **nothing** about `101..1000`; it is abstaining and calling it refusal. So: while running,
-close what you were asked for, because that is what you have determined; at convergence or exit, close the
-unconstrained pattern. Closures **accumulate** — the closed region only grows, and a querier arriving
-after `p` exits inherits every closure `p` posted, with subsumption working inside them.
+That distinction decides every case. A converged producer asserting absence over the unbounded pattern
+**has** determined it — the run ended at 400, so there is no loss at 500. A producer asked for `0..100`
+that asserts absence over `0..1000` has determined **nothing** about `101..1000`; it is abstaining and
+calling it refusal. So: while running, assert absence over what you were asked for, because that is what
+you have determined; at convergence or exit, over the unconstrained pattern. Absence claims
+**accumulate** — the region only grows, and a querier arriving after `p` exits inherits every claim `p`
+posted, with subsumption working inside them.
 
-**This is load-bearing for the aggregation, not a nicety.** Global `false` holds iff *every* producer
-refuses — which is sound only if refusal means determination. A producer that merely is not looking must
-hold **might**, or one idle agent silently converts an `unknown` into a `false` across the whole system:
+**This is load-bearing for the aggregation, and more so than it used to be.** An atom is `{f}` as soon as
+**one** producer says so (§"Where the rules come from"), so a single agent that abstains and calls it
+refusal creates falsity outright, where an earlier draft's unanimity rule would have needed everybody.
+There are exactly two things to post, and one thing not to:
 
-| stance | means |
+| act | means |
 |---|---|
 | **produce** | I have it |
-| **might** | I have determined neither way — *including "I am not looking"* |
-| **will not** | **I have determined there is nothing here** |
+| **assert absence** | **I have determined there is nothing here** |
+| *(say nothing)* | I have determined neither way — *including "I am not looking"* |
 
-Abstention lives in the middle row, and every failure this design has had in this area was something
-belonging there being posted as *will not*.
+Abstention is the third row, and it is not a stance anybody posts: it is `∅`, the identity of the
+aggregation. Every failure this design has had in this area was something belonging in that row being
+posted as an absence claim, and making the row **unpostable** is the structural half of the fix. The
+other half is that the mistake stops being silent — a production inside a region somebody declared empty
+climbs the status to `{t,f}`, where under unanimity a wrong refusal only ever contributed to a
+conjunction and nothing ever contradicted it.
 
-**The obligation is on the producer, and breaking it is detectable.** Producing inside a region you have
-closed contradicts your own assertion, which the store can catch like any other contradiction. That is
-the whole enforcement story, and it is the usual one here.
+**The obligation is on the producer, and breaking it is detectable.** Producing inside a region you
+declared empty contradicts your own assertion — and it needs no detector, because it *is* the status
+`{t,f}`. That is the whole enforcement story, and it is the usual one here.
 
-**A solver's licence to close is unsatisfiability.** A propagator that proves a region has no solutions
-has determined it is empty, and may close it; closing a region it has *not* proved empty asserts a
-determination it does not have, and is unsound. That is not a solver-specific rule — it is the general
+**A solver's licence to assert absence is unsatisfiability.** A propagator that proves a region has no
+solutions has determined it is empty, and may say so; claiming a region it has *not* proved empty asserts
+a determination it does not have, and is unsound. That is not a solver-specific rule — it is the general
 one, with "determined" instantiated for that kind of producer. Note also that unsatisfiability needs no
-vocabulary of its own: it is **grounds for `closed`**, not a third kind of absence.
+vocabulary of its own: it is **grounds for `absent`**, not a third kind of absence.
 
 Two refuted framings, recorded so they are not rediscovered:
 
@@ -259,48 +269,27 @@ Two refuted framings, recorded so they are not rediscovered:
   honest producer: under demand-gating *every* producer emits a fraction of what it could. The defect
   was never dishonesty, it was closing more than you are done with.
 
-**And one distinction worth keeping separate**, because conflating them makes a correct answer look like
-a failure: *"no more answers will arrive for this query"* (the stream is complete — scope closure gives
-it) is not *"for every atom in the query I know true or false"* (knowledge is complete — needs a closure
-covering each atom). A query over a region nobody ever asked about has a complete **stream** and
-incomplete **knowledge**, and reporting `unknown` there is right rather than broken.
+**And there is no closed-world toggle.** An earlier draft had a second level — *"no further producer will
+appear for `Q`"* — because falsity was **inferred** from unanimous refusal, and a universal over an open
+set is unaffirmable. With falsity **asserted** instead, that level has no job: nobody needs to know who
+else exists in order to state what they themselves determined. The per-functor scopes, the reified
+`spawns(P,Q)`, and the write-authority worry about who may close a scope all go with it, since there is
+no longer a scope to close.
 
-Together they make settledness a `∀` over a **known finite** set, i.e. a finite conjunction — and that
-is exactly when `¬∃` becomes affirmable, because *"no answer arrived"* is then decidable by inspecting
-finitely many exhausted streams rather than by surveying an open world.
+That is Ameloot's characterisation paying for itself (§"CALM"): a universal over the producer set is a
+query about **network membership**, which a coordination-free program may not ask. This design has
+exactly one such query left — single-spawn — and it is already priced as irreducible (§Open).
 
-| producer scope | the `∀` | consequence |
-|---|---|---|
-| **open** | unaffirmable | nothing settles; absence stays permanently provisional |
-| **closed** | a finite conjunction | geometric — settledness, and negation, become available |
+**One distinction survives the deletion**, and conflating it with absence is what makes a correct answer
+look like a failure. *"No more answers will arrive for this query"* is **exhaustion**: a fact about
+processes, that every producer which will ever act has finished. *"For every atom in the query I know
+true or false"* is **knowledge**: the status layer. A region nobody ever asked about has a complete
+stream and `∅` knowledge, and reporting *unknown* there is right rather than broken.
 
-So *"no more producers"* is an ordinary monotone post, and **posting it is the closed-world toggle.**
-That is better than leaving the assumption to the evaluator, because it makes the assumption **visible
-and attributable**: somebody asserted it, and if they were wrong, a producer appearing afterwards is a
-plain contradiction the store can detect.
-
-**And it should be scoped, not global.** A global producer set is the coarsest possible toggle and
-almost never what you want. Per-functor scopes — each a subset of the global one — may be closed
-*earlier* and independently: *"no more producers for `loss`"* makes `loss` queries settleable while
-everything else stays open.
-
-**Partial closure buys nothing toward a global answer**, and it is worth saying so because it looks like
-it should. Answers accumulate monotonically, so whatever has arrived is already a lower bound whether or
-not anyone is finished; knowing `p` is done adds no answers. Closure is an **upper**-bound statement —
-*"p contributed exactly this"* — and upper bounds only compose when you have all of them. Where partial
-closure does pay is a query *scoped to that producer*: `closed(Q, p)` settles *"what did p produce?"*
-completely.
-
-**Where new producers come from is worth reifying.** If the set is open, producers emerge from
-somewhere; naming that — `spawns(P, Q)` — makes the producer set the transitive closure of spawning from
-declared roots, and closing it becomes *"no more spawning,"* which is a fact about a *finite* thing.
-This is the neighbourhood of embedded implication and hypothetical reasoning, but it does not need
-either: *"if this scope is closed then Q is settled"* is a **geometric sequent** (geometric antecedent,
-geometric consequent), so it lives in the theory rather than needing `→` in the goal language.
-
-Who may close a scope is a write-authority question, and `../specs/write-authority.md` says that is
-unenforceable. So the toggle is honour-system like everything else: a wrongly-closed scope is a defect
-the store can **detect** but not **prevent**.
+Exhaustion is what a standing query needs in order to **stop**, and as far as this design goes nothing
+else needs it. So it is not a derivation — no rule reads it — but an observation the core makes and hands
+upward (§"Two layers"), on the same shelf as the pid probe and for the same reason: a producer's silence
+is indistinguishable from its slowness, and only something outside the logic can tell them apart.
 
 **One thing that is not an optimisation, though it looks like one.** Production is gated on demand, and
 before running a producer the evaluator asks *"do I already have an answer?"* That memo check **is the
@@ -321,9 +310,11 @@ per-atom one:
   `50..150` — each miss and each run in full, so the overlap is produced twice. Per atom, the second
   producer skips what is there and runs on `101..150`.
 
-**So what the producer is handed is a residual, not a verdict**: the call *minus what is already
-present*, which is `Q ∧ ¬E` with `E` finite — the same construction §"What is checked" describes for the
-handler, applied one level earlier. It need not be materialised; walking the extent and skipping
+**So what the producer is handed is a residual, not a verdict**: the call minus everything already
+settled either way — the `∅`-region of `Q`, which is `Q ∧ ¬E` with `E` the finite set of atoms whose
+status is anything but `∅`. Subtracting the `{f}` part matters as much as the `{t}` part: an atom
+somebody determined absent is one nobody should be asked to produce. Same construction §"What is checked"
+describes for the handler, applied one level earlier. It need not be materialised; walking the extent and skipping
 present atoms computes it incrementally.
 
 **And that removes a mechanism rather than adding one.** A demand entirely covered by another has an
@@ -341,52 +332,65 @@ One representation note. Per-atom is the *semantics*; over a wide axis, *"what i
 stored compressed — intervals, runs — so that computing a residual does not mean walking a billion steps
 to find the gaps. Same split as everywhere else here: meaning per atom, storage as dense as it likes.
 
-### Where the closure rules come from: the valuation reading
+### Where the rules come from: an atom's status
 
 The rules above are easier to justify than to state, and the justification is a semantic model rather
 than a second syntax. Geometric logic remains what you *write*; this is what the writing *means*.
 
-**Two levels, and they are different kinds of object.** Using one word for both is what makes `unknown`
-look ambiguous.
+**An atom's status is the set of things producers have told you about it.** There are two tellable
+things — *it is there*, *it is not there* — so there are four statuses, and they are the subsets of
+`{t, f}`:
 
-| | what it holds | is `unknown` a value? |
+| status | told | |
 |---|---|---|
-| a producer's **stance** on an atom | *I produce it* / *I might* / *I will not* | **yes** — *"I might"* is a genuine third position, not ignorance about a `Bool` |
-| **global knowledge** of an atom | derived from the stances | **no** — it is a *partial* map to `Bool`, and `unknown` is absence from its domain |
+| `∅` | nothing | nobody has determined either way |
+| `{t}` | true | some producer produced it |
+| `{f}` | false | some producer determined it absent |
+| `{t,f}` | both | one produced, another determined absent — a **valuation conflict** |
 
-So globally, every ground atom simply **has** a truth value, and what is partial is our knowledge of it:
-`unknown` means the variable is **unbound** — nobody has determined it — which is the same hole as
-everywhere else here, and fits the reading in which everything is ground up front. Locally, three
-stances, and the middle one is a position rather than a hole.
+**The aggregation is union**, and that is all of it. Union only grows, so a status only ever climbs
+`∅ → {t}`, `∅ → {f}`, `{t} → {t,f}`, `{f} → {t,f}` — monotone **by construction** rather than by
+argument, and monotone in a *growing* producer set rather than only a fixed one, which is the regime
+this design is actually in.
 
-**Each level climbs its own flat order.** A producer goes *might* → *produce* or *might* → *will not*,
-and both are gains, the two outcomes incomparable. Global knowledge goes undefined → `true` or
-undefined → `false`, likewise. Neither ever descends.
+**It is the free completion, one layer up.** §"No functional dependency" meets the same fork at the value
+layer — add a collapsing top, or take the powerset — and takes the powerset, because a top satisfies
+every threshold. The status layer has the identical fork and gets the identical answer. Taking it in both
+places is what makes these one design rather than two.
 
-**The aggregation is what maps one level to the other**: `true` if **any** producer produces it, `false`
-if **every** producer refuses, `unknown` otherwise. As a computation that is `max` over `{-1, 0, 1}`,
-but that chain is the *aggregation*, not an order anything travels along — read as an information order
-it would make closing look like a *loss*, which it is not. The aggregate is monotone in the flat orders:
-nothing un-produces, nothing un-refuses, so global knowledge only ever climbs.
+**Which is why there is no third stance to post.** *"I might"* is `∅`: nothing told, the identity of the
+aggregation. It needs no representation, because you do not announce what you have not determined.
 
-**The unanimity requirement is then a consequence, not a rule.** Global `false` needs *every* producer to
-refuse, which is a universal over the producer set, which is unaffirmable while that set is open. The
-two-level closure is not a design decision; it is what this aggregation forces.
+**And why it is not *"false iff every producer refuses"***, which an earlier draft had. That rule is the
+De Morgan dual of *"true iff some producer produces"*, and the dual is correct only while *will not* is
+the **complement** of *produce* — *"I won't send you one."* Determination makes it an independent
+positive assertion about the world, at which point two independent claims aggregate by union and the dual
+is the wrong shape. Measured over every stance-vector up to four producers: the unanimity rule **descends
+8 times in 360 extensions** of the producer set (witness — one refusal gives `false`; a second producer
+appears and it drops back to `unknown`), where union descends **0**. Union is also at least as
+informative at all 121 vectors and strictly more at 86, of which **64 are cases unanimity reported as
+plain `true`** while some producer had determined the region empty.
 
-**`closed(Q,p)` is a Clark completion**, scoped to one producer and one extent: everything in `Q`'s
-extent that `p` has not marked `true` becomes `false` *from `p`*. Worth naming, because completion is
-exactly the operation that turns *"not derived"* into *"false"* — it is what licenses negation-as-failure
-wherever that is licensed at all.
+**What is readable is the up-sets, and there are exactly four.** A rule body may claim `⊒ {t}`
+(*somebody produced it*), `⊒ {f}` (*somebody determined it absent*), `⊒ {t,f}` (*disputed*), or their
+union (*somebody said something*). Each is affirmed by exhibiting a witness, so each is an open — this is
+§"The one rule" at the status layer, not a new discipline.
 
-**A demand is a valuation on the same space with the same two truth values — just a total one, with no
-holes.** Every atom is either asked about or not. Truth is the *partial* version of the same thing, with
-`unknown` meaning undefined. So an answer is truth **restricted** to where the demand holds: a valuation
-of the same type as truth, saying nothing about what was not asked, which is exactly right — not asking
-teaches you nothing.
+`∅` is the one thing **not** readable: *"nothing has been told about this"* is a down-set, so no finite
+observation affirms it. That is the open-world assumption recovered as a fact about the codomain's
+topology rather than stipulated — and it is why the residual, which wants exactly the `∅`-region of a
+call, is a report and not a derivation.
 
-Note it is restriction and **not conjunction**, and the difference is the bug we already fixed once:
-`v ∧ false = false`, so conjoining would turn *"not asked"* into *"false"* and assert absence across
-everything nobody enquired about. Masking gives `unknown` there. One operation apart.
+**A demand is an open set, and an answer is truth restricted to it.** Not a *total* valuation: only the
+demand's true-set is ever used, and the store can affirm *asked* but never *not asked*, so totality does
+no work and manufactures a hazard. With status held as a pair of extents — what has been told true, what
+has been told false — restriction **is** conjunction, applied to both, and the coercion that made masking
+look one operation from a bug (`unknown ↦ false`, then `v ∧ false = false`) is not writable at all.
+
+**One retraction.** An earlier draft called `absent(Q,p)` a **Clark completion**. It is not: Clark's is
+per-predicate over *all* clauses and cannot be false, where this is per-contributor, asserted at runtime,
+by a party that may be lying. The right lineage is the local-completeness literature, and the citation is
+outstanding.
 
 **Streams need no concept at this level.** A producer's contribution is a valuation that climbs; the
 "stream" is the climbing, not an object — which is why answers stream individually and no answer term
@@ -510,6 +514,29 @@ fails to match must simply *not fire* — never take an else-branch — and with
 else-branch to take. Failure of a match is unobservable, so the order in which matches succeed cannot
 be detected: derivation *times* differ, the answer set does not.
 
+**The same rule holds at the status layer, and there it is enforced rather than observed.** You may test
+that an atom has been told false; you may never test that it has *only* been told false. And you cannot:
+writing `= {f}` needs the conjunct *"and nothing told true"*, which is `¬∃` and has no syntax. The
+restriction to up-sets is not a discipline a rule author keeps — it is what the absence of `¬` and `var`
+leaves expressible, exactly as the absence of an else-branch is. `= {f}` becomes writable in a **report**,
+which may negate, and nowhere else.
+
+**Which is why admitting `{f}` into rule bodies costs nothing.** Reading a told-false record is reading an
+atom — a positive literal, affirmable from finite information, no membership survey. It is not
+negation-as-failure and it observes no absence. And a rule reading `⊒ {f}` fires identically on `{f}` and
+on `{t,f}`, so the climb between them is **unobservable to derivation**, for the same reason a failed
+match is. Conflict is contained not because rules cannot see absence claims, but because the only thing
+they can see about one is upward-closed.
+
+**And a conflicted premise does not explode.** *Ex falso* needs a schema `⊥ ⊢ B` for arbitrary `B`, and a
+definite clause's head is always a specific atom; `{t,f}` is a status, not the formula `A ∧ ¬A`, and the
+object language has no `¬` with which to form the premise. What a conflicted premise does instead is
+derive an ordinary atom, which may then disagree with another derived atom at the head relation — the
+free completion again, one level down, and where a **declared domain conflict** (§"No functional
+dependency") catches what the status layer cannot. The residue is that a conclusion may stand on a
+premise that later became disputed; nothing retracts, but §"Demand is control" owes an account of who can
+still find it.
+
 ## Geometric logic, which is what this language is
 
 The derivation language is **geometric logic**: finite ∧, arbitrary ∨, ∃. **No ¬, no →, no ∀.**
@@ -593,20 +620,24 @@ positive existential over a growing set — monotone, geometric, decidable:
 conflicted(K) :- loss(K,V1), loss(K,V2), V1 ⊔ V2 undefined.
 ```
 
-**And it is broader than two incomparable values.** Once *will not* means **determination** (§"CWA is a
-posted fact"), a producer's closure refuted by another's output is a genuine disagreement about the
-world. So a conflict is **any two non-`might` stances that disagree**:
+**But there are two kinds of conflict, and an earlier draft ran them together.**
 
-| | produce(w), `w ≠ v` incomparable | will not |
-|---|---|---|
-| **produce(v)** | conflict | **conflict** |
-| **will not** | **conflict** | agree |
-| **might** | — | — |
+| | what disagrees | how many atoms | who says so |
+|---|---|---|---|
+| **valuation conflict** | whether the atom is there at all | **one** | the store, structurally: the status is `{t,f}` |
+| **domain conflict** | two atoms violate a constraint somebody declared | **two** | a user-written rule |
 
-`might` conflicts with nothing, which is right — abstention is compatible with every outcome, and it is
-the same row that carries *"I am not looking."* The off-diagonal cells are the ones an earlier draft
-missed: there, one producer determined a region empty and another produced inside it, and the aggregate
-returned `true` in silence.
+The rule above is a *domain* conflict, and writing it as though it were generic is a defect:
+`loss(60,0.5)` and `loss(60,0.4)` are two atoms, both told true, disagreeing with **nothing** until
+somebody declares that `loss` is functional on its step — and the rule hardcodes position 1 as key and
+position 2 as value, which is exactly the key/value split §"There is no `read`" says no term carries.
+Written honestly it is one declaration among many, and the **16 hand-rolled guard sites** in the corpus
+(§"Orders are mostly read-side") are sixteen such declarations rather than one primitive the substrate is
+missing.
+
+The generic half is the status. `⊒ {t,f}` needs no declaration, no key, and no functor-specific
+knowledge: one producer determined a region empty, another produced inside it. Under the previous
+aggregation that case returned `true` **in silence**; here it is a value you can read.
 
 *"This relation is functional here"* is its complement, hence closed, hence a report or a claim about a
 settled relation. That asymmetry is structural, not stipulated: the well-formed region is a **lower
@@ -824,7 +855,7 @@ the same grounding while `↑f(X) ⊋ ↑f(a)`. Nothing in this design has a sig
 correspondence is a fact about the universe, not about the topology.
 
 **And the quantifier lives in the relation, never in the term.** A term with holes uniformly denotes a
-set; what you do with the set is the predicate's business. `closed(Q,p)` reads *universally* over `Q`'s
+set; what you do with the set is the predicate's business. `absent(Q,p)` reads *universally* over `Q`'s
 grounding (none of them will come from `p`); a posted answer reads *existentially* (this one fact lies
 somewhere in that set, described as far as it is known); a posted demand asks for the members. One
 representation, three roles, no modality — which is why a **partially instantiated answer** needs no
@@ -902,11 +933,10 @@ what was **ever** wanted while admission needs what is wanted **now**.
 
 **And `needs` posted at runtime is legal, with one interesting collision.** It is a fact rather than a
 signature, so a producer that loads a rule and gains a capability may simply post the corresponding
-edge. But if it has already posted `closed(Q, p)` and the new capability falls inside `Q`, producing
-anything there contradicts its own closure — and under a closed world others may already have concluded
-those atoms `false`. No new machinery is needed to catch that: it is the same **detectable contradiction**
-as a producer appearing after the producer set was closed. Gain capabilities before you close, not
-after; break the rule and the store can tell.
+edge. But if it has already posted `absent(Q, p)` and the new capability falls inside `Q`, producing
+anything there contradicts its own claim, and others may already have read those atoms as `{f}`. No new
+machinery is needed to catch that: the status climbs to `{t,f}` like any other valuation conflict. Gain
+capabilities before you assert absence, not after; break the rule and the store can tell.
 
 Concretely a subscription is a **cursor into a per-functor term index** — walk the trie with your
 pattern, get notified when new leaves appear beneath it. That keeps `post` the only store-mutating
@@ -1088,7 +1118,8 @@ Not everything can be geometric, and nothing is gained by pretending. The shape 
 non-geometric core underneath a geometric layer**, where each layer pushes as much as it can downward:
 
 - the **core** makes observations that the logic cannot: an OS probe, a clock, a temporal delta, a
-  fixpoint test;
+  fixpoint test, and **exhaustion** — *"`p` will send no more"*, which is a probe plus a rule about what
+  a dead process can still do, never a fact about what exists (§"CWA is a posted fact");
 - the **geometric layer** derives over them and owns everything it can.
 
 What crosses is **atoms**, and the mechanism is already in this repo — `prolog-query-layer.md` says of
@@ -1128,7 +1159,7 @@ it as one injected interface. The hard constraint: **reclamation must not depend
 message**, because the requester may crash and the link may be long — the same argument that makes
 `resolve()` probe a pid rather than trust a dying process to announce itself.
 
-**The residual is not a blocker.** Ship `Q ∧ ¬E` with `E` the finite finished set and **do not
+**The residual is not a blocker.** Ship `Q ∧ ¬E` with `E` the finite settled set and **do not
 normalise**: `Q`'s structure survives intact, and `E` need not cross the link at all, since the handler
 is near the data. What it *is* is a report, with the exception noted above.
 
@@ -1139,10 +1170,9 @@ is near the data. What it *is* is a report, with the exception noted above.
 - **The verdict as a join of two partial observers** — and it is a *report*, which is why it may use the
   narrowing reading that derivation may not.
 - **Cooperative, no enforcement.** Load-bearing for the headline.
-- **`never` as a determination rather than a status** — though it survives as `closed` over a singleton
-  region (§"CWA is a posted fact"), since a producer can only post its own stance; the *"fact about the
-  world"* reading is the **aggregate**, which needs every producer to refuse and therefore is not
-  something anyone posts.
+- **`never` as a determination rather than a status** — it survives as `absent` over a singleton region
+  (§"CWA is a posted fact"). The *"fact about the world"* reading is the right one, and it is what one
+  producer's determination asserts; what nobody posts is the *aggregate*, which is read, not written.
 - **Status cycles; values do not.** `running → OOM → running` cannot live in a monotone order, so the
   attempt index goes in the term and the cycle lives in the *sequence of attempts*, never in one fact.
 - **Structure goes in the key, not the value.**
@@ -1223,7 +1253,7 @@ reintroduces a bug the fold exists to prevent.
    replicated each other's answer both run the six-hour job. That is precisely single-spawn, the one
    irreducibly coordinating requirement, and CALM says it must cost a round.
 6. **Whether demand should be the only interconnect, and not merely the only one that means anything.**
-   The semantics already reads that way (§"Where the closure rules come from"). Making it architectural
+   The semantics already reads that way (§"Where the rules come from"). Making it architectural
    — a local view receives *nothing* it did not ask for — would bound coordination by the number of live
    channels, since the demands would be the only edges in the system. It would also forbid unsolicited
    broadcast, which is a real affordance worth keeping, so the two readings should probably stay apart.
