@@ -168,8 +168,10 @@ it cannot reorder a spine. The divergence is representational rather than an inf
 redelivering every message does not repair it. (A node merely *lagging* on an order-preserving link is
 fine — lag and divergence are different failures.) A shared tail is also a lossy CAS: once one producer
 binds `T = []`, another's next answer is rejected outright. One tail *per producer* fixes all of that,
-since each stream is then single-writer — but it is machinery for nothing, because **no rule ever
-observes absence** (§ below), and `absent(Q,p)` beats `T = []` anyway by being attributable.
+since each stream is then single-writer — and that is the right **structure** in the wrong
+**representation**. What a per-producer tail encodes is one termination marker per producer per stream,
+which is precisely `absent(Q,p)`: the same marker, carrying its author's name, and readable without
+binding anything. So what the dead end kills is the **term**, not the idea.
 
 A set term with an unbound "rest" would sidestep the ordering, and costs more than it saves: union
 modulo associativity, commutativity and idempotence is **finitary rather than unitary**, so the join of
@@ -475,15 +477,30 @@ so `V ⊒ a` *is* `V = a`. What is inexpressible is equality against a **non-gro
 exactly this partial term and no more instantiated"* — which requires ruling out further instantiation,
 i.e. negation. Exactness is available precisely where it is meaningful: at maximal elements.
 
-**Settledness is groundness. Always, and at every level.** A value is settled when its term is ground; a
-query is settled when the term representing its answer set is ground — closing the open tail of the
-branch list. Same test, different subject. There is no producer verb and no `freeze`: closing a tail is
-an ordinary post of the terminating constructor. Consequently there is no freeze-after-write race,
-because there is no freeze.
+**Settledness is groundness for a *value*, and something else for a *query*.** A value is settled when
+its term is ground, and that half is unchanged. But a query has no answer term to ground (§"Answers
+stream individually"), so its settledness is not the same test on a different subject. It splits, along
+the line everything else here splits along:
 
-It follows that **nothing may derive settledness from demand going quiet.** Demand disappearing grounds
-nothing, so it cannot produce settledness — and the discipline that enforces this is ordinary ownership:
-only whoever is producing the answers may close the tail. A reclaimer must never bind it.
+| | what it means | where it lives |
+|---|---|---|
+| **knowledge** complete over a finite `Q` | every atom of `ground(Q)` has status `⊒ {t}` or `⊒ {f}` | a finite conjunction of readable up-sets — **derivable** |
+| **stream** complete for `Q` | no further answer will arrive, from anybody | **exhaustion**, hence control (§"CWA is a posted fact") |
+
+Only the first is a question the logic can answer, and answering it needs no exhaustion: a finite region
+whose every atom has been determined is settled whether or not anyone is still working on it. The second
+is a fact about processes, and the logic never had jurisdiction over those.
+
+**There is still no producer verb and no `freeze`**, though the reason has changed: it used to be that
+closing a tail is an ordinary post of the terminating constructor, and it is now that `absent(Q,p)` is an
+ordinary post, full stop. Either way nothing is frozen, so there is no freeze-after-write race.
+
+It follows that **nothing may derive settledness from demand going quiet.** Demand disappearing
+determines nothing, so it moves no atom out of `∅`. What used to enforce that was a discipline — *only
+whoever is producing the answers may close the tail* — and it is now the record's own shape: an absence
+claim **names its author**, so a reclaimer can post nothing but `absent(Q, reclaimer)`, which asserts a
+determination it plainly does not have. Enforcement is unchanged, which is to say there is none; what
+changes is that the failure stops being **anonymous**. Same repair as the headline's.
 
 **Matching a non-ground pattern is a threshold claim** — the ordinary case, not an exotic one. A body
 literal `loss(60, f(X))` with `X` free claims *"the value is known to be an `f`-term."* It suspends
