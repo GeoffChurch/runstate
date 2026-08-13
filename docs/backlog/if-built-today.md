@@ -163,15 +163,30 @@ watch is a posted term with a free variable; bindings arrive as they are learned
 quantifier is a property of the **posting**, never of the term (§"Facts and demands are dual"), so there
 are two demand acts and not one:
 
-> **A bare pattern is `∃`** — one production satisfies it, and it retires. **A `∀` demand requires a
-> named bounded region.**
+> **A bare pattern is `∃`** — one production satisfies it. **A `∀` demand must be *finitely coverable*** —
+> not *bounded*, which is a different concern with a different owner.
 
-Both halves already ship. A `control.subscribe` with no `every` is one-shot: it fires once and the worker
-posts the expiry counter-record. With `{every, until}` it is **one durable record** denoting a region and
-demanding every atom in it — and durable across the *producer's* death, because a worker starts at
-`_cursor = 0` and re-drains the control log, re-registering whatever is still unanswered. Pinned by
-`tests/test_run_episodes.py::test_relaunch_extends_one_series`: one subscribe posted *before episode 1
-exists*, two episodes, ten steps, one series.
+The durability half ships and is pinned: a `{every, until}` subscribe is **one durable record** denoting a
+region and demanding every atom in it, surviving the *producer's* death because a worker starts at
+`_cursor = 0` and re-drains the control log, re-registering whatever is still unanswered
+(`tests/test_run_episodes.py::test_relaunch_extends_one_series` — one subscribe posted *before episode 1
+exists*, two episodes, ten steps, one series).
+
+**Two corrections to an earlier draft of this rule, both measured.** It said a `∀` demand needs a *named
+bounded* region, and both words were wrong. **"Named" is a re-description** — the durable record is named
+by its `request_id`, which the schema requires of *every* subscribe, `∃` ones included. **"Bounded" is
+admission control wearing a quantifier's clothes**, the cost test §"There is no `read`" already assigns to
+layer 7 — and it forbids the demand this design is *best* at expressing: *"every step, run to convergence,
+and tell me when there are no more."* That demand is unbounded and perfectly dischargeable, because
+§"The threshold rule" already supplies the right precondition — **`ground(Q)` need not be finite; the
+cover must be.** A positive prefix to step 400 plus one `¬(S > 400)` is a finite cover of an infinite
+region. Nor is the unbounded `∀` demand hypothetical: `{"every": …}` with no `until` is schema-legal and
+`design-v0.2.md` documents it as *"forever"*.
+
+**And the `∃` half does not ship as an existential at all.** The worker serves a bare subscribe by reading
+the register — `self._values.get(name)` — and firing at the next safe point with `None` if nothing was
+ever set. That is a **poll**, not an unsatisfied existential waiting on a production. Live code and this
+section disagree; this document is the target rather than the record, but the gap should be known.
 
 An earlier draft read *every* demand existentially while §"Demand subsumption" read every demand
 universally, and recorded the clash as an open question. It was a false dichotomy — two posting acts over
