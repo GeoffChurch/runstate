@@ -198,21 +198,38 @@ unaffirmable and stays so; absence somebody **posted** is data.
 
 ### CWA is a posted fact, and it names its author
 
-**Two different claims were sharing one predicate**, and every confusion in this area comes from that:
+**One predicate was doing two jobs**, and every confusion in this area comes from that. Only one of them
+is a fact about the world, and only that one belongs here:
 
-| claim | says | who can honestly post it | licenses |
-|---|---|---|---|
-| **absence** — `absent(Q, p)` | *"there is nothing in `Q`"* | whoever **determined** it | the status `{f}` across `ground(Q)` |
-| **exhaustion** — `done(Q, p)` | *"`p` will send no more for `Q`"* | `p`, **and any observer with a liveness probe** | nothing; it is a reason to stop waiting |
+> **`absent(Q, p)` — *"p has determined there is nothing in `Q`."*** A claim about the world, attributed
+> to its author, and the only thing that licenses the status `{f}`.
 
-The test that separates them: **could a third party post this knowing only that the process died?**
-Exhaustion, yes. Absence, no — a dead producer's silence is not evidence about the world. That is the
+The other job was *"p will send no more for `Q`"* — **exhaustion** — and it is not a predicate at all. It
+is a claim about a **process**, which this library already produces three ways: `p`'s own
+`lifecycle.stopped`, an observer's `launcher.terminated`, and a pid probe. Naming it alongside `absent`
+would imply the two are one kind of object differing in content, where the whole finding is that they are
+different kinds of thing.
+
+The test that separates them: **could a third party post this knowing only that the process died?** For
+exhaustion yes, for absence no — a dead producer's silence is not evidence about the world. That is the
 launcher-versus-lifecycle split this library already has, kept orthogonal for exactly this reason, and
 collapsing the two is what made a single closure look as though it needed a universal over the producer
 set before it could mean anything.
 
-**Absence is what the rest of this section is about.** Exhaustion is not a logical fact: it is an
-observation about a process, and §"Two layers" is where observations about processes come in.
+**Exhaustion never enters the derivation layer, and keeping it out is load-bearing rather than tidy.**
+Its consumers are control (*"stop waiting"*) and reports (*"this run was abandoned"* — a negation, hence
+a report regardless). No rule reads it. Give it a predicate and somebody will quantify over it —
+*"every producer for `Q` is done, and no atom of `Q` is `{t}`, therefore…"* — which is the unanimity move
+again, needing to know who all the producers are. The vocabulary is where that deletion has to be
+defended, because a name is an invitation.
+
+**And its two signals differ in reliability, which is a second reason not to give them one name.** *"p is
+done with `Q`"* is finer than *"p is dead"* — under demand-gating `p` may have finished one region while
+still working another — but the fine version exists only if `p` volunteers it, and §"What is checked"
+rules that out as a foundation: **reclamation must not depend on receiving a message.** The coarse probe
+is the dependable one, and it **abstains off-host** (§"What it does NOT solve"), where the only signal
+left is a record somebody posted. So exhaustion is a probe here and a log record there — and a record in
+the log is still not a term in the logic.
 
 **`absent` is the quantified form of `never`** — the same determination at a different granularity.
 `never(a)` says nothing goes at one atom; `absent(Q,p)` says nothing goes anywhere in `ground(Q)`. Two
@@ -289,9 +306,9 @@ true or false"* is **knowledge**: the status layer. A region nobody ever asked a
 stream and `∅` knowledge, and reporting *unknown* there is right rather than broken.
 
 Exhaustion is what a standing query needs in order to **stop**, and as far as this design goes nothing
-else needs it. So it is not a derivation — no rule reads it — but an observation the core makes and hands
-upward (§"Two layers"), on the same shelf as the pid probe and for the same reason: a producer's silence
-is indistinguishable from its slowness, and only something outside the logic can tell them apart.
+else needs it — so it stays outside, where the probe and the lifecycle records already are. The reason it
+cannot be inside is the one §"CALM" gives: a producer's silence is indistinguishable from its slowness,
+and no finite observation of the log tells them apart.
 
 **One thing that is not an optimisation, though it looks like one.** Production is gated on demand, and
 before running a producer the evaluator asks *"do I already have an answer?"* That memo check **is the
@@ -1174,8 +1191,8 @@ Not everything can be geometric, and nothing is gained by pretending. The shape 
 non-geometric core underneath a geometric layer**, where each layer pushes as much as it can downward:
 
 - the **core** makes observations that the logic cannot: an OS probe, a clock, a temporal delta, a
-  fixpoint test, and **exhaustion** — *"`p` will send no more"*, which is a probe plus a rule about what
-  a dead process can still do, never a fact about what exists (§"CWA is a posted fact");
+  fixpoint test. **Exhaustion** is not a fifth entry — it is the probe and the lifecycle records already
+  listed, read for a different purpose (§"CWA is a posted fact");
 - the **geometric layer** derives over them and owns everything it can.
 
 What crosses is **atoms**, and the mechanism is already in this repo — `prolog-query-layer.md` says of
