@@ -418,6 +418,15 @@ to find the gaps. Same split as everywhere else here: meaning per atom, storage 
 The rules above are easier to justify than to state, and the justification is a semantic model rather
 than a second syntax. Geometric logic remains what you *write*; this is what the writing *means*.
 
+**The logic is two-valued and positive; the four values below are a *reading*.** Nothing here is a truth
+value the logic computes with. A rule asks only whether an atom is derivable — `loss(60,0.5)`, or its
+polarised twin — and each such question is two-valued, the two values being **not affirmed < affirmed**
+rather than false < true. That order is informational, and the distinction is the whole open-world story:
+if the logic's bottom meant *false*, a negative post would have nothing to do. Measured: the monotone
+predicates on the four values are **exactly** the six a rule can express over the two polarities with `∧`
+and `∨` and no negation — six of sixteen, and the same six. So the four values never enter the logic.
+They are derived, in the same family as `conflicted(K)` or `progress`.
+
 **An atom's status is the set of things producers have told you about it.** There are two tellable
 things — *true*, *false* — so there are four statuses, and they are the subsets of `{t, f}`:
 
@@ -684,9 +693,16 @@ on `{t,f}`, so the climb between them is **unobservable to derivation**, for the
 match is. Conflict is contained not because rules cannot see absence claims, but because the only thing
 they can see about one is upward-closed.
 
-**And a conflicted premise does not explode.** *Ex falso* needs a schema `⊥ ⊢ B` for arbitrary `B`, and a
-definite clause's head is always a specific atom; `{t,f}` is a status, not the formula `A ∧ ¬A`, and the
-object language has no `¬` with which to form the premise. What a conflicted premise does instead is
+**And a conflicted premise does not explode — for free rather than cheaply.** Paraconsistent logics
+normally *pay*: entailment is weakened so that a contradiction stops implying everything. Nothing is
+weakened here, because there was never a contradiction to explode on. `Q` and `¬Q` are **two unrelated
+relations**, and no rule connects them, so there is nothing to derive anything *from*. The contradiction
+exists only in the reading.
+
+> **We did not buy paraconsistency. We never bought consistency.**
+
+*Ex falso* is therefore unformulable rather than blocked: it needs `A ∧ ¬A`, and there is no `¬` with
+which to write it. What a conflicted premise does instead is
 derive an ordinary atom, which may then disagree with another derived atom at the head relation — the
 free completion again, one level down, and where a **declared domain conflict** (§"No functional
 dependency") catches what the status layer cannot. The residue is that a conclusion may stand on a
@@ -695,21 +711,24 @@ still find it.
 
 ## Geometric logic, which is what this language is
 
-The derivation language is **geometric logic**: finite ∧, arbitrary ∨, ∃. **No ¬, no →, no ∀** — as
-**operations**. A posted `¬Q` is neither a counterexample nor an exception to that, on the rule
-§"The threshold rule" states: you may be **told** `¬φ`, and you may never **derive** it.
+The derivation language is **geometric logic**: finite ∧, arbitrary ∨, ∃. **No ¬, no →, no ∀.**
+
+That needs no qualification for the negative post, and an earlier draft's qualification was the symptom of
+a wrong reading. **There is no `¬` in the language at all.** `¬Q` is a **polarised atom** — the mark is
+part of the relation's name, and what the logic sees is an ordinary positive literal. Nothing is excepted,
+because nothing negates.
 
 Every restriction arrived at here independently is one of its clauses:
 
 | decided here | geometric logic |
 |---|---|
-| definite clauses, no *derived* negation | no ¬ |
+| definite clauses, no negation | no ¬ |
 | carry all branches rather than backtrack | **arbitrary ∨** |
 | conjuncts filter branches (the list-monad bind) | frame distributivity, `a ∧ ⋁bᵢ = ⋁(a ∧ bᵢ)` |
 | threshold claims only | **opens** |
 | monotone ⟺ coordination-free (CALM) | Scott-continuity |
 | a **value** is settled = ground = maximal; exact claims only there | total elements of a domain |
-| *derived* negation confined to reports | **closed** sets — refutable, not affirmable |
+| negation confined to reports | **closed** sets — refutable, not affirmable |
 
 The shape has a reason rather than an axiom (Vickers, *Topology via Logic*): **an open set is an
 affirmable property** — confirmable in finite time from finite information, never refutable from it.
