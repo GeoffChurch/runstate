@@ -617,7 +617,7 @@ fact about processes, and the logic never had jurisdiction over those.
 
 **`ground(Q)` need not be finite; the *cover* must be.** That is the ordinary geometric condition rather
 than a new one — the conjunction runs over the records exhibited, not over the atoms they cover, so a
-single `absent` claim settles an infinite region in one observation. Which is exactly why the quantified
+single `¬Q` settles an infinite region in one observation. Which is exactly why the quantified
 form exists at all (`:219`): requiring a finite region would make quantifying pointless. A region
 determined only atom-by-atom, with no quantified claim anywhere, is not affirmable — and is not complete
 either, so nothing is lost. (Finiteness of what you *asked for* is a separate obligation with a separate
