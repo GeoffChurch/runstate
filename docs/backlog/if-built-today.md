@@ -158,7 +158,7 @@ watch is a posted term with a free variable; bindings arrive as they are learned
 **Answers stream individually, and completeness is a separate posted fact.** A querier posts a pattern
 and receives matching atoms one at a time; there is no answer *object* anywhere. Closure is the atom
 `¬Q` — *"somebody has determined there is nothing in Q"*, where `Q` is whatever they have **actually
-determined** (§"CWA is a posted fact") — delivered like any other fact.
+determined** (§"Falsity is told, never inferred") — delivered like any other fact.
 
 That is worth stating because packaging the answers into a growing term is a tempting and dead end.
 Nothing bindable is unordered: a set term is ground, so adding to it is not a binding but a different
@@ -196,7 +196,7 @@ ordinary positive fact, affirmable by exhibiting it, and it needs no closed worl
 The distinction is the whole of this design's negative story: absence you **inferred from silence** is
 unaffirmable and stays so; absence somebody **posted** is data.
 
-### CWA is a posted fact
+### Falsity is told, never inferred
 
 **One predicate was doing two jobs**, and every confusion in this area comes from that. Only one of them
 is a fact about the world, and it needs no predicate either — it is the other thing you can be told:
@@ -251,15 +251,22 @@ is **provenance** — and provenance is wanted for positive facts too (`loss(60,
 so it belongs to whatever mechanism eventually serves both, not to one side of a symmetric pair. It is an
 open item, unbuilt. The cost of not having it is stated at the end of this section.
 
-**And `¬Q` means *determination*, not abstention:**
+**And the rule for posting is the same in both directions:**
 
-> **`¬Q`: "I have determined that nothing goes in `Q`."** Not *"I am not going to look."*
+> **Post what you know.** Nothing retracts, so a post you are not sure of is a defect — in either
+> direction, for the same reason, with no vocabulary of its own.
 
-That distinction decides every case. A converged producer posting `¬Q` over the unbounded pattern **has**
-determined it — the run ended at 400, so there is no loss at 500. A producer asked for `0..100` that
-posts `¬(0..1000)` has determined **nothing** about `101..1000`; it is abstaining and calling it refusal.
-Negative claims **accumulate** — the region only grows, and a querier arriving after `p` exits inherits
-every claim `p` posted, with subsumption working inside them.
+That is not a rule about negation. It is the ordinary honesty condition on any post, and an earlier
+draft's *"I have determined there is nothing there"* was that condition dressed as a special epistemic
+act. Falsity needed the dressing while it was **inferred**, because you had to separate *"I know nothing
+is there"* from *"I stopped looking"*. Told falsity needs none: a producer that stops looking and posts
+`¬Q` is posting what it does not know, which is exactly what posting an uncomputed `loss(60, 0.5)` is.
+
+It still decides every case, and more cheaply. A converged producer posting `¬Q` over the unbounded
+pattern **knows** it — the run ended at 400, so there is no loss at 500. A producer asked for `0..100`
+that posts `¬(0..1000)` knows nothing about `101..1000`. Posts **accumulate** — the known region only
+grows, and a querier arriving after `p` exits inherits everything `p` posted, with subsumption working
+inside it.
 
 **And the region to post is not the one you were asked for.** Answering `Q₀`, a producer must post
 
@@ -273,23 +280,22 @@ production path. And note it is **forward-looking**, which is what makes *"post 
 consequence rather than a rule of thumb: you cannot compute *what I will ever produce* until you are done
 producing.
 
-**This is load-bearing for the aggregation, and more so than it used to be.** An atom is `{f}` as soon as
-**one** producer says so (§"Where the rules come from"), so a single agent that abstains and calls it
-refusal creates falsity outright, where an earlier draft's unanimity rule would have needed everybody.
-There are exactly two things to post, and one thing not to:
+**And it is load-bearing for the aggregation, more so than it used to be.** An atom is `{f}` as soon as
+**one** producer says so (§"Where the rules come from"), so a single agent posting what it does not know
+creates falsity outright, where an earlier draft's unanimity rule would have needed everybody.
 
 | act | means |
 |---|---|
-| **post `Q`** | I have it |
-| **post `¬Q`** | **I have determined there is nothing there** |
-| *(say nothing)* | I have determined neither way — *including "I am not looking"* |
+| **post `Q`** | I know it is there |
+| **post `¬Q`** | I know it is not |
+| *(say nothing)* | I do not know — *including "I am not looking"* |
 
-Abstention is the third row, and it is not a stance anybody posts: it is `∅`, the identity of the
-aggregation. Every failure this design has had in this area was something belonging in that row being
-posted as an absence claim, and making the row **unpostable** is the structural half of the fix. The
-other half is that the mistake stops being silent — a production inside a region somebody declared empty
-climbs the status to `{t,f}`, where under unanimity a wrong refusal only ever contributed to a
-conjunction and nothing ever contradicted it.
+The third row is not a stance anybody posts: it is `∅`, the identity of the aggregation. Every failure
+this design has had in this area was a case belonging in that row being posted as one of the first two,
+and making the row **unpostable** is the structural half of the fix. The other half is that the mistake
+stops being silent — a production inside a region somebody declared empty climbs the status to `{t,f}`,
+where under unanimity a wrong refusal only ever contributed to a conjunction and nothing ever
+contradicted it.
 
 **The obligation is on the producer, it is not enforced, and it is not enforceable.** Producing inside a
 region you declared empty contradicts your own assertion — and it needs no detector, because it *is* the
@@ -305,11 +311,10 @@ posted what. So the sloppy-scope failure is **monotone** (a climb, never a retra
 and still costs something: it spends a conflict report on a non-conflict. That is Open #7's ambiguity
 arriving by a second route.
 
-**A solver's licence to assert absence is unsatisfiability.** A propagator that proves a region has no
-solutions has determined it is empty, and may say so; claiming a region it has *not* proved empty asserts
-a determination it does not have, and is unsound. That is not a solver-specific rule — it is the general
-one, with "determined" instantiated for that kind of producer. Note also that unsatisfiability needs no
-vocabulary of its own: it is **grounds for posting `¬Q`**, not a third kind of absence.
+**A solver knows by proving unsatisfiability.** A propagator that has proved a region has no solutions may
+post `¬Q`; one that has not is posting what it does not know. Not a solver-specific rule — the general one
+with *know* instantiated for that kind of producer. And unsatisfiability needs no vocabulary of its own:
+it is **grounds for a post**, not a third kind of absence.
 
 Two refuted framings, recorded so they are not rediscovered:
 
@@ -334,9 +339,21 @@ query about **network membership**, which a coordination-free program may not as
 exactly one such query left — single-spawn — and it is already priced as irreducible (§Open).
 
 **And what makes the assertion coordination-free is not that it names an author** — it does not name one
-— but that it is a **testimony rather than a survey.** Stating what you determined consults nothing
-outside you; inferring absence from everybody's silence consults everybody. An earlier draft credited the
+— but that it is a **testimony rather than a survey.** Stating what you know consults nothing outside
+you; inferring absence from everybody's silence consults everybody. An earlier draft credited the
 producer argument for this, which was the old semantics' reason, not this one's.
+
+**Which is why "CWA" is the wrong name for what is left, and this section no longer carries it.** The
+closed-world assumption is an **inference rule** — *what is not provable is false* — and nothing here
+applies it. Nor is `¬Q` a **local** closed-world statement (Etzioni/Golden/Weld; Levy), which is also an
+inference licence: *"trust my silence in this region."* Reading `¬Q` means looking at what is **present**;
+LCW means looking at what is **missing**, which is the non-monotone act this design exists to avoid. So
+the completeness-statement lineage is the wrong one for the semantics — though its *machinery* still
+applies, since transfer to a subsumed question is query containment either way.
+
+Where the closed world does survive is where every non-monotone thing survives: a **report** may negate
+over the store's contents, and *"which steps have no atom?"* is a closed-world question asked at the
+boundary that permits them. It needs no toggle, no posted fact, and no section.
 
 **One distinction survives the deletion**, and conflating it with absence is what makes a correct answer
 look like a failure. *"No more answers will arrive for this query"* is **exhaustion**: a fact about
@@ -457,7 +474,7 @@ plain `true`** while some producer had determined the region empty.
 **What is readable is the up-sets, and there are exactly four.** A rule body may claim `⊒ {t}`
 (*somebody produced it*), `⊒ {f}` (*somebody determined it absent*), `⊒ {t,f}` (*disputed*), or their
 union (*somebody said something*). Each is affirmed by exhibiting a witness, so each is an open — this is
-§"The one rule" at the status layer, not a new discipline.
+§"The threshold rule" at the status layer, not a new discipline.
 
 `∅` is the one thing **not** readable: *"nothing has been told about this"* is a down-set, so no finite
 observation affirms it. That is the open-world assumption recovered as a fact about the codomain's
@@ -546,9 +563,30 @@ layout's **0.089 ms**: the term buys nothing, the btree does. Worse, positional 
 positions, so an axis-blind positional range over position 1 also matches on `Config` and `Layer` and
 returns the wrong rows.
 
-## The one rule
+## The threshold rule, and its five instances
 
 > **Threshold claims are always available. Exact claims require settledness.**
+
+**This is a corollary, and an earlier draft billed it as an axiom.** It predates the geometric framing and
+was the original organising principle; §"Geometric logic" then subsumed it, its own table carrying the
+row *threshold claims only | **opens***. So what this states is *"only opens are affirmable"*, in the form
+a rule author needs it — which earns a section, but not primacy.
+
+**The interesting fact is that it keeps instantiating.** It has landed on five different orders, two of
+them arrived at long after it was written, and in every case the up-set is affirmable and its complement
+is not:
+
+| order | affirmable | never |
+|---|---|---|
+| **value** | `V ⊒ t` | `V = t` on an unsettled term |
+| **instantiation** | `nonvar`, `ground` | `var` |
+| **status** (§"Falsity is told, never inferred") | `⊒ {f}` | `= {f}` |
+| **coverage** (§"Where the rules come from") | entailment | membership in the solution set |
+| **constraint** (§"The demand language") | *"the store entails `S ≤ 100`"* | *"5 is still possible"* |
+
+That recurrence is the claim worth making. A rule that has to be re-derived at each new carrier is a
+slogan; one that turns out to already hold there is a basis vector, which is what §"Design rigor" means by
+the payoff being *serendipity*.
 
 A rule body may claim `V ⊒ t` — *"the value carries at least this much information."* Monotone by
 construction: values only go up, so once true, always true.
@@ -566,7 +604,7 @@ the line everything else here splits along:
 | | what it means | where it lives |
 |---|---|---|
 | **knowledge** complete for `Q` | every atom of `ground(Q)` has status `⊒ {t}` or `⊒ {f}` | affirmable by exhibiting a **finite cover** of `Q` by posted records — **derivable** |
-| **stream** complete for `Q` | no further answer will arrive, from anybody | **exhaustion**, hence control (§"CWA is a posted fact") |
+| **stream** complete for `Q` | no further answer will arrive, from anybody | **exhaustion**, hence control (§"Falsity is told, never inferred") |
 
 Only the first is a question the logic can answer, and answering it needs no exhaustion: a region whose
 every atom has been determined is settled whether or not anybody is still working on it. The second is a
@@ -793,7 +831,7 @@ chain and joins always exist there.
 > **Any join-semilattice may be quotiented at the storage layer, freely and soundly.**
 
 Sound in one line: `a ⊔ b ⊒ a` and `a ⊔ b ⊒ b`, and thresholds are upward-closed, so nothing either post
-satisfied can stop being satisfied. That is §"The one rule" doing its job, and it is why the classic
+satisfied can stop being satisfied. That is §"The threshold rule" doing its job, and it is why the classic
 `X = 0` counterexample does not bite — that is an exact claim on an unsettled relation, already banned.
 
 **But off a chain, the join *synthesizes*.** `a ⊔ b ∈ {a, b}` exactly when the order is total; otherwise
@@ -942,7 +980,7 @@ on an answer, and they do not.
 All three mechanisms are control: resource management, a querier changing its mind, and somebody
 deliberately stopping a machine. The logic never had jurisdiction over any of them, any more than it can
 stop you pulling the power. What it does owe is the liveness back-channel named in §"CALM" — a lost
-demand and a slow handler are indistinguishable — and the settledness footgun in §"The one rule".
+demand and a slow handler are indistinguishable — and the settledness footgun in §"The threshold rule".
 
 ### Facts and demands are dual, and the duality is exact
 
@@ -1143,7 +1181,7 @@ propagation never needs it.
 
 **It does not threaten monotonicity, and the discipline that protects it is the one already in force.**
 The constraint store only accumulates, so it grows in the information order. The *solution set* shrinks,
-which is the narrowing direction and antitone as a relation — so the rule is exactly §"The one rule"
+which is the narrowing direction and antitone as a relation — so the rule is exactly §"The threshold rule"
 again: **entailment claims are monotone, membership claims on the solution set are not.** *"The store
 entails `S ≤ 100`"* is affirmable and permanent; *"5 is still possible"* is neither. Disequality is the
 sharp case: `X ≠ Y` is fine as a posted constraint and as an entailment, and not as a test of the
@@ -1238,7 +1276,7 @@ non-geometric core underneath a geometric layer**, where each layer pushes as mu
 
 - the **core** makes observations that the logic cannot: an OS probe, a clock, a temporal delta, a
   fixpoint test. **Exhaustion** is not a fifth entry — it is the probe and the lifecycle records already
-  listed, read for a different purpose (§"CWA is a posted fact");
+  listed, read for a different purpose (§"Falsity is told, never inferred");
 - the **geometric layer** derives over them and owns everything it can.
 
 What crosses is **atoms**, and the mechanism is already in this repo — `prolog-query-layer.md` says of
@@ -1310,7 +1348,7 @@ is near the data. What it *is* is a report, with the exception noted above.
   narrowing reading that derivation may not.
 - **Cooperative, no enforcement.** Load-bearing for the headline.
 - **`never` as a determination rather than a status** — it survives as `absent` over a singleton region
-  (§"CWA is a posted fact"). The *"fact about the world"* reading is the right one, and it is what one
+  (§"Falsity is told, never inferred"). The *"fact about the world"* reading is the right one, and it is what one
   producer's determination asserts; what nobody posts is the *aggregate*, which is read, not written.
 - **Status cycles; values do not.** `running → OOM → running` cannot live in a monotone order, so the
   attempt index goes in the term and the cycle lives in the *sequence of attempts*, never in one fact.
@@ -1383,7 +1421,7 @@ reintroduces a bug the fold exists to prevent.
    **pushdown**: the more expressive the language, the less of it runs where the data lives, and
    locality is what CALM makes non-negotiable.
 4. **Whether a partially-narrowed value may be streamed.** Safe under exactly one discipline — consumers
-   may make threshold claims, never membership claims — which is §"The one rule" applied in flight.
+   may make threshold claims, never membership claims — which is §"The threshold rule" applied in flight.
 5. **No central store.** Each agent holds a lagged local copy and replicates preferentially what it
    demands; the "global" store is the union of the local ones, with no ground truth anywhere. This
    follows from monotonicity and needs no coordination — nobody deletes, sharding and replication are
