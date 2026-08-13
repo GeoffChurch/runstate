@@ -159,6 +159,9 @@ on an atom. Nothing relates them, and one symbol for both invites reading a dema
 So there is no `demand` predicate at the surface, no `while` combinator, and no watcher concept. A
 watch is a posted term with a free variable; bindings arrive as they are learned.
 
+**This paragraph reads a demand *existentially* and §"Demand subsumption" reads it *universally*, and
+they cannot both be right (§Open 8).** Unresolved; do not treat either as settled.
+
 **Answers stream individually, and falsity is a separate posted fact.** A querier posts a pattern and
 receives matching atoms one at a time; there is no answer *object* anywhere. What ends a stream is the
 post `¬Q` — *"everything in Q is false"*, where `Q` is whatever the poster actually knows
@@ -1065,6 +1068,10 @@ one negative shell around positive cores.
 patterns — with the pairing between them. Geometric logic over a two-sorted signature is unchanged
 geometric logic; nothing about `∧`/`∨`/`∃` moves.
 
+**Everything from here to the end of this subsection presumes a demand is read *universally* — serve the
+whole open — which §"An unsatisfied existential is demand" contradicts (§Open 8).** Under the existential
+reading the subsumption below inverts and the anti-unification hazard evaporates. Unresolved.
+
 **Demand subsumption runs the other way, because `↑` is order-reversing.** For facts, more instantiated
 is higher, and compression drops the *less* instantiated. For demands, `p ⊑ q` gives `↑p ⊇ ↑q`, so the
 **more general** demand subsumes the specific one: having posted `loss(V,S)`, a standing `loss(V,12)`
@@ -1475,6 +1482,32 @@ reintroduces a bug the fold exists to prevent.
    Measured counterweight for the first: 0 of 3,165 numeric re-productions diverged on the real corpus,
    so the hazard is real and the consumers' hand-rolled guards are working. The valuation case has not
    been measured — see the census on the tracker.
+8. **Is a demand read existentially or universally? The document currently says both.** This is a live
+   self-contradiction, not a preference, and it decides several things downstream.
+
+   | | §"An unsatisfied existential is demand" | §"Demand subsumption" |
+   |---|---|---|
+   | reading | **∃** — *"asserts only existence, and making an unsatisfied existential true is exactly production"* | **∀** — serve the whole open |
+   | subsumption | the **specific** demand subsumes the general | the **general** subsumes the specific |
+   | anti-unification | safe: generalising *reduces* work | dangerous: generalising demands every loss |
+   | one record can demand | one production, always finite | unboundedly much |
+   | finiteness obligation | dissolves — it is structural | the requester's, over an undecidable property |
+
+   **The duality argues for `∃`.** §"Facts and demands are dual" says satisfaction *"is `x ∈ U` — the
+   pairing between a space and its frame"*, and a demand met by *some* `x ∈ U` is that pairing applied
+   directly; the universal reading is an enumeration request layered over it rather than the pairing
+   itself. *"Make this open inhabited"* is also a named notion — the **positivity predicate** of formal
+   topology (overt locales) — which is a better-grounded home than enumeration.
+
+   **The engineering argues for `∀`**, in one place that may be decisive: an open-ended standing
+   subscription — *"keep sending me losses as this run produces them"* — is a single durable `∀` request.
+   Under `∃` it becomes a stream of demands the control plane must keep generating, which moves a
+   mechanism out of the logic and into the layer §"Demand is control" already owns. Whether that is a
+   loss or a clarification is the open part.
+
+   Note what does **not** turn on it: the fact side, the status layer, `¬Q`, and every measurement in this
+   document. What turns on it is the work set, the anti-unification warning, `ensure`'s window, and the
+   finiteness obligation.
 
 ## Related
 
