@@ -355,6 +355,31 @@ things — *it is there*, *it is not there* — so there are four statuses, and 
 argument, and monotone in a *growing* producer set rather than only a fixed one, which is the regime
 this design is actually in.
 
+**And a status is computed, never stored.** The store holds records over *regions* — one `absent(Q,p)`
+speaks for every atom of `ground(Q)` — so an atom's status is whatever the covering records say, joined.
+That puts the weight on *covering*, and there is exactly one safe reading of it:
+
+> **Coverage is an entailment claim, never a membership claim on the solution set.**
+
+Which is §"The demand language"'s rule one level over, and load-bearing rather than tidy. A region may
+itself have a hole — `absent(loss(S,V) ∧ S > N, p)` with `N` unbound is the same *"a hole is an open
+question"* move §"Facts and demands are dual" makes uniform — and read generously such a claim covers
+every atom `Q` *might* contain, so binding `N` **shrinks** it. Measured: the generous reading descends on
+**12 of 12** bindings (witness — `N` unbound covers all twelve steps; `N := 0` drops step 0, whose status
+falls `{f} → ∅`), where the entailed reading descends **0**. Entailed coverage grows under binding *and*
+under narrowing, since fewer candidate values for `N` means more atoms provably above all of them.
+
+The rest of the model holds as assumed: over 25 stores, statuses are **order-independent** (0
+disagreements in 1,500 arrival shuffles) and **monotone** (0 descents in 7,800 arrivals).
+
+**One consequence to state rather than leave to be discovered.** Deciding coverage runs through the
+solver, and §"The demand language" makes entailment checking deliberately **incomplete** — so an agent
+that has not propagated far enough reports `∅` where a better-propagated one reports `{f}`. Measured
+sound: the under-propagated status sits **below** the complete one in 144 of 144 cases and never above.
+Incompleteness costs knowledge, never soundness, which is the trade already accepted there. The price is
+that a status is **relative to the propagation done**, hence local — which §Open #5 already says of
+everything else here.
+
 **It is the free completion, one layer up.** §"No functional dependency" meets the same fork at the value
 layer — add a collapsing top, or take the powerset — and takes the powerset, because a top satisfies
 every threshold. The status layer has the identical fork and gets the identical answer. Taking it in both
