@@ -149,16 +149,21 @@ an unsatisfied existential true is exactly production. Three concepts fuse:
 | was | is |
 |---|---|
 | the `?` sentinel | an unbound variable |
-| `⊥` — no information yet | an unbound variable |
+| *no information about this value yet* | an unbound variable |
 | "this is demanded" | an existential not yet satisfied |
+
+(The middle row said `⊥` in an earlier draft. Two different bottoms: an unbound variable is the least
+element of the **instantiation** order on a value, where `∅` is the least element of the **status** order
+on an atom. Nothing relates them, and one symbol for both invites reading a demand as a falsity.)
 
 So there is no `demand` predicate at the surface, no `while` combinator, and no watcher concept. A
 watch is a posted term with a free variable; bindings arrive as they are learned.
 
-**Answers stream individually, and completeness is a separate posted fact.** A querier posts a pattern
-and receives matching atoms one at a time; there is no answer *object* anywhere. Closure is the atom
-`¬Q` — *"somebody has determined there is nothing in Q"*, where `Q` is whatever they have **actually
-determined** (§"Falsity is told, never inferred") — delivered like any other fact.
+**Answers stream individually, and falsity is a separate posted fact.** A querier posts a pattern and
+receives matching atoms one at a time; there is no answer *object* anywhere. What ends a stream is the
+post `¬Q` — *"everything in Q is false"*, where `Q` is whatever the poster actually knows
+(§"Falsity is told, never inferred") — delivered like any other fact. *Completeness* is not posted at
+all; it is read off the statuses (§"The threshold rule").
 
 That is worth stating because packaging the answers into a growing term is a tempting and dead end.
 Nothing bindable is unordered: a set term is ground, so adding to it is not a binding but a different
@@ -191,10 +196,10 @@ that watches for patterns it can serve, computes, and posts atoms that unify wit
 this design has no cells. A producer needing something of its own just posts a pattern too, which makes
 it a querier; the roles stay symmetric all the way down.
 
-What *is* representable is **asserted** absence — a producer stating what it determined. That is an
-ordinary positive fact, affirmable by exhibiting it, and it needs no closed world to license it (§ below).
-The distinction is the whole of this design's negative story: absence you **inferred from silence** is
-unaffirmable and stays so; absence somebody **posted** is data.
+What *is* representable is **told** falsity — somebody posting `¬Q` because they know it. That is an
+ordinary fact, affirmable by exhibiting it, and it needs no closed world to license it (§ below). The
+distinction is the whole of this design's negative story: falsity you **inferred from silence** is
+unaffirmable and stays so; falsity somebody **posted** is data.
 
 ### Falsity is told, never inferred
 
@@ -258,8 +263,9 @@ open item, unbuilt. The cost of not having it is stated at the end of this secti
 
 That is not a rule about negation. It is the ordinary honesty condition on any post, and an earlier
 draft's *"I have determined there is nothing there"* was that condition dressed as a special epistemic
-act. Falsity needed the dressing while it was **inferred**, because you had to separate *"I know nothing
-is there"* from *"I stopped looking"*. Told falsity needs none: a producer that stops looking and posts
+act — and phrased spatially besides, as though falsity were an empty place rather than a truth value.
+Falsity needed the dressing while it was **inferred**, because you had to separate *"I know it is false"*
+from *"I stopped looking"*. Told falsity needs none: a producer that stops looking and posts
 `¬Q` is posting what it does not know, which is exactly what posting an uncomputed `loss(60, 0.5)` is.
 
 It still decides every case, and more cheaply. A converged producer posting `¬Q` over the unbounded
@@ -274,7 +280,7 @@ inside it.
 ¬(Q₀ ∖ everything in Q₀ it will ever post positively)
 ```
 
-or it contradicts its own output. Note that region **is a residual** — `Q₀ ∧ ¬E` with `E` finite, the same
+or it contradicts its own output. Note that region **is a residual** — `Q₀ ∖ E` with `E` finite, the same
 construction §"What is checked" describes — now appearing on the negative-post path as well as the
 production path. And note it is **forward-looking**, which is what makes *"post at convergence or exit"* a
 consequence rather than a rule of thumb: you cannot compute *what I will ever produce* until you are done
@@ -286,8 +292,8 @@ creates falsity outright, where an earlier draft's unanimity rule would have nee
 
 | act | means |
 |---|---|
-| **post `Q`** | I know it is there |
-| **post `¬Q`** | I know it is not |
+| **post `Q`** | I know it is true |
+| **post `¬Q`** | I know it is false |
 | *(say nothing)* | I do not know — *including "I am not looking"* |
 
 The third row is not a stance anybody posts: it is `∅`, the identity of the aggregation. Every failure
@@ -386,7 +392,7 @@ per-atom one:
   producer skips what is there and runs on `101..150`.
 
 **So what the producer is handed is a residual, not a verdict**: the call minus everything already
-settled either way — the `∅`-region of `Q`, which is `Q ∧ ¬E` with `E` the finite set of atoms whose
+settled either way — the `∅`-region of `Q`, which is `Q ∖ E` with `E` the finite set of atoms whose
 status is anything but `∅`. Subtracting the `{f}` part matters as much as the `{t}` part: an atom
 somebody determined absent is one nobody should be asked to produce. Same construction §"What is checked"
 describes for the handler, applied one level earlier. It need not be materialised; walking the extent and skipping
@@ -413,8 +419,7 @@ The rules above are easier to justify than to state, and the justification is a 
 than a second syntax. Geometric logic remains what you *write*; this is what the writing *means*.
 
 **An atom's status is the set of things producers have told you about it.** There are two tellable
-things — *it is there*, *it is not there* — so there are four statuses, and they are the subsets of
-`{t, f}`:
+things — *true*, *false* — so there are four statuses, and they are the subsets of `{t, f}`:
 
 | status | told | |
 |---|---|---|
@@ -690,19 +695,21 @@ still find it.
 
 ## Geometric logic, which is what this language is
 
-The derivation language is **geometric logic**: finite ∧, arbitrary ∨, ∃. **No ¬, no →, no ∀.**
+The derivation language is **geometric logic**: finite ∧, arbitrary ∨, ∃. **No ¬, no →, no ∀** — as
+**operations**. A posted `¬Q` is neither a counterexample nor an exception to that, on the rule
+§"The threshold rule" states: you may be **told** `¬φ`, and you may never **derive** it.
 
 Every restriction arrived at here independently is one of its clauses:
 
 | decided here | geometric logic |
 |---|---|
-| definite clauses, no negation | no ¬ |
+| definite clauses, no *derived* negation | no ¬ |
 | carry all branches rather than backtrack | **arbitrary ∨** |
 | conjuncts filter branches (the list-monad bind) | frame distributivity, `a ∧ ⋁bᵢ = ⋁(a ∧ bᵢ)` |
 | threshold claims only | **opens** |
 | monotone ⟺ coordination-free (CALM) | Scott-continuity |
-| settled = ground = maximal; exact claims only there | total elements of a domain |
-| negation confined to reports | **closed** sets — refutable, not affirmable |
+| a **value** is settled = ground = maximal; exact claims only there | total elements of a domain |
+| *derived* negation confined to reports | **closed** sets — refutable, not affirmable |
 
 The shape has a reason rather than an axiom (Vickers, *Topology via Logic*): **an open set is an
 affirmable property** — confirmable in finite time from finite information, never refutable from it.
@@ -731,8 +738,10 @@ grows.
 **Two exceptions are real and do not repair**, so the split is a discipline with named exceptions rather
 than a structural guarantee.
 
-- **The residual** is a negation-bearing message (`Q ∧ ¬E`) sent to a handler that produces from it,
-  which is feeding demand by definition. Benign where re-production is idempotent.
+- **The residual** is a complement-bearing message (`Q ∖ E`) sent to a handler that produces from it,
+  which is feeding demand by definition. Benign where re-production is idempotent. Note `∖` here is
+  **set difference in a region description**, not the posted `¬` — `E`'s atoms are excluded from the
+  region, never asserted false.
 - **`ensure` itself**, which is the library's core operation. Measured: its loop condition is a threshold
   claim on `progress`, a *retractable* quantity, and its two termination guards are a **temporal delta**
   (`progress` now versus `progress` before — *"nothing new was derived"*, which has no positive form)
@@ -805,9 +814,12 @@ metalevel test is smuggled into the derivation layer.
 
 **Two consequences of having no functional dependency.**
 
-*No `⊤`, and none needed.* A per-relation top is what a collapse would land on, and a top necessarily
-satisfies every threshold — that is what being the top means — so one disagreement would fire every rule
-mentioning the relation. Keeping the atoms apart is what keeps the top out of reach. A "broken" flag is
+*No top on the **value** order, and none needed.* A per-relation top is what a collapse would land on,
+and a top necessarily satisfies every threshold — that is what being the top means — so one disagreement
+would fire every rule mentioning the relation. Keeping the atoms apart is what keeps it out of reach.
+(The **status** order does have a top, `{t,f}`, and it is harmless for exactly the reason this paragraph
+gives: it is a top over *what you were told about an atom*, not over the atom's value, so it satisfies no
+threshold a rule reads on the value. Different orders, unrelated tops.) A "broken" flag is
 the same defect wearing different clothes: discarding values and recording a bit is the one operation
 that moves *down*, and it retracts — every rule that fired on `loss(60, f(X))` must un-fire.
 
@@ -815,7 +827,8 @@ that moves *down*, and it retracts — every rule that fired on `loss(60, f(X))`
 arrives. A **threshold** claim is still true — somebody did post `f(a)`, and a later post does not
 unpost it. An **exact** claim was never legitimate on an unsettled term. **No legitimate claim is
 invalidated by a conflict**, so there is nothing to push and no registry of past contributors to keep.
-The store owes a queryable predicate, not a notification.
+The store owes something *readable* — a status for a valuation conflict, a queryable predicate for a
+declared domain one — never a notification.
 
 **And conflict is reachable without forgery**, which is why it has to be designed for rather than
 assumed away: two honest producers differing by one ulp (`0.30000000000000004` vs `0.3`) do not
@@ -1336,7 +1349,7 @@ have no way to re-make it; evicting one descends the status `{f} → ∅`, which
 design does not permit. So the cheapest-looking records in the store are the ones that must never be
 collected — and *"assuming the producers are still there"* is the clause the whole tiering turns on.
 
-**The residual is not a blocker.** Ship `Q ∧ ¬E` with `E` the finite settled set and **do not
+**The residual is not a blocker.** Ship `Q ∖ E` with `E` the finite settled set and **do not
 normalise**: `Q`'s structure survives intact, and `E` need not cross the link at all, since the handler
 is near the data. What it *is* is a report, with the exception noted above.
 
@@ -1347,9 +1360,9 @@ is near the data. What it *is* is a report, with the exception noted above.
 - **The verdict as a join of two partial observers** — and it is a *report*, which is why it may use the
   narrowing reading that derivation may not.
 - **Cooperative, no enforcement.** Load-bearing for the headline.
-- **`never` as a determination rather than a status** — it survives as `absent` over a singleton region
-  (§"Falsity is told, never inferred"). The *"fact about the world"* reading is the right one, and it is what one
-  producer's determination asserts; what nobody posts is the *aggregate*, which is read, not written.
+- **`never` as a fact rather than a status** — it survives as `¬Q` over a singleton region
+  (§"Falsity is told, never inferred"). The *"fact about the world"* reading is the right one, and it is
+  what any one poster asserts; what nobody posts is the **status**, which is read, not written.
 - **Status cycles; values do not.** `running → OOM → running` cannot live in a monotone order, so the
   attempt index goes in the term and the cycle lives in the *sequence of attempts*, never in one fact.
 - **Structure goes in the key, not the value.**
@@ -1434,11 +1447,15 @@ reintroduces a bug the fold exists to prevent.
    — a local view receives *nothing* it did not ask for — would bound coordination by the number of live
    channels, since the demands would be the only edges in the system. It would also forbid unsolicited
    broadcast, which is a real affordance worth keeping, so the two readings should probably stay apart.
-7. **What `conflicted(K)` means when single-spawn did not hold.** Duplicate production plus re-production
-   jitter yields two slightly different atoms, which is a *correct* report of a real disagreement that
-   the system itself caused. So `conflicted` cannot be read as "something is wrong" without knowing
-   whether one producer was guaranteed. Measured counterweight: 0 of 3,165 numeric re-productions
-   diverged on the real corpus, so the hazard is real and the consumers' hand-rolled guards are working.
+7. **What a conflict means, given that three different things produce one.** Neither kind can be read as
+   *"something is wrong"* without more than the conflict itself. **Domain**: duplicate production plus
+   re-production jitter yields two slightly different atoms — a *correct* report of a real disagreement
+   the system itself caused when single-spawn did not hold. **Valuation** (`{t,f}`): either two posters
+   genuinely disagree, or one over-claimed the extent of its own `¬Q` and then produced inside it
+   (§"Falsity is told, never inferred"). Telling those apart is what the absent provenance would buy.
+   Measured counterweight for the first: 0 of 3,165 numeric re-productions diverged on the real corpus,
+   so the hazard is real and the consumers' hand-rolled guards are working. The valuation case has not
+   been measured — see the census on the tracker.
 
 ## Related
 
