@@ -32,6 +32,46 @@ lands** (with one index shape — the contiguous prefix — `until` suffices), a
 when it does it is an **additive** change (optional `from=`/`every=` kwargs on the
 already-`until=` signature; no second breaking rename).
 
+> **Correction, 2026-08-13: it is NOT additive, because `every` as shipped is
+> non-monotone when replayed over a log.** `every` is a **delta**, not a stride —
+> `schedule.py` computes `since_step = step - self._last_step` — so which points
+> it selects depends on which points are already present. Measured against the
+> real `memoizer.history` with `{"every": {"step": 10}}`:
+>
+> ```
+> log {0, 11, 20}      -> [0, 11]
+> log {0, 10, 11, 20}  -> [0, 10, 20]     # step 11 LEFT the answer set
+> ```
+>
+> Adding a fact removed an answer. That is a CALM violation on a **read** path,
+> and it is reachable today through public `history`; it cannot fire through
+> `ensure` only because `ensure` hardcodes `dense = {"every": {"step": 1}}`, the
+> unique stride where delta and alignment coincide. So the deferral is currently
+> *load-bearing* — exposing `from=`/`every=` as-is would ship the
+> non-monotonicity into `ensure`'s answer path.
+>
+> **The repair has a shape: anchor the stride.** `S ≡ r (mod k)` against an
+> explicit origin (`from` is the natural one; today `from` and `every` are
+> unrelated slots) makes a strided region an ordinary open — a countable
+> disjunction of basic opens, closed under finite `∧` by CRT, with the
+> Furstenberg topology as witness — so subsumption becomes gcd/lcm and the
+> residual stays decidable. It lands the constraint domain exactly where
+> `index.md`'s Open #2 already lands: difference constraints **plus
+> congruences**, with CRT as the matched algorithm rather than generic interval
+> narrowing.
+>
+> Two consequences to decide before building. A **delta** reading has no
+> computable residual at all — you cannot know which atoms it selects without
+> simulating the arrival sequence, which is precisely what a residual must not
+> depend on — so if the delta reading survives, it survives as a **rate limit on
+> live emission with no query-side replay**, and `history` must then not
+> implement it. And `{"every": {"time_seconds": 60}}` has no region reading under
+> any repair, since it selects whichever steps land 60 s apart.
+>
+> Found while working `if-built-today.md`'s demand-quantifier question; the
+> caveat below (strided requests are not cheaper to *produce* on a sequence
+> worker) is the same finding's cost half.
+
 ## The idea
 
 Generalize the request from a single `N` to a small **term algebra over
