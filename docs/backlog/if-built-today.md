@@ -670,10 +670,25 @@ speaks about universally. `¬Q` is universal over `Q`, so it decides every atom 
 atom decides exactly one. A **partially instantiated positive post decides nothing** — `loss(3,V)` with
 `V` free is existential (§"Facts and demands are dual"), asserting that *something* is there without
 saying which atom, so it covers the region `loss(3,V)` while leaving every atom in it at `∅`. Exhibit
-such a cover and settledness does **not** follow. Hence the asymmetry that makes finite covers work at
-all: **positives decide one atom each, negatives decide a region each** — so a finite cover of an
-infinite region is necessarily a positive prefix plus a negative tail, which is exactly the shape the
-converged producer posts.
+such a cover and settledness does **not** follow.
+
+**The asymmetry that follows is informational, not logical, and an earlier draft had it backwards.** A
+positive post *can* decide a whole region: `loss(S, 0.2) ∧ S > 400` is **pure `∀`**, perfectly
+expressible, and decides infinitely many atoms in one record. What differs between the polarities is not
+what the logic permits but what there is to say —
+
+> **Absence is uniform, so it always compresses. Presence compresses only when the values do.**
+
+A loss curve's do not, which is why *in practice* a finite cover of an infinite region is a positive
+prefix plus a negative tail. That is a fact about the data, not a theorem about the logic, and stating it
+as the latter was an over-claim.
+
+**And the one genuinely unsayable form is the one already banned elsewhere.** *"Every step past 400 has
+**some** loss"* is `∀S>400. ∃V. loss(S,V)` — a universal *inside* a formula, which geometric logic
+excludes — and it is the existence half of a **functional dependency**, which §"No functional dependency"
+refuses on independent grounds. The quantifier fragment and the functional-dependency ban forbid the same
+sentence. Two restrictions arrived at separately agreeing on a case is the kind of coincidence that
+suggests neither is arbitrary.
 
 **And `Q`'s extent must be fixed, or settledness is not a monotone read.** For a hole-bearing region —
 `loss(S,V) ∧ S ≤ N` with `N` free — the *entailed* extent **grows** as `N` narrows (§"Where the rules
