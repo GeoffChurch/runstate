@@ -650,7 +650,7 @@ the line everything else here splits along:
 
 | | what it means | where it lives |
 |---|---|---|
-| **knowledge** complete for `Q` | every atom of `ground(Q)` has status `⊒ {t}` or `⊒ {f}` | affirmable by exhibiting a **finite cover** of `Q` by posted records — **derivable** |
+| **knowledge** complete for `Q` | every atom of `ground(Q)` has status `⊒ {t}` or `⊒ {f}` | affirmable by exhibiting a **finite cover** of `Q` by *deciding* records — **derivable**, and only for a `Q` whose extent is fixed |
 | **stream** complete for `Q` | no further answer will arrive, from anybody | **exhaustion**, hence control (§"Falsity is told, never inferred") |
 
 Only the first is a question the logic can answer, and answering it needs no exhaustion: a region whose
@@ -664,6 +664,23 @@ form exists at all (`:219`): requiring a finite region would make quantifying po
 determined only atom-by-atom, with no quantified claim anywhere, is not affirmable — and is not complete
 either, so nothing is lost. (Finiteness of what you *asked for* is a separate obligation with a separate
 owner, §"What is checked".)
+
+**But covering is not deciding, and an earlier draft conflated them.** A record decides only what it
+speaks about universally. `¬Q` is universal over `Q`, so it decides every atom in it. A *ground* positive
+atom decides exactly one. A **partially instantiated positive post decides nothing** — `loss(3,V)` with
+`V` free is existential (§"Facts and demands are dual"), asserting that *something* is there without
+saying which atom, so it covers the region `loss(3,V)` while leaving every atom in it at `∅`. Exhibit
+such a cover and settledness does **not** follow. Hence the asymmetry that makes finite covers work at
+all: **positives decide one atom each, negatives decide a region each** — so a finite cover of an
+infinite region is necessarily a positive prefix plus a negative tail, which is exactly the shape the
+converged producer posts.
+
+**And `Q`'s extent must be fixed, or settledness is not a monotone read.** For a hole-bearing region —
+`loss(S,V) ∧ S ≤ N` with `N` free — the *entailed* extent **grows** as `N` narrows (§"Where the rules
+come from"), and settledness is antitone in the extent, so pure information gain can flip it from true to
+false. Nothing descends in the store; the *question* got bigger. Those are the same fact from two sides,
+and the consequence is a precondition rather than a repair: settledness is a legal read over a region
+whose extent is determined, and not over one still sharpening.
 
 **There is still no producer verb and no `freeze`**, though the reason has changed: it used to be that
 closing a tail is an ordinary post of the terminating constructor, and it is now that `¬Q` is an ordinary
