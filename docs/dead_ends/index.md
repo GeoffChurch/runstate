@@ -45,6 +45,14 @@ the summary — enough to recognize the idea when it comes back wearing a new ha
   is the fencepost's **placement** (two sites — pre-yield vs post-tick — diverging at
   `N = 0` and on resume-into-a-met-target), which the helper would not have caught, since
   both sites would have called it with different coordinates.
+- [topological-framings](topological-framings.md) — **REFUTED 2026-08-14** on the third attempt (two
+  adversarial reviews + measurement). Sheaves, then formal topology `(S, ◁, Pos)` / overt locales, then
+  d-frames, each proposed as the structure naming `if-built-today`'s store. All three died of one cause:
+  **we have two *extents* in one frame, not two *topologies***, and the content that distinguishes them
+  (positives decide one atom each, negatives decide a region each) lives in the **basis**, which frames
+  deliberately forget. The space is forced to ground atoms — a residual is not upward-closed, so partial
+  terms are unavailable — hence discrete, hence Boolean-framed, hence inert. Read this before proposing
+  a fourth. The insights survive in the doc; the borrowed names do not.
 - [log-forking](log-forking.md) — **REFUTED 2026-08-04** (two prior-art sweeps + one mechanical hit).
   Resumption *copies* the log so a wrongly-resumed run cannot corrupt the incumbent's — claiming to
   convert the irreversible resume decision into a reversible one, and to dissolve double-live, the

@@ -1066,6 +1066,25 @@ demand and a slow handler are indistinguishable — and the settledness footgun 
 
 ### Facts and demands are dual, and the duality is exact
 
+**First, the point set, because three separate reviews have said that a topological claim without one is
+vacuous.** The points are **ground atoms**. Not partial terms, and this is forced rather than chosen: a
+converged producer must post `¬(Q₀ ∖ E)`, and a residual is **not upward-closed** — with `Q = ↑f(_)` and
+`E = {f(a)}`, `Q ∖ E` contains `f(_)` but not `f(a) ⊒ f(_)` — so under a partial-terms reading the
+negative post's region is not Scott-open and therefore not a region at all.
+
+**Say the consequence out loud: on that space the topology does no work.** Ground atoms are maximal, so
+the space is **discrete** and its frame is the **complete Boolean** powerset — measured three times
+independently (review 8's 8/8 and 256/256; twice more since). Every open is affirmable, nothing is
+forbidden, and any structure defined by which sets are open is inert here. What survives is not topology
+but the **basis**: positives decide one atom each, negatives decide a region each (§"The threshold rule"),
+which frames deliberately forget. `docs/dead_ends/topological-framings.md` records the three attempts
+that foundered on this.
+
+Two carve-outs. **Continuous value carriers** are the one place the space is genuinely not discrete
+(below) — though note IEEE floats are a finite set, so treating a value axis as dense is a modelling
+choice rather than a fact about the system. And the **instantiation** order on partial terms is real and
+used throughout; it is simply not the order whose points these are.
+
 - A **fact** is a ground term: a maximal element, a **point**.
 - A **demand** is a pattern, and a pattern denotes `↑p`. Finite partial terms are exactly the **compact**
   elements, and in an algebraic domain `c` is compact *iff* `↑c` is Scott-open. So a demand *is* a basic
