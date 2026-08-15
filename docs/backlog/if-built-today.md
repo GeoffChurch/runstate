@@ -579,6 +579,16 @@ observation affirms it. That is the open-world assumption recovered as a fact ab
 topology rather than stipulated — and it is why the residual, which wants exactly the `∅`-region of a
 call, is a report and not a derivation.
 
+**And CALM says the same thing independently, which is worth having because it is the sharper form.**
+`⊒{t}` and `⊒{f}` are each a union over parties and therefore monotone; `∅` is the **joint negation of two
+growing extents** and can flip as either grows. By Ameloot's Cor. 13 a query that can flip has no
+coordination-free implementation — so *"nothing has been told about this"* is not merely unaffirmable
+from finite information, it is **unanswerable without a coordination round**. Same for *"and nobody
+disputes it"*, which is `∅` on the conflict axis. The constraint that follows is on **output**, not on
+computation: a scheduler may consult the `∅`-region mid-flight all it likes, and the moment such a
+reading is *published as an answer* the design leaves the monotone class. (Their model makes exactly this
+split — output is append-only by hypothesis, working memory is not.)
+
 **A demand is an open set, and an answer is truth restricted to it.** Not a *total* valuation: only the
 demand's true-set is ever used, and the store can affirm *asked* but never *not asked*, so totality does
 no work and manufactures a hazard. With status held as a pair of extents — what has been told true, what
