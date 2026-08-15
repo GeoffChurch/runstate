@@ -383,12 +383,27 @@ you; inferring absence from everybody's silence consults everybody. An earlier d
 producer argument for this, which was the old semantics' reason, not this one's.
 
 **Which is why "CWA" is the wrong name for what is left, and this section no longer carries it.** The
-closed-world assumption is an **inference rule** — *what is not provable is false* — and nothing here
-applies it. Nor is `¬Q` a **local** closed-world statement (Etzioni/Golden/Weld; Levy), which is also an
-inference licence: *"trust my silence in this region."* Reading `¬Q` means looking at what is **present**;
-LCW means looking at what is **missing**, which is the non-monotone act this design exists to avoid. So
-the completeness-statement lineage is the wrong one for the semantics — though its *machinery* still
-applies, since transfer to a subsumed question is query containment either way.
+closed-world assumption is an assumption *about absence* — Reiter's completeness axiom, whose whole
+content is that an atom not in the store is false — and nothing here applies it. A **local** closed-world
+assumption (Levy 1996; Denecker, Cortés-Calabuig, Bruynooghe & Arieli, TODS 35(3), 2010) narrows that to
+a described region, and falsity is still read off **emptiness**: the operator computing it fires on
+`P(d̄) ∉ D`. Its meaning is therefore a function of the store — which those authors say is inescapable,
+and from which they conclude, in their words, that *"a local closed world assumption is a **nonmonotonic
+construct**."*
+
+**But the difference is in the dynamics, not the sentences, and an earlier draft of this paragraph had it
+backwards.** At a store whose `Q`-region is empty, `LCWA(P, Q)` entails exactly `∀x̄. Q[x̄] → ¬P(x̄)` —
+which *is* `¬Q`. So this design does not out-express LCW; it **promotes LCW's conclusion to a primitive**,
+cutting it loose from the store it was computed against, and that promotion is what buys monotonicity.
+What happens on growth is the whole of the difference, and it is **not** that an LCWA gets retracted — a
+claim recorded here earlier and now withdrawn, since those authors treat LCWAs as *"a more permanent form
+of knowledge than the transient data"*, *"just like integrity constraints"*. Post an atom inside a region
+declared complete and **nothing is retracted, nothing is violated, and no inconsistency arises** (their
+Prop. 4: a locally closed database is *always* consistent) — the negative conclusion simply **stops being
+entailed**, silently, with no event to observe. `¬Q` behaves oppositely: the record stands and the region
+climbs to `{t,f}`. What the promotion costs is that *"complete here, and here is what is in it"* is no
+longer one record — over a non-empty region the exceptions must go into the region description, which
+needs disequality.
 
 Where the closed world does survive is where every non-monotone thing survives: a **report** may negate
 over the store's contents, and *"which steps have no atom?"* is a closed-world question asked at the
