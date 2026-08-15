@@ -39,19 +39,47 @@ stating it narrowly is the point.
 
 ## CALM: why monotonicity, and not merely for tidiness
 
-**Consistency As Logical Monotonicity** (Hellerstein 2010; proved by Ameloot, Neven & Van den Bussche
-2013): *a query has a coordination-free distributed implementation **iff** it is monotone.*
+**Consistency As Logical Monotonicity** (Hellerstein 2010; proved by Ameloot, Neven & Van den Bussche,
+PODS 2011 / JACM 2013, **Cor. 13**): *a query has a coordination-free distributed implementation **iff**
+it is monotone.*
 
 That converts a preference into a requirement. If a querier is far from the data — another host,
 another datacentre, another planet — then:
 
-- **monotone** ⟹ information flows one way, no ownership protocol, no consensus, no round trips,
-- **non-monotone** ⟹ you must know you have seen everything, which costs a coordination round.
+- **monotone** ⟹ information flows one way, no ownership protocol, no consensus,
+- **non-monotone** ⟹ you must know you have seen everything, which is what coordination is for.
 
-Two scoping notes that stop this being over-read. It is a **safety** statement: a lost demand and a
-slow handler leave a querier in byte-identical states, so *liveness* still needs an acknowledgement, and
-a bounded reconnect still needs a cursor. And it applies to the **answer** relation; demand is control
-(§"Demand is control").
+**Four scoping notes, three of them repairing an earlier over-reading of the theorem.**
+
+**It is relative to a model, and the model is the one where nobody knows the distribution.** Cor. 13
+holds in `N0`: arbitrary horizontal partition, *unknown to the program*, asynchronous fair runs, one
+program per node, **non-retractable output** — which is a hypothesis of the model, and one an append-only
+store happens to satisfy. Give the nodes knowledge of the partitioning policy and the class grows (Zinn
+2012, Cor. 3.6); give them the global active domain and **every computable query is coordination-free**.
+So the `iff` is a statement about ignorance, not about queries alone.
+
+**"Coordination-free" is weaker than it sounds, and an earlier draft over-read it.** The definition is
+*existential over placements* — for every input there **exists** some partition on which the computation
+quiesces with no messages — not a promise that a real run sends none. The authors warn against exactly
+that reading, and exhibit a coordination-free transducer that *does* communicate on the obvious
+placement. So *"no round trips"* is not licensed, and neither is pricing coordination in rounds: the
+predicate is binary and the paper costs nothing.
+
+**The theorem constrains the computed query, never the operators.** Every query distributedly computable
+by a first-order transducer is computable by one using negation internally (their Prop. 7). So the
+residual `Q ∖ E`, computed *inside* an agent, is not a violation; **outputting** a residual as an answer
+would be, since outputs cannot be retracted and `Q ∖ E` shrinks as `E` grows. That is the line
+§"Two exceptions" already draws.
+
+**And their Example 10 is this design's `¬∃`, worked.** The **emptiness query** is their exhibited
+non-coordination-free construct: since every node may hold part of the input, the nodes must flood
+identifiers and check against `All` to be sure nothing matches. *"Is there no atom at step 60?"* is that
+query over a region — which is why `= {f}` has no syntax here (§"The threshold rule"), and why the
+design's answer is the one the theorem licenses rather than a stipulation.
+
+Two further scoping notes. It is a **safety** statement: a lost demand and a slow handler leave a querier
+in byte-identical states, so *liveness* still needs an acknowledgement, and a bounded reconnect still
+needs a cursor. And it applies to the **answer** relation; demand is control (§"Demand is control").
 
 ## The model: a store of terms, one operation
 
@@ -373,9 +401,17 @@ else exists in order to state what they themselves determined. The per-functor s
 `spawns(P,Q)`, and the write-authority worry about who may close a scope all go with it, since there is
 no longer a scope to close.
 
-That is Ameloot's characterisation paying for itself (§"CALM"): a universal over the producer set is a
-query about **network membership**, which a coordination-free program may not ask. This design has
-exactly one such query left — single-spawn — and it is already priced as irreducible (§Open).
+That is Ameloot's characterisation paying for itself (§"CALM"): their Cor. 17 makes *"computable without
+the `All` relation"*, *"computable without `Id`"* and *"oblivious"* all equivalent, so a universal over
+the producer set is a query that needs the system relations, which a coordination-free program may not
+ask. This design has exactly one such query left — single-spawn — and it is already priced as irreducible
+(§Open).
+
+Two precisions, since an earlier draft leaned on this harder than it holds. `All` and `Id` are
+**symmetric** there — dropping *either* alone already restricts you to monotone queries — so nothing
+singles out membership. And *"needs `All`"* is **the same statement** as *"is non-monotone"*, not a
+stronger one: Cor. 17 composed with Cor. 13 is an equivalence. It is a more *vivid* way to say it, which
+is worth something, and it is not extra evidence.
 
 **And what makes the assertion coordination-free is not that it names an author** — it does not name one
 — but that it is a **testimony rather than a survey.** Stating what you know consults nothing outside
@@ -1566,7 +1602,15 @@ reintroduces a bug the fold exists to prevent.
    free, and there is no single point to lose. The consequence to be explicit about: the memo check
    becomes **local**, so caching is best-effort, and two agents demanding the same cell without having
    replicated each other's answer both run the six-hour job. That is precisely single-spawn, the one
-   irreducibly coordinating requirement, and CALM says it must cost a round.
+   irreducibly coordinating requirement, and CALM says it cannot be coordination-free. (Not *"costs a
+   round"* — the predicate is binary and the theorem prices nothing; §"CALM".)
+
+   **And there is a line here the design must not cross.** Content-addressed placement *is* a
+   partitioning policy, and *"is this my address?"* is exactly the decision oracle that moves a system
+   out of the model CALM's `iff` is stated in (Zinn 2012). The moment an agent reasons *"I own this
+   region, it is empty here, therefore it is empty"*, the guarantee weakens from monotone to
+   adom-monotone and starts requiring the policy to be globally agreed. Replicating by address is fine;
+   **concluding absence from ownership is not.**
 6. **Whether demand should be the only interconnect, and not merely the only one that means anything.**
    The semantics already reads that way (§"Where the rules come from"). Making it architectural
    — a local view receives *nothing* it did not ask for — would bound coordination by the number of live
