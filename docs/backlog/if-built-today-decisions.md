@@ -35,9 +35,10 @@ anyone produces there, where under unanimity a wrong refusal only ever contribut
 nothing contradicted it.
 
 **What came back, reclassified.** A **closed producer set** is still a legitimate way to *come to know* a
-negative fact — it is just not the semantics of falsity. It costs a query about network membership, hence
-a coordination round, priced exactly; it is paid once, scoped per functor; and the conclusion is posted as
-an ordinary `¬Q` that everything downstream reads coordination-free. See the sketch's §"Falsity is told".
+negative fact — it is just not the semantics of falsity. It needs to know who all the producers are, which
+is the class of query a coordination-free program may not ask; that cost is paid **once**, scoped per
+functor, and the conclusion is posted as an ordinary `¬Q` that everything downstream reads
+coordination-free. See the sketch's §"Falsity is told". (Not *"priced in rounds"* — see §CALM below.)
 
 ## Names that argued against the design
 
