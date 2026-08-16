@@ -106,7 +106,7 @@ unwritability of `= {f}` and the unanswerability of `∅` both need them.
 
 ## The demand quantifier
 
-**Withdrawn: the sketch's two readings, which contradicted.** §"An unsatisfied existential is demand" read
+**Withdrawn: the sketch's two readings, which contradicted.** §"The model" read
 a demand existentially; §"Demand subsumption" read it universally. Both were stated flatly.
 
 **Resolved: the quantifier is a property of the posting, not of the term** — which the sketch already said
@@ -172,6 +172,43 @@ separates geometric from coherent, and `⊥`-in-heads separates Horn from defini
 **And lower is the point.** Being low buys the tractable corner, the placement strictly inside the
 coordination-free class, and the no-value-invention property CALM's proof depends on. The banner pointed
 up while the design's virtue points down.
+
+## What merging would have cost, since the sketch cites it
+
+Merging is declined because it **fabricates** — that reason is decisive and is in the sketch. What it
+would have *cost* was measured, and is here because a cost that cannot change the decision does not
+belong in the design, but a measured null result that stops re-proposal does belong somewhere.
+
+For **linear** terms — no repeated variables — a term is a variable-disjoint partial function from paths
+to symbols, so two terms merge iff they agree where both are defined, and consistency is **pairwise**. A
+mergeable group is therefore exactly a **clique** in the compatibility graph, and greedy merging (put each
+arriving term in the first blob it fits, else start a new one) is **first-fit colouring of the
+complement**.
+
+That identification needs a second lemma which is easy to miss: first-fit tests a candidate against every
+*member* of a colour class, where blob-merging tests it against the blob's **merged term**. Those coincide
+for linear terms — measured, **26,612 pairs, 0 disagreements** — and for non-linear terms they do **not**
+(**321 disagreements in 6,441**), which is the second reason the model is linear-only, and the source of
+the qualifier the sketch's clash test carries.
+
+| | value | |
+|---|---|---|
+| **best** | `χ(Ḡ)`, the clique cover number | NP-hard to find, and not by analogy: **every** graph is realisable as the conflict graph of linear terms, so the optimum *is* graph colouring |
+| **worst** | `Γ(Ḡ)`, the **Grundy number** | definitionally the most parts first-fit can be made to produce |
+| **average** | → 2× optimum **asymptotically** | an Erdős–Rényi asymptotic that converges glacially. Measured, **1.04–1.20** up to n=24 against exact `χ`, and **1.21–1.32** up to n=500 against a heuristic |
+
+**The gap is not a constant factor, and it is reachable at ordinary arity.** On the crown graph `χ = 2`
+while first-fit uses `n`. The naive term realisation would need arity `n`; taking a Sperner antichain
+instead needs only `k ≈ ⌈log₂ n⌉` positions — measured, a **12-position functor gives `χ = 2` against 924
+first-fit blobs**.
+
+The canonical alternative is order-free and unbounded: replace each **maximal consistent subset** by its
+mgu, a function of the whole set, whose size is the number of maximal cliques — up to `3^(n/3) ≈ 1.44ⁿ`
+by Moon–Moser. So canonicity is available and may be exponentially larger than the input.
+
+**Also withdrawn: the "one of three defects dies" measurement.** It was taken against a table-and-FK
+schema this design no longer contains, so it supports a claim about a different artifact. Do not re-quote
+it.
 
 ## Smaller reversals, recorded so they are not re-tried
 

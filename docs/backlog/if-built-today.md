@@ -7,8 +7,9 @@ The answer to the second half is **no**. The load-bearing property is **monotoni
 one way to get it, and there is a theorem saying so (§"CALM").
 
 **Companions.** `if-built-today-decisions.md` records what was tried and withdrawn, so this file can
-state conclusions. `../if-built-today-citations.md` is the verification ledger — every citation here that
-matters has been read in primary source. `../dead_ends/topological-framings.md` records three refuted
+state conclusions. `../if-built-today-citations.md` is the verification ledger — it marks each citation
+**CONFIRMED** (read in primary source), **UNVERIFIED**, or **UNOBTAINED**, and anything below that is not
+CONFIRMED there should be read as unchecked. `../dead_ends/topological-framings.md` records three refuted
 framings so there is not a fourth.
 
 ## What prompted this
@@ -93,12 +94,23 @@ that turns out to be a known-good combination is better founded than one that is
   storage decision first — *"a simple constraint system is just an information system with the
   consistency structure removed"* — and then went the other way, making `false` the **top**, explosive
   (*"the inconsistent store can answer any ask request"*) and identified with divergence.
-- **The vocabulary is Belnap's** (1977), verbatim: told true / told false / told neither / told both.
+- **A store holding both polarities with contradiction *retained* is the paraconsistent relational model**
+  — Bagai & Sunderraman (IJCM 55(1–2), 1995) and Trân & Bagai (Information Systems 25(8), 2000): a pair
+  `⟨R⁺, R⁻⟩`, *"we do not assume `R⁺` and `R⁻` to be mutually disjoint"*, and *"a particular tuple may be
+  considered to be both in and out of a relation."* **Even the multi-party motivation is theirs** — two
+  disagreeing clinical tests, a tank with three disagreeing sensors. And *"all known (or believed)
+  negative information is stored explicitly"*, over extents that may be **infinite** — though represented
+  by automata rather than constraints, and with no accumulation or multi-source union.
+- **The vocabulary is Belnap's** (1977): told true / told false / told neither / told both. (Ledger:
+  UNVERIFIED — cited by the papers above, not yet read here.)
 
-**What is not in any of them.** Falsity **asserted** as the primitive act — no paper here exhibits an
-agent doing it; the storage of the result is theirs, the assertion is not. Refusing the tombstone
-**chain**, so that *told-both* is representable at all. Demand-driven production with the store as the
-cache. And the distribution: **no party roster and no self-identity** — parties may join with nobody told.
+**What is not in any of them**, stated narrowly. Falsity **asserted by an agent** as the primitive act:
+4QL derives `¬p` into the negative extent by rule, and the paraconsistent model's own worked construction
+populates it by **CWA** — the storage of a negative extent is theirs, an agent *positing* one is not.
+**Multi-party monotone accumulation**: neither paraconsistent paper defines an order on those pairs, a
+merge, or an update. Refusing the tombstone **chain**, so that *told-both* is representable at all.
+Demand-driven production with the store as the cache — named as *open work* in 4QL. And the distribution:
+**no party roster and no self-identity**, parties may join with nobody told.
 
 ## The model: a store of literals, one operation
 
@@ -118,9 +130,11 @@ instantiated.
 
 That is what makes monotonicity free rather than argued for. Merging is declined because it
 **fabricates** — `f(a,Y)` and `f(X,b)` compressing to `f(a,b)` asserts a fact nobody posted, which is
-sound only under a functional dependency (§"No functional dependency"). The cost of the free completion
-over greedy merging is priced in `../dead_ends/`: first-fit is graph colouring, measured at 1.04–1.32×
-optimum, with a real separation reachable at logarithmic arity.
+sound only under a functional dependency (§"No functional dependency"). That reason is decisive on its
+own; what merging would have *cost* was measured separately (greedy merging is first-fit colouring of the
+compatibility complement, within 1.04–1.20× of exact `χ` to n=24 and 1.21–1.32× of a heuristic to n=500,
+with a crown separation at **12 positions giving `χ = 2` against 924 first-fit blobs**) and is recorded in
+`if-built-today-decisions.md`, since a cost that cannot change the decision does not belong here.
 
 **An unsatisfied existential is demand.** Posting `loss(60, V)` with `V` fresh asserts *"there is a loss
 at step 60, and it is V"* — since `V` is unconstrained, it asserts only **existence**, and making an
@@ -199,9 +213,18 @@ Smyth's): **an open set is an affirmable property** — confirmable in finite ti
 never refutable from it. You may conjoin *finitely many* observations, because each takes finite time; you
 may disjoin *arbitrarily many*, because any one suffices.
 
+**And that fixes the evaluation strategy, which is otherwise easy to leave implicit.** Body disjunction is
+carried as **branches rather than backtracked over** — arbitrary `∨` means alternatives accumulate, they
+do not get retried — and a conjunct **filters** the branches it meets, which is frame distributivity
+(`a ∧ ⋁bᵢ = ⋁(a ∧ bᵢ)`) and, operationally, the list-monad bind. Monotone-iff-coordination-free is the
+same shape once more, as **Scott-continuity**: a function that commutes with directed joins is one whose
+answer on the limit is the limit of its answers, which is what lets a lagged replica be right rather than
+merely close.
+
 **Why `¬` had to go.** To affirm `φ` you need a finite observation. To affirm `¬φ` you must rule out
-*ever* affirming `φ`, which is a survey of everything there is. That survey **is** the coordination round
-CALM prices. So "no negation," "opens are affirmable," and "monotone ⟺ coordination-free" are one fact in
+*ever* affirming `φ`, which is a survey of everything there is. That survey is **exactly what
+coordination-freeness excludes** (§"CALM" — the predicate is binary, and nothing here is priced in
+rounds). So "no negation," "opens are affirmable," and "monotone ⟺ coordination-free" are one fact in
 three vocabularies.
 
 **The derivation/report split is the open/closed split.** Derivation affirms; reporting refutes. They
@@ -218,8 +241,9 @@ boundary. Its monotone half stays inside: `beaten(A) :- value(A,V), value(A2,V2)
 **One exception is real and does not repair.** `ensure`, the library's core operation: its loop condition
 is a threshold claim on `progress`, a *retractable* quantity, and its two termination guards are a
 **temporal delta** (*"nothing new was derived"*, which has no positive form) and an **inflationary
-fixpoint test** (*"another lap can only reproduce them"*). Neither is geometric, and both feed demand,
-because both decide whether to relaunch. §"Two layers" is where that belongs.
+fixpoint test** (*"another lap can only reproduce them"*). Neither is expressible in the fragment — each
+compares two moments, which no growing set of facts can do — and both feed demand, because both decide
+whether to relaunch. §"Two layers" is where that belongs.
 
 ### The threshold rule, and its six instances
 
@@ -369,10 +393,24 @@ eventually serves both. It is an open item, and the cost of not having it is at 
 a **residual**, and it is **forward-looking**, which is what makes *"post at convergence or exit"* a
 consequence rather than a rule of thumb: you cannot compute *what I will ever produce* until you are done.
 
+Note the two marks are different operations and must not be run together. **`∖` is set difference in a
+region description** — `E`'s atoms are excluded from the region, never asserted false — where the posted
+`¬` is the polarity. `¬(Q₀ ∖ E)` says *"everything in `Q₀` other than `E` is false"*, and says nothing
+whatever about `E`.
+
 ### How a party comes to know a negative fact
 
 `¬Q` is the primitive. Coming to know one is a **list**, and this is where a closed-world argument
 legitimately returns — as a *route*, not as the semantics.
+
+**The test that separates knowing from merely stopping: could a third party post this knowing only that
+the process died?** For **exhaustion** yes — a pid probe suffices. For **falsity** no, because a dead
+producer's silence is not evidence about the world. That is the launcher-versus-lifecycle split this
+library already has, kept orthogonal for exactly this reason, and collapsing the two is what made a
+single closure predicate look as though it needed a universal over the producer set to mean anything.
+Exhaustion arrives three ways — `p`'s own `lifecycle.stopped`, an observer's `launcher.terminated`, and a
+pid probe — of which only the last is dependable, since the first two exist only if somebody volunteers
+them and the probe **abstains off-host**. None of them is a fact about what exists.
 
 - **A converged producer.** The run ended at 400, so there is no loss at 500. It knows because it ran.
 - **A solver.** A propagator that has proved a region has no solutions may post `¬Q`; one that has not is
@@ -380,8 +418,8 @@ legitimately returns — as a *route*, not as the semantics.
   Unsatisfiability needs no vocabulary of its own: it is **grounds for a post**, not a third kind of
   absence.
 - **A closed producer set.** Everyone who could produce here is done, and no more will appear. This one
-  **costs a query about network membership**, hence a coordination round, priced exactly by the CALM
-  results — and it is the one that needs arguing, because §"CALM" is about not needing such queries.
+  **needs to know who all the producers are** — which is exactly the class of query a coordination-free
+  program may not ask — and it is the one that needs arguing, because §"CALM" is about not needing them.
 
 **The argument for the third, since the case against it is real.** The danger is not the reasoning but the
 *name*: give exhaustion a predicate in the derivation layer and somebody will quantify over it — *"every
@@ -494,10 +532,10 @@ or their union. Each is affirmed by exhibiting a witness.
 
 **`∅` is the one thing not readable**, and it fails twice. *"Nothing has been told about this"* is a
 down-set, so no finite observation affirms it — the open-world assumption recovered as a fact about the
-codomain rather than stipulated. And CALM says it more sharply: `⊒{t}` and `⊒{f}` are each a union over
-parties and therefore monotone, where `∅` is the **joint negation of two growing extents** and can flip,
-so it has **no coordination-free implementation**. Not merely unaffirmable — unanswerable without a
-coordination round. Same for *"and nobody disputes it"*.
+status reading rather than stipulated. And CALM says it more sharply: `⊒{t}` and `⊒{f}` are each a union
+over parties and therefore monotone, where `∅` is the **joint negation of two growing extents** and can
+flip, so it has **no coordination-free implementation**. Not merely unaffirmable — unanswerable without
+coordination. Same for *"and nobody disputes it"*.
 
 **The constraint binds on output, not computation.** A scheduler may consult the `∅`-region mid-flight
 freely; publishing such a reading as an answer is what leaves the monotone class. The reference model
@@ -576,14 +614,15 @@ case reads *"we use deletion to start afresh; since the query is monotone, no in
 output."* So the residual computed **inside** an agent is not a violation; **outputting** one would be.
 
 **And their emptiness query is this design's `¬∃`, worked.** It is their exhibited non-coordination-free
-construct: since every node may hold part of the input, the nodes must flood identifiers and check against
-the membership relation. *"Is there no atom at step 60?"* is that query over a region — which is why
-`= {f}` has no syntax here, and why the design's answer is the one the theorem licenses rather than a
-stipulation.
+construct: since every node may hold part of the input, the nodes must flood identifiers and check them
+against the system relation naming all participants. *"Is there no atom at step 60?"* is that query over a
+region — which is why `= {f}` has no syntax here, and why the design's answer is the one the theorem
+licenses rather than a stipulation.
 
-**One property worth claiming, which the theorem licenses.** Monotone ⟺ computable without the membership
-relation **and** without self-identity. So this design needs **no party roster and no self-identity**:
-parties may join with nobody told.
+**One property worth claiming, which the theorem licenses.** Monotone ⟺ computable without the
+all-participants relation **and** without self-identity. So this design needs **no party roster and no
+self-identity**: parties may join with nobody told. (*"Network membership"* is Hellerstein & Alvaro's
+phrase for it, not Ameloot's — the theorem is Ameloot's, the wording theirs.)
 
 Two further scoping notes. It is a **safety** statement: a lost demand and a slow handler leave a querier
 in byte-identical states, so *liveness* still needs an acknowledgement, and a bounded reconnect still
@@ -635,12 +674,18 @@ deliberately stopping a machine. The logic never had jurisdiction over any of th
 
 > **A bare pattern is `∃`** — one production satisfies it. **A `∀` demand must be *finitely coverable***.
 
-Both ship. A subscription with no repeat is one-shot: it fires once and the worker posts the expiry
-counter-record. With a schedule and a bound it is **one durable record** denoting a region and demanding
-every atom in it — durable across the *producer's* death, because a worker re-drains the control log and
-re-registers whatever is still unanswered, pinned by
+**The `∀` half ships; the `∃` half does not, and the gap should be known.** With a schedule and an
+`until`, a subscription is **one durable record** denoting a region and demanding every atom in it —
+durable across the *producer's* death, because a worker re-drains the control log and re-registers
+whatever is still unanswered, pinned by
 `tests/test_run_episodes.py::test_relaunch_extends_one_series`: one subscribe posted *before episode 1
 exists*, two episodes, ten steps, one series.
+
+The `∃` half is a target, not a description: `worker.py` serves a bare subscribe by reading the register —
+`self._values.get(name)` — and firing at the next safe point with `None` if nothing was ever set. That is
+a **poll**, not an unsatisfied existential waiting on a production. And `{"every": …}` with no `until` is
+schema-legal, documented as *"forever"*, which is what makes the unbounded `∀` demand below concrete
+rather than hypothetical.
 
 **Finitely coverable, not bounded.** Boundedness is admission control wearing a quantifier's clothes, and
 it forbids the demand this design is best at expressing: *"every step, run to convergence, and tell me
@@ -659,7 +704,8 @@ region is not Scott-open and therefore not a region at all.
 
 **Say the consequence out loud: on that space the topology does no work.** Ground atoms are maximal, so
 the space is **discrete** and its frame is the complete **Boolean** powerset — measured three times
-independently. Every open is affirmable, nothing is forbidden, and any structure defined by which sets are
+independently, first exhaustively on a small carrier (**8/8** singletons basic open, **256/256** opens
+complemented) and twice since on larger ones. Every open is affirmable, nothing is forbidden, and any structure defined by which sets are
 open is inert here. What survives is not topology but the **basis**, which frames deliberately forget.
 `../dead_ends/topological-framings.md` records the three attempts that foundered on this. Two carve-outs:
 **continuous value carriers** are the one place the space is genuinely not discrete — though IEEE floats
@@ -1005,7 +1051,10 @@ the whole table off the safety path onto the cost path.
 **Where the narrowing (Smyth) construction goes.** The three powerdomains are the three ways to make "a
 set of possibilities" a domain: Hoare/lower (*may*), Smyth/upper (*must*), Plotkin/convex. Putting the
 upper one on the *value* side is a category error — read extensionally as a set of facts it is antitone,
-so a rule body binding a variable to a member is non-monotone. Its natural home is **demand**.
+so a rule body binding a variable to a member is non-monotone. Its natural home is **demand** (*must*
+produce) — **and that is open**, suggestive and unworked. Note that on a continuous carrier it has no
+representable bottom and narrowing never reaches a singleton, so settledness there arrives by naming the
+value rather than by narrowing toward it.
 
 **Continuous carriers are restricted, not broken.** In a continuous dcpo the basic opens are `⇈c`,
 coinciding with `↑c` exactly in the algebraic case; an open interval **is** `⇈c` for the interval domain.
@@ -1155,19 +1204,27 @@ reintroduces a bug the fold exists to prevent.
    demands; the "global" store is the union of the local ones. This follows from monotonicity and needs no
    coordination. The consequence: the memo check becomes **local**, so two agents demanding the same region
    without having replicated each other's answer both run the six-hour job. That is **single-spawn**, the
-   one irreducibly coordinating requirement, and CALM says it cannot be coordination-free.
+   one irreducibly coordinating requirement — and note it is *not* CALM that prices it: *"run iff no other
+   agent is running this"* is a mutual-exclusion requirement, not a query, so the theorem does not speak
+   to it. What CALM does say is that any *query* whose answer needs the participant roster is
+   non-monotone; single-spawn needs the roster for a different reason, and needs it just as badly.
 
    **And there is a line here the design must not cross.** Content-addressed placement *is* a partitioning
    policy, and *"is this my address?"* is exactly the decision oracle that moves a system out of the model
    CALM's `iff` is stated in. Replicating by address is fine; **concluding absence from ownership is not.**
-6. **Whether demand should be the only interconnect**, and not merely the only one that means anything.
-   Making it architectural would bound coordination by the number of live channels, and would forbid
-   unsolicited broadcast, which is a real affordance worth keeping.
+6. **Whether demand should be the only interconnect**, and not merely the only one that *means* anything.
+   The semantics already reads the second way: an answer is truth restricted to the demand, so anything
+   arriving unbidden is a cache warm-up with no semantic status, and an implementation may broadcast
+   freely without the model noticing. Making it **architectural** — a local view receives *nothing* it did
+   not ask for — would bound coordination by the number of live channels, and would forbid unsolicited
+   broadcast, which is a real affordance. So the two readings should probably stay apart.
 7. **What a conflict means, given that three different things produce one.** **Domain**: re-production
    jitter under a single-spawn violation — a *correct* report of a disagreement the system itself caused.
    **Valuation**: two posters genuinely disagreeing, or one over-claiming its own `¬Q`. Measured
-   counterweight for the first: **0 of 3,165** numeric re-productions diverged on the real corpus. The
-   valuation case has not been measured.
+   counterweight for the first: **0 of 3,165** numeric re-productions diverged on the real corpus — which
+   measures that the consumers' hand-rolled guards are **working**, not that the hazard is absent; a
+   census sees only harms detectable in a log, and is biased low in proportion to the machinery already
+   preventing them. The valuation case has not been measured at all.
 8. **What `every` is** — a `∀` over a strided region, or a firing schedule. The wire format has three
    demand shapes and the quantifier rule covers two; a sampling demand fits neither comfortably, and the
    library defers exactly this. See `memoizer-index-algebra.md`, where it is recorded that the current
