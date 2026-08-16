@@ -133,6 +133,36 @@ looks like combination is one of two things: **set semantics** collapsing identi
 literal refining** as a variable inside it is bound. Two posts never merge; one post gets more
 instantiated.
 
+**Which commits to the largest thing in this document: variables are shared across agents.** This is a
+**distributed unification engine**, not a message protocol. When a producer binds `V`, the querier's own
+term refines — the querier is holding that variable, not a copy of it — and that is what makes *"one
+representation, four roles"* (§"Facts and demands are dual") a mechanism rather than a slogan. Post
+`loss(60, V)`: before binding it asserts existence and is a question; after binding your own term **is**
+the answer. Without sharing, a demand and an answer are different objects that merely resemble each
+other, and you need a delivery mechanism to carry one into the other — which is the machinery
+§"Answers stream individually" spends twenty lines killing.
+
+Two posts of the same shape still create **two** variables, and that is not a contradiction: sharing is
+with whoever holds a reference to *that* variable, and independent posts hold none of each other's. It is
+why a call table is still needed (§"Demand subsumption").
+
+**A binding is an ordinary posted fact**, which is what keeps this coordination-free. Two agents binding
+`V` differently is two facts, monotone, no arbiter — and what comes out is `loss(60, 0.5)` and
+`loss(60, 0.4)`, two atoms both true, which is the example this section opened with. **Conflicting
+bindings are the free completion one level down**, at the variable rather than at the atom.
+
+That is also why **Oz/Mozart's owner protocol is not needed here** — *"the owner accepts the first binding
+request and ignores all subsequent"* buys **determinism**, and determinism is exactly what this design
+has already declined. Oz needs one binding to win consistently everywhere; here both are kept and the
+disagreement is readable. The paraconsistent stance and the distributed unification engine are not two
+commitments, they are one.
+
+**What it costs, stated plainly, because this is a large thing to ask for.** A variable needs an identity
+that survives crossing a host, so **variable naming is protocol** and belongs in the wire format. A
+variable becomes a durable object with the same reclamation question as everything else. And a reader
+deciding whether this direction is right should know that *"distributed unification engine"* is a
+substantially bigger artifact than *"message protocol"* — see §"The honest cost".
+
 That is what makes monotonicity free rather than argued for. Merging is declined because it
 **fabricates** — `f(a,Y)` and `f(X,b)` compressing to `f(a,b)` asserts a fact nobody posted, which is
 sound only under a functional dependency (§"No functional dependency"). That reason is decisive on its
@@ -808,7 +838,9 @@ get notified when new leaves appear beneath it. **This is one object with four n
 the call table, the registry, the work set and the cursor are the set of live demands, keyed by skeleton,
 indexed by pattern. The division: *the call table decides who is told; the store decides what is
 computed.* It does not remove the need for it — two queriers independently posting `loss(60,V)` hold
-distinct terms with distinct tails, so one producer answer does not satisfy both.
+distinct terms with distinct tails, so one producer answer does not satisfy both — the producer must bind
+each. That is not in tension with variables being shared (§"The model"): sharing is with whoever holds a
+reference to *that* variable, and two independent posts hold none of each other's.
 
 **There is no `read`, and no syntactic substitute.** A tempting test — *"does the posted term have a free
 variable in key position?"* — cannot carry the distinction. It is not invariant under rewriting
@@ -1193,6 +1225,14 @@ want; large to build.
 A **rewrite, not a refactor**, with consumers on the current API. It trades a design whose failure modes
 are intimately known for one whose failure modes would have to be learned. And storage grows wherever the
 order is partial, since there the only sound completion is the free one.
+
+**And the artifact is much larger than the current one.** Today's runstate is a topic log with typed
+conventions on top — a message protocol, and a thin one on purpose. What §"The model" commits to is a
+**distributed unification engine**: variable identity that survives crossing a host, a wire format that
+names variables, a per-functor term index that supports pattern-walking rather than key lookup, and a
+constraint solver in the read path. That is the honest headline cost, and it dwarfs the fold rewrites
+below. It is also the thing a reader should weigh first, because everything else in this document is
+downstream of being willing to build it.
 
 **No fold ports as-is.** Measured across the whole of `observables.py`: 13 of 16 fold readings are
 non-monotone, and the operator responsible is `latest` = `argmax(seq)`, which appears six times directly
