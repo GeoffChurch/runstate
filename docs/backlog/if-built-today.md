@@ -123,8 +123,11 @@ post(c)        -- add a literal to the store
 Agents post. A **querier** and a **handler** are not different kinds of thing; they are agents posting
 different literals.
 
-**There are two directions and no cells.** Post `Q` to say it is true; post `¬Q` to say it is false. The
-store is a growing set of ground literals in relations. `loss(60, 0.5)` and `loss(60, 0.4)` are two atoms,
+**There are no cells, and no built-in directions either.** The store is a growing set of ground literals
+in relations, and that is the whole of it. A schema that declares two relations a **complementary pair**
+gets to read one as *"true"* and the other as *"false"* — written `Q` and `¬Q` throughout this document —
+and a schema that declares no pair simply has relations. The substrate never knows the difference; the
+pairing is a signature fact, like a sort (§"Types"). `loss(60, 0.5)` and `loss(60, 0.4)` are two atoms,
 both true, and nothing combines them — a reader asking `loss(60, V)` gets two answers. Everything that
 looks like combination is one of two things: **set semantics** collapsing identical literals, or **one
 literal refining** as a variable inside it is bound. Two posts never merge; one post gets more
@@ -183,9 +186,14 @@ The derivation language is **definite clauses** — one atomic head, a body of f
 a **polarised signature**, with constraints from a fixed CLP domain as ordinary body literals. **No `¬`,
 no `→`, no `∀`** as operations; and no `∨`, no `⊥`, no equality and no `∃` in a *head*.
 
-**There is no `¬` in the language at all.** `¬Q` is a **polarised literal** — the mark is part of the
-relation's name — and what the logic sees is an ordinary positive one. Nothing is excepted, because
-nothing negates.
+**There is no `¬` in the language at all, and no polarity either.** The store holds literals in relations;
+`loss` and `loss⁻` are **two relations that no axiom connects**. What makes them a *pair* is a declaration
+in the **signature**, and nothing else — so polarity sits exactly where sorts and wrappers sit, as schema
+the user chooses and the substrate is ignorant of (§"Types"). A user who declares no pairing has ordinary
+relations and no four-value reading; a user who declares one gets it.
+
+`¬Q` is therefore **notation in this document** for a literal of a declared complementary relation, not a
+construct the language contains. Nothing is excepted, because nothing negates.
 
 **What is missing, and why — the reasons are two, not four.**
 
@@ -1021,6 +1029,25 @@ data, the problem returns unchanged. And it is a soundness precondition for the 
 typing discipline — `ground(Q)` is computed against a signature, so two agents disagreeing about the
 signature assert **different `{f}` regions**.
 
+### Polarity is schema, not substrate
+
+A **complementary pair** is a signature declaration like any other: it says two relations of the same
+shape are to be read as the two directions on one subject. The substrate stores literals and knows
+nothing about it; the four-value reading, `⊒{f}`, and everything §"An atom's status" says all exist
+**relative to a declared pairing** and are simply unavailable to a schema that declares none.
+
+Three things follow. **Polarity is opt-in** — a user who wants plain relations has them, and nothing in
+the substrate is wasted. **It rides the signature channel**, so two agents disagreeing about a pairing is
+the same failure as disagreeing about a sort, with the same fix and the same unenforceability. And
+**nothing about a negative relation is structurally special**: it is permanent, unauthored and
+region-capable exactly as a positive one is, which is why the reclamation tiering above turns on
+re-derivability rather than on direction.
+
+What *is* asymmetric is informational and belongs to the data rather than the schema: absence is uniform,
+so a negative relation's extension usually compresses into one record where a positive one does not. That
+gives a negative record more **reach**, so a wrong one does proportionally more damage — a reason for care,
+not a reason to treat the direction as a different kind of thing.
+
 ### Sort closure, and disequality
 
 **Disequality is a constraint-domain predicate, never a logical connective**, so it was never in the
@@ -1106,13 +1133,18 @@ reachability, and the tiers are not in the order storage cost suggests:
 | | cost to lose | evictable? |
 |---|---|---|
 | a **derived** atom | recompute | freely, while its premises survive |
-| a **produced** base fact | a six-hour job — *if the producer still lives* | at a price, and only then |
-| a **negative** claim | possibly **unrecoverable** | no |
+| a **produced** record whose producer still lives | a re-run — six hours, and *the same answer* only if production is deterministic | at a price, and only then |
+| a **produced** record whose producer is gone | **unrecoverable** | no |
 
-The last row is the surprise. A `¬Q` is a determination made at a moment, and a fresh producer may have no
-way to re-make it; evicting one descends the status `{f} → ∅`, the single descent this design does not
-permit. So the cheapest-looking records are the ones that must never be collected — and *"assuming the
-producers are still there"* is the clause the whole tiering turns on.
+**The axis is re-derivability, and it has nothing to do with polarity** — an earlier draft made the last
+row *"a negative claim"* and that was wrong in both directions. A positive fact from a run whose
+checkpoint is deleted is exactly as unrecoverable, and evicting it descends `{t} → ∅`, the same forbidden
+descent. And on determinism the ordering **inverts**: re-running a converged producer regenerates
+`¬(S > 400)` exactly, where re-running a non-deterministic one may produce `loss(60, 0.5000001)` instead
+of `0.5` — a *different atom*, which is a failed re-derivation dressed as a successful one.
+
+So *"assuming the producer is still there, and deterministic"* is the clause the whole tiering turns on,
+and neither clause is about which polarity the record carries.
 
 ## What the substrate is for
 
