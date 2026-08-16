@@ -1,10 +1,13 @@
 # If built today: a monotone store of polarised literals
 
-**Status:** a target sketch. Not a plan to rewrite — the honest answer to *"what would this look like
-from scratch, and is append-only load-bearing?"*
+**Status:** a design in its own right, not a migration plan. It is written standalone — the question is
+whether *this* is a good design, not whether it beats what exists.
 
-The answer to the second half is **no**. The load-bearing property is **monotonicity**; append-only was
-one way to get it, and there is a theorem saying so (§"CALM").
+**What it is for.** Several agents, spread over hosts, cooperating on work that takes hours and may die
+partway: producing values, asking each other for values, and having to agree about what has been produced
+and what never will be. The hard part is not the producing. It is that a querier is far from the data,
+messages are slow and lossy, agents come and go, and everybody must still reach the same answer without
+stopping to confer.
 
 **Companions.** `if-built-today-decisions.md` records what was tried and withdrawn, so this file can
 state conclusions. `../if-built-today-citations.md` is the verification ledger — it marks each citation
@@ -12,40 +15,33 @@ state conclusions. `../if-built-today-citations.md` is the verification ledger �
 CONFIRMED there should be read as unchecked. `../dead_ends/topological-framings.md` records three refuted
 framings so there is not a fourth.
 
-## What prompted this
+## Two commitments, and everything follows from them
 
-Not one defect. A slew of rough edges and inelegances, of which the sharpest is measured.
+**Nothing is ever retracted.** Every record is permanent — not because a log is a convenient
+implementation, but because *retraction is what costs coordination*, and there is a theorem saying so
+(§"CALM"). Monotonicity is the load-bearing property; append-only is one way to get it and not the only
+one.
 
-**The measured one is attribution.** A great deal of *"which thing does this record belong to?"* is
-currently answered by **where the record sits in the log** — which episode a heartbeat belongs to, which
-claim a terminal pairs with, which stop a terminal discharges. Order lies: a worker from a dead episode
-emits late, position says it is current, and `progress` jumps 0 → 500. In the corpus, **11 of 37 stops
-were discharged by a record the worker did not write, 6 of them malformed.**
+**Identity is data, never position.** *"Which thing does this record belong to?"* is answered by an
+argument inside the record, never by where it sits in an order. `heartbeat(episode2, 500)`, not *"the
+heartbeat after the second `started`"* — so there is nothing to infer, because a query about episode 2
+cannot match episode 1's records; the arguments do not unify.
 
-The fix is small and does not need anything else in this document: **put the identity in the term as an
-ordinary argument.** `heartbeat(episode2, 500)`, not *"the heartbeat after the second `started`"*. Then
-there is nothing to infer, because a query about episode 2 cannot match episode 1's records — the
-arguments do not unify. It would work in a plain mutable database.
+**The second commitment is forced by the first.** Under permanence a mis-aimed record can never be
+corrected, only supplemented by a correction that itself has to be trusted. So whatever a reader needs to
+know about a record has to be **in the record, at write time**. Position is exactly the thing that is not.
 
-**And append-only is why it matters here**, which is worth saying because it is a fact about the *status
-quo*, not a payoff of what follows: a store that cannot retract cannot re-attribute. A mis-aimed record
-is permanent, and the only recourse is appending a correction that itself needs to be trusted.
+**Calibration, since the second commitment sounds cheap.** It is the one place this design's problem class
+has been measured, in an existing system with the opposite convention: **11 of 37 stops were discharged by
+a record the worker did not write, 6 of them malformed** — a late heartbeat from a dead episode read as
+current, a displaced worker's terminal read as the run's verdict, a halt swallowed because discharge was
+author- and body-blind. Position-derived identity does not fail rarely.
 
-| defect | class | fixed by identity-as-data? |
-|---|---|---|
-| unaimed heartbeat moving `progress` 0 → 500 | attribution | **yes** |
-| a displaced worker's own terminal read as the run's verdict | attribution | **yes** |
-| #39, the swallowed operator halt — discharge is author- and body-blind | attribution | **yes** |
-| forged verdict silently truncating `ensure` | forgery | no |
-| the claim cascade — one forgery, unbounded double-live | forgery | no |
-
-**Forgery defects come from the absence of write authority, which no representation changes.** A forger
-posting `stopped(episode2, completed)` is making a well-typed post the store accepts, exactly as
-*"cooperative, no enforcement"* intends. Nothing here touches that.
-
-**The rest of this document is a different question**, prompted by the same friction: what the whole thing
-looks like if the store is designed around monotonicity rather than around a log. The attribution
-measurement does not support it. Nothing here is measured against a system that exists.
+Two things that measurement does **not** do. It does not support the rest of this document — identity-as-
+data would work in a plain mutable database, and nothing here is measured against a system that exists.
+And it does not touch **forgery**: a forger posting `stopped(episode2, completed)` makes a well-typed post
+the store accepts, exactly as *"cooperative, no enforcement"* intends. Attribution defects die under these
+commitments; forgery defects do not, and no representation changes that.
 
 ## What makes the answer worth having
 
@@ -1194,10 +1190,15 @@ The third is the answer to *"why this library rather than Postgres plus a type d
 object is closer to **a Prolog with a durable fact base and a pid probe** than to a schema. Coherent to
 want; large to build.
 
-## What survives from runstate
+## What the problem domain forces, whatever the design
 
-- **The run as a durable identity outliving its processes.** The actual contribution, now explicit.
-- **Content-addressed run ids.** Becomes the cache key, unchanged.
+These are not inherited from an incumbent; they are constraints the setting imposes, and any design for it
+will contain something playing each role. They are listed because it is easy to mistake them for choices.
+
+- **A run is a durable identity that outlives its processes.** The unit somebody asks about is not a
+  process — it survives the death and relaunch of every process that ever served it.
+- **Content-addressed identity.** If a run is named by what it computes, the name is also the cache key,
+  and two agents asking for the same thing ask under the same name without arranging to.
 - **The verdict as a join of two partial observers** — and it is a *report*, which is why it may use the
   narrowing reading that derivation may not.
 - **Cooperative, no enforcement.**
