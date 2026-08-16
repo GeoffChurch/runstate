@@ -57,10 +57,12 @@ reimplements it.
 *"This atom is false and nothing says otherwise"* is not against the rules — it has no syntax. The
 alternative to unwritability is code review.
 
-**The restrictions coincide.** Finite `∧` with arbitrary `∨`, monotone-iff-coordination-free, and
-affirmable-in-finite-time are one fact in three vocabularies. A constraint set that three independent
-routes agree on is **forced** rather than chosen, which is the strongest thing available to say about a
-design decision.
+**The restrictions coincide.** Finite `∧` with arbitrary `∨` and affirmable-in-finite-time are one fact in
+two vocabularies — the second is the standard justification for the first, so they are not independent
+confirmations — and **monotone-iff-coordination-free is a genuinely separate route to the same
+constraint set**, arrived at from distribution rather than from observability. Two routes agreeing is
+weaker than three would be and still worth having: it is the difference between a constraint set that was
+chosen and one that was met twice.
 
 **A checker can enforce it.** The discipline is a property of the language, so a tool can hold it. That
 is the static-checkability principle applied to a language rather than to a field access.
@@ -236,7 +238,9 @@ cannot mix, for the same reason the complement of an open is not open.
 | **reporting** — what is missing, what is best, what diverged | **yes, inherently** | **no** |
 
 `argmax` is therefore not expressible in derivation, so a bandit's one non-monotone step is forced to the
-boundary. Its monotone half stays inside: `beaten(A) :- value(A,V), value(A2,V2), V2 > V` only ever grows.
+boundary. Its monotone half stays inside: `beaten(A) :- value(A,V), value(A2,V2), A ≠ A2, V2 > V` only
+ever grows. (The disequality is not decoration — without it, §"No functional dependency" lets one arm
+carry two values, and `A` beats itself.)
 
 **One exception is real and does not repair.** `ensure`, the library's core operation: its loop condition
 is a threshold claim on `progress`, a *retractable* quantity, and its two termination guards are a
@@ -527,8 +531,9 @@ far enough reports `∅` where a better-propagated one reports `{f}`. Measured s
 status sits **below** the complete one in 144 of 144 cases, never above. Incompleteness costs knowledge,
 never soundness — the price is that a status is **relative to the propagation done**, hence local.
 
-**What is readable is the up-sets, and there are exactly four.** `⊒ {t}`, `⊒ {f}`, `⊒ {t,f}` (*disputed*),
-or their union. Each is affirmed by exhibiting a witness.
+**What is readable is the up-sets, and there are exactly four non-trivial ones.** `⊒ {t}`, `⊒ {f}`,
+`⊒ {t,f}` (*disputed*), or their union. Each is affirmed by exhibiting a witness. (Six up-sets in all —
+these four plus the empty and total ones — which is the six of the six-of-sixteen measurement above.)
 
 **`∅` is the one thing not readable**, and it fails twice. *"Nothing has been told about this"* is a
 down-set, so no finite observation affirms it — the open-world assumption recovered as a fact about the
