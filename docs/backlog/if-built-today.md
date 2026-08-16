@@ -676,7 +676,7 @@ returns the wrong rows.
 > **Threshold claims are always available. Exact claims require settledness.**
 
 **This is a corollary, and an earlier draft billed it as an axiom.** It predates the geometric framing and
-was the original organising principle; §"Geometric logic" then subsumed it, its own table carrying the
+was the original organising principle; §"The language" then subsumed it, its own table carrying the
 row *threshold claims only | **opens***. So what this states is *"only opens are affirmable"*, in the form
 a rule author needs it — which earns a section, but not primacy.
 
@@ -835,21 +835,48 @@ dependency") catches what the status layer cannot. The residue is that a conclus
 premise that later became disputed; nothing retracts, but §"Demand is control" owes an account of who can
 still find it.
 
-## Geometric logic, which is what this language is
+## The language, and what each restriction buys
 
-The derivation language is **geometric logic**: finite ∧, arbitrary ∨, ∃. **No ¬, no →, no ∀.**
+**It is not geometric logic, and an earlier draft's banner said it was.** The derivation language is
+**definite clauses** — one atomic head, a body of finite `∧`, `∨` and `∃`, over a **polarised signature**,
+with constraints from a fixed CLP domain as ordinary body literals. **No `¬`, no `→`, no `∀`** as
+operations; and no `∨`, no `⊥` and no `∃` in a *head*.
 
-That needs no qualification for the negative post, and an earlier draft's qualification was the symptom of
-a wrong reading. **There is no `¬` in the language at all.** `¬Q` is a **polarised atom** — the mark is
-part of the relation's name, and what the logic sees is an ordinary positive literal. Nothing is excepted,
-because nothing negates.
+**There is no `¬` in the language at all.** `¬Q` is a **polarised literal** — the mark is part of the
+relation's name — and what the logic sees is an ordinary positive one. Nothing is excepted, because
+nothing negates.
 
-Every restriction arrived at here independently is one of its clauses:
+**What is missing, and why — the reasons are not four, they are two.**
 
-| decided here | geometric logic |
+| geometric logic has | here | why |
+|---|---|---|
+| arbitrary `∨`, `∃`, finite `∧` **in bodies** | **yes** | — |
+| clause-level `∀` (the sequent shape) | **yes** | — |
+| arbitrary `∨` **in heads** | **no** | a disjunctive fact has nowhere to live: this store is a **set of atoms**, one model. `φ ⊢ a ∨ b` needs a set of *models*, or the disjunctive chase |
+| `⊥` in heads — integrity constraints | **no** | same reason, stated in §"No functional dependency": a store that must accept what it is given can only **reject a post** (order-dependent) or **go inconsistent** |
+| equality in heads | **no** | that *is* a functional dependency — same reason a third time |
+| `∃` in heads — value invention | **no** | CALM's quiescence argument **requires** no value invention. (An existential *post* is fine; a rule minting a fresh variable is not.) |
+
+So three omissions are one reason — **the store must accept what it is given** — and the fourth is
+CALM's. None is taste.
+
+**Which places the language two rungs lower than the banner claimed, and lower is the point.** Lacking
+`⊥` in heads we do not even have goal clauses, so this is **definite**, strictly below Horn in the
+logic-programming sense; and `∨`-in-heads is exactly what separates geometric from coherent. Being low is
+what buys the tractable corner (monotone queries answerable directly, in PTIME), the placement strictly
+inside the coordination-free class, and the no-value-invention property CALM's proof depends on. **The
+banner pointed up while the design's virtue points down.**
+
+⚠️ **Terminology hazard, and a live one**: *Horn* means "at most one positive literal" in logic
+programming — so it admits goal clauses — and in the categorical hierarchy (Johnstone D1.1) it means
+formulas built from `⊤`, atoms and finite `∧`, which already excludes `⊥` and `∨`. Say which is meant.
+
+Every restriction still lines up with an affirmability clause, which is the part that was right:
+
+| decided here | why it holds |
 |---|---|
-| definite clauses, no negation | no ¬ |
-| carry all branches rather than backtrack | **arbitrary ∨** |
+| definite clauses, no negation | no `¬` — nothing to refute with |
+| carry all branches rather than backtrack | `∨` in **bodies** |
 | conjuncts filter branches (the list-monad bind) | frame distributivity, `a ∧ ⋁bᵢ = ⋁(a ∧ bᵢ)` |
 | threshold claims only | **opens** |
 | monotone ⟺ coordination-free (CALM) | Scott-continuity |
