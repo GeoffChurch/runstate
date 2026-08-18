@@ -376,6 +376,72 @@ unilaterally terminate even though they may receive additional data in the futur
 **settledness question**, published, with a semiautomata model bridging relational transducers to CRDTs.
 Expect it to be more directly on target than review 7 suggested, and possibly to price more than one claim.
 
+### Power, Koutris & Hellerstein, *The Free Termination Property of Queries over Time*, ICDT 2025 (LIPIcs 328:32) — **CONFIRMED** (read in full, 22 pp.). Review 7's claim about it is **understated**
+
+`power-koutris-hellerstein-2025-free-termination.pdf`. Review 7 cited it only for *"threshold claims
+always, exact claims at settledness"*. It is much more than that: **free termination is this design's
+settledness question**, and the paper's opening complaint is this document's, from the other side.
+
+**The gap they name is the gap this design fills — and by a different mechanism.** On grow-only-set CRDTs:
+*"CRDTs provide coordination-free consistency, but do not support free termination. In the absence of
+coordination, we do not have a mechanism for determining locally whether we have received all the elements
+in the network … **This is not a particularly satisfactory contract between the system and the user: what
+good is distributed state if you do not know when you can query it reliably?**"* Their answer is to
+*derive* termination from the query's algebra. **This design's answer is that settledness is told, not
+derived** — a producer who knows posts it. The two are complementary, and the difference should be stated:
+theirs works with no cooperating producer and only for queries with the right algebra; ours works for any
+query but needs somebody who knows.
+
+**Definitions and the results that bear on the threshold rule:**
+
+- **Def. 3 (free termination state):** `s` is one for `Q` if `Q(s) = Q(s')` for every `s'` reachable from
+  `s`. *"the distributed system can output the value of `Q` without the need to continue the computation."*
+- **Def. 12 + Prop. 13 (threshold queries):** a threshold line is an **antichain** `C`, and
+  `Q_C(s) = ⋁_{c∈C}(s ⊒ c)`. Under an inflationary semiautomaton the free-termination states are
+  **exactly** the elements at or above `C`. And — *"any monotone Boolean query **must be** a Boolean
+  threshold query"* (excluding the always-false one). So the threshold form is **forced**, not chosen;
+  §"An atom's status" is not one design among several.
+- **Prop. 9 / Prop. 10:** inflationary plus a maximal state, or a monotone query at a maximal answer, gives
+  free termination.
+- **Prop. 14:** even a *non-monotone* query with any free-termination state has an antichain threshold —
+  above it the behaviour is governed, below it unconstrained.
+- **Prop. 15 / 16 (join-semilattice):** all free-termination states return the **same value**, and from any
+  state a free-termination state is **reachable**. This design's order is set inclusion, so settledness is
+  consistent and never unreachable — both worth claiming and neither currently claimed.
+
+**Thm. 18, the "inverse curse theorem" — the retraction commitment, proved independently of CALM.** *"Let
+`Q` be a non-constant query. If every state of `D` is invertible, then `Q` has **no free termination
+states**."* Cor. 20: the same when `(D,U)` forms a group. Their gloss: *"Two parallel lines of work have
+shown the value of invertibility in data systems (DBSP, DBToaster) and the value of coordination-free
+monotone queries (CALM theorem, CRDTs), but **the benefits of these properties appear mutually
+exclusive**."*
+
+So §"Two commitments" has a second, independent argument: allow retraction and **nothing ever knows it is
+finished**. Not a CALM restatement — CALM is about soundness, this is about completeness, and the paper
+says so.
+
+**Thm. 24 — and it corrects the doc's justification for `= {f}`.** *"A Boolean query `Q` is positively
+(resp. negatively) coordination-free if and only if `Q` is monotone (resp. **antitone**)."* Positive
+coordination-freeness *"is exactly the notion of query coordination-freeness used for transducer
+networks"*. So antitone queries — emptiness among them — **are** coordination-free, in the *negative*
+direction: Example 11 freely terminates on *"every element of the stream is an `a`"* the moment a non-`a`
+arrives. And Ameloot's exclusion of them is diagnosed as an artefact: *"because of … the encoding of the
+boolean values True and False being the presence of an empty tuple and the absence of a tuple."*
+
+The doc's §CALM currently says `= {f}` has no syntax *"because the theorem licenses it."* That reasoning is
+too crude. The precise statement: an emptiness query is antitone, so it free-terminates exactly where a
+**witness** appears — which is the direction that finds an atom, never the direction that finds none. The
+asymmetry survives intact and is now derived rather than borrowed.
+
+**Thm. 22 — coordination-freeness is a property of a (query, input) pair**, not of a query alone: *"we
+avoid coordination for a given query on some inputs, but not all inputs!"* The doc's language-level ban is
+therefore **conservative** — it buys the guarantee for every input, at the cost of refusing queries that
+would have been fine on the inputs actually seen. Worth stating as a deliberate trade.
+
+**§5.2 — the roster, a third time.** Model `All()` as a nullary relation; states with `All = T` get
+self-loops, so every such state is a free-termination state. *"Of course, the tradeoff is that updating
+`All` requires coordination between the nodes."*
+
 ### Hellerstein, *Complete CALM: A Coordination Criterion for Specifications*, arXiv:2602.09435v4 (14 June 2026) — **CONFIRMED** (read in full, 26 pp.), and it **corrects §CALM**
 
 `hellerstein-2026-complete-calm.pdf`. **Single-authored — Hellerstein, not Power**; a search result
