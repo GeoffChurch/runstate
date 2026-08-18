@@ -1,6 +1,7 @@
 # Dead end: naming the store with a topological structure
 
 **Status:** REFUTED 2026-08-14, on the third attempt, by two adversarial reviews plus measurement.
+**Reconfirmed 2026-08-16 from primary source** — see the sheaves note below.
 Three different structures were tried on `../backlog/if-built-today.md`; all three failed, and after
 the third the *cause* is known and is common to all of them. Recorded so there is not a fourth.
 The **insights survive** and are in the doc; the **borrowed names** do not.
@@ -33,6 +34,20 @@ dual"; a residual is not upward-closed, so partial terms are unavailable). Groun
 so the space is **discrete** and the frame is the complete **Boolean** powerset. Measured three times
 independently. Every open is affirmable; nothing is forbidden; a structure defined by which sets are
 open cannot do work here.
+
+**Sheaves — confirmed from primary source 2026-08-16.** Review 7 recommended Morton (*Contextuality
+from missing and versioned data*, arXiv:1708.03264) as *"the doc's primary citation for §'the sheaf
+map',"* calling his setting *"ours verbatim."* Reading him settles it the other way. His two levels
+that **keep** row identity — tables (Def. 6.3) and table-spaces (Def. 6.5) — are *always* separated and
+*always* completable to a sheaf (Prop. 6.4; p. 18), because a compatible family of indexed rows has a
+canonical glue: take the shared `(v, i)`, concatenate the states. The obstruction exists only at the
+level of **relations** (Def. 6.8), where restriction *"necessarily involves summing over indices"* and
+identity is gone. Our records carry identity in their arguments, so this design sits permanently at the
+level where the phenomenon is **unavailable** — Abramsky's *"quite trivial … functions on a discrete
+space"* aside, now with a construction behind it. **Do not cite Morton in support of a sheaf framing
+here; he is evidence against one.** What he is good for is the regime
+(`../backlog/if-built-today.md` §"What it is for") and the aggregation hazard (§"What gets built on
+top"), both now in the doc.
 
 **Formal topology.** `Pos` is *unique given* `◁` (Ciraulo & Sambin 2018, Prop. 4.6; Aczel via
 Coquand), so it is not ours to redefine as a state predicate — and under our `◁` the forced `Pos` is

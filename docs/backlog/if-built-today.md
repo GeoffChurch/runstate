@@ -5,9 +5,17 @@ whether *this* is a good design, not whether it beats what exists.
 
 **What it is for.** Several agents, spread over hosts, cooperating on work that takes hours and may die
 partway: producing values, asking each other for values, and having to agree about what has been produced
-and what never will be. The hard part is not the producing. It is that a querier is far from the data,
-messages are slow and lossy, agents come and go, and everybody must still reach the same answer without
-stopping to confer.
+and what never will be.
+
+**The regime is a ratio.** Morton (2017) names it the **slow inconsistent regime**: *slow* — analysis
+happens on the same timescale on which information is collected and transmitted; *inconsistent* — agents
+*"because analysis is slow never reach consensus,"* and may hold irreconcilably different views. The test
+is checkable and scale-free. Four hosts running six-hour jobs are in it for the same reason star systems
+are: the answer is wanted while the thing it is about is still changing. Only the constant differs, and
+the interstellar case is merely where the ratio is impossible to argue with.
+
+The hard part is not the producing. It is that the data is elsewhere, messages are slow and lossy, agents
+come and go, and everybody must still reach the same answer without stopping to confer.
 
 **Companions.** `if-built-today-decisions.md` records what was tried and withdrawn, so this file can
 state conclusions. `../if-built-today-citations.md` is the verification ledger — it marks each citation
@@ -42,6 +50,20 @@ data would work in a plain mutable database, and nothing here is measured agains
 And it does not touch **forgery**: a forger posting `stopped(episode2, completed)` makes a well-typed post
 the store accepts, exactly as *"cooperative, no enforcement"* intends. Attribution defects die under these
 commitments; forgery defects do not, and no representation changes that.
+
+**And it forecloses a failure no census could have found.** *Contextuality* is the situation
+where several agents each hold a coherent view, every pair agrees wherever they overlap, and no global
+picture produces them all — formally identical to Bell's theorem, under a dictionary that is forced rather
+than analogical (compatible family ↔ no-signalling, global section ↔ hidden-variable model). It is
+undetectable by any agent, since every local and every pairwise check passes. Morton (2017) shows it arises
+from thoroughly ordinary causes: from missing data alone, and from stale reads under snapshot isolation
+alone. **It cannot arise at this layer.** Gluing indexed rows is a join on identity, so the glue is
+determined rather than guessed, and his Prop. 6.4 constructs it for any compatible family; the obstruction
+lives one level up, where restriction *"necessarily involves summing over indices"* (Def. 6.8) and nothing
+records which row contributed what. Of his own versioning example: *"conflicts are resolved by version
+numbers. Forgetting the version numbers, we get disagreement on indexed overlaps."* Contextuality requires
+forgetting the discriminator; this commitment is the refusal to. **The foreclosure reaches exactly as far as
+identity stays attached** — a consumer that aggregates performs the forgetting map itself, which is §Open.
 
 ## What makes the answer worth having
 
@@ -632,7 +654,7 @@ That converts a preference into a requirement. If a querier is far from the data
 information flows one way, no ownership protocol, no consensus; **non-monotone** ⟹ you must know you have
 seen everything, which is what coordination is for.
 
-**Four scoping notes, three of them repairing a natural over-reading.**
+**Scoping notes, several of them repairing a natural over-reading.**
 
 **It is relative to a model, and the model is the one where nobody knows the distribution.** Cor. 13 holds
 where the partition is arbitrary and *unknown to the program*, with asynchronous fair runs and
@@ -641,11 +663,24 @@ to satisfy. Give the nodes knowledge of the partitioning policy and the class gr
 active domain and **every computable query is coordination-free**. So the `iff` is a statement about
 ignorance, not about queries alone.
 
+**Which puts a line in front of this design's own placement story.** Content-addressed placement *is* a
+partitioning policy, and *"is this my address?"* is exactly the decision oracle that moves a system out of
+the model the `iff` is stated in. Replicating by address is fine; **concluding absence from ownership is
+not.**
+
 **"Coordination-free" is weaker than it sounds.** The definition is *existential over placements* — for
 every input there **exists** some partition on which the computation quiesces with no messages — not a
 promise that a real run sends none. The authors warn against that reading and exhibit a coordination-free
 transducer that communicates on the obvious placement. So *"no round trips"* is not licensed, and neither
 is pricing coordination in rounds: the predicate is binary.
+
+**What survives that deflation is a correctness property, not a performance one** — and it is the one
+worth the price. Coordination-freeness does not promise fewer messages. It promises that the answer needs
+**no arbiter**: every agent converges on the same conclusion, with no round, no leader, no agreement about
+who the participants are, and no moment at which somebody must be *sure they have heard everything*. Read
+as a latency claim it is weak and the authors say so. Read as a claim about what the answer depends on, it
+is exactly what a ban on negation buys — and it is worth buying wherever an arbiter is unaffordable or
+impossible, rather than merely slow.
 
 **The theorem constrains the computed query, never the operators.** Every query distributedly computable
 by a first-order transducer is computable by one using negation internally, and the proof of the monotone
@@ -666,6 +701,27 @@ phrase for it, not Ameloot's — the theorem is Ameloot's, the wording theirs.)
 Two further scoping notes. It is a **safety** statement: a lost demand and a slow handler leave a querier
 in byte-identical states, so *liveness* still needs an acknowledgement, and a bounded reconnect still
 needs a cursor. And it applies to the **answer** relation; demand is control.
+
+**None of which extends to not doing the work twice.** *"Run iff no other agent is running this"* is
+mutual exclusion, not a query, so the theorem is silent on it and a roster is needed anyway — that is
+**single-spawn**, priced in §Open. It is not a counterexample to the paragraph above but a different
+question: the answers converge without an arbiter *and* two agents may separately spend six hours
+computing the same one. Only the first is a claim about correctness.
+
+**And the theorem is not the only thing monotonicity buys; the rest is unconditional.** CALM's `iff` holds
+relative to a model — arbitrary unknown partition, fair asynchronous runs — so a reader who doubts the
+model doubts the guarantee. What follows comes with no hypotheses at all.
+
+**A partial store is sound, never wrong.** `S' ⊆ S` implies everything derivable from `S'` is derivable
+from `S`, so a crash mid-write leaves a subset, and every subset is a valid store: no repair pass, no torn
+state, no reconciliation. The contrast is the point. Under retraction that same subset may hold a fact
+whose retraction has not arrived, so a lagging replica is not an incomplete view but an **incorrect** one,
+and it has no way to tell which it is.
+
+**Delivery gets its properties free.** Merge is union — idempotent, so at-least-once delivery gives
+exactly-once semantics with no dedup table; commutative, so reordering needs no sequencing; associative, so
+batching is arbitrary. The store is a grow-only set, the simplest state-based CRDT. Slow and lossy messages
+are the premise of the regime, and none of this has to be built.
 
 ## Two layers, and what crosses between them
 
@@ -1208,6 +1264,106 @@ will contain something playing each role. They are listed because it is easy to 
   attempt index goes in the term and the cycle lives in the *sequence of attempts*.
 - **Structure goes in the key, not the value.**
 
+## What gets built on top
+
+The base is **definite clauses over an unspecified universe**, and nothing else. Everything else this
+document treats as part of the design is a construction above it. Drawing the dependencies is worth more
+than listing them, because it shows what a reader who rejects one construction still keeps.
+
+```
+definite clauses, parametric over the universe
+├── polarization — complementary relation pairs, declared in the signature
+│   ├── told falsity (¬Q), and stream termination
+│   ├── settledness → the threshold rule → its six instances
+│   └── conflict {t,f} → the Belnap reading
+├── annotation — provenance
+│   ├── dispute → readjudication
+│   └── trust policy
+└── aggregation — summaries over a demand region
+```
+
+**The two upper branches are independent, and that is why the graph is worth drawing.** Provenance
+annotates derivations and combines them; no step of it mentions a polarity, and neither does dispute nor
+trust. So the answer to *"nothing can ever be taken back"* — below — survives a reader who rejects
+polarization outright, which is this design's most contestable choice. Two edges cross: diagnosing a
+`{t,f}` consumes provenance, and objecting to a polarity assignment needs both.
+
+**Polarization is a two-element marker set, not a commitment to two-valuedness.** Polarity is declared
+schema and the substrate never sees it (§"Polarity is schema, not substrate"), so a richer marker set is
+*more declared relations* and the base does not move. A third marker — `undecidable(Q, x)`, say — is posted
+positively, told rather than inferred, exactly as §"Falsity is told" requires. Belnap is therefore not
+*the* logic here but **the reading of the two-marker instance**; over a larger set the reader supplies
+whatever lattice they like, and nothing underneath changes.
+
+### Retraction's effect, without retraction
+
+The largest apparent sacrifice is that nothing can be taken back, so one bad producer would poison the
+store permanently. It does not, and the mechanism needs nothing the base lacks. **Objections are derived**,
+from grounds that are ordinary posted facts:
+
+```
+disputes(F) :- produced_by(F, S), miscalibrated(S), timing_sensitive(F).
+```
+
+`disputes/1` takes the fact as a **term**, which is the wrapper pattern of §Types doing a second job:
+`Fact = stopped(Episode, Outcome) | metric(Metric) | disputes(Fact) | …` is a declared sum sort like any
+other. Because it is **recursive**, objecting to an objection needs nothing added. Who objected is
+provenance on the `disputes` record rather than an argument, so an objection is worth something only where
+provenance exists — the edge drawn above. And because a term carries variables, an objection is
+**region-scoped exactly as a demand is**: `disputes(stopped(episode2, _))` rejects a claim, a rule bodied
+on `produced_by(F, bob)` rejects a producer.
+
+What follows:
+
+**It recovers retraction's effect at none of its cost.** A reader derives from everything its policy does
+not exclude — monotone in the store, no roster, no message to anybody.
+
+**It is strictly better than deletion, not equivalent with extra steps.** A derived `disputes(f)` is
+permanent like everything else, so an objection cannot be un-derived — but nothing was ever removed. `f` is
+still there, counter-grounds are postable, and a reader seeing both folds differently. Under real deletion
+an erroneous deletion destroys `f` and no later discovery recovers it. **Readjudication is free here and
+impossible there.**
+
+**You cannot object without grounds.** That falls out of dispute being derived rather than posted, and it
+is a constraint worth stating rather than discovering: reasons enter the shared record, and bare suspicion
+— *"I simply do not trust Bob"* — is holdable as policy but not postable as fact.
+
+**`disputes`/`upholds` is a complementary pair**, so the polarization branch applies to the annotation
+branch unchanged: conflicting objections get `{t,f}` and the Belnap reading with no new machinery.
+
+**And this is the one place readers legitimately diverge.** Evidence is shared and permanent; the *fold*
+from evidence to acceptance is per-reader, so two readers with different policies reach different answers.
+That is a genuine exception to everything-converges, and the right one — trust is a policy, not a fact.
+
+### Summaries, and the property a construction can forfeit
+
+Aggregation is the third branch, and the one where building upward **costs** a guarantee the base had. An
+answer is truth restricted to a demand; different agents hold different overlapping regions and compute
+over what they have, skipping what is still `∅`. That is Morton's **available-case analysis** (Obs. 6.10)
+exactly, and his **Thm 6.9** says the resulting summaries can be pairwise consistent on every overlap and
+admit **no global joint** — contextuality, manufactured out of a store that was never inconsistent. Every
+agent's view is coherent and every pairwise check passes, so no participant can detect it.
+
+**The store is not wrong; the guarantee does not lift.** Atoms converge without an arbiter; statistics over
+different demand regions need not. The foreclosure of §"Two commitments" holds exactly as far as identity
+stays attached, and the summary map is where it stops.
+
+**Settledness closes it, which enlarges settledness's job.** Prop. 5.2: *without* missing data, restriction
+and summarization commute — so summaries taken over **settled** regions are restrictions of one global
+summary, and glue by construction. The obstruction needs an unsettled atom to hide in. Settledness has been
+treated here as a memo-check device; this makes it the precondition under which anything may be aggregated
+at all. What is open is its cost: whether settled regions are large enough, often enough, for that to be a
+usable discipline rather than a theoretical one.
+
+### What stays outside, and it is not a meta level
+
+Two things, both already named. The **non-monotone core** (§"Two layers"): a clock reading is not logic,
+and the existing repair applies unchanged — date the observation and it becomes a permanent fact about the
+past, which is precisely what a `clock_skew(bob, t₁, t₂, δ)` ground *is*. And the **reader's verdict**:
+folding evidence into acceptance is not a statement, so it is neither a fact nor derivable. It sits outside
+because it is a **decision**, not because it is meta. No stratification is needed anywhere above the base,
+and none is used.
+
 ## What it does NOT solve
 
 - **Cross-host liveness.** You still need a handle and a probe, and it still abstains off-host — and that
@@ -1270,8 +1426,10 @@ reintroduces a bug the fold exists to prevent.
 
 1. **Who checks finite coverability**, and whether it is checkable at post time at all — it is a claim
    about a producer's future. §"Demand is control".
-2. **Provenance.** Not built, and now wanted in three places: diagnosing `{t,f}`, taint after a premise
-   becomes disputed, and attributing a wrong `¬Q`. Positive facts need it equally, so it is one mechanism.
+2. **Provenance.** Not built. What it blocks meanwhile: diagnosing `{t,f}`, taint after a premise becomes
+   disputed, and attributing a wrong `¬Q` — positive facts need it equally, so it is one mechanism. What it
+   would unlock is the annotation branch of §"What gets built on top", including the whole dispute story,
+   so this is the single highest-leverage unbuilt thing here.
 3. **Which constraint domain — *and which algorithm for it*.** Not separable: a generic bounds propagator
    on difference constraints ping-pongs where negative-cycle detection decides the same system in `O(V·E)`.
    For a step axis the answer is difference constraints with cycle detection. If strided demands are ever
@@ -1286,10 +1444,6 @@ reintroduces a bug the fold exists to prevent.
    agent is running this"* is a mutual-exclusion requirement, not a query, so the theorem does not speak
    to it. What CALM does say is that any *query* whose answer needs the participant roster is
    non-monotone; single-spawn needs the roster for a different reason, and needs it just as badly.
-
-   **And there is a line here the design must not cross.** Content-addressed placement *is* a partitioning
-   policy, and *"is this my address?"* is exactly the decision oracle that moves a system out of the model
-   CALM's `iff` is stated in. Replicating by address is fine; **concluding absence from ownership is not.**
 6. **Whether demand should be the only interconnect**, and not merely the only one that *means* anything.
    The semantics already reads the second way: an answer is truth restricted to the demand, so anything
    arriving unbidden is a cache warm-up with no semantic status, and an implementation may broadcast
@@ -1307,6 +1461,10 @@ reintroduces a bug the fold exists to prevent.
    demand shapes and the quantifier rule covers two; a sampling demand fits neither comfortably, and the
    library defers exactly this. See `memoizer-index-algebra.md`, where it is recorded that the current
    delta reading is **non-monotone on a read path**.
+9. **Whether settled-only aggregation is usable.** §"What gets built on top" closes the summary hazard by
+   aggregating only over settled regions, on Morton's Prop. 5.2. That is sound and may be impractical: it
+   is untested whether settled regions are large enough, often enough, to compute anything anybody wants.
+   The corpus has not been asked, and the question is measurable.
 
 ## Related
 
