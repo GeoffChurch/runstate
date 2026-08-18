@@ -118,6 +118,16 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
   which is the tell that the residue is real: cross-host liveness, the artifact plane, enforcement.
   Names the two boundaries as the actual design question — the querier's interface and the handler's
   — with the run born at the second, and the halt dissolving into *withdrawing demand*.
+- **Why definite clauses, and not the neighbouring fragments** —
+  [definite-clause-maximality](definite-clause-maximality.md). Whether `if-built-today`'s fragment is
+  **forced** rather than chosen, via a third route independent of both it already has: preservation under
+  algebraic homomorphisms. Partial result — preservation draws the **outer** boundary (`¬` breaks it; so
+  do goal clauses, since a homomorphism can make a denial's body hold, which is a better reason for
+  *definite rather than Horn* than the doc currently gives), while `∨` and `∃` in heads **are** preserved
+  and are excluded by this design's own commitments instead. So two forces meet rather than one theorem
+  deciding. Names the ladder the doc half has — TGDs / existential rules, disjunctive Datalog, **coherent
+  logic**, then geometric. Open: whether a genuine Lindström theorem exists here, and whether route three
+  is independent of CALM or the same fact rephrased. Two papers on disk, unread.
 - **The relation as interface: demand-driven reads** —
   [demand-driven-reads](demand-driven-reads.md). A target rather than a defect. A bandit or Bayesian
   optimiser does not want `start`/`stop`; it wants to query a mostly-unmaterialised relation
