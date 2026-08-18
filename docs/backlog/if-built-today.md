@@ -675,19 +675,35 @@ partitioning policy, and *"is this my address?"* is exactly the decision oracle 
 the model the `iff` is stated in. Replicating by address is fine; **concluding absence from ownership is
 not.**
 
-**"Coordination-free" is weaker than it sounds.** The definition is *existential over placements* — for
-every input there **exists** some partition on which the computation quiesces with no messages — not a
-promise that a real run sends none. The authors warn against that reading and exhibit a coordination-free
-transducer that communicates on the obvious placement. So *"no round trips"* is not licensed, and neither
-is pricing coordination in rounds: the predicate is binary.
+**"Coordination-free" is weaker than it sounds *in the transducer formalism*.** There the definition is
+*existential over placements* — for every input there **exists** some partition on which the computation
+quiesces with no messages — not a promise that a real run sends none. The authors warn against that reading
+and exhibit a coordination-free transducer that communicates on the obvious placement. So in that setting
+*"no round trips"* is not licensed, and neither is pricing coordination in rounds.
 
-**What survives that deflation is a correctness property, not a performance one** — and it is the one
-worth the price. Coordination-freeness does not promise fewer messages. It promises that the answer needs
-**no arbiter**: every agent converges on the same conclusion, with no round, no leader, no agreement about
-who the participants are, and no moment at which somebody must be *sure they have heard everything*. Read
-as a latency claim it is weak and the authors say so. Read as a claim about what the answer depends on, it
-is exactly what a ban on negation buys — and it is worth buying wherever an arbiter is unaffordable or
-impossible, rather than merely slow.
+**But the property is not the formalism, and the 2026 restatement is stronger.** Hellerstein's *Complete
+CALM* moves the criterion off programs onto **specifications** — a triple `(E, Obs, ≼)`: an event universe,
+a map from histories to admissible outcomes, and a *declared* order where `o₁ ≼ o₂` means `o₂` refines `o₁`
+**without contradicting it**. Monotone means every outcome admitted now still has a refinement admitted at
+every causally later history (Def. 8), and Thm. 1 is *"coordination-free iff monotone."* Its operational
+form (Def. 9) is a genuine responsiveness guarantee: a response is *"enabled **immediately** … without
+requiring any further input action"* at that process. Not *"no messages are sent"* — the sufficiency
+proof's protocol gossips on every event — but **no answer ever blocks on one**, which is the property this
+regime actually needs.
+
+**What that buys, free.** Independently chosen answers at different agents are **jointly consistent with no
+agreement protocol between them** — Remark 2, and it is *"not an additional assumption … a free consequence
+of monotonicity applied to the full history."* Two agents answering from disjoint causal views cannot
+contradict each other. That is the *"without stopping to confer"* of §"What it is for", proved rather than
+asserted.
+
+**What it does *not* buy, and this design has it for a separate reason.** Coordination-freedom is not
+convergence. The transducer model computes a common output set, so replica agreement is built into that
+formulation; at the specification level the two come apart (§6.1). Whether agents *converge* is a
+structural property of `≼`: with joins, monotonicity implies convergence; without them it gives *"safe
+independent action but not convergence"* (§7.4). Here `≼` is set inclusion, which has joins — so this
+design gets both, and gets the second **from the shape of the order rather than from the theorem**. A
+reimplementation that changed the order would have to check it again.
 
 **The theorem constrains the computed query, never the operators.** Every query distributedly computable
 by a first-order transducer is computable by one using negation internally, and the proof of the monotone
@@ -705,19 +721,31 @@ all-participants relation **and** without self-identity. So this design needs **
 self-identity**: parties may join with nobody told. (*"Network membership"* is Hellerstein & Alvaro's
 phrase for it, not Ameloot's — the theorem is Ameloot's, the wording theirs.)
 
+**And the roster is not one obstruction among several — it is the only one.** *Complete CALM* Remark 3:
+*"membership knowledge is the single non-monotone input that renders all subsequent computation
+monotone,"* generalising Ameloot's non-oblivious result; Example 6 decomposes consensus into exactly that
+shape, a non-monotone membership phase followed by monotone vote-counting; and Thm. 4 shows coordination
+can **always** be factored into a membership authority plus an ordering service. So *"what needs a roster"*
+is not a list to be enumerated — it is one item, and everything downstream of it is free.
+
 Two further scoping notes. It is a **safety** statement: a lost demand and a slow handler leave a querier
 in byte-identical states, so *liveness* still needs an acknowledgement, and a bounded reconnect still
 needs a cursor. And it applies to the **answer** relation; demand is control.
 
-**None of which extends to not doing the work twice.** *"Run iff no other agent is running this"* is
-mutual exclusion, not a query, so the theorem is silent on it and a roster is needed anyway — that is
-**single-spawn**, priced in §Open. It is not a counterexample to the paragraph above but a different
-question: the answers converge without an arbiter *and* two agents may separately spend six hours
-computing the same one. Only the first is a claim about correctness.
+**Which is where single-spawn sits, and it is not an exception.** *"Run iff no other agent is running
+this"* is mutual exclusion, not a query, so Ameloot's theorem is silent on it and a roster is needed —
+priced in §Open. But it is the *general* pattern rather than this design's private embarrassment;
+Hellerstein's own reading is that *"the architecture of Paxos-based systems reflects this: membership is
+configured once; everything downstream is actually coordination-free."* And it is once — *"membership
+establishment need only happen once … after the initial bootstrap, the chain of authority transitions is
+monotone."* Two things stay true together: the answers are jointly consistent with no agreement, **and**
+two agents may separately spend six hours computing the same one. Only the first was ever a claim about
+correctness.
 
-**And the theorem is not the only thing monotonicity buys; the rest is unconditional.** CALM's `iff` holds
-relative to a model — arbitrary unknown partition, fair asynchronous runs — so a reader who doubts the
-model doubts the guarantee. What follows comes with no hypotheses at all.
+**And none of what follows needs the theorem at all.** The criterion above is semantic — its proof is
+immediate from the definitions, which is the point of the framing rather than a weakness — but the
+properties below do not appeal to it, to a model of the network, or to any hypothesis about placement.
+They follow from the shape of the store.
 
 **A partial store is sound, never wrong.** `S' ⊆ S` implies everything derivable from `S'` is derivable
 from `S`, so a crash mid-write leaves a subset, and every subset is a valid store: no repair pass, no torn
@@ -727,8 +755,15 @@ and it has no way to tell which it is.
 
 **Delivery gets its properties free.** Merge is union — idempotent, so at-least-once delivery gives
 exactly-once semantics with no dedup table; commutative, so reordering needs no sequencing; associative, so
-batching is arbitrary. The store is a grow-only set, the simplest state-based CRDT. Slow and lossy messages
-are the premise of the regime, and none of this has to be built.
+batching is arbitrary. That is not an analogy to CRDTs but an instance of them: Prop. 4 — *"any
+specification whose updates are inflationary in a join-semilattice and whose outcome order is the lattice
+order is monotone"* — and a grow-only set under union satisfies the hypothesis exactly. Slow and lossy
+messages are the premise of the regime, and none of this has to be built.
+
+**The converse is the whole bet in one picture.** *"A replicated counter with a **reset** operation is not
+inflationary, hence not monotone — coordination is required to implement reset consistently"* (§7.3).
+**A reset is a retraction.** Everything this design refuses, and everything it gets for refusing, is that
+sentence at scale.
 
 ## Two layers, and what crosses between them
 
@@ -739,10 +774,23 @@ non-monotone core underneath a monotone layer**, where each pushes as much as it
   test, and the closed-producer-set conclusion of §"Falsity is told";
 - the **monotone layer** derives over them and owns everything it can.
 
-**The boundary is not a convenience — it coincides with the CALM boundary.** Everything above is monotone
-and coordination-free; everything pushed below is exactly what is not. Three constructs have now tried to
-get in and been reclassified rather than accommodated, and the layer needed no change in any case. The
-reference model draws the same line: output append-only by hypothesis, working memory admitting deletion.
+**The boundary is not a convenience — and it has a name.** *Complete CALM* §4 calls this **proper
+coordination**: *"coordination is a means, not an end. A system may use coordination internally to resolve
+a non-monotone specification, producing a monotone output interface for downstream consumers."* Def. 11
+makes it precise — restrict the admissible outcomes enough to restore monotonicity, then test the residual.
+Everything above the line here is monotone and coordination-free; everything pushed below is exactly what
+is not. Three constructs have now tried to get in and been reclassified rather than accommodated, and the
+layer needed no change in any case. The reference model draws the same line: output append-only by
+hypothesis, working memory admitting deletion.
+
+**And there is a barrier here that this design steps around by construction.** Thm. 3:
+relational-transducer CALM *cannot in general verify* proper coordination — a non-monotone specification
+implemented in Datalog must contain negation, adding coordination rules leaves the negation in place, so
+the syntactic check false-negatives, and deciding monotonicity in stratified Datalog is undecidable. The
+claim above is therefore checkable only at the **specification** level, not with Cor. 13. What rescues it
+here is that the non-monotone work never enters the program: there is no stratified negation to defeat the
+check, because there is no negation. **Separating rather than stratifying is what keeps the residual
+syntactically evident** — which is what the next paragraph's rule is really for.
 
 **What crosses is literals**, and the mechanism is already in this repo — `prolog-query-layer.md` says of
 the one existing case, *"pass the probe result in as a parameter rather than calling out."* The
