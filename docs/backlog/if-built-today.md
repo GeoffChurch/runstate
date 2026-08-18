@@ -30,6 +30,21 @@ implementation, but because *retraction is what costs coordination*, and there i
 (§"CALM"). Monotonicity is the load-bearing property; append-only is one way to get it and not the only
 one.
 
+**And a second theorem, about a different loss.** CALM prices retraction in coordination: you may have it
+if you pay. The *inverse curse theorem* prices it in something unbuyable — if every state can be undone,
+**no query ever knows it is finished**. (Power, Koutris & Hellerstein, ICDT 2025, Thm. 18: if every state
+is invertible and `Q` is not constant, `Q` has no free-termination state.) The proof is three lines. From
+an undoable state you can reach the state that undoes everything, and from there anything at all — so
+nothing observed now constrains what is observed later, and every answer stays provisional forever. Their
+own summary: the value of invertibility (DBSP, DBToaster) and the value of coordination-free monotonicity
+(CALM, CRDTs) *"appear mutually exclusive."*
+
+**Which makes this commitment a precondition for the rest of the design, not only its distribution story.**
+Settledness, the threshold rule, the residual, a memo check that ever stops — every one is a claim that
+*nothing more is coming*. Under retraction none of them can exist. The two theorems price the same refusal
+and buy different halves: CALM buys soundness, never emitting a wrong answer; this buys completeness,
+knowing there is no further answer to wait for.
+
 **Identity is data, never position.** *"Which thing does this record belong to?"* is answered by an
 argument inside the record, never by where it sits in an order. `heartbeat(episode2, 500)`, not *"the
 heartbeat after the second `started`"* — so there is nothing to infer, because a query about episode 2
@@ -121,6 +136,13 @@ that turns out to be a known-good combination is better founded than one that is
   disagreeing clinical tests, a tank with three disagreeing sensors. And *"all known (or believed)
   negative information is stored explicitly"*, over extents that may be **infinite** — though represented
   by automata rather than constraints, and with no accumulation or multi-source union.
+- **Free termination — *"can a node know its output is final without coordinating?"* — is Power, Koutris
+  & Hellerstein** (ICDT 2025). That is settledness, and their opening complaint is this document's: CRDTs
+  give coordination-free consistency but no local way to know everything has arrived, and *"what good is
+  distributed state if you do not know when you can query it reliably?"* Their answer **derives**
+  termination from the query's algebra. They have the told form too — §5.2's nullary `All()`, *"true if we
+  know that all machines have sent all their local data"* — and note that *"updating `All` requires
+  coordination between the nodes."*
 - **The vocabulary is Belnap's** (1977): told true / told false / told neither / told both. (Ledger:
   UNVERIFIED — cited by the papers above, not yet read here.)
 
@@ -129,8 +151,17 @@ that turns out to be a known-good combination is better founded than one that is
 populates it by **CWA** — the storage of a negative extent is theirs, an agent *positing* one is not.
 **Multi-party monotone accumulation**: neither paraconsistent paper defines an order on those pairs, a
 merge, or an update. Refusing the tombstone **chain**, so that *told-both* is representable at all.
-Demand-driven production with the store as the cache — named as *open work* in 4QL. And the distribution:
-**no party roster and no self-identity**, parties may join with nobody told.
+Demand-driven production with the store as the cache — named as *open work* in 4QL.
+
+**A completeness claim scoped to a region.** Their `All()` is global, so it costs a round; `¬Q` is one
+party's claim about one region and needs nobody's agreement. Same idea, and **scope is the entire
+difference** between paying for it and not.
+
+Not, however, the distribution property itself: **no party roster and no self-identity is Ameloot's**, and
+is now stated three times over (Cor. 13; *Complete CALM* Remark 3, *"membership knowledge is the single
+non-monotone input that renders all subsequent computation monotone"*; free termination §5.2). What is not
+in any of them is a data model built so that **every readable predicate sits inside that class by
+construction**, rather than a language in which one may or may not stay there.
 
 ## The model: a store of literals, one operation
 
@@ -400,6 +431,21 @@ and covers the region while leaving every atom in it at `∅`.
 *entailed* extent grows as the hole narrows, and settledness is antitone in the extent, so pure
 information gain can flip it true → false. Nothing descends in the store; the *question* got bigger.
 
+**Two properties of the derivable half, both from the order having joins.** Status aggregates by union, so
+the state order is a **join-semilattice** — a stronger hypothesis than monotonicity, and it pays twice
+(Power, Koutris & Hellerstein 2025, Props. 15–16).
+
+- **States that can stop agree.** Two stores both settled for a question have a least upper bound reachable
+  from each; each being settled forces it to agree with that bound, so they agree with each other. Two
+  agents who can both stop **cannot disagree**. Without joins this fails outright — two settled states
+  could have no common future and disagree permanently.
+- **No store is a dead end.** If a question can be settled at all, it can be settled from wherever you are
+  now. A *possibility* claim, not liveness: it rules out dead ends, not stalls.
+
+**Which pairs with the caveat above.** Settledness can be lost — but only by the **question** growing, never
+by the **store** growing. That is the whole content of requiring `Q`'s extent to be fixed, and the other
+direction needs no guard at all.
+
 **There is no producer verb and no `freeze`** — `¬Q` is an ordinary post — so there is no
 freeze-after-write race. And **nothing may derive settledness from demand going quiet**: demand
 disappearing determines nothing, so it moves no atom out of `∅`. There is no ownership rule to enforce
@@ -600,10 +646,13 @@ these four plus the empty and total ones — which is the six of the six-of-sixt
 
 **`∅` is the one thing not readable**, and it fails twice. *"Nothing has been told about this"* is a
 down-set, so no finite observation affirms it — the open-world assumption recovered as a fact about the
-status reading rather than stipulated. And CALM says it more sharply: `⊒{t}` and `⊒{f}` are each a union
-over parties and therefore monotone, where `∅` is the **joint negation of two growing extents** and can
-flip, so it has **no coordination-free implementation**. Not merely unaffirmable — unanswerable without
-coordination. Same for *"and nobody disputes it"*.
+status reading rather than stipulated. And the sharper statement is about **direction**. `⊒{t}` and `⊒{f}`
+are each a union over parties and therefore monotone, where `∅` is the conjunction of two negated growing
+extents, hence **antitone** — and an antitone query free-terminates only where a witness refutes it
+(Power, Koutris & Hellerstein 2025, Thm. 24). So `∅` is decidable exactly in the direction of its own
+destruction: a reader can always confirm it has **left** `∅`, never that it is **in** it. Not unanswerable
+without coordination — answerable in one direction, and that direction is the useless one. Same for *"and
+nobody disputes it"*.
 
 **The constraint binds on output, not computation.** A scheduler may consult the `∅`-region mid-flight
 freely; publishing such a reading as an answer is what leaves the monotone class. The reference model
@@ -710,11 +759,15 @@ by a first-order transducer is computable by one using negation internally, and 
 case reads *"we use deletion to start afresh; since the query is monotone, no incorrect tuples are
 output."* So the residual computed **inside** an agent is not a violation; **outputting** one would be.
 
-**And their emptiness query is this design's `¬∃`, worked.** It is their exhibited non-coordination-free
-construct: since every node may hold part of the input, the nodes must flood identifiers and check them
-against the system relation naming all participants. *"Is there no atom at step 60?"* is that query over a
-region — which is why `= {f}` has no syntax here, and why the design's answer is the one the theorem
-licenses rather than a stipulation.
+**And their emptiness query is this design's `¬∃`, worked — though the reason is finer than it first
+looks.** It is Ameloot's exhibited non-coordination-free construct: since every node may hold part of the
+input, the nodes must flood identifiers and check them against the system relation naming all participants.
+But Power, Koutris & Hellerstein's Thm. 24 splits the property — a Boolean query is *positively*
+coordination-free iff **monotone**, *negatively* coordination-free iff **antitone** — and diagnoses
+Ameloot's exclusion of antitone queries as an artefact of the transducer output encoding, where false is an
+*absent* tuple. So emptiness is not uncomputable, and this design should not lean on a claim that it is. It
+free-terminates **exactly where a witness appears**: the direction that finds an atom, never the direction
+that finds none. `= {f}` has no syntax here for that reason.
 
 **One property worth claiming, which the theorem licenses.** Monotone ⟺ computable without the
 all-participants relation **and** without self-identity. So this design needs **no party roster and no
