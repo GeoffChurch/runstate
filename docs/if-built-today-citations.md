@@ -376,6 +376,54 @@ unilaterally terminate even though they may receive additional data in the futur
 **settledness question**, published, with a semiautomata model bridging relational transducers to CRDTs.
 Expect it to be more directly on target than review 7 suggested, and possibly to price more than one claim.
 
+### Darari, Nutt, Pirrò & Razniewski, *Completeness Statements about RDF Data Sources and Their Use for Query Answering*, ISWC 2013 — **CONFIRMED** (read in full, 18 pp.). **It refutes a novelty claim written into the doc on 2026-08-18**
+
+`darari-2013-completeness-statements-rdf.pdf`. Review 7 was **right** about this one, and precise: it named
+Def. 16 and described it as *"a pair `(C,k)` = statement plus producer."* That is exactly what Def. 16 is.
+
+**What they have, and it is the doc's `¬Q` story:**
+
+- **Scoped, not global.** Def. 3: `Compl(P₁ | P₂)` — `P₁` a pattern, `P₂` a condition; *"a data source
+  contains all triples in a pattern `P₁` that satisfy a condition `P₂`."* Their running example is
+  *"complete for all movies directed by Tarantino"*, which is a region, not a database.
+- **Posted as data, machine-readable.** §3.2 gives the RDF vocabulary — `hasComplStmt`, `hasPattern`,
+  `hasCondition` — so the claim is published *by the source, as triples*, and their motivating figure is a
+  real *"verified as complete"* mark on an IMDb page.
+- **Composable.** §4's operator `T_C(G) = ⋃_{C∈C} Q_C(G)`, with entailment `C ⊨ Compl(Q)`, and Thm. 14 for
+  RDFS closure.
+- **Multi-source, with union semantics.** Def. 15 (incomplete federated data source), **Def. 16 (indexed
+  completeness statement, `(C,k)`)**, Def. 18: *"Q is complete if evaluated over the **union** of all
+  sources in the federation."* Prop. 19 and Thm. 20 (smart rewriting) do the reasoning.
+
+**Consequence: the paragraph added to §"Whose this already is" on 2026-08-18 is wrong.** It claimed *"a
+completeness claim scoped to a region"* is not in any of the prior art, and called scope *"the entire
+difference"* from free termination's global `All()`. Darari et al. published scoped-posted-composable-
+multi-source completeness in 2013. **Delete the claim.**
+
+**The residue, stated narrowly and worth much less than what it replaces:**
+
+- Theirs is a **metadata layer about sources**, which is why Def. 16 must index a statement to a source
+  IRI. Ours is a record in the **same store**, merged by the same union, needing no index — because `¬Q`
+  claims about a region of the world rather than about one source's coverage of it.
+- Their semantics is relative to an **ideal graph** `Gⁱ`, *"all the facts that hold in the world"* (Def.
+  15), against which a statement is true or false; §6 concedes it *"rests on the assumption that a domain
+  'expert' has the necessary background knowledge."* This design defines no correctness against a world at
+  all — a false `¬Q` is a false post, under the same non-enforcement as a false value.
+
+**And an independent convergence worth recording.** §6, *Maintenance*: *"For non-authoritative sources,
+**temporal guards** can be used; e.g., instead of saying 'complete for all movies by Tarantino', one would
+say 'complete for movies by Tarantino **in 2010**'."* That is this repo's *date the observation and make it
+a fact about the past*, reached independently for the same reason.
+
+**Complexity, for the coverage check:** *"All completeness checks presented in this paper are NP-complete"*
+— conjunctive query containment reduces into completeness checking. The doc's coverage-as-entailment
+reading inherits the same class; their mitigation is that queries and statements are small in practice.
+
+**Calibration note on review 7.** It is accurate on the database prior art and unreliable on the
+topological material — the same review produced `dead_ends/topological-framings.md` and understated the
+free-termination paper, but named Darari's Def. 16 exactly right. Treat its database citations as leads
+worth chasing and its category-theoretic ones as suspect.
+
 ### Power, Koutris & Hellerstein, *The Free Termination Property of Queries over Time*, ICDT 2025 (LIPIcs 328:32) — **CONFIRMED** (read in full, 22 pp.). Review 7's claim about it is **understated**
 
 `power-koutris-hellerstein-2025-free-termination.pdf`. Review 7 cited it only for *"threshold claims

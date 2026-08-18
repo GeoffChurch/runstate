@@ -125,6 +125,19 @@ that turns out to be a known-good combination is better founded than one that is
   exists in a proof** — Ameloot, Ketsman, Neven & Zinn (TODS 40(4), 2016) Prop. 4.6, with deletion set to
   `∅` *"causing nodes to only accumulate facts"*, broadcasting absences that are *"accumulated at all
   nodes."*
+- **A completeness claim scoped to a region, posted as data, and composable across sources — that is
+  Darari, Nutt, Pirrò & Razniewski** (ISWC 2013). `Compl(P₁ | P₂)` is a pattern plus a condition — *"a data
+  source contains all triples in a pattern `P₁` that satisfy a condition `P₂`"* — published as RDF via
+  `hasComplStmt`/`hasPattern`/`hasCondition`, with an entailment operator over sets of them; and **Def. 16
+  indexes each statement to a source**, so a federated query is complete *"if evaluated over the **union**
+  of all sources in the federation."* Their motivating case is a real *"verified as complete"* mark on an
+  IMDb page. Two differences. Theirs is **metadata about sources** — which is why the index is needed at
+  all — where `¬Q` is a record in the same store, claiming about a region of the world rather than about
+  one source's coverage of it. And their semantics is relative to an **ideal graph**, against which a
+  statement is objectively true or false, where nothing here defines correctness against a world: a false
+  `¬Q` is a false post, under the same non-enforcement as a false value. They also reach this repo's dating
+  repair independently — §6 recommends *"temporal guards … 'complete for movies by Tarantino **in
+  2010**'."*
 - **Ask/tell over a monotone store is CCP** (Saraswat, Rinard & Panangaden, POPL '91), which made the
   storage decision first — *"a simple constraint system is just an information system with the
   consistency structure removed"* — and then went the other way, making `false` the **top**, explosive
@@ -153,11 +166,7 @@ populates it by **CWA** — the storage of a negative extent is theirs, an agent
 merge, or an update. Refusing the tombstone **chain**, so that *told-both* is representable at all.
 Demand-driven production with the store as the cache — named as *open work* in 4QL.
 
-**A completeness claim scoped to a region.** Their `All()` is global, so it costs a round; `¬Q` is one
-party's claim about one region and needs nobody's agreement. Same idea, and **scope is the entire
-difference** between paying for it and not.
-
-Not, however, the distribution property itself: **no party roster and no self-identity is Ameloot's**, and
+Not the distribution property itself: **no party roster and no self-identity is Ameloot's**, and
 is now stated three times over (Cor. 13; *Complete CALM* Remark 3, *"membership knowledge is the single
 non-monotone input that renders all subsequent computation monotone"*; free termination §5.2). What is not
 in any of them is a data model built so that **every readable predicate sits inside that class by
