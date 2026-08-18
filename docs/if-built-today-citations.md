@@ -355,6 +355,50 @@ uncertainty about *which positive atom* holds — with no negative polarity at a
 however a clean published **foil** for *nothing retracts*: it deletes subsumed records and demotes the
 residue to "maybe", with the information loss acknowledged in the paper's own motivating example.
 
+## ✅ RETRIEVED 2026-08-18 — the T1 batch (review 7's retraction list), all open-access, none paywalled
+
+All in `docs/resources/` (gitignored). **All UNREAD.** Retrieved to action T1: the doc presents three
+things as reasoning that review 7 says are published, and review 7's *other* confident claims put three
+sections in `dead_ends/` — so nothing goes into the doc until it is read here.
+
+| file | for which claim |
+|---|---|
+| `power-koutris-hellerstein-2025-free-termination.pdf` | *"threshold claims always, exact claims at settledness"* — Props 9, 13/14, Thm 24 |
+| `conway-2012-logic-and-lattices-bloomL.pdf` | the same claim (`gt_eq`/`when_true`), **and** the no-else-branch rule (footnote 2), **and** `lcart` for closure-as-fact |
+| `kuper-newton-2013-lvars.pdf` | threshold reads |
+| `kuper-2015-dissertation-lvars.pdf` | bonus — the LVars work in full, incl. *Freeze After Writing* quasi-determinism, which §"An atom's status" already gestures at |
+| `darari-2013-completeness-statements-rdf.pdf` | closure as a posted fact — Def. 16, a pair `(C,k)` of statement plus producer |
+
+**Power, Koutris & Hellerstein is `The Free Termination Property of Queries over Time`**, ICDT 2025,
+LIPIcs vol. 328 paper 32 — review 7 gave the authors and proposition numbers but not the title, and the
+title matters: *free termination* is *"in the absence of coordination, what query properties allow nodes to
+unilaterally terminate even though they may receive additional data in the future."* That is this design's
+**settledness question**, published, with a semiautomata model bridging relational transducers to CRDTs.
+Expect it to be more directly on target than review 7 suggested, and possibly to price more than one claim.
+
+### ⚠️ Unrequested find, and it may be the most consequential paper in this ledger
+
+`power-2026-complete-calm-coordination-criterion.pdf` — **Hellerstein, *Complete CALM: A Coordination
+Criterion for Specifications*, arXiv:2602.09435v4, 14 June 2026.** Two months old; postdates every CALM
+reading in this ledger. From the abstract and §1 only (**not yet read**), it announces:
+
+- CALM generalised off relational transducers and off set-inclusion growth, onto **specifications** — a
+  triple of event universe, observation function, and a declared **refinement order**. *"A specification
+  admits a correct coordination-free implementation iff it is monotone."*
+- It **subsumes CALM, CRDTs, I-confluence and HATs as instances**, and yields a bidirectional *Complete
+  CAP*.
+- §4.1 **"proper coordination"** — *"resolve a non-monotone specification with coordination and re-test the
+  residual for monotonicity."*
+
+**Why this is urgent rather than interesting.** §CALM currently carries several scoping notes repairing
+over-readings *of the transducer model* — including that the `iff` is relative to a model where nobody
+knows the partition, and that coordination-freeness is existential over placements. If the criterion now
+lives at the specification level with an arbitrary refinement order, some of those caveats may be
+artefacts of the older formalism rather than facts about the property. Separately, §4.1 looks like the
+published form of §"Two layers, and what crosses between them", and the CRDT-subsumption looks like the
+formal link to the grow-only-set observation added to §CALM on 2026-08-18. **Read this before touching
+§CALM again.**
+
 ## ✅ RETRIEVED 2026-08-14 — all five, in `docs/resources/` (gitignored)
 
 `bagai-sunderraman-1995-paraconsistent-relational-model.pdf` ·
