@@ -376,28 +376,78 @@ unilaterally terminate even though they may receive additional data in the futur
 **settledness question**, published, with a semiautomata model bridging relational transducers to CRDTs.
 Expect it to be more directly on target than review 7 suggested, and possibly to price more than one claim.
 
-### ⚠️ Unrequested find, and it may be the most consequential paper in this ledger
+### Hellerstein, *Complete CALM: A Coordination Criterion for Specifications*, arXiv:2602.09435v4 (14 June 2026) — **CONFIRMED** (read in full, 26 pp.), and it **corrects §CALM**
 
-`power-2026-complete-calm-coordination-criterion.pdf` — **Hellerstein, *Complete CALM: A Coordination
-Criterion for Specifications*, arXiv:2602.09435v4, 14 June 2026.** Two months old; postdates every CALM
-reading in this ledger. From the abstract and §1 only (**not yet read**), it announces:
+`hellerstein-2026-complete-calm.pdf`. **Single-authored — Hellerstein, not Power**; a search result
+grouped it with Power's ICDT paper and that was wrong. Two months old, postdating every other CALM reading
+here. It is the most consequential paper in this ledger.
 
-- CALM generalised off relational transducers and off set-inclusion growth, onto **specifications** — a
-  triple of event universe, observation function, and a declared **refinement order**. *"A specification
-  admits a correct coordination-free implementation iff it is monotone."*
-- It **subsumes CALM, CRDTs, I-confluence and HATs as instances**, and yields a bidirectional *Complete
-  CAP*.
-- §4.1 **"proper coordination"** — *"resolve a non-monotone specification with coordination and re-test the
-  residual for monotonicity."*
+**The framework.** A **specification** is `Spec = (E, Obs, ≼)` (Def. 4): an event universe, a map
+`Obs : H → P(O)` from histories to admissible outcomes, and a **declared** partial order `≼` where
+`o₁ ≼ o₂` means *"o₂ refines o₁ without contradicting it."* Histories are Lamport partial orders; a future
+`H₁ ⊑ₕ H₂` may add causally later events but **not insert predecessors** (Def. 3) — *"the past is fixed;
+only the future is open."*
 
-**Why this is urgent rather than interesting.** §CALM currently carries several scoping notes repairing
-over-readings *of the transducer model* — including that the `iff` is relative to a model where nobody
-knows the partition, and that coordination-freeness is existential over placements. If the criterion now
-lives at the specification level with an arbitrary refinement order, some of those caveats may be
-artefacts of the older formalism rather than facts about the property. Separately, §4.1 looks like the
-published form of §"Two layers, and what crosses between them", and the CRDT-subsumption looks like the
-formal link to the grow-only-set observation added to §CALM on 2026-08-18. **Read this before touching
-§CALM again.**
+- **Def. 8 (monotone spec):** for all `H₁ ⊑ₕ H₂` and all `o ∈ Obs(H₁)`, some `o' ∈ Obs(H₂)` has `o ≼ o'`.
+- **Thm. 1 (Complete CALM):** *"A specification is coordination-free iff it is monotone."* The proof is
+  immediate — he says so: *"the natural CALM 'theorem' above is definitional."* The content is the framing.
+- **Thm. 2 (Operational Complete CALM):** the same, against I/O automata, for the full interface contract.
+
+**CORRECTION 1 — §CALM's deflation is an artefact of Ameloot's formalism, and the property is stronger
+than this ledger and the doc have been treating it.** The doc says coordination-freeness is *"existential
+over placements … not a promise that a real run sends none,"* hence *"'no round trips' is not licensed."*
+That is right about Ameloot. **Def. 9 (coordination-free, operational)** is a different and much stronger
+condition: *"for every process `pᵢ` and every client invocation `inv(e)ᵢ`, the response `resp(e,v)ᵢ` is
+enabled **immediately**: there exists an execution fragment from `pᵢ`'s post-invocation state consisting
+only of internal and output actions at `pᵢ` … **without requiring any further input action** at `pᵢ`."*
+
+So it **is** a responsiveness guarantee: no request ever waits on a message. Not *"no messages are sent"* —
+the sufficiency proof's causal-view protocol gossips on every event — but **no response blocks on one**.
+The doc's *"what survives the deflation is a correctness property, not a performance one"* (added
+2026-08-18) is therefore too weak and should be rewritten.
+
+**CORRECTION 2 — coordination-freedom and replica convergence are two properties, not one, and the doc
+conflates them.** §6.1: *"the transducer model studies coordination-free computation of a common output
+set, so **replica agreement is built into that formulation**. Complete CALM **decouples** the two
+properties: monotonicity characterizes when coordination is avoidable; **replica consistency is a separate
+structural property of `≼`**."* §7.4: *"if `≼` admits a join-semilattice structure … monotonicity implies
+convergence; if `≼` lacks joins, monotonicity guarantees safe independent action but not convergence."*
+This design has both — but because `≼` is set inclusion, which has joins, and that reason should be stated
+rather than assumed.
+
+**Confirmations of things the doc already says or wants:**
+
+- **Remark 2 (joint consistency without agreement)** — independently chosen responses at different
+  processes are *"jointly consistent without any inter-process agreement protocol … Joint consistency is
+  not an additional assumption—it is a **free consequence of monotonicity** applied to the full history."*
+  That is §"What it is for"'s *"everybody must still reach the same answer without stopping to confer"*,
+  proved.
+- **§4 Proper coordination** is §"Two layers, and what crosses between them", published. Def. 11
+  (properly coordinated variant): shrink `Obs` enough to restore monotonicity, then test the residual.
+  **Thm. 3 (Separation): relational-transducer CALM *cannot in general* verify proper coordination** —
+  adding coordination rules to a Datalog program leaves negation in the program, the syntactic check gives
+  a false negative, and deciding monotonicity in stratified Datalog is undecidable. So the doc's claim that
+  its layer boundary *"coincides with the CALM boundary"* needs the **specification-level** criterion; the
+  one it currently cites cannot check it.
+- **Example 6 + Remark 3 — the roster criterion, published.** *"membership knowledge is the single
+  non-monotone input that renders all subsequent computation monotone,"* generalising Ameloot's
+  non-oblivious result; *"membership is configured once; everything downstream is actually
+  coordination-free."* **Thm. 4:** coordination can always be factored into membership authority + an
+  ordering service.
+- **Prop. 4 (CRDTs are monotone)** — inflationary updates on a join-semilattice with the lattice order as
+  outcome order. The grow-only-set observation added to §CALM is an instance of this, not an analogy.
+- **§3.6** — *"monotonicity is guaranteed for positive queries (Datalog without negation) … for Datalog,
+  the absence of negation ensures monotonicity with respect to set inclusion."* Supports §"What makes the
+  answer worth having"'s *"a checker can enforce it"*; and checking monotonicity on general specifications
+  is **undecidable** (Rice-like), so a syntactic fragment is the only tractable route.
+
+**And it settles the relationship to the other T1 paper.** §9: *"Power et al. study whether a node can know
+its output is **final** without coordination—**strictly stronger than monotonicity**. The two results are
+**orthogonal**."* Free termination is the settledness question and it is a *different axis* from CALM —
+which means the doc's settledness material and its CALM material price different things, per both authors.
+
+*Disclosure noted in the paper's acknowledgments: generative AI was used as a writing and reviewing
+assistant, with all content reviewed and approved by the author.*
 
 ## ✅ RETRIEVED 2026-08-14 — all five, in `docs/resources/` (gitignored)
 
