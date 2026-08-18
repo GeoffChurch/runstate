@@ -376,6 +376,84 @@ unilaterally terminate even though they may receive additional data in the futur
 **settledness question**, published, with a semiautomata model bridging relational transducers to CRDTs.
 Expect it to be more directly on target than review 7 suggested, and possibly to price more than one claim.
 
+### Kuper & Newton, *LVars: Lattice-based Data Structures for Deterministic Parallelism*, FHPC 2013 — **CONFIRMED** (read §§1–5, 7 pp. of 13). And it locates this design's fork precisely
+
+`kuper-newton-2013-lvars.pdf`. Review 7 cited it for threshold reads; confirmed, and §3.3 is the
+definition:
+
+> `get` performs a blocking **"threshold" read** … It takes a pointer to an LVar and a **threshold set**
+> `Q`, which is a non-empty subset of `D` that is **pairwise incompatible** … If the LVar's state `d` in
+> the lattice is **at or above** some `d' ∈ Q`, the `get` operation unblocks and returns the singleton
+> `{d'}`.
+
+Their image for it is worth keeping: *"each element in the threshold set is an 'alarm' that detects the
+activation of itself or any state above it … Together these edges form a **'tripwire'**."*
+
+**But their threshold condition is strictly stronger than Power's, and the reason is exactly this design's
+fork.** Power, Koutris & Hellerstein need only an **antichain** (Def. 12); LVars need **pairwise
+incompatible** — *"the lub of any two distinct elements in `Q` is `⊤`"* — because `get` must return a
+**unique** element, and they prove uniqueness from that premise. Pairwise incompatibility presupposes a
+`⊤`, and §3.1 says what theirs is: *"`D` has a greatest element `⊤`, representing the **error** state that
+results from conflicting updates,"* with *"any update that would take the state of an LVar to `⊤` results
+in an error."*
+
+**This design refused that `⊤`** — §"No functional dependency" takes the free completion rather than a
+collapsing top, and the status layer follows. Three consequences, and they are one decision seen three
+times:
+
+1. Our readable up-sets are **antichain-generated, not tripwires**. `⊒{t} ∨ ⊒{f}` has minimal elements
+   `{t}, {f}` whose join is `{t,f}` — not `⊤`, since there is none — so it is a legal threshold *line* and
+   would be an illegal LVars threshold *set*.
+2. We therefore cannot do LVars-style **unique-value** threshold reads, and do not need to: every readable
+   status here is a Boolean up-set test, not a value-returning blocking read.
+3. **`{t,f}` is LVars' `⊤` made readable instead of fatal.** Confirmed against primary text — the
+   handoff's note that *"`{t,f}` is LVish's error made affirmable"* is right, and the error state is
+   already in the 2013 paper, not only the LVish follow-up.
+
+**One re-pointing.** *Quasi-determinism* is **not** in this paper: the 2013 abstract promises determinism,
+with §7's `consume` giving *"a limited form of nondeterminism that admits failures but never wrong
+answers."* The quasi-deterministic freeze-after-write result is the 2014 LVish paper, and any citation of
+it should point there. `kuper-2015-dissertation-lvars.pdf` is on disk and covers both.
+
+### Conway, Marczak, Alvaro, Hellerstein & Maier, *Logic and Lattices for Distributed Programming* (Bloom^L), UCB/EECS-2012-167 / SoCC 2012 — **CONFIRMED** (read §§1–3, 8 pp. of 17)
+
+`conway-2012-logic-and-lattices-bloomL.pdf`. Review 7 named two claims; **both check out, one of them
+verbatim**.
+
+**The no-else-branch rule is their footnote 2, and it is one sentence.** Of the `when_true` morphism,
+which is *"similar to an 'if' statement"*:
+
+> ² Observe that an "else" clause would test for an **upper bound** on the final lattice value, which is a
+> **non-monotonic property**!
+
+The doc reaches the same rule at §"The threshold rule" — *"a rule whose body fails to match must simply
+not fire — never take an else-branch"* — and should credit it. Their framing is sharper than ours in one
+respect: an else-branch is specifically a test for an **upper bound**, which names *why* it is
+non-monotone rather than only that it is.
+
+**Threshold reads are `gt`/`gt_eq` → `lbool`, with the monotonicity spelled out.** Table 3 gives `lbool`
+(Boolean lattice, `false < true`, merge `∨`) and `lmax` (merge `max`), with morphisms `gt(n) → lbool` and
+`gt_eq(n) → lbool`. Text: *"The `lbool` lattice represents conditions that, **once satisfied, remain
+satisfied**. For example, the `gt` morphism on lattice `lmax` … once the `lmax` exceeds `n`, it will
+remain > `n`."* That is the threshold read, 2012, a year before LVars.
+
+**And the paper's whole motivation is the doc's own point about set-containment being the wrong order.**
+§2.2.1, on a quorum-vote program: *"the set of received votes grows and the size of the `votes` collection
+can only increase, so once a quorum has been reached it will never be retracted. Unfortunately, the current
+CALM analysis would regard this program as non-monotonic because it contains a point of order: the grouping
+operation."* Their fix is to allow *"program values that 'grow' according to a partial order other than set
+containment"* — which is 2012's practical version of what *Complete CALM* later makes general as the
+declared refinement order `≼`.
+
+**Two more convergences.** Lattices in Bloom^L are **grow-only** — §3.2.1: *"Bloom^L does not support
+deletion (`<-` operator) for lattices."* And every lattice has a non-monotone `reveal` that extracts a
+plain value, which *"cannot ensure that subsequent code uses the value in a monotonic fashion"* — the same
+boundary problem as §"Two layers"'s *what crosses is literals*.
+
+**One review-7 claim NOT found:** `lcart`, cited there for closure-as-a-posted-fact. It is not among the
+built-in lattices of Table 3 (`lbool`, `lmax`, `lmin`, `lset`, `lpset`, `lbag`, `lmap`). Either it is in
+§§4–6 (unread) or the citation is wrong. **Do not use it until located.**
+
 ### Darari, Nutt, Pirrò & Razniewski, *Completeness Statements about RDF Data Sources and Their Use for Query Answering*, ISWC 2013 — **CONFIRMED** (read in full, 18 pp.). **It refutes a novelty claim written into the doc on 2026-08-18**
 
 `darari-2013-completeness-statements-rdf.pdf`. Review 7 was **right** about this one, and precise: it named
