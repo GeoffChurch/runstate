@@ -748,6 +748,25 @@ monotone layer gets to reason about. And because the timestamps are **per-observ
 breaks `last_activity` in the measurements — the literals must carry *who observed, by whose clock*, and
 any comparison across observers is a report rather than a derivation.
 
+**Which clock, for which question.** Three questions get conflated, and the one that cannot be answered is
+the one nothing here asks.
+
+- **Order** — *did A precede B?* — needs no physical clock at all. Message counters with acknowledgement
+  give the causal partial order exactly, and §CALM already requires that machinery for an unrelated
+  reason: liveness needs an acknowledgement, a bounded reconnect needs a cursor. The counter is the cursor.
+- **Duration** — *has it been five minutes?* — is what liveness and staleness genuinely need, and it is a
+  **local** question, so a local monotonic clock answers it.
+- **Absolute time** — *when, in UTC?* — is needed for nothing here, and is the only one unobtainable.
+  Morton §4: the order on events is unknowable at short timescales because the clocks themselves are wrong,
+  so an eventstamp is honestly an **interval** `[t_s, t_e]`, and strict causality holds only where the gap
+  exceeds light-travel time. Even TrueTime, which he adopts, is an engineered guarantee that *"could
+  fail"*, not a proved one.
+
+**And the local stamp must come from a monotonic source, which is not automatic.** A wall clock steps — NTP
+corrections, leap seconds — so `T₁ < T₂` can be false on a *single* machine, making *"nothing changed
+between T₁ and T₂"* wrong under the very rule meant to make per-observer stamps safe. The core's clock
+primitive reads a monotonic source or the repair does not hold.
+
 CCP (`ask`/`tell` over a monotone store) is the right model for the *semantics*; CHR is the right model
 for the *execution*, where simplification keeps the store small provided the body entails the head. One
 caution: CHR's store is a multiset, and idempotence is what makes one-way replication safe — use set
