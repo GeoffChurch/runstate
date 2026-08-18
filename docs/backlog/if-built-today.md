@@ -262,6 +262,13 @@ and `∨`-in-heads is what separates geometric from coherent. Being low is what 
 (monotone queries answerable directly, in PTIME), the placement strictly inside the coordination-free
 class, and the no-value-invention property the proof depends on.
 
+**Whether the fragment is *forced* rather than chosen is asked separately** in
+`definite-clause-maximality.md`, via a third route — preservation under algebraic homomorphisms. Its
+partial answer: preservation draws the **outer** boundary (it rules out `¬`, and rules out goal clauses
+because a homomorphism can make a denial's body hold), while `∨` and `∃` in heads *are* preserved and are
+excluded by this design's own commitments instead. So the omissions above have two different kinds of
+cause, and the section does not currently distinguish them.
+
 ⚠️ **Terminology**: *Horn* means "at most one positive literal" in logic programming — admitting goal
 clauses — and in the categorical hierarchy means formulas from `⊤`, atoms and finite `∧`, which already
 excludes `⊥` and `∨`. Say which is meant.
@@ -1491,6 +1498,9 @@ reintroduces a bug the fold exists to prevent.
 - `../if-built-today-citations.md` — the verification ledger; every citation above marked CONFIRMED there
   has been read in primary source.
 - `../dead_ends/topological-framings.md` — sheaves, formal topology, d-frames: three framings, one cause.
+- `definite-clause-maximality.md` — whether this fragment is forced rather than chosen. A third route
+  (preservation under homomorphisms) that would answer §"What makes the answer worth having"'s own
+  concession that *"two routes agreeing is weaker than three would be"*. Open; two papers unread.
 - `demand-driven-reads.md` — the consumer-facing target. **Stale**: it still describes a
   LEFT-JOIN-over-a-grid, `?` as a value, `read`/`force` as verbs, and LISTEN/NOTIFY. Its §5a taxonomy
   survives.
