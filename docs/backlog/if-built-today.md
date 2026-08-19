@@ -1495,11 +1495,20 @@ under-poison, silently. Precise poisoning needs exactly that pair, and neither w
 There is no backtracking to simulate, because nothing is undone. What speculation produces is
 **abandonment with a permanent record**: the derivations stay, marked.
 
-**Its cost is the one property this design least wants to spend.** A blocked guard never posts a wrong
-fact. Speculation posts facts that are false under the store that actually arrives, so *"a partial store is
-sound, never wrong"* (§CALM) stops holding outright and becomes conditional on every reader implementing
-the provenance filter correctly. That is a strictly weaker contract, weakened in precisely the dimension
-the design exists to protect — which is why blocking is the model and this is an option.
+**Its cost is not soundness.** A speculative derivation is not a false assertion but a **contingent** one —
+true given its recorded hypotheses — and an implication whose antecedent turns out false is *vacuous*, not
+wrong. So *"a partial store is sound, never wrong"* (§CALM) survives intact. The hypothesis's own state is
+read by machinery already here: pending is `∅`, confirmed `⊒{t}`, refuted `⊒{f}`.
+
+**What it costs is that facts stop being autonomous.** Every other record here means what it says on its
+own; a speculative derivation means what it says *given* something still open. Two consequences follow.
+Provenance becomes a **requirement** rather than an enhancement — and it must live **in the record**, since
+under partial replication (§Open) a conclusion that outran its premises would be a bare assertion again,
+which is §"Two commitments" applied to derivations rather than to episodes. And the remaining cost is
+ordinary waste: work done under an antecedent that fails is work done.
+
+**So blocking is the default for being simpler, not for being safer.** A blocked guard needs no provenance
+and wastes nothing; speculation buys progress under uncertainty and pays for it in bookkeeping.
 
 ### Summaries, and the property a construction can forfeit
 
