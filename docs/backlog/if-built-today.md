@@ -394,9 +394,12 @@ drawn: `nonvar` and `ground` are **monotone**, `var` is **antitone**.
 
 > You may test that instantiation has **reached** a threshold. You may never test that it has not.
 
-It also means a rule whose body fails to match must simply *not fire* — never take an else-branch, and
-with no negation there is none to take. Failure of a match is unobservable, so the order in which matches
-succeed cannot be detected: derivation *times* differ, the answer set does not.
+It also means **every branch is a positive guard that blocks, and none fires *because the others did
+not***. That is CCP's `ask` and LVars' threshold read, and it needs no closed sort — though over a closed
+sum, exhaustive case analysis by constructor is perfectly available and monotone, since enumerating
+constructors is not negation. What is unavailable is only the branch taken on a *failure to match*. And
+failure to match is unobservable here, so the order in which matches succeed cannot be detected:
+derivation *times* differ, the answer set does not.
 
 **The same holds at the status layer, and there it is enforced rather than observed.** You may test that
 an atom has been told false; you may never test that it has *only* been told false — and you cannot,
@@ -1470,6 +1473,33 @@ branch unchanged: conflicting objections get `{t,f}` and the Belnap reading with
 **And this is the one place readers legitimately diverge.** Evidence is shared and permanent; the *fold*
 from evidence to acceptance is per-reader, so two readers with different policies reach different answers.
 That is a genuine exception to everything-converges, and the right one — trust is a policy, not a fact.
+
+### Speculation, which needs nothing new and is not recommended
+
+Blocking is not the only way to handle a branch whose guard is undecided. An agent may **speculate**: post
+`dif(X, a)`, proceed down the else branch, and let a later `X = a` produce a contradiction. Nothing has to
+be added for this to work.
+
+| what it needs | where it already is |
+|---|---|
+| `dif(X, a)` as an ordinary post | the constraint domain, §Open |
+| a contradiction that does not explode | `{t,f}`, affirmable and **inert** |
+| finding what the contradiction poisoned | provenance |
+| declining the poisoned derivations | the trust policy above |
+
+**And two decisions taken separately turn out to need each other.** Because conflict is **inert** here —
+4QL's `i`-propagation is declined — a violated `dif` does not automatically taint what was derived from it,
+so provenance is what locates the damage. Propagating conflict would over-poison; no provenance would
+under-poison, silently. Precise poisoning needs exactly that pair, and neither was chosen for this.
+
+There is no backtracking to simulate, because nothing is undone. What speculation produces is
+**abandonment with a permanent record**: the derivations stay, marked.
+
+**Its cost is the one property this design least wants to spend.** A blocked guard never posts a wrong
+fact. Speculation posts facts that are false under the store that actually arrives, so *"a partial store is
+sound, never wrong"* (§CALM) stops holding outright and becomes conditional on every reader implementing
+the provenance filter correctly. That is a strictly weaker contract, weakened in precisely the dimension
+the design exists to protect — which is why blocking is the model and this is an option.
 
 ### Summaries, and the property a construction can forfeit
 
