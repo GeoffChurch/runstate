@@ -145,8 +145,7 @@ that turns out to be a known-good combination is better founded than one that is
 - **A store holding both polarities with contradiction *retained* is the paraconsistent relational model**
   — Bagai & Sunderraman (IJCM 55(1–2), 1995) and Trân & Bagai (Information Systems 25(8), 2000): a pair
   `⟨R⁺, R⁻⟩`, *"we do not assume `R⁺` and `R⁻` to be mutually disjoint"*, and *"a particular tuple may be
-  considered to be both in and out of a relation."* **Even the multi-party motivation is theirs** — two
-  disagreeing clinical tests, a tank with three disagreeing sensors. And *"all known (or believed)
+  considered to be both in and out of a relation."* Their *"all known (or believed)
   negative information is stored explicitly"*, over extents that may be **infinite** — though represented
   by automata rather than constraints, and with no accumulation or multi-source union.
 - **Free termination — *"can a node know its output is final without coordinating?"* — is Power, Koutris
@@ -436,6 +435,16 @@ derive an ordinary atom, which may then disagree with another at the head relati
 completion one level down, and where a **declared domain conflict** catches what the status layer cannot.
 
 > **We did not buy paraconsistency. We never bought consistency.**
+
+**Keeping a conflict visible is Belnap's argument; the reason for it here is not his.** *"If the computer
+would not report our contradictions in answer to our questions, we would have no way of knowing that its
+data-base harboured contradictory information"* (1977, §II) — suppress a conflict and you destroy the
+evidence that it exists. But he declines to *resolve* conflicts only for want of a method: *"since I have
+never heard of a practical, reasonable, mechanizable strategy for revision of belief in the presence of
+contradiction, I can hardly be faulted for not providing my computer with such."* Here it is not a want.
+**Precluding conflict costs coordination** — agreeing in advance that two producers will not disagree
+means knowing who they are — so what was an admission becomes the load-bearing reason. Detection is
+preserved; preclusion is the thing declined.
 
 **Settledness is groundness for a *value*, and something else for a *query*.** A value is settled when its
 term is ground. A query has no answer term to ground, so its settledness splits:
