@@ -701,6 +701,20 @@ destruction: a reader can always confirm it has **left** `∅`, never that it is
 without coordination — answerable in one direction, and that direction is the useless one. Same for *"and
 nobody disputes it"*.
 
+**And the operation this forecloses has a name.** A bilattice carries two symmetries (Fitting, *Bilattices
+Are Nice Things*, Def. 2.4): **negation** reverses the truth order and fixes the information order;
+**conflation** reverses the information order and fixes truth. Negation is this design's polarity swap and
+costs nothing. Conflation is the other one, and on these four values it is `−∅ = {t,f}`, `−{t,f} = ∅`, with
+`{t}` and `{f}` fixed — **its entire content is what it does with `∅`**. Fitting's multi-source gloss says
+what that is: the affirmers after conflation are *"the people who originally did not deny."* The
+closed-world assumption, written as an operation.
+
+**So three refusals stated separately here are one.** Declining CWA, holding `∅` unaffirmable, and needing
+no roster are not three commitments but one: **conflation is unavailable**. Its defining case requires
+recognising `∅`; recognising `∅` requires knowing nobody will ever tell you; and that is the participant
+roster, which §CALM names as the single non-monotone input. It also replaces a stance with a test that has
+a yes-or-no answer — *does this operation reverse `≤_k`?*
+
 **The constraint binds on output, not computation.** A scheduler may consult the `∅`-region mid-flight
 freely; publishing such a reading as an answer is what leaves the monotone class. The reference model
 makes exactly that split — output append-only by hypothesis, working memory admitting deletion.
