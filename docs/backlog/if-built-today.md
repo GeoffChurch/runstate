@@ -156,8 +156,8 @@ that turns out to be a known-good combination is better founded than one that is
   termination from the query's algebra. They have the told form too — §5.2's nullary `All()`, *"true if we
   know that all machines have sent all their local data"* — and note that *"updating `All` requires
   coordination between the nodes."*
-- **The vocabulary is Belnap's** (1977): told true / told false / told neither / told both. (Ledger:
-  UNVERIFIED — cited by the papers above, not yet read here.)
+- **The four values are Belnap's** (1977): the four subsets of `{t, f}`, read as told-true, told-false,
+  told-neither, told-both.
 
 **What is not in any of them**, stated narrowly. Falsity **asserted by an agent** as the primitive act:
 4QL derives `¬p` into the negative extent by rule, and the paraconsistent model's own worked construction
@@ -643,7 +643,7 @@ the monotone predicates on the four values are **exactly** the six a rule can ex
 polarities with `∧` and `∨` and no negation — six of sixteen, and the same six.
 
 **An atom's status is the set of things producers have told you about it**: `∅`, `{t}`, `{f}`, `{t,f}` —
-the subsets of `{t, f}`, and Belnap's four, using his words. **The aggregation is union**, so a status
+the subsets of `{t, f}`, and Belnap's four. **The aggregation is union**, so a status
 only ever climbs — monotone **by construction**, and in a *growing* producer set rather than only a fixed
 one.
 

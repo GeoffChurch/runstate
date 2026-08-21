@@ -782,19 +782,15 @@ databases"* (2000) exist, weakly suggesting the 1995 model is finite-extensional
 
 ## UNVERIFIED — queued
 
-- **Constraint databases** (Kanellakis, Kuper & Revesz, ~1990) — flagged by the CCP/4QL pass as the most
-  likely home for *told-false over an infinite constraint-described region*, which is simultaneously this
-  design's most load-bearing property and the one most likely to lose novelty. **Check before claiming
-  anything about regions.**
-- Jakl, PhD thesis 2018 Ch. 6, *"Belnap–Dunn logic of bispaces"* — geometric logic in the information
-  order, `con`/`tot` as **judgement forms rather than formulas**.
-- Ameloot, Ketsman, Neven & Zinn, TODS 40(4), 2016 — weaker forms of monotonicity; candidate formal home
-  for "told falsity buys coordination-freeness".
-- Belnap 1977 — the "told true / told false / told neither / told both" vocabulary, used verbatim here.
-- Gelfond & Lifschitz explicit negation minus the consistency constraint; Blair & Subrahmanian;
-  Kifer & Subrahmanian GAP.
-- Review 7's retraction list (punctuations, LVars/Bloom^L thresholds, Bloom^L fn. 2, residuation/Hanus,
-  Oz `ByNeed`, the ICDT 2025 termination results).
+Nothing outstanding. Every claim the doc rests on has a CONFIRMED entry above, and the remaining leads on
+review 7's list are each superseded by a stronger citation already read: closure-as-a-posted-fact by
+**Darari** (scoped, posted, composable, multi-source, implemented), explicit-negation-without-consistency
+by **4QL Def. 5** and the paraconsistent lineage, coroutining by **CCP `ask`** and **LVars `get`**.
+
+One dangling reference, recorded so it is not chased twice: review 7 cites **Bloom^L's `lcart`** for
+closure-as-fact, and it is **not** among the built-in lattices of that paper's Table 3 (`lbool`, `lmax`,
+`lmin`, `lset`, `lpset`, `lbag`, `lmap`). Either it is in §§4–6 or the citation is wrong. Nothing depends
+on it.
 
 ## Where the contribution stands, as of this pass
 
