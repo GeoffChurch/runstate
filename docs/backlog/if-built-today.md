@@ -310,12 +310,24 @@ variables are an antecedent `∃`, heads are atoms.
 | → **coherent**, via `⊥` | goal clauses | monotonicity — a denial is not preserved under homomorphisms |
 | → **geometric** | infinitary `∨` | nothing new in kind: in heads the same boundary, in bodies infinitely many rules |
 
-**So one requirement chooses the fragment, rather than a list of refusals: the store must have a least
-model.** Every read here is *"is this witnessed?"* — a threshold, a settledness claim, a residual — and
-`∨` in heads is precisely the construct that destroys it. Read downward, the same fact is what buys the
-tractable corner (PTIME against disjunctive Datalog's `Σ₂ᵖ`), the no-value-invention property the proof
-depends on, and — from the `⊥` row rather than the `∨` one — the placement strictly inside the
-coordination-free class. `definite-clause-maximality.md` works the boundary out.
+**So the fragment is chosen by two requirements and one further restriction, not by a list of refusals.**
+
+- **A least model** — every read here is *"is this witnessed?"*, a threshold, a settledness claim, a
+  residual, and `∨` in heads is precisely the construct that destroys it.
+- **Preservation under homomorphisms** — which is what excludes `⊥` from heads: a homomorphism may identify
+  terms and so make a denial's body hold, where nothing positive can be falsified that way.
+- **Atomic heads**, a restriction rather than a requirement, since `∃` in heads is compatible with both of
+  the above. It is taken for the **no-value-invention** property the proof depends on: a conclusion is
+  built only from terms already in the body, so no fresh element is ever minted.
+
+**The first two are independent, and Makowsky is why both must be named**: *"a first-order theory admits
+initial models iff there is a set of definable partial functions such that adding those functions to the
+vocabulary of `T` gives us a theory `T₁` which is equivalent to a **universal Horn** theory"* (JCSS 34,
+1987). Initiality alone reaches **Horn**, which still admits denials. Definite is where the two meet.
+
+Read downward, the same facts buy the tractable corner (PTIME, against disjunctive Datalog's `Σ₂ᵖ`) from
+the first, and the placement strictly inside the coordination-free class from the second.
+`definite-clause-maximality.md` works the boundary out.
 
 **Whether the fragment is *forced* rather than chosen is asked separately** in
 `definite-clause-maximality.md`, via a third route — preservation under algebraic homomorphisms. Its
