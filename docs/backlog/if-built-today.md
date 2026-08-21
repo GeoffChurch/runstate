@@ -651,6 +651,14 @@ open-world story: if the logic's bottom meant *false*, a negative post would hav
 the monotone predicates on the four values are **exactly** the six a rule can express over the two
 polarities with `∧` and `∨` and no negation — six of sixteen, and the same six.
 
+**And the other order is not merely unused — it is not traversable.** In the bilattice these four values
+live in, the truth order is `⟨P₁,N₁⟩ ≤_t ⟨P₂,N₂⟩` iff `P₁ ⊆ P₂` **and `N₂ ⊆ N₁`** — note the reversal.
+Truth rises by adding a positive *or by dropping a negative*, and dropping a negative is **retraction**.
+Half of `≤_t`'s covering steps therefore run against permanence, and the truth-order top `{t}` becomes
+unreachable the moment anything false is told. A store that only grows travels `≤_k` freely and `≤_t` only
+partway, so the informational reading is not a preference between two available orders: only one of them
+is a direction the store can move.
+
 **An atom's status is the set of things producers have told you about it**: `∅`, `{t}`, `{f}`, `{t,f}` —
 the subsets of `{t, f}`, and Belnap's four. **The aggregation is union**, so a status
 only ever climbs — monotone **by construction**, and in a *growing* producer set rather than only a fixed

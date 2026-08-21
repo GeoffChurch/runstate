@@ -27,6 +27,20 @@ halves are *presented* (singletons vs. residual-shaped regions) while both gener
 `P(A)`. Frames — hence biframes, hence d-frames — are defined by forgetting exactly that. Choosing
 among frame-level structures is choosing among names for `P(A) × P(A)`.
 
+**That product form is a theorem, confirmed from primary source 2026-08-20.** Fitting (*Bilattices Are
+Nice Things*, Def. 3.1) defines the **bilattice product** `𝓛₁ ⊙ 𝓛₂` — pairs of positive and negative
+evidence, `≤_k` componentwise and `≤_t` reversed in the second component — and states that *"every
+distributive bilattice is isomorphic to `𝓛₁ ⊙ 𝓛₂` for some distributive lattices"*, which he calls *"a
+descendant of the Polarities Theorem of Dunn."* For `ℬ = {false < true}`, `ℬ ⊙ ℬ` is *"isomorphically the
+bilattice `FOUR`"* — this design's four values. So `P(A) × P(A)` is not an incidental shape this file
+noticed; it is **forced**. The structure is one lattice paired with itself, which is exactly what *"two
+extents in one frame"* says, and there was never a second topology to find.
+
+**Do not cite bilattices in support of a fourth framing.** The representation theorem is precisely why the
+first three had nothing to grip. They are not useless here — `../backlog/if-built-today.md` §"An atom's
+status" takes **conflation** from the same paper — but what a bilattice supplies is an *operation*, not a
+topology.
+
 ## The specific refutations, so they are not re-derived
 
 **The space is degenerate.** Points are ground atoms (forced — see the doc's §"Facts and demands are
