@@ -296,11 +296,27 @@ construct the language contains. Nothing is excepted, because nothing negates.
 So three omissions are one reason — **the store must accept what it is given** — and the fourth is CALM's.
 None is taste.
 
-**Which places the language two rungs below "geometric", and lower is the point.** Lacking `⊥` in heads
-there are no goal clauses, so this is **definite**, strictly below Horn in the logic-programming sense;
-and `∨`-in-heads is what separates geometric from coherent. Being low is what buys the tractable corner
-(monotone queries answerable directly, in PTIME), the placement strictly inside the coordination-free
-class, and the no-value-invention property the proof depends on.
+**Which names the fragment rather than subtracting toward it: regular logic with atomic heads.** Regular
+logic is `⊤`, `∧` and `∃` — the internal logic of regular categories — and the ladder runs **cartesian**
+(`∃` only where provably unique) ⊂ **regular** ⊂ **coherent** (adds `⊥` and finite `∨`) ⊂ **geometric**
+(the `∨` made infinitary). Definite clauses sit inside regular: bodies are conjunctions, body-only
+variables are an antecedent `∃`, heads are atoms.
+
+**Each step up is priced, and the prices differ in kind.**
+
+| step | admits | costs |
+|---|---|---|
+| drop the atomic-head restriction | `∃` in heads — tuple-generating dependencies | Skolemising keeps the least model, so every result here survives; the chase need not terminate, and against a constraint domain a head `∃` can assert a witness nothing satisfies |
+| → **coherent**, via `∨` | `∨` in heads | **the least model.** Minimal models instead, so truth stops being witnessed by a record. A boundary, not a price |
+| → **coherent**, via `⊥` | goal clauses | monotonicity — a denial is not preserved under homomorphisms |
+| → **geometric** | infinitary `∨` | nothing new in kind: in heads the same boundary, in bodies infinitely many rules |
+
+**So one requirement chooses the fragment, rather than a list of refusals: the store must have a least
+model.** Every read here is *"is this witnessed?"* — a threshold, a settledness claim, a residual — and
+`∨` in heads is precisely the construct that destroys it. Read downward, the same fact is what buys the
+tractable corner (PTIME against disjunctive Datalog's `Σ₂ᵖ`), the no-value-invention property the proof
+depends on, and — from the `⊥` row rather than the `∨` one — the placement strictly inside the
+coordination-free class. `definite-clause-maximality.md` works the boundary out.
 
 **Whether the fragment is *forced* rather than chosen is asked separately** in
 `definite-clause-maximality.md`, via a third route — preservation under algebraic homomorphisms. Its
@@ -655,6 +671,25 @@ never soundness — the price is that a status is **relative to the propagation 
 **What is readable is the up-sets, and there are exactly four non-trivial ones.** `⊒ {t}`, `⊒ {f}`,
 `⊒ {t,f}` (*disputed*), or their union. Each is affirmed by exhibiting a witness. (Six up-sets in all —
 these four plus the empty and total ones — which is the six of the six-of-sixteen measurement above.)
+
+**Those four are threshold reads, and refusing the top is what fixes their shape.** LVars' `get` (Kuper &
+Newton, FHPC 2013) is the same operation — block until the state is *at or above* an element of a
+**threshold set** — but theirs must be **pairwise incompatible**, *"the lub of any two distinct elements in
+`Q` is `⊤`"*, because `get` returns the unique element crossed and uniqueness is proved from that premise.
+Pairwise incompatibility presupposes a `⊤`, and theirs is the **error** state produced by conflicting
+writes. The free completion was taken here instead, so `⊒{t} ∨ ⊒{f}` — minimal elements `{t}` and `{f}`,
+joining to `{t,f}` — is an illegal LVars threshold *set* and a perfectly legal threshold *line* in the
+antichain sense. Each package is internally forced:
+
+| | LVars | here |
+|---|---|---|
+| conflicting writes | `⊤`, an error | `{t,f}`, a status |
+| threshold shape | pairwise incompatible | antichain |
+| what a read returns | the unique element crossed | true or false |
+
+**And their restriction is unnecessary here because their return is.** Uniqueness exists to hand back a
+*value*; every readable status here is a Boolean *"is it at or above X?"*, which needs none. One decision —
+keep both polarities, take no top — settles all three rows.
 
 **`∅` is the one thing not readable**, and it fails twice. *"Nothing has been told about this"* is a
 down-set, so no finite observation affirms it — the open-world assumption recovered as a fact about the

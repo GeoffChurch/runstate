@@ -152,6 +152,42 @@ Still to obtain:
   includes the denials.
 - **Initial algebra semantics** — Goguen, Thatcher, Wagner & Wright.
 
+## The categorical placement — checked 2026-08-20, and deliberately kept out of the doc
+
+Recorded so it is not re-derived, and **not** carried into `if-built-today.md`, where it would do no work.
+The sibling `../dead_ends/topological-framings.md` exists because borrowed machinery that does no work has
+already cost that document three sections; this is placement, which is checkable, and nothing more.
+
+**The ladder.** `⊤, ∧, ∃!` = **cartesian** ⊂ `⊤, ∧, ∃` = **regular** ⊂ `+⊥, +∨` = **coherent** ⊂
+`+ infinitary ∨` = **geometric**, these being the internal logics of cartesian, regular, coherent and
+geometric categories. **Definite clauses are regular with atomic heads** — a body-only variable is an
+unrestricted antecedent `∃`, so the fragment is *not* cartesian — and **regular sequents `φ ⊢ ∃ȳ ψ` are
+exactly tuple-generating dependencies**. So "definite clauses plus `∃` in heads" is not a hand-cut
+fragment: it is regular logic.
+
+**Why disjunction in an antecedent is free.** `φ ∨ φ' ⊢ ψ` holds iff `φ ⊢ ψ` and `φ' ⊢ ψ`, and geometric
+logic's distributive laws float `∨` out of `∧` and `∃` to the top, so every antecedent reduces to a family
+of `∨`-free ones. Infinitary antecedent `∨` splits into an infinite *family of sequents* — fine for a
+theory, which is why the obstacle to it is finite presentability of a **program**, not semantics.
+
+**Classifying toposes — read, and it stops one rung short of us** (`../resources/beke-theories-of-presheaf-type.pdf`,
+Beke, *Theories of presheaf type*, 2004; §§0–2 read):
+
+- **Definition:** a geometric theory is *of presheaf type* if its classifying topos is equivalent to a
+  presheaf topos.
+- **Cartesian is settled, and it is a biconditional** — Remark 1.2 cites the **Gabriel–Ulmer theorem**,
+  *"that the classifying toposes of finite limit theories are precisely the presheaf toposes `Pre(𝒞)` where
+  `𝒞` has finite limits."*
+- **Coherent is not uniformly presheaf type**, with a sharp counterexample: *"there exists **no coherent
+  presheaf type axiomatization of fields**."*
+- **Recognition is delicate.** Remark 1.5: *"whether or not `T⁺` is of presheaf type is **not determined by
+  the abstract category `Mod(T⁺)` alone**; so any categorical recognition method must employ some auxiliary
+  device."* Prop. 0.1 gives the finitely-accessible characterisation, and the *"some"* in its clause (iv)
+  is where the gap hides.
+
+So the clean theorem sits one rung **below** the fragment and the delicacy starts one rung **above** it,
+which leaves Open #5.
+
 ## Open
 
 1. **Does a genuine Lindström theorem for definite/Horn logic exist?** Abstract model theory for logics
@@ -167,6 +203,12 @@ Still to obtain:
 4. **Whether route three is actually independent.** CALM's monotonicity and homomorphism-preservation may
    be closer than they look. If they are two statements of one fact, the doc gains a better *phrasing* but
    not a third route, and it should say so rather than count to three.
+5. **Is every *regular* theory of presheaf type?** Gabriel–Ulmer settles cartesian affirmatively; Beke
+   exhibits a coherent theory (fields) that is not. Regular sits between, and the question was not answered
+   in the sections read. The literature speaks of *characterisations of* the regular theories classified by
+   a presheaf topos, which suggests a proper subclass — but that is an inference from a phrasing, not a
+   result. **Worth an actual attempt**: the gap may be open for want of anyone asking rather than for
+   difficulty, and the two ends are close together.
 
 ## Related
 
