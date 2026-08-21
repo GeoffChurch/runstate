@@ -376,6 +376,38 @@ unilaterally terminate even though they may receive additional data in the futur
 **settledness question**, published, with a semiautomata model bridging relational transducers to CRDTs.
 Expect it to be more directly on target than review 7 suggested, and possibly to price more than one claim.
 
+### Fitting, *Bilattices Are Nice Things* (2002) — **CONFIRMED** (read §§1–3, 8 pp.). It names the operation this design refuses
+
+`Bilattices_Are_Nice_Things.pdf`. A pre-bilattice is `⟨ℬ, ≤_t, ≤_k⟩`, two orders on one carrier (Def. 2.1);
+`≤_k` ranks *"degree of information"*, `≤_t` *"degree of truth."* Belnap's `FOUR` is the smallest
+non-trivial one.
+
+**§2.2's multi-source example is this design's semantics.** *"Suppose we have a certain group of people,
+`𝒫`, whose opinions we value … some will call it true, some false. But also, some may decline to express
+an opinion, and some may be uncertain enough to say they have reasons for calling it both true and false …
+we assign `X` a kind of generalized truth value `⟨P, N⟩` … **we do not require that `P ∪ N = 𝒫`, nor that
+`P ∩ N = ∅`.**"* With `≤_k` componentwise `⊆` — this design's aggregation by union.
+
+**Why there is no truth order here, in one line of his definition.** `⟨P₁,N₁⟩ ≤_t ⟨P₂,N₂⟩` iff `P₁ ⊆ P₂`
+**and `N₂ ⊆ N₁`** — *"note the reversal"* — so truth rises when people *"drop negative opinions or add
+positive ones."* Dropping a negative opinion is **retraction**. The truth order cannot be climbed by
+posting, only by un-telling, which is why only `≤_k` is available. (A consequence of the standard
+definition, not a result of his; state the fact, do not attribute it.)
+
+**Conflation (Def. 2.4) is the closed-world assumption as an operation, and it is what this design
+refuses.** A bilattice may carry two symmetries: *negation* reverses `≤_t` and fixes `≤_k`; *conflation*
+reverses `≤_k` and fixes `≤_t`. In the people example `¬⟨P,N⟩ = ⟨N,P⟩` — the polarity swap, harmless — and
+`−⟨P,N⟩ = ⟨𝒫−N, 𝒫−P⟩`, glossed as *"the people who affirm under a conflation are the people who originally
+did not deny."* On `FOUR`, *"`−⊥ = ⊤`, `−⊤ = ⊥`, and `true` and `false` are left unchanged"* — so its
+entire content is what it does with `∅`. **The operation is his; the identification with CWA, and with the
+roster via `∅`-recognition, is ours** — he says only *"a kind of switching to a default position."*
+
+**And the representation theorem confirms `dead_ends/topological-framings.md` from primary source.** Def.
+3.1 gives the bilattice product `𝓛₁ ⊙ 𝓛₂`; *"every distributive bilattice is isomorphic to `𝓛₁ ⊙ 𝓛₂` for
+some distributive lattices"*, which he calls *"a descendant of the Polarities Theorem of Dunn"*, and
+`ℬ ⊙ ℬ ≅ FOUR` for `ℬ = {false < true}`. That is the dead-end file's diagnosis — *"two extents in one
+frame, not two topologies"* — stated as a theorem by someone not arguing with us.
+
 ### Kuper & Newton, *LVars: Lattice-based Data Structures for Deterministic Parallelism*, FHPC 2013 — **CONFIRMED** (read §§1–5, 7 pp. of 13). And it locates this design's fork precisely
 
 `kuper-newton-2013-lvars.pdf`. Review 7 cited it for threshold reads; confirmed, and §3.3 is the
