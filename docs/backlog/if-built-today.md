@@ -970,14 +970,54 @@ for the *execution*, where simplification keeps the store small provided the bod
 caution: CHR's store is a multiset, and idempotence is what makes one-way replication safe — use set
 semantics.
 
+## One demand, traced
+
+Everything up to here has been argued rather than shown. Here is a single demand from posting to
+settlement, so the rest has something to be about. Nothing in it is new — every step is a mechanism one of
+the surrounding sections defends.
+
+**A querier posts one record.** It wants the loss at every step of a run, for as long as the run lasts: the
+term `metric(loss, V, S)` with `S ≥ 1`, posted as a **`∀`** demand — *decide every atom in this region*,
+not *find me one*. The region is **unbounded**, and that is fine; what must be finite is the eventual
+cover, not the region.
+
+**A producer is handed the residual, not the demand.** Steps 1–60 are already in the store, so what reaches
+it is `S ≥ 61` — the demand minus what is settled. Nobody detects that the first sixty were subsumed; they
+simply contribute nothing.
+
+**It produces, and the querier reads a threshold.** `metric(loss, 0.31, 61)` is posted. The querier's read
+is `⊒{t}` on that atom, affirmed the only way anything is affirmed here: by exhibiting the record.
+
+**At step 900 the querier sees `∅`, and may conclude nothing from it.** Nothing has been told about that
+atom. That is not *"there is no loss at step 900"* — it is *"nobody has said."* The querier may confirm it
+has **left** `∅` the instant any record arrives, and may never confirm it is **in** it.
+
+**The run converges at 743, and the producer says so.** It posts one negative record, `¬metric(loss, V, S)`
+for `S > 743`. **That single record decides infinitely many atoms** — and it is *told*, not inferred.
+Nobody derived it from the absence of anything: the producer knew, and said.
+
+**Now the region is settled.** Every atom of `S ≥ 1` is decided — `⊒{t}` for the 743 produced steps, `⊒{f}`
+beyond. The cover is finite (743 positives and one negative) though the region is not, which is exactly
+what makes an unbounded demand dischargeable. The querier's *"tell me when there are no more"* fires here,
+and not before.
+
+**A second querier posts the identical demand, and nothing runs.** Its residual against a settled region is
+empty, so there is no work to hand anyone and no producer to launch. The store was the cache; no cache was
+built.
+
+**And if two producers disagree.** Two of them posting different losses at step 61 produce two *atoms*,
+both `⊒{t}` — a **domain** conflict, invisible unless somebody wrote a rule saying loss is functional in
+the step. A **valuation** conflict is a different thing: it takes a post of `¬metric(loss, 0.31, 61)`, and
+then that one atom reads `{t,f}` — affirmable, inert, and poisoning nothing around it.
+
 ## Demand is control
 
 Demand is not monotone: a lease expires, a querier withdraws, an operator halts a run. That is fine.
 
 **Nothing derived becomes false; some things never get derived.** A withdrawn demand means a term is not
 produced, so a reader's threshold claim never fires — it suspends forever. That is a **liveness** failure,
-not a safety one. Two replicas with different demand produce different *subsets*; every literal either
-holds is correct.
+not a safety one. Two replicas with different demand produce different *subsets*; every literal in either
+is correct.
 
 All three mechanisms are control: resource management, a querier changing its mind, and somebody
 deliberately stopping a machine. The logic never had jurisdiction over any of them.
@@ -1119,7 +1159,7 @@ has two key positions. What two verbs were buying is **a declaration of intent t
 which a syntactic property cannot replace. Consequently **admission control needs an explicit mechanism**,
 and the natural signal is a *quantity*: how many atoms does this posted term denote?
 
-### The demand language: constraints from a fixed domain
+## The demand language: constraints from a fixed domain
 
 Talking *about* demands means handling the holes in a pattern, and there are exactly three ways —
 **erase** them into a finite tag (adornments, fixed at compile time), **delegate** them to the
