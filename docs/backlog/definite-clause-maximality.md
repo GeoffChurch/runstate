@@ -5,11 +5,22 @@ Background: [if-built-today](if-built-today.md) §"The language, and what each r
 places its fragment *"two rungs below geometric"* and justifies each omission separately. This file asks
 whether the fragment is **forced** rather than merely chosen, and finds a partial answer.
 
-## Status: OPEN, with a partial result
+## Status: ANSWERED 2026-08-20 for the main question; two riders open
 
-Not refuted, not funded. Two papers are on disk and unread. The result below is reasoning, and the
-literature has not been consulted — which in this repo is the failure mode that has already cost three
-sections (`../dead_ends/topological-framings.md`).
+**Makowsky 1987 has the characterisation, and it reaches Horn rather than definite.** *"A first-order
+theory `T` admits initial models **iff** there is a set of definable partial functions such that adding
+those functions to the vocabulary of `T` gives us a theory `T₁` which is equivalent to a **universal Horn**
+theory"* (JCSS 34, p. 268; §3 gives the term-model case, §5 the `∀∃` form). So the property this design is
+built on — a least model, i.e. an initial one — is **exactly** what Horn axiomatisability buys, and it is a
+theorem rather than a framing.
+
+**It does not, on its own, reach definite.** A denial has a least model — `{p ∧ q → false}` is satisfied by
+nothing-true — so initiality does not exclude `⊥` from heads. Homomorphism-preservation does. **The
+two-forces picture below is therefore confirmed rather than replaced**, and the design doc has been
+corrected to name both.
+
+Open riders: the `∃`-in-heads condition below is stated too loosely (see Open #6), and §§4–6 of Makowsky
+are unread.
 
 ## Why it would pay
 
@@ -190,9 +201,19 @@ which leaves Open #5.
 
 ## Open
 
-1. **Does a genuine Lindström theorem for definite/Horn logic exist?** Abstract model theory for logics
-   with initial semantics. Unknown; do not assume it does. The "each extension breaks a different property"
-   pattern above is Lindström-*shaped* but is not itself such a theorem.
+1. ~~**Does a genuine Lindström theorem for definite/Horn logic exist?**~~ **ANSWERED**, in the form that
+   matters: Makowsky's is a characterisation theorem — *admits initial models* `iff` *Horn up to definable
+   partial functions* — which is what the "each extension breaks a different property" pattern was reaching
+   for. It is not literally Lindström-shaped (no maximal-logic-under-preservation statement), and nothing
+   here needs it to be.
+6. **State the `∃`-in-heads condition precisely.** This file says "Skolemising keeps initiality." Makowsky's
+   theorem asks for **definable partial functions**, which is nearer cartesian's *provably unique* `∃` than
+   to an arbitrary Skolem symbol — so the current wording is the right direction and too loose. §5 unread;
+   read it before relying on the claim.
+7. **Makowsky identifies the initial model with Reiter's CWA** (§1.10) and this design does not adopt it.
+   His generic assignment is **two-valued**, so a non-consequence is *false*; here it is `∅`. The least
+   model is kept, the two-valued reading of it is declined, and that difference is the whole of
+   §"An atom's status". Worth one sentence somewhere, so the identification is never read as an adoption.
 2. **Does `⊥` in heads break preservation, or only the store?** Unchecked.
 3. **Abstract interpretation.** Homomorphism-preservation is the soundness condition for abstract
    interpretation over a positive program (Cousot & Cousot): computing in the coarser image
