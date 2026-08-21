@@ -376,6 +376,41 @@ unilaterally terminate even though they may receive additional data in the futur
 **settledness question**, published, with a semiautomata model bridging relational transducers to CRDTs.
 Expect it to be more directly on target than review 7 suggested, and possibly to price more than one claim.
 
+### Makowsky, *Why Horn Formulas Matter in Computer Science: Initial Structures and Generic Examples*, JCSS 34(2/3), 266–292 (1987) — **CONFIRMED** (read §§1–2 + the stated results, 8 pp. of 27). The maximality result exists, and it reaches **Horn**, not definite
+
+`makowsky-1987-why-horn-formulas-matter.pdf`. Year confirmed from the masthead: **1987**, not 1985.
+
+**Initiality, his Def. 2.1, is the maximality file's framing verbatim:** *"A is initial in K if for every
+structure `B ∈ K` there is a **unique homomorphism** `h_B : A → B`."*
+
+**The main theorem, stated in the introduction (p. 268):** *"a first-order theory `T` admits initial
+(= `∃⁺`-generic) models **iff** there is a set of definable partial functions such that adding those
+functions to the vocabulary of `T` gives us a theory `T₁` which is equivalent to a **universal Horn**
+theory. Additionally, if `T` is finite, this set of definable partial functions can be chosen to be finite,
+too."* §5 restates it as *"admits initial models iff it is a partially functional `∀∃`-Horn theory"*, and
+§3 gives the term-model case: theories admitting initial **term** models are the **universal Horn**
+theories. §1's propositional warm-up (Thm. 1.9) is the same shape: `Σ` admits generic assignments iff `Σ`
+is equivalent to its Horn consequences.
+
+**Consequence, and it corrected the doc.** *"Has a least model"* characterises **Horn**, which still admits
+denials — `{p ∧ q → false}` has a least model, namely nothing true. So initiality alone does not exclude
+`⊥` from heads; homomorphism-preservation does, and both requirements must be named. The doc's §"The
+language" said one requirement chose the fragment and now says two.
+
+**And `∃` in heads is admissible under a sharper condition than plain Skolemisation.** The theorem asks for
+**definable partial functions**, which is nearer cartesian's *provably unique* `∃` than to an arbitrary
+Skolem symbol. `definite-clause-maximality.md` currently says "Skolemise and initiality survives"; that is
+the right direction but the condition is narrower. §5 unread — **restate it precisely before relying on
+it.**
+
+**One passage that reads as a contradiction of this design and is not.** §1.10: *"We can think of
+non-negated literals as **facts** and Horn clauses as **rules**. A generic assignment then corresponds to a
+world where only those assertions are true which are either facts or follow from the facts by application
+of the rules. **This is nothing else than the closed world assumption** as introduced in [Re78]."* His
+assignment is **two-valued** — a non-consequence gets `0`, i.e. *false*. Here a non-consequence gets `∅`.
+**This design keeps the least model and declines the two-valued reading of it**, which is the whole content
+of §"An atom's status". Do not let the sentence stand unremarked anywhere it could be read as an adoption.
+
 ### Fitting, *Bilattices Are Nice Things* (2002) — **CONFIRMED** (read §§1–3, 8 pp.). It names the operation this design refuses
 
 `Bilattices_Are_Nice_Things.pdf`. A pre-bilattice is `⟨ℬ, ≤_t, ≤_k⟩`, two orders on one carrier (Def. 2.1);
