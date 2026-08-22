@@ -1802,7 +1802,24 @@ reintroduces a bug the fold exists to prevent.
    counterweight for the first: **0 of 3,165** numeric re-productions diverged on the real corpus — which
    measures that the consumers' hand-rolled guards are **working**, not that the hazard is absent; a
    census sees only harms detectable in a log, and is biased low in proportion to the machinery already
-   preventing them. The valuation case has not been measured at all.
+   preventing them.
+
+   **The valuation case is now measured (2026-08-22), and the number is not the finding.** Across 2,300
+   logs from the two consumer repos: **2,743** `lifecycle.stopped` records and **0** values at a step
+   beyond the `final_step` their stop declared; **1,140** `launcher.terminated` records and **0**
+   subsequent values or heartbeats. But the zero is structural rather than fortunate — **the deployed
+   protocol has no `¬Q`**. The only closure claim is a worker's own `stopped`, so the two independent
+   claimants that `{t,f}` represents cannot both exist; and the one *external* claim,
+   `launcher.terminated`, is posted after reaping, when the worker is already gone. The census therefore
+   shows the mechanism **inapplicable to this corpus** — a legitimate census conclusion — and says nothing
+   about a design that adds `¬Q`, since `¬Q`'s absence is the whole explanation.
+
+   Two incidental findings. **411 of 2,743 stops (15%) carry no `final_step`**, so they close nothing and
+   delimit no region — which bears on whether settledness would be derivable in practice. And **1,643
+   values do arrive after their stop**, every one of them at a step *within* the closed region: teardown
+   telemetry (`status`, `phase: "saving"`). Under this design those are ordinary positive posts inside a
+   settled region, not conflicts — but the first pass of this census counted them as violations, so the
+   loose predicate *"any value after a stopped"* is recorded here as the wrong one.
 8. **What `every` is** — a `∀` over a strided region, or a firing schedule. The wire format has three
    demand shapes and the quantifier rule covers two; a sampling demand fits neither comfortably, and the
    library defers exactly this. See `memoizer-index-algebra.md`, where it is recorded that the current
