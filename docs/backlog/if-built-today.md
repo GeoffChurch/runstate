@@ -1389,6 +1389,59 @@ so a negative relation's extension usually compresses into one record where a po
 gives a negative record more **reach**, so a wrong one does proportionally more damage — a reason for care,
 not a reason to treat the direction as a different kind of thing.
 
+**The representation: one wrapper functor, not a naming convention per subject.** Declare
+
+```
+pol(A)  =  pos(A) | neg(A)
+```
+
+once, and keep `pol(A)` **out of the term algebra**, so `pol(A) ≠ A`. Atoms are untouched — `loss(V, S)`
+keeps its own per-functor signature, and `pos(loss(V,S))` / `neg(loss(V,S))` are its two directions. `¬Q`
+is notation for `neg(Q)`.
+
+**What changes is the shape of the atom set.** A partner relation per subject gives `Atoms(p) ⊔ Atoms(p⁻)`
+— a coproduct of two independently declared functors, isomorphic to `2 × Atoms(p)` only when the
+declaration is honoured, which nothing verifies. The wrapper gives `2 × Atom` by construction, and three
+things follow from that one fact rather than from three separate arguments:
+
+- **`¬¬Q` is a type error.** `neg(neg(x))` needs `x : Atom` and is handed `pol(Atom)`. This is exactly why
+  `pol` stays out of the algebra: an endomorphic `¬` would have to be a constructor *of* the term algebra,
+  and in a free algebra `not(not(Q))` is a **distinct term** from `Q` that no type discipline can collapse.
+- **The two directions cannot drift.** Both constructors take the same argument sort, so a mismatched arity
+  between them is unwritable.
+- **The status fold is a transpose.** *"The set of things producers have told you about it"* is
+  `Set(2 × A) → (A → P(2))` — currying, nothing more. With a partner relation the fold must consult the
+  pairing to know which atoms to group, and the pairing is what no tool checks.
+
+**And it is the form that generalises.** §"What gets built on top" reads polarity as the two-element case
+of a declared marker set: under a wrapper a third marker is a third constructor, under partner relations a
+third naming convention with nothing relating it to the first two.
+
+**The price is polarity-polymorphism, and it is small.** `conflict(X) :- X, ¬X` is unwritable, since `¬X`
+would need `X : Atom` and it is `pol(Atom)`. Little is lost: `conflict(A) :- pos(A), neg(A)` is one rule,
+generic over atoms, and it names the conflict by the **atom** rather than by a direction the conflict does
+not have. Where a rule must genuinely leave the direction open — *dispute the opposite of what an untrusted
+source said* — two facts supply it,
+
+```
+flipped(pos(A), neg(A)).
+flipped(neg(A), pos(A)).
+```
+
+and involutivity is **provable from them** rather than asserted. The rules needing this are a small fixed
+set of meta-rules, so the verbosity is bounded.
+
+**On the wire this is the closed-set rule rather than a preference.** Serialisation forces polarity into a
+field whatever the language does; what differs is that field's domain. A partner relation per subject puts
+it in the **functor name** — an open namespace, recovered by string surgery on a prefix. The wrapper puts
+it in an outermost functor with **exactly two values**, which a schema can pin with
+`additionalProperties: false`.
+
+**None of which prevents anything.** The substrate typechecks nothing, and a schema declaring its own
+endomorphic `not/1` gets double negation with no objection — the same unenforceability that applies to
+sorts, above. The claim is only static checkability's: a closed set known at authoring time should be
+spelled so a tool can check it, and two polarities is closed where a functor namespace is open.
+
 ### Sort closure, and disequality
 
 **Disequality is a constraint-domain predicate, never a logical connective**, so it was never in the
