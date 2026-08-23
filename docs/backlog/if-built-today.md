@@ -190,35 +190,45 @@ looks like combination is one of two things: **set semantics** collapsing identi
 literal refining** as a variable inside it is bound. Two posts never merge; one post gets more
 instantiated.
 
-**Which commits to the largest thing in this document: variables are shared across agents.** This is a
-**distributed unification engine**, not a message protocol. When a producer binds `V`, the querier's own
-term refines — the querier is holding that variable, not a copy of it — and that is what makes *"one
-representation, four roles"* (§"Facts and demands are dual") a mechanism rather than a slogan. Post
-`loss(60, V)`: before binding it asserts existence and is a question; after binding your own term **is**
-the answer. Without sharing, a demand and an answer are different objects that merely resemble each
-other, and you need a delivery mechanism to carry one into the other — which is the machinery
-§"Answers stream individually" spends twenty lines killing.
+**Unification is local; sharing is a posted equality.** A rule body unifies against the store the ordinary
+way, inside one agent. What does *not* cross a host is a shared mutable variable: a hole in a posted term
+is an ordinary constant — `loss(60, v37)` — and *"`v37` is `0.31`"* is a posted fact like any other,
+carrying the ordinary four-valued status.
 
-Two posts of the same shape still create **two** variables, and that is not a contradiction: sharing is
-with whoever holds a reference to *that* variable, and independent posts hold none of each other's. It is
-why a call table is still needed (§"Demand subsumption").
+**That is what makes *"one representation, four roles"* (§"Facts and demands are dual") a mechanism rather
+than a slogan.** Post `loss(60, v37)`: with no equality told it asserts existence and is a question; once
+`v37 = 0.31` is told, the same term read through that equality **is** the answer. No delivery mechanism is
+needed and no copy is made — the equality is a fact in the store, read like any other — which is why
+§"Answers stream individually" can kill the delivery machinery without a shared object to replace it.
 
-**A binding is an ordinary posted fact**, which is what keeps this coordination-free. Two agents binding
-`V` differently is two facts, monotone, no arbiter — and what comes out is `loss(60, 0.5)` and
-`loss(60, 0.4)`, two atoms both true, which is the example this section opened with. **Conflicting
-bindings are the free completion one level down**, at the variable rather than at the atom.
+Two posts of the same shape still make **two** holes, and that is not a contradiction: `v37` and `v38` are
+different constants, so one producer's equality does not answer both. It is why a call table is still
+needed (§"Demand subsumption").
+
+**A binding is an ordinary posted fact**, and this is where it pays. Two agents binding disagreement is
+**readable** — two equalities, and `v37 = 0.31` reads `{t,f}` if somebody denies it. Under a shared mutable
+variable that sentence cannot be true: a term cannot refine to `0.31` *and* to `0.45`, so either the second
+binding has nowhere to go or the refinement never happened. **Conflicting bindings are the free completion
+one level down**, at the hole rather than at the atom.
 
 That is also why **Oz/Mozart's owner protocol is not needed here** — *"the owner accepts the first binding
-request and ignores all subsequent"* buys **determinism**, and determinism is exactly what this design
-has already declined. Oz needs one binding to win consistently everywhere; here both are kept and the
-disagreement is readable. The paraconsistent stance and the distributed unification engine are not two
-commitments, they are one.
+request and ignores all subsequent"* buys **determinism**, and determinism is exactly what this design has
+already declined. Oz needs one binding to win consistently everywhere; here both are kept and the
+disagreement is readable. The paraconsistent stance and this are not two commitments, they are one.
 
-**What it costs, stated plainly, because this is a large thing to ask for.** A variable needs an identity
-that survives crossing a host, so **variable naming is protocol** and belongs in the wire format. A
-variable becomes a durable object with the same reclamation question as everything else. And a reader
-deciding whether this direction is right should know that *"distributed unification engine"* is a
-substantially bigger artifact than *"message protocol"* — see §"The honest cost".
+**And unboundness stops being observable.** With a shared variable, *"is this bound?"* is answered by
+looking at your own term — which is **observing absence**, the move this design forbids everywhere, and
+which §"There is no `read`" must prohibit by hand. Under a reified equality, unbound is `∅`, and `∅` is
+unaffirmable by construction. A rule enforced by discipline now holds by shape, which is what
+§"What makes the answer worth having" means by *unsound things are unwritable, not forbidden*.
+
+**What it costs.** A hole needs an identity that survives crossing a host, so **naming is still protocol**
+and belongs in the wire format. What it no longer costs is a durable *mutable* object: `v37` is an ordinary
+constant with the ordinary reclamation question. The closure work does not appear — it **moves**. Shared
+variables do it eagerly, at bind time, through whatever the hole was unified with; posted equalities do it
+lazily, at read time or into an index. The one genuinely new cost is the one being bought: an equality can
+be disputed, so readers with different trust policies close over different subsets and reach different
+congruences — which §"What gets built on top" already books as the price of trust being policy.
 
 That is what makes monotonicity free rather than argued for. Merging is declined because it
 **fabricates** — `f(a,Y)` and `f(X,b)` compressing to `f(a,b)` asserts a fact nobody posted, which is
