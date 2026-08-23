@@ -222,7 +222,7 @@ substantially bigger artifact than *"message protocol"* — see §"The honest co
 
 That is what makes monotonicity free rather than argued for. Merging is declined because it
 **fabricates** — `f(a,Y)` and `f(X,b)` compressing to `f(a,b)` asserts a fact nobody posted, which is
-sound only under a functional dependency (§"No functional dependency"). That reason is decisive on its
+sound only under a functional dependency (§"Constraints are asked"). That reason is decisive on its
 own; what merging would have *cost* was measured separately (greedy merging is first-fit colouring of the
 compatibility complement, within 1.04–1.20× of exact `χ` to n=24 and 1.21–1.32× of a heuristic to n=500,
 with a crown separation at **12 positions giving `χ = 2` against 924 first-fit blobs**) and is recorded in
@@ -288,7 +288,7 @@ construct the language contains. Nothing is excepted, because nothing negates.
 |---|---|---|
 | arbitrary `∨`, `∃`, finite `∧` **in bodies**; clause-level `∀` | **yes** | — |
 | arbitrary `∨` **in heads** | **no** | a disjunctive fact has nowhere to live: this store is a **set of literals**, one model. `φ ⊢ a ∨ b` needs a set of *models*, or the disjunctive chase |
-| `⊥` in heads — integrity constraints | **no** | a store that must accept what it is given can only **reject a post** (order-dependent) or **go inconsistent** (§"No functional dependency") |
+| `⊥` in heads — integrity constraints | **no** | a store that must accept what it is given can only **reject a post** (order-dependent) or **go inconsistent** (§"Constraints are asked") |
 | equality in heads | **no** | that *is* a functional dependency — the same reason again |
 | `∃` in heads — value invention | **no** | the coordination-freeness proof's quiescence argument **requires** no value invention. An existential *post* is fine; a rule minting a fresh variable is not |
 
@@ -369,7 +369,7 @@ cannot mix, for the same reason the complement of an open is not open.
 
 `argmax` is therefore not expressible in derivation, so a bandit's one non-monotone step is forced to the
 boundary. Its monotone half stays inside: `beaten(A) :- value(A,V), value(A2,V2), A ≠ A2, V2 > V` only
-ever grows. (The disequality is not decoration — without it, §"No functional dependency" lets one arm
+ever grows. (The disequality is not decoration — without it, §"Constraints are asked" lets one arm
 carry two values, and `A` beats itself.)
 
 **One exception is real and does not repair.** `ensure`, the library's core operation: its loop condition
@@ -610,7 +610,7 @@ which is why it failed rather than why the move is wrong.
 **It is not enforced and it is not enforceable.** Producing inside a region you declared empty contradicts
 your own assertion — and needs no detector, because it *is* the status `{t,f}`. Nothing rejects the post,
 and nothing could: refusing a contradicting post is order-dependent, whoever arrives first winning, which
-is §"No functional dependency"'s argument against asserting functionality as an axiom.
+is §"Constraints are asked"'s argument against asserting a constraint as an axiom.
 
 **But detectable is not diagnosable, and that is where the missing provenance is felt.** `{t,f}` says two
 claims disagree. It does not say whether that is a real disagreement about the world — two producers with
@@ -676,7 +676,7 @@ the subsets of `{t, f}`, and Belnap's four. **The aggregation is union**, so a s
 only ever climbs — monotone **by construction**, and in a *growing* producer set rather than only a fixed
 one.
 
-**It is the free completion, one layer up.** §"No functional dependency" meets the same fork at the value
+**It is the free completion, one layer up.** §"Constraints are asked" meets the same fork at the value
 layer — add a collapsing top, or take the powerset — and takes the powerset. The status layer gets the
 identical answer.
 
@@ -1235,7 +1235,7 @@ keeping as the operational one: naming `⋁{c : c ∧ a ≤ b}` needs a **compre
 ranges over a **given** index family. So the thing to guard is not internalisation but **comprehension**,
 and the slogan is not *"`→` is unwritable"* but **"`→` is not uniformly definable."**
 
-## No functional dependency, and why
+## Constraints are asked, never asserted
 
 The tempting move is to declare a relation functional — *"for each key, exactly one value"* — so the store
 can combine posts and compress. It should be resisted, and the reason is not the one it first appears.
@@ -1255,7 +1255,14 @@ none survives:
 
 Only the third works, and it is not a functional dependency at all: it is an **observation**.
 
-> **Functionality is something a reader may ask about, never something the store asserts.**
+**And the argument is not about functional dependency in particular.** A functional dependency is an
+**equation between terms**, and the store's terms are **free** — `0.5` and `0.4` are distinct precisely
+because nothing identifies them. So asserting *any* equation the data can violate has the same three
+exits: quotient the terms, explode, or refuse a post. Which is why `⊥` in heads is refused for the same
+reason (§"The language"), and why every constraint on facts lives **downstream, as a query**. What varies
+between constraints is only who writes the query.
+
+> **A constraint is something a reader may ask about, never something the store asserts.**
 
 **And the affirmable half is the negative one.** *"This relation is not functional at this key"* is a
 positive existential over a growing set — monotone, decidable:
