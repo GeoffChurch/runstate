@@ -464,7 +464,7 @@ incompatible** — *"the lub of any two distinct elements in `Q` is `⊤`"* — 
 results from conflicting updates,"* with *"any update that would take the state of an LVar to `⊤` results
 in an error."*
 
-**This design refused that `⊤`** — §"No functional dependency" takes the free completion rather than a
+**This design refused that `⊤`** — §"Constraints are asked" takes the free completion rather than a
 collapsing top, and the status layer follows. Three consequences, and they are one decision seen three
 times:
 
