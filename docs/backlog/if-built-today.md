@@ -1469,7 +1469,7 @@ the whole table off the safety path onto the cost path.
 | aggregation | note |
 |---|---|
 | last-write-wins | `argmax` over `seq`; a report |
-| `max` / `min` | a report. On a **dense** carrier the only compact element is `⊥`, so the affirmable claim is strict `⊐` — **ask open intervals, never points** |
+| `max` / `min` | a report |
 | set union | the identity read, and the only option for a **holistic** aggregate (median, percentile), where no bounded *exact* summary exists. Bounded *approximate* ones do: a 200-bucket sketch reproduced a 2000-sample bootstrap CI to **1.07% of its width** |
 | "must all agree" | the `conflicted` predicate above |
 | lexicographic | fine as a *selection* order, dangerous as a *combining* one: with `attempt` at the head, `(1,running)` and `(1,crashed)` have least upper bound `(2,⊥)` — it **fabricates attempt 2**, in a design about attribution |
@@ -1478,15 +1478,20 @@ the whole table off the safety path onto the cost path.
 set of possibilities" a domain: Hoare/lower (*may*), Smyth/upper (*must*), Plotkin/convex. Putting the
 upper one on the *value* side is a category error — read extensionally as a set of facts it is antitone,
 so a rule body binding a variable to a member is non-monotone. Its natural home is **demand** (*must*
-produce) — **and that is open**, suggestive and unworked. Note that on a continuous carrier it has no
-representable bottom and narrowing never reaches a singleton, so settledness there arrives by naming the
-value rather than by narrowing toward it.
+produce) — **and that is open**, suggestive and unworked.
 
 **Continuous carriers are restricted, not broken.** In a continuous dcpo the basic opens are `⇈c`,
 coinciding with `↑c` exactly in the algebraic case; an open interval **is** `⇈c` for the interval domain.
 Nothing settles at a point under bisection, but *"is `S` in `(0.4, 0.6)`?"* becomes true the moment
 narrowing puts the domain inside it. So: **settle the question, not the value.** Thresholds fire and
 standing queries die. (GC is *not* on that list: on the boundary the query neither fires nor dies.)
+
+**The constructive form of that rule is a value that streams.** Represent a real as an exponent plus a
+growing list of expansion coefficients and it is already a monotone stream of information — the same shape
+as the store — so every interval question becomes an ordinary threshold read, firing the moment enough
+coefficients place the domain inside the interval. Not free: a streamed real is a **region of coefficient
+atoms** rather than a `Float`, so the value plane acquires unbounded extents and §"Types" would owe it a
+sort. Unworked.
 
 **Terminology hazards, all live.** *Join* — relational `⋈` versus lattice `⊔`, and the lattice join versus
 the powerdomain pair. *Union* — status aggregation in the knowledge order versus value aggregation under a
