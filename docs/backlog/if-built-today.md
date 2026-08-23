@@ -1487,6 +1487,7 @@ the whole table off the safety path onto the cost path.
 |---|---|
 | last-write-wins | `argmax` over `seq`; a report |
 | `max` / `min` | a report |
+| multiset union | counts rather than membership — the `ℕ` reading where set union is the `𝔹` one. Ask **at least `n`**, never **exactly `n`**: the first is monotone and thresholds, the second flips on the next arrival. It stays a *reading*, because a multiset **store** would lose idempotent merge and with it at-least-once-is-exactly-once; and counting is `π`, so it is priced with the other summaries in §"What gets built on top" |
 | set union | the identity read, and the only option for a **holistic** aggregate (median, percentile), where no bounded *exact* summary exists. Bounded *approximate* ones do: a 200-bucket sketch reproduced a 2000-sample bootstrap CI to **1.07% of its width** |
 | "must all agree" | the `conflicted` predicate above |
 | lexicographic | fine as a *selection* order, dangerous as a *combining* one: with `attempt` at the head, `(1,running)` and `(1,crashed)` have least upper bound `(2,⊥)` — it **fabricates attempt 2**, in a design about attribution |
@@ -1751,13 +1752,21 @@ A **rewrite, not a refactor**, with consumers on the current API. It trades a de
 are intimately known for one whose failure modes would have to be learned. And storage grows wherever the
 order is partial, since there the only sound completion is the free one.
 
-**And the artifact is much larger than the current one.** Today's runstate is a topic log with typed
-conventions on top — a message protocol, and a thin one on purpose. What §"The model" commits to is a
-**distributed unification engine**: variable identity that survives crossing a host, a wire format that
-names variables, a per-functor term index that supports pattern-walking rather than key lookup, and a
-constraint solver in the read path. That is the honest headline cost, and it dwarfs the fold rewrites
-below. It is also the thing a reader should weigh first, because everything else in this document is
-downstream of being willing to build it.
+**And the artifact is larger in one direction and smaller in the other.** Today's runstate is an *ordered*
+topic log with typed conventions on top — a message protocol, and a thin one on purpose.
+
+**The transport this design needs is weaker than that.** The store is a growing **set** of ground terms and
+merge is union, so unordered, duplicate-tolerant, loss-tolerant broadcast suffices: a reader holding one
+agent's posts and not another's simply has a smaller store, which is sound. Not even causal order is
+required — missing a cause costs completeness, never correctness. Order is needed in exactly one place, the
+**claim**, where `send(expected_seq=)` is a compare-and-swap; and that is single-spawn, which §CALM already
+concedes as the one coordinated act. Nothing in the semantics reads a sequence number.
+
+**What is larger is the read side.** A per-functor term index that pattern-walks rather than key-looks-up,
+a constraint solver in the read path, and cross-host naming for the holes in posted terms — that last being
+what survives of §"The model"'s sharing story now that the shared mutable variable does not. That is the
+honest headline cost, and it dwarfs the fold rewrites below. It is also the thing a reader should weigh
+first, because everything else here is downstream of being willing to build it.
 
 **No fold ports as-is.** Measured across the whole of `observables.py`: 13 of 16 fold readings are
 non-monotone, and the operator responsible is `latest` = `argmax(seq)`, which appears six times directly
