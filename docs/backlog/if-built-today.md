@@ -1609,6 +1609,13 @@ The base is **definite clauses over an unspecified universe**, and nothing else.
 document treats as part of the design is a construction above it. Drawing the dependencies is worth more
 than listing them, because it shows what a reader who rejects one construction still keeps.
 
+There is also a second, independent reason the line sits where it does, found after it was drawn: the
+constructions below it are exactly the ones whose **meaning varies with the universe the user inhabits** —
+polarity, equality, the four-value reading and settledness all mean something else (or nothing) in a
+regime where an arbiter is affordable and a refuted branch can be pruned. The audit and the criterion are
+in `substrate-parametrically.md`; by §"What makes the answer worth having"'s own standard, a boundary met
+twice rather than chosen.
+
 ```
 definite clauses, parametric over the universe
 ├── polarization — complementary relation pairs, declared in the signature
