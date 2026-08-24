@@ -118,6 +118,13 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
   which is the tell that the residue is real: cross-host liveness, the artifact plane, enforcement.
   Names the two boundaries as the actual design question — the querier's interface and the handler's
   — with the run born at the second, and the halt dissolving into *withdrawing demand*.
+- **The substrate, parametrically** — [substrate-parametrically](substrate-parametrically.md). A store
+  state is `M(World)`, and `if-built-today` is the instance at the monad Morton's slow inconsistent regime
+  forces — pruning is retraction, so the inverse curse applies at the level of `M`, and dead branches must
+  stay readable, which is `{t,f}`. The finding is an audit: the sketch's layering, drawn from
+  opinion-freeness alone, puts every `M`-dependent construct below the line and nothing `M`-independent
+  there — a boundary met twice, by two premises, the second unknown when the first was applied. Carries
+  the placement criterion for future constructs; deliberately a lens rather than a framework.
 - **Why definite clauses, and not the neighbouring fragments** —
   [definite-clause-maximality](definite-clause-maximality.md). Whether `if-built-today`'s fragment is
   **forced** rather than chosen, via a third route independent of both it already has: preservation under
