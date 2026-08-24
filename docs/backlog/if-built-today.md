@@ -292,6 +292,12 @@ relations and no four-value reading; a user who declares one gets it.
 `¬Q` is therefore **notation in this document** for a literal of a declared complementary relation, not a
 construct the language contains. Nothing is excepted, because nothing negates.
 
+The same split covers variables. In this document they are written Prolog-style — `V`, capitalised — and on
+the wire a variable travels as a **constructor**, `var(37)`, an ordinary term with a known functor. Neither
+a capital letter nor a sigil is wire format, because both make a receiver decide variable-ness from the
+spelling of a name — the closed-set-in-an-open-namespace error the polarity representation (§"Polarity is
+schema, not substrate") exists to avoid.
+
 **What is missing, and why — the reasons are two, not four.**
 
 | a richer fragment has | here | why |
