@@ -74,6 +74,22 @@ everything else follows. The sketch's narrative already runs in exactly that ord
 then §"Two commitments", then the constructions), which nobody planned as universe-then-monad-then-instance.
 A third convergence, smaller and of the same kind.
 
+## The store algebra is a parameter too, and its boundary is a trade against transport
+
+Within a fixed `M`, the store's value algebra is a second parameter: any **join-semilattice** — idempotent,
+commutative, associative merge — keeps the free delivery properties (duplicate-tolerant, unordered,
+at-least-once = exactly-once). Set semantics is the **free** join-semilattice on records, so every other
+admissible store is a quotient of it — the same shape as the congruence lattice (finest lens is initial)
+and the same shape as the free completion at the value and status layers. Instances: `𝔹` (the sketch),
+`(ℕ, max)` observation counts with at-least thresholds (Bloom^L's `lmax`), fuzzy `[0,1]` with `max`.
+
+The boundary is idempotence, and it is a **trade against level 0**: a non-idempotent store (`ℕ` with `+`,
+true totals) is admissible exactly where the physics grants exactly-once delivery — which is a
+coordination assumption, so the cost has not vanished, it has moved down a level. Inside the idempotent
+family, true totals are recovered by **occurrence naming** (per-actor or per-event ids, counted as a
+reading), so the gap between witnessed and true counts is priced by the naming-policy spectrum
+(`if-built-today.md` §"The model"), not by the algebra.
+
 ## What this is for
 
 - **A placement criterion for future constructs**: apply the boundary test before deciding where a new

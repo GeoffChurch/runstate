@@ -1287,26 +1287,32 @@ can combine posts and compress. It should be resisted, and the reason is not the
 **It is not a syntactic problem.** `p(X,Y) ∧ p(X,Y') ⊢ Y = Y'` is a perfectly good sequent; the `∀` and
 `→` live at the sequent level, which theories permit.
 
-**The problem is what asserting it does to a store that must accept what it is given.** A store holding
-`loss(60,0.5)` and `loss(60,0.4)` is then not a *model* of its own theory. There are three responses and
-none survives:
+**The problem is what asserting it would have to do to a store that must accept what it is given.** A
+store holding `loss(60,0.5)` and `loss(60,0.4)` faces two exits, not three:
 
 | | |
 |---|---|
-| refuse the second post | order-dependent — whoever arrives first wins, and contents depend on timing |
-| derive the consequence | `0.5 = 0.4`, so the theory is inconsistent, so everything follows |
-| record both and note the violation | fine — but then it was never an axiom |
+| **refuse** the second post | order-dependent — whoever arrives first wins, contents depend on timing, and admissibility becomes a function of state, so there is no fixed algebra at all |
+| **record** | the pair; or the derived consequence `eq(0.5, 0.4)`; or both — and every one of these is an **observation** |
 
-Only the third works, and it is not a functional dependency at all: it is an **observation**.
+There is no explosion exit. Ex falso would need an interpreted `=` for the derived equation to contradict,
+and the logic has none (§"The language"): `eq(0.5, 0.4)` is an ordinary ambient-ambient equality —
+testimony, disputable to `{t,f}`, folded or declined per reader policy. The records stay; what a folding
+reader sees is a coarser quotient, and what a declining reader sees is two values. **Deriving the
+consequence *is* recording an observation.**
 
-**And the argument is not about functional dependency in particular.** A functional dependency is an
-**equation between terms**, and the store's terms are **free** — `0.5` and `0.4` are distinct precisely
-because nothing identifies them. So asserting *any* equation the data can violate has the same three
-exits: quotient the terms, explode, or refuse a post. Which is why `⊥` in heads is refused for the same
-reason (§"The language"), and why every constraint on facts lives **downstream, as a query**. What varies
-between constraints is only who writes the query.
+So the store does not forbid asserting a constraint — **it renders assertion into testimony.** Write the
+dependency as a rule and what it derives is equalities that readers weigh; they are ambient-ambient, hence
+declined by default, so the constraint constrains exactly the readers who opt into it. The store cannot be
+commanded, only informed.
 
 > **A constraint is something a reader may ask about, never something the store asserts.**
+
+**This is also what keeps the contextuality foreclosure intact** (§"Two commitments"). An enforced
+dependency is precisely the construct that would make two local views pairwise-consistent yet unglueable —
+`{loss(60,0.5)}` admissible, `{loss(60,0.4)}` admissible, their union not. Rendered into testimony, the
+union is always admissible, and what would have been a gluing failure is a **conflicted equality atom**,
+readable. Gluing never fails at the atom layer *because* nothing there can be violated.
 
 **And the affirmable half is the negative one.** *"This relation is not functional at this key"* is a
 positive existential over a growing set — monotone, decidable:
@@ -1500,17 +1506,27 @@ derivation layer. What it costs is preservation: `≠` is not preserved under ho
 homomorphism may identify two constants — the same *"two unbound variables may yet be identified"* seen a
 third time.
 
-**And it is a type-level closed-world assumption.** `a ≠ b` is licensed only by the Unique Name
-Assumption, which is one of the three components of Reiter's CWA formalisation. So:
+**And the Unique Name Assumption is not needed — it dissolves into a lattice of lenses.** `a ≠ b` is
+licensed only by UNA — *different names denote different things* — one of the three components of Reiter's
+CWA formalisation. This design assumes nothing of the kind, anywhere. The substrate needs only **syntactic
+record identity** — tree-equality of posted records, for dedup; set semantics is about records, not
+denotations, and the wire obligation it implies is a canonical encoding, not a semantic assumption. Every
+*denotational* sameness is a **reader's congruence**: the finest, or posted equalities folded per policy,
+or a non-free theory quotient nobody posted (`0.50 ≡ 0.5`, units) — a producer that normalises before
+posting has simply chosen one at write time. Congruences form a lattice, and the finest is **initial**:
+every reading is a quotient of it, which is why it serves as the default — not privileged, just the one
+everything factors through, and the only one whose closure stays bounded (§"The language"); every
+coarsening buys merges and pays closure. What Reiter needed as an *axiom*, because his reading was
+two-valued and global, appears here as the initial object of the lens lattice, assumption-free.
 
-> **Disequality over a *closed* sort is sugar for a finite `∨` of equalities — positive, homomorphism-
-> preserved, free. Over an *open* sort it is a genuine primitive, and it costs the stronger preservation
-> property.**
-
-Marking a sort closed is a **signature-level** fact, so it rides the deployment channel rather than
-needing a runtime membership query — the same channel as signature agreement, with the same failure mode
-if two agents disagree. And the one place `≠` looked forced — the residual over an unbounded axis —
-**decomposes into intervals**, which are `≤`/`>`. `all_different` above is already the closed case.
+**No sugar is provided for `≠`, and that is a decision rather than an omission.** The tempting replacement
+— `X ≠ a` over closed `{a,b,c}` written as `X = b ∨ X = c` — is not an equivalence: the disjunction is
+monotone and survives coarsening, the disequality is **antitone** and does not, and they come apart at
+exactly the merge a folded equality performs. Sugaring an antitone test would be the opposite of *unsound
+things are unwritable*. A rule needing case analysis over a closed sort writes the **positive disjunction
+directly**, says which cases it means, and survives every lens; nothing writes `≠` and nothing translates
+it. And the one place `≠` looked forced — the residual over an unbounded axis — **decomposes into
+intervals**, which are `≤`/`>`. `all_different` above is already the closed case.
 
 ### Orders are mostly read-side
 
@@ -1521,7 +1537,7 @@ the whole table off the safety path onto the cost path.
 |---|---|
 | last-write-wins | `argmax` over `seq`; a report |
 | `max` / `min` | a report |
-| multiset union | counts rather than membership — the `ℕ` reading where set union is the `𝔹` one. Ask **at least `n`**, never **exactly `n`**: the first is monotone and thresholds, the second flips on the next arrival. It stays a *reading*, because a multiset **store** would lose idempotent merge and with it at-least-once-is-exactly-once; and counting is `π`, so it is priced with the other summaries in §"What gets built on top" |
+| multiset union | counts rather than membership. An observation-count that only climbs, asked only **at least `n`**, is admissible as a **store** too — it is the `(ℕ, max)` join-semilattice, Bloom^L's `lmax` with `gt_eq`, and the at-least-only discipline is the threshold rule, forced not advisory (*exactly* flips on the next arrival; *at most* is an upper-bound test, the else-branch move). The subtlety is what the count **means**: bare totals have no coordination-free merge (`+` is not idempotent; `max` means *"some single lineage tallied `n`"* — sound for at-least, undercounting). **True totals are occurrence naming**: per-actor tallies (the G-counter; membership) or per-event ids (the naming table's corners), counted as a `π` reading — multiplicity is identity, so the naming policy prices the count |
 | set union | the identity read, and the only option for a **holistic** aggregate (median, percentile), where no bounded *exact* summary exists. Bounded *approximate* ones do: a 200-bucket sketch reproduced a 2000-sample bootstrap CI to **1.07% of its width** |
 | "must all agree" | the `conflicted` predicate above |
 | lexicographic | fine as a *selection* order, dangerous as a *combining* one: with `attempt` at the head, `(1,running)` and `(1,crashed)` have least upper bound `(2,⊥)` — it **fabricates attempt 2**, in a design about attribution |
