@@ -119,6 +119,18 @@ Not a revival: pairing the constraint store's information-growth with its soluti
 the "two topologies". Both of **our** polarities *grow* — a negative post adds a record, it does not
 remove a possibility — so `L₋` is a copy of `L₊`, not a dual. Checked 2026-08-14.
 
+**Revival update (2026-08-24): the refutation's premise is gone; the refutation stands anyway.** All
+three framings were killed by crisp point identity — ground atoms pairwise distinct, so the space is
+discrete. Reified, disputable equality (the sketch's binding story since `15b299c`) removes that
+premise: whether two terms name one point is now informational, affirmable and never refutable. But the
+correct object is **not** a frame on the atoms at a stage — at each stage the congruence quotient is
+still discrete. What varies is *which space you are in*, over the store poset: a store-indexed family of
+discrete quotients with coarsening maps (the Kripke/presheaf-over-stages reading; fresh names are
+nominal-sets territory, unverified). First outing of that lens: it corrected the variable-vs-ground
+split on equality cost to **fresh-vs-ambient**, and found the contamination edge — see
+`../backlog/if-built-today.md` §"The language". It guides, it does not prove; anyone reviving
+frames-on-atoms is still wrong.
+
 ## Related
 
 - `../backlog/if-built-today.md` §"Facts and demands are dual" — the point set, and why it is forced.

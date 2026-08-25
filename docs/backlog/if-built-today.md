@@ -205,6 +205,22 @@ Two posts of the same shape still make **two** holes, and that is not a contradi
 different constants, so one producer's equality does not answer both. It is why a call table is still
 needed (§"Demand subsumption").
 
+**Though "two holes" is a naming policy, not a fact — and where distinctness comes from is the policy's
+axis.** Deterministic gensym is unavailable coordination-free: *"each actor has a unique name known to
+them"* is **self-identity**, Ameloot's `Id`, the membership input at the name layer — its fourth
+appearance, after single-spawn, the claim's CAS, and `All()`. The corners:
+
+| distinctness from | mechanism | price |
+|---|---|---|
+| **content** | ambient names disambiguated by discriminating arguments — which is content-addressing done by hand, and what the measured corpus already does (24 ambient value names, zero fresh variables) | identical questions share a hole, so one equality answers both: automatic memo, smaller call table, and "two holes" above stops being true |
+| **chance** | random names | almost-sure freshness; a collision is an *accidental forgery*, surfacing as spurious sharing or `{t,f}` — the class §"Two commitments" already scopes out |
+| **membership** | per-actor prefixes | self-identity — the bootstrap paid once (*Complete CALM* Remark 3), and what `local://host/pid` already borrows from the OS |
+| **the link** | pairwise sessions: a variable is named per link end, so identity is *indexical* — "my end / your end" — and **no global identity exists at all** | no broadcast of variable-bearing terms (ground facts still broadcast; consistent with demand being control). Cross-link identity is a middleman's posted **translation equality**, `eq(v_ab, v_bc)` — scope extrusion by reification, no new machinery |
+
+The link corner is the only one that is deterministic *and* oblivious; the content corner is the only one
+where a name collision *means* something (the questions coincide) rather than failing. Nothing below the
+substrate decides among them — naming is a convention like polarity, and a deployment picks its corner.
+
 **A binding is an ordinary posted fact**, and this is where it pays. Two agents binding disagreement is
 **readable** — two equalities, and `v37 = 0.31` reads `{t,f}` if somebody denies it. Under a shared mutable
 variable that sentence cannot be true: a term cannot refine to `0.31` *and* to `0.45`, so either the second
@@ -344,6 +360,18 @@ vocabulary of `T` gives us a theory `T₁` which is equivalent to a **universal 
 Read downward, the same facts buy the tractable corner (PTIME, against disjunctive Datalog's `Σ₂ᵖ`) from
 the first, and the placement strictly inside the coordination-free class from the second.
 `definite-clause-maximality.md` works the boundary out.
+
+**And one connective is absent from the logic rather than priced on the ladder: interpreted equality.**
+Regular logic ordinarily includes a substitutive `=`; here equality is a **convention** — an ordinary
+posted relation whose congruence closure is a *reading*, taken per trust policy (§"The model"). Variable
+repetition in a body still joins on syntactic coincidence, which the logic's diagonal gives free. The cost
+of the reading splits on **freshness, not on syntax**: an equality with a **fresh side** — a variable,
+a name only its holders can utter (freshness being itself a naming policy; §"The model") — closes among
+those holders, inside the window whose question it is. An equality **between ambient terms** — names
+anyone may utter at any time — can arrive from anywhere, and a single one makes every class it touches
+global. Which is why a reader's default policy folds fresh-sided equalities and declines ambient-ambient
+ones, and why FD-violation detection stays a reader-side query (§"Constraints are asked") rather than a
+derived equality.
 
 **Whether the fragment is *forced* rather than chosen is asked separately** in
 `definite-clause-maximality.md`, via a third route — preservation under algebraic homomorphisms. Its
