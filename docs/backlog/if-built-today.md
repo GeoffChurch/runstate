@@ -555,13 +555,16 @@ needs `¬∃` — and under an **open** world that is not merely banned but unkn
 *no answer exists*, only *no answer has arrived*. Nothing needs it, because production is
 **demand-gated**: a producer runs because somebody asked, never because something was found missing.
 
-And demand-gating needs no machinery either. **A demand is a posted pattern; a producer is an agent that
-watches for patterns it can serve, computes, and posts literals that unify with them.** There is no
-`demand_p` relation in any rule body that *gates production* — writing one as
-`value(X,V) :- demand(X), handler(X,V)` smuggles a key/value split back in through the adornment, and this
-design has no cells. (§"Demand is control" internalises *"this was wanted"* as a queryable fact, which is
-a different object and gates nothing.) A producer needing something of its own posts a pattern too, which
-makes it a querier; the roles stay symmetric all the way down.
+And demand-gating needs no machinery either. **A demand is a partial term; a producer is an agent whose
+rules match it, compute, and post the equalities that fill it.** That is the magic-sets construction with
+the magic predicate folded into the base relation. The unfolded form — a separate `demand_p(X)` gating
+`value(X,V) :- demand_p(X), handler(X,V)` — carries the adornment, *which position is bound*, as a second
+predicate, and so presupposes a key/value split no relation has. The partial term carries the same
+adornment structurally, as which positions hold a `var`, and it is a property of the **query** rather
+than the relation: `loss(60, V)` and `loss(S, 0.31)` are two adornments of one relation and two partial
+terms. The demand is also the durable record of *"this was wanted"*, with no second object needed. A
+producer needing something of its own posts a partial term too, which makes it a querier; the roles stay
+symmetric all the way down.
 
 **What *is* representable is told falsity** — somebody posting `¬Q` because they know it. That is an
 ordinary fact, affirmable by exhibiting it, and it needs no closed world to license it. The distinction is
@@ -1024,9 +1027,8 @@ settlement, so the rest has something to be about. Nothing in it is new — ever
 the surrounding sections defends.
 
 **A querier posts one record.** It wants the loss at every step of a run, for as long as the run lasts: the
-term `metric(loss, V, S)` with `S ≥ 1`, posted as a **`∀`** demand — *decide every atom in this region*,
-not *find me one*. The region is **unbounded**, and that is fine; what must be finite is the eventual
-cover, not the region.
+partial term `metric(loss, V, S)` with `S ≥ 1` — both positions open, the extent **unbounded**. That is
+fine; what must be finite is the eventual cover, not the region.
 
 **A producer is handed the residual, not the demand.** Steps 1–60 are already in the store, so what reaches
 it is `S ≥ 61` — the demand minus what is settled. Nobody detects that the first sixty were subsumed; they
@@ -1059,11 +1061,13 @@ then that one atom reads `{t,f}` — affirmable, inert, and poisoning nothing ar
 
 ## Demand is control
 
-Demand is not monotone: a lease expires, a querier withdraws, an operator halts a run. That is fine.
+A demand is a post, and monotone like any other. What is not monotone is *listening*: a lease expires, a
+querier withdraws, an operator halts a run. That is fine.
 
-**Nothing derived becomes false; some things never get derived.** A withdrawn demand means a term is not
-produced, so a reader's threshold claim never fires — it suspends forever. That is a **liveness** failure,
-not a safety one. Two replicas with different demand produce different *subsets*; every literal in either
+**Nothing derived becomes false; some things never get derived.** A subscription that ends means nobody is
+told; a producer stopped by an operator's `stop` — a told fact, never an inferred silence — means a term
+is not produced, so a reader's threshold claim never fires and suspends forever. That is a **liveness**
+failure, not a safety one. Two replicas with different demand produce different *subsets*; every literal in either
 is correct.
 
 All three mechanisms are control: resource management, a querier changing its mind, and somebody
@@ -1071,29 +1075,39 @@ deliberately stopping a machine. The logic never had jurisdiction over any of th
 
 ### The quantifier is a property of the posting
 
-> **A bare pattern is `∃`** — one production satisfies it. **A `∀` demand must be *finitely coverable***.
+> **A demand is a partial term.** Its extent is the region its constraints denote — bounded or not, and
+> the solver reads which. No quantifier travels on the wire.
 
-**The `∀` half ships; the `∃` half does not, and the gap should be known.** With a schedule and an
-`until`, a subscription is **one durable record** denoting a region and demanding every atom in it —
-durable across the *producer's* death, because a worker re-drains the control log and re-registers
-whatever is still unanswered, pinned by
+**Earlier drafts carried a `∀`/`∃` bit on the demand** — *a bare pattern is `∃`; a `∀` demand must be
+finitely coverable* — and it was the one quantifier not read off shape. The others all are: clause-`∀`
+from being a rule, body-`∃` from a body-only variable, store-`∃` from a variable in a post, region-`∀`
+from negative polarity. Positive-`∀` had no shape, so it needed a flag. It went for two reasons. A partial
+term already asserts existence without witnessing it, which is the whole of `∃`. And *"decide every atom
+in this region"* was never a request: a producer derives everything its rules reach from what it has, and
+a converged one is **obliged** to post `¬(Q₀ ∖ E)` (§"Falsity is told") — so both halves of *"every step,
+run to convergence, and tell me when there are no more"* arrive unasked. What is left to ask for is a
+producer not yet running, and that is a partial term or a plain trigger fact.
+
+**What ships already carries its extent as a constraint.** A subscription with an `until` is one durable
+record denoting a bounded region — durable across the *producer's* death, because a worker re-drains the
+control log and re-registers whatever is still unanswered, pinned by
 `tests/test_run_episodes.py::test_relaunch_extends_one_series`: one subscribe posted *before episode 1
-exists*, two episodes, ten steps, one series.
+exists*, two episodes, ten steps, one series. `{"every": …}` with no `until` is schema-legal, documented
+as *"forever"* — the unbounded region, which is what makes the case below concrete rather than
+hypothetical. (The bare subscribe is served by a poll of the register, `self._values.get(name)`, not by
+anything waiting on a production; that is the gap between the shipped library and this design.)
 
-The `∃` half is a target, not a description: `worker.py` serves a bare subscribe by reading the register —
-`self._values.get(name)` — and firing at the next safe point with `None` if nothing was ever set. That is
-a **poll**, not an unsatisfied existential waiting on a production. And `{"every": …}` with no `until` is
-schema-legal, documented as *"forever"*, which is what makes the unbounded `∀` demand below concrete
-rather than hypothetical.
+**Bounded is a property of the constraint, not admission control in a quantifier's clothes.** `S ≤ 1000`
+is bounded; `S ≥ 1` is not; either is a legal demand. The unbounded one is the demand this design is best
+at expressing, and it is perfectly dischargeable because `ground(Q)` need not be finite provided the
+*cover* is — a positive prefix to step 400 plus one `¬(S > 400)`.
 
-**Finitely coverable, not bounded.** Boundedness is admission control wearing a quantifier's clothes, and
-it forbids the demand this design is best at expressing: *"every step, run to convergence, and tell me
-when there are no more."* That demand is unbounded and perfectly dischargeable, because `ground(Q)` need
-not be finite provided the cover is — a positive prefix to step 400 plus one `¬(S > 400)`.
-
-**Open: who checks it.** Whether a finite cover will *ever* exist depends on a producer's future, so it
-may not be checkable at post time at all. §"What is checked" assigns owners to the other obligations and
-cannot yet assign one to this.
+**Who checks it splits in two.** Whether the extent is bounded is the solver's, at post time — the
+checkable half, previously unassigned because it was bundled with the other. Whether a finite cover will
+*ever* exist for an unbounded extent is a claim about an external producer's future, and no post-time
+check reaches it: a producer halted short of convergence knows nothing about the rest and must post
+nothing (§"The rule for posting"). That half is §Open, and it is the exhaustion question, not a
+quantifier one.
 
 ### Facts and demands are dual, and the duality is exact
 
@@ -1127,11 +1141,12 @@ inclusion of groundings**, which is the one-line reason a negative claim transfe
 question.
 
 **And the quantifier lives in the posting, never in the term.** A term with holes uniformly denotes a set;
-what you do with the set is decided by how it is posted. `¬Q` reads *universally* over `Q`'s grounding; a
-posted answer reads *existentially*; a posted demand asks for the members — *one* of them if the pattern is
-bare, *all* of them if it is posted `∀`. One representation, four roles, no modality — which is why a
-**partially instantiated answer** needs no special case: it is an answer about what is known and a
-question about what is not, simultaneously.
+what you do with the set is decided by how it is posted. `¬Q` reads *universally* over `Q`'s grounding,
+from its polarity; a positive post reads *existentially* over its variables, from its shape; and a demand
+is a positive post whose extent is not yet witnessed — it asks for the members by being one of them with a
+hole. One representation, read by polarity and position, **no modality** — which is why a **partially
+instantiated answer** needs no special case: it is an answer about what is known and a question about
+what is not, simultaneously.
 
 That is Stone duality, and the proof-theoretic sense of polarity is apt too: **a fact is data where a
 demand is a continuation**. But polarity should not be asked to carry more — it explains neither
@@ -1141,9 +1156,9 @@ word.
 
 ### Demand subsumption
 
-**Everything here is about `∀` demands.** For a bare `∃` pattern the contravariance below **inverts** —
-the *specific* demand subsumes, because a smaller open is harder to inhabit — and the anti-unification
-hazard goes with it, since generalising an `∃` demand *reduces* work.
+**Everything here is about a demand's region — the set its constraints denote.** With no `∀`/`∃` bit on
+the wire (§"The quantifier is a property of the posting") there is one case; an earlier
+inverted-contravariance special case for *"bare `∃` patterns"* went with the bit.
 
 **Subsumption runs the other way, because `↑` is order-reversing.** For facts, more instantiated is
 higher. For demands, `p ⊑ q` gives `↑p ⊇ ↑q`, so the **more general** demand subsumes the specific one:
@@ -1160,11 +1175,16 @@ set from the surviving subscriptions handles that for free.
 
 | | monotone? | where |
 |---|---|---|
-| the **demand relation** — *"this was wanted"* | yes, accumulates | internalised, a fact about an `Open` |
-| the **live subscription** — *"someone is listening now"* | no, revocable | control, outside the store |
+| the **demand** — a partial term | yes, an ordinary post | the store; it gates a producer's rule |
+| the **subscription** — *"tell me when this changes"* | no, revocable | the reader's own rule plus routing: the rule is program, the routing is transport |
 
-Production is triggered by the subscription; the internalised demand is a durable record of *"what has
-ever been asked."* (`Open` here is an opaque sort with no `denote`, so no reflection is bought.)
+Production is triggered by a demand matching a producer's rule. A subscription triggers nothing: it is a
+body literal that fires on arrival, seen from the transport's side, and it needs no object in the store —
+what a subscriber missed is still there when it returns, since nothing retracts. No `Open` sort and no
+`denote` are needed, so no reflection is bought. The shipped `control.subscribe` is what this replaces:
+three concerns in one record (a read, a route, a trigger), pairing answers to requests **by log position**
+— the positional answer fold — which §"Two commitments" forbids. Its `request_id` is the variable's wire
+name (§"The model") in disguise.
 
 **It does not carry a dependency graph, and the logical layer needs none.** When a handler serving
 `report` posts a pattern for `loss`, the store cannot tell that from an unrelated querier — symmetric
@@ -1581,7 +1601,7 @@ language". Name them differently in any implementation.
 | exact claims only on ground terms | **structural — not expressible otherwise** |
 | sorts | **checked**, statically, at both ends |
 | the quantity a demand denotes, and its finiteness | **one test, two owners**: the requester supplies the count, layer 7 meters it |
-| a `∀` demand's finite coverability | **unassigned** — see §"Demand is control" |
+| a demand's extent is bounded | **the solver**, at post time; whether an unbounded extent is ever *covered* is an external producer's future — §Open |
 | reclamation | policy, behind one interface |
 
 **Finiteness is not a decidability claim.** Range-restriction over a grid looks like one and is not: it is
@@ -1862,8 +1882,11 @@ reintroduces a bug the fold exists to prevent.
 
 ## Open
 
-1. **Who checks finite coverability**, and whether it is checkable at post time at all — it is a claim
-   about a producer's future. §"Demand is control".
+1. **Whether an unbounded demand is ever covered.** Boundedness of the extent is the solver's at post time
+   (§"The quantifier is a property of the posting"); what no post-time check reaches is whether an
+   *external* producer will ever converge and post its `¬Q`. A producer halted short of convergence
+   knows nothing and must post nothing, so the region stays `∅` — this is the exhaustion question
+   (§"How a party comes to know a negative fact"), and it needs a shape that is not `¬Q`.
 2. **Provenance.** Not built. What it blocks meanwhile: diagnosing `{t,f}`, taint after a premise becomes
    disputed, and attributing a wrong `¬Q` — positive facts need it equally, so it is one mechanism. What it
    would unlock is the annotation branch of §"What gets built on top", including the whole dispute story,
