@@ -299,3 +299,49 @@ arbiter, an arbiter needs membership, and membership is the single non-monotone 
 shared variable means paying for coordination, not avoiding it. (*"Is this hole still unbound?"* is **not**
 a trigger: it is antitone — true now, false on the next arrival — so the design forbids asking it
 everywhere, not only here.)
+
+## The Skolem reading, and why it self-satisfies
+
+**What it was (2026-08-25 → 2026-09-04).** After the reification above, §"The model" said a hole in a
+posted term *"is an ordinary constant"*. Read literally, `loss(60, v37)` is then a **ground literal** — the
+Skolem form of `∃x. loss(60, x)` — and the store stays a set of ground literals with no variable anywhere.
+The sentence one paragraph over, *"a variable travels as a constructor `var(37)`"*, is a weaker claim (a
+wire *name*, not a constant), and the two were treated as one.
+
+**Why it was attractive**, recorded because it was argued for twice in one review. Posting a fact about a
+name you minted is honest existential assertion — *"there is a loss at 60, and I call it `v37`"* — so a
+demand is an ordinary post and the posting rule is not bent. The store is uniformly ground. And a producer
+who has posted `¬Q` over the region can **dispute** the demand: the atom reads `{t,f}`, the disagreement is
+readable, and that felt like the design working as intended.
+
+**What killed it is what Skolemization does.** `P(c)` for fresh `c` does not merely *assert* `∃x. P(x)` — it
+**witnesses** it. The demand is satisfied by its own placeholder. And §"The model" defines demand as an
+***unsatisfied*** existential: *"making an unsatisfied existential true is exactly production."* Under the
+constant reading there is nothing left to produce; the question answered itself with itself. Downstream,
+the same fact made the residual subtract the demand atom from the region it defined, and made admission
+control's signal — *how many atoms does this term denote?* — read **one** for every demand regardless of
+region.
+
+**And independently, no producer could have acted on it.** Three ways to recognise a placeholder, all
+closed: *"still has a hole"* is `var/1`, antitone (§"The threshold rule"); recognising it by spelling is
+the closed-set-in-an-open-namespace error (§"Polarity is schema"); recognising it by the *absence* of an
+equality is observing absence. A named **variable** is recognised structurally — matching the functor
+`var` is an ordinary positive match on a term that never changes — which is none of the three.
+
+**What is true instead: asserted versus witnessed.** A partial term asserts existence and provides no
+witness. It decides no atom (§"An atom's status": *"a partially instantiated positive post decides
+nothing"*), so it cannot be wrong and cannot be disputed. The attractive dispute case does not vanish — it
+lands differently and better. A producer's `¬Q` over the demand's region makes that region read entirely
+`{f}`, which is the **affirmable** form of *"this demand cannot be satisfied"*: a finite cover of told-false
+records, monotone, needing nothing new. The asker learns the negative by reading it, not by having posted
+a falsehood that had to be caught.
+
+**Formally.** The hole is a constraint-store variable in the CCP sense (§"Two layers" names CCP as the
+semantics): it has an identity, it is not a value, and what is known about it accumulates. It is `∃`-bound
+at **store** scope, not record scope — which is what lets a later post refer to it — and the wire name is
+the **scope extrusion**, which is why the naming policy is load-bearing rather than cosmetic: two posts of
+the same shape make two holes because they extrude two names.
+
+**Revival trigger.** A setting where a demand *should* be a claim — the asker genuinely knows the thing
+exists and wants a disagreement to land as `{t,f}` on one atom. Then post a **ground** fact, which is what
+a claim is. That is not a demand and never was.

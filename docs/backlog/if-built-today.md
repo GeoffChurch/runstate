@@ -192,8 +192,11 @@ instantiated.
 
 **Unification is local; sharing is a posted equality.** A rule body unifies against the store the ordinary
 way, inside one agent. What does *not* cross a host is a shared mutable variable: a hole in a posted term
-is an ordinary constant — `loss(60, v37)` — and *"`v37` is `0.31`"* is a posted fact like any other,
-carrying the ordinary four-valued status.
+is a **named variable** — `loss(60, v37)`, with `v37` the name of an unknown and never a value — and
+*"`v37` is `0.31`"* is a posted fact like any other, carrying the ordinary four-valued status. It is not a
+constant, and the difference is load-bearing: a value in that position would *witness* the existential the
+post asserts, and a witnessed existential leaves nothing to produce (`if-built-today-decisions.md`,
+§"The Skolem reading").
 
 **That is what makes *"one representation, four roles"* (§"Facts and demands are dual") a mechanism rather
 than a slogan.** Post `loss(60, v37)`: with no equality told it asserts existence and is a question; once
@@ -1190,10 +1193,11 @@ Concretely a subscription is a **cursor into a per-functor term index** — walk
 get notified when new leaves appear beneath it. **This is one object with four names in earlier drafts**:
 the call table, the registry, the work set and the cursor are the set of live demands, keyed by skeleton,
 indexed by pattern. The division: *the call table decides who is told; the store decides what is
-computed.* It does not remove the need for it — two queriers independently posting `loss(60,V)` hold
-distinct terms with distinct tails, so one producer answer does not satisfy both — the producer must bind
-each. That is not in tension with variables being shared (§"The model"): sharing is with whoever holds a
-reference to *that* variable, and two independent posts hold none of each other's.
+computed.* It does not remove the need for it — two queriers independently posting `loss(60,V)` hold two
+**differently named** variables, so one producer's equality answers only the name it mentions, and the
+producer posts one equality per name. That is the naming policy of §"The model" doing its work, and it
+makes the call table's *identity* role corner-relative: under the content corner the two names coincide,
+one equality answers both, and what remains of the table is its *routing* role — who is told.
 
 **There is no `read`, and no syntactic substitute.** A tempting test — *"does the posted term have a free
 variable in key position?"* — cannot carry the distinction. It is not invariant under rewriting
