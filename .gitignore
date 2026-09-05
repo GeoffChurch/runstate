@@ -11,3 +11,6 @@ dist/
 venv/
 .coverage
 htmlcov/
+
+# Retrieved papers -- copyrighted, kept locally for citation verification.
+docs/resources/

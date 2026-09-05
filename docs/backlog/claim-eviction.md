@@ -43,6 +43,16 @@ already written to avoid the problem.
   five-in-one shape the defect rather than one instance of it
   (`lifecycle-stopped-unbundling.md`).
 
+**One argument that looked like a revival trigger and is not.** `episode-aim.md` revision 1 claimed
+that once `lifecycle.stopped` requires aim, a third party would need a legal verb to release a claim
+at all — which would have made this design structurally necessary rather than merely useful. It is
+**false, measured**: a forger reads `latest_episode(ch).seq` in one call and stamps it, and the
+well-aimed forgery releases the claim exactly as today. Aim buys non-transferability, never forgery
+resistance. **This design must stand on its own merits**; nothing in the aim thread compels it.
+
+What the aim thread *does* establish in this design's favour is narrower and real: aim alone cannot
+close #39's forgery route, so if that route is ever worth closing, **this** is the mechanism.
+
 ## The Postgres advisory lock as an eviction veto — REFUTED, do not re-propose
 
 Floated as a cheaper answer to §4's cross-host blind spot: `PostgresChannel` implements
