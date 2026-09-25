@@ -48,7 +48,11 @@ a homomorphism may *identify* terms, and identification only ever makes more rul
 Three faces of one property, and which is "defining" depends on what is being held:
 
 - **monotonicity** is a property of the operator `T_P` — more in, more out;
-- **preservation under homomorphisms** is a property of the *formulas*;
+- **preservation under homomorphisms** is a property of the *program under transport* — apply an algebra
+  homomorphism `h` to the terms in every rule, and the transported program's least model contains `h` of
+  the original's. Not of the rules read as sentences under homomorphisms *of models*: in that sense
+  `∀x.(p(x) → q(x))` is not preserved (map a model with `p` empty into one with `p = {a}, q = ∅`), and the
+  two senses are easy to conflate — a fresh-eyes review did;
 - **initiality** is a property of the *model* — a unique homomorphism from the least Herbrand model into
   every other model.
 

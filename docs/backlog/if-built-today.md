@@ -415,9 +415,11 @@ cannot mix, for the same reason the complement of an open is not open.
 | **reporting** — what is missing, what is best, what diverged | **yes, inherently** | **no** |
 
 `argmax` is therefore not expressible in derivation, so a bandit's one non-monotone step is forced to the
-boundary. Its monotone half stays inside: `beaten(A) :- value(A,V), value(A2,V2), A ≠ A2, V2 > V` only
-ever grows. (The disequality is not decoration — without it, §"Constraints are asked" lets one arm
-carry two values, and `A` beats itself.)
+boundary. Its monotone half stays inside: `beaten(A, V) :- value(A, V), value(_, V2), V2 > V` only ever
+grows. It is about a **value**, not an arm, because with no functional dependency (§"Constraints are
+asked") an arm may carry two values, and *"is this arm beaten?"* is then not well-posed — beaten on one
+value, unbeaten on the other. Per value it is exact, and needs no disequality: an arm's lower value
+beaten by its own higher one is simply true.
 
 **One exception is real and does not repair.** `ensure`, the library's core operation: its loop condition
 is a threshold claim on `progress`, a *retractable* quantity, and its two termination guards are a
