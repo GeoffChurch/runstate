@@ -161,8 +161,7 @@ that turns out to be a known-good combination is better founded than one that is
 **What is not in any of them**, stated narrowly. Falsity **asserted by an agent** as the primitive act:
 4QL derives `¬p` into the negative extent by rule, and the paraconsistent model's own worked construction
 populates it by **CWA** — the storage of a negative extent is theirs, an agent *positing* one is not.
-**Multi-party monotone accumulation**: neither paraconsistent paper defines an order on those pairs, a
-merge, or an update. Refusing the tombstone **chain**, so that *told-both* is representable at all.
+Refusing the tombstone **chain**, so that *told-both* is representable at all.
 Demand-driven production with the store as the cache — named as *open work* in 4QL.
 
 Not the distribution property itself: **no party roster and no self-identity is Ameloot's**, and
@@ -211,7 +210,8 @@ needed (§"Demand subsumption").
 **Though "two holes" is a naming policy, not a fact — and where distinctness comes from is the policy's
 axis.** Deterministic gensym is unavailable coordination-free: *"each actor has a unique name known to
 them"* is **self-identity**, Ameloot's `Id`, the membership input at the name layer — its fourth
-appearance, after single-spawn, the claim's CAS, and `All()`. The corners:
+appearance, after single-spawn, the claim's compare-and-swap (§"The honest cost"), and `All()`. The
+corners:
 
 | distinctness from | mechanism | price |
 |---|---|---|
@@ -360,8 +360,11 @@ initial models iff there is a set of definable partial functions such that addin
 vocabulary of `T` gives us a theory `T₁` which is equivalent to a **universal Horn** theory"* (JCSS 34,
 1987). Initiality alone reaches **Horn**, which still admits denials. Definite is where the two meet.
 
-Read downward, the same facts buy the tractable corner (PTIME, against disjunctive Datalog's `Σ₂ᵖ`) from
-the first, and the placement strictly inside the coordination-free class from the second.
+Read downward, the first buys the tractable corner (PTIME, against disjunctive Datalog's `Σ₂ᵖ`), and
+monotonicity — which definite clauses have by construction — buys membership in the coordination-free class
+(§"CALM"). Nothing sharper is claimed. Placement *strictly inside* that class, in Ameloot's `H`, is stated
+in homomorphisms of **models**, where the second requirement means algebra homomorphisms on **terms**; and
+the ledger's own condition for it, no `≠` in a constraint region, fails at §"Speculation"'s `dif(X, a)`.
 `definite-clause-maximality.md` works the boundary out.
 
 **And one connective is absent from the logic rather than priced on the ladder: interpreted equality.**
@@ -398,13 +401,17 @@ do not get retried — and a conjunct **filters** the branches it meets, which i
 (`a ∧ ⋁bᵢ = ⋁(a ∧ bᵢ)`) and, operationally, the list-monad bind. Monotone-iff-coordination-free is the
 same shape once more, as **Scott-continuity**: a function that commutes with directed joins is one whose
 answer on the limit is the limit of its answers, which is what lets a lagged replica be right rather than
-merely close.
+merely close. Continuity is the stronger property in general; the two coincide for a finitary query, and
+every definite program's consequence operator is one, since a body reads finitely many facts.
 
 **Why `¬` had to go.** To affirm `φ` you need a finite observation. To affirm `¬φ` you must rule out
 *ever* affirming `φ`, which is a survey of everything there is. That survey is **exactly what
 coordination-freeness excludes** (§"CALM" — the predicate is binary, and nothing here is priced in
-rounds). So "no negation," "opens are affirmable," and "monotone ⟺ coordination-free" are one fact in
-three vocabularies.
+rounds). So "no negation," "opens are affirmable," and "monotone ⟺ coordination-free" are one
+constraint set in three vocabularies, reached by **two** routes rather than one fact: the first two are one
+fact (§"What makes the answer worth having"), and the third arrives from distribution, on different
+premises — give nodes knowledge of the partition and the coordination-free class grows (§"CALM"), where
+affirmability does not move.
 
 **The derivation/report split is the open/closed split.** Derivation affirms; reporting refutes. They
 cannot mix, for the same reason the complement of an open is not open.
@@ -529,20 +536,19 @@ and covers the region while leaving every atom in it at `∅`.
 *entailed* extent grows as the hole narrows, and settledness is antitone in the extent, so pure
 information gain can flip it true → false. Nothing descends in the store; the *question* got bigger.
 
-**Two properties of the derivable half, both from the order having joins.** Status aggregates by union, so
-the state order is a **join-semilattice** — a stronger hypothesis than monotonicity, and it pays twice
-(Power, Koutris & Hellerstein 2025, Props. 15–16).
+**What settledness does not buy: agreement.** The tempting citation is Power, Koutris & Hellerstein's
+Props. 15–16 (2025) — in a join-semilattice, every free-termination state returns the same value — read as
+*"two agents who can both stop cannot disagree."* Settledness is not free termination. It is an up-set, and
+`{t}` is settled while still able to climb to `{t,f}`: a store holding `metric(loss, 0.31, 61)` and another
+holding `¬metric(loss, V, S)` for `S > 40` are both settled for that atom, answer `{t}` and `{f}`, and join
+at `{t,f}`. What is true is weaker and holds of **every** pair of stores, settled or not — their testimony
+is jointly satisfiable at the join, because `{t,f}` absorbs both. That is §"CALM"'s joint consistency, not
+a property of settledness, and *"we never bought consistency"* already said it.
 
-- **States that can stop agree.** Two stores both settled for a question have a least upper bound reachable
-  from each; each being settled forces it to agree with that bound, so they agree with each other. Two
-  agents who can both stop **cannot disagree**. Without joins this fails outright — two settled states
-  could have no common future and disagree permanently.
-- **No store is a dead end.** If a question can be settled at all, it can be settled from wherever you are
-  now. A *possibility* claim, not liveness: it rules out dead ends, not stalls.
-
-**Which pairs with the caveat above.** Settledness can be lost — but only by the **question** growing, never
-by the **store** growing. That is the whole content of requiring `Q`'s extent to be fixed, and the other
-direction needs no guard at all.
+**What it does buy is permanence under growth.** Settledness is an up-set of a union-closed order, so it is
+never lost by the **store** growing, and a question settled from any store is settleable from every other,
+by adding that store's records. It can be lost only by the **question** growing — the whole content of
+requiring `Q`'s extent to be fixed.
 
 **There is no producer verb and no `freeze`** — `¬Q` is an ordinary post — so there is no
 freeze-after-write race. And **nothing may derive settledness from demand going quiet**: demand
@@ -713,7 +719,9 @@ a literal is derivable, and that question is two-valued — the two values being
 affirmed** rather than false < true. That order is informational, and the distinction is the whole
 open-world story: if the logic's bottom meant *false*, a negative post would have nothing to do. Measured:
 the monotone predicates on the four values are **exactly** the six a rule can express over the two
-polarities with `∧` and `∨` and no negation — six of sixteen, and the same six.
+polarities with `∧` and `∨` and no negation — six of sixteen, and the same six. The two constants count:
+`⊤` is the empty `∧`, a fact, and `⊥` is the empty `∨`, a predicate with no clause; the language bans `⊥`
+only in heads.
 
 **And the other order is not merely unused — it is not traversable.** In the bilattice these four values
 live in, the truth order is `⟨P₁,N₁⟩ ≤_t ⟨P₂,N₂⟩` iff `P₁ ⊆ P₂` **and `N₂ ⊆ N₁`** — note the reversal.
@@ -802,8 +810,10 @@ makes exactly that split — output append-only by hypothesis, working memory ad
 
 **A demand is an open set, and an answer is truth restricted to it.** Not a *total* valuation: only the
 demand's true-set is ever used, and the store can affirm *asked* but never *not asked*. With status held
-as a **pair of extents**, restriction **is** conjunction applied to both, and the coercion that made
-masking look one operation from a bug is not writable.
+as a **pair of extents** `⟨P, N⟩`, restriction to a demand `D` **is** intersection applied to both,
+`⟨P ∩ D, N ∩ D⟩` — the knowledge-order meet `⊗` with `⟨D, D⟩`. It is not the truth-order `∧` with the
+demand read as a total valuation `⟨D, D̄⟩`, which gives `⟨P ∩ D, N ∪ D̄⟩` and marks every undemanded atom
+false: the coercion that made masking look one operation from a bug, and not writable here.
 
 ## The residual, assembled
 
@@ -826,12 +836,19 @@ only on the difference.
 either way — the **`∅`-region** of `Q`. Subtracting the `{f}` part matters as much as the `{t}` part: an
 atom somebody determined absent is one nobody should be asked to produce.
 
-**And here the four hops meet.** The `∅`-region is exactly the thing that is *not readable* — down-set,
-and unanswerable without coordination. So the residual is **not a derivation**. It survives because it is
+**And here the four hops meet.** The `∅`-region is exactly the thing that is *not readable* — a
+down-set, answerable only in the direction of leaving it (§"An atom's status"). So the residual is **not a
+derivation**. It survives because it is
 never published: it is computed **locally**, **best-effort**, and consumed as a **scheduling decision**,
 which is control (§"Demand is control"). It need not be materialised; walking the extent and skipping
 settled atoms computes it incrementally, and `E` need not cross the link, since the handler is near the
 data.
+
+**Its emptiness is settledness.** A call's residual is empty exactly when every atom of the call is
+decided, which is the knowledge-complete row of §"The threshold rule". So the two are one object read in
+two directions: *empty* is witnessed by a finite cover — affirmable, publishable — and *non-empty* is a
+down-set, local and best-effort. Settledness is not a second primitive on the other side of the line; it is
+the residual's one affirmable reading.
 
 **That removes a mechanism rather than adding one.** A demand entirely covered by another has an **empty
 residual** and costs nothing, without anybody detecting that it was subsumed — so containment compaction
@@ -975,8 +992,7 @@ a non-monotone specification, producing a monotone output interface for downstre
 makes it precise — restrict the admissible outcomes enough to restore monotonicity, then test the residual.
 Everything above the line here is monotone and coordination-free; everything pushed below is exactly what
 is not. Three constructs have now tried to get in and been reclassified rather than accommodated, and the
-layer needed no change in any case. The reference model draws the same line: output append-only by
-hypothesis, working memory admitting deletion.
+layer needed no change in any case.
 
 **And there is a barrier here that this design steps around by construction.** Thm. 3:
 relational-transducer CALM *cannot in general verify* proper coordination — a non-monotone specification
@@ -1464,8 +1480,8 @@ Three things follow. **Polarity is opt-in** — a user who wants plain relations
 the substrate is wasted. **It rides the signature channel**, so two agents disagreeing about a pairing is
 the same failure as disagreeing about a sort, with the same fix and the same unenforceability. And
 **nothing about a negative relation is structurally special**: it is permanent, unauthored and
-region-capable exactly as a positive one is, which is why the reclamation tiering above turns on
-re-derivability rather than on direction.
+region-capable exactly as a positive one is, which is why the reclamation tiering (§"What is checked, and
+what is the requester's", below) turns on re-derivability rather than on direction.
 
 What *is* asymmetric is informational and belongs to the data rather than the schema: absence is uniform,
 so a negative relation's extension usually compresses into one record where a positive one does not. That
@@ -1602,7 +1618,7 @@ language". Name them differently in any implementation.
 |---|---|
 | exact claims only on ground terms | **structural — not expressible otherwise** |
 | sorts | **checked**, statically, at both ends |
-| the quantity a demand denotes, and its finiteness | **one test, two owners**: the requester supplies the count, layer 7 meters it |
+| the quantity a demand denotes, and its finiteness | **one test, two owners**: the requester supplies the count, the declarative graph above runstate meters it (`../layers.md`, layer 7) |
 | a demand's extent is bounded | **the solver**, at post time; whether an unbounded extent is ever *covered* is an external producer's future — §Open |
 | reclamation | policy, behind one interface |
 
@@ -1961,6 +1977,9 @@ reintroduces a bug the fold exists to prevent.
 - `prolog-query-layer.md` §3 — the measured answer-subsumption results, reinterpreted: the defect is an
   exact claim on an unsettled term, and it does not arise here because nothing aggregates at write time.
 - `memoizer-index-algebra.md` — the emission filter, and why exposing it is not additive.
-- `../specs/write-authority.md` — unchanged by any of this; a unique constraint is test-and-set (consensus
-  2), where `send(expected_seq=)` is compare-and-swap (consensus ∞).
+- `../specs/write-authority.md` — unchanged by any of this. Consensus number does not separate a unique
+  constraint from `send(expected_seq=)`: a keyed row that stays readable is a write-once register, not a
+  test-and-set — every loser can read who won — and the shipped compare-and-swap *is* a unique constraint,
+  `PRIMARY KEY (run_id, seq)`. What differs is the **key**: a dense position that every append contends on,
+  against a semantic key contended only by inserts of the same key.
 - `../layers.md`, `../positioning.md` — where this sits.

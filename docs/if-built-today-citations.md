@@ -599,8 +599,11 @@ query but needs somebody who knows.
 - **Prop. 14:** even a *non-monotone* query with any free-termination state has an antichain threshold —
   above it the behaviour is governed, below it unconstrained.
 - **Prop. 15 / 16 (join-semilattice):** all free-termination states return the **same value**, and from any
-  state a free-termination state is **reachable**. This design's order is set inclusion, so settledness is
-  consistent and never unreachable — both worth claiming and neither currently claimed.
+  state a free-termination state is **reachable**. This design's order is set inclusion — but settledness is
+  **not** free termination: it is an up-set, and `{t}` is settled while still able to climb to `{t,f}`, so
+  Prop. 15's agreement does not transfer (counterexample in §"The threshold rule"). What transfers is
+  weaker and needs neither proposition: testimony is jointly satisfiable at the join, and settledness,
+  being an up-set under union, is reachable from any store once it is reachable from one.
 
 **Thm. 18, the "inverse curse theorem" — the retraction commitment, proved independently of CALM.** *"Let
 `Q` be a non-constant query. If every state of `D` is invertible, then `Q` has **no free termination
