@@ -44,7 +44,8 @@ topology.
 ## The specific refutations, so they are not re-derived
 
 **The space is degenerate.** Points are ground atoms (forced — see the doc's §"Facts and demands are
-dual"; a residual is not upward-closed, so partial terms are unavailable). Ground atoms are maximal,
+dual": truth-bearers are ground atoms, and quantified sentences have no status; the earlier argument, that
+a residual is not upward-closed, was retired with the obligation to post `¬(Q₀ ∖ E)`). Ground atoms are maximal,
 so the space is **discrete** and the frame is the complete **Boolean** powerset. Measured three times
 independently. Every open is affirmable; nothing is forbidden; a structure defined by which sets are
 open cannot do work here.
