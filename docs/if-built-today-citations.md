@@ -852,8 +852,31 @@ databases"* (2000) exist, weakly suggesting the 1995 model is finite-extensional
 
 ## UNVERIFIED — queued
 
-Nothing outstanding. Every claim the doc rests on has a CONFIRMED entry above, and the remaining leads on
-review 7's list are each superseded by a stronger citation already read: closure-as-a-posted-fact by
+**Added 2026-09-30 with the record-scope / `asked` / question rewrite.** Each is cited in the doc and none
+is yet read by the author. Recalled or agent-asserted by the 2026-09-29 two-reviewer check; the reviewer's
+own grade is given.
+
+- **Leach, Nieva & Rodríguez-Artalejo, *Constraint Logic Programming with Hereditary Harrop Formulas*,
+  TPLP 1(4), 2001, arXiv cs/0404053.** *Agent-read* §§3–4 and Ex. 5.2. Claimed: HH(C) keeps `∀`-goals
+  generic (*"the traditional formulation by means of a new variable has been kept"*); its constraint
+  language is closed under `∧`, `⇒`, `∃`, `∀` and not `∨`; Ex. 5.2, credited to Maher 1987, shows the
+  generic rule failing on a goal that holds only by the case split `x≈a ∨ x≉a`. Doc: §"Whose this already
+  is", §"Speculation".
+- **Maher, *Logic semantics for a class of committed-choice programs*, ICLP 1987** — strong completeness
+  via a disjunction of answer constraints. *Recalled*, via HH(C) Ex. 5.2 only; confirm the title before
+  citing it by name.
+- **Nelson (1949), constructive falsity / N4; Gelfond & Lifschitz, *Classical negation in logic programs
+  and disjunctive databases*, NGC 9, 1991.** *Recalled.* Claimed: strong negation as an independent
+  predicate; the negative clauses `(∃xφ)⁻ = ∀x φ⁻`, `(∀xφ)⁻ = ∃x φ⁻`. Doc: §"Whose this already is",
+  §"The threshold rule".
+- **Motro, *Integrity = validity + completeness*, TODS 14(4), 1989; Levy, *Obtaining complete answers from
+  incomplete databases*, VLDB 1996; Razniewski & Nutt, *Completeness of queries over incomplete
+  databases*, PVLDB 4(11), 2011.** Motro and Levy *recalled*; Razniewski & Nutt *abstract agent-read*.
+  Claimed: query completeness, established by completeness statements. Doc: §"Whose this already is",
+  §"The threshold rule".
+
+Before this addition: nothing outstanding. Every claim the doc rested on had a CONFIRMED entry above, and
+the remaining leads on review 7's list are each superseded by a stronger citation already read: closure-as-a-posted-fact by
 **Darari** (scoped, posted, composable, multi-source, implemented), explicit-negation-without-consistency
 by **4QL Def. 5** and the paraconsistent lineage, coroutining by **CCP `ask`** and **LVars `get`**.
 
