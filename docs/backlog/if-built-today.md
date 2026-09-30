@@ -625,7 +625,7 @@ a production inside a region somebody declared empty climbs the status to `{t,f}
 
 **`¬Q` is the quantified form of `never`.** `never(a)` says nothing goes at one atom; `¬Q` says nothing
 goes anywhere in `ground(Q)`. Two forms exist only because a region can be **infinite**: a producer that
-converged at step 400 is asserting `never` about infinitely many atoms, and a quantified statement is the
+converged at step 743 is asserting `never` about infinitely many atoms, and a quantified statement is the
 only finite way to say it.
 
 **No author.** `p` and `q` posting the same negative region is **one** literal posted twice, not two, and
@@ -666,7 +666,7 @@ Exhaustion arrives three ways — `p`'s own `lifecycle.stopped`, an observer's `
 pid probe — of which only the last is dependable, since the first two exist only if somebody volunteers
 them and the probe **abstains off-host**. None of them is a fact about what exists.
 
-- **A converged producer.** The run ended at 400, so there is no loss at 500. It knows because it ran.
+- **A converged producer.** The run ended at 743, so there is no loss at 900. It knows because it ran.
 - **A solver.** A propagator that has proved a region has no solutions may post `¬Q`; one that has not is
   posting what it does not know. Not a solver-specific rule — the general one with *know* instantiated.
   Unsatisfiability needs no vocabulary of its own: it is **grounds for a post**, not a third kind of
@@ -1179,7 +1179,7 @@ anything waiting on a production; that is the gap between the shipped library an
 **Bounded is a property of the constraint, not admission control in a quantifier's clothes.** `S ≤ 1000`
 is bounded; `S ≥ 1` is not; either is a legal demand. The unbounded one is the demand this design is best
 at expressing, and it is perfectly dischargeable because `ground(Q)` need not be finite provided the
-*cover* is — for a question that binds the value, a positive prefix to step 400 plus one `¬(S > 400)`.
+*cover* is — for a question that binds the value, a positive prefix to step 743 plus one `¬(S > 743)`.
 
 **Who checks it splits in two.** Whether the extent is bounded is the solver's, at post time — the
 checkable half, previously unassigned because it was bundled with the other. Whether a finite cover will
@@ -1717,7 +1717,7 @@ reachability, and the tiers are not in the order storage cost suggests:
 row *"a negative claim"* and that was wrong in both directions. A positive fact from a run whose
 checkpoint is deleted is exactly as unrecoverable, and evicting it descends `{t} → ∅`, the same forbidden
 descent. And on determinism the ordering **inverts**: re-running a converged producer regenerates
-`¬(S > 400)` exactly, where re-running a non-deterministic one may produce `loss(60, 0.5000001)` instead
+`¬(S > 743)` exactly, where re-running a non-deterministic one may produce `loss(60, 0.5000001)` instead
 of `0.5` — a *different atom*, which is a failed re-derivation dressed as a successful one.
 
 So *"assuming the producer is still there, and deterministic"* is the clause the whole tiering turns on,
