@@ -862,13 +862,16 @@ own grade is given.
   language is closed under `∧`, `⇒`, `∃`, `∀` and not `∨`; Ex. 5.2, credited to Maher 1987, shows the
   generic rule failing on a goal that holds only by the case split `x≈a ∨ x≉a`. Doc: §"Whose this already
   is", §"Speculation".
-- **Maher, *Logic semantics for a class of committed-choice programs*, ICLP 1987** — strong completeness
-  via a disjunction of answer constraints. *Recalled*, via HH(C) Ex. 5.2 only; confirm the title before
-  citing it by name.
-- **Nelson (1949), constructive falsity / N4; Gelfond & Lifschitz, *Classical negation in logic programs
-  and disjunctive databases*, NGC 9, 1991.** *Recalled.* Claimed: strong negation as an independent
-  predicate; the negative clauses `(∃xφ)⁻ = ∀x φ⁻`, `(∀xφ)⁻ = ∃x φ⁻`. Doc: §"Whose this already is",
-  §"The threshold rule".
+- **Maher, *Logic semantics for a class of committed-choice programs*, ICLP 1987, pp. 858–876** — strong
+  completeness via a disjunction of answer constraints. Title and pages *agent-read* from HH(C)'s
+  bibliography (2026-09-30). Nuance: HH(C) Ex. 5.2's case split is on a **free** variable of the goal, which
+  matches settledness's per-instance check over free variables, not a bound `∀`.
+- **Almukdad & Nelson, *Constructible falsity and inexact predicates*, JSL 49(1), 1984 (N4); Nelson 1949
+  (N3); Gelfond & Lifschitz, *Classical negation in logic programs and disjunctive databases*, NGC 9,
+  1991.** *Recalled.* Claimed: N4 is the paraconsistent strong negation with no axiom connecting `A` and
+  `~A`; N3 has `~A → (A → B)`; GL's answer sets collapse to all literals on a complementary pair, so GL is
+  explosive. The negative clauses `(∃xφ)⁻ = ∀x φ⁻`, `(∀xφ)⁻ = ∃x φ⁻` are common to both. Doc: §"Whose this
+  already is", §"The threshold rule".
 - **Motro, *Integrity = validity + completeness*, TODS 14(4), 1989; Levy, *Obtaining complete answers from
   incomplete databases*, VLDB 1996; Razniewski & Nutt, *Completeness of queries over incomplete
   databases*, PVLDB 4(11), 2011.** Motro and Levy *recalled*; Razniewski & Nutt *abstract agent-read*.
