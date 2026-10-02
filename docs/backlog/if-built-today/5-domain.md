@@ -201,7 +201,7 @@ by anything waiting on a production; that is the gap between the shipped library
 
 [`3-questions.md`](3-questions.md) §"Demand is control" leaves *still wanted* to a scheduling policy. runstate already has
 both kinds of demand: `relaunch_if_needed` serves **durable** demand and `ensure_served` serves **leased**
-demand ([`../../specs/lazy-launch.md`](../../specs/lazy-launch.md)). The proposed policy:
+demand ([`../../specs/lazy-launch.md`](../../specs/lazy-launch.md)). The policy:
 
 - **A lease is a duration, renewed by the asker** — posted periodically, one way, as today's heartbeat is.
   No reply, so no round trip. Durable demand is a lease of unbounded duration, and its risk — a question
@@ -213,16 +213,40 @@ demand ([`../../specs/lazy-launch.md`](../../specs/lazy-launch.md)). The propose
   bounded one runstate accepts in [`../../specs/time-lease-boundary.md`](../../specs/time-lease-boundary.md): a scheduler that attaches after a
   dead asker's last renewal receives it as fresh, and the question looks wanted for one more duration.
 
-Two choices are open, with their trade-offs:
+- **The lease is an argument of the question record**, so a renewal is just the question asked again:
 
-- **One relation or two.** The lease as an argument of `asked` — `asked(Q, lease(N, D))`, with *"Q was
-  asked"* the projection `∃N, D` — or a separate renewed `wanted` record beside a permanent `asked`. One
-  relation is minimal, since the permanent form is derivable; two keep *"asked"* and *"still wanted"* as
-  separate concerns. No semantic difference.
-- **Early withdrawal, or lapse only.** With a renewal counter `N`, the live lease is the highest-`N` record
-  — a `max`, so monotone — and a renewal of duration zero withdraws at once. Without `N`, an asker can only
-  stop renewing and wait out the duration. Withdrawal also needs leases kept per asker, so several askers
-  of one question do not cancel each other; a random session id serves, with no roster.
+  ```
+  asked(Q, lease(C, N, D))      C = hash(k), for a secret k the asker drew at random
+  withdrawn(k)                  withdraws every lease whose C is hash(k)
+  ```
+
+  The questions layer's `asked(Q)` is the projection `∃C, N, D`, so *"Q was asked"* is derived rather
+  than kept as a second record. A separate renewed `wanted` record beside a permanent `asked` behaves
+  identically and is one relation more. `N` only keeps renewals distinct: without it, renewal eight is the
+  same record as renewal seven, and set semantics hides the arrival the scheduler times from.
+- **These are ordinary facts; *still wanted* is the reading.** Both records are posted like any other and
+  stay true forever. They say *"wanted for `D` from when you receive this"* and *"lease `C` is
+  withdrawn"*, never *"wanted now"*. Only the scheduler, holding a clock, turns them into a gate, which is
+  what [`3-questions.md`](3-questions.md) §"Demand is control" requires.
+- **An asker can withdraw early, by revealing its secret.** A lease is live while its latest renewal is
+  younger than `D` and no `withdrawn(k)` with `hash(k) = C` has arrived. This assumes every asker can
+  draw unguessable random numbers, and a one-way hash. Content-addressed run ids already assume a
+  collision-resistant hash; this needs preimage resistance, which the usual hashes also give. What it buys:
+  - **Withdrawal is unforgeable on a public store**, with no private channel. A plain session id would sit
+    in every renewal, and any reader could withdraw under it. Renewals stay forgeable, which is harmless:
+    forging one grants nothing that asking `Q` directly would not.
+  - **Withdrawal needs no ordering.** `C` is fresh and never reused, and a reveal is permanent, so a
+    withdrawal beats a renewal that arrives after it. The shipped `control.unsubscribe` needs its
+    counter-must-follow-by-`seq` pairing only because the asker's `request_id` can be reused, and pairing
+    by log position is what [`README.md`](README.md) §"Two commitments" forbids.
+  - **Several askers of one question cannot withdraw each other**, since each holds its own `k`, and no
+    roster is kept.
+  - **The asker chooses the granularity.** One `k` per question withdraws questions singly. One `k` shared
+    across a session's questions withdraws them all with one reveal. A rule that derives a question from
+    another can pass the parent's `C` through, so the derived question is withdrawn with its parent.
+- **Withdrawal adds to lapse; it does not replace it.** An asker that crashes cannot reveal anything, so
+  expiry stays the backstop. The pair mirrors runstate's `lifecycle.stopped` for a clean exit and heartbeat
+  staleness for a crash.
 
 ## What the measurements say
 
