@@ -10,17 +10,20 @@ a clause's own variables are universal, but that is the reading of a rule, not a
 and no `∨`, no `⊥`, no equality and no `∃` in a *head*. Posted records are the special case whose body is
 constraints only (`0-substrate.md` §"The model").
 
+**It is the language the design can check, not the language agents must be written in.** An agent may be
+written in anything that can build and read terms and post records; the design constrains only what it
+posts and what it reads. What it posts is testimony, under the same honour system as every post. The
+definite-clause language is where a derivation's monotonicity — and so everything §"CALM" buys — holds by
+construction rather than by the author's care. Code in any other language that derives and posts is a
+producer like any other.
+
 **There is no `¬` in the language at all.** The store holds records in relations, and no axiom connects
 any relation to any other. A schema may declare two relations to be read as a statement and its denial;
 that reading is schema the user chooses and the logic is ignorant of, exactly where sorts sit (§"Types").
 Nothing is excepted, because nothing negates.
 
-The same split covers variables. In this document they are written Prolog-style — `V`, capitalised — and on
-the wire a variable travels as a **constructor**, `var(37)`, an ordinary term with a known functor, scoped
-to the record it occurs in (`0-substrate.md` §"The model"). Neither a capital letter nor a sigil is wire
-format, because both make a receiver decide variable-ness from the spelling of a name — the
-closed-set-in-an-open-namespace error: a set known when the schema is written belongs in a field a tool can
-check, not in the spelling of a name.
+Variables are written Prolog-style in this document — `V`, capitalised. How they travel is
+`0-substrate.md` §"The wire format".
 
 **What is missing, and why — the reasons are two, not four.**
 
