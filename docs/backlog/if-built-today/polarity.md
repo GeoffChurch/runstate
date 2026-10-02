@@ -305,7 +305,9 @@ is a direction the store can move.
 **An atom's status is the set of things producers have told you about it**: `∅`, `{t}`, `{f}`, `{t,f}` —
 the subsets of `{t, f}`, and Belnap's four. **The aggregation is union**, so a status
 only ever climbs — monotone **by construction**, and in a *growing* producer set rather than only a fixed
-one.
+one. And it **glues distributively**: an atom's status in the union of two stores is the join of its
+statuses in each, exactly — the global picture is computed from the local ones with nothing lost, however
+much the stores overlap.
 
 **It is the free completion, one layer up.** `logic.md` §"Constraints are asked" meets the same fork at the value
 layer — add a collapsing top, or take the powerset — and takes the powerset. The status layer gets the
