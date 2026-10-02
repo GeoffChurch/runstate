@@ -808,7 +808,7 @@ design says it does *not* use.
 
 An earlier pass concluded LCW is an **inference licence** rather than a positive assertion, with the
 differentiator being that LCW must be **retracted** as the KB grows while a told-false fact never is —
-and `c0a18ba` wrote that into the doc. **That conclusion is itself unverified against primary text**, and
+and `0dd493f` wrote that into the doc. **That conclusion is itself unverified against primary text**, and
 the doc is currently leaning on it. Sources: Levy, VLDB 1996, 402–412; Cortés-Calabuig et al., AAAI 2007;
 Denecker et al., TODS 35(3), 2010. Also unverified even bibliographically: Motro TODS 1989;
 Razniewski & Nutt PVLDB 2011.
