@@ -166,6 +166,33 @@ as *"forever"* — the unbounded region of `3-questions.md` §"Quantifiers live 
 than hypothetical. (The bare subscribe is served by a poll of the register, `self._values.get(name)`, not
 by anything waiting on a production; that is the gap between the shipped library and this design.)
 
+## Still wanted: leases
+
+`3-questions.md` §"Demand is control" leaves *still wanted* to a scheduling policy. runstate already has
+both kinds of demand: `relaunch_if_needed` serves **durable** demand and `ensure_served` serves **leased**
+demand (`../../specs/lazy-launch.md`). The proposed policy:
+
+- **A lease is a duration, renewed by the asker** — posted periodically, one way, as today's heartbeat is.
+  No reply, so no round trip. Durable demand is a lease of unbounded duration, and its risk — a question
+  that never settles, relaunched forever — is `open.md` 10's admission rule, not a lease problem.
+- **The scheduler times it from local receipt**, on its own monotonic clock: a question is still wanted
+  while less than the duration has passed since the scheduler received the latest renewal. No clock is
+  compared across hosts, matching runstate's original liveness design, where the Watcher knows when a
+  beacon arrived *"because it was there"* (`../../specs/observer-clock.md`). The known cost is the same
+  bounded one runstate accepts in `../../specs/time-lease-boundary.md`: a scheduler that attaches after a
+  dead asker's last renewal receives it as fresh, and the question looks wanted for one more duration.
+
+Two choices are open, with their trade-offs:
+
+- **One relation or two.** The lease as an argument of `asked` — `asked(Q, lease(N, D))`, with *"Q was
+  asked"* the projection `∃N, D` — or a separate renewed `wanted` record beside a permanent `asked`. One
+  relation is minimal, since the permanent form is derivable; two keep *"asked"* and *"still wanted"* as
+  separate concerns. No semantic difference.
+- **Early withdrawal, or lapse only.** With a renewal counter `N`, the live lease is the highest-`N` record
+  — a `max`, so monotone — and a renewal of duration zero withdraws at once. Without `N`, an asker can only
+  stop renewing and wait out the duration. Withdrawal also needs leases kept per asker, so several askers
+  of one question do not cancel each other; a random session id serves, with no roster.
+
 ## What the measurements say
 
 Every corpus figure the layers lean on, kept here so the layers themselves stay workload-free.
