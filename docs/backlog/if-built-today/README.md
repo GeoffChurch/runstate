@@ -22,18 +22,30 @@ it can be reviewed and discussed alone.
 
 | file | layer | depends on |
 |---|---|---|
-| `substrate.md` | records, variables, the one operation, what the substrate must provide | — |
+| `substrate.md` | records as constrained facts, record-scoped variables, the one operation | — |
 | `logic.md` | definite clauses over constraints; CALM; the monotone layer and its non-monotone core | substrate |
-| `polarity.md` | told falsity, the four statuses, the threshold rule, settledness | substrate, logic |
-| `questions.md` | `asked`, quantifiers in questions, the residual, demand as control | substrate, logic, polarity |
-| `provenance.md` | objections without retraction; speculation | substrate, logic; meets polarity only at diagnosing `{t,f}` |
+| `polarity.md` | told falsity, the four statuses, the threshold rule, settledness of a set of atoms | substrate, logic |
+| `reclamation.md` | eviction, never retraction | substrate, logic, polarity |
+| `questions.md` | `asked`, quantifiers in questions, settledness of a question, the residual, demand as control | substrate, logic, polarity |
+| `provenance.md` | objections without retraction; speculation | substrate, logic, polarity (the dispute mechanism alone needs none) |
 | `aggregation.md` | orders as reads; summaries, and what glues | substrate, logic, polarity, questions |
-| `domain.md` | one worked instance — runs, metrics, steps — and the cost against today's runstate | all of the above |
+| `domain.md` | one worked instance — runs, metrics, steps — every corpus measurement, and the cost against today's runstate | all of the above |
 | `prior-art.md` | whose this already is | — |
 | `open.md` | what is open, across layers | — |
 
 **The rule: a layer cites only its ancestors.** A reference from a layer to a layer above it is a defect
-— a lower layer leaning on an upper one — and is findable by grep.
+— a lower layer leaning on an upper one — and is findable by grep. **And the layers below `domain.md` are
+workload-free**: their examples are neutral (`p(K, V)`), and every corpus figure lives in `domain.md`.
+
+## The order of the layers
+
+**Ground terms, then variables, then the valuation, then quantifiers.** Truth-bearers are ground atoms,
+each with a status; quantifiers range over statuses, in questions and reads, and a quantified sentence is
+never told and has no status of its own. Told quantified sentences would give a sentence two sources of
+truth — told directly, and derived from its instances — and would make polarity interact with the
+quantifiers, since `¬∀` is `∃¬`. Tarski's order is the same: quantifiers are defined through
+satisfaction, which presupposes a valuation of atoms. In files: variables are `substrate.md`, the valuation
+is `polarity.md`, quantifiers are `questions.md`.
 
 **Companions.** `decisions/` records, per layer, what was tried and withdrawn, so these files can state
 conclusions. `../../if-built-today-citations.md` is the verification ledger — it marks each citation
@@ -96,7 +108,7 @@ lives one level up, where restriction *"necessarily involves summing over indice
 records which row contributed what. Of his own versioning example: *"conflicts are resolved by version
 numbers. Forgetting the version numbers, we get disagreement on indexed overlaps."* Contextuality requires
 forgetting the discriminator; this commitment is the refusal to. **The foreclosure reaches exactly as far as
-identity stays attached** — a consumer that aggregates performs the forgetting map itself, which is §Open.
+identity stays attached** — a consumer that aggregates performs the forgetting map itself, which is `aggregation.md`.
 
 ## What makes the answer worth having
 

@@ -59,12 +59,13 @@ stays attached, and the summary map is where it stops.
 
 **Settledness does not close it, and the strong kind does not either.** Prop. 5.2 says *without* missing
 data, restriction and summarization commute — but of **one table**. Two agents hold two stores, and both
-can be complete while disagreeing. Under the weak kind of settledness, two stores each holding one loss
-per step, different ones at step 61, are both settled for `∃V. metric(r, loss, V, S)`, their means differ,
-and nothing reads `{t,f}`. Under the strong kind the same thing happens: each producer vouched *"0.31 and
-nothing else"* or *"0.40 and nothing else"* at step 61, each store is strongly settled, and neither holds
-both values. What the strong kind buys is that the disagreement is **visible at the join** — the union
-reads `{t,f}` at step 61, a valuation conflict rather than a silent domain one. Gluing needs, in addition,
+can be complete while disagreeing. Under the weak kind of settledness, two stores each holding one value
+per key, different ones at key 61, are both settled for `∃V. p(K, V)`, their means differ, and nothing
+reads `{t,f}`. Under the strong kind the same thing happens: each producer vouched *"0.31 and nothing
+else"* or *"0.40 and nothing else"* at key 61, each store is strongly settled, and neither holds both
+values. What the strong kind buys is that the disagreement is **visible at the join** — the union reads
+`{t,f}` at key 61, a valuation conflict rather than a silent domain one (`questions.md` §"Settledness of a
+question"). Gluing needs, in addition,
 that the union is conflict-free over the region, which is `= {t}` and never affirmable. So a summary is a
 **report** — it sits outside, like `argmax` — and a summary computed over a strongly settled region is
 the one whose disagreement with another agent's will surface when their views meet. Whether that is a

@@ -1,6 +1,8 @@
 # Provenance: objections without retraction
 
-**Layer:** depends on `substrate.md`, `logic.md`; meets `polarity.md` only at diagnosing `{t,f}`. The dependency graph is in `README.md`.
+**Layer:** depends on `substrate.md`, `logic.md`, `polarity.md`. The dependency graph is in `README.md`.
+The dispute mechanism itself uses no polarity and survives a reader who rejects it; upholding, diagnosing
+`{t,f}` and speculation use the statuses.
 
 ## Retraction's effect, without retraction
 
@@ -12,14 +14,15 @@ from grounds that are ordinary posted facts:
 disputes(F) :- produced_by(F, S), miscalibrated(S), timing_sensitive(F).
 ```
 
-`disputes/1` takes a **told record** as a term — `F : Fact`, where `Fact` is the sort of `told(A, P)`
-terms — so an objection names a valued fact, polarity included: one can dispute a claim that something is
-*false* as readily as a claim that it is true. `disputes` is itself an atom, so objecting to an objection,
-`disputes(told(disputes(F), pos))`, needs nothing added. Who objected is provenance on the `disputes`
-record rather than an argument, so an objection is worth something only where provenance exists — the
-edge drawn above. And because a record may be a region, an objection is **region-scoped exactly as any
-tell is**: `told(disputes(told(stopped(episode2, O), pos)), pos) :- outcome(O)` rejects every claimed
-outcome for that episode, and a rule bodied on `produced_by(F, bob)` rejects a producer.
+`disputes/1` takes a **posted record** as a term — `F : Fact`, the sort of records — so an objection
+names exactly what was posted. Where a schema declares polarity, a record includes its polarity, and one
+can dispute a claim that something is *false* as readily as a claim that it is true. `disputes` is itself
+a relation, so objecting to an objection, `disputes(disputes(F))`, needs nothing added. Who objected is
+provenance on the `disputes` record rather than an argument, so an objection is worth something only where
+provenance exists — the edge drawn in `README.md` §"What gets built on top". And because a record may be a
+region, an objection is **region-scoped exactly as any record is**: `disputes(verdict(x, O)) :-
+outcome(O)` rejects every claimed verdict for `x`, and a rule bodied on `produced_by(F, bob)` rejects a
+producer.
 
 What follows:
 
@@ -42,7 +45,7 @@ reasons enter the shared record and bare suspicion — *"I simply do not trust B
 but not postable as fact. Grounds are only as good as the facts they cite, and `distrust(bob)` is a fact
 anyone can post; the constraint moves suspicion into the open rather than forbidding it.
 
-**Upholding is `told(disputes(F), neg)`**, so the polarization branch applies to the annotation branch
+**Where polarity is declared, upholding is `told(disputes(F), neg)`**, so the polarization branch applies to the annotation branch
 unchanged: conflicting objections get `{t,f}` and the Belnap reading with no new machinery.
 
 **And this is the one place readers legitimately diverge.** Evidence is shared and permanent; the *fold*
@@ -77,14 +80,14 @@ There is no backtracking to simulate, because nothing is undone. What speculatio
 
 **Its cost is not soundness.** A speculative derivation is not a false assertion but a **contingent** one —
 true given its recorded hypotheses — and an implication whose antecedent turns out false is *vacuous*, not
-wrong. So *"a partial store is sound, never wrong"* (§CALM) survives intact. The hypothesis's own state is
+wrong. So *"a partial store is sound, never wrong"* (`logic.md` §"CALM") survives intact. The hypothesis's own state is
 read by machinery already here: pending is `∅`, confirmed `⊒{t}`, refuted `⊒{f}`.
 
 **What it costs is that facts stop being autonomous.** Every other record here means what it says on its
 own; a speculative derivation means what it says *given* something still open. Two consequences follow.
 Provenance becomes a **requirement** rather than an enhancement — and it must live **in the record**, since
-under partial replication (§Open) a conclusion that outran its premises would be a bare assertion again,
-which is `README.md` §"Two commitments" applied to derivations rather than to episodes. And the remaining cost is
+under partial replication (`open.md`) a conclusion that outran its premises would be a bare assertion
+again, which is `README.md` §"Two commitments" applied to derivations rather than to posted records. And the remaining cost is
 ordinary waste: work done under an antecedent that fails is work done.
 
 **So blocking is the default for being simpler, not for being safer.** A blocked guard needs no provenance

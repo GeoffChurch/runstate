@@ -8,30 +8,19 @@ The derivation language is **definite clauses** — one atomic head, a body of f
 constraints from a fixed CLP domain as ordinary body literals. **No `¬`, no `→`, no `∀`** as operations —
 a clause's own variables are universal, but that is the reading of a rule, not a connective a body can use;
 and no `∨`, no `⊥`, no equality and no `∃` in a *head*. Posted records are the special case whose body is
-constraints only (`substrate.md` §"The model"). **Questions** are a separate, read-side language — positive formulas with
-explicit `∃` and `∀` — and are never told, only asked.
+constraints only (`substrate.md` §"The model").
 
-**The order is: ground terms, then variables, then the valuation, then quantifiers.** Truth-bearers are
-ground atoms, each with a status; quantifiers range over statuses, in questions and reads, and a quantified
-sentence is never told and has no status of its own. Told quantified sentences would give a sentence two
-sources of truth — told directly, and derived from its instances — and would make polarity interact with
-the quantifiers, since `¬∀` is `∃¬`. Tarski's order is the same: quantifiers are defined through
-satisfaction, which presupposes a valuation of atoms.
-
-**There is no `¬` in the language at all, and no polarity either.** The store holds records in relations.
-Polarity is one relation a schema may declare, `told(A, P)` with `P ∈ {pos, neg}`, and nothing connects
-`told(A, pos)` to `told(A, neg)` — so polarity sits exactly where sorts sit, as schema the user chooses and
-the substrate is ignorant of (§"Types"). A user who declares no `told` has ordinary relations and no
-four-value reading; a user who declares it gets it.
-
-`¬Q` is therefore **notation in this document** for `told(Q, neg)`, not a construct the language contains.
+**There is no `¬` in the language at all.** The store holds records in relations, and no axiom connects
+any relation to any other. A schema may declare two relations to be read as a statement and its denial;
+that reading is schema the user chooses and the logic is ignorant of, exactly where sorts sit (§"Types").
 Nothing is excepted, because nothing negates.
 
 The same split covers variables. In this document they are written Prolog-style — `V`, capitalised — and on
 the wire a variable travels as a **constructor**, `var(37)`, an ordinary term with a known functor, scoped
-to the record it occurs in (`substrate.md` §"The model"). Neither a capital letter nor a sigil is wire format, because both
-make a receiver decide variable-ness from the spelling of a name — the closed-set-in-an-open-namespace error
-the polarity representation (`polarity.md` §"Polarity is schema, not substrate") exists to avoid.
+to the record it occurs in (`substrate.md` §"The model"). Neither a capital letter nor a sigil is wire
+format, because both make a receiver decide variable-ness from the spelling of a name — the
+closed-set-in-an-open-namespace error: a set known when the schema is written belongs in a field a tool can
+check, not in the spelling of a name.
 
 **What is missing, and why — the reasons are two, not four.**
 
@@ -80,7 +69,7 @@ Read downward, the first buys the tractable corner (PTIME, against disjunctive D
 monotonicity — which definite clauses have by construction — buys membership in the coordination-free class
 (§"CALM"). Nothing sharper is claimed. Placement *strictly inside* that class, in Ameloot's `H`, is stated
 in homomorphisms of **models**, where the second requirement means algebra homomorphisms on **terms**; and
-the ledger's own condition for it, no `≠` in a constraint region, fails as soon as a constraint body uses `≠`, which §"The demand language"
+the ledger's own condition for it, no `≠` in a constraint region, fails as soon as a constraint body uses `≠`, which §"The constraint domain"
 permits.
 `../definite-clause-maximality.md` works the boundary out.
 
@@ -145,13 +134,6 @@ asked") an arm may carry two values, and *"is this arm beaten?"* is then not wel
 value, unbeaten on the other. Per value it is exact, and needs no disequality: an arm's lower value
 beaten by its own higher one is simply true.
 
-**One exception is real and does not repair.** `ensure`, the library's core operation: its loop condition
-is a threshold claim on `progress`, a *retractable* quantity, and its two termination guards are a
-**temporal delta** (*"nothing new was derived"*, which has no positive form) and an **inflationary
-fixpoint test** (*"another lap can only reproduce them"*). Neither is expressible in the fragment — each
-compares two moments, which no growing set of facts can do — and both feed demand, because both decide
-whether to relaunch. §"Two layers" is where that belongs.
-
 ## CALM: why monotonicity, and not merely for tidiness
 
 **Consistency As Logical Monotonicity** (Hellerstein 2010; proved by Ameloot, Neven & Van den Bussche,
@@ -209,7 +191,7 @@ reimplementation that changed the order would have to check it again.
 **The theorem constrains the computed query, never the operators.** Every query distributedly computable
 by a first-order transducer is computable by one using negation internally, and the proof of the monotone
 case reads *"we use deletion to start afresh; since the query is monotone, no incorrect tuples are
-output."* So the residual computed **inside** an agent is not a violation; **outputting** one would be.
+output."* So a non-monotone computation **inside** an agent is not a violation; **outputting** one would be.
 
 **And their emptiness query is this design's `¬∃`, worked — though the reason is finer than it first
 looks.** It is Ameloot's exhibited non-coordination-free construct: since every node may hold part of the
@@ -219,7 +201,7 @@ coordination-free iff **monotone**, *negatively* coordination-free iff **antiton
 Ameloot's exclusion of antitone queries as an artefact of the transducer output encoding, where false is an
 *absent* tuple. So emptiness is not uncomputable, and this design should not lean on a claim that it is. It
 free-terminates **exactly where a witness appears**: the direction that finds an atom, never the direction
-that finds none. `= {f}` has no syntax here for that reason.
+that finds none. An emptiness test has no syntax here for that reason.
 
 **One property worth claiming, which the theorem licenses.** Monotone ⟺ computable without the
 all-participants relation **and** without self-identity. So this design needs **no party roster and no
@@ -235,11 +217,11 @@ is not a list to be enumerated — it is one item, and everything downstream of 
 
 Two further scoping notes. It is a **safety** statement: a lost demand and a slow handler leave a querier
 in byte-identical states, so *liveness* still needs an acknowledgement, and a bounded reconnect still
-needs a cursor. And it applies to the **answer** relation; demand is control.
+needs a cursor. And it applies to what is **output**, not to what an agent chooses to compute next.
 
 **Which is where single-spawn sits, and it is not an exception.** *"Run iff no other agent is running
 this"* is mutual exclusion, not a query, so Ameloot's theorem is silent on it and a roster is needed —
-priced in §Open. But it is the *general* pattern rather than this design's private embarrassment;
+priced in `open.md`. But it is the *general* pattern rather than this design's private embarrassment;
 Hellerstein's own reading is that *"the architecture of Paxos-based systems reflects this: membership is
 configured once; everything downstream is actually coordination-free."* And it is once — *"membership
 establishment need only happen once … after the initial bootstrap, the chain of authority transitions is
@@ -276,7 +258,7 @@ Not everything can be monotone, and nothing is gained by pretending. The shape t
 non-monotone core underneath a monotone layer**, where each pushes as much as it can downward:
 
 - the **core** makes observations the logic cannot: an OS probe, a clock, a temporal delta, a fixpoint
-  test, and the closed-producer-set conclusion of `polarity.md` §"Falsity is told";
+  test, and any conclusion that needs to know every participant;
 - the **monotone layer** derives over them and owns everything it can.
 
 **The boundary is not a convenience — and it has a name.** *Complete CALM* §4 calls this **proper
@@ -331,26 +313,18 @@ for the *execution*, where simplification keeps the store small provided the bod
 caution: CHR's store is a multiset, and idempotence is what makes one-way replication safe — use set
 semantics.
 
-## The demand language: constraints from a fixed domain
+## The constraint domain: constraints from a fixed domain
 
-Talking *about* demands means handling the holes in a pattern, and there are exactly three ways —
-**erase** them into a finite tag (adornments, fixed at compile time), **delegate** them to the
-metalanguage (exponentials), or **represent** them as a term plus a `denote` relation (quotation). The
-axis underneath is *when the demand vocabulary is fixed*.
+Talking *about* a set of atoms — a region, or anything else a pattern describes — means handling the
+variables in a pattern, and there are exactly three ways — **erase** them into a finite tag (adornments,
+fixed at compile time), **delegate** them to the metalanguage (exponentials), or **represent** them as a
+term plus a `denote` relation (quotation). The axis underneath is *when the pattern vocabulary is fixed*.
 
-**Take the middle course between erasing and representing: CLP.** A demand carries constraints from a
-**fixed domain**, with a solver deciding satisfiability. `loss(V,S), S ≤ 100` has shape *"range
+**Take the middle course between erasing and representing: CLP.** A pattern carries constraints from a
+**fixed domain**, with a solver deciding satisfiability. `p(X, Y), Y ≤ 100` has shape *"range
 constraint"* and data `100`. The constraint is an ordinary positive literal in the body, so the logic is
 untouched and stays first-order and decidable. Adornments are the degenerate case where the domain is bare
 equality.
-
-**An `asked` record does hold its question as a term, binders included — and that is not the
-representing course.** Representing buys reflection because a user rule may *interpret* a quoted demand
-through `denote`. Here no rule does: a producer's rule matches a question of a fixed shape it was written
-for, as it would match any term, and the one thing that interprets a question — deciding whether it is
-settled and what its residual is — is the engine's coverage check, over a fixed question language:
-positive formulas, explicit `∃` and `∀`, constraints from the fixed domain. The vocabulary is fixed at
-design time, which is the axis this section turns on.
 
 **Propagate, never label.** A propagator narrows domains by local reasoning; when narrowing cannot decide,
 the usual fallback is *search*. Don't. Answer **undecided** and let the caller suspend. That removes
@@ -361,24 +335,20 @@ since copying a term copies its suspended goals).
 **It does not by itself delete the budget.** Measured in `clpfd` with no labelling anywhere,
 `X in 1..N, Y in 1..N, X #> Y, Y #> X` — two variables, two constraints, obviously unsatisfiable — costs
 **989 inferences at N=10 and 4,550,534 at N=10⁵**, because bounds propagation raises each bound by one per
-step. On a half-bounded step axis the ascent does not terminate at all. **But that is an algorithm
+step. On a half-bounded axis the ascent does not terminate at all. **But that is an algorithm
 mismatch, not a property of the problem**: `X > Y > X` is a system of **difference constraints**, decided
 by negative-cycle detection in `O(V·E)` independent of magnitude. A propagator-producer may run
 Bellman–Ford, exactly as any sound backend is allowed.
 
-What it costs is **incompleteness**: entailments a search would have found go unreported, so a demand that
-*is* subsumed may not be recognised and redundant work happens. That is the right trade — incompleteness
+What it costs is **incompleteness**: entailments a search would have found go unreported, so a pattern that
+*is* covered may not be recognised and redundant work happens. That is the right trade — incompleteness
 costs work, search costs soundness. And it draws a clean line: propagation's narrowing is **real
 information**, monotone, and may be posted; labelling's is **conditional** and must never be.
 
-**Propagation happens in two places, and neither needs an unknown shared across records.** *Inside one
-record or question*, it is the solver simplifying that record's own constraint body — the coverage check
-and the residual run it. *Across records*, narrowing what is known about a keyed value is posting
-**negative regions** about it: a producer that has bounded the loss at step 61 to `[0.25, 0.35]` posts
-`told(metric(r, loss, V, 61), neg)` under `V < 0.25` and under `V > 0.35`. Those accumulate, the tightest
-bound is the union of what has been excluded, and a threshold question — *"is the loss at 61 below 0.4?"*
-— settles the moment the excluded regions cover everything above it. The key, not a variable, is what
-ties the narrowings together.
+**Propagation happens inside one record or one rule body**: the solver simplifying that unit's own
+constraints. It needs no unknown shared across records. (Narrowing what is known about a value *across*
+records is a different act — posting what has been excluded — and needs a reading of records as denials,
+which is schema above this layer.)
 
 **And then the solver is not a component — it is producers.** A propagator watches, derives and posts
 regions; with labelling banned that is all it does. Its rules are ordinary positive rules with constraint
@@ -386,19 +356,19 @@ bodies, monotone, and their output only accumulates. Entailment checking is an o
 what the evaluator does anyway. So *"which constraint domain"* is not a separate decision; it is *"which
 rules do you write"*, and they run where the data is.
 
-Several propagators over the same key **compose without coordination**, since each posts only regions it
-derived, and the tightest bound is a read. A propagator that derives *less* than the rules would is simply
+Several propagators over the same constraints **compose without coordination**, since each posts only what
+it derived, and the tightest bound is a read. A propagator that derives *less* than the rules would is simply
 incomplete, which is safe.
 
 **`all_different` is worth checking because it looks like it should fail: it does not.** Disequality is
 legal inside a constraint body, and narrowing from it (`X ≠ 3` with `X ∈ {2,3,4}` gives `X ∈ {2,4}`) is
-positive derivation within the record or question that states it. Only the *state test* — *"are these
+positive derivation within the record or rule body that states it. Only the *state test* — *"are these
 currently different?"* — is forbidden, and propagation never needs it. **Entailment claims are monotone; membership claims on the solution set are
 not.**
 
 **The boundary worth stating.** Everything stays first-order while the constraint *vocabulary* is fixed.
-Opening it, so a demand's shape is computed at runtime, buys **reflection** and its costs. What genuinely
-needs it is the system reasoning about itself — demands about demands, or producers advertising *"I serve
+Opening it, so a pattern's shape is computed at runtime, buys **reflection** and its costs. What genuinely
+needs it is the system reasoning about itself — patterns about patterns, or producers advertising *"I serve
 any pattern of this shape."* Nothing here does.
 
 **And exponentials are the wrong escape.** Finite limits, exponentials and `Ω` together *are* an
@@ -430,16 +400,16 @@ can combine posts and compress. It should be resisted, and the reason is not the
 `→` live at the sequent level, which theories permit.
 
 **The problem is what asserting it would have to do to a store that must accept what it is given.** A
-store holding `loss(60,0.5)` and `loss(60,0.4)` faces two exits, not three:
+store holding `p(k, a)` and `p(k, b)` faces two exits, not three:
 
 | | |
 |---|---|
 | **refuse** the second post | order-dependent — whoever arrives first wins, contents depend on timing, and admissibility becomes a function of state, so there is no fixed algebra at all |
-| **record** | the pair; or the derived consequence `eq(0.5, 0.4)`; or both — and every one of these is an **observation** |
+| **record** | the pair; or the derived consequence `eq(a, b)`; or both — and every one of these is an **observation** |
 
 There is no explosion exit. Ex falso would need an interpreted `=` for the derived equation to contradict,
-and the logic has none (§"The language"): `eq(0.5, 0.4)` is an ordinary ambient-ambient equality —
-testimony, disputable to `{t,f}`, folded or declined per reader policy. The records stay; what a folding
+and the logic has none (§"The language"): `eq(a, b)` is an ordinary ambient-ambient equality —
+testimony, folded or declined per reader policy. The records stay; what a folding
 reader sees is a coarser quotient, and what a declining reader sees is two values. **Deriving the
 consequence *is* recording an observation.**
 
@@ -452,29 +422,21 @@ commanded, only informed.
 
 **This is also what keeps the contextuality foreclosure intact** (`README.md` §"Two commitments"). An enforced
 dependency is precisely the construct that would make two local views pairwise-consistent yet unglueable —
-`{loss(60,0.5)}` admissible, `{loss(60,0.4)}` admissible, their union not. Rendered into testimony, the
-union is always admissible, and what would have been a gluing failure is a **conflicted equality atom**,
-readable. Gluing never fails at the atom layer *because* nothing there can be violated.
+`{p(k, a)}` admissible, `{p(k, b)}` admissible, their union not. Rendered into testimony, the union is
+always admissible, and what would have been a gluing failure is a pair of records and a derivable
+equality, readable. Gluing never fails at the atom layer *because* nothing there can be violated.
 
 **And the affirmable half is the negative one.** *"This relation is not functional at this key"* is a
 positive existential over a growing set — monotone, decidable:
 
 ```
-conflicted(K) :- loss(K,V1), loss(K,V2), V1 ⊔ V2 undefined.
+conflicted(K) :- p(K,V1), p(K,V2), V1 ⊔ V2 undefined.
 ```
 
-**There are two kinds of conflict.**
-
-| | what disagrees | how many atoms | who says so |
-|---|---|---|---|
-| **valuation conflict** | whether the atom is there at all | **one** | the store, structurally: the status is `{t,f}` |
-| **domain conflict** | two atoms violate a constraint somebody declared | **two** | a user-written rule |
-
-The rule above is a *domain* conflict, and writing it as though it were generic is a defect: it hardcodes
-position 1 as key and position 2 as value, which is exactly the split `questions.md` §"There is no `read`" says no term
-carries. Written honestly it is one declaration among many, and the **16 hand-rolled guard sites** in the
-corpus are sixteen such declarations rather than one missing primitive. The generic half is the status:
-`⊒ {t,f}` needs no declaration, no key, and no functor-specific knowledge.
+Writing that rule as though it were generic is a defect: it hardcodes position 1 as key and position 2 as
+value, and no term carries such a split — `verdict(Outcome, FinalStep)` has two value positions,
+`provenance(key, Prid, Sha)` two key positions. Written honestly it is one declaration among many, made
+per relation by whoever knows which positions determine which.
 
 *"This relation is functional here"* is the complement, hence closed, hence a report. That asymmetry is
 structural: the well-formed region is a **lower set**, so its complement is an **upper set**, so **conflict
@@ -491,20 +453,17 @@ linear terms**; with a repeated variable a positional test is a lower bound and 
 
 *No top on the **value** order, and none needed.* A per-relation top is what a collapse would land on, and
 a top satisfies every threshold — so one disagreement would fire every rule mentioning the relation.
-Keeping the atoms apart keeps it out of reach. (The **status** order does have a top, `{t,f}`, and it is
-harmless for exactly that reason: it is a top over *what you were told*, not over the value, so it
-satisfies no threshold a rule reads on the value.) A "broken" flag is the same defect in different
-clothes: discarding values and recording a bit is the one operation that moves *down*, and it retracts.
+Keeping the atoms apart keeps it out of reach. A "broken" flag is the same defect in different clothes:
+discarding values and recording a bit is the one operation that moves *down*, and it retracts.
 
 *Nothing needs broadcasting.* Ask whether a reader who already got `f(a)` must be told when `g(b)` arrives.
-A **threshold** claim is still true; an **exact** claim — *"this is the only value"* — was never available unless someone vouched for the key. **No
-legitimate claim is invalidated by a conflict**, so there is nothing to push and no registry of past
-contributors to keep. The store owes something *readable* — a status for a valuation conflict, a queryable
-predicate for a declared domain one — never a notification.
+A **threshold** claim is still true; an **exact** claim — *"this is the only value"* — was never
+available from the records alone. **No legitimate claim is invalidated by a conflict**, so there is
+nothing to push and no registry of past contributors to keep. The store owes something *readable* — a
+queryable predicate for a declared conflict — never a notification.
 
 **And conflict is reachable without forgery**, which is why it has to be designed for: two honest
-producers differing by one ulp (`0.30000000000000004` vs `0.3`) do not reconcile. `mycooc/analyze_run.py`
-already hand-rolls a guard against exactly this.
+producers whose results differ in the last bit do not reconcile.
 
 **What this costs, and where it does not.** The rejection applies only where the order is **partial** in
 the sense that some pair has *no least upper bound*. Any join-semilattice may be quotiented at storage,
@@ -517,12 +476,6 @@ Where the order *is* partial there are exactly two completions: add a `⊤` (tot
 explodes) or take the **powerset** (total and sound, and it does not compress). The design takes the free
 completion, which is what "keep the atoms" has meant throughout.
 
-**And the whole argument is smaller than it reads.** Measured over **823 real logs, 2.5M records**: the
-compression given up is **0.34%**, and cells whose values genuinely fail to join are **0.072%**. Both are a
-footnote. Where the partial case *does* land supports keeping the atoms — **1,714 of the 1,719 divergent
-cells are `status`**, an app event mirrored onto the value plane at a reused step, where last-write-wins
-reports a run as *saving* at step 87 of training.
-
 ## Types: many-sorted, per functor, structural
 
 Each functor declares the sorts of its arguments and its result. The signature belongs to the
@@ -530,33 +483,25 @@ Each functor declares the sorts of its arguments and its result. The signature b
 check a first-writer-wins register decided by arrival order.
 
 **Sorts are per functor and there is no untyped escape hatch.** A single flat relation —
-`value(Name, V, Step)` for every metric — looks like it buys an open namespace and is unsound: one functor
-has one signature, so every value position shares a sort, so `value(loss, X, S)` and `value(converged, X,
-S)` may share `X`. That aliases a float slot to a bool slot with nothing to object. Per-functor signatures
-reject it at the alias.
-
-**But the partition is by *sort*, not by name, and that is far cheaper than it looks.** Measured over 821
-real logs: 24 distinct value names, **none carrying more than one sort** (21 `float`, 3 `dict`), and no new
-names in the corpus's second half. So the entire measured value plane is **two** relations —
-`metric(Name, Float, Step)` and `event(Name, Json, Step)` — both fixed shapes with the name as **data**.
-The aliasing objection never arises, because the partitions are separated by *relation* rather than by
-name. A consumer declares one signature per value *sort*, not one per metric: two, against twenty-four
-names. The case that motivates the rule is genuine — `mycooc`'s `permutation` carries `None` under one
-flag and a nested record under another, in **source** — and it is a hazard the rule forecloses rather than
-damage it repairs, since **0 of 24** names show sort drift.
+`attr(Name, K, V)` for every attribute — looks like it buys an open namespace and is unsound: one functor
+has one signature, so every value position shares a sort, so `attr(size, K, X)` and `attr(done, K, X)` may
+share `X`. That aliases an integer slot to a boolean one with nothing to object. Per-functor signatures
+reject it at the alias. (A flat relation per *sort*, with the name as data, avoids the alias; it is the
+right shape exactly when the names are an open set, chosen at runtime — otherwise a known name belongs
+where a tool can check it.)
 
 **Wrappers recover what the flat relation was for, as schema rather than machinery.** Per-functor sorts
-make `loss/2` and `accuracy/2` different relations, so *"every metric"* would be `∃F. F(S,V)` — not
+make `size/2` and `done/2` different relations, so *"every attribute"* would be `∃F. F(K,V)` — not
 first-order. A user wraps, and nothing in the engine changes:
 
 ```
-metric(loss(60, V))        -- Metric = loss(Step,Float) | converged(Step,Bool) | …
-table1(loss(V), 60)        -- Metric = loss(Float)      | converged(Bool)      | …
+attr(size(K, V))           -- Attr = size(Key,Int) | done(Key,Bool) | …
+at(K, size(V))             -- Attr = size(Int)     | done(Bool)     | …
 ```
 
-The first buys **rangeability**; the second **hoists the axis out**, making step a shared position so
-*"everything at step 60"* is one pattern — which is exactly the defect the indexing measurement found,
-fixed in the user's own schema with zero engine support.
+The first buys **rangeability**; the second **hoists the key out**, making it a shared position so
+*"everything at key k"* is one pattern — which fixes, in the user's own schema with zero engine support,
+the defect that positional indexing over heterogeneous terms exhibits.
 
 With a static signature a type conflict **is not expressible at runtime**. It is a program that does not
 typecheck, caught twice: locally before anything is sent, and again on receipt, because at an
@@ -565,9 +510,9 @@ precise: **a type error is a property of the message alone** — no store state 
 it is order-independent. That is exactly what a *value* conflict is not.
 
 Agreeing the signature is deployment, not runtime. **The residual is real:** if signatures were themselves
-data, the problem returns unchanged. And it is a soundness precondition for the negative side, not only a
-typing discipline — `ground(Q)` is computed against a signature, so two agents disagreeing about the
-signature assert **different `{f}` regions**.
+data, the problem returns unchanged. And it is more than a typing discipline: a region's set of ground
+atoms is computed against a signature, so two agents disagreeing about the signature disagree about what
+any region covers.
 
 ## Sort closure, and disequality
 

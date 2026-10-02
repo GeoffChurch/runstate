@@ -2,13 +2,21 @@
 
 **Layer:** depends on `substrate.md`, `logic.md`. The dependency graph is in `README.md`.
 
-## The threshold rule, and its five instances
+**Polarity is one relation a schema may declare**, `told(A, P)` with `P ∈ {pos, neg}`, read as *"A is
+true"* and *"A is false"*. Nothing connects `told(A, pos)` to `told(A, neg)`; the logic is unchanged
+(`logic.md` §"The language"). `¬Q` is **notation in this document** for `told(Q, neg)`, not a construct the
+language contains. In a record, `P` is always ground — a region over polarities would tell an atom true and
+false at once. Why one relation rather than a partner per subject is §"Polarity is schema, not substrate",
+below. A schema that declares no `told` keeps plain relations, and nothing in this file applies to it.
+
+## The threshold rule, and its instances
 
 > **Threshold claims are always available. Exact claims require settledness.**
 
 This is a corollary of the affirmability shape, not an axiom — it states *"only opens are affirmable"* in
-the form a rule author needs. What earns it a section is that it keeps instantiating. Five orders now, in
-every case the up-set affirmable and its complement not:
+the form a rule author needs. What earns it a section is that it keeps instantiating. Four orders here
+— a layer above that introduces another order adds its row — in every case the up-set affirmable and its
+complement not:
 
 | order | affirmable | never |
 |---|---|---|
@@ -16,7 +24,6 @@ every case the up-set affirmable and its complement not:
 | **status** | `⊒ {f}` | `= {f}` |
 | **coverage** | entailment | membership in the solution set |
 | **constraint** | *"the excluded regions entail `V ≤ 0.35`"* | *"0.3 is still possible"* |
-| **demand** | *"this was asked"* | *"this was not asked"* |
 
 A rule that must be re-derived at each new carrier is a slogan; one that already holds there is a basis
 vector.
@@ -27,7 +34,7 @@ this partial term and no more instantiated"* — which requires ruling out furth
 negation. Exactness is available precisely where it is meaningful: at maximal elements.
 
 **Matching a non-ground pattern is a threshold claim** — the ordinary case. A body literal
-`loss(60, f(X))` with `X` free claims *"the value is known to be an `f`-term."* It suspends until that
+`p(k, f(X))` with `X` free claims *"the value is known to be an `f`-term."* It suspends until that
 threshold is reached, then binds `X`; once reached it stays reached. On an
 **algebraic** domain the compact elements are the finite partial terms and the sets `↑p` form a basis of
 the Scott topology — verified exhaustively for terms, `Flat`, `Set` and products — so *matching against a
@@ -35,8 +42,7 @@ pattern is exactly asking a basic open*, and the restriction is a **basis**, not
 
 Rule bodies **resolve against records** — one-way against a ground fact, the pattern's variables binding
 and the fact's not; against a region by renaming its variables apart and conjoining its constraints, which
-is CLP resolution against a constrained fact — and agents **post**. Asking and telling are both posts, told apart by relation: `asked`, or anything else
-(`questions.md` §"A question is a tell of `asked`").
+is CLP resolution against a constrained fact — and agents **post**.
 
 **There is no `var/1` to worry about.** Instantiation tests are the classic non-logical family, and in a
 store whose terms refine, `var` is the antitone member of it. Here no posted record ever changes, so a
@@ -69,7 +75,8 @@ which the logic lacks. A program could still write an explosive clause, a head r
 `told(B, pos) :- told(A, pos), told(A, neg), atom(B)` — but that is a rule somebody wrote, visible and
 removable, not one the logic imposes. What a conflicted premise does is
 derive an ordinary atom, which may then disagree with another at the head relation; that is the free
-completion one level down, and where a **declared domain conflict** catches what the status layer cannot.
+completion one level down, and where a **declared domain conflict** catches what the status layer cannot
+(§"Two kinds of conflict", below).
 
 > **We did not buy paraconsistency. We never bought consistency.**
 
@@ -83,93 +90,56 @@ contradiction, I can hardly be faulted for not providing my computer with such."
 means knowing who they are — so what was an admission becomes the load-bearing reason. Detection is
 preserved; preclusion is the thing declined.
 
-**Settledness belongs to a *question*.** No posted term ever refines, so there is no value waiting to be
-ground; what can be complete or not is a question's answer, and its completeness splits:
+**Settledness of a set of atoms.** No posted term ever refines, so there is no value waiting to be ground;
+what can be complete or not is a *set of atoms* — a region `Q` — and its completeness splits:
 
 | | what it means | where it lives |
 |---|---|---|
-| **knowledge** complete for a question `q(x̄)` | for every tuple `x̄` of its free variables in range, `q(x̄)` is **decided**: its positive reading holds, or its negative reading does | affirmable by exhibiting a **finite cover** — a certificate — but **not derivable** in the fragment, whose bodies have no `∀` |
-| **stream** complete | no further answer will arrive, from anybody | **exhaustion**, hence control |
+| **knowledge** complete for `Q` | every atom of `Q` is **decided**: its status is `⊒ {t}` or `⊒ {f}` | affirmable by exhibiting a **finite cover** — a certificate — but **not derivable** in the fragment, whose bodies have no `∀` |
+| **stream** complete | nothing further will be told about `Q`, by anybody | **exhaustion**, hence control |
 
-Only the first is a question the logic can answer, and it needs no exhaustion: a question whose every
-instance has been decided is settled whether or not anybody is still working on it. Its established name
-is **query completeness** (see the ledger) — with one difference: that literature assumes what is held is
-true, where here an instance may be decided as `{t,f}`.
+Only the first is a question the logic can answer, and it needs no exhaustion: a region whose every atom
+has been decided is settled whether or not anybody is still working on it. (Settledness of a *question*,
+which may bind some of its variables, refines this one where questions are defined.)
+
+**`Q` need not be finite; the *cover* must be.** The conjunction runs over the records exhibited, not over
+the atoms they cover, so a single negative region settles an infinite region in one observation. Every
+record decides what it covers — a ground fact one atom, a region every atom in it — because no posted
+record is existential (`substrate.md` §"The model").
 
 **Affirmable when a finite cover exists, and only then.** Three conditions hide in *"a finite cover"*. The
-cover must exist: a producer that never converges, posting one positive per step forever, settles the
-question only in the limit. Checking it is entailment into a finite disjunction — decidable for difference
-and linear constraints, not for every domain. And a `∀` over an open sort — every run, every config — can be
-covered only by a region over the whole sort, which a poster can honestly tell only if it knows the sort is
-closed; that is the roster again.
-
-**The two readings follow the connectives.** For an atom, the positive reading is `told(a, pos)` and the
-negative is `told(a, neg)`. Conjunction is positive when both halves are and negative when either is,
-dually for disjunction; and `∃y` is positive when some instance is, **negative when every instance is**,
-dually for `∀y`. A constraint relativises both: the negative reading of `∃V. c ∧ φ` is *"every `V`
-satisfying `c` makes `φ` negative"*. These are the strong-negation clauses (Nelson), and both readings
-mention `told` only positively, so settledness is monotone in the store, for any order of quantifiers,
-over a fixed universe.
-
-**How strong a settledness is depends on what the question binds.** Settled for `∃V. metric(r, loss, V,
-S)` means every step has *a* loss, or has none — and says nothing about whether a step has *other* losses,
-since binding `V` asked for one. Settled for `metric(r, loss, V, S)` with `V` free as well means every
-(step, value) pair is decided: every step's set of losses is complete. The second needs someone to vouch,
-at each produced step, that there is no other value there, which is honest exactly when the key determines
-the value (§"The rule for posting"). **A "no" answer to a question that constrains a bound variable, and
-any summary (`aggregation.md` §"Summaries"), need the second.**
-
-**`ground(q)` need not be finite; the *cover* must be.** The conjunction runs over the records exhibited,
-not over the atoms they cover, so a single negative region settles an infinite region in one observation.
-Every record decides what it covers — a ground fact one atom, a region every atom in it — because no posted
-record is existential (`substrate.md` §"The model"). An `asked` record decides nothing about its content: it is a fact
-about asking.
-
-**And the question must stay the same question**, or settledness is not a monotone read: settledness is
-antitone in the extent, so a question whose extent grows can flip from settled to unsettled with nothing
-descending in the store. With variables scoped to records, no posted question grows on its own. It can
-still grow if the signature grows, if a reader's lens coarsens, or if a constraint mentions a description
-term whose meaning is later resolved — so constraints in questions mention ground constants only.
+cover must exist: a producer that never finishes, posting one positive per key forever, settles the region
+only in the limit. Checking it is entailment into a finite disjunction — decidable for difference and
+linear constraints, not for every domain. And a region over an open sort — every member of a set that can
+grow — can be covered only by a record over the whole sort, which a poster can honestly tell only if it
+knows the sort is closed; that is knowledge of every participant again.
 
 **What settledness does not buy: agreement.** The tempting citation is Power, Koutris & Hellerstein's
 Props. 15–16 (2025) — in a join-semilattice, every free-termination state returns the same value — read as
 *"two agents who can both stop cannot disagree."* Settledness is not free termination. It is an up-set, and
-`{t}` is settled while still able to climb to `{t,f}`: a store holding `metric(r, loss, 0.31, 61)` and
-another holding `¬metric(r, loss, V, S)` for `S > 40` both settle the yes/no question about that atom, answer `{t}` and `{f}`, and join
-at `{t,f}`. What is true is weaker and holds of **every** pair of stores, settled or not — their testimony
-is jointly satisfiable at the join, because `{t,f}` absorbs both. That is `logic.md` §"CALM"'s joint consistency, not
-a property of settledness, and *"we never bought consistency"* already said it.
+`{t}` is settled while still able to climb to `{t,f}`: a store holding `p(k, a)` and another holding
+`¬p(K, V)` for `K > j`, with `k > j`, both settle the atom `p(k, a)`, answer `{t}` and `{f}`, and join at
+`{t,f}`. What is true is weaker and holds of **every** pair of stores, settled or not — their testimony is
+jointly satisfiable at the join, because `{t,f}` absorbs both. That is `logic.md` §"CALM"'s joint
+consistency, not a property of settledness, and *"we never bought consistency"* already said it.
 
 **What it does buy is permanence under growth.** Settledness is an up-set of a union-closed order, so it is
-never lost by the **store** growing, and a question settled from any store is settleable from every other,
-by adding that store's records. It can be lost only by the **question** growing — the whole content of
-requiring `Q`'s extent to be fixed.
+never lost by the **store** growing, and a region settled from any store is settleable from every other, by
+adding that store's records. It can be lost only by the **region** growing — which is why a region is fixed
+when it is named.
 
 **There is no producer verb and no `freeze`** — `¬Q` is an ordinary post — so there is no
-freeze-after-write race. And **nothing may derive settledness from demand going quiet**: demand
-disappearing determines nothing, so it moves no atom out of `∅`. There is no ownership rule to enforce
-that; a reclaimer posting `¬Q` is making a false claim exactly as it would by posting a false
-`loss(60, 0.5)`, under the same enforcement, which is none.
+freeze-after-write race. There is no ownership rule either: a reclaimer posting `¬Q` without knowing it is
+making a false claim exactly as it would by posting a false `p(k, a)`, under the same enforcement, which is
+none.
 
 ## Falsity is told, never inferred
 
 **Inferred absence needs no representation at all.** *"Nothing is there yet, so produce it"* looks like it
 needs `¬∃` — and under an **open** world that is not merely banned but unknowable, since you can never say
-*no answer exists*, only *no answer has arrived*. Nothing needs it, because production is
-**demand-gated**: a producer runs because somebody asked, never because something was found missing.
-
-And demand-gating needs little machinery. **A demand is an `asked` record; a producer is an agent whose
-rules match it, compute, and post tells.** That is the magic-sets construction in its magic-templates
-form. The per-relation form — a separate `demand_p(X)` gating `value(X,V) :- demand_p(X), handler(X,V)` —
-carries the adornment, *which position is bound*, as a second predicate for every relation, and so
-presupposes a key/value split no relation has. `asked` is one relation for all of them and holds the whole
-question, so the adornment is a property of the **question** rather than the relation: `asked(∃V.
-loss(60, V))` and `asked(∃S. loss(S, 0.31))` ask two different things of one relation. A fully bound
-question — `asked(valid(c))`, the yes/no case — is simply a ground record. The `asked` record is also the
-durable record of *"this was wanted"*, with no second object needed. A producer needing something of its
-own posts an `asked` record too, which makes it a querier, and rules deriving `asked` from `asked` are
-ordinary definite clauses — which is how demand propagates to sub-demands. The roles stay symmetric all
-the way down.
+*no answer exists*, only *no answer has arrived*. Nothing needs it, provided production runs because
+somebody asked, never because something was found missing — which is how production is driven in the
+layer above.
 
 **What *is* representable is told falsity** — somebody posting `¬Q` because they know it. That is an
 ordinary fact, affirmable by exhibiting it, and it needs no closed world to license it. The distinction is
@@ -183,7 +153,7 @@ somebody posted is data.**
 
 That is not a rule about negation; it is the ordinary honesty condition on any post. A producer that stops
 looking and posts `¬Q` is posting what it does not know, which is exactly what posting an uncomputed
-`loss(60, 0.5)` is.
+`p(k, a)` is.
 
 | act | means |
 |---|---|
@@ -196,31 +166,29 @@ The third row is not a stance anybody posts: it is `∅`, the identity of the ag
 a production inside a region somebody declared empty climbs the status to `{t,f}`.
 
 **`¬Q` is the quantified form of `never`.** `never(a)` says nothing goes at one atom; `¬Q` says nothing
-goes anywhere in `ground(Q)`. Two forms exist only because a region can be **infinite**: a producer that
-converged at step 743 is asserting `never` about infinitely many atoms, and a region is the
-only finite way to say it.
+goes anywhere in `Q`. Two forms exist only because a region can be **infinite**: a producer that finished
+at key `n` is asserting `never` about infinitely many atoms beyond it, and a region is the only finite way
+to say it.
 
-**No author.** `p` and `q` posting the same negative region is **one** literal posted twice, not two, and
+**No author.** Two producers posting the same negative region is **one** record posted twice, not two, and
 set semantics collapses it correctly. What an author argument would buy is **provenance** — wanted equally
-for positive facts, since `loss(60,0.5)` names nobody either — so it belongs to whatever mechanism
-eventually serves both. It is an open item, and the cost of not having it is at the end of this section.
+for positive facts, since `p(k, a)` names nobody either — so it belongs to whatever mechanism eventually
+serves both. It is an open item, and the cost of not having it is at the end of this section.
 
 **What a producer may post negatively is what it knows is absent — and that depends on the key.** A
-producer that ran to convergence at step 743 knows there is no loss after 743: the tail
-`told(metric(r, loss, V, S), neg) :- float(V), S > 743` is knowledge, because the run stopped. Inside the
-produced range it knows less. Having posted `0.31` at step 61, it may add *"and no other loss at step 61"*
-— two regions, `told(metric(r, loss, V, 61), neg)` under `V < 0.31` and under `V > 0.31` — only if it knows
-the key determines the value.
-That **per-key complement** is testimony, which `logic.md` §"Constraints are asked" permits; it over-claims whenever
+producer that finished at key `n` knows there is nothing beyond it: the tail
+`told(p(K, V), neg) :- K > n` is knowledge, because the producer stopped. Inside the produced range it
+knows less. Having posted `p(k, a)`, it may add *"and no other value at `k`"* — `told(p(k, V), neg)`
+under `V < a` and under `V > a` — only if it knows the key determines the value. That **per-key
+complement** is testimony, which `logic.md` §"Constraints are asked" permits; it over-claims whenever
 another honest producer could post a different value under the same key.
 
 **So a key is a schema's claim about what determines the value, and its granularity is a trade-off.** A
-**finer** key — naming the episode, the producer, or a content-addressed run whose identity includes seed
-and code — makes vouching honest, but a disagreement becomes two separate facts that never read as a
-conflict. A **coarser** key makes a disagreement a visible `{t,f}`, but vouching over-claims unless the key
-really determines the value. Choosing is the user's, per relation. Vouching is what the strong reading of
-settledness needs (§"The threshold rule"); the weak reading needs only positives and the tail, which is
-why the posting rule obliges neither. (An earlier draft obliged every producer to post
+**finer** key — one that names the producer, or a computation precise enough to be deterministic — makes
+vouching honest, but a disagreement becomes two separate facts that never read as a conflict. A
+**coarser** key makes a disagreement a visible `{t,f}`, but vouching over-claims unless the key really
+determines the value. Choosing is the user's, per relation. Vouching is what settling the region
+`p(k, V)` — every value at a key — needs (§"The threshold rule"); the posting rule obliges none of it. (An earlier draft obliged every producer to post
 `¬(Q₀ ∖ E)` — everything asked other than what it produced is false — which is the per-key complement made
 unconditional, and so an over-claim wherever the key does not determine the value.)
 
@@ -231,14 +199,11 @@ legitimately returns — as a *route*, not as the semantics.
 
 **The test that separates knowing from merely stopping: could a third party post this knowing only that
 the process died?** For **exhaustion** yes — a pid probe suffices. For **falsity** no, because a dead
-producer's silence is not evidence about the world. That is the launcher-versus-lifecycle split this
-library already has, kept orthogonal for exactly this reason, and collapsing the two is what made a
-single closure predicate look as though it needed a universal over the producer set to mean anything.
-Exhaustion arrives three ways — `p`'s own `lifecycle.stopped`, an observer's `launcher.terminated`, and a
-pid probe — of which only the last is dependable, since the first two exist only if somebody volunteers
-them and the probe **abstains off-host**. None of them is a fact about what exists.
+producer's silence is not evidence about the world. Keep the two orthogonal: collapsing them is what made
+a single closure predicate look as though it needed a universal over the producer set to mean anything.
+Exhaustion is a fact about a process; none of the ways it arrives is a fact about what exists.
 
-- **A converged producer.** The run ended at 743, so there is no loss at 900. It knows because it ran.
+- **A finished producer.** It stopped at key `n`, so there is nothing at `n + 1`. It knows because it ran.
 - **A solver.** A propagator that has proved a region has no solutions may post `¬Q`; one that has not is
   posting what it does not know. Not a solver-specific rule — the general one with *know* instantiated.
   Unsatisfiability needs no vocabulary of its own: it is **grounds for a post**, not a third kind of
@@ -407,19 +372,43 @@ closed-world assumption, written as an operation.
 **So three refusals stated separately here are one.** Declining CWA, holding `∅` unaffirmable, and needing
 no roster are not three commitments but one: **conflation is unavailable**. Its defining case requires
 recognising `∅`; recognising `∅` requires knowing nobody will ever tell you; and that is the participant
-roster, which §CALM names as the single non-monotone input. It also replaces a stance with a test that has
+roster, which `logic.md` §"CALM" names as the single non-monotone input. It also replaces a stance with a test that has
 a yes-or-no answer — *does this operation reverse `≤_k`?*
 
 **The constraint binds on output, not computation.** A scheduler may consult the `∅`-region mid-flight
 freely; publishing such a reading as an answer is what leaves the monotone class. The reference model
 makes exactly that split — output append-only by hypothesis, working memory admitting deletion.
 
-**A demand is an open set, and an answer is truth restricted to it.** Not a *total* valuation: only the
-demand's true-set is ever used, and the store can affirm *asked* but never *not asked*. With status held
-as a **pair of extents** `⟨P, N⟩`, restriction to a demand `D` **is** intersection applied to both,
-`⟨P ∩ D, N ∩ D⟩` — the knowledge-order meet `⊗` with `⟨D, D⟩`. It is not the truth-order `∧` with the
-demand read as a total valuation `⟨D, D̄⟩`, which gives `⟨P ∩ D, N ∪ D̄⟩` and marks every undemanded atom
-false: the coercion that made masking look one operation from a bug, and not writable here.
+**Restricting to a set of atoms is the knowledge-order meet.** With status held as a **pair of extents**
+`⟨P, N⟩`, restriction to a set `D` **is** intersection applied to both, `⟨P ∩ D, N ∩ D⟩` — the meet `⊗`
+with `⟨D, D⟩`. It is not the truth-order `∧` with `D` read as a total valuation `⟨D, D̄⟩`, which gives
+`⟨P ∩ D, N ∪ D̄⟩` and marks every atom outside `D` false: the coercion that made masking look one
+operation from a bug, and not writable here.
+
+## Two kinds of conflict
+
+| | what disagrees | how many atoms | who says so |
+|---|---|---|---|
+| **valuation conflict** | whether the atom is there at all | **one** | the store, structurally: the status is `{t,f}` |
+| **domain conflict** | two atoms violate a constraint somebody declared | **two** | a user-written rule (`logic.md` §"Constraints are asked") |
+
+The generic half is the status: `⊒ {t,f}` needs no declaration, no key, and no functor-specific
+knowledge. A domain conflict is per relation, declared by whoever knows which positions determine which.
+And one turns into the other through vouching: `p(k, a)` and `p(k, b)` are a domain conflict, until a
+producer posts the per-key complement for `a` (§"The rule for posting") — then `p(k, b)` reads `{t,f}`.
+
+The status order has a top, `{t,f}`, and it is harmless where a value-order top would not be: it is a top
+over *what you were told*, not over the value, so it satisfies no threshold a rule reads on the value.
+
+## Narrowing is excluding
+
+Narrowing what is known about a value across records needs no unknown shared between them: it is posting
+**negative regions** keyed by content. A producer that has bounded the value at `k` to `[0.25, 0.35]` posts
+`told(p(k, V), neg)` under `V < 0.25` and under `V > 0.35`. Those accumulate, the tightest bound is the
+union of what has been excluded, and a threshold read — *"is the value at `k` below 0.4?"* — is decided the
+moment the excluded regions cover everything at or above it. The key, not a variable, ties the narrowings
+together; and several producers narrowing the same key compose without coordination, since each posts
+only what it excluded.
 
 ## Polarity is schema, not substrate
 
@@ -448,7 +437,7 @@ told(A, P)      A : Atom,   P : Pol = pos | neg
 ```
 
 once, and keep `told` **out of `Atom`**, so no atom is itself a `told` record. Atoms are untouched —
-`loss(V, S)` keeps its own per-functor signature, and `told(loss(V,S), pos)` / `told(loss(V,S), neg)` are
+`p(K, V)` keeps its own per-functor signature, and `told(p(K,V), pos)` / `told(p(K,V), neg)` are
 its two directions. `¬Q` is notation for `told(Q, neg)`.
 
 **What changes is the shape of the atom set.** A partner relation per subject gives `Atoms(p) ⊔ Atoms(p⁻)`
@@ -479,8 +468,7 @@ be a third naming convention with nothing relating it to the first two.
 field whatever the language does; what differs is that field's domain. A partner relation per subject puts
 it in the **functor name** — an open namespace, recovered by string surgery on a prefix. `told` puts it in
 a field with **exactly two values**, which a schema can pin with `additionalProperties: false`. The field
-stays two-valued because a tell's `P` is always ground (`substrate.md` §"The model"); questions live in `asked`, not in
-`told`.
+stays two-valued because a record's `P` is always ground (top of this file).
 
 **None of which prevents anything.** The substrate typechecks nothing, and a schema declaring its own
 endomorphic `not/1` gets double negation with no objection — the same unenforceability that applies to
