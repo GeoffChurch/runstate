@@ -2,7 +2,7 @@
 
 Forward-looking (surfaced 2026-08-24, from the step-back question *"how much of this layer could be
 separated from an even lower layer that gives the actual physics of determinism and communication?"*).
-Background: [if-built-today](if-built-today.md), whose layering this page re-derives from a second,
+Background: [if-built-today](if-built-today/README.md), whose layering this page re-derives from a second,
 independent premise.
 
 ## Status: a lens with one theorem-shaped observation and one audit, deliberately not a framework
@@ -88,7 +88,7 @@ true totals) is admissible exactly where the physics grants exactly-once deliver
 coordination assumption, so the cost has not vanished, it has moved down a level. Inside the idempotent
 family, true totals are recovered by **occurrence naming** (per-actor or per-event ids, counted as a
 reading), so the gap between witnessed and true counts is priced by the naming-policy spectrum
-(`if-built-today-decisions.md` §"Record scope", where the spectrum now lives), not by the algebra.
+(`if-built-today/decisions/questions.md` §"Record scope", where the spectrum now lives), not by the algebra.
 
 ## What this is for
 
@@ -103,7 +103,7 @@ reading), so the gap between witnessed and true counts is priced by the naming-p
 
 ## Related
 
-- [if-built-today](if-built-today.md) — the slow-regime instance, and the layering this page re-derives.
+- [if-built-today](if-built-today/README.md) — the slow-regime instance, and the layering this page re-derives.
 - [definite-clause-maximality](definite-clause-maximality.md) — the logic level's own characterisation
   (initial models ⟺ Horn up to definable partial functions), independent of `M`.
 - `../dead_ends/topological-framings.md` — why this page stops at the boundary test.

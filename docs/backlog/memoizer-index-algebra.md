@@ -68,7 +68,7 @@ already-`until=` signature; no second breaking rename).
 > implement it. And `{"every": {"time_seconds": 60}}` has no region reading under
 > any repair, since it selects whichever steps land 60 s apart.
 >
-> Found while working `if-built-today.md`'s demand-quantifier question; the
+> Found while working `if-built-today/`'s demand-quantifier question; the
 > caveat below (strided requests are not cheaper to *produce* on a sequence
 > worker) is the same finding's cost half.
 
