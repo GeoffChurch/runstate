@@ -1,4 +1,4 @@
-# Decisions and retractions — `../questions.md`
+# Decisions and retractions — `../3-questions.md`
 
 What was tried in this layer, what was withdrawn, and why. Conventions in `README.md`.
 

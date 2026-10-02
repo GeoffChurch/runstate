@@ -1,7 +1,7 @@
 # Why definite clauses, and not the neighbouring fragments
 
 Forward-looking (surfaced 2026-08-18, from the homomorphism-preservation thread).
-Background: [if-built-today/logic.md](if-built-today/logic.md) §"The language, and what each restriction buys", which
+Background: [if-built-today/1-logic.md](if-built-today/1-logic.md) §"The language, and what each restriction buys", which
 places its fragment *"two rungs below geometric"* and justifies each omission separately. This file asks
 whether the fragment is **forced** rather than merely chosen, and finds a partial answer.
 
@@ -256,7 +256,7 @@ which leaves Open #5.
 
 ## Related
 
-- [if-built-today/logic.md](if-built-today/logic.md) §"The language, and what each restriction buys" — the fragment and
+- [if-built-today/1-logic.md](if-built-today/1-logic.md) §"The language, and what each restriction buys" — the fragment and
   the per-omission justifications this file tries to replace with one argument.
 - [if-built-today](if-built-today/README.md) §"What makes the answer worth having" — the two-routes concession
   that motivates this.

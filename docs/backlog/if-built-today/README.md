@@ -18,24 +18,27 @@ The hard part is not the producing. It is that the data is elsewhere, messages a
 come and go, and everybody must still reach the same answer without stopping to confer.
 
 **The layers, one file each.** This file holds what spans all of them; each layer is its own document, so
-it can be reviewed and discussed alone.
+it can be reviewed and discussed alone. The layers form a partial order, not a chain, and each file is
+prefixed with its **depth** — the longest path down to `0-substrate.md`. Files sharing a number are
+siblings with no dependency between them. (These numbers are not `../../layers.md`'s, which number
+runstate's own stack.)
 
 | file | layer | depends on |
 |---|---|---|
-| `substrate.md` | records as constrained facts, record-scoped variables, the one operation | — |
-| `logic.md` | definite clauses over constraints; CALM; the monotone layer and its non-monotone core | substrate |
-| `polarity.md` | told falsity, the four statuses, the threshold rule, settledness of a set of atoms | substrate, logic |
-| `reclamation.md` | eviction, never retraction | substrate, logic, polarity |
-| `questions.md` | `asked`, quantifiers in questions, settledness of a question, the residual, demand as control | substrate, logic, polarity |
-| `provenance.md` | objections without retraction; speculation | substrate, logic, polarity (the dispute mechanism alone needs none) |
-| `aggregation.md` | orders as reads; summaries, and what glues | substrate, logic, polarity, questions |
-| `domain.md` | one worked instance — runs, metrics, steps — every corpus measurement, and the cost against today's runstate | all of the above |
+| `0-substrate.md` | records as constrained facts, record-scoped variables, the one operation | — |
+| `1-logic.md` | definite clauses over constraints; CALM; the monotone layer and its non-monotone core | substrate |
+| `2-polarity.md` | told falsity, the four statuses, the threshold rule, settledness of a set of atoms | substrate, logic |
+| `3-reclamation.md` | eviction, never retraction | substrate, logic, polarity |
+| `3-questions.md` | `asked`, quantifiers in questions, settledness of a question, the residual, demand as control | substrate, logic, polarity |
+| `3-provenance.md` | objections without retraction; speculation | substrate, logic, polarity (the dispute mechanism alone needs none) |
+| `4-aggregation.md` | orders as reads; summaries, and what glues | substrate, logic, polarity, questions |
+| `5-domain.md` | one worked instance — runs, metrics, steps — every corpus measurement, and the cost against today's runstate | all of the above |
 | `prior-art.md` | whose this already is | — |
 | `open.md` | what is open, across layers | — |
 
 **The rule: a layer cites only its ancestors.** A reference from a layer to a layer above it is a defect
-— a lower layer leaning on an upper one — and is findable by grep. **And the layers below `domain.md` are
-workload-free**: their examples are neutral (`p(K, V)`), and every corpus figure lives in `domain.md`.
+— a lower layer leaning on an upper one — and is findable by grep. **And the layers below `5-domain.md` are
+workload-free**: their examples are neutral (`p(K, V)`), and every corpus figure lives in `5-domain.md`.
 
 ## The order of the layers
 
@@ -44,8 +47,8 @@ each with a status; quantifiers range over statuses, in questions and reads, and
 never told and has no status of its own. Told quantified sentences would give a sentence two sources of
 truth — told directly, and derived from its instances — and would make polarity interact with the
 quantifiers, since `¬∀` is `∃¬`. Tarski's order is the same: quantifiers are defined through
-satisfaction, which presupposes a valuation of atoms. In files: variables are `substrate.md`, the valuation
-is `polarity.md`, quantifiers are `questions.md`.
+satisfaction, which presupposes a valuation of atoms. In files: variables are `0-substrate.md`, the valuation
+is `2-polarity.md`, quantifiers are `3-questions.md`.
 
 **Companions.** `decisions/` records, per layer, what was tried and withdrawn, so these files can state
 conclusions. `../../if-built-today-citations.md` is the verification ledger — it marks each citation
@@ -57,7 +60,7 @@ refuted framings so there is not a fourth.
 
 **Nothing is ever retracted.** Every record is permanent — not because a log is a convenient
 implementation, but because *retraction is what costs coordination*, and there is a theorem saying so
-(`logic.md` §"CALM"). Monotonicity is the load-bearing property; append-only is one way to get it and not the only
+(`1-logic.md` §"CALM"). Monotonicity is the load-bearing property; append-only is one way to get it and not the only
 one.
 
 **And a second theorem, about a different loss.** CALM prices retraction in coordination: you may have it
@@ -108,7 +111,7 @@ lives one level up, where restriction *"necessarily involves summing over indice
 records which row contributed what. Of his own versioning example: *"conflicts are resolved by version
 numbers. Forgetting the version numbers, we get disagreement on indexed overlaps."* Contextuality requires
 forgetting the discriminator; this commitment is the refusal to. **The foreclosure reaches exactly as far as
-identity stays attached** — a consumer that aggregates performs the forgetting map itself, which is `aggregation.md`.
+identity stays attached** — a consumer that aggregates performs the forgetting map itself, which is `4-aggregation.md`.
 
 ## What makes the answer worth having
 
@@ -163,9 +166,9 @@ polarization outright, which is this design's most contestable choice. Two edges
 `{t,f}` consumes provenance, and objecting to a polarity assignment needs both.
 
 **Polarization is a two-element marker set, not a commitment to two-valuedness.** Polarity is declared
-schema and the substrate never sees it (`polarity.md` §"Polarity is schema, not substrate"), so a richer marker set is
+schema and the substrate never sees it (`2-polarity.md` §"Polarity is schema, not substrate"), so a richer marker set is
 *more declared values of `Pol`* and the base does not move. A third marker — `undecidable`, say — is told
-rather than inferred, exactly as `polarity.md` §"Falsity is told" requires. Belnap is therefore not
+rather than inferred, exactly as `2-polarity.md` §"Falsity is told" requires. Belnap is therefore not
 *the* logic here but **the reading of the two-marker instance**; over a larger set the reader supplies
 whatever lattice they like, and nothing underneath changes.
 

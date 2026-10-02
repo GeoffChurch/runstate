@@ -1,4 +1,4 @@
-# Decisions and retractions — `../substrate.md`
+# Decisions and retractions — `../0-substrate.md`
 
 What was tried in this layer, what was withdrawn, and why. Conventions in `README.md`.
 
@@ -81,7 +81,7 @@ survive is the *mutable object* — the variable is a durable name with the ordi
 and it **never fails to unify**: a second binding does not clash, it records disagreement, which is the
 paraconsistent variant of a logic variable and the variant this design's setting calls for.
 
-> **Superseded 2026-09-30** (`questions.md` §"Record scope"). The durable name did not survive either: folding two
+> **Superseded 2026-09-30** (`3-questions.md` §"Record scope"). The durable name did not survive either: folding two
 > bindings of one name is a congruence, and it fabricates.
 
 **Revival trigger.** A case where **determinism** is required — where disagreement must be *impossible*

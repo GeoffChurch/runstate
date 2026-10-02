@@ -1,10 +1,10 @@
 # Polarity: told falsity and the four statuses
 
-**Layer:** depends on `substrate.md`, `logic.md`. The dependency graph is in `README.md`.
+**Layer:** depends on `0-substrate.md`, `1-logic.md`. The dependency graph is in `README.md`.
 
 **Polarity is one relation a schema may declare**, `told(A, P)` with `P ∈ {pos, neg}`, read as *"A is
 true"* and *"A is false"*. Nothing connects `told(A, pos)` to `told(A, neg)`; the logic is unchanged
-(`logic.md` §"The language"). `¬Q` is **notation in this document** for `told(Q, neg)`, not a construct the
+(`1-logic.md` §"The language"). `¬Q` is **notation in this document** for `told(Q, neg)`, not a construct the
 language contains. In a record, `P` is always ground — a region over polarities would tell an atom true and
 false at once. Why one relation rather than a partner per subject is §"Polarity is schema, not substrate",
 below. A schema that declares no `told` keeps plain relations, and nothing in this file applies to it.
@@ -105,7 +105,7 @@ which may bind some of its variables, refines this one where questions are defin
 **`Q` need not be finite; the *cover* must be.** The conjunction runs over the records exhibited, not over
 the atoms they cover, so a single negative region settles an infinite region in one observation. Every
 record decides what it covers — a ground fact one atom, a region every atom in it — because no posted
-record is existential (`substrate.md` §"The model").
+record is existential (`0-substrate.md` §"The model").
 
 **Affirmable when a finite cover exists, and only then.** Three conditions hide in *"a finite cover"*. The
 cover must exist: a producer that never finishes, posting one positive per key forever, settles the region
@@ -120,7 +120,7 @@ Props. 15–16 (2025) — in a join-semilattice, every free-termination state re
 `{t}` is settled while still able to climb to `{t,f}`: a store holding `p(k, a)` and another holding
 `¬p(K, V)` for `K > j`, with `k > j`, both settle the atom `p(k, a)`, answer `{t}` and `{f}`, and join at
 `{t,f}`. What is true is weaker and holds of **every** pair of stores, settled or not — their testimony is
-jointly satisfiable at the join, because `{t,f}` absorbs both. That is `logic.md` §"CALM"'s joint
+jointly satisfiable at the join, because `{t,f}` absorbs both. That is `1-logic.md` §"CALM"'s joint
 consistency, not a property of settledness, and *"we never bought consistency"* already said it.
 
 **What it does buy is permanence under growth.** Settledness is an up-set of a union-closed order, so it is
@@ -180,7 +180,7 @@ producer that finished at key `n` knows there is nothing beyond it: the tail
 `told(p(K, V), neg) :- K > n` is knowledge, because the producer stopped. Inside the produced range it
 knows less. Having posted `p(k, a)`, it may add *"and no other value at `k`"* — `told(p(k, V), neg)`
 under `V < a` and under `V > a` — only if it knows the key determines the value. That **per-key
-complement** is testimony, which `logic.md` §"Constraints are asked" permits; it over-claims whenever
+complement** is testimony, which `1-logic.md` §"Constraints are asked" permits; it over-claims whenever
 another honest producer could post a different value under the same key.
 
 **So a key is a schema's claim about what determines the value, and its granularity is a trade-off.** A
@@ -210,13 +210,13 @@ Exhaustion is a fact about a process; none of the ways it arrives is a fact abou
   absence.
 - **A closed producer set.** Everyone who could produce here is done, and no more will appear. This one
   **needs to know who all the producers are** — which is exactly the class of query a coordination-free
-  program may not ask — and it is the one that needs arguing, because `logic.md` §"CALM" is about not needing them.
+  program may not ask — and it is the one that needs arguing, because `1-logic.md` §"CALM" is about not needing them.
 
 **The argument for the third, since the case against it is real.** The danger is not the reasoning but the
 *name*: give exhaustion a predicate in the derivation layer and somebody will quantify over it — *"every
 producer for `Q` is done, and no atom of `Q` is `{t}`, therefore…"* — which is the unanimity move, needing
 to know who all the producers are. The route survives only if the quantification happens **below** the
-logic and only the `¬Q` crosses up (`logic.md` §"Two layers"), so that **no predicate exists for a rule to quantify
+logic and only the `¬Q` crosses up (`1-logic.md` §"Two layers"), so that **no predicate exists for a rule to quantify
 over**. Then: coordination is paid **once**, at the point of conclusion, **scoped per functor**, and what
 comes out is an ordinary monotone fact that everything downstream reads coordination-free.
 
@@ -231,7 +231,7 @@ it:
 > **Make the assumption explicit, post it, scope it, pay for it once.**
 
 Four instances, arrived at separately: this route; **signature agreement**; **sort closure**
-(`logic.md` §"Types"); and the original global closed-world toggle — which was this move at the wrong granularity,
+(`1-logic.md` §"Types"); and the original global closed-world toggle — which was this move at the wrong granularity,
 which is why it failed rather than why the move is wrong.
 
 ### The obligation, and the one thing it cannot buy
@@ -239,7 +239,7 @@ which is why it failed rather than why the move is wrong.
 **It is not enforced and it is not enforceable.** Producing inside a region you declared empty contradicts
 your own assertion — and needs no detector, because it *is* the status `{t,f}`. Nothing rejects the post,
 and nothing could: refusing a contradicting post is order-dependent, whoever arrives first winning, which
-is `logic.md` §"Constraints are asked"'s argument against asserting a constraint as an axiom.
+is `1-logic.md` §"Constraints are asked"'s argument against asserting a constraint as an axiom.
 
 **But detectable is not diagnosable, and that is where the missing provenance is felt.** `{t,f}` says two
 claims disagree. It does not say whether that is a real disagreement about the world — two producers with
@@ -309,7 +309,7 @@ one. And it **glues distributively**: an atom's status in the union of two store
 statuses in each, exactly — the global picture is computed from the local ones with nothing lost, however
 much the stores overlap.
 
-**It is the free completion, one layer up.** `logic.md` §"Constraints are asked" meets the same fork at the value
+**It is the free completion, one layer up.** `1-logic.md` §"Constraints are asked" meets the same fork at the value
 layer — add a collapsing top, or take the powerset — and takes the powerset. The status layer gets the
 identical answer.
 
@@ -374,7 +374,7 @@ closed-world assumption, written as an operation.
 **So three refusals stated separately here are one.** Declining CWA, holding `∅` unaffirmable, and needing
 no roster are not three commitments but one: **conflation is unavailable**. Its defining case requires
 recognising `∅`; recognising `∅` requires knowing nobody will ever tell you; and that is the participant
-roster, which `logic.md` §"CALM" names as the single non-monotone input. It also replaces a stance with a test that has
+roster, which `1-logic.md` §"CALM" names as the single non-monotone input. It also replaces a stance with a test that has
 a yes-or-no answer — *does this operation reverse `≤_k`?*
 
 **The constraint binds on output, not computation.** A scheduler may consult the `∅`-region mid-flight
@@ -392,7 +392,7 @@ operation from a bug, and not writable here.
 | | what disagrees | how many atoms | who says so |
 |---|---|---|---|
 | **valuation conflict** | whether the atom is there at all | **one** | the store, structurally: the status is `{t,f}` |
-| **domain conflict** | two atoms violate a constraint somebody declared | **two** | a user-written rule (`logic.md` §"Constraints are asked") |
+| **domain conflict** | two atoms violate a constraint somebody declared | **two** | a user-written rule (`1-logic.md` §"Constraints are asked") |
 
 The generic half is the status: `⊒ {t,f}` needs no declaration, no key, and no functor-specific
 knowledge. A domain conflict is per relation, declared by whoever knows which positions determine which.

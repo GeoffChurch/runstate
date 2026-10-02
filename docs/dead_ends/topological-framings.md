@@ -37,7 +37,7 @@ noticed; it is **forced**. The structure is one lattice paired with itself, whic
 extents in one frame"* says, and there was never a second topology to find.
 
 **Do not cite bilattices in support of a fourth framing.** The representation theorem is precisely why the
-first three had nothing to grip. They are not useless here — `../backlog/if-built-today/polarity.md` §"An atom's
+first three had nothing to grip. They are not useless here — `../backlog/if-built-today/2-polarity.md` §"An atom's
 status" takes **conflation** from the same paper — but what a bilattice supplies is an *operation*, not a
 topology.
 
@@ -62,7 +62,7 @@ level where the phenomenon is **unavailable** — Abramsky's *"quite trivial …
 space"* aside, now with a construction behind it. **Do not cite Morton in support of a sheaf framing
 here; he is evidence against one.** What he is good for is the regime
 (`../backlog/if-built-today/README.md` §"What it is for") and the aggregation hazard
-(`../backlog/if-built-today/aggregation.md` §"Summaries"), both now in the doc.
+(`../backlog/if-built-today/4-aggregation.md` §"Summaries"), both now in the doc.
 
 **Formal topology.** `Pos` is *unique given* `◁` (Ciraulo & Sambin 2018, Prop. 4.6; Aczel via
 Coquand), so it is not ours to redefine as a state predicate — and under our `◁` the forced `Pos` is
@@ -129,11 +129,11 @@ still discrete. What varies is *which space you are in*, over the store poset: a
 discrete quotients with coarsening maps (the Kripke/presheaf-over-stages reading; fresh names are
 nominal-sets territory, unverified). First outing of that lens: it corrected the variable-vs-ground
 split on equality cost to **fresh-vs-ambient**, and found the contamination edge — see
-`../backlog/if-built-today/logic.md` §"The language". It guides, it does not prove; anyone reviving
+`../backlog/if-built-today/1-logic.md` §"The language". It guides, it does not prove; anyone reviving
 frames-on-atoms is still wrong.
 
 ## Related
 
-- `../backlog/if-built-today/questions.md` §"Facts and demands are dual" — the point set, and why it is forced.
-- `../backlog/if-built-today/polarity.md` §"The threshold rule" — covering vs. deciding, the surviving content.
+- `../backlog/if-built-today/3-questions.md` §"Facts and demands are dual" — the point set, and why it is forced.
+- `../backlog/if-built-today/2-polarity.md` §"The threshold rule" — covering vs. deciding, the surviving content.
 - Reviews 7 and 8 (untracked) said it first: *"state the topology first, or the claim is vacuous."*

@@ -1,4 +1,4 @@
-# Decisions and retractions — `../polarity.md`
+# Decisions and retractions — `../2-polarity.md`
 
 What was tried in this layer, what was withdrawn, and why. Conventions in `README.md`.
 
@@ -28,7 +28,7 @@ nothing contradicted it.
 negative fact — it is just not the semantics of falsity. It needs to know who all the producers are, which
 is the class of query a coordination-free program may not ask; that cost is paid **once**, scoped per
 functor, and the conclusion is posted as an ordinary `¬Q` that everything downstream reads
-coordination-free. See the sketch's §"Falsity is told", now `../polarity.md`. (Not *"priced in rounds"* — see §CALM in `logic.md`.)
+coordination-free. See the sketch's §"Falsity is told", now `../2-polarity.md`. (Not *"priced in rounds"* — see §CALM in `1-logic.md`.)
 
 ## Names that argued against the design
 
@@ -114,7 +114,7 @@ alternation only appears if a free value position is existentially closed. That 
 400 has **some** loss"* — is the existence half of a **functional dependency**, which §"No functional
 dependency" refuses on independent grounds. The fragment and the ban forbid the same sentence.
 
-> **Scoped 2026-09-30** (`questions.md` §"Record scope"). Both paragraphs above hold of *told* sentences, and still
+> **Scoped 2026-09-30** (`3-questions.md` §"Record scope"). Both paragraphs above hold of *told* sentences, and still
 > do: no posted record is existential. *"Every step has some loss"* is not refused as a **question** —
 > nobody tells it, and settling it needs a witness or a refutation per step, not a dependency. And the
 > partially instantiated positive post that "decides nothing" no longer exists: every posted record is a

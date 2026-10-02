@@ -1,6 +1,6 @@
 # Questions: asking, settledness and the residual
 
-**Layer:** depends on `substrate.md`, `logic.md`, `polarity.md`. The dependency graph is in `README.md`.
+**Layer:** depends on `0-substrate.md`, `1-logic.md`, `2-polarity.md`. The dependency graph is in `README.md`.
 
 ## A question is a tell of `asked`
 
@@ -32,7 +32,7 @@ intent that §"There is no `read`" says no syntactic property can replace. Quant
 and nowhere in records that tell — `README.md` §"The order of the layers".
 
 **An `asked` record does hold its question as a term, binders included — and that is not the
-representing course** of `logic.md` §"The constraint domain". Representing buys reflection because a user
+representing course** of `1-logic.md` §"The constraint domain". Representing buys reflection because a user
 rule may *interpret* a quoted pattern through `denote`. Here no rule does: a producer's rule matches a
 question of a fixed shape it was written for, as it would match any term, and the one thing that
 interprets a question — deciding whether it is settled and what its residual is — is the engine's coverage
@@ -44,7 +44,7 @@ asserting *"there is a value at key 60"* — which the asker does not know, so i
 and a question about key 900 of a producer that stops at key 500 was a false post nothing caught. Read as an
 assertion, the question also satisfies itself: its own post witnesses the existential it asks about. The
 Skolem constant, the named hole and the unsatisfied existential were three forms of that one mistake
-(`decisions/questions.md`, §"The Skolem reading", §"Record scope").
+(`decisions/3-questions.md`, §"The Skolem reading", §"Record scope").
 
 So there is exactly one demand predicate, no `while` combinator and no watcher concept. A watch is a
 reader's own rule over the store; only `asked` triggers production.
@@ -52,7 +52,7 @@ reader's own rule over the store; only `asked` triggers production.
 **Answers stream individually.** An answer is any tell whose region meets the question's — a ground fact
 in range, or a region — and a querier receives them one at a time; there is no answer *object* anywhere.
 A question is an open set and an answer is truth restricted to it, which is the knowledge-order meet
-(`polarity.md` §"An atom's status"): the store can affirm *asked* but never *not asked*, so nothing outside
+(`2-polarity.md` §"An atom's status"): the store can affirm *asked* but never *not asked*, so nothing outside
 the question is read as false. What ends a stream is the question becoming **settled** (§"Settledness of a
 question", below), read off the statuses —
 never the arrival of one record, since on an unordered transport a producer's `¬` can arrive before its last
@@ -67,17 +67,17 @@ redelivering every message does not repair it. A shared tail is also a lossy CAS
 `T = []`, another's next answer is rejected. One tail *per producer* fixes both — and that is the right
 **structure** in the wrong **representation**, since what it encodes is one termination marker per
 producer per stream — and that is **exhaustion**, a fact about a producer, not `¬Q`, which has no author
-(`polarity.md` §"The rule for posting"). The dead end kills the term, not the idea.
+(`2-polarity.md` §"The rule for posting"). The dead end kills the term, not the idea.
 
 ## Settledness of a question
 
-`polarity.md` §"The threshold rule" defines settledness for a set of atoms: every atom decided. A question
+`2-polarity.md` §"The threshold rule" defines settledness for a set of atoms: every atom decided. A question
 refines it, because a question may bind some of its variables.
 
 **For every tuple of its free variables in range, the question is decided**: its positive reading holds,
 or its negative reading does. Its established name is **query completeness** (see the ledger) — with one
 difference: that literature assumes what is held is true, where here an instance may be decided as
-`{t,f}`. It is affirmable by a finite cover, under the conditions `polarity.md` states, and not derivable in
+`{t,f}`. It is affirmable by a finite cover, under the conditions `2-polarity.md` states, and not derivable in
 the fragment, whose bodies have no `∀`.
 
 **The two readings follow the connectives.** For an atom, the positive reading is `told(a, pos)` and the
@@ -91,9 +91,9 @@ over a fixed universe.
 **How strong a settledness is depends on what the question binds.** Settled for `∃V. p(K, V)` means
 every key has *a* value, or has none — and says nothing about whether a key has *other* values, since
 binding `V` asked for one. Settled for `p(K, V)` with `V` free as well means every (key, value) pair is
-decided — the set-of-atoms settledness of `polarity.md` — and every key's set of values is complete. The
+decided — the set-of-atoms settledness of `2-polarity.md` — and every key's set of values is complete. The
 second needs someone to vouch, at each produced key, that there is no other value there, which is honest
-exactly when the key determines the value (`polarity.md` §"The rule for posting"). **A "no" answer to a
+exactly when the key determines the value (`2-polarity.md` §"The rule for posting"). **A "no" answer to a
 question that constrains a bound variable needs the second.**
 
 **An `asked` record decides nothing about its content**: it is a fact about asking. And **nothing may
@@ -106,7 +106,7 @@ descending in the store. With variables scoped to records, no posted question gr
 still grow if the signature grows, if a reader's lens coarsens, or if a constraint mentions a description
 term whose meaning is later resolved — so constraints in questions mention ground constants only.
 
-**The threshold rule's fifth instance.** `polarity.md`'s table gains a row here:
+**The threshold rule's fifth instance.** `2-polarity.md`'s table gains a row here:
 
 | order | affirmable | never |
 |---|---|---|
@@ -135,7 +135,7 @@ either way. Subtracting the negative part matters as much as the positive: an in
 absent is one nobody should be asked to produce.
 
 **And here the four hops meet.** An undecided instance is exactly the thing that is *not readable* — a
-down-set, answerable only in the direction of leaving it (`polarity.md` §"An atom's status"). So the residual is **not a
+down-set, answerable only in the direction of leaving it (`2-polarity.md` §"An atom's status"). So the residual is **not a
 derivation**. It survives because it is never published: it is computed **locally**, **best-effort**, and
 consumed as a **scheduling decision**, which is control (§"Demand is control"). It need not be
 materialised; walking the extent and skipping decided instances computes it incrementally, and the
@@ -198,7 +198,7 @@ the scheduler computes does. The residual of `∃V. p(K, V)` empties when every 
 residual of `p(K, V)` with `V` free empties only when every key's values are vouched complete; and one
 witness empties `∃K, V. p(K, V) ∧ V < 0.1`. Three different
 scheduling decisions over one pattern — so the quantifiers travel, per variable, with the question
-(`decisions/questions.md`, §"Record scope").
+(`decisions/3-questions.md`, §"Record scope").
 
 **Bounded is a property of the constraint, not admission control in a quantifier's clothes.** `K ≤ 1000`
 is bounded; `K ≥ 1` is not; either is a legal demand. The unbounded one is the demand this design is best
@@ -209,15 +209,15 @@ the *cover* is — for a question that binds the value, a positive prefix to key
 checkable half, previously unassigned because it was bundled with the other. Whether a finite cover will
 *ever* exist for an unbounded extent is a claim about an external producer's future, and no post-time
 check reaches it: a producer halted short of convergence knows nothing about the rest and must post
-nothing (`polarity.md` §"The rule for posting"). That half is `open.md`, and it is the exhaustion question, not a
+nothing (`2-polarity.md` §"The rule for posting"). That half is `open.md`, and it is the exhaustion question, not a
 quantifier one.
 
 ### Facts and demands are dual, and the duality is exact
 
 **The points are ground atoms**, and this follows from the layering rather than being chosen for the
 topology: truth-bearers are ground atoms, each with a status, and quantified sentences have none
-(`logic.md` §"The language"). (An earlier draft argued it from the producer's obligation to post `¬(Q₀ ∖ E)` — a region
-that is not upward-closed — and that obligation is gone; `polarity.md` §"The rule for posting".)
+(`1-logic.md` §"The language"). (An earlier draft argued it from the producer's obligation to post `¬(Q₀ ∖ E)` — a region
+that is not upward-closed — and that obligation is gone; `2-polarity.md` §"The rule for posting".)
 
 **Say the consequence out loud: on that space the topology does no work.** Ground atoms are maximal, so
 the space is **discrete** and its frame is the complete **Boolean** powerset — measured three times
@@ -344,7 +344,7 @@ the explicit binders. **Admission control still needs an explicit mechanism**, a
 | | who |
 |---|---|
 | exact claims only on ground terms | **structural — not expressible otherwise** |
-| sorts | **checked**, statically, at both ends (`logic.md` §"Types") |
+| sorts | **checked**, statically, at both ends (`1-logic.md` §"Types") |
 | the quantity a demand denotes, and its finiteness | **one test, two owners**: the requester supplies the count, a planner above this layer meters it |
 | a demand's extent is bounded | **the solver**, at post time; whether an unbounded extent is ever *covered* is an external producer's future — `open.md` |
 
