@@ -20,26 +20,56 @@ will contain something playing each role. They are listed because it is easy to 
   attempt index goes in the term and the cycle lives in the *sequence of attempts*.
 - **Structure goes in the key, not the value.**
 
+## The schema
+
+**One relation for every metric, typed per metric**, with the step hoisted to a fixed position
+(`1-logic.md` §"Types", the wrapper):
+
+```
+at(R, S, M)        R : Run,  S : Step (an integer),  M : Metric = loss(Float) | accuracy(Float) | converged(Bool) | …
+```
+
+A misspelt metric is an undeclared constructor, rejected on arrival by a check on the message alone; each
+metric has its own value sort; *"every metric at step 61"* is the one pattern `at(r, 61, M)`; and the step
+sits at the same position for every metric, which fixes the positional-indexing defect measured in
+§"What the measurements say". The metrics are the ones the schema declares. Sharing schemas between agents
+at runtime, so that new metrics appear without redeploying, is out of scope.
+
+**`R` is a content-addressed run id** — a hash of whatever inputs the user decides determine the run's
+output (`../../specs/run-id-recipe.md`: the pattern is runstate's, the choice of inputs the user's). By
+`2-polarity.md` §"The rule for posting", a key is a claim about what determines the value, so `R`'s
+granularity decides what a producer may vouch for:
+
+- **If the computation is deterministic given those inputs,** every launch of `r` produces the same losses,
+  `r` determines the value, and a producer may vouch per step — *"0.31, and no other loss at step 61"*. The
+  example below assumes this.
+- **If it is not** — nondeterministic GPU kernels, say — `r` does not determine the value, and there are two
+  honest schemas. Key by episode, `at(E, S, M)` with `episode(E, r)`: each episode vouches for itself, and
+  two launches that disagree become two separate facts that a rule must compare. Or keep `r` and never
+  vouch: only *"every step has a loss"* settles, and a disagreement is two values at one step, a domain
+  conflict.
+
 ## One demand, traced
 
 Everything up to here has been argued rather than shown. Here is a single demand from posting to
 settlement, so the rest has something to be about. Nothing in it is new — every step is a mechanism one of
-the surrounding sections defends.
+the layers defends.
 
 **A querier posts one record.** It wants the loss at every step of run `r`, for as long as the run lasts:
 
 ```
-asked(∃V. metric(r, loss, V, S)) :- S ≥ 1.
+asked(∃V. at(r, S, loss(V))) :- S ≥ 1.
 ```
 
-`S` is free, so the question ranges over every step — integers, since the signature sorts `S` as a step;
-`V` is bound, so each step wants *a* loss. The extent is **unbounded**. That is fine; what must be finite is the eventual cover, not the region.
+`S` is free, so the question ranges over every step — integers, since `S` is step-sorted; `V` is bound, so
+each step wants *a* loss. The extent is **unbounded**. That is fine; what must be finite is the eventual
+cover, not the region.
 
 **A producer is handed the residual, not the question.** Steps 1–60 already have a loss in the store, so
 what reaches it is `S ≥ 61` — the question minus what is decided. Nobody detects that the first sixty were
 subsumed; they simply contribute nothing.
 
-**It produces, and the querier reads a threshold.** `metric(r, loss, 0.31, 61)` is posted. The querier's
+**It produces, and the querier reads a threshold.** `at(r, 61, loss(0.31))` is posted. The querier's
 read is `⊒{t}` on that atom, affirmed the only way anything is affirmed here: by exhibiting the record.
 
 **At step 900 the querier sees `∅`, and may conclude nothing from it.** Nothing has been told about that
@@ -47,8 +77,8 @@ step. That is not *"there is no loss at step 900"* — it is *"nobody has said."
 has **left** `∅` the instant any record arrives, and may never confirm it is **in** it.
 
 **The run converges at 743, and the producer says so.** It posts one negative region,
-`told(metric(r, loss, V, S), neg) :- float(V), S > 743`. **That single record decides infinitely many
-atoms** — and it is *told*, not inferred. Nobody derived it from the absence of anything: the producer
+`told(at(r, S, M), neg) :- S > 743, is_metric(M)` — no metric of any kind after step 743, because the run
+stopped. **That single record decides infinitely many atoms** — and it is *told*, not inferred. Nobody derived it from the absence of anything: the producer
 knew, and said.
 
 **Now the question is settled.** Every step `S ≥ 1` is decided — a witness for each of the 743 produced
@@ -60,14 +90,15 @@ not a contradiction.
 
 **A second querier posts the identical question, and nothing runs.** Identical questions are one record,
 and its residual is empty, so there is no work to hand anyone and no producer to launch. The store was the
-cache; no cache was built. A querier asking the *stronger* question — `metric(r, loss, V, S)` with `V`
-free, every step's set of losses complete — would find it unsettled, and it stays so unless the producer
-vouches, at each step, that its loss is the only one (`2-polarity.md` §"The rule for posting").
+cache; no cache was built. A querier asking the *stronger* question — `at(r, S, loss(V))` with `V` free,
+every step's set of losses complete — would find it unsettled, and it stays so unless the producer
+vouches, at each step, that its loss is the only one (`2-polarity.md` §"The rule for posting"). Under
+the deterministic assumption of §"The schema" it may.
 
 **And if two producers disagree.** Two of them posting different losses at step 61 produce two *atoms*,
 both `⊒{t}` — a **domain** conflict, invisible unless somebody wrote a rule saying loss is functional in
-the step. A **valuation** conflict is a different thing: it takes a negative covering `metric(r, loss, 0.31,
-61)` — a per-key complement from the other producer, say — and then that one atom reads `{t,f}`:
+the step. A **valuation** conflict is a different thing: it takes a negative covering `at(r, 61, loss(0.31))`
+— a per-key complement from the other producer, say — and then that one atom reads `{t,f}`:
 affirmable, inert, and poisoning nothing around it. Which of the two a disagreement becomes is decided by
 the key's granularity and whether producers vouch — a schema's choice.
 
@@ -220,8 +251,8 @@ half. So the entire measured value plane is **two** relations — `metric(Name, 
 arises, because the partitions are separated by *relation* rather than by name. The case that motivates
 per-functor sorts is genuine — `mycooc`'s `permutation` carries `None` under one flag and a nested record
 under another, in **source** — and it is a hazard the rule forecloses rather than damage it repairs, since
-**0 of 24** names show sort drift. (Whether metric names belong in functors or in data is open: names
-known at schema time belong where a tool can check them; a free-text metric name typed into a UI at
-runtime is the open-set case.)
+**0 of 24** names show sort drift. The two-relation shape avoids aliasing but leaves the name in an open
+namespace, where a typo is a new atom; §"The schema" puts each declared metric in its own constructor
+instead, which the measured names — all known when the schema is written — fit without exception.
 
 (The 821-vs-823 discrepancy is unexplained; the two figures may be one corpus counted twice.)
