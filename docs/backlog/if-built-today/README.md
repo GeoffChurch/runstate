@@ -179,8 +179,8 @@ whatever lattice they like, and nothing underneath changes.
 - **The artifact plane.** Checkpoints on a filesystem remain unmodelled, and remain where a double-live
   worker's real damage lands.
 - **Enforcement.** Still honour-system. This is why forgery defects survive.
-- **The halt does not dissolve.** Self-withdrawal is free — scope a posted demand to its subscription and
-  disconnecting ends it. But the measured case is an **operator** stopping a run a **scheduler** relaunches,
+- **The halt does not dissolve.** Self-withdrawal is free — an asker that stops wanting a question stops
+  renewing it, and nothing is posted or retracted (`3-questions.md` §"Demand is control"). But the measured case is an **operator** stopping a run a **scheduler** relaunches,
   i.e. withdrawing *someone else's* demand. That needs a write and an authority rule, and always did.
 - **Diagnosing a conflict.** `{t,f}` is affirmable; telling a genuine disagreement from an over-claimed
   region is not, without provenance nobody has built.

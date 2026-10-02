@@ -177,6 +177,14 @@ is correct.
 All three mechanisms are control: resource management, a querier changing its mind, and somebody
 deliberately stopping a machine. The logic never had jurisdiction over any of them.
 
+**So production is gated on three things, and only two are facts.** A producer is launched for a question
+that **was asked**, is **unsettled**, and is **still wanted**. The first two are monotone reads of the
+store. The third is control: an `asked` record is permanent, so if *still wanted* were read off it, an
+asker that went away would leave a question that gates production forever — and one that can never settle
+would be relaunched forever. *Still wanted* is supplied by the non-monotone core, like any reading of a
+clock, and is never a fact anyone posts as true. How it is supplied — a lease, a session, a durable
+standing order — is a scheduling policy, not part of this layer.
+
 ### Quantifiers live in questions, and nowhere else
 
 > **A demand is an `asked` record holding a question.** Its extent is the region its constraints denote —
@@ -274,8 +282,9 @@ But go no further. **Anti-unification is the join in the demand order and it ove
 generalising `p(12, V)` and `p(13, V)` yields `p(K, V)`, which demands *every* key. On the fact
 side the join is safe because it adds information; on the demand side it adds *work*, and here a unit of
 work is a six-hour job. One caveat on the compression: **derive the work set, never destructively shrink
-it.** A demand, once recorded, is never withdrawn — but a *subscription* can end, and recomputing the work
-set from the surviving subscriptions handles that for free.
+it.** An `asked` record is never withdrawn, but whether its question is still wanted is control
+(§"Demand is control"), and recomputing the work set from the questions still wanted handles an asker
+going away for free.
 
 **What to internalise, and what not.**
 
@@ -318,8 +327,8 @@ contradicts its own claim — caught as `{t,f}` like any other valuation conflic
 
 Concretely a subscription is a **cursor into a per-functor term index** — walk the trie with your pattern,
 get notified when new leaves appear beneath it. **This is one object with four names in earlier drafts**:
-the call table, the registry, the work set and the cursor are the set of live questions, keyed by pattern
-and binders, indexed by pattern. The division: *the call table decides who is told; the store decides
+the call table, the registry, the work set and the cursor are the set of questions still wanted, keyed by
+pattern and binders, indexed by pattern. The division: *the call table decides who is told; the store decides
 what is computed.* Two queriers independently asking the same question post one record — variables are
 numbered canonically within a record, so identical questions are identical records — and what remains of
 the table is its *routing* role: who is told. That needs a canonical form for constraints, too. Without
