@@ -222,7 +222,7 @@ scores above.
 ```bash
 pip install -e .                    # install editable
 pip install -e .[test]              # + jsonschema for the schema tests
-pytest tests/                       # run all tests (~700, ~9s; +Postgres if a DSN is set)
+pytest tests/                       # run all tests (~1040, ~5-9s; +Postgres if a DSN is set)
 pytest tests/test_channel.py -v     # one module
 pytest tests/test_schema.py -v      # emitted messages conform to the schema stack
 
@@ -242,7 +242,8 @@ export RUNSTATE_TEST_PG_DSN="postgresql:///runstate_test?host=/tmp/rs-pgsock&por
 ```
 
 The socket directory **must be a short path** -- the sun_path limit is 107 bytes and a scratchpad
-path blows it (`Unix-domain socket path ... is too long`). 781/215 without the DSN, 1020/1 with it.
+path blows it (`Unix-domain socket path ... is too long`). 814 passed / 224 skipped without the DSN
+(2026-10-02); 1,038 collected in all.
 
 The pre-commit hook runs the whole CI gate set -- `black --check`,
 `mypy --strict`, `pytest` -- in ~9.4 s, almost all of it the suite. It exists

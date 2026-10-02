@@ -111,12 +111,15 @@ therefore determines a partial function **(name, step) → value**, and the fold
 that recovers it is §4's **register projection** (`latest`) lifted pointwise:
 **last-write-wins by `seq` per (name, step) cell.**
 
-- **Serendipity (episode rewinds resolve themselves):** when ep2 resumes from
+- **Episode rewinds resolve only where they overlap:** when ep2 resumes from
   an earlier checkpoint than ep1 reached, the rewritten steps' samples
-  last-win and the orphaned branch drops out — the fold returns the
-  **as-resumed trajectory** with zero episode-awareness code. The raw events
-  stay on the log for forensics; the observable is the canonical projection,
-  not the only view.
+  last-win. The orphaned branch does **not** drop out: ep2 need not rewrite
+  every cell below its own frontier (a coarser stride, or a metric it stops
+  emitting), so ep1's values survive at the cells ep2 never revisited, and the
+  fold can return a series no single execution produced. It is a convergent
+  merge, not the as-resumed trajectory; projecting one lineage needs a fork
+  point, which the log does not carry. The raw events stay on the log for
+  forensics.
 - **Shape: the family, zero arguments** — `{name: {step: value}}`, the whole
   curried projection in one log pass. Per-name access = indexing; name
   enumeration = `.keys()` (free); oracle-exact (mycooc's `channel_metrics`

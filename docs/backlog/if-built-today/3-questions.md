@@ -173,9 +173,10 @@ the residual's one affirmable reading.
 **Some residuals never empty, honestly.** A question with a free variable over an unbounded value sort —
 every value at every key — is settled only by vouching at every produced key, and a producer that
 cannot vouch leaves it open forever. A scheduler that relaunches on a non-empty residual then relaunches
-forever. So admission owes a rule for such questions, and the no-progress guard must hold against them;
-the `control.target` design was refuted by exactly this storm ([`../../specs/control-target.md`](../../specs/control-target.md), R5: 373
-spawns in 3 s).
+forever. So admission owes a rule for such questions, and the no-progress guard must hold against them.
+The same failure shape, a relaunch loop the guard did not stop, was measured when the `control.target`
+design was refuted ([`../../specs/control-target.md`](../../specs/control-target.md), R5: 373 spawns in 3 s); there the cause was a guard
+that could not fire on time targets.
 
 **That removes a mechanism rather than adding one.** A demand entirely covered by another has an **empty
 residual** and costs nothing, without anybody detecting that it was subsumed — so containment compaction
