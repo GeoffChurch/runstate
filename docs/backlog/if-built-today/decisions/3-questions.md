@@ -1,6 +1,6 @@
-# Decisions and retractions — `../3-questions.md`
+# Decisions and retractions — [`../3-questions.md`](../3-questions.md)
 
-What was tried in this layer, what was withdrawn, and why. Conventions in `README.md`.
+What was tried in this layer, what was withdrawn, and why. Conventions in [`README.md`](README.md).
 
 ## The demand quantifier
 
@@ -24,7 +24,7 @@ already present: **`ground(Q)` need not be finite; the cover must be.**
 - **The dead-end verdict on the per-producer answer tail was too strong.** It is the right *structure* in
   the wrong *representation*: one termination marker per producer per stream is precisely `¬Q`.
 - **`every` is a delta, not a stride** — so exposing it on `ensure` is *not* an additive change, and the
-  emission filter's deferral is load-bearing. See `../../memoizer-index-algebra.md`.
+  emission filter's deferral is load-bearing. See [`../../memoizer-index-algebra.md`](../../memoizer-index-algebra.md).
 
 ## The Skolem reading, and why it self-satisfies
 

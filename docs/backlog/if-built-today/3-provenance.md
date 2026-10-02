@@ -1,6 +1,6 @@
 # Provenance: objections without retraction
 
-**Layer:** depends on `0-substrate.md`, `1-logic.md`, `2-polarity.md`. The dependency graph is in `README.md`.
+**Layer:** depends on [`0-substrate.md`](0-substrate.md), [`1-logic.md`](1-logic.md), [`2-polarity.md`](2-polarity.md). The dependency graph is in [`README.md`](README.md).
 The dispute mechanism itself uses no polarity and survives a reader who rejects it; upholding, diagnosing
 `{t,f}` and speculation use the statuses.
 
@@ -19,7 +19,7 @@ names exactly what was posted. Where a schema declares polarity, a record includ
 can dispute a claim that something is *false* as readily as a claim that it is true. `disputes` is itself
 a relation, so objecting to an objection, `disputes(disputes(F))`, needs nothing added. Who objected is
 provenance on the `disputes` record rather than an argument, so an objection is worth something only where
-provenance exists — the edge drawn in `README.md` §"What gets built on top". And because a record may be a
+provenance exists — the edge drawn in [`README.md`](README.md) §"What gets built on top". And because a record may be a
 region, an objection is **region-scoped exactly as any record is**: `disputes(verdict(x, O)) :-
 outcome(O)` rejects every claimed verdict for `x`, and a rule bodied on `produced_by(F, bob)` rejects a
 producer.
@@ -31,7 +31,7 @@ reading of it that only climbs: `disputes` records only accumulate, with no rost
 anybody; per fact, the pair *(grounds for, objections)* only climbs; and a policy phrased as an allow-list
 — *use records from sources I trust* — is monotone too. What is not monotone is the **decision** *accept
 unless disputed*, which a later objection withdraws; and a question settled from records that decision
-later excludes becomes unsettled. The decision is a reader's and sits outside (`1-logic.md` §"What stays
+later excludes becomes unsettled. The decision is a reader's and sits outside ([`1-logic.md`](1-logic.md) §"What stays
 outside"). Nothing in the store was destroyed to get it.
 
 **It is strictly better than deletion, not equivalent with extra steps.** A derived `disputes(f)` is
@@ -82,14 +82,14 @@ There is no backtracking to simulate, because nothing is undone. What speculatio
 
 **Its cost is not soundness.** A speculative derivation is not a false assertion but a **contingent** one —
 true given its recorded hypotheses — and an implication whose antecedent turns out false is *vacuous*, not
-wrong. So *"a partial store is sound, never wrong"* (`1-logic.md` §"CALM") survives intact. The hypothesis's own state is
+wrong. So *"a partial store is sound, never wrong"* ([`1-logic.md`](1-logic.md) §"CALM") survives intact. The hypothesis's own state is
 read by machinery already here: pending is `∅`, confirmed `⊒{t}`, refuted `⊒{f}`.
 
 **What it costs is that facts stop being autonomous.** Every other record here means what it says on its
 own; a speculative derivation means what it says *given* something still open. Two consequences follow.
 Provenance becomes a **requirement** rather than an enhancement — and it must live **in the record**, since
-under partial replication (`open.md`) a conclusion that outran its premises would be a bare assertion
-again, which is `README.md` §"Two commitments" applied to derivations rather than to posted records. And the remaining cost is
+under partial replication ([`open.md`](open.md)) a conclusion that outran its premises would be a bare assertion
+again, which is [`README.md`](README.md) §"Two commitments" applied to derivations rather than to posted records. And the remaining cost is
 ordinary waste: work done under an antecedent that fails is work done.
 
 **So blocking is the default for being simpler, not for being safer.** A blocked guard needs no provenance

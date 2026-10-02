@@ -1,10 +1,10 @@
-# Decisions and retractions — `../prior-art.md`
+# Decisions and retractions — [`../prior-art.md`](../prior-art.md)
 
-What was tried in this layer, what was withdrawn, and why. Conventions in `README.md`.
+What was tried in this layer, what was withdrawn, and why. Conventions in [`README.md`](README.md).
 
 ## Prior art that narrowed the claim
 
-Full verification ledger: `../../../if-built-today-citations.md`. In short, and welcomed rather than resisted:
+Full verification ledger: [`../../../if-built-today-citations.md`](../../../if-built-today-citations.md). In short, and welcomed rather than resisted:
 the **store** is 4QL's Definition 5 and appears in a TODS proof (`R_notMsg`/`R_notMem`/`R_known`); the
 **logic** is a fragment of Jakl's, with soundness and completeness proved; the **regions** are Kanellakis,
 Kuper & Revesz's; **CCP** is the ask/tell model and dropped the consistency structure first, though it

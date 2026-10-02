@@ -88,7 +88,7 @@ true totals) is admissible exactly where the physics grants exactly-once deliver
 coordination assumption, so the cost has not vanished, it has moved down a level. Inside the idempotent
 family, true totals are recovered by **occurrence naming** (per-actor or per-event ids, counted as a
 reading), so the gap between witnessed and true counts is priced by the naming-policy spectrum
-(`if-built-today/decisions/3-questions.md` §"Record scope", where the spectrum now lives), not by the algebra.
+([`if-built-today/decisions/3-questions.md`](if-built-today/decisions/3-questions.md) §"Record scope", where the spectrum now lives), not by the algebra.
 
 ## What this is for
 

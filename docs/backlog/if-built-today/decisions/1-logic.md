@@ -1,6 +1,6 @@
-# Decisions and retractions — `../1-logic.md`
+# Decisions and retractions — [`../1-logic.md`](../1-logic.md)
 
-What was tried in this layer, what was withdrawn, and why. Conventions in `README.md`.
+What was tried in this layer, what was withdrawn, and why. Conventions in [`README.md`](README.md).
 
 ## The banner
 

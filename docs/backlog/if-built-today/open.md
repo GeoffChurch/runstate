@@ -1,17 +1,17 @@
 # Open
 
-**Layer:** across all layers; numbering preserved from the single-file draft. The dependency graph is in `README.md`.
+**Layer:** across all layers; numbering preserved from the single-file draft. The dependency graph is in [`README.md`](README.md).
 
 1. **Whether an unbounded demand is ever covered.** Boundedness of the extent is the solver's at post time
-   (`3-questions.md` §"Quantifiers live in questions"); what no post-time check reaches is whether an
+   ([`3-questions.md`](3-questions.md) §"Quantifiers live in questions"); what no post-time check reaches is whether an
    *external* producer will ever converge and post its `¬Q`. A producer halted short of convergence
    knows nothing about the rest and must post nothing about it, so the tail stays `∅` — this is the
-   exhaustion question (`2-polarity.md` §"How a party comes to know a negative fact"), and it needs a shape that is not
+   exhaustion question ([`2-polarity.md`](2-polarity.md) §"How a party comes to know a negative fact"), and it needs a shape that is not
    `¬Q`. What is settled is settled by witnesses: for a question that binds the value, the halted
    producer's prefix is decided, and only the tail is open.
 2. **Provenance.** Not built. What it blocks meanwhile: diagnosing `{t,f}`, taint after a premise becomes
    disputed, and attributing a wrong `¬Q` — positive facts need it equally, so it is one mechanism. What it
-   would unlock is the annotation branch of `README.md` §"What gets built on top", including the whole dispute story,
+   would unlock is the annotation branch of [`README.md`](README.md) §"What gets built on top", including the whole dispute story,
    so this is the single highest-leverage unbuilt thing here.
 3. **Which constraint domain — *and which algorithm for it*.** Not separable: a generic bounds propagator
    on difference constraints ping-pongs where negative-cycle detection decides the same system in `O(V·E)`.
@@ -23,19 +23,19 @@
    **The answer-shape, if pushdown ever bites: ship programs as data.** A program is a content-addressed
    term, `program(h, Source)`, and a request to run it near the data is an ordinary question,
    `asked(run(h, Args))`. A generic producer that serves `run` executes it and posts its results as
-   ordinary facts. Nothing below `5-domain.md` changes: the store accumulates the program, the request and
+   ordinary facts. Nothing below [`5-domain.md`](5-domain.md) changes: the store accumulates the program, the request and
    the answers, monotonically, and identical programs with identical arguments are one question, so
    memoisation is free.
 
    **What it does not replace.** Arbitrary programs are opaque. The engine cannot certify a program's
    completeness, compute its residual, or detect that one program's answer covers another's —
    equivalence is undecidable, and only identical hashes coincide. Those are what the fixed question
-   language of `3-questions.md` buys: a second asker of a covered question triggers nothing, and anyone
+   language of [`3-questions.md`](3-questions.md) buys: a second asker of a covered question triggers nothing, and anyone
    can check settledness by a finite cover. Shipped programs are the escape hatch *beside* the questions,
    not a replacement for them; a program's completeness is its own testimony, posted as a negative tail
    like any producer's.
 
-   **Two hazards.** A shipped aggregation computes a tier-3 summary (`4-aggregation.md`) over whatever its
+   **Two hazards.** A shipped aggregation computes a tier-3 summary ([`4-aggregation.md`](4-aggregation.md)) over whatever its
    host holds at that moment, so it posts a **dated** report — *"the mean over what I held as of
    cursor c"* — which is a permanent fact about the past. Posted as undated fact it would be read as *the*
    mean, which is the contextuality hazard. Tier-1 and tier-2 summaries, may-lifts included, can be
@@ -84,14 +84,14 @@
 8. **What `every` is** — a `∀` over a strided region, or a firing schedule. It splits. A stride anchored
    at `from` is a range for a question's free variable, and needs congruences in the constraint domain
    (Open 3). The shipped delta and time readings of `every` have no region reading — see
-   `../memoizer-index-algebra.md`, where the delta reading is recorded as **non-monotone on a read path** — so
+   [`../memoizer-index-algebra.md`](../memoizer-index-algebra.md), where the delta reading is recorded as **non-monotone on a read path** — so
    they stay firing schedules, which is control. Of the shipped `until`, the step axis is a range, the time
    axis is a range only if the atom carries its time, and `count` is a lease rather than a question.
-9. **Whether may-summaries are usable.** `4-aggregation.md` §"Summaries" sorts summaries into three tiers
+9. **Whether may-summaries are usable.** [`4-aggregation.md`](4-aggregation.md) §"Summaries" sorts summaries into three tiers
    and gives the may-lift, which moves any summary into tier 2. Open, and measurable: whether may-summaries
    — or their interval coarsening — are narrow enough in practice to be useful, and whether strongly
    settled regions are large enough, often enough, to make them exhaustive. The corpus has not been asked.
-10. **An admission rule for questions whose residual cannot empty** (`3-questions.md` §"The residual, assembled"): a free
+10. **An admission rule for questions whose residual cannot empty** ([`3-questions.md`](3-questions.md) §"The residual, assembled"): a free
     variable over an unbounded value sort, or a strong question over producers that do not vouch. Without
     one, a scheduler that relaunches on a non-empty residual relaunches forever.
 

@@ -1,6 +1,6 @@
 # The substrate: records, variables, one operation
 
-**Layer:** the base. The dependency graph is in `README.md`.
+**Layer:** the base. The dependency graph is in [`README.md`](README.md).
 
 ## The model: a store of records, one operation
 
@@ -33,7 +33,7 @@ record refers to a variable in another, so there is no cross-host naming of unkn
 equality, and no shared mutable object. Unification is local to a rule body inside one agent; sharing
 across atoms is what a clause body is for, and it stays inside the clause.
 
-**Why not variables scoped to the store**, which an earlier draft had (`decisions/0-substrate.md`,
+**Why not variables scoped to the store**, which an earlier draft had ([`decisions/0-substrate.md`](decisions/0-substrate.md),
 §"The shared variable"). A variable that outlives its record lets one unknown appear in several records and
 be bound once. The moment two posters bind it differently, a reader must choose one of three: a
 **congruence**, which fabricates (`v = a` and `v = b` close to `a ≡ b`); **branching**, which is a set of
@@ -54,7 +54,7 @@ if something guaranteed one record per key, which nothing here does. That reason
 what merging would have *cost* was measured separately (greedy merging is first-fit colouring of the
 compatibility complement, within 1.04–1.20× of exact `χ` to n=24 and 1.21–1.32× of a heuristic to n=500,
 with a crown separation at **12 positions giving `χ = 2` against 924 first-fit blobs**) and is recorded in
-`decisions/0-substrate.md`, since a cost that cannot change the decision does not belong here.
+[`decisions/0-substrate.md`](decisions/0-substrate.md), since a cost that cannot change the decision does not belong here.
 
 **Terms, not blobs**, because the engine must traverse a term to match a pattern. That is the whole
 argument, and it is **not** an indexing one: an index on a serialised key does as well, and positional
