@@ -60,3 +60,23 @@ with a crown separation at **12 positions giving `χ = 2` against 924 first-fit 
 argument, and it is **not** an indexing one: an index on a serialised key does as well, and positional
 indexing over terms of different shapes is not merely slow but wrong, since one axis sits at a different
 position in each.
+
+## The wire format
+
+Everywhere else in these documents records are written in readable form — `p(X, Y) :- Y > 10`, and the
+layers above write their own readable forms on top of it. This section is the one place that says how a
+record travels, so the encoding can change here without touching the rest.
+
+- **A variable is a constructor, `var(N)`**, an ordinary term with a known functor. Neither a capital letter
+  nor a sigil is wire format, because both make a receiver decide variable-ness from the spelling of a name
+  — the closed-set-in-an-open-namespace error: a set known when the schema is written belongs in a field a
+  tool can check, not in the spelling of a name.
+- **`N` is numbered canonically by first occurrence within the record**, so two records that differ only
+  in the names of their variables are the same record, and set semantics deduplicates them.
+- **A record may carry a ground prefix** naming some of its variables with a binder —
+  `prefix([exists(var(1))])`. Every other variable must occur in the record's constraint body, which is the
+  arrival check of §"The model"; a variable named in the prefix is exempt, since the prefix is what
+  scopes it. The layer that defines questions is the one that uses this.
+- **Programs never handle this encoding directly.** Rules are written in the readable form and matched
+  up to renaming of bound variables; code in other languages goes through a small API that builds and
+  opens records. That is what keeps a reading program from capturing a variable a record binds.

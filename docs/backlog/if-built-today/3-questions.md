@@ -26,18 +26,41 @@ a property of the **question** rather than the relation: `asked(∃V. p(60, V))`
 ask two different things of one relation. A fully bound question — `asked(valid(c))`, the yes/no case —
 is simply a ground record. The `asked` record is also the durable record of *"this was wanted"*, with no
 second object needed. A producer needing something of its own posts an `asked` record too, which makes it
-a querier, and rules deriving `asked` from `asked` are ordinary definite clauses — which is how demand
-propagates to sub-demands. The roles stay symmetric all the way down. It is also the declaration of
+a querier — and that is how demand propagates to sub-demands, whether the agent does it in code or with
+rules like `asked(∃V. loss(K, V)) :- asked(∃W. report(K, W))`, which are ordinary definite clauses
+(§"Matching questions respects scope", below). The roles stay symmetric all the way down. It is also the
+declaration of
 intent that §"There is no `read`" says no syntactic property can replace. Quantifiers appear in questions
 and nowhere in records that tell — `README.md` §"The order of the layers".
 
 **An `asked` record does hold its question as a term, binders included — and that is not the
 representing course** of `1-logic.md` §"The constraint domain". Representing buys reflection because a user
-rule may *interpret* a quoted pattern through `denote`. Here no rule does: a producer's rule matches a
-question of a fixed shape it was written for, as it would match any term, and the one thing that
-interprets a question — deciding whether it is settled and what its residual is — is the engine's coverage
-check, over a fixed question language: positive formulas, explicit `∃` and `∀`, constraints from the fixed
-domain. The vocabulary is fixed at design time, which is the axis that section turns on.
+rule may *interpret* a quoted pattern through `denote`. Here no rule does: a producer matches a question
+of a fixed shape it was written for, and the one thing that interprets a question — deciding whether it is
+settled and what its residual is — is the engine's coverage check, over a fixed question language:
+positive formulas, explicit `∃` and `∀`, constraints from the fixed domain. The vocabulary is fixed at
+design time, which is the axis that section turns on.
+
+**Matching questions respects scope.** A program that reads a stored question reads a formula with
+binders in it, and the classic hazard of that is **capture**: a variable of the reading program coming to
+stand for a variable the question binds, and being carried into some other question where it means
+something else. In the rule language it cannot be written. A rule's question pattern carries its own
+binders — `asked(∃W. report(K, W))` — and the engine matches it against stored questions up to renaming of
+bound variables. Canonical numbering already makes renamed variants one record, so this is cheap. The
+rule's `K` lies outside the scope of `∃W`, so it cannot stand for `W`: ordinary lexical scope, the same as
+in any language with lambdas, and the freshness side-condition of matching under binders (nominal logic;
+Miller's higher-order patterns). A rule that tries to take hold of a bound part of a question has no way
+to be written. For agents written in other languages, the same guarantee is a small **question API** —
+build a question from a template; open a stored one with fresh names — so no code handles the wire
+encoding directly.
+
+**Three kinds of variable, kept apart.** Those of a posted record are scoped to it, and on the wire they
+are `var(N)` (`0-substrate.md` §"The wire format"). Those of a rule are scoped to its clause. And a **shared unknown** across
+records is not a variable at all: it is a ground name — `x37`, or a description term like `best_of(r)` — on
+which agents post `eq` records, and which a reader folds with the rest of an equality class only if its
+lens opts in (`1-logic.md` §"The language"). That needs nothing from the core, and the trade-off of
+`0-substrate.md` §"Why not variables scoped to the store" — fold two bindings of one name and they
+identify two values — becomes the user's explicit choice.
 
 **Asking claims nothing, and that is load-bearing.** An earlier draft read a posted pattern `p(60, V)` as
 asserting *"there is a value at key 60"* — which the asker does not know, so it broke *post what you know*,
