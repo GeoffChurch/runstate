@@ -114,6 +114,10 @@ touch the epoch.)*
   heartbeat carries **no embedded timestamp** *by design* — staleness uses the *reader's* arrival
   clock — and that body `{step, consumed_seq}` is pinned (`additionalProperties:false` is
   load-bearing). Adding `t` re-opens a frozen convention to duplicate a clock the reader already has.
+  *(Reversed 2026-07-16: [`observer-clock.md`](observer-clock.md) made `t` required on the heartbeat,
+  lifecycle-v0.4, because a third party attaching cold has no arrival clock for past beacons. The
+  conclusion here stands, since `ensure` still times its window on the consumer's poll clock, but this
+  reason for it no longer does.)*
 - **`value.t` is rejected** (the first draft's "first cut"). It is the **sparse** value-series
   stamp (written only when a subscription fires, `worker.py`). Reading it as a "dense" clock is a
   misnomer and a livelock: a worker that stops emitting while still alive freezes `_elapsed`, so a

@@ -89,9 +89,14 @@ know about a record has to be **in the record, at write time**. Position is exac
 
 **Calibration, since the second commitment sounds cheap.** It is the one place this design's problem class
 has been measured, in an existing system with the opposite convention: **11 of 37 stops were discharged by
-a record the worker did not write, 6 of them malformed** — a late heartbeat from a dead episode read as
-current, a displaced worker's terminal read as the run's verdict, a halt swallowed because discharge was
-author- and body-blind. Position-derived identity does not fail rarely.
+a record the worker did not write, 6 of them malformed.** Each was a third party releasing a stranded claim
+with the only record that can release one, and a discharge paired by position answered every stop pending
+before it. No harm had landed, since each halt had already been served another way, but the mechanism is
+live (`runstate/observables.py`, `undischarged_stops`). Those records are forgeries in form; the defect
+they caused is attribution, since a release paired by name, naming no stop, discharges none. Two more
+instances were reproduced in a prototype rather than counted: a late heartbeat from a dead episode read as
+current, and a displaced worker's terminal read as the run's verdict ([`../episode-aim.md`](../episode-aim.md)). Position-derived
+identity does not fail rarely.
 
 Two things that measurement does **not** do. It does not support the rest of this document — identity-as-
 data would work in a plain mutable database, and nothing here is measured against a system that exists.
@@ -174,8 +179,10 @@ whatever lattice they like, and nothing underneath changes.
 
 ## What it does NOT solve
 
-- **Cross-host liveness.** You still need a handle and a probe, and it still abstains off-host — and that
-  abstention must not become a stored verdict.
+- **Cross-host liveness.** You still need a handle and a probe, and the probe still abstains off-host — and
+  that abstention must not become a stored verdict. A connection-oriented backend's lock can observe a death
+  across hosts, as runstate's Postgres backend does, but arbitrating the claim on it is a further step
+  runstate has not taken.
 - **The artifact plane.** Checkpoints on a filesystem remain unmodelled, and remain where a double-live
   worker's real damage lands.
 - **Enforcement.** Still honour-system. This is why forgery defects survive.

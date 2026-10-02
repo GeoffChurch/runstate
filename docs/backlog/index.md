@@ -108,16 +108,16 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
   resembling one. Read-only; the substrate, the claim and liveness are explicitly out, and **every
   refutation in this repo is language-independent**, so none is retired by it. Artifact is a separate
   package.
-- **If built today: relational, demand-driven, identity in columns** —
-  [if-built-today](if-built-today/README.md), one document per layer. The honest answer to *"from scratch, and is append-only
-  load-bearing?"* — mostly **no**. Most of this repo's defects are self-inflicted by **positional
-  inference**: episodes derived by position, terminals paired by position, stops discharged by
-  position. The forged verdict, the claim cascade, the unaimed heartbeat, #39 and the whole
-  `episode-aim` cluster all become a column or an FK. The claim becomes
-  `CREATE UNIQUE INDEX … WHERE status='live'`. What it does **not** solve is the inherent residue,
-  which is the tell that the residue is real: cross-host liveness, the artifact plane, enforcement.
-  Names the two boundaries as the actual design question — the querier's interface and the handler's
-  — with the run born at the second, and the halt dissolving into *withdrawing demand*.
+- **If built today: a monotone store of polarised literals** —
+  [if-built-today](if-built-today/README.md), one document per layer. A greenfield design for agents
+  spread over hosts with no central store: a growing set of typed records, identity carried in each
+  record rather than derived from position, questions as permanent `asked` records whose production is
+  gated by leases, and falsity told rather than inferred. Most of this repo's attribution defects are
+  self-inflicted by **positional inference** (episodes derived by position, terminals paired by position,
+  stops discharged by position), and the forged verdict, the claim cascade, the unaimed heartbeat, #39
+  and the `episode-aim` cluster die under its two commitments. What it does **not** solve is the
+  inherent residue, which is the tell that the residue is real: cross-host liveness, the artifact plane,
+  enforcement and forgery, and the operator halt, which needs a write path and an authority rule.
 - **The substrate, parametrically** — [substrate-parametrically](substrate-parametrically.md). A store
   state is `M(World)`, and `if-built-today` is the instance at the monad Morton's slow inconsistent regime
   forces — pruning is retraction, so the inverse curse applies at the level of `M`, and dead branches must

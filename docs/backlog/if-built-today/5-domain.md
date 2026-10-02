@@ -116,7 +116,9 @@ merge is union, so unordered, duplicate-tolerant, loss-tolerant broadcast suffic
 agent's posts and not another's simply has a smaller store, which is sound. Not even causal order is
 required — missing a cause costs completeness, never correctness. Order is needed in exactly one place, the
 **claim**, where `send(expected_seq=)` is a compare-and-swap; and that is single-spawn, which [`1-logic.md`](1-logic.md)
-§"CALM" already concedes as the one coordinated act. Nothing in the semantics reads a sequence number.
+§"CALM" already concedes as the one coordinated act. Nothing in **derivation** reads a sequence number: the
+claim needs order, a fold ported as a report may still compare positions, and a reconnecting reader's cursor
+is transport.
 
 **What is larger is the read side.** A per-functor term index that pattern-walks rather than key-looks-up,
 a constraint solver in the read path, and a **coverage checker** that decides settledness and the residual
@@ -126,8 +128,8 @@ That is the honest headline cost, and it dwarfs the fold rewrites below. It is a
 first, because everything else here is downstream of being willing to build it.
 
 **No fold ports as-is.** Measured across the whole of `observables.py`: 13 of 16 fold readings are
-non-monotone, and the operator responsible is `latest` = `argmax(seq)`, which appears six times directly
-plus three `[-1]`/`reversed` and three `max(…)` in 551 lines. Each becomes **dual plus subtraction** — the
+non-monotone, and the operator responsible is `latest` = `argmax(seq)`, which appears seven times directly
+plus three `[-1]`/`reversed` and two `max(…)` in 551 lines. Each becomes **dual plus subtraction** — the
 monotone half derived inside, one complementation performed outside:
 
 ```
@@ -182,9 +184,12 @@ delta** (*"nothing new was derived"*, which has no positive form) and an **infla
 moments, which no growing set of facts can do — and both feed demand, because both decide whether to
 relaunch. [`1-logic.md`](1-logic.md) §"Two layers" is where that belongs.
 
-**Exhaustion arrives three ways in runstate today** — a worker's own `lifecycle.stopped`, an observer's
-`launcher.terminated`, and a pid probe — of which only the last is dependable, since the first two exist
-only if somebody volunteers them and the probe **abstains off-host**. That is the launcher-versus-lifecycle
+**Exhaustion arrives four ways in runstate today, and is inferred a fifth.** It arrives as a worker's own
+`lifecycle.stopped`, an observer's `launcher.terminated`, a pid probe, and on Postgres the release of the
+episode's advisory lock; heartbeat staleness infers it. The first two exist only if somebody volunteers
+them, and the probe **abstains off-host**. The lock observes a death across hosts, but runstate keeps it a
+Watcher signal, never a claim gate ([`../../specs/channel-postgres.md`](../../specs/channel-postgres.md)). Staleness is an inference, and
+[`../../dead_ends/failure-detector.md`](../../dead_ends/failure-detector.md) shows it must never arbitrate a claim. That is the launcher-versus-lifecycle
 split this library already has, kept orthogonal for exactly the reason [`2-polarity.md`](2-polarity.md) §"How a party comes to
 know a negative fact" gives: exhaustion is a fact about a process, never about what exists.
 

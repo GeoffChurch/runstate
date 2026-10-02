@@ -66,6 +66,13 @@ every divergence reachable through `ensure`, take-the-latest yields exactly the 
 resumed wall-clock — a pre-existing property of `history`'s latest-`t` collapse, not a
 take-the-latest regression.)
 
+**The second premise has since narrowed (noted 2026-10-02).** *Episodes are sequential* holds only at
+the claiming instant: `../specs/write-authority.md` (revision 4) withdrew single-writer over time. A
+displaced worker that is still live can write after its successor's claim, and then take-the-latest can
+return a series no single execution produced. `write-authority.md` declares that as the value plane's
+known cost. The argument above stays sound for the sequential case it describes, which is every
+divergence `ensure` can produce with one live writer.
+
 ## G1 also fixes a latent bug on `master` (not just a future gate)
 
 `ensure` *already* re-drives `preempted` runs, and "preempt ⟹ no overlap" is **not** guaranteed:
