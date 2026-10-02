@@ -109,7 +109,7 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
   refutation in this repo is language-independent**, so none is retired by it. Artifact is a separate
   package.
 - **If built today: relational, demand-driven, identity in columns** —
-  [if-built-today](if-built-today.md). The honest answer to *"from scratch, and is append-only
+  [if-built-today](if-built-today/README.md), one document per layer. The honest answer to *"from scratch, and is append-only
   load-bearing?"* — mostly **no**. Most of this repo's defects are self-inflicted by **positional
   inference**: episodes derived by position, terminals paired by position, stops discharged by
   position. The forged verdict, the claim cascade, the unaimed heartbeat, #39 and the whole

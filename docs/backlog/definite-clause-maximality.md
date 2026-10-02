@@ -1,7 +1,7 @@
 # Why definite clauses, and not the neighbouring fragments
 
 Forward-looking (surfaced 2026-08-18, from the homomorphism-preservation thread).
-Background: [if-built-today](if-built-today.md) §"The language, and what each restriction buys", which
+Background: [if-built-today/logic.md](if-built-today/logic.md) §"The language, and what each restriction buys", which
 places its fragment *"two rungs below geometric"* and justifies each omission separately. This file asks
 whether the fragment is **forced** rather than merely chosen, and finds a partial answer.
 
@@ -169,7 +169,7 @@ Still to obtain:
 
 ## The categorical placement — checked 2026-08-20, and deliberately kept out of the doc
 
-Recorded so it is not re-derived, and **not** carried into `if-built-today.md`, where it would do no work.
+Recorded so it is not re-derived, and **not** carried into `if-built-today/`, where it would do no work.
 The sibling `../dead_ends/topological-framings.md` exists because borrowed machinery that does no work has
 already cost that document three sections; this is placement, which is checkable, and nothing more.
 
@@ -256,9 +256,9 @@ which leaves Open #5.
 
 ## Related
 
-- [if-built-today](if-built-today.md) §"The language, and what each restriction buys" — the fragment and
+- [if-built-today/logic.md](if-built-today/logic.md) §"The language, and what each restriction buys" — the fragment and
   the per-omission justifications this file tries to replace with one argument.
-- [if-built-today](if-built-today.md) §"What makes the answer worth having" — the two-routes concession
+- [if-built-today](if-built-today/README.md) §"What makes the answer worth having" — the two-routes concession
   that motivates this.
 - `../dead_ends/topological-framings.md` — the standing reminder that reasoning ahead of the literature has
   already failed three times on the sibling document.

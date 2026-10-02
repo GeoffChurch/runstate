@@ -1,4 +1,4 @@
-# Citations for `backlog/if-built-today.md` — verification ledger
+# Citations for `backlog/if-built-today/` — verification ledger
 
 **Untracked working note, started 2026-08-14.** The doc presents prior art as reasoning in several
 places (review 7's central finding). This file holds citations **verified against primary source text**,
