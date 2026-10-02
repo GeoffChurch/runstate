@@ -19,6 +19,30 @@
    wanted, add congruences with CRT, and note the corpus has not been surveyed for what else it needs.
 4. **Where the query language stops.** What constrains it is **pushdown**: the more expressive, the less
    runs where the data lives.
+
+   **The answer-shape, if pushdown ever bites: ship programs as data.** A program is a content-addressed
+   term, `program(h, Source)`, and a request to run it near the data is an ordinary question,
+   `asked(run(h, Args))`. A generic producer that serves `run` executes it and posts its results as
+   ordinary facts. Nothing below `5-domain.md` changes: the store accumulates the program, the request and
+   the answers, monotonically, and identical programs with identical arguments are one question, so
+   memoisation is free.
+
+   **What it does not replace.** Arbitrary programs are opaque. The engine cannot certify a program's
+   completeness, compute its residual, or detect that one program's answer covers another's —
+   equivalence is undecidable, and only identical hashes coincide. Those are what the fixed question
+   language of `3-questions.md` buys: a second asker of a covered question triggers nothing, and anyone
+   can check settledness by a finite cover. Shipped programs are the escape hatch *beside* the questions,
+   not a replacement for them; a program's completeness is its own testimony, posted as a negative tail
+   like any producer's.
+
+   **Two hazards.** A shipped aggregation computes a tier-3 summary (`4-aggregation.md`) over whatever its
+   host holds at that moment, so it posts a **dated** report — *"the mean over what I held as of
+   cursor c"* — which is a permanent fact about the past. Posted as undated fact it would be read as *the*
+   mean, which is the contextuality hazard. Tier-1 and tier-2 summaries, may-lifts included, can be
+   posted live and maintained incrementally. And running someone else's code is a far larger trust surface
+   than reading their facts — termination, resources, side effects — and the logic has nothing to say
+   about it. Prior art, recalled and unchecked: Webdamlog (Abiteboul et al.) delegates rules to remote
+   peers; query versus data shipping in distributed databases; Unison's content-addressed code.
 5. **No central store.** Each agent holds a lagged local copy and replicates preferentially what it
    demands; the "global" store is the union of the local ones. This follows from monotonicity and needs no
    coordination. The consequence: the memo check becomes **local**, so two agents demanding the same region
