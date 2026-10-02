@@ -1,6 +1,6 @@
 # The domain: runs, metrics and steps
 
-**Layer:** one worked instance, depending on every layer. The dependency graph is in `README.md`.
+**Layer:** one worked instance, depending on every layer. The dependency graph is in [`README.md`](README.md).
 
 ## What the problem domain forces, whatever the design
 
@@ -23,7 +23,7 @@ will contain something playing each role. They are listed because it is easy to 
 ## The schema
 
 **One relation for every metric, typed per metric**, with the step hoisted to a fixed position
-(`1-logic.md` §"Types", the wrapper):
+([`1-logic.md`](1-logic.md) §"Types", the wrapper):
 
 ```
 at(R, S, M)        R : Run,  S : Step (an integer),  M : Metric = loss(Float) | accuracy(Float) | converged(Bool) | …
@@ -36,8 +36,8 @@ sits at the same position for every metric, which fixes the positional-indexing 
 at runtime, so that new metrics appear without redeploying, is out of scope.
 
 **`R` is a content-addressed run id** — a hash of whatever inputs the user decides determine the run's
-output (`../../specs/run-id-recipe.md`: the pattern is runstate's, the choice of inputs the user's). By
-`2-polarity.md` §"The rule for posting", a key is a claim about what determines the value, so `R`'s
+output ([`../../specs/run-id-recipe.md`](../../specs/run-id-recipe.md): the pattern is runstate's, the choice of inputs the user's). By
+[`2-polarity.md`](2-polarity.md) §"The rule for posting", a key is a claim about what determines the value, so `R`'s
 granularity decides what a producer may vouch for:
 
 - **If the computation is deterministic given those inputs,** every launch of `r` produces the same losses,
@@ -92,7 +92,7 @@ not a contradiction.
 and its residual is empty, so there is no work to hand anyone and no producer to launch. The store was the
 cache; no cache was built. A querier asking the *stronger* question — `at(r, S, loss(V))` with `V` free,
 every step's set of losses complete — would find it unsettled, and it stays so unless the producer
-vouches, at each step, that its loss is the only one (`2-polarity.md` §"The rule for posting"). Under
+vouches, at each step, that its loss is the only one ([`2-polarity.md`](2-polarity.md) §"The rule for posting"). Under
 the deterministic assumption of §"The schema" it may.
 
 **And if two producers disagree.** Two of them posting different losses at step 61 produce two *atoms*,
@@ -115,7 +115,7 @@ topic log with typed conventions on top — a message protocol, and a thin one o
 merge is union, so unordered, duplicate-tolerant, loss-tolerant broadcast suffices: a reader holding one
 agent's posts and not another's simply has a smaller store, which is sound. Not even causal order is
 required — missing a cause costs completeness, never correctness. Order is needed in exactly one place, the
-**claim**, where `send(expected_seq=)` is a compare-and-swap; and that is single-spawn, which `1-logic.md`
+**claim**, where `send(expected_seq=)` is a compare-and-swap; and that is single-spawn, which [`1-logic.md`](1-logic.md)
 §"CALM" already concedes as the one coordinated act. Nothing in the semantics reads a sequence number.
 
 **What is larger is the read side.** A per-functor term index that pattern-walks rather than key-looks-up,
@@ -166,7 +166,7 @@ Three jobs, one of them not commodity:
 - **indexing** — noting that per-position term indexing over heterogeneous terms is not a database
   feature, and neither is unification;
 - **an oracle channel whose outputs are timestamped into facts about the past** — the OS probe, the clock,
-  the temporal delta, the fixpoint test (`1-logic.md` §"Two layers"). The store can tell you what happened;
+  the temporal delta, the fixpoint test ([`1-logic.md`](1-logic.md) §"Two layers"). The store can tell you what happened;
   it cannot tell you that *nothing* happened, and `ensure` needs exactly that.
 
 The third is the answer to *"why this library rather than Postgres plus a type discipline."* The buildable
@@ -180,12 +180,12 @@ threshold claim on `progress`, a *retractable* quantity, and its two termination
 delta** (*"nothing new was derived"*, which has no positive form) and an **inflationary fixpoint test**
 (*"another lap can only reproduce them"*). Neither is expressible in the fragment — each compares two
 moments, which no growing set of facts can do — and both feed demand, because both decide whether to
-relaunch. `1-logic.md` §"Two layers" is where that belongs.
+relaunch. [`1-logic.md`](1-logic.md) §"Two layers" is where that belongs.
 
 **Exhaustion arrives three ways in runstate today** — a worker's own `lifecycle.stopped`, an observer's
 `launcher.terminated`, and a pid probe — of which only the last is dependable, since the first two exist
 only if somebody volunteers them and the probe **abstains off-host**. That is the launcher-versus-lifecycle
-split this library already has, kept orthogonal for exactly the reason `2-polarity.md` §"How a party comes to
+split this library already has, kept orthogonal for exactly the reason [`2-polarity.md`](2-polarity.md) §"How a party comes to
 know a negative fact" gives: exhaustion is a fact about a process, never about what exists.
 
 **What ships already carries its extent as a constraint.** A subscription with an `until` is one durable
@@ -193,24 +193,24 @@ record denoting a bounded region — durable across the *producer's* death, beca
 control log and re-registers whatever is still unanswered, pinned by
 `tests/test_run_episodes.py::test_relaunch_extends_one_series`: one subscribe posted *before episode 1
 exists*, two episodes, ten steps, one series. `{"every": …}` with no `until` is schema-legal, documented
-as *"forever"* — the unbounded region of `3-questions.md` §"Quantifiers live in questions", concrete rather
+as *"forever"* — the unbounded region of [`3-questions.md`](3-questions.md) §"Quantifiers live in questions", concrete rather
 than hypothetical. (The bare subscribe is served by a poll of the register, `self._values.get(name)`, not
 by anything waiting on a production; that is the gap between the shipped library and this design.)
 
 ## Still wanted: leases
 
-`3-questions.md` §"Demand is control" leaves *still wanted* to a scheduling policy. runstate already has
+[`3-questions.md`](3-questions.md) §"Demand is control" leaves *still wanted* to a scheduling policy. runstate already has
 both kinds of demand: `relaunch_if_needed` serves **durable** demand and `ensure_served` serves **leased**
-demand (`../../specs/lazy-launch.md`). The proposed policy:
+demand ([`../../specs/lazy-launch.md`](../../specs/lazy-launch.md)). The proposed policy:
 
 - **A lease is a duration, renewed by the asker** — posted periodically, one way, as today's heartbeat is.
   No reply, so no round trip. Durable demand is a lease of unbounded duration, and its risk — a question
-  that never settles, relaunched forever — is `open.md` 10's admission rule, not a lease problem.
+  that never settles, relaunched forever — is [`open.md`](open.md) 10's admission rule, not a lease problem.
 - **The scheduler times it from local receipt**, on its own monotonic clock: a question is still wanted
   while less than the duration has passed since the scheduler received the latest renewal. No clock is
   compared across hosts, matching runstate's original liveness design, where the Watcher knows when a
-  beacon arrived *"because it was there"* (`../../specs/observer-clock.md`). The known cost is the same
-  bounded one runstate accepts in `../../specs/time-lease-boundary.md`: a scheduler that attaches after a
+  beacon arrived *"because it was there"* ([`../../specs/observer-clock.md`](../../specs/observer-clock.md)). The known cost is the same
+  bounded one runstate accepts in [`../../specs/time-lease-boundary.md`](../../specs/time-lease-boundary.md): a scheduler that attaches after a
   dead asker's last renewal receives it as fresh, and the question looks wanted for one more duration.
 
 Two choices are open, with their trade-offs:
@@ -228,14 +228,14 @@ Two choices are open, with their trade-offs:
 
 Every corpus figure the layers lean on, kept here so the layers themselves stay workload-free.
 
-**Terms, measured** (for `0-substrate.md` §"The model"'s *"terms, not blobs"*). Measured on 200k rows, a
+**Terms, measured** (for [`0-substrate.md`](0-substrate.md) §"The model"'s *"terms, not blobs"*). Measured on 200k rows, a
 JSONB key with a btree expression index runs the central range query in **0.085 ms** against a positional
 term layout's **0.089 ms** — the term buys nothing, the btree does. Worse, positional indexing over
 *heterogeneous* terms is not merely slow but wrong: with `loss(Config,Step)`, `grad(Config,Layer,Step)` and
 `ckpt(Run,Config,Shard,Step)` the step axis sits at three different positions, and an axis-blind positional
-range returned **132,879 rows against a correct 91,500**. `1-logic.md` §"Types"'s hoisting wrapper is the fix.
+range returned **132,879 rows against a correct 91,500**. [`1-logic.md`](1-logic.md) §"Types"'s hoisting wrapper is the fix.
 
-**What keeping every record costs** (for `1-logic.md` §"Constraints are asked"). Measured over **823 real
+**What keeping every record costs** (for [`1-logic.md`](1-logic.md) §"Constraints are asked"). Measured over **823 real
 logs, 2.5M records**: the compression given up is **0.34%**, and cells whose values genuinely fail to join
 are **0.072%**. Both are a footnote. Where the partial case *does* land supports keeping the atoms —
 **1,714 of the 1,719 divergent cells are `status`**, an app event mirrored onto the value plane at a reused
@@ -244,7 +244,7 @@ forgery: two honest producers differing by one ulp (`0.30000000000000004` vs `0.
 `mycooc/analyze_run.py` already hand-rolls a guard against exactly this. The corpus has **16 hand-rolled
 guard sites**, sixteen per-relation conflict declarations rather than one missing primitive.
 
-**The value plane's sorts** (for `1-logic.md` §"Types"). Measured over 821 real logs: 24 distinct value
+**The value plane's sorts** (for [`1-logic.md`](1-logic.md) §"Types"). Measured over 821 real logs: 24 distinct value
 names, **none carrying more than one sort** (21 `float`, 3 `dict`), and no new names in the corpus's second
 half. So the entire measured value plane is **two** relations — `metric(Name, Float, Step)` and
 `event(Name, Json, Step)` — both fixed shapes with the name as **data**; the aliasing objection never

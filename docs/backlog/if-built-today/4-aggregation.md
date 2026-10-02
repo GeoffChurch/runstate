@@ -1,6 +1,6 @@
 # Aggregation: orders and summaries
 
-**Layer:** depends on `0-substrate.md`, `1-logic.md`, `2-polarity.md`, `3-questions.md`. The dependency graph is in `README.md`.
+**Layer:** depends on [`0-substrate.md`](0-substrate.md), [`1-logic.md`](1-logic.md), [`2-polarity.md`](2-polarity.md), [`3-questions.md`](3-questions.md). The dependency graph is in [`README.md`](README.md).
 
 ## Orders are mostly read-side
 
@@ -32,7 +32,7 @@ standing queries die. (GC is *not* on that list: on the boundary the query neith
 growing list of expansion coefficients and it is already a monotone stream of information — the same shape
 as the store — so every interval question becomes an ordinary threshold read, firing the moment enough
 coefficients place the domain inside the interval. Not free: a streamed real is a **region of coefficient
-atoms** rather than a `Float`, so the value plane acquires unbounded extents and `1-logic.md` §"Types" would owe it a
+atoms** rather than a `Float`, so the value plane acquires unbounded extents and [`1-logic.md`](1-logic.md) §"Types" would owe it a
 sort. Unworked.
 
 **Terminology hazards, all live.** *Join* — relational `⋈` versus lattice `⊔`, and the lattice join versus
@@ -54,10 +54,10 @@ admit **no global joint** — contextuality, manufactured out of a store that wa
 agent's view is coherent and every pairwise check passes, so no participant can detect it.
 
 **The store is not wrong; the guarantee does not lift.** Atoms converge without an arbiter; statistics over
-different demand regions need not. The foreclosure of `README.md` §"Two commitments" holds exactly as far as identity
+different demand regions need not. The foreclosure of [`README.md`](README.md) §"Two commitments" holds exactly as far as identity
 stays attached, and the summary map is where it stops.
 
-**Below this layer everything glues, distributively** (`2-polarity.md` §"An atom's status"): the global store
+**Below this layer everything glues, distributively** ([`2-polarity.md`](2-polarity.md) §"An atom's status"): the global store
 is the union of the local ones, and each atom's global status is the join of its local statuses. What a
 summary keeps of that depends on the summary, and there are exactly three tiers.
 
@@ -74,7 +74,7 @@ share records.
 | **2** | monotone, not join-preserving | **by common refinement** — the summary of the union refines each local one, so none can contradict another, but the global one is recomputed from the *records* | the set of possible means (below); the count of distinct records; settledness |
 | **3** | not monotone | **none** — a report, and it sits outside like `argmax` | *the* mean; last-write-wins; median; `sum` over overlapping stores |
 
-Tier 1 is Bloom^L's *morphisms* as against its monotone functions, and tier 2 holds by `1-logic.md`
+Tier 1 is Bloom^L's *morphisms* as against its monotone functions, and tier 2 holds by [`1-logic.md`](1-logic.md)
 §"CALM"'s joint consistency applied to summaries. **Every summary factors** as a tier-1 map into a
 lattice — the set of records, or each key's set of values — followed by one final read, so its tier is
 that read's tier; Bloom^L's non-monotone `reveal` is the tier-3 read. And a non-idempotent tally climbs
@@ -85,7 +85,7 @@ the multiset row).
 settled for `∃V. p(K, V)`; their means differ, and nothing reads `{t,f}`, because neither holds both
 values. Strong settledness does not change that — each producer vouched *"0.31 and nothing else"* or
 *"0.40 and nothing else"*, and the disagreement becomes **visible at the join**, as a valuation conflict
-rather than a silent domain one (`3-questions.md` §"Settledness of a question"), but not before. A picking
+rather than a silent domain one ([`3-questions.md`](3-questions.md) §"Settledness of a question"), but not before. A picking
 summary would need the union conflict-free over the region, which is `= {t}` and never affirmable. Prop.
 5.2's commutation is about **one table**; two agents hold two.
 
@@ -121,5 +121,5 @@ may(g)(store) = { g(c) : c chooses one told-true value for each key in range }
 It is the Hoare, or *may*, reading of §"Orders are mostly read-side" applied to summaries, and it is what
 a reader that shows summaries across agents would compute. Whether may-summaries are useful in practice,
 and whether strongly settled regions are large enough often enough to make them exhaustive, is
-`open.md` 9.
+[`open.md`](open.md) 9.
 

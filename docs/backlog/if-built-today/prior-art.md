@@ -1,6 +1,6 @@
 # Whose this already is
 
-**Layer:** prior art, across all layers. The dependency graph is in `README.md`.
+**Layer:** prior art, across all layers. The dependency graph is in [`README.md`](README.md).
 
 Placed early so that nothing later reads as an unearned discovery. Losing novelty is welcome: a design
 that turns out to be a known-good combination is better founded than one that is new.

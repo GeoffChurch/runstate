@@ -1,6 +1,6 @@
 # The logic: definite clauses over constraints
 
-**Layer:** depends on `0-substrate.md`. The dependency graph is in `README.md`.
+**Layer:** depends on [`0-substrate.md`](0-substrate.md). The dependency graph is in [`README.md`](README.md).
 
 ## The language, and what each restriction buys
 
@@ -8,7 +8,7 @@ The derivation language is **definite clauses** — one atomic head, a body of f
 constraints from a fixed CLP domain as ordinary body literals. **No `¬`, no `→`, no `∀`** as operations —
 a clause's own variables are universal, but that is the reading of a rule, not a connective a body can use;
 and no `∨`, no `⊥`, no equality and no `∃` in a *head*. Posted records are the special case whose body is
-constraints only (`0-substrate.md` §"The model").
+constraints only ([`0-substrate.md`](0-substrate.md) §"The model").
 
 **It is the language the design can check, not the language agents must be written in.** An agent may be
 written in anything that can build and read terms and post records; the design constrains only what it
@@ -23,7 +23,7 @@ that reading is schema the user chooses and the logic is ignorant of, exactly wh
 Nothing is excepted, because nothing negates.
 
 Variables are written Prolog-style in this document — `V`, capitalised. How they travel is
-`0-substrate.md` §"The wire format".
+[`0-substrate.md`](0-substrate.md) §"The wire format".
 
 **What is missing, and why — the reasons are two, not four.**
 
@@ -33,7 +33,7 @@ Variables are written Prolog-style in this document — `V`, capitalised. How th
 | arbitrary `∨` **in heads** | **no** | a disjunctive fact has nowhere to live: this store is a **set of literals**, one model. `φ ⊢ a ∨ b` needs a set of *models*, or the disjunctive chase |
 | `⊥` in heads — integrity constraints | **no** | a store that must accept what it is given can only **reject a post** (order-dependent) or **go inconsistent** (§"Constraints are asked") |
 | equality in heads | **no** | that *is* a functional dependency — the same reason again |
-| `∃` in heads — value invention | **no** | the coordination-freeness proof's quiescence argument **requires** no value invention. A rule minting a fresh variable is excluded, and no posted record is existential either (`0-substrate.md` §"The model") |
+| `∃` in heads — value invention | **no** | the coordination-freeness proof's quiescence argument **requires** no value invention. A rule minting a fresh variable is excluded, and no posted record is existential either ([`0-substrate.md`](0-substrate.md) §"The model") |
 
 So three omissions are one reason — **the store must accept what it is given** — and the fourth is CALM's.
 None is taste.
@@ -74,7 +74,7 @@ monotonicity — which definite clauses have by construction — buys membership
 in homomorphisms of **models**, where the second requirement means algebra homomorphisms on **terms**; and
 the ledger's own condition for it, no `≠` in a constraint region, fails as soon as a constraint body uses `≠`, which §"The constraint domain"
 permits.
-`../definite-clause-maximality.md` works the boundary out.
+[`../definite-clause-maximality.md`](../definite-clause-maximality.md) works the boundary out.
 
 **And one connective is absent from the logic rather than priced on the ladder: interpreted equality.**
 Regular logic ordinarily includes a substitutive `=`; here equality is a **convention** — an ordinary
@@ -89,7 +89,7 @@ together they equate two ambient values. Record-scoped variables remove fresh na
 altogether.)
 
 **Whether the fragment is *forced* rather than chosen is asked separately** in
-`../definite-clause-maximality.md`, via a third route — preservation under algebraic homomorphisms. Its
+[`../definite-clause-maximality.md`](../definite-clause-maximality.md), via a third route — preservation under algebraic homomorphisms. Its
 partial answer: preservation draws the **outer** boundary (it rules out `¬`, and rules out goal clauses
 because a homomorphism can make a denial's body hold), while `∨` and `∃` in heads *are* preserved and are
 excluded by this design's own commitments instead. So the omissions above have two different kinds of
@@ -118,7 +118,7 @@ every definite program's consequence operator is one, since a body reads finitel
 coordination-freeness excludes** (§"CALM" — the predicate is binary, and nothing here is priced in
 rounds). So "no negation," "opens are affirmable," and "monotone ⟺ coordination-free" are one
 constraint set in three vocabularies, reached by **two** routes rather than one fact: the first two are one
-fact (`README.md` §"What makes the answer worth having"), and the third arrives from distribution, on different
+fact ([`README.md`](README.md) §"What makes the answer worth having"), and the third arrives from distribution, on different
 premises — give nodes knowledge of the partition and the coordination-free class grows (§"CALM"), where
 affirmability does not move.
 
@@ -180,7 +180,7 @@ regime actually needs.
 **What that buys, free.** Independently chosen answers at different agents are **jointly consistent with no
 agreement protocol between them** — Remark 2, and it is *"not an additional assumption … a free consequence
 of monotonicity applied to the full history."* Two agents answering from disjoint causal views cannot
-contradict each other. That is the *"without stopping to confer"* of `README.md` §"What it is for", proved rather than
+contradict each other. That is the *"without stopping to confer"* of [`README.md`](README.md) §"What it is for", proved rather than
 asserted.
 
 **What it does *not* buy, and this design has it for a separate reason.** Coordination-freedom is not
@@ -224,7 +224,7 @@ needs a cursor. And it applies to what is **output**, not to what an agent choos
 
 **Which is where single-spawn sits, and it is not an exception.** *"Run iff no other agent is running
 this"* is mutual exclusion, not a query, so Ameloot's theorem is silent on it and a roster is needed —
-priced in `open.md`. But it is the *general* pattern rather than this design's private embarrassment;
+priced in [`open.md`](open.md). But it is the *general* pattern rather than this design's private embarrassment;
 Hellerstein's own reading is that *"the architecture of Paxos-based systems reflects this: membership is
 configured once; everything downstream is actually coordination-free."* And it is once — *"membership
 establishment need only happen once … after the initial bootstrap, the chain of authority transitions is
@@ -281,7 +281,7 @@ here is that the non-monotone work never enters the program: there is no stratif
 check, because there is no negation. **Separating rather than stratifying is what keeps the residual
 syntactically evident** — which is what the next paragraph's rule is really for.
 
-**What crosses is literals**, and the mechanism is already in this repo — `../prolog-query-layer.md` says of
+**What crosses is literals**, and the mechanism is already in this repo — [`../prolog-query-layer.md`](../prolog-query-layer.md) says of
 the one existing case, *"pass the probe result in as a parameter rather than calling out."* The
 generalisation is the repo's recurring repair applied to oracles: **timestamp the observation and make it
 a fact about the past.** *"Nothing changed between T₁ and T₂"* is permanently true once observed, where
@@ -423,7 +423,7 @@ commanded, only informed.
 
 > **A constraint is something a reader may ask about, never something the store asserts.**
 
-**This is also what keeps the contextuality foreclosure intact** (`README.md` §"Two commitments"). An enforced
+**This is also what keeps the contextuality foreclosure intact** ([`README.md`](README.md) §"Two commitments"). An enforced
 dependency is precisely the construct that would make two local views pairwise-consistent yet unglueable —
 `{p(k, a)}` admissible, `{p(k, b)}` admissible, their union not. Rendered into testimony, the union is
 always admissible, and what would have been a gluing failure is a pair of records and a derivable

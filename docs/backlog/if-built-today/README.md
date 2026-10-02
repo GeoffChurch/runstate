@@ -19,26 +19,26 @@ come and go, and everybody must still reach the same answer without stopping to 
 
 **The layers, one file each.** This file holds what spans all of them; each layer is its own document, so
 it can be reviewed and discussed alone. The layers form a partial order, not a chain, and each file is
-prefixed with its **depth** — the longest path down to `0-substrate.md`. Files sharing a number are
-siblings with no dependency between them. (These numbers are not `../../layers.md`'s, which number
+prefixed with its **depth** — the longest path down to [`0-substrate.md`](0-substrate.md). Files sharing a number are
+siblings with no dependency between them. (These numbers are not [`../../layers.md`](../../layers.md)'s, which number
 runstate's own stack.)
 
 | file | layer | depends on |
 |---|---|---|
-| `0-substrate.md` | records as constrained facts, record-scoped variables, the one operation | — |
-| `1-logic.md` | definite clauses over constraints; CALM; the monotone layer and its non-monotone core | substrate |
-| `2-polarity.md` | told falsity, the four statuses, the threshold rule, settledness of a set of atoms | substrate, logic |
-| `3-reclamation.md` | eviction, never retraction | substrate, logic, polarity |
-| `3-questions.md` | `asked`, quantifiers in questions, settledness of a question, the residual, demand as control | substrate, logic, polarity |
-| `3-provenance.md` | objections without retraction; speculation | substrate, logic, polarity (the dispute mechanism alone needs none) |
-| `4-aggregation.md` | orders as reads; summaries, and what glues | substrate, logic, polarity, questions |
-| `5-domain.md` | one worked instance — runs, metrics, steps — every corpus measurement, and the cost against today's runstate | all of the above |
-| `prior-art.md` | whose this already is | — |
-| `open.md` | what is open, across layers | — |
+| [`0-substrate.md`](0-substrate.md) | records as constrained facts, record-scoped variables, the one operation | — |
+| [`1-logic.md`](1-logic.md) | definite clauses over constraints; CALM; the monotone layer and its non-monotone core | substrate |
+| [`2-polarity.md`](2-polarity.md) | told falsity, the four statuses, the threshold rule, settledness of a set of atoms | substrate, logic |
+| [`3-reclamation.md`](3-reclamation.md) | eviction, never retraction | substrate, logic, polarity |
+| [`3-questions.md`](3-questions.md) | `asked`, quantifiers in questions, settledness of a question, the residual, demand as control | substrate, logic, polarity |
+| [`3-provenance.md`](3-provenance.md) | objections without retraction; speculation | substrate, logic, polarity (the dispute mechanism alone needs none) |
+| [`4-aggregation.md`](4-aggregation.md) | orders as reads; summaries, and what glues | substrate, logic, polarity, questions |
+| [`5-domain.md`](5-domain.md) | one worked instance — runs, metrics, steps — every corpus measurement, and the cost against today's runstate | all of the above |
+| [`prior-art.md`](prior-art.md) | whose this already is | — |
+| [`open.md`](open.md) | what is open, across layers | — |
 
 **The rule: a layer cites only its ancestors.** A reference from a layer to a layer above it is a defect
-— a lower layer leaning on an upper one — and is findable by grep. **And the layers below `5-domain.md` are
-workload-free**: their examples are neutral (`p(K, V)`), and every corpus figure lives in `5-domain.md`.
+— a lower layer leaning on an upper one — and is findable by grep. **And the layers below [`5-domain.md`](5-domain.md) are
+workload-free**: their examples are neutral (`p(K, V)`), and every corpus figure lives in [`5-domain.md`](5-domain.md).
 
 ## The order of the layers
 
@@ -47,20 +47,20 @@ each with a status; quantifiers range over statuses, in questions and reads, and
 never told and has no status of its own. Told quantified sentences would give a sentence two sources of
 truth — told directly, and derived from its instances — and would make polarity interact with the
 quantifiers, since `¬∀` is `∃¬`. Tarski's order is the same: quantifiers are defined through
-satisfaction, which presupposes a valuation of atoms. In files: variables are `0-substrate.md`, the valuation
-is `2-polarity.md`, quantifiers are `3-questions.md`.
+satisfaction, which presupposes a valuation of atoms. In files: variables are [`0-substrate.md`](0-substrate.md), the valuation
+is [`2-polarity.md`](2-polarity.md), quantifiers are [`3-questions.md`](3-questions.md).
 
 **Companions.** `decisions/` records, per layer, what was tried and withdrawn, so these files can state
-conclusions. `../../if-built-today-citations.md` is the verification ledger — it marks each citation
+conclusions. [`../../if-built-today-citations.md`](../../if-built-today-citations.md) is the verification ledger — it marks each citation
 **CONFIRMED** (read in primary source), **UNVERIFIED**, or **UNOBTAINED**, and anything here that is not
-CONFIRMED there should be read as unchecked. `../../dead_ends/topological-framings.md` records three
+CONFIRMED there should be read as unchecked. [`../../dead_ends/topological-framings.md`](../../dead_ends/topological-framings.md) records three
 refuted framings so there is not a fourth.
 
 ## Two commitments, and everything follows from them
 
 **Nothing is ever retracted.** Every record is permanent — not because a log is a convenient
 implementation, but because *retraction is what costs coordination*, and there is a theorem saying so
-(`1-logic.md` §"CALM"). Monotonicity is the load-bearing property; append-only is one way to get it and not the only
+([`1-logic.md`](1-logic.md) §"CALM"). Monotonicity is the load-bearing property; append-only is one way to get it and not the only
 one.
 
 **And a second theorem, about a different loss.** CALM prices retraction in coordination: you may have it
@@ -111,7 +111,7 @@ lives one level up, where restriction *"necessarily involves summing over indice
 records which row contributed what. Of his own versioning example: *"conflicts are resolved by version
 numbers. Forgetting the version numbers, we get disagreement on indexed overlaps."* Contextuality requires
 forgetting the discriminator; this commitment is the refusal to. **The foreclosure reaches exactly as far as
-identity stays attached** — a consumer that aggregates performs the forgetting map itself, which is `4-aggregation.md`.
+identity stays attached** — a consumer that aggregates performs the forgetting map itself, which is [`4-aggregation.md`](4-aggregation.md).
 
 ## What makes the answer worth having
 
@@ -144,7 +144,7 @@ There is also a second, independent reason the line sits where it does, found af
 constructions below it are exactly the ones whose **meaning varies with the universe the user inhabits** —
 polarity, equality, the four-value reading and settledness all mean something else (or nothing) in a
 regime where an arbiter is affordable and a refuted branch can be pruned. The audit and the criterion are
-in `../substrate-parametrically.md`; by §"What makes the answer worth having"'s own standard, a boundary met
+in [`../substrate-parametrically.md`](../substrate-parametrically.md); by §"What makes the answer worth having"'s own standard, a boundary met
 twice rather than chosen.
 
 ```
@@ -166,9 +166,9 @@ polarization outright, which is this design's most contestable choice. Two edges
 `{t,f}` consumes provenance, and objecting to a polarity assignment needs both.
 
 **Polarization is a two-element marker set, not a commitment to two-valuedness.** Polarity is declared
-schema and the substrate never sees it (`2-polarity.md` §"Polarity is schema, not substrate"), so a richer marker set is
+schema and the substrate never sees it ([`2-polarity.md`](2-polarity.md) §"Polarity is schema, not substrate"), so a richer marker set is
 *more declared values of `Pol`* and the base does not move. A third marker — `undecidable`, say — is told
-rather than inferred, exactly as `2-polarity.md` §"Falsity is told" requires. Belnap is therefore not
+rather than inferred, exactly as [`2-polarity.md`](2-polarity.md) §"Falsity is told" requires. Belnap is therefore not
 *the* logic here but **the reading of the two-marker instance**; over a larger set the reader supplies
 whatever lattice they like, and nothing underneath changes.
 
@@ -180,7 +180,7 @@ whatever lattice they like, and nothing underneath changes.
   worker's real damage lands.
 - **Enforcement.** Still honour-system. This is why forgery defects survive.
 - **The halt does not dissolve.** Self-withdrawal is free — an asker that stops wanting a question stops
-  renewing it, and nothing is posted or retracted (`3-questions.md` §"Demand is control"). But the measured case is an **operator** stopping a run a **scheduler** relaunches,
+  renewing it, and nothing is posted or retracted ([`3-questions.md`](3-questions.md) §"Demand is control"). But the measured case is an **operator** stopping a run a **scheduler** relaunches,
   i.e. withdrawing *someone else's* demand. That needs a write and an authority rule, and always did.
 - **Diagnosing a conflict.** `{t,f}` is affirmable; telling a genuine disagreement from an over-claimed
   region is not, without provenance nobody has built.
@@ -188,21 +188,21 @@ whatever lattice they like, and nothing underneath changes.
 ## Related
 
 - `decisions/` — what was tried and withdrawn, and why, one file per layer.
-- `../../if-built-today-citations.md` — the verification ledger; every citation marked CONFIRMED there
+- [`../../if-built-today-citations.md`](../../if-built-today-citations.md) — the verification ledger; every citation marked CONFIRMED there
   has been read in primary source.
-- `../../dead_ends/topological-framings.md` — sheaves, formal topology, d-frames: three framings, one cause.
-- `../definite-clause-maximality.md` — whether this fragment is forced rather than chosen. A third route
+- [`../../dead_ends/topological-framings.md`](../../dead_ends/topological-framings.md) — sheaves, formal topology, d-frames: three framings, one cause.
+- [`../definite-clause-maximality.md`](../definite-clause-maximality.md) — whether this fragment is forced rather than chosen. A third route
   (preservation under homomorphisms) that would answer §"What makes the answer worth having"'s own
   concession that *"two routes agreeing is weaker than three would be"*. Open; two papers unread.
-- `../demand-driven-reads.md` — the consumer-facing target. **Stale**: it still describes a
+- [`../demand-driven-reads.md`](../demand-driven-reads.md) — the consumer-facing target. **Stale**: it still describes a
   LEFT-JOIN-over-a-grid, `?` as a value, `read`/`force` as verbs, and LISTEN/NOTIFY. Its §5a taxonomy
   survives.
-- `../prolog-query-layer.md` §3 — the measured answer-subsumption results, reinterpreted: the defect is an
+- [`../prolog-query-layer.md`](../prolog-query-layer.md) §3 — the measured answer-subsumption results, reinterpreted: the defect is an
   exact claim on an unsettled term, and it does not arise here because nothing aggregates at write time.
-- `../memoizer-index-algebra.md` — the emission filter, and why exposing it is not additive.
-- `../../specs/write-authority.md` — unchanged by any of this. Consensus number does not separate a unique
+- [`../memoizer-index-algebra.md`](../memoizer-index-algebra.md) — the emission filter, and why exposing it is not additive.
+- [`../../specs/write-authority.md`](../../specs/write-authority.md) — unchanged by any of this. Consensus number does not separate a unique
   constraint from `send(expected_seq=)`: a keyed row that stays readable is a write-once register, not a
   test-and-set — every loser can read who won — and the shipped compare-and-swap *is* a unique constraint,
   `PRIMARY KEY (run_id, seq)`. What differs is the **key**: a dense position that every append contends on,
   against a semantic key contended only by inserts of the same key.
-- `../../layers.md`, `../../positioning.md` — where this sits.
+- [`../../layers.md`](../../layers.md), [`../../positioning.md`](../../positioning.md) — where this sits.
