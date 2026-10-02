@@ -1,6 +1,6 @@
 # Provenance: objections without retraction
 
-**Layer:** depends on `substrate.md`, `logic.md`, `polarity.md`. The dependency graph is in `README.md`.
+**Layer:** depends on `0-substrate.md`, `1-logic.md`, `2-polarity.md`. The dependency graph is in `README.md`.
 The dispute mechanism itself uses no polarity and survives a reader who rejects it; upholding, diagnosing
 `{t,f}` and speculation use the statuses.
 
@@ -31,7 +31,7 @@ reading of it that only climbs: `disputes` records only accumulate, with no rost
 anybody; per fact, the pair *(grounds for, objections)* only climbs; and a policy phrased as an allow-list
 — *use records from sources I trust* — is monotone too. What is not monotone is the **decision** *accept
 unless disputed*, which a later objection withdraws; and a question settled from records that decision
-later excludes becomes unsettled. The decision is a reader's and sits outside (`logic.md` §"What stays
+later excludes becomes unsettled. The decision is a reader's and sits outside (`1-logic.md` §"What stays
 outside"). Nothing in the store was destroyed to get it.
 
 **It is strictly better than deletion, not equivalent with extra steps.** A derived `disputes(f)` is
@@ -82,7 +82,7 @@ There is no backtracking to simulate, because nothing is undone. What speculatio
 
 **Its cost is not soundness.** A speculative derivation is not a false assertion but a **contingent** one —
 true given its recorded hypotheses — and an implication whose antecedent turns out false is *vacuous*, not
-wrong. So *"a partial store is sound, never wrong"* (`logic.md` §"CALM") survives intact. The hypothesis's own state is
+wrong. So *"a partial store is sound, never wrong"* (`1-logic.md` §"CALM") survives intact. The hypothesis's own state is
 read by machinery already here: pending is `∅`, confirmed `⊒{t}`, refuted `⊒{f}`.
 
 **What it costs is that facts stop being autonomous.** Every other record here means what it says on its

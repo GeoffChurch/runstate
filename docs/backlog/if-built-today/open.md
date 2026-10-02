@@ -3,10 +3,10 @@
 **Layer:** across all layers; numbering preserved from the single-file draft. The dependency graph is in `README.md`.
 
 1. **Whether an unbounded demand is ever covered.** Boundedness of the extent is the solver's at post time
-   (`questions.md` §"Quantifiers live in questions"); what no post-time check reaches is whether an
+   (`3-questions.md` §"Quantifiers live in questions"); what no post-time check reaches is whether an
    *external* producer will ever converge and post its `¬Q`. A producer halted short of convergence
    knows nothing about the rest and must post nothing about it, so the tail stays `∅` — this is the
-   exhaustion question (`polarity.md` §"How a party comes to know a negative fact"), and it needs a shape that is not
+   exhaustion question (`2-polarity.md` §"How a party comes to know a negative fact"), and it needs a shape that is not
    `¬Q`. What is settled is settled by witnesses: for a question that binds the value, the halted
    producer's prefix is decided, and only the tail is open.
 2. **Provenance.** Not built. What it blocks meanwhile: diagnosing `{t,f}`, taint after a premise becomes
@@ -63,11 +63,11 @@
    `../memoizer-index-algebra.md`, where the delta reading is recorded as **non-monotone on a read path** — so
    they stay firing schedules, which is control. Of the shipped `until`, the step axis is a range, the time
    axis is a range only if the atom carries its time, and `count` is a lease rather than a question.
-9. **Whether may-summaries are usable.** `aggregation.md` §"Summaries" sorts summaries into three tiers
+9. **Whether may-summaries are usable.** `4-aggregation.md` §"Summaries" sorts summaries into three tiers
    and gives the may-lift, which moves any summary into tier 2. Open, and measurable: whether may-summaries
    — or their interval coarsening — are narrow enough in practice to be useful, and whether strongly
    settled regions are large enough, often enough, to make them exhaustive. The corpus has not been asked.
-10. **An admission rule for questions whose residual cannot empty** (`questions.md` §"The residual, assembled"): a free
+10. **An admission rule for questions whose residual cannot empty** (`3-questions.md` §"The residual, assembled"): a free
     variable over an unbounded value sort, or a strong question over producers that do not vouch. Without
     one, a scheduler that relaunches on a non-empty residual relaunches forever.
 

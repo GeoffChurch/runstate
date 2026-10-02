@@ -53,7 +53,7 @@ substrate), and the serialisable-DSL question, restated as one problem: *make th
 can subtract from and transport.*
 
 **The internalised answer is magic sets** — demand as a derived relation, where the residual is not
-computed and shipped but *derived in place* by demand rules. See `if-built-today/questions.md`
+computed and shipped but *derived in place* by demand rules. See `if-built-today/3-questions.md`
 §"The internalised form", which also covers why the guard disappears under it and what the safety
 condition is.
 

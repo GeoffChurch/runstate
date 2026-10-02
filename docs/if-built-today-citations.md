@@ -880,7 +880,7 @@ own grade is given.
 
 - **Bloom^L's morphism / monotone-function distinction** (Conway et al. 2012, entry above). The entry
   confirms the term *morphism* and the non-monotone `reveal`, but not the definition — morphisms as the
-  join-preserving maps, as against merely monotone functions — which `aggregation.md` §"Summaries" uses to
+  join-preserving maps, as against merely monotone functions — which `4-aggregation.md` §"Summaries" uses to
   name tier 1. *Recalled*; check §§4–6.
 
 Before this addition: nothing outstanding. Every claim the doc rested on had a CONFIRMED entry above, and

@@ -1,6 +1,6 @@
 # Reclamation: eviction, never retraction
 
-**Layer:** depends on `substrate.md`, `logic.md`, `polarity.md`. The dependency graph is in `README.md`.
+**Layer:** depends on `0-substrate.md`, `1-logic.md`, `2-polarity.md`. The dependency graph is in `README.md`.
 
 ## Reclamation is policy behind one interface
 

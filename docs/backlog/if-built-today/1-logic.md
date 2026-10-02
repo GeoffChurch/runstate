@@ -1,6 +1,6 @@
 # The logic: definite clauses over constraints
 
-**Layer:** depends on `substrate.md`. The dependency graph is in `README.md`.
+**Layer:** depends on `0-substrate.md`. The dependency graph is in `README.md`.
 
 ## The language, and what each restriction buys
 
@@ -8,7 +8,7 @@ The derivation language is **definite clauses** — one atomic head, a body of f
 constraints from a fixed CLP domain as ordinary body literals. **No `¬`, no `→`, no `∀`** as operations —
 a clause's own variables are universal, but that is the reading of a rule, not a connective a body can use;
 and no `∨`, no `⊥`, no equality and no `∃` in a *head*. Posted records are the special case whose body is
-constraints only (`substrate.md` §"The model").
+constraints only (`0-substrate.md` §"The model").
 
 **There is no `¬` in the language at all.** The store holds records in relations, and no axiom connects
 any relation to any other. A schema may declare two relations to be read as a statement and its denial;
@@ -17,7 +17,7 @@ Nothing is excepted, because nothing negates.
 
 The same split covers variables. In this document they are written Prolog-style — `V`, capitalised — and on
 the wire a variable travels as a **constructor**, `var(37)`, an ordinary term with a known functor, scoped
-to the record it occurs in (`substrate.md` §"The model"). Neither a capital letter nor a sigil is wire
+to the record it occurs in (`0-substrate.md` §"The model"). Neither a capital letter nor a sigil is wire
 format, because both make a receiver decide variable-ness from the spelling of a name — the
 closed-set-in-an-open-namespace error: a set known when the schema is written belongs in a field a tool can
 check, not in the spelling of a name.
@@ -30,7 +30,7 @@ check, not in the spelling of a name.
 | arbitrary `∨` **in heads** | **no** | a disjunctive fact has nowhere to live: this store is a **set of literals**, one model. `φ ⊢ a ∨ b` needs a set of *models*, or the disjunctive chase |
 | `⊥` in heads — integrity constraints | **no** | a store that must accept what it is given can only **reject a post** (order-dependent) or **go inconsistent** (§"Constraints are asked") |
 | equality in heads | **no** | that *is* a functional dependency — the same reason again |
-| `∃` in heads — value invention | **no** | the coordination-freeness proof's quiescence argument **requires** no value invention. A rule minting a fresh variable is excluded, and no posted record is existential either (`substrate.md` §"The model") |
+| `∃` in heads — value invention | **no** | the coordination-freeness proof's quiescence argument **requires** no value invention. A rule minting a fresh variable is excluded, and no posted record is existential either (`0-substrate.md` §"The model") |
 
 So three omissions are one reason — **the store must accept what it is given** — and the fourth is CALM's.
 None is taste.
