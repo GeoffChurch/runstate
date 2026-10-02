@@ -98,4 +98,4 @@ is a pattern the repo already ships one tier up; `observables.py`'s launcher-dea
 > Position cannot do this job: a reap is a reader-side observation that lands arbitrarily late …
 > Both forgeries die by construction here.
 
-Live work: `../backlog/episode-correlation.md`.
+Live work: `../backlog/episode-aim.md`.
