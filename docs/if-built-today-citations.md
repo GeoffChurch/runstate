@@ -878,6 +878,11 @@ own grade is given.
   Claimed: query completeness, established by completeness statements. Doc: §"Whose this already is",
   §"The threshold rule".
 
+- **Bloom^L's morphism / monotone-function distinction** (Conway et al. 2012, entry above). The entry
+  confirms the term *morphism* and the non-monotone `reveal`, but not the definition — morphisms as the
+  join-preserving maps, as against merely monotone functions — which `aggregation.md` §"Summaries" uses to
+  name tier 1. *Recalled*; check §§4–6.
+
 Before this addition: nothing outstanding. Every claim the doc rested on had a CONFIRMED entry above, and
 the remaining leads on review 7's list are each superseded by a stronger citation already read: closure-as-a-posted-fact by
 **Darari** (scoped, posted, composable, multi-source, implemented), explicit-negation-without-consistency

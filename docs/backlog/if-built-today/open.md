@@ -63,12 +63,10 @@
    `../memoizer-index-algebra.md`, where the delta reading is recorded as **non-monotone on a read path** — so
    they stay firing schedules, which is control. Of the shipped `until`, the step axis is a range, the time
    axis is a range only if the atom carries its time, and `count` is a lease rather than a question.
-9. **What aggregation can promise.** Nothing here closes the summary hazard (`aggregation.md` §"Summaries"): settledness,
-   weak or strong, does not make two agents' summaries glue, because each holds its own table and
-   conflict-freedom over a region is never affirmable. What strong settledness offers is a disagreement
-   that surfaces as `{t,f}` when views meet. Open: whether a knowledge-monotone summary — set- or
-   interval-valued over the four statuses — would let aggregation move inside; and, measurably, whether
-   strongly settled regions are large enough, often enough, to matter.
+9. **Whether may-summaries are usable.** `aggregation.md` §"Summaries" sorts summaries into three tiers
+   and gives the may-lift, which moves any summary into tier 2. Open, and measurable: whether may-summaries
+   — or their interval coarsening — are narrow enough in practice to be useful, and whether strongly
+   settled regions are large enough, often enough, to make them exhaustive. The corpus has not been asked.
 10. **An admission rule for questions whose residual cannot empty** (`questions.md` §"The residual, assembled"): a free
     variable over an unbounded value sort, or a strong question over producers that do not vouch. Without
     one, a scheduler that relaunches on a non-empty residual relaunches forever.

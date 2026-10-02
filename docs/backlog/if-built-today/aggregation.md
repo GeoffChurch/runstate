@@ -57,18 +57,69 @@ agent's view is coherent and every pairwise check passes, so no participant can 
 different demand regions need not. The foreclosure of `README.md` §"Two commitments" holds exactly as far as identity
 stays attached, and the summary map is where it stops.
 
-**Settledness does not close it, and the strong kind does not either.** Prop. 5.2 says *without* missing
-data, restriction and summarization commute — but of **one table**. Two agents hold two stores, and both
-can be complete while disagreeing. Under the weak kind of settledness, two stores each holding one value
-per key, different ones at key 61, are both settled for `∃V. p(K, V)`, their means differ, and nothing
-reads `{t,f}`. Under the strong kind the same thing happens: each producer vouched *"0.31 and nothing
-else"* or *"0.40 and nothing else"* at key 61, each store is strongly settled, and neither holds both
-values. What the strong kind buys is that the disagreement is **visible at the join** — the union reads
-`{t,f}` at key 61, a valuation conflict rather than a silent domain one (`questions.md` §"Settledness of a
-question"). Gluing needs, in addition,
-that the union is conflict-free over the region, which is `= {t}` and never affirmable. So a summary is a
-**report** — it sits outside, like `argmax` — and a summary computed over a strongly settled region is
-the one whose disagreement with another agent's will surface when their views meet. Whether that is a
-usable discipline depends on strongly settled regions being large enough, often enough, and on the
-key-granularity choice of `polarity.md` §"The rule for posting".
+**Below this layer everything glues, distributively** (`polarity.md` §"An atom's status"): the global store
+is the union of the local ones, and each atom's global status is the join of its local statuses. What a
+summary keeps of that depends on the summary, and there are exactly three tiers.
+
+**Which summaries keep it.** Stores are finite sets under union — the free join-semilattice — so the
+summaries that keep *distributive* gluing are exactly the maps `S(A) = ⨆_{r ∈ A} f(r)`, for some
+per-record `f` into a join-semilattice: the join-homomorphisms. Commutative and associative is not enough;
+**idempotence** is the condition, because agents' stores overlap and union counts the overlap once. `sum`
+and `count` are commutative monoids and fail exactly there: `sum(A ∪ B) ≠ sum(A) + sum(B)` when `A` and `B`
+share records.
+
+| tier | class | gluing | examples |
+|---|---|---|---|
+| **1** | join-homomorphisms, `⨆ f(r)` | **distributive** — the global summary is the join of the local ones, mergeable like a CRDT | per key, the set of told values; `max`; `min`; *"is there a value below 0.1?"*; the statuses themselves |
+| **2** | monotone, not join-preserving | **by common refinement** — the summary of the union refines each local one, so none can contradict another, but the global one is recomputed from the *records* | the set of possible means (below); the count of distinct records; settledness |
+| **3** | not monotone | **none** — a report, and it sits outside like `argmax` | *the* mean; last-write-wins; median; `sum` over overlapping stores |
+
+Tier 1 is Bloom^L's *morphisms* as against its monotone functions, and tier 2 holds by `logic.md`
+§"CALM"'s joint consistency applied to summaries. **Every summary factors** as a tier-1 map into a
+lattice — the set of records, or each key's set of values — followed by one final read, so its tier is
+that read's tier; Bloom^L's non-monotone `reveal` is the tier-3 read. And a non-idempotent tally climbs
+into tier 2 by counting occurrences named as data rather than arrivals (§"Orders are mostly read-side",
+the multiset row).
+
+**The tier-3 case, concretely.** Two stores each hold one value per key, 0.31 and 0.40 at key 61. Both are
+settled for `∃V. p(K, V)`; their means differ, and nothing reads `{t,f}`, because neither holds both
+values. Strong settledness does not change that — each producer vouched *"0.31 and nothing else"* or
+*"0.40 and nothing else"*, and the disagreement becomes **visible at the join**, as a valuation conflict
+rather than a silent domain one (`questions.md` §"Settledness of a question"), but not before. A picking
+summary would need the union conflict-free over the region, which is `= {t}` and never affirmable. Prop.
+5.2's commutation is about **one table**; two agents hold two.
+
+### The may-lift: any summary, moved into tier 2
+
+The tier-3 mean has a tier-2 counterpart, and the construction is general. For a summary `g` defined on
+data with one value per key, its **may-lift** is
+
+```
+may(g)(store) = { g(c) : c chooses one told-true value for each key in range }
+```
+
+— every value of `g` that some told choice supports. Its properties hold for every `g`:
+
+- **It is tier 2.** A new positive adds choices; a negative removes none, since it cannot withdraw a
+  told-true value. So `may(g)` only grows, and two agents' may-summaries are always jointly consistent.
+- **It is empty until the region is weakly settled.** A choice needs a value at *every* key in range, so
+  while one key has none there is no choice and `may(g) = ∅`. Restricting to the keys that do have values
+  would not fix this, since a new key would then change every mean, which is tier 3. Weak settledness —
+  every key has a value or is told to have none — is the lift's precondition; keys told to have none drop
+  out of range.
+- **It collapses to the scalar.** When each key has exactly one told value, `may(g)` is the singleton
+  `{g(…)}`, so the ordinary summary is its special case and nothing is lost by computing the lift.
+- **It is exhaustive for one store when that store is strongly settled** — every key's set of values
+  complete. Across stores it is not: conflict-freedom is never affirmable, so *"these are all the possible
+  means"* stays a report.
+- **Its reads split along the threshold rule.** *"Some supported mean is below 0.5"* is affirmable and
+  stays true; *"every supported mean is below 0.5"* is antitone in the positives, and is a report.
+- **It has a cheap coarsening.** The set of choices is exponential in the number of keys, but for a `g`
+  monotone in each value — the mean is — the interval `[g(min choice), g(max choice)]` is computed per key in
+  linear time, and is itself tier 2.
+
+It is the Hoare, or *may*, reading of §"Orders are mostly read-side" applied to summaries, and it is what
+a reader that shows summaries across agents would compute. Whether may-summaries are useful in practice,
+and whether strongly settled regions are large enough often enough to make them exhaustive, is
+`open.md` 9.
 

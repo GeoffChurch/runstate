@@ -26,11 +26,13 @@ producer.
 
 What follows:
 
-**It recovers retraction's effect without retracting.** The *evidence* is monotone — `disputes` records
-only accumulate, with no roster and no message to anybody. The *fold* is not: a reader accepting `f` unless
-it is disputed withdraws its acceptance when a dispute arrives, and a question settled from records a
-policy later excludes becomes unsettled. That fold is a reader's decision and sits outside (§"What stays
-outside"); what is gained is that nothing in the store was destroyed to get it.
+**It recovers retraction's effect without retracting.** What is monotone is the evidence and every
+reading of it that only climbs: `disputes` records only accumulate, with no roster and no message to
+anybody; per fact, the pair *(grounds for, objections)* only climbs; and a policy phrased as an allow-list
+— *use records from sources I trust* — is monotone too. What is not monotone is the **decision** *accept
+unless disputed*, which a later objection withdraws; and a question settled from records that decision
+later excludes becomes unsettled. The decision is a reader's and sits outside (`logic.md` §"What stays
+outside"). Nothing in the store was destroyed to get it.
 
 **It is strictly better than deletion, not equivalent with extra steps.** A derived `disputes(f)` is
 permanent like everything else, so an objection cannot be un-derived — but nothing was ever removed. `f` is
