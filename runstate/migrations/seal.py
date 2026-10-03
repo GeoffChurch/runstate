@@ -15,13 +15,22 @@ if TYPE_CHECKING:
 
 def seal_sqlite(path: Path) -> None:
     """Checkpoint, leave WAL so the file opens read-only with no sidecars, then
-    clear every write bit. An old writer's next append fails with 'attempt to
+    clear every write bit. Raises, leaving the file untouched, if another
+    connection keeps the log from checkpointing or leaving WAL. An old writer's next append fails with 'attempt to
     write a readonly database'."""
     conn = sqlite3.connect(path, isolation_level=None)
     try:
         conn.execute("PRAGMA busy_timeout=5000")
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        conn.execute("PRAGMA journal_mode=DELETE")
+        try:
+            busy, _, _ = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            (journal,) = conn.execute("PRAGMA journal_mode=DELETE").fetchone()
+        except sqlite3.OperationalError as e:  # "database is locked"
+            busy, journal = -1, str(e)
+        if busy != 0 or journal.lower() != "delete":
+            raise RuntimeError(
+                f"cannot seal {path}: another connection holds the log open "
+                f"(checkpoint busy={busy}, journal_mode={journal}); close it and retry"
+            )
     finally:
         conn.close()
     mode = os.stat(path).st_mode

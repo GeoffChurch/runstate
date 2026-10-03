@@ -57,3 +57,23 @@ def test_sealed_postgres_run_refuses_inserts(pg_ready):
                 f"INSERT INTO {schema}.log VALUES (%s, 1, 'value', 'n', NULL, '{{}}', 0)",
                 [other],
             )
+
+
+def test_seal_refuses_while_another_connection_holds_the_log(
+    tmp_path, crashed_wal_writer
+):
+    path = tmp_path / "r.db"
+    crashed_wal_writer(path, 3)
+    holder = sqlite3.connect(path)
+    try:
+        holder.execute("PRAGMA journal_mode=WAL")
+        holder.execute("BEGIN")
+        holder.execute(
+            "SELECT count(*) FROM log"
+        ).fetchone()  # an open read transaction
+        with pytest.raises(RuntimeError, match="another connection holds the log open"):
+            seal_sqlite(path)
+        if not _AS_ROOT:
+            assert os.stat(path).st_mode & 0o200  # still writable: nothing was chmodded
+    finally:
+        holder.close()
