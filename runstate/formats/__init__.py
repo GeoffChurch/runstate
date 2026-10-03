@@ -122,18 +122,21 @@ def sqlite_onboarding(root: Path, run_id: str) -> str:
         '[ -s "$f" ] || continue; '
         f't={q_base}/"${{f##*/}}"; '
         'if [ -e "$t" ]; then echo "skipped $f: $t exists" >&2; continue; fi; '
-        f'for x in {sidecars}; do if [ -e "$f$x" ]; then mv "$f$x" "$t$x"; fi; done; '
+        f"for x in {sidecars}; do "
+        'if [ -e "$f$x" ]; then mv "$f$x" "$t$x"; fi; done; '
         '[ -e "$f" ] || { : > "$f" && chmod a-w "$f"; }; done'
     )
     return (
-        f"{root / (run_id + '.db')} predates versioned addresses, so its format is unknown "
-        f"and nothing will infer it. If it was written by runstate at or after {_BASE_COMMIT}, "
-        f"it is format {_BASE}: check that its lifecycle.heartbeat bodies carry a `t` field. "
-        f"First stop every process that writes under {root}, and drain any queued jobs that "
-        f"would. Then move the log, with any {', '.join(_SIDECARS)} files beside it, into "
-        f"{base}/, and leave a tombstone at its old address: an empty, read-only file. "
-        f"{_WHY_TOMBSTONE} Then run `{sqlite_migrate_command(root)}`. To do this for every "
-        f"legacy log under the root:\n  {loop}"
+        f"{root / (run_id + '.db')} predates versioned addresses, so its format "
+        f"is unknown and nothing will infer it. If it was written by runstate at "
+        f"or after {_BASE_COMMIT}, it is format {_BASE}: check that its "
+        f"lifecycle.heartbeat bodies carry a `t` field. First stop every process "
+        f"that writes under {root}, and drain any queued jobs that would. Then "
+        f"move the log, with any {', '.join(_SIDECARS[:-1])} or {_SIDECARS[-1]} "
+        f"file beside it, into "
+        f"{base}/, and leave a tombstone at its old address: an empty, read-only "
+        f"file. {_WHY_TOMBSTONE} Then run `{sqlite_migrate_command(root)}`. To do "
+        f"this for every legacy log under the root:\n  {loop}"
     )
 
 
@@ -147,22 +150,24 @@ def postgres_onboarding(run_id: str, schema: str) -> str:
     s = '"' + schema.replace('"', '""') + '"'
     fn = f"{s}.runstate_log_moved"
     sql = (
-        f"BEGIN; CREATE SCHEMA {target}; ALTER TABLE {s}.log SET SCHEMA {target}; "
+        f"BEGIN; CREATE SCHEMA {target}; "
+        f"ALTER TABLE {s}.log SET SCHEMA {target}; "
         f"CREATE TABLE {s}.log (LIKE {target}.log); "
         f"CREATE FUNCTION {fn}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
-        f"RAISE EXCEPTION 'runstate: this log moved to schema {target}; upgrade runstate'; "
+        f"RAISE EXCEPTION "
+        f"'runstate: this log moved to schema {target}; upgrade runstate'; "
         f"END $$; "
         f"CREATE TRIGGER runstate_log_moved BEFORE INSERT ON {s}.log "
         f"FOR EACH ROW EXECUTE FUNCTION {fn}(); COMMIT;"
     )
     return (
-        f"run {run_id!r} is in the unversioned `log` table of schema {s}, which predates "
-        f"versioned addresses, so its format is unknown and nothing will infer it. If it "
-        f"was written by runstate at or after {_BASE_COMMIT}, it is format {_BASE}. First "
-        f"stop every process that writes to it, and drain any queued jobs that would. Then "
-        f"move the table into schema {target}, and leave a tombstone in its place: an empty "
-        f"`log` that refuses every insert. {_WHY_TOMBSTONE} Then run "
-        f"`{POSTGRES_MIGRATE_COMMAND}`:\n"
+        f"run {run_id!r} is in the unversioned `log` table of schema {s}, which "
+        f"predates versioned addresses, so its format is unknown and nothing will "
+        f"infer it. If it was written by runstate at or after {_BASE_COMMIT}, it "
+        f"is format {_BASE}. First stop every process that writes to it, and drain "
+        f"any queued jobs that would. Then move the table into schema {target}, "
+        f"and leave a tombstone in its place: an empty `log` that refuses every "
+        f"insert. {_WHY_TOMBSTONE} Then run `{POSTGRES_MIGRATE_COMMAND}`:\n"
         f"  {sql}"
     )
 

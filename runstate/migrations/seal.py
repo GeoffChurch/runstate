@@ -13,14 +13,19 @@ if TYPE_CHECKING:
     import psycopg
 
 
+# How long the seal waits for another connection to let go of the log before it
+# refuses, as the channels wait (their busy_timeout).
+_BUSY_TIMEOUT_MS = 5000
+
+
 def seal_sqlite(path: Path) -> None:
     """Checkpoint, leave WAL so the file opens read-only with no sidecars, then
     clear every write bit. Raises, leaving the file untouched, if another
-    connection keeps the log from checkpointing or leaving WAL. An old writer's next append fails with 'attempt to
-    write a readonly database'."""
+    connection keeps the log from checkpointing or leaving WAL. An old writer's
+    next append fails with 'attempt to write a readonly database'."""
     conn = sqlite3.connect(path, isolation_level=None)
     try:
-        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
         try:
             busy, _, _ = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
             (journal,) = conn.execute("PRAGMA journal_mode=DELETE").fetchone()

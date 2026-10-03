@@ -60,8 +60,13 @@ def test_sealed_postgres_run_refuses_inserts(pg_ready):
 
 
 def test_seal_refuses_while_another_connection_holds_the_log(
-    tmp_path, crashed_wal_writer
+    tmp_path, crashed_wal_writer, monkeypatch
 ):
+    """The holder never lets go, so the seal refuses whatever it waits; a short
+    wait keeps the refusal path and drops the 5 s it cost the suite."""
+    from runstate.migrations import seal
+
+    monkeypatch.setattr(seal, "_BUSY_TIMEOUT_MS", 50)
     path = tmp_path / "r.db"
     crashed_wal_writer(path, 3)
     holder = sqlite3.connect(path)
