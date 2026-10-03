@@ -88,6 +88,12 @@ def test_every_emitted_envelope_conforms(tmp_path):
         request_id="bad",
     )  # -> nak
     obs.send(
+        {"every": {"step": 1}, "until": {"count": 2}},
+        topic="control.subscribe",
+        name="loss",
+        request_id="lease",
+    )  # episode-local (a count atom) -> the worker binds it: lifecycle.bound
+    obs.send(
         {}, topic="control.subscribe", name="loss", request_id="once"
     )  # one-shot ->
     # the worker writes its expiry counter-record (a WORKER-authored

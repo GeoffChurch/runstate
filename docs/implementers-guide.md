@@ -934,6 +934,10 @@ they can never drift from the wire format. **Convention used by the test:**
 
 ### 8.1 Valid records (one or more per reserved topic)
 
+Each record stands alone: together they are not one log (three `stopped`s below
+name one claim, which no single log would hold). The names agree, though: every
+record that names a claim names the `lifecycle.started` at seq 4.
+
 A subscribe with a compound schedule (fire from step 100; then every 10 steps or
 60 s, whichever first; until both step 5000 and 100 fires):
 
@@ -951,7 +955,9 @@ An unsubscribe (cancels `sub-1`; empty body):
  "body": {}}
 ```
 
-A conditional stop (stop at step 500; `from` only):
+A conditional stop (stop at step 500; `from` only). Its `request_id` is
+**required** (`subscription-v0.3`): the `lifecycle.stopped` that honors the
+stop, or the `nak` that refuses it, answers it by that name:
 
 ```json
 {"seq": 3, "topic": "control.stop", "name": null, "request_id": "stop-1",
@@ -966,56 +972,88 @@ The worker's claim, re-emitting its launch id on `request_id` (§3.8):
 ```
 
 A stepped heartbeat, and a **stepless** heartbeat (a `serve()` worker; `step`
-present-nullable):
+present-nullable). Each names the claim it follows (`claim_seq`, an integer
+≥ 1, never null):
 
 ```json
 {"seq": 5, "topic": "lifecycle.heartbeat", "name": null, "request_id": null,
- "body": {"step": 42, "consumed_seq": 3, "t": 1721145602.0}}
+ "body": {"step": 42, "consumed_seq": 3, "claim_seq": 4, "t": 1721145602.0}}
 ```
 
 ```json
 {"seq": 6, "topic": "lifecycle.heartbeat", "name": null, "request_id": null,
- "body": {"step": null, "consumed_seq": 3, "t": 1721145601.5}}
+ "body": {"step": null, "consumed_seq": 3, "claim_seq": 4, "t": 1721145601.5}}
 ```
 
 A **completed** stop and an **errored** stop (`error is not None` ⟹ errored,
-§4.4):
+§4.4). Every `stopped` names its claim (`claim_seq`) and the stops it honored
+(`honored`, the `request_id`s of every stop pending when it stopped, due or not;
+`[]` when none was). The errored worker died at step 412 holding `stop-1`, not
+yet due at 500, and still names it: a `stopped` clears every pending stop:
 
 ```json
 {"seq": 7, "topic": "lifecycle.stopped", "name": null, "request_id": null,
- "body": {"completed": true, "error": null, "final_step": 999, "t": 1721145700.0}}
+ "body": {"completed": true, "error": null, "final_step": 999, "claim_seq": 4,
+          "honored": [], "t": 1721145700.0}}
 ```
 
 ```json
 {"seq": 8, "topic": "lifecycle.stopped", "name": null, "request_id": null,
- "body": {"completed": false, "error": "CUDA OOM at step 512", "final_step": 512,
-          "t": 1721145710.0}}
+ "body": {"completed": false, "error": "CUDA OOM at step 412", "final_step": 412,
+          "claim_seq": 4, "honored": ["stop-1"], "t": 1721145710.0}}
+```
+
+A **commanded** stop: the worker carried out `stop-1` at step 500 and names it,
+which answers it (no completion claim, no error ⟹ preempted, §4.4):
+
+```json
+{"seq": 9, "topic": "lifecycle.stopped", "name": null, "request_id": null,
+ "body": {"completed": false, "error": null, "final_step": 500, "claim_seq": 4,
+          "honored": ["stop-1"], "t": 1721145705.0}}
+```
+
+A **claimless** `stopped`, written by a third party for a run no worker ever
+claimed: `claim_seq` is `null`, and it answers only the stops it names:
+
+```json
+{"seq": 10, "topic": "lifecycle.stopped", "name": null, "request_id": null,
+ "body": {"completed": false, "error": null, "final_step": null, "claim_seq": null,
+          "honored": ["stop-0"], "t": 1721145590.0}}
 ```
 
 A nak (closed reason enum; undated):
 
 ```json
-{"seq": 9, "topic": "lifecycle.nak", "name": null, "request_id": "sub-bad",
+{"seq": 11, "topic": "lifecycle.nak", "name": null, "request_id": "sub-bad",
  "body": {"reason": "unsatisfiable", "message": "schedule can produce no fires"}}
+```
+
+A binding: `sub-1`'s schedule has a `time_seconds` atom, so it is
+episode-local, and before registering it the worker binds it to its own claim
+(`request_id` required: the subscription it binds):
+
+```json
+{"seq": 12, "topic": "lifecycle.bound", "name": null, "request_id": "sub-1",
+ "body": {"claim_seq": 4}}
 ```
 
 A launcher record **with its required `request_id`**, and a killed termination
 (reason-field pairing: `signal` non-null, `exit_code` null):
 
 ```json
-{"seq": 10, "topic": "launcher.launched", "name": null, "request_id": "launch-abc",
+{"seq": 13, "topic": "launcher.launched", "name": null, "request_id": "launch-abc",
  "body": {"handle": "local://host42/12345", "status": "running", "t": 1721145599.0}}
 ```
 
 ```json
-{"seq": 11, "topic": "launcher.terminated", "name": null, "request_id": "launch-abc",
+{"seq": 14, "topic": "launcher.terminated", "name": null, "request_id": "launch-abc",
  "body": {"reason": "killed", "exit_code": null, "signal": 9, "t": 1721145720.0}}
 ```
 
 A value (answering `sub-1`; `step`/`t` present-nullable but stamped here):
 
 ```json
-{"seq": 12, "topic": "value", "name": "loss", "request_id": "sub-1",
+{"seq": 15, "topic": "value", "name": "loss", "request_id": "sub-1",
  "body": {"value": 0.5, "step": 42, "t": 1721145602.0}}
 ```
 
@@ -1032,36 +1070,62 @@ An **extra top-level envelope field** — rejected by `envelope-v0.2`
  "body": {"value": 0.5, "step": 1, "t": 1.0}, "author": "me"}
 ```
 
-A **heartbeat with no `t`** — rejected by `lifecycle-v0.4` (`t` is required
+A **heartbeat with no `t`** — rejected by `lifecycle-v0.5` (`t` is required
 non-null since the observer-clock bump):
 
 ```jsonc
 {"seq": 2, "topic": "lifecycle.heartbeat", "name": null, "request_id": null,
- "body": {"step": 1, "consumed_seq": 0}}
+ "body": {"step": 1, "consumed_seq": 0, "claim_seq": 1}}
+```
+
+A **heartbeat that names no claim** — rejected by `lifecycle-v0.5` (`claim_seq`
+is required and never null: a beat speaks for the one episode it names):
+
+```jsonc
+{"seq": 3, "topic": "lifecycle.heartbeat", "name": null, "request_id": null,
+ "body": {"step": 1, "consumed_seq": 0, "claim_seq": null, "t": 1.0}}
 ```
 
 A **launcher record with `request_id: null`** — rejected by `launcher-v0.4` (the
 launch's correlation id is required on both records, §3.8):
 
 ```jsonc
-{"seq": 3, "topic": "launcher.terminated", "name": null, "request_id": null,
+{"seq": 4, "topic": "launcher.terminated", "name": null, "request_id": null,
  "body": {"reason": "exited", "exit_code": 0, "signal": null, "t": 1.0}}
 ```
 
-A **`count` atom outside `until`** — rejected by `subscription-v0.2` (`count` is
+A **`count` atom outside `until`** — rejected by `subscription-v0.3` (`count` is
 grammatical only under `until`, §3.3):
 
 ```jsonc
-{"seq": 4, "topic": "control.subscribe", "name": "loss", "request_id": "r",
+{"seq": 5, "topic": "control.subscribe", "name": "loss", "request_id": "r",
  "body": {"from": {"count": 5}}}
 ```
 
-A **completed stop carrying an `error`** — rejected by `lifecycle-v0.4` (the
+A **stop with no `request_id`** — rejected by `subscription-v0.3` (a stop is
+answered by name, so it must carry one):
+
+```jsonc
+{"seq": 6, "topic": "control.stop", "name": null, "request_id": null,
+ "body": {}}
+```
+
+A **completed stop carrying an `error`** — rejected by `lifecycle-v0.5` (the
 `completed ⟹ error is null` coupling, §4.4):
 
 ```jsonc
-{"seq": 5, "topic": "lifecycle.stopped", "name": null, "request_id": null,
- "body": {"completed": true, "error": "boom", "final_step": null, "t": 1.0}}
+{"seq": 7, "topic": "lifecycle.stopped", "name": null, "request_id": null,
+ "body": {"completed": true, "error": "boom", "final_step": null, "claim_seq": 1,
+          "honored": [], "t": 1.0}}
+```
+
+A **`stopped` with no `honored`** — rejected by `lifecycle-v0.5` (the list is
+always present, `[]` when it honored nothing; never omitted, never null):
+
+```jsonc
+{"seq": 8, "topic": "lifecycle.stopped", "name": null, "request_id": null,
+ "body": {"completed": true, "error": null, "final_step": null, "claim_seq": 1,
+          "t": 1.0}}
 ```
 
 ---

@@ -1,7 +1,7 @@
 """The service-worker spec (docs/specs/service-worker.md).
 
-Expiry counter-records + the positional answer fold (a subscribe is live
-until an unsubscribe/nak with its request_id FOLLOWS it by seq), the enforced
+Expiry counter-records + the answer fold by name (a subscribe is live until
+an unsubscribe/nak NAMES its request_id, wherever it lands), the enforced
 registered<=>fire-possible invariant, the count-atom hygiene, pinned/retire/
 serve, and the death-CAS race discipline. Parametrized over both backends.
 """
@@ -69,7 +69,7 @@ def test_worker_redrains_its_own_expiry_record_silently(open_run):
     assert open_run().read(topics=["lifecycle.nak"]) == []
 
 
-# ----- the positional answer fold across episodes -----
+# ----- the answer fold across episodes -----
 
 
 def test_resumed_episode_does_not_resurrect_an_expired_lease(open_run):
@@ -101,28 +101,41 @@ def test_resumed_episode_skips_a_naked_subscribe(open_run):
     assert len(open_run().read(topics=["lifecycle.nak"])) == 1
 
 
-def test_same_id_resubscribe_after_answer_is_live(open_run):
-    # positional, not id-set: a later subscribe reusing an answered id is a
-    # fresh, live request.
+def test_same_id_resubscribe_after_answer_is_live_by_name(open_run):
+    """Replaces the positional ``test_same_id_resubscribe_after_answer_is_live``
+    (reference-by-name §3, Subscriptions): a request_id names ONE request, and
+    once an answer names it the id is spent -- a later subscribe reusing it is
+    dead on arrival, where positionally it was a fresh, live request. To
+    replace a subscription, use a fresh id."""
     orch = open_run()
     _sub(orch, {"every": {"step": 1}}, "r1")
     orch.send({}, topic="control.unsubscribe", request_id="r1")  #  rescind
-    _sub(orch, {"every": {"step": 1}}, "r1")  #                     again, later
+    _sub(orch, {"every": {"step": 1}}, "r1")  #           again, later: spent id
+    _sub(orch, {"every": {"step": 1}}, "r2")  #           the replacement idiom
+    with Worker(open_run(), now=lambda: 0.0) as w:
+        w.set("loss", 1.0)
+        w.tick(step=0)
+        assert w.pinned is True  #                         by r2 alone
+    vals = open_run().read(topics=["value"])
+    assert [v.request_id for v in vals] == ["r2"]  #  the reused id never serves
+    assert open_run().read(topics=["lifecycle.nak"]) == []  # silently: no refusal
+
+
+def test_unsubscribe_before_its_subscribe_answers_nothing_by_name(open_run):
+    """Replaces the positional ``test_unsubscribe_before_its_subscribe_answers_nothing``
+    (reference-by-name §3, Subscriptions): an answer counts wherever it lands.
+    An unsubscribe names its id whether it sits before or after the subscribe,
+    so the subscribe after it is dead on arrival -- positionally that
+    unsubscribe was "too early" and answered nothing."""
+    orch = open_run()
+    orch.send({}, topic="control.unsubscribe", request_id="r1")  #  names r1
+    _sub(orch, {"every": {"step": 1}}, "r1")
+    _sub(orch, {"every": {"step": 1}}, "r2")  #           an unanswered control
     with Worker(open_run(), now=lambda: 0.0) as w:
         w.set("loss", 1.0)
         w.tick(step=0)
     vals = open_run().read(topics=["value"])
-    assert [v.request_id for v in vals] == ["r1"]  #  served exactly once
-
-
-def test_unsubscribe_before_its_subscribe_answers_nothing(open_run):
-    orch = open_run()
-    orch.send({}, topic="control.unsubscribe", request_id="r1")  #  too early
-    _sub(orch, {"every": {"step": 1}}, "r1")
-    with Worker(open_run(), now=lambda: 0.0) as w:
-        w.set("loss", 1.0)
-        w.tick(step=0)
-    assert len(open_run().read(topics=["value"])) == 1
+    assert [v.request_id for v in vals] == ["r2"]
 
 
 # ----- the enforced invariant: registered <=> a future fire is possible -----
@@ -252,7 +265,14 @@ def test_retire_wins_on_a_quiet_log(open_run):
     w.tick(step=None)
     assert w.retire() is True
     e = open_run().latest("lifecycle.stopped")
-    assert e.body == {"completed": False, "error": None, "final_step": None, "t": 0.0}
+    assert e.body == {
+        "completed": False,
+        "error": None,
+        "final_step": None,
+        "claim_seq": open_run().latest("lifecycle.started").seq,
+        "honored": [],
+        "t": 0.0,
+    }
     w.stopped()  #                                 __exit__ path: idempotent
     assert len(open_run().read(topics=["lifecycle.stopped"])) == 1
 
@@ -362,28 +382,55 @@ def test_founding_prestaged_time_lease_registers(open_run):
     assert len(open_run().read(topics=["value"])) == 1
 
 
-def test_boundary_voids_a_time_lease(open_run):
-    # a started other than the drainer's own follows the lease -> voided:
-    # pop-then-skip, no nak, no record -- the boundary started IS the
-    # counter-record (pairing-by-seq's fourth instance).
+def _bindings(ch):
+    return [
+        (b.request_id, b.body["claim_seq"]) for b in ch.read(topics=["lifecycle.bound"])
+    ]
+
+
+def test_boundary_voids_a_time_lease_by_name(open_run):
+    """Replaces the positional ``test_boundary_voids_a_time_lease``
+    (reference-by-name §3, Episode-local subscriptions): a lease is void only
+    through the episode that registered it, recorded as ``lifecycle.bound``.
+    The old fixture's dead started never took the lease in, so it voids
+    nothing -- positionally that bare started WAS the void. The next episode
+    to drain the lease binds it to its own claim and serves it; once that
+    episode ends, the binding voids it for every later one, silently (no nak,
+    no record)."""
     orch = open_run()
     _sub(orch, {"every": {"step": 1}, "until": {"time_seconds": 100}}, "r1")
-    _dead_started(orch)  #                         a prior episode's boundary
+    _dead_started(orch)  #               a prior episode that never drained it
     w = Worker(open_run(), now=lambda: 0.0)
     assert w.claimed is True  #  a lost worker emits nothing -- vacuous-green guard
     w.set("loss", 1.0)
     w.tick(step=0)
-    assert open_run().read(topics=["value"]) == []
+    own = open_run().latest("lifecycle.started").seq
+    assert [v.request_id for v in open_run().read(topics=["value"])] == ["r1"]
+    assert _bindings(open_run()) == [("r1", own)]  #  bound to the registering claim
+    assert w.pinned is True
+    w.stopped()  #                       its registering episode ends
+    w2 = Worker(open_run(), now=lambda: 0.0)
+    assert w2.claimed is True
+    w2.set("loss", 2.0)
+    w2.tick(step=1)
+    assert len(open_run().read(topics=["value"])) == 1  #  never re-anchored
     assert open_run().read(topics=["lifecycle.nak"]) == []
     assert open_run().read(topics=["control.unsubscribe"]) == []
-    assert w.pinned is False
+    assert w2.pinned is False
 
 
-def test_voided_lease_pops_its_same_id_predecessor(open_run):
-    # the A1 attack: a client tightened an unbounded step-sub into a
-    # time-leased replacement (same id); after a boundary the replacement is
-    # voided -- and must still rescind the predecessor (slots, not sets),
-    # else the superseded immortal sub resurrects while live_demand reads 0.
+def test_voided_lease_pops_its_same_id_predecessor_by_name(open_run):
+    """Replaces the positional ``test_voided_lease_pops_its_same_id_predecessor``
+    (reference-by-name §3): a lease is void only through the episode that
+    registered it, and a re-send of a live id is the SAME request, its latest
+    schedule standing. The A1 attack -- a client tightens an unbounded step-sub
+    into a time lease under the same id -- so leaves ONE request, a lease: the
+    old fixture's dead started never took it in, so the next episode serves it
+    (positionally it was voided at zero fires). Once its registering episode
+    ends the whole request is void, and the superseded immortal schedule must
+    not resurrect while live_demand reads 0."""
+    from runstate import live_demand
+
     orch = open_run()
     _sub(orch, {"every": {"step": 1}}, "r1")  #                      immortal
     _sub(orch, {"every": {"step": 1}, "until": {"time_seconds": 100}}, "r1")
@@ -392,8 +439,16 @@ def test_voided_lease_pops_its_same_id_predecessor(open_run):
     assert w.claimed is True  #  a lost worker emits nothing -- vacuous-green guard
     w.set("loss", 1.0)
     w.tick(step=0)
-    assert open_run().read(topics=["value"]) == []
-    assert w.pinned is False
+    assert len(open_run().read(topics=["value"])) == 1  #  the lease, not voided
+    assert _bindings(open_run()) == [("r1", open_run().latest("lifecycle.started").seq)]
+    w.stopped()
+    assert live_demand(open_run()) == []
+    w2 = Worker(open_run(), now=lambda: 0.0)
+    assert w2.claimed is True
+    w2.set("loss", 2.0)
+    w2.tick(step=1)
+    assert len(open_run().read(topics=["value"])) == 1  #  no resurrection
+    assert w2.pinned is False
 
 
 def test_reanchor_once_then_void(open_run):
@@ -414,19 +469,26 @@ def test_reanchor_once_then_void(open_run):
     assert len(open_run().read(topics=["value"])) == n
 
 
-def test_zero_fire_void(open_run):
-    # consecutive crash-births around a pre-staged lease: voided, zero fires
-    # ever (documented: acceptance != will-serve; renewal is the client's
-    # detection mechanism).
+def test_zero_fire_void_by_name(open_run):
+    """Replaces the positional ``test_zero_fire_void`` (reference-by-name §3,
+    Episode-local subscriptions): a lease is void only through the episode that
+    registered it. Consecutive crash-births around a pre-staged lease never took
+    it in, so they bind nothing and void nothing -- positionally they voided it
+    with zero fires ever. The first episode that drains it serves it."""
+    from runstate import live_demand
+
     orch = open_run()
     _sub(orch, {"every": {"step": 1}, "until": {"time_seconds": 100}}, "r1")
     _dead_started(orch)
     _dead_started(orch)
+    assert [e.request_id for e in live_demand(open_run())] == ["r1"]  # not void
     w = Worker(open_run(), now=lambda: 0.0)
+    assert w.claimed is True  #  a lost worker emits nothing -- vacuous-green guard
     w.set("loss", 1.0)
     w.tick(step=0)
-    assert open_run().read(topics=["value"]) == []
-    assert w.pinned is False
+    assert [v.request_id for v in open_run().read(topics=["value"])] == ["r1"]
+    assert _bindings(open_run()) == [("r1", open_run().latest("lifecycle.started").seq)]
+    assert w.pinned is True
 
 
 def test_step_keyed_lease_crosses_boundaries(open_run):
@@ -440,8 +502,15 @@ def test_step_keyed_lease_crosses_boundaries(open_run):
     assert len(open_run().read(topics=["value"])) == 1
 
 
-def test_mixed_schedule_is_episode_scoped(open_run):
-    # any time atom anywhere makes the whole registration a lease.
+def test_mixed_schedule_is_episode_scoped_by_name(open_run):
+    """Replaces the positional ``test_mixed_schedule_is_episode_scoped``
+    (reference-by-name §3, Episode-local subscriptions): any time atom anywhere
+    makes the whole registration a lease, and a lease is void only through the
+    episode that registered it. The old fixture's dead started never took it
+    in, so it voids nothing (positionally it voided it). What makes the mixed
+    schedule episode-scoped is now its binding: the registering episode binds
+    it, a step-keyed twin gets no binding, and once that episode ends the lease
+    is void while the twin carries over."""
     orch = open_run()
     _sub(
         orch,
@@ -451,11 +520,26 @@ def test_mixed_schedule_is_episode_scoped(open_run):
         },
         "r1",
     )
+    _sub(orch, {"every": {"step": 1}, "until": {"step": 1000}}, "r2")  # step-keyed
     _dead_started(orch)
     w = Worker(open_run(), now=lambda: 0.0)
+    assert w.claimed is True  #  a lost worker emits nothing -- vacuous-green guard
     w.set("loss", 1.0)
     w.tick(step=0)
-    assert open_run().read(topics=["value"]) == []
+    own = open_run().latest("lifecycle.started").seq
+    assert sorted(v.request_id for v in open_run().read(topics=["value"])) == [
+        "r1",
+        "r2",
+    ]
+    assert _bindings(open_run()) == [("r1", own)]  #  the lease alone is bound
+    w.stopped()
+    w2 = Worker(open_run(), now=lambda: 0.0)
+    assert w2.claimed is True
+    w2.set("loss", 2.0)
+    w2.tick(step=1)
+    fired = [v.request_id for v in open_run().read(topics=["value"])]
+    assert fired.count("r1") == 1  #  void once its registering episode ended
+    assert fired.count("r2") == 2  #  the step-keyed twin carries over
 
 
 def test_ghost_relaunch_bound(open_run):
@@ -699,10 +783,15 @@ def test_count_is_episode_local_like_time_and_step_is_not():
     assert references_time(lease_time) is True
 
 
-def test_a_count_lease_does_not_refund_its_budget_each_episode(tmp_path):
-    """The gap this closes: a count budget used to reset at every episode
-    boundary, so `until={"count": N}` fired N times PER EPISODE instead of
-    being discharged like its time-referencing twin."""
+def test_a_count_lease_does_not_refund_its_budget_each_episode_by_name(tmp_path):
+    """Replaces the positional ``test_a_count_lease_does_not_refund_its_budget_each_episode``
+    (reference-by-name §3, Episode-local subscriptions). The gap it closed: a
+    count budget used to reset at every episode boundary, so
+    `until={"count": N}` fired N times PER EPISODE. A lease is void only through
+    the episode that registered it: the old fixture's starteds never took the
+    lease in, so they void nothing (positionally the second one did). Once an
+    episode binds it, the budget is that episode's, and it is void for every
+    other episode, never refunded -- like its time-referencing twin."""
     from runstate.channel import create_channel
     from runstate.observables import live_demand
 
@@ -716,6 +805,10 @@ def test_a_count_lease_does_not_refund_its_budget_each_episode(tmp_path):
     assert [e.seq for e in live_demand(ch)] == [sub]
 
     ch.send({"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started")
+    assert [e.seq for e in live_demand(ch)] == [sub]
+    c2 = ch.send({"handle": "local://h/2", "t": 1.0}, topic="lifecycle.started")
+    assert [e.seq for e in live_demand(ch)] == [sub]  # nobody took it in: not void
+    ch.send({"claim_seq": c2}, topic="lifecycle.bound", request_id="lease")
     assert [e.seq for e in live_demand(ch)] == [sub]  # its own episode: still live
-    ch.send({"handle": "local://h/2", "t": 1.0}, topic="lifecycle.started")
-    assert live_demand(ch) == []  # discharged by the boundary, like a time lease
+    ch.send({"handle": "local://h/3", "t": 2.0}, topic="lifecycle.started")
+    assert live_demand(ch) == []  # bound to another episode: the budget is spent
