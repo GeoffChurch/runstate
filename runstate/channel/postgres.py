@@ -129,7 +129,8 @@ def check_format(conn: psycopg.Connection[Any], run_id: str) -> bool:
             )
     if _has_rows(conn, "public", run_id):
         raise LogFormatMissing(
-            where="public.log", instructions=formats.postgres_onboarding(run_id)
+            where="public.log",
+            instructions=formats.postgres_onboarding(run_id, "public"),
         )
     return False
 

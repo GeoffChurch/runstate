@@ -9,6 +9,7 @@ read it."""
 from __future__ import annotations
 
 import re
+import shlex
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -85,26 +86,69 @@ _BASE = "0.2.0"  # what every log written before versioned addresses can be onbo
 _BASE_COMMIT = "4729fcd (2026-07-16, lifecycle-v0.4 and launcher-v0.4)"
 
 
+# The legacy log's sidecars, moved with it: the -wal and -shm of WAL mode.
+_SIDECARS = ("-wal", "-shm")
+
+_WHY_TOMBSTONE = (
+    "A writer still running an older runstate resolves only the old address, so "
+    "without the tombstone it would start the run over there, silently."
+)
+
+
 def sqlite_onboarding(root: Path, run_id: str) -> str:
+    """The one-time instructions for a log at the legacy address (§7): stop the
+    writers, move each log into the 0.2.0 directory with its sidecars, and leave
+    a tombstone, an empty read-only file, at its old address (§5). The loop
+    skips empty files and logs already in place, so running it again is safe."""
+    base = root / ("v" + _BASE)
+    q_root, q_base = shlex.quote(str(root)), shlex.quote(str(base))
+    sidecars = " ".join(["''", *_SIDECARS])
+    loop = (
+        f"mkdir -p {q_base} && for f in {q_root}/*.db; do "
+        '[ -s "$f" ] || continue; '
+        f't={q_base}/"${{f##*/}}"; '
+        'if [ -e "$t" ]; then echo "skipped $f: $t exists" >&2; continue; fi; '
+        f'for x in {sidecars}; do if [ -e "$f$x" ]; then mv "$f$x" "$t$x"; fi; done; '
+        '[ -e "$f" ] || { : > "$f" && chmod a-w "$f"; }; done'
+    )
     return (
         f"{root / (run_id + '.db')} predates versioned addresses, so its format is unknown "
         f"and nothing will infer it. If it was written by runstate at or after {_BASE_COMMIT}, "
         f"it is format {_BASE}: check that its lifecycle.heartbeat bodies carry a `t` field. "
-        f"Move it, with any -wal and -shm files beside it, into {root / ('v' + _BASE)}/, "
-        f"then run `runstate migrate {root}`. To move every legacy log under the root:\n"
-        f"  mkdir -p '{root}/v{_BASE}' && for f in '{root}'/*.db '{root}'/*.db-wal "
-        f"'{root}'/*.db-shm; do [ -e \"$f\" ] && mv \"$f\" '{root}/v{_BASE}/'; done"
+        f"First stop every process that writes under {root}, and drain any queued jobs that "
+        f"would. Then move the log, with any {' and '.join(_SIDECARS)} files beside it, into "
+        f"{base}/, and leave a tombstone at its old address: an empty, read-only file. "
+        f"{_WHY_TOMBSTONE} Then run `runstate migrate {q_root}`. To do this for every "
+        f"legacy log under the root:\n  {loop}"
     )
 
 
-def postgres_onboarding(run_id: str) -> str:
-    schema = DirectoryLayout(_BASE).pg_schema()
+def postgres_onboarding(run_id: str, schema: str) -> str:
+    """The one-time instructions for a run in the legacy ``log`` table, found in
+    ``schema`` (§7): stop the writers, move the table into the 0.2.0 schema, and
+    leave a tombstone in its place, an empty ``log`` with the old columns whose
+    trigger refuses every insert (§5). One transaction, so it moves whole or not
+    at all."""
+    target = DirectoryLayout(_BASE).pg_schema()
+    s = '"' + schema.replace('"', '""') + '"'
+    fn = f"{s}.runstate_log_moved"
+    sql = (
+        f"BEGIN; CREATE SCHEMA {target}; ALTER TABLE {s}.log SET SCHEMA {target}; "
+        f"CREATE TABLE {s}.log (LIKE {target}.log); "
+        f"CREATE FUNCTION {fn}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+        f"RAISE EXCEPTION 'runstate: this log moved to schema {target}; upgrade runstate'; "
+        f"END $$; "
+        f"CREATE TRIGGER runstate_log_moved BEFORE INSERT ON {s}.log "
+        f"FOR EACH ROW EXECUTE FUNCTION {fn}(); COMMIT;"
+    )
     return (
-        f"run {run_id!r} is in the unversioned `log` table, which predates versioned "
-        f"addresses, so its format is unknown and nothing will infer it. If it was written "
-        f"by runstate at or after {_BASE_COMMIT}, it is format {_BASE}. Move the table, "
-        f"then run `runstate migrate`:\n"
-        f"  CREATE SCHEMA {schema}; ALTER TABLE public.log SET SCHEMA {schema};"
+        f"run {run_id!r} is in the unversioned `log` table of schema {s}, which predates "
+        f"versioned addresses, so its format is unknown and nothing will infer it. If it "
+        f"was written by runstate at or after {_BASE_COMMIT}, it is format {_BASE}. First "
+        f"stop every process that writes to it, and drain any queued jobs that would. Then "
+        f"move the table into schema {target}, and leave a tombstone in its place: an empty "
+        f"`log` that refuses every insert. {_WHY_TOMBSTONE} Then run `runstate migrate`:\n"
+        f"  {sql}"
     )
 
 

@@ -13,6 +13,7 @@ from runstate import (
     create_channel,
 )
 from runstate.formats import FORMATS, DirectoryLayout
+from runstate.migrations import migrate
 
 
 @pytest.fixture
@@ -106,3 +107,100 @@ def test_a_newer_schema_refuses(dsn):
     finally:
         with psycopg.connect(dsn, autocommit=True) as c:
             c.execute("DROP SCHEMA runstate_v99_0_0 CASCADE")
+
+
+# ----- onboarding: the LogFormatMissing instructions, run as written -------------
+
+
+@pytest.fixture
+def scratch_db(dsn):
+    """A database of its own, dropped afterwards. Onboarding moves a whole table
+    into schema ``runstate_v0_2_0``, which the shared test database already has."""
+    import psycopg
+    from psycopg.conninfo import make_conninfo
+
+    name = f"rs_scratch_{uuid.uuid4().hex}"
+    with psycopg.connect(dsn, autocommit=True) as c:
+        c.execute(f"CREATE DATABASE {name}")
+    try:
+        yield make_conninfo(dsn, dbname=name)
+    finally:
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute(f"DROP DATABASE {name} WITH (FORCE)")
+
+
+def _master_log(dsn, run_id, n):
+    """A log as master wrote it: its DDL and appends, unqualified, so they land
+    in the schema the connection's search path resolves (the channel's
+    constants are master's, byte for byte)."""
+    import psycopg
+
+    from runstate.channel.postgres import (
+        _CREATE_INDEX,
+        _CREATE_NAME_INDEX,
+        _CREATE_TABLE,
+        _UNCONDITIONAL,
+    )
+
+    with psycopg.connect(dsn, autocommit=True) as c:
+        for ddl in (_CREATE_TABLE, _CREATE_INDEX, _CREATE_NAME_INDEX):
+            c.execute(ddl)
+        for i in range(n):
+            c.execute(
+                _UNCONDITIONAL,
+                {
+                    "run": run_id,
+                    "topic": "value",
+                    "name": "n",
+                    "rid": None,
+                    "body": "{}",
+                },
+            )
+
+
+def _onboarding_sql(dsn, run_id):
+    """The SQL the LogFormatMissing message gives, verbatim."""
+    with pytest.raises(LogFormatMissing) as exc:
+        attach_channel(run_id, root=dsn, backend="postgres")
+    lines = [ln for ln in str(exc.value).splitlines() if ln.startswith("  ")]
+    assert lines
+    return "\n".join(lines)
+
+
+def test_onboarding_leaves_a_tombstone_an_old_writer_cannot_use(scratch_db):
+    """C1 on postgres: master's ensure_schema recreates an absent ``log``, so
+    moving the table, and nothing more, let a writer from before versioned
+    addresses start every run over in a fresh one. The instructions leave an
+    empty ``log`` with the old columns, whose trigger refuses every insert. And
+    HEAD's checks answer as they would without it, before ``migrate`` and after."""
+    import psycopg
+
+    from runstate.channel.postgres import ensure_schema
+    from runstate.migrations.stores import PostgresStore
+
+    dsn = scratch_db
+    _master_log(dsn, "r1", 3)
+    ensure_schema(dsn)
+    onboard = _onboarding_sql(dsn, "r1").strip()
+    with psycopg.connect(dsn, autocommit=True) as c:
+        c.execute(onboard)
+
+    _master_log(dsn, "r1", 0)  # master's ensure_schema: a no-op on the tombstone
+    with psycopg.connect(dsn, autocommit=True) as c:
+        with pytest.raises(psycopg.errors.RaiseException, match="upgrade runstate"):
+            _master_log(dsn, "r1", 1)  # master's create: its append is refused
+        # master's attach reads MAX(seq) of the run, and 0 is its RunNotFound
+        assert c.execute(
+            "SELECT COALESCE(MAX(seq), 0) FROM log WHERE run_id = 'r1'"
+        ).fetchone() == (0,)
+        assert c.execute("SELECT count(*) FROM public.log").fetchone() == (0,)
+
+    for locate in (attach_channel, create_channel):  # an older format holds it
+        with pytest.raises(LogFormatMismatch, match="runstate migrate"):
+            locate("r1", root=dsn, backend="postgres")
+    assert migrate(PostgresStore(dsn), None, to=LOG_FORMAT) == ["r1"]
+    with attach_channel("r1", root=dsn, backend="postgres") as ch:
+        assert ch.last_seq() == 3
+    with pytest.raises(RunNotFound):
+        attach_channel("r2", root=dsn, backend="postgres")
+    assert onboard.startswith("BEGIN;") and onboard.endswith("COMMIT;")  # whole or not

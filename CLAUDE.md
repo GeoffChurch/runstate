@@ -245,8 +245,10 @@ scores above.
 consumers (mycooc, translation, runstate-tui) depend on runstate through a **git pin**, installed
 non-editable into their own envs (`cooc`, `base`). So work here never changes what they import.
 Upgrading a consumer means bumping its pin, and running any migration its logs need, in that repo.
-The procedure (`docs/specs/log-formats.md`): bump the consumer's pin; onboard any legacy logs
-(`<root>/<rid>.db`) as the `LogFormatMissing` message instructs; then `runstate migrate <root>`
+The procedure (`docs/specs/log-formats.md` §8): stop the consumer's old processes and drain its queued
+jobs; bump its pin; onboard any legacy logs (`<root>/<rid>.db`) exactly as the `LogFormatMissing`
+message instructs, which leaves a tombstone at each old address so a stale writer fails loudly; then
+`runstate migrate <root>`
 (add `--backend postgres` for a DSN), which moves format-0.2.0 logs to the current format, 0.3.0.
 Until then every open raises rather than reading a log of another format.
 `pythonpath = ["."]` in `pyproject.toml` makes the tests import this checkout whatever env runs

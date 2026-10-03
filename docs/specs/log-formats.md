@@ -101,8 +101,28 @@ A sealed log is readable and refuses every write.
 connection holds the log open. And sealing by file permissions **does not bind the root user**, who can
 still write a read-only file; the seal is a guard against the wrong upgrade order, not against root.
 
-Sealing is what makes the wrong upgrade order fail loudly. A pinned writer from before format versioning
-never checks a format, but its append to a sealed log is refused by the file system or the database.
+Sealing is what makes the wrong upgrade order fail loudly for a writer that resolves the sealed log's
+address: its append is refused by the file system or the database.
+
+**A writer from before format versioning never resolves a versioned address.** It checks no format and
+opens only the legacy address (§3), which onboarding (§7) empties by moving the log away, so the seal on the
+moved copy never reaches it. Onboarding therefore leaves a **tombstone** at the legacy address, which plays
+the seal's part for such a writer:
+
+- **SQLite.** An empty, read-only `<root>/<rid>.db`. The old writer's create fails with "attempt to write a
+  readonly database", in WAL and DELETE mode alike, and its attach finds no records (`RunNotFound`).
+- **Postgres.** An empty `log` with the old columns, in the schema the legacy table was found in, and a
+  trigger on it that refuses every insert. The old `ensure_schema` finds the table and creates nothing, and
+  the old writer's first append raises.
+
+*Found in the final review.* Without the tombstone the wrong order did not fail at all. A pre-versioning
+worker started after onboarding saw no records at the legacy address, birthed a fresh log there (on
+Postgres, its `ensure_schema` recreated `log`), recomputed the run from step 0, and finished without an
+error.
+
+The tombstone is part of the onboarding instructions, not runtime code. This release's opening checks reach
+an onboarded run through checks 2 and 3 (§4) before they look at the legacy address, so they answer as they
+would without it, before `runstate migrate` and after; tests pin both backends.
 
 ## 6. `runstate migrate`
 
@@ -150,10 +170,18 @@ Logs written before format versioning sit at the legacy address. Nothing infers 
 
 > This log predates versioned addresses. If it was written by runstate at or after `4729fcd`
 > (2026-07-16, lifecycle-v0.4 and launcher-v0.4), it is format 0.2.0 (check: its `lifecycle.heartbeat`
-> bodies carry a `t` field). Move it to `<root>/v0.2.0/<rid>.db`, then run `runstate migrate <root>`.
+> bodies carry a `t` field). First stop every process that writes under the root, and drain any queued
+> jobs that would. Then move it, with its sidecar files, to `<root>/v0.2.0/<rid>.db`, leave a tombstone at
+> its old address, and run `runstate migrate <root>`.
 
-It also gives a one-line shell loop for moving every legacy log under a root. On Postgres the instruction is
-`ALTER TABLE log SET SCHEMA runstate_v0_2_0` (after creating the schema).
+It also gives a one-line shell loop that does this for every legacy log under a root. The loop skips empty
+files and logs already in place, so running it again is safe. On Postgres the instruction is one
+transaction: create schema `runstate_v0_2_0`, `ALTER TABLE <schema>.log SET SCHEMA runstate_v0_2_0`, then
+create the tombstone (§5) in the schema the table was found in.
+
+**The tombstone is why the move is not enough.** A writer still running a release from before versioned
+addresses resolves only the legacy address. Without the tombstone it would find nothing there and start the
+run over, silently; with it, its next write fails (§5).
 
 **The move is the user's explicit statement of the format.** `runstate migrate` has no legacy option.
 
@@ -163,13 +191,17 @@ found" and be relaunched from scratch.
 
 ## 8. Operating rules
 
-- **The upgrade procedure for a consumer:** bump its pin, then migrate its logs, in that order. If the
-  order is wrong, sealing makes the old writer fail loudly.
+- **The upgrade procedure for a consumer:** stop its old processes and drain its queued jobs, bump its
+  pin, onboard its legacy logs (§7), then migrate them, in that order. A job queued under the old pin runs
+  the old code whenever it starts. If the order is wrong anyway, the seal and the tombstone (§5) are the
+  backstop: they make the old writer fail loudly rather than start the run over.
 - **Rollback:** make the old log writable again (`chmod u+w`, or delete the run from `sealed_runs`),
-  delete the new one, and revert the pin.
+  delete the new one, and revert the pin. Reverting to a pin from before versioned addresses also undoes
+  the onboarding: delete the tombstone, and move the log back to the legacy address.
 - **Garbage collection:** a sealed log may be deleted once nothing pins its format. This is an owner
   action. `store.md` Recipe 3 gains a rule: collecting a run deletes its log at its format's address,
-  because a log no longer sits inside the run's home.
+  because a log no longer sits inside the run's home, and deletes its tombstone at the legacy address with
+  it. A tombstone left behind would make the run's id read as an unonboarded legacy log (§4, check 4).
 - **Copying a run** between roots or backends copies its log at its format's address, which carries the
   format with it.
 
