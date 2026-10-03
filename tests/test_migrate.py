@@ -100,7 +100,7 @@ def test_a_live_run_is_refused_and_untouched(toy, monkeypatch, tmp_path):
     old = _seed(tmp_path, "8.0.0", "r1")
     before = old.read_bytes()
     monkeypatch.setattr(migrations, "STEPS", (Tag("8.0.0", "8.1.0", live=True),))
-    with pytest.raises(MigrationError, match="live episode"):
+    with pytest.raises(MigrationError, match=r"^run 'r1': [^']*live episode"):
         migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0")
     assert os.stat(old).st_mode & 0o200  # not sealed: refused before the seal
     assert old.read_bytes() == before

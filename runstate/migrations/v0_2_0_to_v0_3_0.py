@@ -7,16 +7,20 @@ It keeps every record's seq, because a ``claim_seq`` points at a seq. It deletes
 nothing, and appends only ``lifecycle.bound`` records, after the last record.
 It ports the spike's backfill (``374c1a2:scripts/backfill_reference_by_name.py``),
 which was measured exact on 2,562 of 2,569 copies of real consumer logs; the
-other 7 are the stale-beat leak below. Two rules go further than the spike's,
-which merged requests the positional rule kept apart: a stop id that several
-requests bear, and a nak before every subscribe of its id. Neither case occurs
-in the real corpus or in the spike's synthetic world.
+other 7 are the stale-beat leak below. Three rules go further than the
+spike's, which merged requests the positional rule kept apart, or let a nak
+answer a request it could not have refused: a stop id that other requests also
+bear, a nak before every subscribe of its id, and a nak before every stop of
+its id. None of these occurs in the real corpus or in the spike's synthetic
+world.
 
 The rules:
 
 - **Stops.** A nameless stop gets ``stop@<seq>``. A stop keeps its id only when
   no other request bears it: when it is the only stop with that id, and no
-  subscription's. Otherwise every stop bearing it gets ``<id>#<seq>``.
+  other request a nak could refuse under that id (a subscription, or a verb
+  0.2.0 did not know) bears it. Otherwise every stop bearing it gets
+  ``<id>#<seq>``.
   Positionally each stop record was its own request, while in 0.3.0 the requests
   of one id are one request, which every nak bearing that id answers. Each
   ``stopped.honored`` lists the stops that ``stopped`` cleared under the old rule:
@@ -26,8 +30,11 @@ The rules:
 - **Subscriptions.** A reused id is split into segments at each answer, and the
   later segments become ``<id>#<k>``, together with their answers and value
   fires. An answer before every subscribe of its id answered nothing, so it is
-  renamed to name nothing: an unsubscribe always, and a nak when a subscription
-  bears its id. Any other such nak refused a stop, and names it.
+  renamed to name nothing: an unsubscribe always, and a nak unless no
+  subscription bears its id and a stop bearing it precedes it. A nak cannot
+  refuse a stop that comes after it, so one with no stop of its id before it
+  answered nothing either. A nak that keeps its id names its stop: the naked
+  stop that names fix.
 - **Leases.** One ``lifecycle.bound`` for each episode-local subscription the
   positional boundary rule voided, naming the first claim between it and the
   latest claim.
@@ -62,6 +69,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any
@@ -173,16 +181,18 @@ class Backfill:
         self.rebodied.add(e.seq)
 
 
-def _subscribed(records: list[_Record]) -> set[str]:
-    return {
-        e.request_id
-        for e in records
-        if e.topic == _Topic.SUBSCRIBE and e.request_id is not None
-    }
+def _ids(records: list[_Record], keep: Callable[[str], bool]) -> set[str]:
+    """The request ids of the records whose topic ``keep`` selects."""
+    return {e.request_id for e in records if keep(e.topic) and e.request_id is not None}
 
 
 def _name_stops(log: Backfill, records: list[_Record]) -> None:
-    shared = _subscribed(records)
+    # every other request a nak could refuse by id; an unsubscribe is never one
+    shared = _ids(
+        records,
+        lambda t: t.startswith("control.")
+        and t not in (_Topic.STOP, _Topic.UNSUBSCRIBE),
+    )
     uses = Counter(
         e.request_id
         for e in records
@@ -232,14 +242,17 @@ class _Segment:
 
 
 def _segment_subscriptions(log: Backfill, records: list[_Record]) -> None:
-    subscribed = _subscribed(records)
+    subscribed = _ids(records, lambda t: t == _Topic.SUBSCRIBE)
+    stopped_so_far: set[str] = set()  #  the ids stops have borne so far
     segments: dict[str, _Segment] = {}
     for i, e in enumerate(records):
         rid = e.request_id
         if rid is None:
             continue
         seg = segments.get(rid)
-        if e.topic == _Topic.SUBSCRIBE:
+        if e.topic == _Topic.STOP:
+            stopped_so_far.add(rid)
+        elif e.topic == _Topic.SUBSCRIBE:
             if seg is None:
                 seg = segments[rid] = _Segment(rid)
             elif not seg.live:
@@ -253,7 +266,11 @@ def _segment_subscriptions(log: Backfill, records: list[_Record]) -> None:
                 log.set_rid(i, seg.name)
         elif e.topic in _ANSWERS:
             if seg is None:
-                if e.topic == _Topic.UNSUBSCRIBE or rid in subscribed:
+                if (
+                    e.topic == _Topic.UNSUBSCRIBE
+                    or rid in subscribed
+                    or rid not in stopped_so_far
+                ):
                     log.set_rid(i, log.mint(f"{rid}!orphan@{e.seq}"))
                 continue
             if seg.name != rid:
@@ -283,7 +300,7 @@ def _bind_voided_leases(log: Backfill) -> None:
         if between:
             body: _Body = {"claim_seq": between[0]}
             seq = last + len(log.appended) + 1
-            log.appended.append(_Record(seq, _Topic.BOUND, None, rid, body))
+            log.appended.append(_Record(seq, _Topic.BOUND.value, None, rid, body))
 
 
 def backfill(records: list[_Record]) -> Backfill:

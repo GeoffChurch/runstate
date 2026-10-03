@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://runstate.dev/protocol/lifecycle-v0.4.json",
+  "title": "runstate v0.4 lifecycle convention",
+  "description": "Pins the bodies of the lifecycle.* topics the worker produces: started (attach + self-reported liveness handle), heartbeat (tick beacon), stopped (cooperative dying breath), nak (a refused control request). Applied on top of the envelope schema. v0.4 adds a required `t` (the worker's wall-clock when it emitted the record) to started/heartbeat/stopped -- the records the observer/liveness plane reads -- so a third party that did not launch the run can date the beacon and answer staleness (docs/specs/observer-clock.md). `started.attached_at` was renamed to `t` and made required non-null in the same bump. `nak` is deliberately left undated (nothing times it).",
+
+  "allOf": [
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"pattern": "^lifecycle\\."}}},
+      "then": {"properties": {"topic": {"enum": ["lifecycle.started", "lifecycle.heartbeat", "lifecycle.stopped", "lifecycle.nak"]}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "lifecycle.started"}}},
+      "then": {"properties": {"body": {"$ref": "#/$defs/Started"}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "lifecycle.heartbeat"}}},
+      "then": {"properties": {"body": {"$ref": "#/$defs/Heartbeat"}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "lifecycle.stopped"}}},
+      "then": {"properties": {"body": {"$ref": "#/$defs/Stopped"}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "lifecycle.nak"}}},
+      "then": {"properties": {"body": {"$ref": "#/$defs/Nak"}}}
+    }
+  ],
+
+  "$defs": {
+    "Started": {
+      "type": "object", "required": ["handle", "t"], "additionalProperties": false,
+      "description": "Pushed on attach; the worker self-reports its liveness handle (§8). t is the worker's wall-clock at attach (required non-null) -- the run epoch, and one uniform clock across the lifecycle event records. It was `attached_at` (present-nullable) before the observer-clock harmonization.",
+      "properties": {
+        "handle": {"type": "string"},
+        "t": {"type": "number", "minimum": 0}
+      }
+    },
+    "Heartbeat": {
+      "type": "object", "required": ["step", "consumed_seq", "t"], "additionalProperties": false,
+      "description": "Tick-driven liveness beacon. consumed_seq is the worker's read position in its inbound `control` order (§11-12), published after durable registration. t is the worker's wall-clock when it beat -- what lets a third-party observer date the beacon and answer staleness (observer-clock).",
+      "properties": {
+        "step": {"type": ["integer", "null"], "minimum": 0},
+        "consumed_seq": {"type": "integer", "minimum": 0},
+        "t": {"type": "number", "minimum": 0}
+      }
+    },
+    "Stopped": {
+      "type": "object", "required": ["completed", "error", "final_step", "t"], "additionalProperties": false,
+      "description": "The cooperative dying breath; its existence on the log = a clean, resumable halt (§7). completed=true is the worker's opt-in claim of intrinsic completion; otherwise the stop projects to preempted. error is the failure diagnostic; a completed stop carries no error. t is the worker's wall-clock at the dying breath (the finish time / GC-age answer).",
+      "properties": {
+        "completed": {"type": "boolean"},
+        "error": {"type": ["string", "null"]},
+        "final_step": {"type": ["integer", "null"], "minimum": 0},
+        "t": {"type": "number", "minimum": 0}
+      },
+      "allOf": [
+        {"if": {"required": ["completed"], "properties": {"completed": {"const": true}}},
+         "then": {"properties": {"error": {"const": null}}}}
+      ]
+    },
+    "Nak": {
+      "type": "object", "required": ["reason", "message"], "additionalProperties": false,
+      "description": "A refused control request, correlated by request_id. `reason` is a closed enum: malformed (body didn't conform -- a sender bug), unsatisfiable (well-formed but provably zero fires), unsupported (unknown control verb). `message` is free human detail.",
+      "properties": {
+        "reason": {"type": "string", "enum": ["malformed", "unsatisfiable", "unsupported"]},
+        "message": {"type": "string"}
+      }
+    }
+  }
+}

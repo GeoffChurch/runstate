@@ -272,6 +272,39 @@ MALFORMED = [
     r(8, "lifecycle.stopped", {"reason": "reclaimed: slurm TIMEOUT"}),
 ]
 
+# A verb 0.2.0 did not know, refused by master's worker as unsupported, under an
+# id an operator stop also bears: once before the stop, once after it. Under the
+# positional rule neither nak answered the stop.
+VERBS = [
+    r(1, "lifecycle.started", _started(DEAD, 1.0)),  # hand-run, stepless; dies
+    r(2, "control.pause", {}, rid="p"),
+    r(3, "lifecycle.nak", _nak("unsupported", "unknown 'control.pause'"), rid="p"),
+    r(4, "control.stop", {"from": {"time_seconds": 3600}}, rid="p"),
+    r(5, "control.stop", {"from": {"time_seconds": 3600}}, rid="q"),
+    r(6, "control.pause", {}, rid="q"),
+    r(7, "lifecycle.nak", _nak("unsupported", "unknown 'control.pause'"), rid="q"),
+    r(8, "lifecycle.heartbeat", _beat(None, 7, 2.0)),
+]
+
+# Third parties' well-formed releases. A claimless one keeps a startless run
+# claimable (mycooc's resume_fanout)...
+CLAIMLESS = [
+    r(1, "control.stop", {}),
+    r(2, "lifecycle.stopped", _stopped(None, 1.0)),
+]
+
+# ...and one releases a stranded claim after its worker was killed (mycooc's
+# reclaim tool), discharging the operator's stop it never carried out (#39,
+# copied faithfully).
+RELEASED = [
+    r(1, "launcher.launched", _launched("local://n4/51", 1.0), rid="L1"),
+    r(2, "lifecycle.started", _started("local://n4/51", 2.0), rid="L1"),
+    r(3, "lifecycle.heartbeat", _beat(3, 0, 3.0)),
+    r(4, "control.stop", {"from": {"step": 10}}, rid="halt"),
+    r(5, "launcher.terminated", _killed(9, 4.0), rid="L1"),
+    r(6, "lifecycle.stopped", _stopped(None, 5.0)),
+]
+
 
 def _dated(rows):
     """Every record its own created_at, so the test can see each one kept."""
@@ -285,8 +318,14 @@ GOLDEN = {
     "episodes": _dated(EPISODES),
     "shared": _dated(SHARED),
     "malformed": _dated(MALFORMED),
+    "verbs": _dated(VERBS),
+    "claimless": _dated(CLAIMLESS),
+    "released": _dated(RELEASED),
 }
-WELL_FORMED = ["stops", "subs", "episodes", "shared"]
+# The records each golden log holds that are invalid under 0.2.0's own schemas;
+# every other log is well-formed (test_golden_inputs_are_0_2_0_as_declared).
+INVALID_UNDER_0_2_0 = {"malformed": [2, 4, 8], "verbs": [2, 6]}
+WELL_FORMED = [rid for rid in GOLDEN if rid not in INVALID_UNDER_0_2_0]
 
 
 def _write(root: Path, rid: str, rows: list[Row]) -> Path:
@@ -366,6 +405,27 @@ MASTER = {
         "live_demand": [],
         "progress": 4,
     },
+    "verbs": {
+        "peek_terminal": None,
+        "live_episode": None,
+        "undischarged_stops": [4, 5],
+        "live_demand": [],
+        "progress": None,
+    },
+    "claimless": {
+        "peek_terminal": ("preempted", None, None),
+        "live_episode": None,
+        "undischarged_stops": [],
+        "live_demand": [],
+        "progress": None,
+    },
+    "released": {
+        "peek_terminal": ("preempted", None, None),
+        "live_episode": None,
+        "undischarged_stops": [],
+        "live_demand": [],
+        "progress": 3,
+    },
 }
 
 # The only reads allowed to differ: the spike's two classes (T4), each a positional
@@ -432,6 +492,7 @@ def test_records_keep_seq_topic_name_created_at_and_unchanged_bytes(rid):
     rows = GOLDEN[rid]
     out = step.transform(rows)
     kept, appended = out[: len(rows)], out[len(rows) :]
+    assert all(type(x.topic) is str for x in out)  # never an enum member
     assert [(x.seq, x.topic, x.name, x.created_at) for x in kept] == [
         (x.seq, x.topic, x.name, x.created_at) for x in rows
     ]
@@ -491,6 +552,26 @@ def test_an_answer_naming_a_later_subscription_is_renamed():
         "y",
         "y",
     )
+
+
+def test_a_nak_before_every_stop_of_its_id_names_nothing():
+    """A nak cannot refuse a stop that comes after it, so under the positional
+    rule it answered nothing. Named, it would spend the stop."""
+    rows = [
+        r(1, "lifecycle.nak", _nak("unsupported", "m"), rid="p"),
+        r(2, "control.stop", {}, rid="p"),
+    ]
+    nak, stop = step.transform(rows)
+    assert (nak.request_id, stop.request_id) == ("p!orphan@1", "p")
+
+
+def test_a_stop_sharing_its_id_with_any_other_request_is_renamed():
+    """VERBS: an unknown verb is a request too, and master's worker naks it under
+    its id. A stop sharing that id keeps it only at the cost of being answered
+    by a nak that refused something else."""
+    out = {x.seq: x.request_id for x in step.transform(GOLDEN["verbs"])}
+    assert (out[4], out[5]) == ("p#4", "q#5")
+    assert (out[3], out[7]) == ("p!orphan@3", "q")  # q now names no stop
 
 
 def test_leases_the_boundary_voided_get_an_inferred_bound():
@@ -561,7 +642,7 @@ def test_a_refused_sqlite_run_is_refused_before_the_seal(tmp_path):
     run stays writable and unsealed, and a re-run refuses it the same way."""
     old = _write(tmp_path, "r", [r(1, "lifecycle.heartbeat", _beat(0, 0, 1.0))])
     for attempt in range(2):
-        with pytest.raises(MigrationError, match="seq 1"):
+        with pytest.raises(MigrationError, match=r"^run 'r': .*seq 1"):
             migrate(SqliteStore(tmp_path), ["r"], to="0.3.0")
         assert os.stat(old).st_mode & 0o200  #          no read-only bit
         assert _journal_mode(old) == "wal"  #   the seal would have left WAL
@@ -607,7 +688,7 @@ def test_a_refused_postgres_run_rolls_back_its_seal(pg_v0_2_0_run):
     with psycopg.connect(dsn) as c:
         c.execute(insert, [rid, *r(1, "lifecycle.heartbeat", _beat(0, 0, 1.0))])
     for attempt in range(2):
-        with pytest.raises(MigrationError, match="seq 1"):
+        with pytest.raises(MigrationError, match=rf"^run '{rid}': .*seq 1"):
             migrate(PostgresStore(dsn), [rid], to="0.3.0")
         with psycopg.connect(dsn) as c:
             sealed = c.execute(
@@ -643,28 +724,64 @@ def test_a_claim_without_a_handle_cannot_be_judged():
         step.is_live([r(1, "lifecycle.started", {"t": 0.0})])
 
 
+def test_a_refusal_through_migrate_names_its_run(tmp_path):
+    """Minor 1: migrate() names the run in every refusal it surfaces, and stops
+    at the first."""
+    _write(tmp_path, "a", [r(1, "lifecycle.started", {"t": 0.0})])
+    _write(tmp_path, "b", [r(1, "lifecycle.heartbeat", _beat(0, 0, 1.0))])
+    with pytest.raises(MigrationError, match=r"^run 'a': .*seq 1.*no handle"):
+        migrate(SqliteStore(tmp_path), None, to="0.3.0")
+    with pytest.raises(MigrationError, match=r"^run 'b': .*seq 1.*precedes"):
+        migrate(SqliteStore(tmp_path), ["b"], to="0.3.0")
+
+
 # ----- schema validity -----------------------------------------------------------
 
-_PROTO = Path(__file__).resolve().parent.parent / "protocol"
+_HERE = Path(__file__).resolve().parent
+# 0.2.0's stack, vendored from master 72d9c3f: its lifecycle and subscription
+# schemas left protocol/ when 0.3.0 replaced them.
+STACK_0_2_0 = (
+    _HERE / "fixtures" / "log-format-0.2.0",
+    [
+        "envelope-v0.2",
+        "subscription-v0.2",
+        "lifecycle-v0.4",
+        "launcher-v0.4",
+        "value-v0.2",
+    ],
+)
+STACK_0_3_0 = (
+    _HERE.parent / "protocol",
+    [
+        "envelope-v0.2",
+        "subscription-v0.3",
+        "lifecycle-v0.5",
+        "launcher-v0.4",
+        "value-v0.2",
+    ],
+)
 
 
-@pytest.mark.parametrize("rid", WELL_FORMED)
-def test_well_formed_logs_come_out_valid_under_the_0_3_0_schemas(rid):
+def _invalid_seqs(rows, stack):
+    """The seqs of the rows the stack rejects: the envelope schema, then the
+    convention schema of the record's topic."""
     jsonschema = pytest.importorskip("jsonschema")
+    root, (envelope, control, lifecycle, launcher, value) = stack
 
-    def validator(name):
+    def load(name):
         return jsonschema.Draft202012Validator(
-            json.loads((_PROTO / f"{name}.schema.json").read_text())
+            json.loads((root / f"{name}.schema.json").read_text())
         )
 
-    envelope = validator("envelope-v0.2")
+    env = load(envelope)
     conventions = {
-        "control.": validator("subscription-v0.3"),
-        "lifecycle.": validator("lifecycle-v0.5"),
-        "launcher.": validator("launcher-v0.4"),
-        "value": validator("value-v0.2"),
+        "control.": load(control),
+        "lifecycle.": load(lifecycle),
+        "launcher.": load(launcher),
+        "value": load(value),
     }
-    for x in step.transform(GOLDEN[rid]):
+    bad = []
+    for x in rows:
         record = {
             "seq": x.seq,
             "topic": x.topic,
@@ -672,9 +789,20 @@ def test_well_formed_logs_come_out_valid_under_the_0_3_0_schemas(rid):
             "request_id": x.request_id,
             "body": json.loads(x.body),
         }
-        envelope.validate(record)
         (convention,) = [v for k, v in conventions.items() if x.topic.startswith(k)]
-        convention.validate(record)
+        if not env.is_valid(record) or not convention.is_valid(record):
+            bad.append(x.seq)
+    return bad
+
+
+@pytest.mark.parametrize("rid", list(GOLDEN))
+def test_golden_inputs_are_0_2_0_as_declared(rid):
+    assert _invalid_seqs(GOLDEN[rid], STACK_0_2_0) == INVALID_UNDER_0_2_0.get(rid, [])
+
+
+@pytest.mark.parametrize("rid", WELL_FORMED)
+def test_well_formed_logs_come_out_valid_under_the_0_3_0_schemas(rid):
+    assert _invalid_seqs(step.transform(GOLDEN[rid]), STACK_0_3_0) == []
 
 
 # ----- a retained step carries its formats' semantics ------------------------------

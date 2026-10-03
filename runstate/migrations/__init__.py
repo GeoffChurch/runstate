@@ -55,13 +55,17 @@ def chain(start: str, target: str) -> list[Step]:
 
 def migrate(store: "Store", run_ids: list[str] | None, *, to: str) -> list[str]:
     """Move each run (every run under the store when None) to format ``to``,
-    one step at a time. Returns the run ids that moved."""
+    one step at a time. Returns the run ids that moved. Stops at the first
+    refusal, which names its run."""
     moved = []
     for run_id, fmt in sorted(store.formats_of(run_ids).items()):
         if fmt == to:
             continue
-        for step in chain(fmt, to):
-            store.migrate_one(step, run_id)
+        try:
+            for step in chain(fmt, to):
+                store.migrate_one(step, run_id)
+        except MigrationError as exc:
+            raise MigrationError(f"run {run_id!r}: {exc}") from exc
         moved.append(run_id)
     return moved
 

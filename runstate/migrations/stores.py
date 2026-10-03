@@ -73,9 +73,7 @@ class SqliteStore:
         if os.stat(src).st_mode & 0o222:  # not yet sealed
             rows = _read_sqlite(src)
             if step.is_live(rows):
-                raise MigrationError(
-                    f"run {run_id!r} has a live episode; stop it first"
-                )
+                raise MigrationError("it has a live episode; stop it first")
             step.transform(rows)  # the dry run: a refusal raises before the seal
             seal_sqlite(src)
         out = step.transform(_read_sqlite(src))
@@ -148,9 +146,7 @@ class PostgresStore:
                 )
             ]
             if step.is_live(rows):
-                raise MigrationError(
-                    f"run {run_id!r} has a live episode; stop it first"
-                )
+                raise MigrationError("it has a live episode; stop it first")
             from ..channel.postgres import (
                 _CREATE_INDEX,
                 _CREATE_NAME_INDEX,
