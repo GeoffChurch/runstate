@@ -12,12 +12,12 @@ import re
 from collections.abc import Iterable
 from pathlib import Path
 
-from . import v0_2_0
+from . import v0_2_0, v0_3_0
 from ._layout import DirectoryLayout, Layout
 
 LOG_FORMAT = "0.2.0"
 
-FORMATS: dict[str, Layout] = {v0_2_0.LAYOUT.version: v0_2_0.LAYOUT}
+FORMATS: dict[str, Layout] = {m.LAYOUT.version: m.LAYOUT for m in (v0_2_0, v0_3_0)}
 
 _VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 

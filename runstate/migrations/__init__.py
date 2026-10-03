@@ -32,9 +32,6 @@ class Step(Protocol):
     def transform(self, rows: list[Row]) -> list[Row]: ...
 
 
-STEPS: tuple[Step, ...] = ()
-
-
 class MigrationError(Exception):
     pass
 
@@ -67,3 +64,10 @@ def migrate(store: "Store", run_ids: list[str] | None, *, to: str) -> list[str]:
             store.migrate_one(step, run_id)
         moved.append(run_id)
     return moved
+
+
+# The steps, retained forever. Imported last: each step module imports Row and
+# MigrationError from this one.
+from .v0_2_0_to_v0_3_0 import V0_2_0_to_V0_3_0  # noqa: E402
+
+STEPS: tuple[Step, ...] = (V0_2_0_to_V0_3_0(),)
