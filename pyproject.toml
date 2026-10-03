@@ -35,6 +35,9 @@ classifiers = [
 ]
 dependencies = []
 
+[project.scripts]
+runstate = "runstate.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/GeoffChurch/runstate"
 Repository = "https://github.com/GeoffChurch/runstate"
