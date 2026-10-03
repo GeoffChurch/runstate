@@ -113,18 +113,22 @@ def sqlite_onboarding(root: Path, run_id: str) -> str:
     """The one-time instructions for a log at the legacy address (§7): stop the
     writers, move each log into the 0.2.0 directory with its sidecars, and leave
     a tombstone, an empty read-only file, at its old address (§5). The loop
-    skips empty files and logs already in place, so running it again is safe."""
+    skips empty files and logs already in place, so running it again is safe. A log
+    it must skip because another sits at its destination is left untouched, every
+    other log is still moved, and the loop then exits non-zero: that run is not
+    onboarded."""
     base = root / ("v" + _BASE)
     q_root, q_base = shlex.quote(str(root)), shlex.quote(str(base))
     sidecars = " ".join(["''", *_SIDECARS])
     loop = (
-        f"mkdir -p {q_base} && for f in {q_root}/*.db; do "
+        f"rc=0; mkdir -p {q_base} && for f in {q_root}/*.db; do "
         '[ -s "$f" ] || continue; '
         f't={q_base}/"${{f##*/}}"; '
-        'if [ -e "$t" ]; then echo "skipped $f: $t exists" >&2; continue; fi; '
+        'if [ -e "$t" ]; then echo "skipped $f: $t exists" >&2; rc=1; continue; fi; '
         f"for x in {sidecars}; do "
         'if [ -e "$f$x" ]; then mv "$f$x" "$t$x"; fi; done; '
-        '[ -e "$f" ] || { : > "$f" && chmod a-w "$f"; }; done'
+        '[ -e "$f" ] || { : > "$f" && chmod a-w "$f"; }; done '
+        '&& [ "$rc" = 0 ]'
     )
     return (
         f"{root / (run_id + '.db')} predates versioned addresses, so its format "

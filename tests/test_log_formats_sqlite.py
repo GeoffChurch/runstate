@@ -146,7 +146,7 @@ def _onboarding_loop(root, rid):
     with pytest.raises(LogFormatMissing) as exc:
         attach_channel(rid, root=root)
     loop = str(exc.value).splitlines()[-1].strip()
-    assert loop.startswith("mkdir -p ")
+    assert loop.startswith("rc=0; mkdir -p ")
     return loop
 
 
@@ -230,6 +230,43 @@ def test_the_onboarding_loop_can_be_run_again(tmp_path, crashed_wal_writer):
     _run(loop)
     assert {p.name: p.read_bytes() for p in moved.parent.iterdir()} == before
     assert (tmp_path / "r1.db").stat().st_size == 0
+
+
+def _sh(loop):
+    return subprocess.run(["sh", "-c", loop], capture_output=True, text=True)
+
+
+def test_the_onboarding_loop_exits_zero_on_a_clean_run(tmp_path, crashed_wal_writer):
+    crashed_wal_writer(tmp_path / "r1.db", 3)
+    crashed_wal_writer(tmp_path / "r2.db", 3)
+    done = _sh(_onboarding_loop(tmp_path, "r1"))
+    assert done.returncode == 0 and done.stderr == ""
+    assert (tmp_path / "r1.db").stat().st_size == 0
+    assert (tmp_path / "r2.db").stat().st_size == 0
+
+
+@_NOT_ROOT
+def test_the_onboarding_loop_exits_nonzero_after_a_conflict_but_moves_the_rest(
+    tmp_path, crashed_wal_writer
+):
+    """A log whose destination is taken is skipped, left writable and untombstoned,
+    so the run is not onboarded: the loop says so by its status, yet still moves
+    and tombstones every other log."""
+    crashed_wal_writer(tmp_path / "r1.db", 3)
+    crashed_wal_writer(tmp_path / "r2.db", 3)
+    crashed_wal_writer(tmp_path / "r3.db", 3)
+    loop = _onboarding_loop(tmp_path, "r1")
+    moved = FORMATS["0.2.0"].sqlite_path(tmp_path, "r2")
+    moved.parent.mkdir()
+    moved.write_bytes(b"already here")  # r2's destination is taken
+    done = _sh(loop)
+    assert done.returncode != 0 and "skipped" in done.stderr
+    assert (tmp_path / "r2.db").stat().st_size > 0  # untouched
+    assert moved.read_bytes() == b"already here"
+    for rid in ("r1", "r3"):
+        tomb = tmp_path / f"{rid}.db"
+        assert tomb.stat().st_size == 0 and not tomb.stat().st_mode & 0o222
+        assert FORMATS["0.2.0"].sqlite_path(tmp_path, rid).stat().st_size > 0
 
 
 def test_a_crashed_delete_mode_writer_onboards_and_migrates(
