@@ -171,6 +171,10 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
   5. fenced worker writes, possibly optional given 1.
 
   The target is that a wrong claim costs waste, never corruption. It supersedes episode-aim, below.
+- **Log formats and reference by name: follow-ups** — [log-formats-followups](log-formats-followups.md).
+  LIVING (2026-10-03). What the shipping branch's final review left real but not merge-blocking: the
+  uncached per-open listing, migration robustness (cycle guard, DDL without the lock, raw tracebacks),
+  tests that would pin more, and four unreachable gaps kept so nobody rediscovers them.
 - **A lifecycle record that speaks for an episode must name it** — [episode-aim](episode-aim.md).
   **SUPERSEDED 2026-10-03** by identity-in-records layer 1. Its blockers (the startless run, the fold
   cost) are answered there; its analysis of forgery and backfill still stands. Possibly to be condensed
