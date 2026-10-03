@@ -66,24 +66,30 @@ pair *is* purely "because the self-report can fail to arrive." The heartbeat is 
 
 ## The seam: what couples selection to identity
 
-Layer 2 sits beneath layer 3 by import graph. The coupling is **two mechanisms and one gap** — not,
-as an earlier revision claimed, a single epoch lookup.
+Layer 2 sits beneath layer 3 by import graph. The coupling is **two mechanisms** — not, as an
+earlier revision claimed, a single epoch lookup.
 
 1. **The epoch anchor.** `memoizer._epoch` reads `lifecycle.started.t`; a time-referencing `history`
    with no `started` **raises**. Measured: same six `value` records, same schedule, `started.t=1000`
    → steps `[3,4,5]`; `started.t=1003` → `[]`.
-2. **The boundary eliminator** — the stronger one. `references_time` × `boundary_voided`: an
-   **identity record destroys a selection registration**. Measured: a time-referencing subscribe
-   survives one `lifecycle.started` and is eliminated by the second; the step-only equivalent
-   survives both.
-3. **The gap: `count`.** `satisfied()` has *three* coordinates, and `count` is per-`Subscription`,
-   so it is episode-local for exactly the reason time is — but `references_time` does not see it, so
-   it gets no boundary discharge. Measured over three 3-step episodes: `until={"count":5}` fires
-   `[3,3,3]` (budget resets each episode); the time equivalent fires `[3,0,0]`.
+2. **The boundary eliminator** — the stronger one. `references_episode_local` × `lifecycle.bound`:
+   an **identity record voids a selection registration**. A lease (a `time_seconds` or `count` atom
+   anywhere in its schedule) is bound by name to the episode that registers it, and is void for
+   every other episode, and for every reader once a terminal names its episode
+   (`observables.lease_void`, `specs/time-lease-boundary.md`). The step-only equivalent survives
+   every episode.
+
+Until 2026-10-03 (log format 0.2.0) the eliminator was positional: `references_time` ×
+`boundary_voided`, a lease void once a `lifecycle.started` lay between it and the drainer's own
+claim. That revision also listed a third item, **the `count` gap**: `count` is per-`Subscription`,
+so it is episode-local for exactly the reason time is, but `references_time` did not see it.
+Measured then over three 3-step episodes: `until={"count":5}` fired `[3,3,3]` (the budget reset each
+episode), the time equivalent `[3,0,0]`. The gap is closed: the predicate catches both coordinates
+(`time-lease-boundary.md`, the `count` amendment).
 
 So the honest statement is not "time couples information to process" but: **only `step` is intrinsic
 to the information. `time_seconds` and `count` are both measured from a registration that can
-outlive the episode receiving it — and only one of them is discharged at the boundary.**
+outlive the episode receiving it, so both are bound to the episode that registers them.**
 
 ## Correspondences
 

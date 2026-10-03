@@ -4,6 +4,8 @@ import time
 import pytest
 from pathlib import Path
 import runstate
+from runstate import LOG_FORMAT
+from runstate.formats import FORMATS
 from runstate.memoizer import (
     NoProgressError,
     RecordlessExitError,
@@ -13,7 +15,41 @@ from runstate.memoizer import (
     launch_producer,
 )
 from runstate.launcher import relaunch_if_needed
+from runstate.observables import latest_episode
 from runstate.vocabulary.handle import local_handle
+
+
+# Hand-composed lifecycle records in their 0.3.0 shape (lifecycle-v0.5): a beat
+# names the claim it follows; a stopped names its claim (None: a run that never
+# claimed) and the stops it honored.
+def hb(ch, step, consumed_seq, claim_seq, t=0.0):
+    return ch.send(
+        {"step": step, "consumed_seq": consumed_seq, "t": t, "claim_seq": claim_seq},
+        topic="lifecycle.heartbeat",
+    )
+
+
+def stopped(
+    ch, *, claim_seq, completed=False, error=None, final_step=None, honored=(), t=0.0
+):
+    return ch.send(
+        {
+            "completed": completed,
+            "error": error,
+            "final_step": final_step,
+            "claim_seq": claim_seq,
+            "honored": list(honored),
+            "t": t,
+        },
+        topic="lifecycle.stopped",
+    )
+
+
+def current_claim(ch):
+    """The seq of the latest claim -- what a record speaking for the current
+    episode names -- or None if nothing ever claimed."""
+    e = latest_episode(ch)
+    return e.seq if e is not None else None
 
 
 def test_history_replays_schedule_over_logged_points(open_run):
@@ -369,7 +405,7 @@ def test_ensure_redrives_when_extend_noops_onto_a_live_episode(tmp_path):
     seed = launcher.create_channel(rid)
     # a live foreign episode (started by our pid -> resolve() alive, no stopped),
     # having emitted loss 0,1 and beaconed step 1
-    seed.send({"handle": local_handle(), "t": 0.0}, topic="lifecycle.started")
+    c = seed.send({"handle": local_handle(), "t": 0.0}, topic="lifecycle.started")
     seed.send(
         {"value": 0.0, "step": 0, "t": 0.0},
         topic="value",
@@ -382,7 +418,7 @@ def test_ensure_redrives_when_extend_noops_onto_a_live_episode(tmp_path):
         name="loss",
         request_id="obs",
     )
-    seed.send({"step": 1, "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat")
+    hb(seed, 1, 0, c)
     # pre-stage the subscription so the re-drive episode emits; the checkpoint
     # says the foreign episode reached step 2 (the re-drive resumes there)
     seed.send(
@@ -403,18 +439,11 @@ def test_ensure_redrives_when_extend_noops_onto_a_live_episode(tmp_path):
     def driver_sleep(_):
         if not ended["done"]:
             ended["done"] = True
-            launcher.attach_channel(rid).send(
-                {"completed": False, "error": None, "final_step": 1, "t": 0.0},
-                topic="lifecycle.stopped",
-            )
+            stopped(launcher.attach_channel(rid), claim_seq=c, final_step=1)
 
     series = ensure(producer, "loss", until={"step": 4}, sleep=driver_sleep)
-    assert [b["step"] for b in series] == [
-        0,
-        1,
-        2,
-        3,
-    ]  #  foreign 0,1 + re-driven 2,3 = one series
+    # foreign 0,1 + re-driven 2,3 = one series
+    assert [b["step"] for b in series] == [0, 1, 2, 3]
 
 
 def test_public_exports_present():
@@ -473,23 +502,17 @@ def _seed_episode(ch, *, heartbeat_step, completed: bool, value_steps=None):
     """Write a completed single-episode lifecycle into *ch* (no live episode after)."""
     from runstate.vocabulary.handle import local_handle
 
-    ch.send(
+    c = ch.send(
         {"handle": local_handle(), "t": 0.0},
         topic="lifecycle.started",
     )
-    ch.send(
-        {"step": heartbeat_step, "consumed_seq": 0, "t": 0.0},
-        topic="lifecycle.heartbeat",
-    )
+    hb(ch, heartbeat_step, 0, c)
     if value_steps is not None:
         for s in value_steps:
             ch.send(
                 {"value": float(s), "step": s, "t": 0.0}, topic="value", name="loss"
             )
-    ch.send(
-        {"completed": completed, "error": None, "final_step": heartbeat_step, "t": 0.0},
-        topic="lifecycle.stopped",
-    )
+    stopped(ch, claim_seq=c, completed=completed, final_step=heartbeat_step)
 
 
 def test_ensure_completed_short_of_up_to_returns_without_redriving():
@@ -526,21 +549,16 @@ def test_ensure_preempted_redrives_then_stops_on_completion():
         """On the producer's first extend call, append a second episode that completes."""
         from runstate.vocabulary.handle import local_handle
 
-        channel.send(
+        c = channel.send(
             {"handle": local_handle(), "t": 1.0},
             topic="lifecycle.started",
         )
-        channel.send(
-            {"step": M, "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat"
-        )
+        hb(channel, M, 0, c)
         for s in range(K + 1, M + 1):
             channel.send(
                 {"value": float(s), "step": s, "t": 1.0}, topic="value", name="loss"
             )
-        channel.send(
-            {"completed": True, "error": None, "final_step": M, "t": 0.0},
-            topic="lifecycle.stopped",
-        )
+        stopped(channel, claim_seq=c, completed=True, final_step=M)
 
     producer = _FakeProducer(ch, extend_side_effect=_extend_side_effect)
     series = ensure(producer, "loss", until={"step": up_to})
@@ -578,7 +596,7 @@ def test_ensure_killed_resumes_on_caller_re_call_take_the_latest():
     def episodes(channel, target):
         calls["n"] += 1
         launch = f"L{calls['n']}"  #               each episode answers its own launch
-        channel.send(
+        c = channel.send(
             {"handle": local_handle(), "t": float(calls["n"])},
             topic="lifecycle.started",
             request_id=launch,
@@ -586,9 +604,7 @@ def test_ensure_killed_resumes_on_caller_re_call_take_the_latest():
         if (
             calls["n"] == 1
         ):  #                     progress 0..2, then KILLED (external signal)
-            channel.send(
-                {"step": 2, "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat"
-            )
+            hb(channel, 2, 0, c)
             for s in range(3):
                 channel.send(
                     {"value": float(s), "step": s, "t": 0.0}, topic="value", name="loss"
@@ -599,17 +615,12 @@ def test_ensure_killed_resumes_on_caller_re_call_take_the_latest():
                 request_id=launch,
             )
         else:  #                                   resume behind frontier: re-emit step 2 divergently, then 3..5, complete
-            channel.send(
-                {"step": 5, "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat"
-            )
+            hb(channel, 5, 0, c)
             for s, v in [(2, 2.5), (3, 3.0), (4, 4.0), (5, 5.0)]:
                 channel.send(
                     {"value": v, "step": s, "t": 1.0}, topic="value", name="loss"
                 )
-            channel.send(
-                {"completed": True, "error": None, "final_step": 5, "t": 0.0},
-                topic="lifecycle.stopped",
-            )
+            stopped(channel, claim_seq=c, completed=True, final_step=5)
 
     producer = _FakeProducer(ch, extend_side_effect=episodes)
 
@@ -689,10 +700,7 @@ class _ZeroStepTimeProducer:
 
     def extend(self, until):
         self.calls += 1
-        self._c.send(
-            {"completed": False, "error": None, "final_step": 0, "t": 0.0},
-            topic="lifecycle.stopped",
-        )
+        stopped(self._c, claim_seq=current_claim(self._c), final_step=0)
         return _DeadHandle()
 
 
@@ -705,12 +713,10 @@ def test_ensure_time_milestone_does_not_false_raise_on_zero_step_progress():
     from runstate.vocabulary.handle import local_handle
 
     ch = MemoryChannel()
-    ch.send(
+    c = ch.send(
         {"handle": local_handle(), "t": 0.0}, topic="lifecycle.started"
     )  #           epoch 0.0
-    ch.send(
-        {"step": 0, "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat"
-    )  # 0 steps
+    hb(ch, 0, 0, c)  # 0 steps
     ch.send({"value": 0.0, "step": 0, "t": 0.0}, topic="value", name="loss")
 
     series = ensure(
@@ -730,11 +736,11 @@ def test_ensure_time_milestone_satisfies_via_poll_clock_even_when_value_sparse()
     from runstate.vocabulary.handle import local_handle
 
     ch = MemoryChannel()
-    ch.send({"handle": local_handle(), "t": 0.0}, topic="lifecycle.started")
+    c = ch.send({"handle": local_handle(), "t": 0.0}, topic="lifecycle.started")
     ch.send(
         {"value": 0.0, "step": 0, "t": 0.0}, topic="value", name="loss"
     )  # value.t frozen at 0
-    ch.send({"step": 0, "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat")
+    hb(ch, 0, 0, c)
 
     series = ensure(
         _ZeroStepTimeProducer(ch),
@@ -795,13 +801,8 @@ class _StepThenWaitProducer:
                 self._c.send(
                     {"value": float(s), "step": s, "t": 0.0}, topic="value", name="loss"
                 )
-            self._c.send(
-                {"step": 2, "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat"
-            )
-        self._c.send(
-            {"completed": False, "error": None, "final_step": 2, "t": 0.0},
-            topic="lifecycle.stopped",
-        )
+            hb(self._c, 2, 0, current_claim(self._c))
+        stopped(self._c, claim_seq=current_claim(self._c), final_step=2)
         return _DeadHandle()
 
 
@@ -857,18 +858,9 @@ class _TimeChunkProducer:
             topic="value",
             name="loss",
         )
-        self._c.send(
-            {"step": self._s, "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat"
-        )
-        self._c.send(
-            {
-                "completed": self._completed,
-                "error": None,
-                "final_step": self._s,
-                "t": 0.0,
-            },
-            topic="lifecycle.stopped",
-        )
+        c = current_claim(self._c)
+        hb(self._c, self._s, 0, c)
+        stopped(self._c, claim_seq=c, completed=self._completed, final_step=self._s)
         self._s += 1
         return _DeadHandle()
 
@@ -989,7 +981,9 @@ def test_store_pin_reuse_is_extend_across_drivers(tmp_path):
     assert [b["step"] for b in series_b] == list(range(8))
 
     dbs = sorted((tmp_path / "runs").rglob("*.db"))
-    assert dbs == [home / f"{rid}.db"]  #                   one home, one log
+    assert dbs == [
+        FORMATS[LOG_FORMAT].sqlite_path(home, rid)
+    ]  #                   one home, one log
     episodes = driver_b.attach_channel(rid).read(topics=["lifecycle.started"])
     assert len(episodes) == 2  #                            A's prefix + B's extension
 
@@ -1016,7 +1010,7 @@ def test_store_pin_latecomer_waits_on_live_foreign_episode():
     launcher = runstate.ThreadLauncher()
     rid = "exp"
     ch = launcher.create_channel(rid)
-    ch.send(
+    c = ch.send(
         {"handle": local_handle(), "t": 0.0}, topic="lifecycle.started"
     )  #           the live foreign winner (our pid)
 
@@ -1040,9 +1034,7 @@ def test_store_pin_latecomer_waits_on_live_foreign_episode():
             ch.send(
                 {"value": float(s), "step": s, "t": 0.0}, topic="value", name="loss"
             )
-            ch.send(
-                {"step": s, "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat"
-            )
+            hb(ch, s, 0, c)
             delivered["n"] += 1
 
     series = ensure(_Gated(), "loss", until={"step": 5}, sleep=winner_delivers)
@@ -1110,12 +1102,9 @@ def test_foreign_episode_helper_tracks_live_episode():
     ch = MemoryChannel()
     handle = foreign_episode(ch)
     assert handle.is_alive() is False  #            empty log: no episode
-    ch.send({"handle": local_handle(), "t": 0.0}, topic="lifecycle.started")
+    c = ch.send({"handle": local_handle(), "t": 0.0}, topic="lifecycle.started")
     assert handle.is_alive() is True  #             claim landed: live
-    ch.send(
-        {"completed": False, "error": None, "final_step": 0, "t": 0.0},
-        topic="lifecycle.stopped",
-    )
+    stopped(ch, claim_seq=c, final_step=0)
     assert handle.is_alive() is False  #            episode over
     assert handle.wait() is None  #                 nothing to reap
 
@@ -1159,10 +1148,7 @@ def test_ensure_collision_skips_no_progress_raise_when_foreign_episode_lives(
                         topic="value",
                         name="loss",
                     )
-                self.channel.send(
-                    {"step": 2, "consumed_seq": 0, "t": 0.0},
-                    topic="lifecycle.heartbeat",
-                )
+                hb(self.channel, 2, 0, current_claim(self.channel))
             return _DeadHandle()
 
     series = ensure(_Collider(ch), "loss", until={"step": 3})
@@ -1194,7 +1180,7 @@ def _reaped_exit0(rid, *, claimed, steps=(), handle="local://nohost/999999", epo
     )
     ch.send({"handle": handle, "t": 0.0}, topic="launcher.launched", request_id="L1")
     if claimed:
-        ch.send(
+        c = ch.send(
             {"handle": handle, "t": epoch}, topic="lifecycle.started", request_id="L1"
         )
         for step in steps:
@@ -1203,9 +1189,7 @@ def _reaped_exit0(rid, *, claimed, steps=(), handle="local://nohost/999999", epo
                 topic="value",
                 name="loss",
             )
-            ch.send(
-                {"step": step, "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat"
-            )
+            hb(ch, step, 0, c)
     ch.send(
         {"reason": "exited", "exit_code": 0, "signal": None, "t": 1.0},
         topic="launcher.terminated",
@@ -1277,10 +1261,7 @@ def test_ensure_conforming_worker_never_reaches_the_recordless_bound():
     # Stop-tier precedence: a worker that declared itself done is unaffected,
     # even though its launcher also reaped it with exit 0.
     ch = _reaped_exit0("ok", claimed=True, steps=(0, 1, 2))
-    ch.send(
-        {"completed": True, "error": None, "final_step": 2, "t": 3.0},
-        topic="lifecycle.stopped",
-    )
+    stopped(ch, claim_seq=current_claim(ch), completed=True, final_step=2, t=3.0)
     p = _CountingProducer("ok", ch)
     assert [b["step"] for b in ensure(p, "loss", until={"step": 50})] == [0, 1, 2]
     assert p.extends == 0
@@ -1295,20 +1276,15 @@ def test_ensure_rewake_across_a_recordless_exit0_still_succeeds():
     class Delivering(_CountingProducer):
         def extend(self, until):
             self.extends += 1
+            c = current_claim(self._ch)
             for step in (1, 2):
                 self._ch.send(
                     {"value": float(step), "step": step, "t": 0.0},
                     topic="value",
                     name="loss",
                 )
-                self._ch.send(
-                    {"step": step, "consumed_seq": 0, "t": 0.0},
-                    topic="lifecycle.heartbeat",
-                )
-            self._ch.send(
-                {"completed": True, "error": None, "final_step": 2, "t": 4.0},
-                topic="lifecycle.stopped",
-            )
+                hb(self._ch, step, 0, c)
+            stopped(self._ch, claim_seq=c, completed=True, final_step=2, t=4.0)
             from runstate.memoizer import foreign_episode
 
             return foreign_episode(self._ch)

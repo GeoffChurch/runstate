@@ -3,9 +3,9 @@
 All notable changes to runstate are recorded here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-runstate has **not yet cut a public release**: the package on `master` is
-`0.2.0.dev0`, while the docs describe the shipped arc as "v0.3" and the wire
-conventions are already at `v0.4`. That three-way version-naming tension, and
+runstate has **not yet cut a public release**: the package is `0.3.0.dev0` and
+its logs are log format 0.3.0, while the docs describe the shipped arc as "v0.3"
+and the wire conventions run up to `v0.5`. That three-way version-naming tension, and
 what SemVer means against per-convention wire versions, is an owner decision
 drafted (not ruled) in
 [`docs/backlog/release-and-stability-contract.md`](docs/backlog/release-and-stability-contract.md).
@@ -19,13 +19,33 @@ substitute for those; a reading order over them.
 The post-v0.2 arc, landed on `master`, not yet released. Grouped by the thread
 that produced each change.
 
+### Log formats (breaking)
+
+- **A log's format is part of its address** (2026-10-03,
+  `docs/specs/log-formats.md`). Logs live at `<root>/v<format>/<rid>.db` (a schema
+  per format on Postgres). The locators raise `LogFormatMismatch` on a newer or an
+  older format and `LogFormatMissing` on a legacy unversioned log, and
+  `runstate migrate` moves logs forward through retained, chained steps that copy
+  and seal. Format 0.2.0 names the logs written since `4729fcd`; format 0.3.0
+  (reference by name, below) is current, and the package is `0.3.0.dev0`.
+
+### Library API (breaking)
+
+- **`await_consumed(channel, seq)` takes the request's id from its record**
+  (2026-10-03). The `request_id` parameter is gone: it was a second source of
+  truth, and a missing or mismatched one returned `None` ("accepted") while the
+  worker refused the request. A subscribe, unsubscribe or stop at `seq` with no
+  `request_id` now raises `ValueError`, and a stop its terminal `stopped` honored
+  returns `None` rather than the refused-by-death verdict.
+
 ### Wire protocol versions (breaking)
 
 Each convention schema in `protocol/` is versioned on its own timeline and is
 `additionalProperties: false`, so any field change is a deliberate version bump
-(never a silent addition). The envelope (`envelope-v0.2`) and the
-subscription/value conventions (`subscription-v0.2`, `value-v0.2`) are unchanged
-since v0.2. The lifecycle and launcher conventions each bumped twice:
+(never a silent addition). The envelope (`envelope-v0.2`) and the value
+convention (`value-v0.2`) are unchanged since v0.2. The subscription convention
+bumped once, the launcher convention twice, and the lifecycle convention three
+times:
 
 - **lifecycle `v0.2 → v0.3`** (2026-07-10) — dropped the dead `Started.hostname`
   field (the first-ever convention bump). Its migration script converged and was
@@ -41,9 +61,16 @@ since v0.2. The lifecycle and launcher conventions each bumped twice:
   renamed to `t` (`docs/specs/observer-clock.md`). Existing logs migrated
   offline via a quiescence-gated script that converged and was then deleted per
   the develop-by-migration doctrine, exactly as the two bumps above; git
-  carries it. (Whether that doctrine must change once strangers hold logs —
-  retain scripts, or ship compat — is one of the stability contract's open
-  decisions.)
+  carries it. (That doctrine ended once consumers pinned runstate: migration
+  steps are now retained, `docs/specs/log-formats.md`.)
+- **lifecycle `v0.4 → v0.5` and subscription `v0.2 → v0.3`** (2026-10-03) —
+  reference by name: `heartbeat` and `stopped` carry `claim_seq`, the episode
+  they speak for; `stopped.honored` lists the stops it answers; the new
+  `lifecycle.bound` binds a lease to the episode that registered it; and
+  `control.stop` requires a `request_id` (`docs/specs/reference-by-name.md`).
+  The control-plane folds no longer depend on arrival order, which fixes #39,
+  the claim cascade and the stale-beat leak. Its migration is retained, as log
+  format 0.3.0, reached by `runstate migrate`.
 
 ### June 2026 — the v0.3 thread (run-episodes → the store dissolution)
 

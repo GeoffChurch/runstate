@@ -1,8 +1,19 @@
 # A lifecycle record that speaks for an episode must name it
 
-**Status:** PROPOSED, **revision 2** — attacked as a unit, and three of revision 1's load-bearing
-claims failed under construction. The mechanism survives and is the only thing on the table that
-fixes the claim cascade. Its *case* needed rebuilding.
+**Status:** **SUPERSEDED 2026-10-03** by [identity-in-records](identity-in-records.md) layer 1,
+reference by name.
+- **What layer 1 adds.** The `claim_seq` stamp on `heartbeat` and `stopped` is this entry's mechanism,
+  and layer 1 is that plus naming for the other three positional rules (stops, subscriptions, leases).
+- **Both of this entry's blockers are answered:**
+  - **The startless run.** A stop is named by its `request_id`, not aimed at a claim, and a claimless
+    release names the stop it discharges.
+  - **The fold cost.** The newest-first search keeps `progress` at 6 → 11 µs.
+- **What still stands, and is kept below:** aim buys non-transferability, never forgery resistance;
+  and a backfill copies historical misattributions faithfully.
+- **Possible future cleanup:** condense this entry into a short note within layer 1's design.
+
+The text below is revision 2 as it stood: PROPOSED, attacked as a unit, and three of revision 1's
+load-bearing claims failed under construction.
 
 Revision 1 claimed aim closes #39's forgery route (it does not), specified a discharge predicate
 that **regresses `stop-discharge.md` S3**, and co-gated this on `claim-eviction.md` on two arguments

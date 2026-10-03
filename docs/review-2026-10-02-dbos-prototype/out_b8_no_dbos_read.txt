@@ -1,0 +1,27 @@
+== (1) layer-written run, read by /usr/bin/python3 ==
+dbos is NOT importable in this interpreter: /usr/bin/python3
+dbos_migrations: [(123,)]
+segment 2bb01218f54b.0: status=SUCCESS workflow serialization=portable_json output={'final_step': 12, 'stopped': False}
+   step row 1 _resume_step: serialization=portable_json -> 0
+   step row 2 DBOS.recv: serialization=portable_json -> None
+   step row 3 DBOS.sleep: serialization=portable_json -> 1790985314.4920776
+values read with sqlite3+json: 12 steps 0..11; step 3 = {'step': 3, 'loss': 0.251411, 't': 1790985314.5397043, 'pid': 502595}
+beacon: [('2bb01218f54b.0', 502595, 1790985314.5)]
+ 
+== (2) run written with DBOS's default serializer ==
+dbos is NOT importable in this interpreter: /usr/bin/python3
+dbos_migrations: [(123,)]
+segment defaultrun.0: status=SUCCESS workflow serialization=py_pickle output=<py_pickle, 30 bytes, protocol 4: not JSON; needs Python pickle>
+   stream offset 0: serialization=py_pickle -> <py_pickle, 41 bytes, protocol 4: not JSON; needs Python pickle>
+   stream offset 1: serialization=py_pickle -> <py_pickle, 41 bytes, protocol 4: not JSON; needs Python pickle>
+   step row 1 chunk: serialization=py_pickle -> <py_pickle, 24 bytes, protocol 4: not JSON; needs Python pickle>
+   step row 2 chunk: serialization=py_pickle -> <py_pickle, 24 bytes, protocol 4: not JSON; needs Python pickle>
+   step row 3 chunk: serialization=py_pickle -> <py_pickle, 24 bytes, protocol 4: not JSON; needs Python pickle>
+   event final: serialization=py_pickle -> <py_pickle, 30 bytes, protocol 4: not JSON; needs Python pickle>
+beacon: no such table: rs_beacon
+ 
+
+=== B8 third-party read without DBOS: PARTIAL ===
+  layer run (portable_json configured): values + status readable with sqlite3+json, no DBOS: True
+  DBOS defaults: step outputs / workflow output / events / streams are base64 pickle: True
+  schema: documented 'System Tables' page (Postgres schema; no stability promise for the tables); SQLite schema differs (no 'dbos.' schema prefix) and DBOS's own launch log calls SQLite 'for development and testing'

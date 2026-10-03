@@ -3,7 +3,9 @@
 # on PATH, whose interpreter may carry a DIFFERENT editable runstate -- the
 # import-shadowing trap that has produced false greens in this repo before.
 repo_root="$(git rev-parse --show-toplevel)"
-if [ -x "$repo_root/.venv/bin/python" ]; then
+if [ -x "$repo_root/.conda/bin/python" ]; then
+    PY="$repo_root/.conda/bin/python"
+elif [ -x "$repo_root/.venv/bin/python" ]; then
     PY="$repo_root/.venv/bin/python"
 else
     PY="$(command -v python3 || command -v python)"

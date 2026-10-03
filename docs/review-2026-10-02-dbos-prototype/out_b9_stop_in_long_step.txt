@@ -1,0 +1,21 @@
+(a) stop at ckpt step 10: training continued for 40 steps / 4.09s after the request; DBOS status right after the request=PENDING
+      worker: ['[502626] RESULT {"final_step": 50, "stopped": true} after 5.21s']; final ckpt={'step': 50, 'state': {'w': 25.0}}; last value step=49; verdict=preempted
+      operation_outputs rows=8 for 50 training steps
+(b) stop at ckpt step 10: training continued for 1 steps / 0.07s after the request; DBOS status right after the request=PENDING
+      worker: ['[502710] RESULT {"final_step": 11, "stopped": true} after 1.19s']; final ckpt={'step': 11, 'state': {'w': 5.5}}; last value step=10; verdict=preempted
+      operation_outputs rows=8 for 11 training steps
+(c) stop at ckpt step 10: training continued for 1 steps / 0.06s after the request; DBOS status right after the request=PENDING
+      worker: ['[502735] RESULT {"final_step": 11, "stopped": true} after 1.23s']; final ckpt={'step': 11, 'state': {'w': 5.5}}; last value step=10; verdict=preempted
+      operation_outputs rows=38 for 11 training steps
+(d) stop at ckpt step 10: training continued for 0 steps / -0.02s after the request; DBOS status right after the request=CANCELLED
+      worker: ['    raise DBOSAwaitedWorkflowCancelledError(workflow_id)', 'dbos._error.DBOSAwaitedWorkflowCancelledError: DBOS Error 13: Awaited workflow 2bb01218f54b.0 was cancelled']; final ckpt={'step': 10, 'state': {'w': 5.0}}; last value step=9; verdict=preempted
+      operation_outputs rows=3 for 10 training steps
+(e) preemptible async step: {"t_cancel": 1790985328.561651, "events": [{"step_interrupted_by": "DBOSWorkflowConflictIDError", "at_k": 11, "t": 1790985328.6107917}, {"get_result_raised": "DBOSAwaitedWorkflowCancelledError"}], "status": "CANCELLED", "mode": "stream writes in step", "step_stop_latency_s": [0.05], "step_rows": []}
+(e) preemptible async step: {"t_cancel": 1790985332.173272, "events": [{"step_interrupted_by": "CancelledError", "at_k": 20, "t": 1790985332.9899468}, {"get_result_raised": "DBOSAwaitedWorkflowCancelledError"}], "status": "CANCELLED", "mode": "no DB writes in step", "step_stop_latency_s": [0.82], "step_rows": []}
+
+=== B9 stop inside a long DBOS step: PARTIAL ===
+  (a) native message+recv: 40 more steps, 4.09s -- only at the step boundary
+  (b) + layer's in-step peek: 1 more steps, 0.07s
+  (c) one DBOS step per training step: 1 more steps, 0.06s
+  (d) cancel_workflow: 0 more steps, -0.02s (abort at the next fenced write, verdict written first)
+  (e) see the preemptible-async line above

@@ -115,6 +115,12 @@ Every currently-open defect in this area is one of the four it should not be ass
 - **#32** — the reclaim must impersonate the worker to release the claim, which is what manufactures
   the displacement in the first place. (Jobs 2 and 3.)
 
+*Since log format 0.3.0 (2026-10-03, `../specs/reference-by-name.md`) job 4 is by name.* A `stopped`
+discharges only the stops its `honored` list names, and `Worker._discharge_floor` is gone, so a third
+party's release written with `honored: []` discharges nothing: #39's harm is closed for any release
+that does not name the stop. The table and the #39 bullet above describe format 0.2.0's positional
+rule, under which any later `stopped` discharged every pending stop. A forger can still name a stop.
+
 ## 2. The hardest question splits; only one half was ever hard
 
 `cross-host-claim-gate.md` §4.2 calls **"who is allowed to write it, and on what evidence"** the
@@ -231,6 +237,10 @@ structural rather than four separate patches that have to stay correct.
 | `progress` / `_episode_stopped` | `STOPPED` | none — **no rewound frontier** |
 | `undischarged_stops` (`:444`), `Worker._discharge_floor` (`worker.py:88`) | `STOPPED` | none — **#39 fixed** |
 | `last_activity` via `_DATED_TOPICS` (`:326`) | five dated topics | none — **#42 fixed** |
+
+(The citations are format 0.2.0's tree. Under 0.3.0, `_discharge_floor` is gone and
+`undischarged_stops` folds `stopped.honored` and naks by name, so the `#39 fixed` row needs no
+eviction record: names fixed it, §1's note.)
 
 The one change — **below** the probe, and a range read, both for reasons revision 1 got wrong:
 
@@ -380,21 +390,22 @@ So old logs keep their forged verdicts, forever, and there is **no** compatibili
 `stopped` as an eviction — that branch would be the exact wart the project bans. This is a
 correctness limit, not a cost one, and it is the kind that survives "old logs do not constrain us."
 
-Schema: `protocol/lifecycle-v0.4.schema.json` → **v0.5**, adding `lifecycle.evicted` to the topic
-enum and its body, replacing v0.4 rather than accumulating beside it.
+Schema: the current lifecycle schema (`protocol/lifecycle-v0.5.schema.json`) → **a later lifecycle
+version**, adding `lifecycle.evicted` to the topic enum and its body, replacing the current version
+rather than accumulating beside it.
 
 **That is a doc-wide edit, not a file rename.** Priced, because revision 1 undercounted it: **two**
 conformance assertions, not one — `test_schema.py` and `test_implementers_guide.py`, the latter
 requiring a valid `lifecycle.evicted` example in `../implementers-guide.md`. Plus
 `test_public_api.py::test_public_surface_is_stable`, `test_api_doc_covers_the_public_surface`,
-`../api.md`, and 11 `lifecycle-v0.4` references across `../api.md`, `../implementers-guide.md`,
+`../api.md`, and the lifecycle-version references across `../api.md`, `../implementers-guide.md`,
 `CHANGELOG.md`, `README.md`, `CLAUDE.md`, and `release-and-stability-contract.md`. And
 `live_episode`'s own docstring, which currently states the *opposite* of what this ships (*"Only a
 later `lifecycle.stopped` and a `resolve()`-dead handle release a claim"*).
 
-**No consumer pins a runstate version.** All three import the working tree by ambient `sys.path`, so
-a v0.4 → v0.5 bump has nothing to bump against: the flip is instantaneous and not opt-out-able. That
-is an argument for landing the consumer changes in the same window, not for a compatibility shim.
+**The consumers pin runstate by commit** (since 2026-10-03), so a lifecycle bump reaches each one
+when it upgrades: a log format change, carried by `runstate migrate` (`../specs/log-formats.md`). That
+is an argument for landing each consumer's changes in its upgrade, not for a compatibility shim.
 
 ## 10. The cost of the third read — MEASURED
 

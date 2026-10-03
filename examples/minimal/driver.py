@@ -53,7 +53,7 @@ def main():
                         {"from": {"step": 0}},
                         # the wire is just strings -- Topic.CONTROL_STOP and "control.stop" are interchangeable
                         topic="control.stop",
-                        request_id="driver-stop",
+                        request_id=uuid.uuid4().hex,  # a stop id is never reused
                     )
                     stop_sent = True
                     print("[driver] divergence detected -> sent control.stop")

@@ -22,7 +22,10 @@ from collections.abc import Callable
 from typing import Any
 
 import psycopg
+from psycopg import sql
 
+from .. import formats
+from ..formats import FORMATS, LOG_FORMAT, LogFormatMismatch, LogFormatMissing
 from .base import Channel, RunNotFound
 from .envelope import Body, Envelope
 
@@ -80,11 +83,78 @@ def ensure_schema(dsn: str) -> None:
     ``__init__`` -- the channel constructor only probes for the table. Idempotent;
     the orchestration helpers (sweep, the launchers) call it at startup so
     cold-start-many-workers is self-sufficient."""
+    schema = FORMATS[LOG_FORMAT].pg_schema()
     with psycopg.connect(dsn) as conn, conn.transaction():
         conn.execute("SELECT pg_advisory_xact_lock(%s)", (_SCHEMA_LOCK_KEY,))
+        conn.execute(
+            sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(schema))
+        )
+        conn.execute(
+            sql.SQL("SET LOCAL search_path TO {}").format(sql.Identifier(schema))
+        )
         conn.execute(_CREATE_TABLE)
         conn.execute(_CREATE_INDEX)
         conn.execute(_CREATE_NAME_INDEX)
+
+
+def _has_rows(conn: psycopg.Connection[Any], schema: str, run_id: str) -> bool:
+    table = sql.SQL("{}.log").format(sql.Identifier(schema)).as_string(conn)
+    reg = conn.execute("SELECT to_regclass(%s)", [table]).fetchone()
+    if reg is None or reg[0] is None:
+        return False
+    hit = conn.execute(
+        sql.SQL("SELECT 1 FROM {}.log WHERE run_id = %s LIMIT 1").format(
+            sql.Identifier(schema)
+        ),
+        [run_id],
+    ).fetchone()
+    return hit is not None
+
+
+# The legacy table: the `log` that an UNQUALIFIED name resolves to under the
+# connection's own search path, as every statement of a runstate from before
+# versioned addresses was unqualified (a DSN may carry `options=-csearch_path=`).
+# It is runstate's only if it has a `run_id` column (another application's `log`
+# is not), and legacy only outside the versioned `runstate_v…` schemas.
+_LEGACY_LOG = """
+SELECT n.nspname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.oid = to_regclass('log') AND NOT starts_with(n.nspname, 'runstate_v')
+  AND EXISTS (SELECT 1 FROM pg_attribute a
+              WHERE a.attrelid = c.oid AND a.attname = 'run_id' AND NOT a.attisdropped)
+"""
+
+
+def check_format(conn: psycopg.Connection[Any], run_id: str) -> bool:
+    """log-formats.md §4 on postgres. Raises for a newer format in the database,
+    or for the run held by an older format or the legacy table. Returns whether
+    the run has rows at the current address. Call it before setting the
+    connection's search path: the legacy table is found under its own."""
+    names = [r[0] for r in conn.execute("SELECT nspname FROM pg_namespace").fetchall()]
+    newer = formats.newer_in(names, prefix="runstate_v", sep="_", than=LOG_FORMAT)
+    if newer:
+        raise LogFormatMismatch(
+            found=newer[-1],
+            expected=LOG_FORMAT,
+            where="this database",
+            command=formats.POSTGRES_MIGRATE_COMMAND,
+        )
+    if _has_rows(conn, FORMATS[LOG_FORMAT].pg_schema(), run_id):
+        return True
+    for version, layout in formats.older_than(LOG_FORMAT):
+        if _has_rows(conn, layout.pg_schema(), run_id):
+            raise LogFormatMismatch(
+                found=version,
+                expected=LOG_FORMAT,
+                where=f"schema {layout.pg_schema()}",
+                command=formats.POSTGRES_MIGRATE_COMMAND,
+            )
+    legacy = conn.execute(_LEGACY_LOG).fetchone()
+    if legacy is not None and _has_rows(conn, legacy[0], run_id):
+        raise LogFormatMissing(
+            where=f"{legacy[0]}.log",
+            instructions=formats.postgres_onboarding(run_id, legacy[0]),
+        )
+    return False
 
 
 # The CAS: insert at seq=expected+1 iff the run's current max is still expected.
@@ -186,12 +256,24 @@ class PostgresChannel(Channel):
         self._json_default = json_default
         self._lock = threading.Lock()
         self._conn = psycopg.connect(dsn, autocommit=True)
+        try:  # one guard: a failure anywhere in the open closes the connection
+            self._open(run_id, create=create)
+        except BaseException:
+            self._conn.close()
+            raise
+
+    def _open(self, run_id: str, *, create: bool) -> None:
         # lock_timeout is the busy_timeout analogue: a wedged conflicting writer
         # makes the CAS raise (indeterminate) rather than hang forever.
         self._conn.execute("SET lock_timeout = '5000ms'")
+        has_rows = check_format(self._conn, run_id)  # before the search path
+        self._conn.execute(
+            sql.SQL("SET search_path TO {}").format(
+                sql.Identifier(FORMATS[LOG_FORMAT].pg_schema())
+            )
+        )
         registered = self._conn.execute("SELECT to_regclass('log')").fetchone()
         if registered is None or registered[0] is None:
-            self._conn.close()
             raise RuntimeError(
                 "the postgres 'log' table is absent; call "
                 "runstate.channel.postgres.ensure_schema(dsn) first"
@@ -201,12 +283,7 @@ class PostgresChannel(Channel):
             # (it only probes for the shared *table*). Existence is per-run: no
             # rows WHERE run_id=X == the run doesn't exist. This is the semantic
             # sqlite/memory now conform to -- postgres embodies it natively.
-            row = self._conn.execute(
-                "SELECT COALESCE(MAX(seq), 0) FROM log WHERE run_id = %s",
-                [run_id],
-            ).fetchone()
-            if not row or row[0] == 0:
-                self._conn.close()
+            if not has_rows:
                 raise RunNotFound(f"run {run_id!r} has no records (postgres backend)")
 
     def send(

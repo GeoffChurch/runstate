@@ -72,6 +72,17 @@ records of those topics:**
   `read(topics=[Topic.VALUE])`) and `history` (`memoizer.py:history`,
   `read(topics=[Topic.VALUE], name=name)`) need the **full per-`(name, step)`
   series**. (§5: never compactable.)
+*This survey is the 2026-07-16 tree, log format 0.2.0. Since format 0.3.0
+(2026-10-03, `../specs/reference-by-name.md`) the folds below join by name,
+not by position: `live_demand` reads `control.subscribe`/`control.unsubscribe`/
+`lifecycle.nak`/`lifecycle.bound` (no episode boundaries), `undischarged_stops`
+reads every `control.stop`, `stopped` and nak (`stopped.honored` names the
+stops), and the current heartbeat is the newest naming the latest claim
+(`observables.current_heartbeat`), which on a miss reads heartbeat history in
+a backward window. That last change bears on "heartbeats are read ONLY via
+`latest`" below: a compactor that drops beats must keep, for each claim,
+the newest beat that names it.*
+
 - **The discharge / answer / boundary folds re-derive over `control.*` +
   `lifecycle.started`/`stopped`/`nak`:**
   - `live_demand` reads `control.subscribe`/`control.unsubscribe`/

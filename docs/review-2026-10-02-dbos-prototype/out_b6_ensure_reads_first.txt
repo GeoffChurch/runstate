@@ -1,0 +1,6 @@
+setup: worker ran to 20; values present=20; segments=[('2bb01218f54b.0', 'SUCCESS')]
+ensure(config, 15) -> 15 values (steps 0..14) in 7 ms
+  worker launches=[]; workflow_status rows changed=False; new ckpt writes=0
+
+=== B6 ensure reads first: PASS ===
+  no launch, no DB write by DBOS, served from streams: True

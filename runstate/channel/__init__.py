@@ -23,6 +23,8 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
+from .. import formats
+from ..formats import LOG_FORMAT, FORMATS, LogFormatMismatch, LogFormatMissing
 from .base import Channel, EpisodeHolder, EpisodeProbe, RunNotFound
 from .envelope import Body, Envelope
 from .memory import MemoryChannel
@@ -38,6 +40,53 @@ from .sqlite import SqliteChannel
 # exactly as they would share a file on sqlite -- and root=None never collides
 # with a namespace literally named "None".
 _MEMORY_LOGS: dict[tuple[str | None, str], tuple[list[Envelope], threading.Lock]] = {}
+
+
+def _locate_sqlite(
+    root: Path,
+    run_id: str,
+    *,
+    create: bool,
+    json_default: Callable[[object], object] | None,
+) -> Channel:
+    """log-formats.md §4, in order: refuse a root holding a newer format; open the
+    current address; refuse an older format or the legacy address holding the run;
+    else RunNotFound (attach) or a birth at the current address (create)."""
+    if root.is_dir():
+        newer = formats.newer_in(
+            (p.name for p in root.iterdir() if p.is_dir()),
+            prefix="v",
+            sep=".",
+            than=LOG_FORMAT,
+        )
+        if newer:
+            raise LogFormatMismatch(
+                found=newer[-1],
+                expected=LOG_FORMAT,
+                where=str(root),
+                command=formats.sqlite_migrate_command(root),
+            )
+    path = FORMATS[LOG_FORMAT].sqlite_path(root, run_id)
+    if path.exists():
+        return SqliteChannel(path, create=create, json_default=json_default)
+    for version, layout in formats.older_than(LOG_FORMAT):
+        old = layout.sqlite_path(root, run_id)
+        if old.exists():
+            raise LogFormatMismatch(
+                found=version,
+                expected=LOG_FORMAT,
+                where=str(old),
+                command=formats.sqlite_migrate_command(root),
+            )
+    legacy = root / f"{run_id}.db"
+    if legacy.exists():
+        raise LogFormatMissing(
+            where=str(legacy), instructions=formats.sqlite_onboarding(root, run_id)
+        )
+    if not create:
+        raise RunNotFound(f"run has no records at {path}")
+    path.parent.mkdir(exist_ok=True)  # the root itself must already exist
+    return SqliteChannel(path, create=True, json_default=json_default)
 
 
 def _locate(
@@ -62,8 +111,8 @@ def _locate(
             raise ValueError(
                 "the sqlite backend requires a root directory (got root=None)"
             )
-        return SqliteChannel(
-            Path(root) / f"{run_id}.db", create=create, json_default=json_default
+        return _locate_sqlite(
+            Path(root), run_id, create=create, json_default=json_default
         )
     if backend == "memory":
         key = (None if root is None else os.path.abspath(str(root)), run_id)

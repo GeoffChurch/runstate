@@ -70,7 +70,7 @@ clusters that unlock each other, with a sequencing — see
   release + what SemVer means against per-convention wire versions; the public
   form of the migration doctrine (retain scripts once strangers hold logs); the
   end-of-schema-file-deletion trigger; deprecation policy; the version-naming
-  tension (`0.2.0.dev0` vs the docs' "v0.3" vs wire-`v0.4`); and the schemas-
+  tension (`0.3.0.dev0` vs the docs' "v0.3" vs wire-`v0.5`); and the schemas-
   not-in-the-wheel question. Six decision points, each with a recommendation;
   nothing ruled. Blocks the first `pip install runstate`.
 
@@ -159,7 +159,26 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
 
 ## Protocol extensions (control plane)
 
+- **Identity in records** — [identity-in-records](identity-in-records.md). DESIGN, not converged
+  (2026-10-03), with a measured spike behind each layer. Records name what they answer, end or concern,
+  instead of being related by position. In dependency order:
+  1. reference by name on control and lifecycle records (order-independent folds; fixes #39, the
+     cascade and the stale-beat leak; the startless run answered) — **IMPLEMENTED 2026-10-03** as log
+     format 0.3.0 ([`../specs/reference-by-name.md`](../specs/reference-by-name.md));
+  2. names on values;
+  3. episode-keyed artefacts read through the log's vouching;
+  4. time as a *trigger* for claims, which dissolves the cross-host wedge;
+  5. fenced worker writes, possibly optional given 1.
+
+  The target is that a wrong claim costs waste, never corruption. It supersedes episode-aim, below.
+- **Log formats and reference by name: follow-ups** — [log-formats-followups](log-formats-followups.md).
+  LIVING (2026-10-03). What the shipping branch's final review left real but not merge-blocking: the
+  uncached per-open listing, migration robustness (cycle guard, DDL without the lock, raw tracebacks),
+  tests that would pin more, and four unreachable gaps kept so nobody rediscovers them.
 - **A lifecycle record that speaks for an episode must name it** — [episode-aim](episode-aim.md).
+  **SUPERSEDED 2026-10-03** by identity-in-records layer 1. Its blockers (the startless run, the fold
+  cost) are answered there; its analysis of forgery and backfill still stands. Possibly to be condensed
+  into a short note within layer 1's design. The original summary follows.
   **Revision 2, attacked.** The launcher and control tiers aim; the lifecycle tier aims only where it
   *answers a request*, so `stopped` and `heartbeat` — the two records that speak for an episode
   without naming it — are exactly the two that get misattributed. `claim_seq`, **well-aimed** (no
@@ -172,7 +191,7 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
   need latest-then-verify or they cost 2124×.
 - **A halt that survives an episode boundary** — [run-scoped-halt](run-scoped-halt.md). `control.stop`
   is an **episode**-scoped request; a consumer reads it as a **run**-scoped halt, and they diverge at
-  the boundary. Measured with no third party: an operator halts a run, an ordinary live worker honours
+  the boundary. Measured with no third party: an operator halts a run, an ordinary live worker honors
   the stop, the discharge fires correctly — and the run is claimable again and a new episode claims it.
   The discharge rule is right and must not be reopened. **Open need, no mechanism**: a value-plane
   register recipe was proposed and refuted — it designed the read path and asserted the write path,
@@ -226,24 +245,23 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
   single-host; the heartbeat ◊P detector remains the floor for *observation* (the
   `Watcher`), not the claim.
 - **Watcher boundary-aware re-broadcast** — a time-keyed `broadcast` barrier
-  subscription on a run that *resumes* is boundary-voided with no record
-  (`../specs/time-lease-boundary.md`); today's steering is "spell barriers
-  step-keyed" (design §9). A Watcher that watches `started`s and re-issues its
+  subscription is a lease, so on a run that *resumes* it is void for the new
+  episode (`../specs/time-lease-boundary.md`); today's steering is "spell
+  barriers step-keyed" (design §9). A Watcher that watches `started`s and re-issues its
   broadcast across boundaries would lift the restriction. Small.
 - **Time-axis unification** — three time anchorings now coexist by design:
   `history()` replays time atoms run-epoch-anchored; live subscriptions are
   episode-scoped (`time-lease-boundary`); stops re-anchor per episode
   (stop-discharge's note). Each is locally right; if a consumer ever needs them to
   agree, unify deliberately rather than ad hoc.
-- **Discharge-by-id (merge-tolerant control folds)** — generalize the stop-discharge
-  fold's positional rule ("pending until the *next* `lifecycle.stopped`",
-  `../specs/stop-discharge.md`) — now two positional rules (the stop discharge AND
-  the subscribe answer fold, design §7) — to explicit causal reference: a `stopped`
-  names the `request_id`(s) it discharges. Makes the control fold commutative, so it
-  survives multi-writer `control.*` (§12.7–8) and replicated logs, where "next" is
-  not well-defined. No-op while every log has a single home — including the shipped
-  single-instance Postgres backend (one total order, even under multi-writer `control.*`);
-  revisit only with a replicated / multi-home log.
+- **Discharge-by-id (merge-tolerant control folds)** — **REALISED 2026-10-03** by
+  identity-in-records layer 1 ([`../specs/reference-by-name.md`](../specs/reference-by-name.md)):
+  a `stopped` names the stops it discharges (`honored`), and the subscribe answer fold
+  joins on `request_id` too, so the control folds are order-independent. It was
+  proposed as a no-op while every log has a single home; it shipped anyway, because
+  position was also the cause of single-home defects (#39, a stop discharged unseen at
+  the dying breath). What it leaves for a replicated or multi-home log is the order
+  among claims: a claim's name is the arbiter's `seq`.
 - [launcher-protocol-typing](launcher-protocol-typing.md) — the `Launcher` Protocol's
   `launch` can't be structurally typed (the two reference launchers have disjoint
   `launch` signatures: a callable `target` vs a `cmd`). Split the uniform

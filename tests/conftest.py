@@ -188,3 +188,60 @@ def conc_backend(request, tmp_path, monkeypatch):
         journal=journal,
         namespace=uuid.uuid4().hex,
     )
+
+
+@pytest.fixture
+def crashed_wal_writer():
+    """Review focus 3: write n records in WAL mode from a process that dies without
+    closing, leaving its frames un-checkpointed in the WAL -- the realistic state
+    of a log whose writer crashed before it was migrated."""
+    import subprocess
+    import sys
+
+    def write(path, n):
+        code = (
+            "import os; from runstate.channel.sqlite import SqliteChannel; "
+            f"ch = SqliteChannel({str(path)!r}); "
+            f"[ch.send({{'i': i}}, topic='value', name='n') for i in range({n})]; "
+            "os._exit(0)"
+        )
+        env = {**os.environ, "RUNSTATE_SQLITE_JOURNAL_MODE": "WAL"}
+        subprocess.run([sys.executable, "-c", code], check=True, env=env)
+
+    return write
+
+
+_CRASHED_JOURNAL_WRITER = """
+import os, sqlite3, sys
+from runstate.channel.sqlite import SqliteChannel
+path, n = sys.argv[1], int(sys.argv[2])
+ch = SqliteChannel(path)
+for i in range(n):
+    ch.send({"i": i}, topic="value", name="n")
+ch.close()
+c = sqlite3.connect(path, isolation_level=None)
+c.execute("PRAGMA cache_size=1")
+c.execute("BEGIN")
+for _ in range(2000):
+    c.execute("INSERT INTO log (topic, body, created_at) VALUES ('value', '{}', 0)")
+os._exit(9)
+"""
+
+
+@pytest.fixture
+def crashed_journal_writer():
+    """Write n records in DELETE journal mode (mycooc's NFS mode), then die in
+    the middle of a transaction whose dirty pages already spilled to the db
+    file: the hot ``-journal`` left beside it holds the pages they overwrote, so
+    the file is consistent only once a read-write open rolls the journal back."""
+    import subprocess
+    import sys
+
+    def write(path, n):
+        env = {**os.environ, "RUNSTATE_SQLITE_JOURNAL_MODE": "DELETE"}
+        args = [sys.executable, "-c", _CRASHED_JOURNAL_WRITER, str(path), str(n)]
+        assert subprocess.run(args, env=env).returncode == 9
+        journal = path.with_name(path.name + "-journal")
+        assert journal.stat().st_size > 0, "the writer left no hot journal"
+
+    return write

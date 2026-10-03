@@ -196,39 +196,46 @@ anywhere else it would be a circular gate, and the worker refuses it.) The
 algebra has **no normal form** on purpose: conditions are evaluated, never compared
 or hashed, so canonicalizing redundant encodings would buy nothing.
 
-Control facts live by one **pairing-by-`seq` rule** (design §7): a standing fact
-is live until its counter-record *follows* it on the log. A pending **stop** is
-discharged by the next `stopped` (so the decision is a latched *level* — a missed
-`True` is recovered at the next safe point — and a resumed episode never replays
-an answered stop). A **subscribe** is live until an unsubscribe-or-nak bearing
-its `request_id` follows it — the **answer fold** — and a registration *expires*
-the moment no future fire is possible (`until` met, one-shot consumed), with the
-worker writing the expiry record itself. One more pairing, recordless: a
-**time-referencing** subscribe is a *lease on one living worker* — it is voided
-by the next worker's `started` (its countdown can't honestly survive the worker
+Control facts live by one rule, **reference by name** (design §7): a record that
+answers or ends another names it, by an id that is never reused, so the log reads
+the same whatever order its records arrived in. A pending **stop** is discharged
+by the `stopped` that lists its `request_id` in `honored` — the worker names every
+stop pending when it stops — or refused by a `nak` naming it (so the decision is a
+latched *level* — a missed `True` is recovered at the next safe point — and a
+resumed episode never replays an answered stop). A **subscribe** is live until an
+unsubscribe or nak names its `request_id` — the **answer fold** — after which the
+id is *spent*: a request reusing it is dead on arrival, so a replacement takes a
+fresh id. A registration *expires* the moment no future fire is possible (`until`
+met, one-shot consumed), with the worker writing the expiry record itself. And a
+**time-referencing** subscribe is a *lease on one living worker*: the worker that
+registers it first writes a `lifecycle.bound` naming its own episode, and the
+lease is void for every other (its countdown can't honestly survive the worker
 that was counting), so a dead client's lease can never haunt a run, and bounds
 meant to outlive workers are spelled in steps (`until: {step: N}`), not seconds.
 So `observables.live_demand(channel)` reads "who still wants something"
 straight off the log.
 
 *Did my command land?* There is no per-request ack — and the read is
-**answer-first**: a `nak` following your request resolves it immediately
+**answer-first**: a `nak` naming your request resolves it immediately
 (`{reason, message}`, `reason ∈ {malformed, unsatisfiable, unsupported}`,
 dropped — never fatal to the worker); otherwise the worker's **consumption
 watermark** (`consumed_seq`, on its heartbeat) passing your seq means
 registered-and-accepted; and a terminal `stopped` arriving instead means the run
 died under your request. `await_consumed()` is the blessed read, returning
-exactly that answer space (`Nak` | `RunResult` | `None`).
+exactly that answer space (`Nak` | `RunResult` | `None`), by the `request_id` your
+request bears; it raises if your request bears none or reuses an id an answer
+already spent.
 
 **(c) Lifecycle — the worker's self-report** (`worker → observers`, reserved
 `lifecycle.*`):
 
 | topic | body | what it is / why |
 |---|---|---|
-| `started` | `{handle, t}` | pushed on attach; the worker self-reports its liveness **handle**; `t` is the attach wall-clock (the run epoch) |
-| `heartbeat` | `{step?, consumed_seq, t}` | a tick-driven **beacon** — see below |
-| `stopped` | `{completed, error, final_step, t}` | the cooperative **dying breath** — see below |
-| `nak` | `{reason, message}` | a refused control request (correlated by `request_id`) |
+| `started` | `{handle, t}` | the **claim**, pushed on attach; the worker self-reports its liveness **handle**; `t` is the attach wall-clock (the run epoch); its `seq` names the episode |
+| `heartbeat` | `{step?, consumed_seq, claim_seq, t}` | a tick-driven **beacon**, naming its episode — see below |
+| `stopped` | `{completed, error, final_step, claim_seq, honored, t}` | the cooperative **dying breath**, naming the episode it ends and the stops it honored — see below |
+| `nak` | `{reason, message}` | a refused control request (named by `request_id`) |
+| `bound` | `{claim_seq}` | binds a lease (`request_id`) to the episode that registered it |
 
 *What is a heartbeat?* A periodic **beacon** the worker pushes from inside its loop
 (not on request). It does triple duty: **liveness** (if it goes stale, the worker

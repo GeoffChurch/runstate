@@ -19,6 +19,7 @@ from .channel import (
     attach_channel,
     create_channel,
 )
+from .formats import LOG_FORMAT, LogFormatError, LogFormatMismatch, LogFormatMissing
 from .launcher import (
     Launcher,
     LaunchHandle,
@@ -53,6 +54,7 @@ from .observables import (
 from .vocabulary.handle import handle_pid
 from .vocabulary.schedule import Condition
 from .vocabulary.payloads import (
+    Bound,
     Heartbeat,
     Launched,
     Nak,
@@ -98,6 +100,10 @@ __all__ = [
     "create_channel",
     "current_channel",
     "RunNotFound",
+    "LOG_FORMAT",
+    "LogFormatError",
+    "LogFormatMismatch",
+    "LogFormatMissing",
     "Channel",
     "Body",
     "Envelope",
@@ -145,6 +151,7 @@ __all__ = [
     "Started",
     "Heartbeat",
     "Stopped",
+    "Bound",
     "Nak",
     "Launched",
     "Terminated",

@@ -16,7 +16,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from runstate import RunNotFound, attach_channel, create_channel, current_channel
+from runstate import (
+    LOG_FORMAT,
+    RunNotFound,
+    attach_channel,
+    create_channel,
+    current_channel,
+)
+from runstate.formats import FORMATS
 
 
 @pytest.fixture(params=["memory", "sqlite", "postgres"])
@@ -104,9 +111,8 @@ def test_attach_leaves_foreign_sqlite_byte_identical(tmp_path):
     """The PR #14 harm, pinned (sqlite): attaching where a stale pointer resolves
     to a FOREIGN valid sqlite db must not create, schema-mutate, or WAL-sidecar
     it. The file stays byte-identical and no -wal/-shm appears."""
-    foreign = (
-        tmp_path / "ghost.db"
-    )  # attach("ghost", root=tmp_path) -> tmp_path/ghost.db
+    foreign = FORMATS[LOG_FORMAT].sqlite_path(tmp_path, "ghost")
+    foreign.parent.mkdir()
     conn = sqlite3.connect(str(foreign))
     conn.execute("CREATE TABLE unrelated (x INTEGER)")
     conn.execute("INSERT INTO unrelated VALUES (1)")
@@ -118,15 +124,16 @@ def test_attach_leaves_foreign_sqlite_byte_identical(tmp_path):
         attach_channel("ghost", root=str(tmp_path), backend="sqlite")
 
     assert hashlib.sha256(foreign.read_bytes()).digest() == before
-    assert not (tmp_path / "ghost.db-wal").exists()
-    assert not (tmp_path / "ghost.db-shm").exists()
+    assert not foreign.with_name("ghost.db-wal").exists()
+    assert not foreign.with_name("ghost.db-shm").exists()
 
 
 def test_attach_corrupt_db_propagates_not_runnotfound(tmp_path):
     """A genuine non-sqlite / corrupt file is NOT a lookup miss: DatabaseError
     propagates rather than being mapped to RunNotFound (only OperationalError --
     missing file / no 'log' table -- is the miss)."""
-    junk = tmp_path / "junk.db"
+    junk = FORMATS[LOG_FORMAT].sqlite_path(tmp_path, "junk")
+    junk.parent.mkdir()
     junk.write_bytes(b"this is definitely not a sqlite database")
     with pytest.raises(sqlite3.DatabaseError):
         attach_channel("junk", root=str(tmp_path), backend="sqlite")

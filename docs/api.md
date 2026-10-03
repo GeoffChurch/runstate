@@ -70,6 +70,12 @@ The uniform absence signal (a `LookupError`): `attach_channel` raises it when a
 run has no records, so a nonexistent and an empty run are identically "no run"
 (docs/specs/channel-locators.md).
 
+### Log formats
+
+- `LOG_FORMAT`: the log format this release reads and writes.
+- `LogFormatError`, `LogFormatMismatch` and `LogFormatMissing`: see
+  `docs/specs/log-formats.md` §4.
+
 ### `Channel`
 
 ```python
@@ -140,8 +146,12 @@ via `retire`). `set` updates the current-value register (observer-chosen
 cadence); `emit` logs a point unconditionally (worker-chosen cadence — the
 series `ensure`/`history` read) and **raises `ValueError` before the first tick
 or on a stepless worker**. `stopped(completed=True)` is the opt-in completion
-claim; the default projects to `preempted`. `retire()` is the careful death (the
-dying breath CAS'd against the drained log).
+claim; the default projects to `preempted`. `retire()` is the careful death.
+Both dying breaths name their claim (`claim_seq`) and every pending stop
+(`honored`), and are compare-and-appended over a fully read control tail:
+`retire()` takes in every control verb and returns False if new demand arrived,
+while a plain `stopped()` takes in only stops, leaving a racing subscribe live
+for the next episode.
 
 **What the episode claim guarantees — and where it stops.** The birth CAS gives
 **at most one claimant at the instant of claiming**. It does *not* give
@@ -247,17 +257,30 @@ runs under a shared `request_id` — the **cross-run barrier**. `poll` raises
 ### `await_consumed`
 
 ```python
-await_consumed(channel, seq, *, request_id=None, timeout=None,
+await_consumed(channel, seq, *, timeout=None,
                poll_interval=0.05, now=time.time, sleep=time.sleep) -> Nak | RunResult | None
 ```
 
-Block until the control request at `seq` is answered or drained. **Answer-first**:
-a `lifecycle.nak` bearing `request_id` that follows `seq` returns the `Nak`; a
-terminal record following the request with no later episode returns the terminal
-`RunResult` (refused-by-death); otherwise the heartbeat watermark
-(`consumed_seq >= seq`) passing means accepted (returns `None`). Raises
-`TimeoutError` if `timeout` elapses (not-yet-drained is not a refusal), and
-`MalformedRecordError` on a nak body it cannot parse.
+Block until the control request at `seq` is answered or drained. The request is
+the record at `seq`, and the `request_id` it bears is the name its answers carry,
+so the caller passes no id. **Answer-first**: the first answer naming the request
+that follows `seq` resolves it — a `lifecycle.nak` returns the `Nak`, and for a
+stop, a `lifecycle.stopped` whose `honored` lists it returns `None` (carried out).
+With no answer, a terminal record following the request with no later episode
+returns the terminal `RunResult` (refused-by-death), and the heartbeat watermark
+(`consumed_seq >= seq`) passing means accepted (returns `None`).
+
+Raises `ValueError` at once, before waiting, where `None` would be a false
+"accepted": no record sits at `seq` (an empty seq names no request); the record
+at `seq` is not a `control.*` request; a `control.*` record at `seq` carries no
+`request_id` (subscription-v0.3 closes the topic set to subscribe, unsubscribe and
+stop, each naming its request; the worker refuses any other under no id);
+or the request **reuses a spent id** (`specs/reference-by-name.md` §3): an answer
+named its id before `seq` (for a subscribe an unsubscribe or a nak, for a stop a
+stopped's `honored` or a nak), so the worker drops it unanswered — the error names
+the id and that record. Raises `TimeoutError` if `timeout` elapses
+(not-yet-drained is not a refusal), and `MalformedRecordError` on a nak body it
+cannot parse.
 
 ### `RunStatus`
 
@@ -381,9 +404,10 @@ record) in one place.
 live_episode(channel) -> str | None
 ```
 
-Handle of the currently-live episode, or None: the latest episode with no
-following `stopped` whose worker resolves alive (a started-then-crashed episode
-resolves dead → not live).
+Handle of the currently-live episode, or None: the latest claim with no
+`stopped` naming it (`claim_seq`), whose worker resolves alive (a
+started-then-crashed episode resolves dead → not live). An unresolvable foreign
+handle reads as alive.
 
 ### `live_demand`
 
@@ -391,11 +415,13 @@ resolves dead → not live).
 live_demand(channel) -> list[Envelope]
 ```
 
-The live leased demand: every `control.subscribe` envelope with no **answer**
-following it by seq (an answer is a `control.unsubscribe` or `lifecycle.nak`
-bearing its `request_id`), and — for time-referencing schedules — no episode
-boundary between it and the latest `lifecycle.started`. The one public home of
-the positional answer fold + the time-lease rule. Value-blind.
+The live leased demand: every `control.subscribe` whose `request_id` no
+**answer** names (an answer is a `control.unsubscribe` or `lifecycle.nak` bearing
+it, wherever it sits), each in its latest form; and, for a lease (a `time_seconds`
+or `count` atom anywhere in the schedule), not void: bound by `lifecycle.bound`
+to an episode other than the latest claim, or to the latest claim once a terminal
+names it. A spent id is dead on arrival. The one public home of the answer fold
+and the lease rule. Value-blind.
 
 ### `progress`
 
@@ -403,9 +429,10 @@ the positional answer fold + the time-lease rule. Value-blind.
 progress(channel) -> int | None
 ```
 
-Max step the trajectory reached, from the DENSE axis (the latest
-`lifecycle.heartbeat.step` and `lifecycle.stopped.final_step`, whichever is
-greater); None if neither has a value yet. **The window fencepost**: a target
+The current episode's step frontier, from the DENSE axis (the step of the
+newest heartbeat naming the latest claim and the `final_step` of the `stopped`
+naming it, whichever is greater); None if neither has a value yet. It may
+decrease across an episode boundary. **The window fencepost**: a target
 `until={"step": N}` is the half-open window `[0, N)`, reached iff
 `progress + 1 >= N`; `progress is None` is window-step 0.
 
@@ -415,11 +442,26 @@ greater); None if neither has a value yet. **The window fencepost**: a target
 undischarged_stops(channel) -> list[Envelope]
 ```
 
-The `control.stop` envelopes not yet discharged — pending from append until the
-next `lifecycle.stopped` follows by seq (one `stopped` discharges every pending
-stop at once). The positional stop rule's public observer home, mirroring
-`live_demand`. Note **pending ≠ due** and **naked stops over-report**
-(conservative: never under-reports).
+The `control.stop` envelopes no answer names — pending until a
+`lifecycle.stopped` lists the `request_id` in `honored` (the worker served it) or
+a `lifecycle.nak` bears it (the worker refused it), wherever that answer sits. A
+`stopped` that names no stop (a third party's release) discharges nothing. The
+stop rule's public observer home, mirroring `live_demand`. Note **pending ≠
+due**. It reads every stop, `stopped` and nak; a polled path uses
+`Watcher.pending_stops`.
+
+### `Watcher.pending_stops`
+
+```python
+w.pending_stops(run_id: str) -> list[Envelope]
+```
+
+The run's stops no answer names — `undischarged_stops`, kept incrementally. Each
+call reads only records new since the last, so a long run costs O(new records)
+per poll, not O(log). The state tracks the unanswered stops by id, spent ids
+(every id an answer has named), and its own read cursor. A stop with a spent id
+is dead on arrival, exactly as the pure fold treats it. The cursor starts at 0,
+so the first call computes the pure fold and no separate seed is needed.
 
 ### `value_series`
 
@@ -586,7 +628,7 @@ Callers catching only `(NoProgressError, RunFailedError)` must add this name.
 ```python
 Topic  # StrEnum: the closed, protocol-owned routing keys
 # VALUE, LIFECYCLE_STARTED, LIFECYCLE_HEARTBEAT, LIFECYCLE_STOPPED, LIFECYCLE_NAK,
-# LAUNCHER_LAUNCHED, LAUNCHER_TERMINATED, CONTROL_STOP, CONTROL_SUBSCRIBE, CONTROL_UNSUBSCRIBE
+# LIFECYCLE_BOUND, LAUNCHER_LAUNCHED, LAUNCHER_TERMINATED, CONTROL_STOP, CONTROL_SUBSCRIBE, CONTROL_UNSUBSCRIBE
 ```
 
 The CLOSED, protocol-owned routing keys (`Envelope.topic`) — the complete
@@ -636,23 +678,36 @@ measures); renamed from v0.3's `attached_at`.
 ### `Heartbeat`
 
 ```python
-Heartbeat(step: int | None, consumed_seq: int, t: float)
+Heartbeat(step: int | None, consumed_seq: int, claim_seq: int, t: float)
 ```
 
 Tick-driven liveness beacon: progress (`step`, null for a stepless service) + the
-consumption watermark (`consumed_seq`) + freshness (`t`). This is the record
+consumption watermark (`consumed_seq`) + the episode it speaks for (`claim_seq`, the
+`seq` of its `lifecycle.started`) + freshness (`t`). This is the record
 liveness reads, so `t` dates the newest beacon for a third-party observer.
 
 ### `Stopped`
 
 ```python
-Stopped(completed: bool, error: str | None, final_step: int | None, t: float)
+Stopped(completed: bool, error: str | None, final_step: int | None,
+        claim_seq: int | None, honored: list[str], t: float)
 ```
 
 The cooperative dying breath; its existence on the log = a clean, *resumable*
 halt. `completed=True` is the opt-in completion claim; otherwise it projects to
 `preempted`. `error` is the failure diagnostic; a completed stop carries no error
-(enforced).
+(enforced). `claim_seq` names the episode it ends (null: a run that never claimed);
+`honored` lists the `control.stop` `request_id`s it discharges.
+
+### `Bound`
+
+```python
+Bound(claim_seq: int)
+```
+
+`lifecycle.bound`: an episode-local subscription (a lease) bound to the episode
+`claim_seq` names; the envelope `request_id` is the lease. Written once per (lease,
+episode) at registration.
 
 ### `Nak`
 
@@ -691,13 +746,14 @@ and never parses `body`.
 
 | topic | body | produced by | consumed by | schema |
 |---|---|---|---|---|
-| `control.subscribe` | `Condition` (`{from?, every?, until?}`) | orchestrator | worker | `subscription-v0.2` |
-| `control.unsubscribe` | `{}` | orchestrator (or worker on expiry) | worker | `subscription-v0.2` |
-| `control.stop` | `{from?}` | orchestrator | worker | `subscription-v0.2` |
-| `lifecycle.started` | `Started {handle, t}` | worker | observers | `lifecycle-v0.4` |
-| `lifecycle.heartbeat` | `Heartbeat {step?, consumed_seq, t}` | worker | observers | `lifecycle-v0.4` |
-| `lifecycle.stopped` | `Stopped {completed, error, final_step, t}` | worker | observers | `lifecycle-v0.4` |
-| `lifecycle.nak` | `Nak {reason, message}` | worker | the requester (by `request_id`) | `lifecycle-v0.4` |
+| `control.subscribe` | `Condition` (`{from?, every?, until?}`) | orchestrator | worker | `subscription-v0.3` |
+| `control.unsubscribe` | `{}` | orchestrator (or worker on expiry) | worker | `subscription-v0.3` |
+| `control.stop` | `{from?}`; `request_id` required | orchestrator | worker | `subscription-v0.3` |
+| `lifecycle.started` | `Started {handle, t}` | worker | observers | `lifecycle-v0.5` |
+| `lifecycle.heartbeat` | `Heartbeat {step?, consumed_seq, claim_seq, t}` | worker | observers | `lifecycle-v0.5` |
+| `lifecycle.stopped` | `Stopped {completed, error, final_step, claim_seq, honored, t}` | worker | observers | `lifecycle-v0.5` |
+| `lifecycle.nak` | `Nak {reason, message}` | worker | the requester (by `request_id`) | `lifecycle-v0.5` |
+| `lifecycle.bound` | `Bound {claim_seq}`; `request_id` = the lease | worker | worker, observers | `lifecycle-v0.5` |
 | `launcher.launched` | `Launched {handle, t, status}` | launcher | observers | `launcher-v0.4` |
 | `launcher.terminated` | `Terminated {reason, exit_code?, signal?, t}` | launcher | observers | `launcher-v0.4` |
 | `value` | `Value {value, step?, t?}` | worker | observers | `value-v0.2` |
