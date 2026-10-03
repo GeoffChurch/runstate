@@ -9,8 +9,7 @@ replayed in random linear extensions of the four orders the rule leaves standing
   2. the order among claims (the claim CAS);
   3. "a record follows what it names" (``claim_seq`` on heartbeat / stopped /
      bound; ``honored`` on stopped; ``request_id`` on unsubscribe / nak / value /
-     bound, naming the subscribe or stop they answer; a claim's launch id naming
-     its ``launcher.launched``);
+     bound, naming the subscribe or stop they answer);
   4. "a launch's death follows its claim" (a ``launcher.terminated`` is written
      only after the claim it answers).
 
@@ -33,7 +32,6 @@ import random
 import socket
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import replace
 from typing import Any
 
 
@@ -299,11 +297,12 @@ def causal_edges(envs: list[Envelope], tags: dict[int, str]) -> list[set[int]]:
             last_claim = i
             if e.request_id is not None:
                 claim_of_launch[e.request_id] = i
-                preds[i].update(by_rid[(Topic.LAUNCHER_LAUNCHED, e.request_id)])
         # 3. a record follows what it names
         if "claim_seq" in e.body and e.body["claim_seq"] is not None:
             preds[i].add(index[e.body["claim_seq"]])  # heartbeat, stopped, bound
         if e.topic == Topic.LIFECYCLE_STOPPED:
+            # True causality (spec); redundant for these reads, since the answer
+            # rule spends an id wherever the stopped sits. Kept deliberately.
             for r in e.body["honored"]:
                 preds[i].update(by_rid[(Topic.CONTROL_STOP, r)])
         if e.request_id is not None:
@@ -394,8 +393,9 @@ def test_named_reads_are_invariant_under_causal_reordering() -> None:
                 f"{[(e.seq, e.topic, e.request_id, e.body) for e in envs]}\n"
                 f"  baseline: {baseline}\n  reordered: {got}"
             )
-    # the property is vacuous if nothing ever moved
-    assert N_HISTORIES * N_PERMUTATIONS == 0 or reordered > 0
+    # the property is vacuous if the orderings barely move (measured: ~97% of
+    # sampled orderings differ from the written order)
+    assert reordered >= 0.9 * N_HISTORIES * N_PERMUTATIONS
 
 
 def test_the_causal_constraints_are_not_vacuous() -> None:
@@ -405,4 +405,4 @@ def test_the_causal_constraints_are_not_vacuous() -> None:
         envs, tags = history(seed)
         order = linear_extension(causal_edges(envs, tags), random.Random(seed))
         free += order != sorted(order)
-    assert N_HISTORIES == 0 or free > 0
+    assert free >= 0.9 * N_HISTORIES  # measured: ~97% of histories admit one
