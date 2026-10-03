@@ -73,7 +73,8 @@ it today).
 ## Recipe 1 — placement: the content-addressed home
 
 Every run lives at **`runs/<rid[:2]>/<rid>/`** under a caller-owned root
-— channel (`{rid}.db`) and artifacts together. An experiment cell is a
+— channel (`v<format>/<rid>.db`, the format-versioned address of
+[`log-formats.md`](log-formats.md) §3) and artifacts together. An experiment cell is a
 **thin directory**: a pointer to the home (`run -> ../../runs/ab/abc…`)
 plus cell-local policy files (`.skip`, `.failure`). **Cell ≠ run is the
 load-bearing distinction** — their conflation was the
@@ -266,6 +267,10 @@ Discipline, in order:
   properties** — its read-set is gone, so it can never be recomputed.
   Whole-home deletion is an explicit destructive choice that forfeits
   the nested analyses with it.
+
+Collecting a run deletes its log at its format's address
+(`<home>/v<format>/<rid>.db`, plus any `-wal`/`-shm`), so a sweep over a root that
+holds several formats must delete each run at the format it is in.
 
 `live_episode`'s conservatism helps here: an unresolvable (foreign-host)
 handle reads live, so the sweep refuses to collect what it cannot

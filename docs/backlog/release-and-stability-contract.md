@@ -78,6 +78,10 @@ it since v0.2.
 
 ## (b) The public form of the migration doctrine
 
+> **RESOLVED 2026-10-03 by [`docs/specs/log-formats.md`](../specs/log-formats.md): option 3, with
+> detection replaced by the address.** A log's format is part of where it lives, so `runstate migrate`
+> never has to detect a version; steps are retained and chained. The text below is the trail.
+
 **Tension.** "Delete the migration script once it converges" is right for a
 solo author and wrong for a library with users, who upgrade on their own
 schedule and need the script that matches *their* starting version.

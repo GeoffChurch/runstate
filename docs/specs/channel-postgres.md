@@ -90,6 +90,16 @@ rubric — a `FileLock` would be a redundant weaker second primitive). `__init__
 `UndefinedTable`); the orchestration helpers (`sweep`, the launchers) call `ensure_schema` at
 startup so cold-start-many-workers is self-sufficient.
 
+### The schema is per format
+
+*(Added 2026-10-03; [`log-formats.md`](log-formats.md).)* The shared `log` table above lives in a schema
+named for the log format, `runstate_v<format>` with dots as underscores (today `runstate_v0_2_0`).
+`ensure_schema` creates that schema and the table inside it, under the same advisory lock. The channel
+runs `SET search_path` to the schema at open, so its unqualified SQL (and `to_regclass('log')`) resolves
+there. That is a session setting: **a transaction-mode pooler drops it**, the same reason the advisory
+lock needs a direct or session-pooled endpoint (see the *Liveness* caveat above). Opening also runs the
+format checks of [`channel-locators.md`](channel-locators.md#addresses-and-formats) across the schemas.
+
 ## The four operations (the conformant core)
 
 **Connection & transaction model (load-bearing).** Each `PostgresChannel` holds **one

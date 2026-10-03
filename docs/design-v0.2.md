@@ -85,6 +85,10 @@ The pattern grammar, in full: the **only** wildcard is a trailing `.>` — `"con
 
 `last_seq` (added 2026-07-10) is admitted on the stronger ground — the **op-admission principle**: *the surface must be readable in every coordinate it requires callers to assert.* The CAS makes every claimant assert the head (`expected_seq`; `0` = empty is its base case) while nothing could read it below O(N); `last_seq` is that coordinate's read, O(1) on every backend (`len(log)`; `MAX(seq)` on the key), and every real log store exposes it (Kafka end offsets, NATS last-seq, EventStore head). Its two sanctioned consumer classes: CAS claimants (the Worker's head-first attach — folds from topic-filtered reads capped at the asserted head, same-read fusion preserved by assertion) and the incremental reader's has-anything-new watermark (a viewer polls `last_seq`, re-folds on change). Nothing else passes the principle: `count(topic)`, `first()`, `read_range` — no caller is required to assert those.
 
+### Log format
+
+`attach_channel` and `create_channel` check a log's **format** when they open it: a log's format is part of its address (`<root>/v<format>/<rid>.db`; a schema per format on Postgres), and a log of any format but the release's own raises `LogFormatMismatch` / `LogFormatMissing` rather than being read. Logs move between formats by `runstate migrate`. Specified in `specs/log-formats.md`.
+
 ### Read projections
 
 Stateful-communication shapes are **queries over the one log**: register/latest = `latest`; flag/terminal-fact = existence; queue = a single consumer persisting its cursor; bounded window = last-*k* by `seq`; tail = a cursor read. Per-(topic,name) compaction is a *semantic* choice (makes the register the retained object), not free GC — deferred, chosen with eyes open.
@@ -318,6 +322,7 @@ The six convention decisions are settled (see revision history). Status tags bel
 
 ## Revision history
 
+- 2026-10-03: **Log formats (stage 1) implemented** (`specs/log-formats.md`). §4 gains the opening-time format check: logs live at `<root>/v<format>/<rid>.db` (a schema per format on Postgres), the locators raise on a newer, older or legacy-unversioned log, and `runstate migrate` carries logs forward through retained, chained, sealing steps. No wire-body change.
 - 2026-10-02: **Drift corrections, no design change.** Header and §10 brought to the current schema
   versions (`lifecycle`-`v0.4`, `launcher`-`v0.4`; the heartbeat body is `{step, consumed_seq, t}`
   since `specs/observer-clock.md`). §9's `value_series` no longer claims an episode rewind yields the

@@ -102,6 +102,23 @@ Both explicit locators are thin wrappers over a private
 postgres constructor). There is no default: creation is always the explicitly-named
 call.
 
+## Addresses and formats
+
+*(Added 2026-10-03; the design is [`log-formats.md`](log-formats.md) §4 — not restated here.)* A log's
+format is part of its address. SQLite logs live at `<root>/v<format>/<rid>.db` (today `v0.2.0`; the root
+must already exist, the `v<format>/` directory is made on birth); on Postgres each format is a schema
+(`runstate_v0_2_0`). Both locators run five checks, in order, before touching the log:
+
+1. a **newer** format present under the root / in the database → `LogFormatMismatch` (upgrade runstate);
+2. the current format's address exists → open it;
+3. an **older** format's address holds the run → `LogFormatMismatch` (run `runstate migrate`);
+4. the **legacy** unversioned `<root>/<rid>.db` holds the run → `LogFormatMissing`, whose message carries
+   the one-time onboarding instructions;
+5. nothing anywhere → `RunNotFound` (`attach_channel`) or a birth at the current address (`create_channel`).
+
+Both errors subclass `LogFormatError` and are never turned into "not found". Memory channels have no
+address and skip the checks.
+
 ## Classification principle (for the call-site audit)
 
 The split matters at the boundary where a party opens a run **it does not own**.

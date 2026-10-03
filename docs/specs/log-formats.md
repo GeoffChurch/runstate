@@ -1,6 +1,7 @@
 # Spec: log formats — a log's format is part of its address
 
-**Status:** SPECIFIED 2026-10-03, not implemented. Designed with the owner section by section. Its first
+**Status:** IMPLEMENTED 2026-10-03 (stage 1: format 0.2.0, the addresses, the opening checks, sealing and
+`runstate migrate`). Designed with the owner section by section. Its first
 user is [`reference-by-name.md`](reference-by-name.md), which introduces format 0.3.0.
 
 **What it gives:** every log has exactly one format, and every log can say which. A runstate release opens
@@ -95,6 +96,10 @@ A sealed log is readable and refuses every write.
   `log` table. Sealing a run and copying it happen in one transaction, holding a lock that blocks
   concurrent inserts for that run.
 
+*Found in implementation.* SQLite sealing **raises rather than partially sealing** when another
+connection holds the log open. And sealing by file permissions **does not bind the root user**, who can
+still write a read-only file; the seal is a guard against the wrong upgrade order, not against root.
+
 Sealing is what makes the wrong upgrade order fail loudly. A pinned writer from before format versioning
 never checks a format, but its append to a sealed log is refused by the file system or the database.
 
@@ -123,6 +128,12 @@ migrated.
   intermediate format, and re-running continues from there.
 - **Steps are retained, never deleted.** This resolves `release-and-stability-contract.md` §(b) in favour
   of its option 3, with the detection problem removed by the address.
+
+*Found in implementation.* The CLI is `runstate migrate <root> [<rid>...] [--to V] [--backend
+sqlite|postgres]`. On Postgres the seal is taken first, then the rows are read and copied **in the same
+transaction**, so any failure rolls back completely and **leaves the run unsealed and unmigrated**: stricter
+than SQLite, where a failure leaves the run sealed and unmigrated. Re-running `runstate migrate` completes
+either.
 
 ## 7. Onboarding legacy logs
 
