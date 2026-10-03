@@ -10,9 +10,13 @@ from runstate.vocabulary.payloads import Topic
 
 
 def _random_history(rng, n):
+    """Stops named and nameless, stoppeds honoring some ids, naks naming an id
+    and naks naming none (a worker's refusal of a nameless request), and noise."""
     ids = [f"s{i}" for i in range(6)]
     for _ in range(n):
-        kind = rng.choice(["stop", "stop", "nameless", "stopped", "nak", "value"])
+        kind = rng.choice(
+            ["stop", "stop", "nameless", "stopped", "nak", "nameless-nak", "value"]
+        )
         if kind == "stop":
             yield {}, Topic.CONTROL_STOP, rng.choice(ids)
         elif kind == "nameless":
@@ -33,6 +37,11 @@ def _random_history(rng, n):
                 "reason": "malformed",
                 "message": "",
             }, Topic.LIFECYCLE_NAK, rng.choice(ids)
+        elif kind == "nameless-nak":
+            yield {
+                "reason": "malformed",
+                "message": "stop requires a request_id",
+            }, Topic.LIFECYCLE_NAK, None
         else:
             yield {"value": 1, "step": 0, "t": None}, "value", None
 
