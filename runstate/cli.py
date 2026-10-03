@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import shlex
 import sys
 from pathlib import Path
 
@@ -27,8 +26,8 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
     if args.backend == "sqlite" and args.root.startswith(_DSN_SCHEMES):
         p.error(
-            f"{args.root} is a postgres DSN, not a sqlite root: run "
-            f"`runstate migrate {shlex.quote(args.root)} --backend postgres`"
+            "the root is a postgres DSN, not a sqlite root: run "
+            f"`{formats.POSTGRES_MIGRATE_COMMAND}`"
         )
     store: Store = (
         PostgresStore(args.root)

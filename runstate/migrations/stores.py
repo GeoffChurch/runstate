@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
-import tempfile
+import uuid
 from pathlib import Path
 from typing import Protocol
 from urllib.request import pathname2url
@@ -95,11 +95,8 @@ class SqliteStore:
         # A temporary file of this call's own, beside the address: two migrators
         # of one run never unlink or publish each other's. Hidden, and not
         # *.db, so no run listing sees it; removed if the write fails.
-        fd, name = tempfile.mkstemp(
-            dir=dst.parent, prefix=f".{dst.name}.", suffix=".tmp"
-        )
-        os.close(fd)
-        tmp = Path(name)
+        # sqlite creates it, so it takes the mode the umask gives a native birth.
+        tmp = dst.parent / f".{dst.name}.{uuid.uuid4().hex}.tmp"
         try:
             conn = sqlite3.connect(tmp, isolation_level=None)
             try:

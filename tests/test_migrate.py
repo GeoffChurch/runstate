@@ -2,6 +2,7 @@
 
 import json
 import os
+import stat
 
 import pytest
 
@@ -241,7 +242,18 @@ def test_cli_refuses_a_dsn_without_the_postgres_backend(dsn, capsys):
         main(["migrate", dsn])
     assert exc.value.code == 2
     err = capsys.readouterr().err
-    assert dsn in err and "--backend postgres" in err
+    assert "--backend postgres" in err
+
+
+def test_cli_dsn_refusal_does_not_echo_the_password(capsys):
+    """The library names a DSN by a placeholder (it can carry a password); the
+    CLI's refusal must not print the one it was given."""
+    from runstate.cli import main
+
+    with pytest.raises(SystemExit):
+        main(["migrate", "postgresql://u:hunter2secret@h/db"])
+    err = capsys.readouterr().err
+    assert "hunter2secret" not in err and "--backend postgres" in err
 
 
 def test_cli_migrate(toy, tmp_path, capsys):
@@ -356,3 +368,20 @@ def test_postgres_copy_holds_every_committed_row(pg_toy):
     migrate(PostgresStore(pg_toy), ["r1"], to="8.1.0")
     q = "SELECT seq FROM runstate_v8_{}.log WHERE run_id='r1' ORDER BY seq"
     assert _pg_one(pg_toy, q.format("1_0")) == _pg_one(pg_toy, q.format("0_0"))
+
+
+@pytest.mark.parametrize("mask", [0o022, 0o002])
+def test_a_migrated_log_has_the_mode_a_native_birth_has(toy, tmp_path, mask):
+    """A group-shared root (umask 002) must stay readable by the group after a
+    migration: the migrated log honors the umask exactly as a birth does."""
+    old = os.umask(mask)
+    try:
+        _seed(tmp_path, "8.0.0", "r1")
+        assert migrate(SqliteStore(tmp_path), None, to="8.1.0") == ["r1"]
+        migrated = DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1")
+        born = _seed(tmp_path, "8.2.0", "r2")
+        assert stat.S_IMODE(migrated.stat().st_mode) == stat.S_IMODE(
+            born.stat().st_mode
+        )
+    finally:
+        os.umask(old)
