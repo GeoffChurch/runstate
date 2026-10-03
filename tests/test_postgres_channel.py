@@ -16,6 +16,8 @@ import pytest
 
 psycopg = pytest.importorskip("psycopg")
 
+from runstate.formats import FORMATS, LOG_FORMAT  # noqa: E402
+
 
 def _poll_until(fn, target, *, timeout=10.0, interval=0.05):
     """Poll ``fn()`` until it equals ``target`` or the timeout elapses; return the
@@ -386,7 +388,8 @@ def test_cas_wedged_writer_raises_not_false_loss(pg_ready):
     wedger = psycopg.connect(pg_ready)  #                     autocommit=False
     try:
         wedger.execute(  # an uncommitted (run, seed+1) holds the PK index slot
-            "INSERT INTO log (run_id, seq, topic, name, request_id, body, created_at)"
+            f"INSERT INTO {FORMATS[LOG_FORMAT].pg_schema()}.log"
+            " (run_id, seq, topic, name, request_id, body, created_at)"
             " VALUES (%s, %s, 'lifecycle.started', NULL, NULL, '{}', 0)",
             (run_id, seed + 1),
         )
