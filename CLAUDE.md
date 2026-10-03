@@ -219,16 +219,16 @@ scores above.
 
 ## Test commands
 
-**Develop in the dedicated `runstate` conda env, never in a consumer's.** Since 2026-10-03 the
+**Develop in the repo-local env `./.conda`, never in a consumer's.** Since 2026-10-03 the
 consumers (mycooc, translation, runstate-tui) depend on runstate through a **git pin**, installed
 non-editable into their own envs (`cooc`, `base`). So work here never changes what they import.
 Upgrading a consumer means bumping its pin, and running any migration its logs need, in that repo.
 `pythonpath = ["."]` in `pyproject.toml` makes the tests import this checkout whatever env runs
-them.
+them. The pre-commit hook prefers `./.conda/bin/python` when it exists.
 
 ```bash
-conda activate runstate             # the dev env: editable install + test + postgres extras
-pip install -e .[test,postgres]     # (re)create it
+conda activate ./.conda             # the dev env: editable install + test + postgres extras
+conda create -p ./.conda python=3.12 && ./.conda/bin/pip install -e .[test,postgres]  # (re)create it
 pytest tests/                       # run all tests (~1040, ~5-9s; +Postgres if a DSN is set)
 pytest tests/test_channel.py -v     # one module
 pytest tests/test_schema.py -v      # emitted messages conform to the schema stack
