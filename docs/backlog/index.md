@@ -169,9 +169,11 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
   4. time as a *trigger* for claims, which dissolves the cross-host wedge;
   5. fenced worker writes, possibly optional given 1.
 
-  The target is that a wrong claim costs waste, never corruption. Overlaps with the episode-aim entry
-  below, and does its job by naming.
+  The target is that a wrong claim costs waste, never corruption. It supersedes episode-aim, below.
 - **A lifecycle record that speaks for an episode must name it** — [episode-aim](episode-aim.md).
+  **SUPERSEDED 2026-10-03** by identity-in-records layer 1. Its blockers (the startless run, the fold
+  cost) are answered there; its analysis of forgery and backfill still stands. Possibly to be condensed
+  into a short note within layer 1's design. The original summary follows.
   **Revision 2, attacked.** The launcher and control tiers aim; the lifecycle tier aims only where it
   *answers a request*, so `stopped` and `heartbeat` — the two records that speak for an episode
   without naming it — are exactly the two that get misattributed. `claim_seq`, **well-aimed** (no

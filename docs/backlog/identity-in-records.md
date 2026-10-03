@@ -312,9 +312,9 @@ That is efficiency, not correctness, **unless** layer 3 turns out to need it.
 
 ## Relationship to existing entries
 
-- **[episode-aim](episode-aim.md):** layer 1 does its job by naming instead of aiming, and answers its
-  open startless-run case. Its objection about copying misattribution in a backfill stands for
-  historical logs.
+- **[episode-aim](episode-aim.md): superseded by layer 1** (2026-10-03). Layer 1 does its job by naming,
+  and answers its open startless-run case. Its objection about copying misattribution in a backfill
+  stands for historical logs. *Possible cleanup:* condense it into a short note in this section.
 - **`discharge-by-id`** ([index](index.md)): layer 1 realises it.
 - **[claim-eviction](claim-eviction.md), [lifecycle-stopped-unbundling](lifecycle-stopped-unbundling.md):**
   layer 1 closes #39's discharge half. A third party's release is still a `stopped` that asserts a
