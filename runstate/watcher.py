@@ -7,7 +7,8 @@ need state a single log read can't have:
 
   3. **probe the handle** — if a tracked handle resolves dead and the log has no
      terminal record, the worker died without reporting → ``presumed_dead``;
-  4. **heartbeat staleness** — if the newest ``lifecycle.heartbeat`` is older than
+  4. **heartbeat staleness** — if the current episode's newest heartbeat (the
+     newest ``lifecycle.heartbeat`` naming the latest claim) is older than
      ``heartbeat_timeout`` (wall-clock since it *arrived*), the worker is hung or
      crashed → ``presumed_dead``. Off unless a timeout is given (the dead-vs-busy
      threshold is per-workload, §8). The clock seeds at registration (so a

@@ -232,11 +232,17 @@ one on the golden logs. The final review's fuzz (7,000 synthetic logs, master's 
 
 At the consumer's own time, in this order:
 
-1. Bump its pin to the commit that introduces format 0.3.0.
-2. Onboard: move its legacy logs into `v0.2.0/`, as the `LogFormatMissing` message instructs.
-3. Migrate a **copy** first and compare its reads, then run `runstate migrate <root>`.
-4. Change its code:
-   - mint a `request_id` on every `control.stop` (none of the corpus's 184 stops has one);
+1. Stop its old processes and drain its queued jobs (`log-formats.md` §8).
+2. Bump its pin to the commit that introduces format 0.3.0.
+3. Onboard: move its legacy logs into `v0.2.0/`, as the `LogFormatMissing` message instructs.
+4. Migrate a **copy** first and compare its reads, then run `runstate migrate <root>`.
+5. Change its code:
+   - mint a `request_id` on every `control.stop` (none of the corpus's 184 stops has one). Grep its
+     code for every send of `control.stop` (`Topic.CONTROL_STOP`) and check each carries a
+     `request_id`: one that does not is malformed under subscription-v0.3, so after the upgrade the
+     worker naks it and runs on, and it stops nothing;
+   - drop the `request_id=` argument from every `await_consumed` call: the id is now the one the
+     request's own record bears;
    - mycooc's `resume_fanout`: the claimless release names the stops it clears (`claim_seq: null`,
      `honored: [...]`);
    - mycooc's reclaim tool names the claim it releases, with `honored: []`, so it no longer clears pending

@@ -80,7 +80,8 @@ Every party opens a log through one of them: the Worker, the folds, `ensure`, th
    directory, or a `runstate_v…` schema), raise **`LogFormatMismatch`**, telling the caller to upgrade
    runstate. A newer format's interior cannot be known, but its name can, so this needs one directory or
    schema listing, cacheable per process. Without it an old runstate would read "not found" and relaunch a
-   run that has moved on.
+   run that has moved on. On Postgres the listing covers the **whole database**, so consumers that share
+   one database upgrade in lockstep (§8).
 2. **The current format's address exists.** Open it.
 3. **An older format's address holds the run.** Older layouts come from the format modules. Raise
    **`LogFormatMismatch`**, naming the found and expected formats and telling the caller to run
@@ -223,6 +224,9 @@ found" and be relaunched from scratch.
   it. A tombstone left behind would make the run's id read as an unonboarded legacy log (§4, check 4).
 - **Copying a run** between roots or backends copies its log at its format's address, which carries the
   format with it.
+- **Consumers that share one Postgres database upgrade in lockstep.** The newer-format check (§4, check
+  1) covers the whole database: once one consumer migrates, the new format's schema exists, and every
+  open by a consumer still pinned to the old release raises `LogFormatMismatch` until it upgrades too.
 
 ## 9. Interop
 

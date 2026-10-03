@@ -322,6 +322,19 @@ add or change a convention body.
    `cross_host`) in `tests/conftest.py`'s `_MAX_TIER` ladder, so the
    tier-gated concurrency suite covers it up to that tier.
 5. All existing Channel conformance tests must pass against it unchanged.
+6. A persistent backend (anything but memory) also meets the log-format obligations
+   (`docs/specs/log-formats.md` §3–§6 and §9; the address scheme and the opening
+   checks are part of the protocol):
+   - **a layout per format** — an address method on the `Layout` Protocol
+     (`runstate/formats/_layout.py`), defined for every registered format;
+   - **the five opening checks** (§4), in order, in its `_locate` branch: a newer
+     format present, the current address, an older format, the legacy address
+     (only for a backend that held logs before versioned addresses), nothing;
+   - **a migration store** — a `Store` (`formats_of`, `migrate_one`) in
+     `runstate/migrations/stores.py`, and a `--backend` choice in `runstate/cli.py`;
+   - **a seal** (`runstate/migrations/seal.py`): a sealed log reads and refuses
+     every write, and is taken before the copy reads its rows;
+   - the tests §10 lists, for each.
 
 ## Where to put new ideas
 

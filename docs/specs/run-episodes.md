@@ -44,11 +44,15 @@ reads by run-absolute `step`, not by episode.)
   retention/GC question — §12.9; *home-level* collection now has a recipe,
   `specs/store.md` Recipe 3; in-log retention stays full.)
 - **Addendum (2026-06-09) — the drain-side mirror.** Cross-episode *control*
-  follows the same follow-by-`seq` fold in the opposite direction: every control
-  fact is live until its counter-record (`unsubscribe` rescinds a subscribe; the
-  next `lifecycle.stopped` *discharges* a `control.stop`), so a resumed episode
-  re-derives standing subscriptions but never replays an answered stop. Specced
-  and shipped as [stop-discharge](stop-discharge.md); folded into design §6/§7.
+  is live until its counter-record: an `unsubscribe` or a nak naming a subscribe
+  rescinds it, and a `lifecycle.stopped` listing a `control.stop` in `honored`,
+  or a nak naming it, *discharges* it. So a resumed episode re-derives standing
+  subscriptions but never replays an answered stop. Specced and shipped as
+  [stop-discharge](stop-discharge.md); folded into design §6/§7. (As shipped in
+  2026-06, under log format 0.2.0, the fold was by position: the counter-record
+  had to *follow* its fact by `seq`, and the next `stopped` discharged every
+  pending stop. Reference by name replaced that with names in format 0.3.0,
+  [reference-by-name](reference-by-name.md).)
 
 ### 3. Single-spawn guard — the worker self-claims its episode
 Two workers for one `run_id` would corrupt the series (both resume the same
