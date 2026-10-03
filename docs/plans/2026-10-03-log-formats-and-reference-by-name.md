@@ -33,8 +33,6 @@ Background: `docs/backlog/identity-in-records.md` (layer 1). Spike evidence:
 - **Gates:** `black --check runstate/ tests/`, `mypy --strict runstate`, and `pytest tests/` must pass at every
   commit. The pre-commit hook runs all three. The Postgres tests skip without `RUNSTATE_TEST_PG_DSN`; to run
   them, start a throwaway server as `CLAUDE.md` §"Run the Postgres suite locally" describes.
-- **Edits** may use any tool. Applying a committed diff with `git apply --3way`, and checking out a file
-  from a commit with `git checkout <commit> -- <path>`, are the intended ways to port spike code.
 - **No new runtime dependencies.** Format versions are plain `X.Y.Z`, parsed by `formats.parse`. Do not
   use `packaging`.
 - **Format names:** directory `v<X.Y.Z>`, schema `runstate_v<X>_<Y>_<Z>`, constant `runstate.LOG_FORMAT`.
@@ -1582,7 +1580,7 @@ git diff 72d9c3f 374c1a2 -- runstate/__init__.py | git apply --3way   # adds Bou
 
 Resolve any conflict in `runstate/__init__.py` by keeping both sides' exports.
 
-- [ ] **Step 2: Rename `honoured` → `honored`** with the Edit tool (`replace_all: true`) in
+- [ ] **Step 2: Rename `honoured` → `honored`** in
   `protocol/lifecycle-v0.5.schema.json` and `runstate/vocabulary/payloads.py`. Grep to confirm none remain:
   `grep -rn honour protocol runstate`. Expected: no output.
 
@@ -1646,7 +1644,7 @@ git diff 72d9c3f 374c1a2 -- runstate/worker.py runstate/observables.py runstate/
 git checkout 374c1a2 -- tests/test_reference_by_name.py
 ```
 
-- [ ] **Step 2: Rename** with Edit (`replace_all: true`) in all four files:
+- [ ] **Step 2: Rename** in all four files:
   - `_honoured` → `_honored`;
   - `honoured=` → `honored=`;
   - `"honoured"` → `"honored"`;
