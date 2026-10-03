@@ -33,9 +33,8 @@ Background: `docs/backlog/identity-in-records.md` (layer 1). Spike evidence:
 - **Gates:** `black --check runstate/ tests/`, `mypy --strict runstate`, and `pytest tests/` must pass at every
   commit. The pre-commit hook runs all three. The Postgres tests skip without `RUNSTATE_TEST_PG_DSN`; to run
   them, start a throwaway server as `CLAUDE.md` §"Run the Postgres suite locally" describes.
-- **Edits.** Make edits with the Edit tool, using `replace_all: true` for renames. Never mutate files with
-  sed, awk or Python scripts. Applying a committed diff with `git apply --3way` and checking out a file from
-  a commit with `git checkout <commit> -- <path>` are allowed.
+- **Edits** may use any tool. Applying a committed diff with `git apply --3way`, and checking out a file
+  from a commit with `git checkout <commit> -- <path>`, are the intended ways to port spike code.
 - **No new runtime dependencies.** Format versions are plain `X.Y.Z`, parsed by `formats.parse`. Do not
   use `packaging`.
 - **Format names:** directory `v<X.Y.Z>`, schema `runstate_v<X>_<Y>_<Z>`, constant `runstate.LOG_FORMAT`.
