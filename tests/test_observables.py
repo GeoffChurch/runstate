@@ -741,7 +741,7 @@ def test_a_malformed_stop_is_repairable_by_appending_a_good_one(open_run):
     assert peek_terminal(open_run()).outcome == "preempted"
 
 
-def test_live_episode_ignores_a_launcher_death_that_peek_terminal_honours(open_run):
+def test_live_episode_ignores_a_launcher_death_that_peek_terminal_honors(open_run):
     # CHARACTERISATION, not an endorsement. The two folds have non-nested eliminator
     # sets: peek_terminal reads the launch-correlated `terminated`; live_episode reads
     # only `stopped` + resolve(). So a provably-dead run reads as still-claimed, and

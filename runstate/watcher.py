@@ -32,6 +32,8 @@ from .observables import (
     Outcome,
     RunResult,
     _verdict_record,
+    current_heartbeat,
+    latest_episode,
     verdict_parse,
     peek_terminal,
 )
@@ -228,7 +230,7 @@ class Watcher:
         # and clobbered, a silent no-op. Seeding last_hb_seq too makes only a GENUINELY
         # newer beacon upgrade to now() (witnessed, skew-immune). No heartbeat on the
         # log -> seed now() (the never-beaconed-startup-death catch tier 4 exists for).
-        hb = channel.latest(Topic.LIFECYCLE_HEARTBEAT)
+        hb = current_heartbeat(channel, latest_episode(channel))
         seed = _heartbeat_seed(hb, self._now())
         self._runs[run_id] = _RunState(
             run_id=run_id,
@@ -415,7 +417,9 @@ class Watcher:
         return out
 
     def _note_heartbeat(self, st: _RunState) -> None:
-        hb = st.channel.latest(Topic.LIFECYCLE_HEARTBEAT)
+        # Only a beat NAMING the latest claim is liveness evidence for the run: a
+        # displaced worker's beacon names its own old claim (lifecycle-v0.5).
+        hb = current_heartbeat(st.channel, latest_episode(st.channel))
         if hb is not None and hb.seq > st.last_hb_seq:
             st.last_hb_seq = hb.seq
             try:
@@ -482,7 +486,7 @@ def await_consumed(
         nak = _answer()
         if nak is not None:
             return nak
-        hb = channel.latest(Topic.LIFECYCLE_HEARTBEAT)
+        hb = current_heartbeat(channel, latest_episode(channel))
         if hb is not None:
             try:
                 consumed = Heartbeat(**hb.body).consumed_seq >= seq
