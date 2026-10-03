@@ -349,14 +349,21 @@ def test_progress_ignores_a_previous_episode_terminal(open_run):
 
 def test_progress_is_the_max_of_both_axes(open_run):
     # frontier of the two registers of the CURRENT episode (both read by the
-    # claim they name): its stopped's final_step may be ahead of its last
-    # heartbeat -- max wins. (A prior episode's stopped is not this episode's
-    # frontier: test_progress_ignores_a_previous_episode_terminal.)
+    # claim they name) -- max wins, whichever register is ahead and whichever
+    # landed last. (A prior episode's stopped is not this episode's frontier:
+    # test_progress_ignores_a_previous_episode_terminal.)
     ch = open_run()
-    c = ch.send({"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started")
-    hb(ch, 30, 0, c)
-    stopped(ch, claim_seq=c, final_step=50)
+    # the stopped is ahead and the beat is NEWER: kills "the newest record wins"
+    # (a reclaim tool's release naming c, then a straggler beat of c)
+    c1 = ch.send({"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started")
+    stopped(ch, claim_seq=c1, final_step=50)
+    hb(ch, 30, 0, c1)
     assert progress(open_run()) == 50
+    # the converse, the beat ahead of final_step: kills "the stopped wins"
+    c2 = ch.send({"handle": "local://h/2", "t": 1.0}, topic="lifecycle.started")
+    hb(ch, 70, 0, c2, t=1.0)
+    stopped(ch, claim_seq=c2, final_step=60, t=1.0)
+    assert progress(open_run()) == 70
 
 
 def test_progress_ignores_stepless_heartbeats(open_run):
@@ -452,7 +459,7 @@ def test_live_demand_nak_answers(open_run):
     assert live_demand(open_run()) == []
 
 
-def test_live_demand_is_positional_not_an_id_set_by_name(open_run):
+def test_live_demand_treats_a_spent_id_as_dead_by_name(open_run):
     """Replaces the positional ``test_live_demand_is_positional_not_an_id_set``
     (reference-by-name §3, Subscriptions): a request_id names ONE request, and
     once any answer names an id the id is spent -- wherever the answer sits. So
@@ -497,7 +504,7 @@ def test_live_demand_agrees_with_the_worker(open_run):
     assert live_demand(open_run()) == []  #    the fold sees the expiry record
 
 
-def test_live_demand_excludes_boundary_voided_time_leases_by_name(open_run):
+def test_live_demand_voids_a_time_lease_only_through_its_binding_by_name(open_run):
     """Replaces the positional ``test_live_demand_excludes_boundary_voided_time_leases``
     (reference-by-name §3, Episode-local subscriptions): a lease is void only
     through the episode that registered it, recorded as ``lifecycle.bound``.
@@ -557,6 +564,7 @@ def test_peek_terminal_typed_error_on_extra_key_stopped(open_run):
         peek_terminal(open_run())
     assert ei.value.seq == seq
     assert ei.value.topic == "lifecycle.stopped"
+    assert "oops" in ei.value.detail  #           the extra key, not a missing name
     assert str(seq) in str(ei.value) and "lifecycle.stopped" in str(ei.value)
 
 
@@ -565,7 +573,7 @@ def test_peek_terminal_typed_error_on_missing_key_stopped(open_run):
         {"completed": True, "claim_seq": None, "honored": []},
         topic="lifecycle.stopped",
     )
-    with pytest.raises(MalformedRecordError):
+    with pytest.raises(MalformedRecordError, match="missing.*'error', 'final_step'"):
         peek_terminal(open_run())
 
 
@@ -573,7 +581,7 @@ def test_peek_terminal_typed_error_on_completed_with_error(open_run):
     # the payload constraint (completed => error is None) is a convention
     # violation like any other: ValueError from __post_init__ is wrapped too.
     stopped(open_run(), claim_seq=None, completed=True, error="x")
-    with pytest.raises(MalformedRecordError):
+    with pytest.raises(MalformedRecordError, match="completed stop cannot carry"):
         peek_terminal(open_run())
 
 
@@ -655,7 +663,7 @@ def test_undischarged_stops_pending_is_not_due(open_run):
     assert [e.request_id for e in undischarged_stops(open_run())] == ["late"]
 
 
-def test_undischarged_stops_overreports_naked_stops_by_name(open_run):
+def test_undischarged_stops_drops_a_naked_stop_at_its_nak_by_name(open_run):
     """Replaces the positional ``test_undischarged_stops_overreports_naked_stops``
     (reference-by-name §3, Stops): a stop is pending until a stopped lists it or
     a nak names its id, so a refused stop is answered by its nak. Positionally no
@@ -757,7 +765,7 @@ def test_a_malformed_stop_is_repairable_by_appending_a_good_one(open_run):
         },
         topic="lifecycle.stopped",
     )
-    with pytest.raises(MalformedRecordError):
+    with pytest.raises(MalformedRecordError, match="note"):
         peek_terminal(open_run())
     stopped(ch, claim_seq=c, final_step=1, t=2.0)
     assert peek_terminal(open_run()).outcome == "preempted"

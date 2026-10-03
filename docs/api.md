@@ -258,12 +258,18 @@ await_consumed(channel, seq, *, request_id=None, timeout=None,
 ```
 
 Block until the control request at `seq` is answered or drained. **Answer-first**:
-a `lifecycle.nak` bearing `request_id` that follows `seq` returns the `Nak`; a
+a `lifecycle.nak` naming `request_id` that follows `seq` returns the `Nak`; a
 terminal record following the request with no later episode returns the terminal
 `RunResult` (refused-by-death); otherwise the heartbeat watermark
-(`consumed_seq >= seq`) passing means accepted (returns `None`). Raises
-`TimeoutError` if `timeout` elapses (not-yet-drained is not a refusal), and
-`MalformedRecordError` on a nak body it cannot parse.
+(`consumed_seq >= seq`) passing means accepted (returns `None`). A request that
+**reuses a spent id** is dead on arrival (`specs/reference-by-name.md` §3): if an
+answer named `request_id` before `seq` (for a subscribe an unsubscribe or a nak,
+for a stop a stopped's `honored` or a nak), it raises `ValueError` naming the id
+and that record, at once, since the worker drops the request unanswered. Also
+`ValueError` if no record sits at `seq`. Raises `TimeoutError` if `timeout`
+elapses (not-yet-drained is not a refusal), and `MalformedRecordError` on a nak
+body it cannot parse. With `request_id=None` the spent-id check and the nak
+lookup are skipped.
 
 ### `RunStatus`
 

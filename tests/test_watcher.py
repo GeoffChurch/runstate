@@ -534,19 +534,93 @@ def test_await_consumed_resolves_a_nak_before_the_watermark(open_run):
     assert nak is not None and nak.reason == "unsatisfiable"
 
 
-def test_await_consumed_ignores_an_earlier_nak_for_the_same_id(open_run):
-    # await_consumed's nak lookup is windowed after the request: a nak that
-    # PRECEDES the request is not returned as its answer.
+@pytest.mark.parametrize(
+    "topic, body",
+    [
+        ("lifecycle.nak", {"reason": "malformed", "message": "old"}),
+        ("control.unsubscribe", {}),
+    ],
+    ids=["nak", "unsubscribe"],
+)
+def test_await_consumed_refuses_a_subscribe_reusing_a_spent_id(open_run, topic, body):
+    """Replaces the positional ``test_await_consumed_ignores_an_earlier_nak_for_the_same_id``
+    (reference-by-name §2 and §3, Subscriptions): a request_id is never reused,
+    and once any answer names it the id is spent -- a later subscribe reusing it
+    is dead on arrival wherever the answer sits. The worker drops it silently,
+    so None ("accepted") would be false, and no nak exists to return (naking a
+    reuse is unsound): await_consumed raises, naming the id and the record that
+    spent it."""
     ch = open_run()
     c = claim(ch)
     ch.send(
-        {"reason": "malformed", "message": "old"}, topic="lifecycle.nak", request_id="r"
+        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r"
     )
+    spent = ch.send(body, topic=topic, request_id="r")
     s = ch.send(
         {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r"
     )
+    hb(ch, 0, s, c)  #             the worker drained it -- and dropped it, unanswered
+    with pytest.raises(ValueError, match=rf"'r'.*{topic} at seq {spent}\b"):
+        await_consumed(open_run(), s, request_id="r", timeout=1.0)
+
+
+def _honor(ch, claim_seq, rid):
+    return stopped(ch, claim_seq=claim_seq, honored=[rid])
+
+
+def _refuse(ch, claim_seq, rid):
+    return ch.send(
+        {"reason": "malformed", "message": "old"}, topic="lifecycle.nak", request_id=rid
+    )
+
+
+@pytest.mark.parametrize("spend", [_honor, _refuse], ids=["honored", "nak"])
+def test_await_consumed_refuses_a_stop_reusing_a_spent_id(open_run, spend):
+    """Replaces the positional ``test_await_consumed_ignores_an_earlier_nak_for_the_same_id``
+    for stops (reference-by-name §3, Stops): a stop is spent once a stopped's
+    ``honored`` names it or a nak names it, so a later stop reusing the id is
+    dead on arrival -- the next episode ignores it, and await_consumed raises
+    rather than report it accepted."""
+    ch = open_run()
+    c1 = claim(ch)
+    ch.send({}, topic="control.stop", request_id="halt")
+    spent = spend(ch, c1, "halt")
+    c2 = claim(ch, t=1.0)
+    s = ch.send({}, topic="control.stop", request_id="halt")
+    hb(ch, 0, s, c2)  #           the next episode drained it -- and ignored it
+    with pytest.raises(ValueError, match=rf"'halt'.* at seq {spent}\b"):
+        await_consumed(open_run(), s, request_id="halt", timeout=1.0)
+
+
+def test_await_consumed_returns_a_later_nak_by_name(open_run):
+    # a nak naming the request that FOLLOWS it still answers it -- a stop's as
+    # well as a subscribe's -- and an earlier answer naming ANOTHER id spends
+    # nothing here.
+    ch = open_run()
+    c = claim(ch)
+    ch.send(
+        {"reason": "malformed", "message": "other"},
+        topic="lifecycle.nak",
+        request_id="other",
+    )
+    s = ch.send({"from": {"bogus": 1}}, topic="control.stop", request_id="halt")
+    ch.send(
+        {"reason": "malformed", "message": "bad trigger"},
+        topic="lifecycle.nak",
+        request_id="halt",
+    )
     hb(ch, 0, s, c)
-    assert await_consumed(open_run(), s, request_id="r") is None
+    nak = await_consumed(open_run(), s, request_id="halt", timeout=1.0)
+    assert nak is not None and nak.message == "bad trigger"
+
+
+def test_await_consumed_refuses_a_seq_that_holds_no_request(open_run):
+    # the request's topic decides which answers spend its id, so a seq with no
+    # record names no request to await
+    ch = open_run()
+    claim(ch)
+    with pytest.raises(ValueError, match="no record at seq 9"):
+        await_consumed(open_run(), 9, request_id="r", timeout=0.0, now=lambda: 0.0)
 
 
 def test_await_consumed_resolves_refused_by_death(open_run):

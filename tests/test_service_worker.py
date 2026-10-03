@@ -73,14 +73,15 @@ def test_worker_redrains_its_own_expiry_record_silently(open_run):
 
 
 def test_resumed_episode_does_not_resurrect_an_expired_lease(open_run):
-    # keyed by COUNT (not time) so this isolates the answer fold -- a time
-    # lease would also be boundary-voided (specs/time-lease-boundary.md),
+    # a one-shot ({}) is not episode-local, so no lifecycle.bound voids it in
+    # episode 2: this isolates the answer fold. A time or count lease would
+    # also be void through its binding (specs/time-lease-boundary.md),
     # masking the expiry-record regression this test pins.
     orch = open_run()
-    _sub(orch, {"every": {"step": 1}, "until": {"count": 1}}, "r1")
+    _sub(orch, {}, "r1")
     with Worker(open_run(), now=lambda: 0.0) as w1:  #        episode 1
         w1.set("loss", 1.0)
-        w1.tick(step=0)  #                        fires; count-until met; record
+        w1.tick(step=0)  #                        fires once; consumed; record
     n_values = len(open_run().read(topics=["value"]))
     assert n_values == 1
     with Worker(open_run(), now=lambda: 0.0) as w2:  #        episode 2
@@ -101,7 +102,7 @@ def test_resumed_episode_skips_a_naked_subscribe(open_run):
     assert len(open_run().read(topics=["lifecycle.nak"])) == 1
 
 
-def test_same_id_resubscribe_after_answer_is_live_by_name(open_run):
+def test_same_id_resubscribe_after_answer_is_dead_by_name(open_run):
     """Replaces the positional ``test_same_id_resubscribe_after_answer_is_live``
     (reference-by-name §3, Subscriptions): a request_id names ONE request, and
     once an answer names it the id is spent -- a later subscribe reusing it is
@@ -121,7 +122,7 @@ def test_same_id_resubscribe_after_answer_is_live_by_name(open_run):
     assert open_run().read(topics=["lifecycle.nak"]) == []  # silently: no refusal
 
 
-def test_unsubscribe_before_its_subscribe_answers_nothing_by_name(open_run):
+def test_unsubscribe_before_its_subscribe_still_answers_it_by_name(open_run):
     """Replaces the positional ``test_unsubscribe_before_its_subscribe_answers_nothing``
     (reference-by-name §3, Subscriptions): an answer counts wherever it lands.
     An unsubscribe names its id whether it sits before or after the subscribe,
@@ -373,7 +374,8 @@ def _dead_started(ch):
 
 
 def test_founding_prestaged_time_lease_registers(open_run):
-    # the drainer's own started is not a boundary: the founding idiom lives.
+    # the episode that drains the lease binds it to its own claim and serves
+    # it: the founding idiom lives.
     orch = open_run()
     _sub(orch, {"every": {"step": 1}, "until": {"time_seconds": 100}}, "r1")
     w = Worker(open_run(), now=lambda: 0.0)
@@ -388,7 +390,7 @@ def _bindings(ch):
     ]
 
 
-def test_boundary_voids_a_time_lease_by_name(open_run):
+def test_a_time_lease_is_void_only_through_its_binding_by_name(open_run):
     """Replaces the positional ``test_boundary_voids_a_time_lease``
     (reference-by-name §3, Episode-local subscriptions): a lease is void only
     through the episode that registered it, recorded as ``lifecycle.bound``.
@@ -452,24 +454,24 @@ def test_voided_lease_pops_its_same_id_predecessor_by_name(open_run):
 
 
 def test_reanchor_once_then_void(open_run):
-    # a lease arriving DURING an episode is registered fresh by its first
-    # possible drainer (the one permitted re-anchor), then voided by the
-    # boundary after that.
+    # a lease arriving DURING an episode is registered by the first episode
+    # that drains it, which binds it to its own claim (lifecycle.bound); once
+    # that episode ends, the binding voids it for the next one.
     orch = open_run()
     _dead_started(orch)  #                         "ep1", already dead
     _sub(orch, {"every": {"step": 1}, "until": {"time_seconds": 100}}, "r1")
-    with Worker(open_run(), now=lambda: 0.0) as w2:  #  first possible drainer
+    with Worker(open_run(), now=lambda: 0.0) as w2:  #  first episode to drain it
         w2.set("loss", 1.0)
-        w2.tick(step=0)  #                         the one re-anchor: serves
+        w2.tick(step=0)  #                         binds it and serves
     n = len(open_run().read(topics=["value"]))
     assert n == 1
-    with Worker(open_run(), now=lambda: 0.0) as w3:  #  next boundary: voids
+    with Worker(open_run(), now=lambda: 0.0) as w3:  #  bound to w2's claim: void
         w3.set("loss", 2.0)
         w3.tick(step=1)
     assert len(open_run().read(topics=["value"])) == n
 
 
-def test_zero_fire_void_by_name(open_run):
+def test_crash_births_that_never_drained_a_lease_do_not_void_it_by_name(open_run):
     """Replaces the positional ``test_zero_fire_void`` (reference-by-name §3,
     Episode-local subscriptions): a lease is void only through the episode that
     registered it. Consecutive crash-births around a pre-staged lease never took
@@ -543,8 +545,9 @@ def test_mixed_schedule_is_episode_scoped_by_name(open_run):
 
 
 def test_ghost_relaunch_bound(open_run):
-    # a dead lease with a boundary already after it costs exactly ONE
-    # relaunch; the waker needs no flap policy.
+    # a lease nobody will renew, behind a crash-birth that never took it in,
+    # costs exactly ONE launch: that episode binds it, and once the episode
+    # ends the binding voids it. The waker needs no flap policy.
     from runstate import live_demand
 
     orch = open_run()

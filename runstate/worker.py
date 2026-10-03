@@ -35,7 +35,14 @@ from .vocabulary.schedule import (
     references_episode_local,
     satisfied,
 )
-from .observables import _claim_name, _honored, lease_void, live_episode
+from .observables import (
+    _STOP_ANSWERS,
+    _SUBSCRIBE_ANSWERS,
+    _answer_names,
+    _claim_name,
+    lease_void,
+    live_episode,
+)
 
 
 @dataclass
@@ -79,38 +86,36 @@ class Worker:
             envs = [
                 e
                 for e in self._ch.read(
+                    # (a nak answers both kinds; a repeated topic is harmless)
                     topics=[
-                        Topic.LIFECYCLE_STOPPED,
-                        Topic.CONTROL_UNSUBSCRIBE,
-                        Topic.LIFECYCLE_NAK,
+                        *_SUBSCRIBE_ANSWERS,
+                        *_STOP_ANSWERS,
                         Topic.LIFECYCLE_BOUND,
                     ]
                 )
                 if e.seq <= last
             ]
-            # The answer folds, BY NAME: a request_id is spent once any answer
-            # names it -- a subscribe by an unsubscribe or nak, a stop by a
-            # stopped's `honored` or a nak -- wherever the answer sits. The
-            # drain skips spent ids (so a resumed episode neither re-honors a
-            # served stop, resurrects an expired lease, nor re-naks a refusal).
+            # The answer folds, BY NAME (observables' one answer rule): a
+            # request_id is spent once any answer names it -- a subscribe by an
+            # unsubscribe or nak, a stop by a stopped's `honored` or a nak --
+            # wherever the answer sits. The drain skips spent ids (so a resumed
+            # episode neither re-honors a served stop, resurrects an expired
+            # lease, nor re-naks a refusal).
             self._spent_subs: set[str] = set()
             self._spent_stops: set[str] = set()
             # Lease bindings (Bound): request_id -> the claims that registered it.
             self._bound: dict[str, set[int]] = {}
             for e in envs:
-                if e.topic == Topic.LIFECYCLE_STOPPED:
-                    self._spent_stops.update(_honored(e))
-                elif e.request_id is None:
-                    continue
-                elif e.topic == Topic.LIFECYCLE_BOUND:
+                if e.topic == Topic.LIFECYCLE_BOUND:
                     ok, k = _claim_name(e)
-                    if ok and k is not None:
+                    if e.request_id is not None and ok and k is not None:
                         self._bound.setdefault(e.request_id, set()).add(k)
-                elif e.topic == Topic.LIFECYCLE_NAK:
-                    self._spent_subs.add(e.request_id)
-                    self._spent_stops.add(e.request_id)
-                else:
-                    self._spent_subs.add(e.request_id)
+                    continue
+                names = _answer_names(e)
+                if e.topic in _SUBSCRIBE_ANSWERS:
+                    self._spent_subs.update(names)
+                if e.topic in _STOP_ANSWERS:
+                    self._spent_stops.update(names)
             if live_episode(self._ch) is not None:
                 # ORDER IS LOAD-BEARING, and a consumer depends on it off-repo:
                 # this precedes the claim send, so a loser has no claim of its

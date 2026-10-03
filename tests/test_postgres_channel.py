@@ -296,7 +296,10 @@ def test_watcher_staleness_floor_is_not_vetoed_by_a_held_lock(pg_ready):
     try:
         s = obs.send({}, topic="lifecycle.started", expected_seq=0)
         holder.hold_episode(s)  #                                      lock HELD (alive)
-        obs.send({"step": 0, "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat")
+        obs.send(
+            {"step": 0, "consumed_seq": 0, "claim_seq": s, "t": 0.0},
+            topic="lifecycle.heartbeat",
+        )  #                                             the beat names its claim
         clock = {"t": 0.0}
         w = Watcher(now=lambda: clock["t"], heartbeat_timeout=1.0)
         w.observe(run_id, obs)

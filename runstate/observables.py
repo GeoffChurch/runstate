@@ -158,6 +158,26 @@ def _honored(e: Envelope) -> list[str]:
     return []
 
 
+# THE ANSWER RULE, in one place (reference-by-name §3): which records answer a
+# request, and which ids an answer names. A subscribe is answered by an
+# unsubscribe (the client's, or the worker's own expiry record) or a nak; a
+# stop by a stopped that honors it or a nak. Once any answer names an id, the
+# id is spent, wherever the answer sits. The worker's drain, ``live_demand``,
+# ``undischarged_stops``, the Watcher's ``pending_stops`` and
+# ``await_consumed`` all fold with these, so they cannot disagree.
+_SUBSCRIBE_ANSWERS = (Topic.CONTROL_UNSUBSCRIBE, Topic.LIFECYCLE_NAK)
+_STOP_ANSWERS = (Topic.LIFECYCLE_STOPPED, Topic.LIFECYCLE_NAK)
+
+
+def _answer_names(e: Envelope) -> list[str]:
+    """The request_ids an answer record NAMES: a ``stopped`` names the stops in
+    its ``honored`` (tolerant, ``_honored``); an unsubscribe or a nak names its
+    own ``request_id``, and a null one names nothing."""
+    if e.topic == Topic.LIFECYCLE_STOPPED:
+        return _honored(e)
+    return [] if e.request_id is None else [e.request_id]
+
+
 def _terminal_stopped(
     channel: Channel, claim: Envelope | None, *, strict: bool
 ) -> Envelope | None:
@@ -480,12 +500,7 @@ def live_demand(channel: Channel) -> list[Envelope]:
     answered: set[str] = set()
     bound: dict[str, set[int]] = {}
     for e in channel.read(
-        topics=[
-            Topic.CONTROL_SUBSCRIBE,
-            Topic.CONTROL_UNSUBSCRIBE,
-            Topic.LIFECYCLE_NAK,
-            Topic.LIFECYCLE_BOUND,
-        ]
+        topics=[Topic.CONTROL_SUBSCRIBE, *_SUBSCRIBE_ANSWERS, Topic.LIFECYCLE_BOUND]
     ):
         if e.request_id is None:
             continue
@@ -496,7 +511,7 @@ def live_demand(channel: Channel) -> list[Envelope]:
             if ok and k is not None:
                 bound.setdefault(e.request_id, set()).add(k)
         else:
-            answered.add(e.request_id)
+            answered.update(_answer_names(e))
     claim = latest_episode(channel)
     current = claim.seq if claim is not None else None
     ended = claim is not None and bool(bound) and _episode_ended(channel, claim)
@@ -528,16 +543,12 @@ def undischarged_stops(channel: Channel) -> list[Envelope]:
     is pending the moment it lands but fires only when its condition crosses."""
     stops: dict[str, Envelope] = {}
     answered: set[str] = set()
-    for e in channel.read(
-        topics=[Topic.CONTROL_STOP, Topic.LIFECYCLE_STOPPED, Topic.LIFECYCLE_NAK]
-    ):
+    for e in channel.read(topics=[Topic.CONTROL_STOP, *_STOP_ANSWERS]):
         if e.topic == Topic.CONTROL_STOP:
             if e.request_id is not None:
                 stops[e.request_id] = e
-        elif e.topic == Topic.LIFECYCLE_STOPPED:
-            answered.update(_honored(e))
-        elif e.request_id is not None:
-            answered.add(e.request_id)
+        else:
+            answered.update(_answer_names(e))
     return sorted(
         (e for r, e in stops.items() if r not in answered), key=lambda e: e.seq
     )
