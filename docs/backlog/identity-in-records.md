@@ -115,16 +115,21 @@ arrive in. This replaces §7's "must follow by `seq`".
 
 **Conditions:**
 
-1. **Migrate in one step.** On an unmigrated log, beats name nothing and `ensure` and `await_consumed`
-   **hang silently**, so the backfill is mandatory, not optional.
-2. **Consumer changes** (owner-authorised, consumer repos):
+1. **Each consumer migrates when it bumps its pin, not all at once.** Since 2026-10-03 mycooc,
+   translation and runstate-tui depend on runstate through a git pin (`72d9c3f`), so this work
+   never reaches them uninvited. A consumer upgrading runs the backfill on its logs, then bumps.
+2. **The new version must refuse an old-format log loudly.** On an unmigrated log, beats name nothing
+   and `ensure` and `await_consumed` **hang silently**. With pinned consumers, old logs and new readers
+   will meet, for example when a cockpit or a later upgrade reads them. A format check that raises
+   is required, not a compatibility reader.
+3. **Consumer changes at upgrade time:**
    - mycooc's and translation's stop writers must mint `request_id`s (none of their 184 stops has one);
    - mycooc's `resume_fanout` must name the stop it discharges.
-3. **Accept the renewing-client gap.** A client renewing a lease with the same id is unserved between a
+4. **Accept the renewing-client gap.** A client renewing a lease with the same id is unserved between a
    crash and its next renewal; it used to be re-anchored. The gap is bounded by the renewal period.
-4. **Decide** whether `undischarged_stops` needs an incremental (Watcher-side) form before anything
+5. **Decide** whether `undischarged_stops` needs an incremental (Watcher-side) form before anything
    polls it on long runs.
-5. **Rewrite the docs:** design §7 (the rule becomes "answers name; the claim CAS orders claims; windows
+6. **Rewrite the docs:** design §7 (the rule becomes "answers name; the claim CAS orders claims; windows
    are causal"), `../specs/stop-discharge.md`, `../specs/service-worker.md`,
    `../specs/time-lease-boundary.md`, the implementers-guide examples, and the 36 tests that pin
    positional semantics or the v0.4 shapes.
@@ -302,8 +307,8 @@ That is efficiency, not correctness, **unless** layer 3 turns out to need it.
 
 ## Order of work
 
-1. **Layer 1:** turn the spike into specs. The consumer changes need the owner's authorisation, and
-   the backfill runs as one step.
+1. **Layer 1:** turn the spike into specs, including the loud old-format check. The consumers stay
+   on their pins; each migrates and makes its stop-writer changes when it upgrades.
 2. **Layer 2:** the encoding experiment, then value names and the stamping helper.
 3. **Layer 3:** test R\* without the fence. That result decides layer 5.
 4. **Layer 4:** the gate, with witnessed staleness. Decide the NFS question before any SQLite-over-NFS
