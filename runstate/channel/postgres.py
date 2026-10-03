@@ -133,14 +133,20 @@ def check_format(conn: psycopg.Connection[Any], run_id: str) -> bool:
     newer = formats.newer_in(names, prefix="runstate_v", sep="_", than=LOG_FORMAT)
     if newer:
         raise LogFormatMismatch(
-            found=newer[-1], expected=LOG_FORMAT, where="this database"
+            found=newer[-1],
+            expected=LOG_FORMAT,
+            where="this database",
+            command=formats.POSTGRES_MIGRATE_COMMAND,
         )
     if _has_rows(conn, FORMATS[LOG_FORMAT].pg_schema(), run_id):
         return True
     for version, layout in formats.older_than(LOG_FORMAT):
         if _has_rows(conn, layout.pg_schema(), run_id):
             raise LogFormatMismatch(
-                found=version, expected=LOG_FORMAT, where=f"schema {layout.pg_schema()}"
+                found=version,
+                expected=LOG_FORMAT,
+                where=f"schema {layout.pg_schema()}",
+                command=formats.POSTGRES_MIGRATE_COMMAND,
             )
     legacy = conn.execute(_LEGACY_LOG).fetchone()
     if legacy is not None and _has_rows(conn, legacy[0], run_id):

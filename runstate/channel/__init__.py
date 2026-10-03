@@ -61,7 +61,10 @@ def _locate_sqlite(
         )
         if newer:
             raise LogFormatMismatch(
-                found=newer[-1], expected=LOG_FORMAT, where=str(root)
+                found=newer[-1],
+                expected=LOG_FORMAT,
+                where=str(root),
+                command=formats.sqlite_migrate_command(root),
             )
     path = FORMATS[LOG_FORMAT].sqlite_path(root, run_id)
     if path.exists():
@@ -69,7 +72,12 @@ def _locate_sqlite(
     for version, layout in formats.older_than(LOG_FORMAT):
         old = layout.sqlite_path(root, run_id)
         if old.exists():
-            raise LogFormatMismatch(found=version, expected=LOG_FORMAT, where=str(old))
+            raise LogFormatMismatch(
+                found=version,
+                expected=LOG_FORMAT,
+                where=str(old),
+                command=formats.sqlite_migrate_command(root),
+            )
     legacy = root / f"{run_id}.db"
     if legacy.exists():
         raise LogFormatMissing(

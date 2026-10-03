@@ -170,6 +170,13 @@ migrated.
 *Found in implementation.* The CLI is `runstate migrate <root> [<rid>...] [--to V] [--backend
 sqlite|postgres]`. On Postgres the seal is taken first, then the rows are read and copied in that one transaction.
 
+*Found in the final review.* `runstate migrate` exited 0 having done nothing when the root did not exist,
+or when a DSN was given without `--backend postgres` and read as a SQLite root with no runs. It refuses
+both now: a SQLite root that is not a directory, and a `postgres://` or `postgresql://` root without
+`--backend postgres`. Every message that says to migrate gives the whole command, `runstate migrate
+<root>` or `runstate migrate '<dsn>' --backend postgres` (a placeholder, since a DSN can carry a
+password).
+
 ## 7. Onboarding legacy logs
 
 Logs written before format versioning sit at the legacy address. Nothing infers their format. The

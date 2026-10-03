@@ -60,17 +60,29 @@ def newer_in(names: Iterable[str], *, prefix: str, sep: str, than: str) -> list[
     return sorted(set(found), key=parse)
 
 
+def sqlite_migrate_command(root: Path) -> str:
+    """The whole command that migrates the sqlite logs under ``root``."""
+    return f"runstate migrate {shlex.quote(str(root))}"
+
+
+# The whole command that migrates a postgres database. A DSN can carry a
+# password, so a message names it by a placeholder, never by its value.
+POSTGRES_MIGRATE_COMMAND = "runstate migrate '<dsn>' --backend postgres"
+
+
 class LogFormatError(Exception):
     """A log is not in the format this runstate reads."""
 
 
 class LogFormatMismatch(LogFormatError):
-    def __init__(self, *, found: str, expected: str, where: str) -> None:
+    """``command`` is the whole command that migrates logs where this one is."""
+
+    def __init__(self, *, found: str, expected: str, where: str, command: str) -> None:
         self.found, self.expected, self.where = found, expected, where
         if parse(found) > parse(expected):
             action = f"upgrade runstate (this release reads format {expected})"
         else:
-            action = f"run `runstate migrate` to move it to format {expected}"
+            action = f"run `{command}` to move it to format {expected}"
         super().__init__(
             f"the log at {where} is format {found}, not {expected}: {action}"
         )
@@ -120,7 +132,7 @@ def sqlite_onboarding(root: Path, run_id: str) -> str:
         f"First stop every process that writes under {root}, and drain any queued jobs that "
         f"would. Then move the log, with any {', '.join(_SIDECARS)} files beside it, into "
         f"{base}/, and leave a tombstone at its old address: an empty, read-only file. "
-        f"{_WHY_TOMBSTONE} Then run `runstate migrate {q_root}`. To do this for every "
+        f"{_WHY_TOMBSTONE} Then run `{sqlite_migrate_command(root)}`. To do this for every "
         f"legacy log under the root:\n  {loop}"
     )
 
@@ -149,7 +161,8 @@ def postgres_onboarding(run_id: str, schema: str) -> str:
         f"was written by runstate at or after {_BASE_COMMIT}, it is format {_BASE}. First "
         f"stop every process that writes to it, and drain any queued jobs that would. Then "
         f"move the table into schema {target}, and leave a tombstone in its place: an empty "
-        f"`log` that refuses every insert. {_WHY_TOMBSTONE} Then run `runstate migrate`:\n"
+        f"`log` that refuses every insert. {_WHY_TOMBSTONE} Then run "
+        f"`{POSTGRES_MIGRATE_COMMAND}`:\n"
         f"  {sql}"
     )
 
@@ -158,6 +171,7 @@ __all__ = [
     "DirectoryLayout",
     "FORMATS",
     "LOG_FORMAT",
+    "POSTGRES_MIGRATE_COMMAND",
     "Layout",
     "LogFormatError",
     "LogFormatMismatch",
@@ -166,5 +180,6 @@ __all__ = [
     "older_than",
     "parse",
     "postgres_onboarding",
+    "sqlite_migrate_command",
     "sqlite_onboarding",
 ]

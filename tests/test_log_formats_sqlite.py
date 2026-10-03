@@ -74,9 +74,10 @@ def test_a_v0_2_0_log_says_migrate(tmp_path):
     with SqliteChannel(old) as ch:
         ch.send({}, topic="value", name="n")
     for locate in (attach_channel, create_channel):
-        with pytest.raises(LogFormatMismatch, match="runstate migrate") as exc:
+        with pytest.raises(LogFormatMismatch) as exc:
             locate("r1", root=tmp_path)
         assert (exc.value.found, exc.value.expected) == ("0.2.0", "0.3.0")
+        assert f"run `runstate migrate {tmp_path}`" in str(exc.value)  # in full
     assert not _path(tmp_path, "r1").exists()  # create did not birth beside it
 
 

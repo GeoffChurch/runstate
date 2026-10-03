@@ -63,7 +63,10 @@ def test_older_schema_holding_the_run_says_migrate(dsn, monkeypatch):
         )
     try:
         for locate in (attach_channel, create_channel):
-            with pytest.raises(LogFormatMismatch, match="runstate migrate"):
+            with pytest.raises(
+                LogFormatMismatch,
+                match=r"run `runstate migrate '<dsn>' --backend postgres`",
+            ):
                 locate(rid, root=dsn, backend="postgres")
     finally:
         with psycopg.connect(dsn, autocommit=True) as c:

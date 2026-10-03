@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 import sys
 from pathlib import Path
 
 from . import formats
 from .migrations import migrate
 from .migrations.stores import PostgresStore, SqliteStore, Store
+
+# The URI schemes libpq reads as a DSN (a key=value DSN is no directory either,
+# which SqliteStore refuses).
+_DSN_SCHEMES = ("postgres://", "postgresql://")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -20,6 +25,11 @@ def main(argv: list[str] | None = None) -> int:
     m.add_argument("--to", default=formats.LOG_FORMAT)
     m.add_argument("--backend", choices=["sqlite", "postgres"], default="sqlite")
     args = p.parse_args(argv)
+    if args.backend == "sqlite" and args.root.startswith(_DSN_SCHEMES):
+        p.error(
+            f"{args.root} is a postgres DSN, not a sqlite root: run "
+            f"`runstate migrate {shlex.quote(args.root)} --backend postgres`"
+        )
     store: Store = (
         PostgresStore(args.root)
         if args.backend == "postgres"

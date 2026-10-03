@@ -39,7 +39,16 @@ def _read_sqlite(path: Path) -> list[Row]:
 
 class SqliteStore:
     def __init__(self, root: Path) -> None:
+        """Refuses a root that is not a directory: it holds no runs, and a
+        migration that found none would report success having done nothing."""
         self._root = Path(root)
+        if not self._root.is_dir():
+            raise MigrationError(
+                f"{root} is not a directory, so it holds no sqlite logs. For a "
+                f"sqlite root, run `{formats.sqlite_migrate_command(self._root)}` "
+                f"on the directory that holds the v<format>/ directories; for a "
+                f"postgres database, run `{formats.POSTGRES_MIGRATE_COMMAND}`"
+            )
 
     def formats_of(self, run_ids: list[str] | None) -> dict[str, str]:
         """Each run's newest registered format present under the root."""

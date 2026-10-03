@@ -183,6 +183,39 @@ def test_a_hot_journal_of_a_crashed_writer_is_rolled_back(
     assert not path.with_name("r1.db-journal").exists()
 
 
+@pytest.mark.parametrize("kind", ["absent", "a file"])
+def test_a_root_that_is_not_a_directory_is_refused(tmp_path, kind):
+    """I5: the store listed no runs under a root that does not exist, and
+    `migrate` exited 0 having done nothing. It refuses, giving both commands."""
+    root = tmp_path / "root"
+    if kind == "a file":
+        root.write_text("")
+    with pytest.raises(MigrationError, match="not a directory") as exc:
+        SqliteStore(root)
+    assert f"runstate migrate {root}" in str(exc.value)
+    assert "runstate migrate '<dsn>' --backend postgres" in str(exc.value)
+
+
+def test_cli_refuses_a_root_that_is_not_a_directory(tmp_path):
+    from runstate.cli import main
+
+    with pytest.raises(MigrationError, match="not a directory"):
+        main(["migrate", str(tmp_path / "absent")])
+
+
+@pytest.mark.parametrize("dsn", ["postgres://u@h/db", "postgresql:///db?host=/tmp/s"])
+def test_cli_refuses_a_dsn_without_the_postgres_backend(dsn, capsys):
+    """I5: a DSN given without --backend postgres was read as a sqlite root
+    with no runs, and `migrate` exited 0 having done nothing."""
+    from runstate.cli import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(["migrate", dsn])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert dsn in err and "--backend postgres" in err
+
+
 def test_cli_migrate(toy, tmp_path, capsys):
     from runstate.cli import main
 
