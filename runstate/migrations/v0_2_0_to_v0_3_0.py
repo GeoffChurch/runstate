@@ -63,13 +63,80 @@ from __future__ import annotations
 import json
 from collections import Counter
 from dataclasses import dataclass, field, replace
+from enum import StrEnum
 from typing import Any
 
-from ..channel.envelope import Body, Envelope
 from ..vocabulary.handle import resolve
-from ..vocabulary.payloads import Topic
-from ..vocabulary.schedule import references_episode_local
 from . import MigrationError, Row
+
+# ----- the two formats' record semantics, frozen here --------------------------
+#
+# The step is retained forever, so it must read 0.2.0 and write 0.3.0 as they
+# were defined when it was written, whatever later code does (log-formats.md
+# §6: a step carries what it needs of its old format). It imports no record
+# semantics from the package: not Envelope, not Topic, not the schedule
+# predicates. From outside it takes only Row and MigrationError, and resolve(),
+# an OS probe of a handle rather than a format rule.
+
+_Body = dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _Record:
+    """One record with its body parsed: a 0.2.0 envelope (envelope-v0.2)."""
+
+    seq: int
+    topic: str
+    name: str | None
+    request_id: str | None
+    body: _Body
+
+
+class _Topic(StrEnum):
+    """The topics the step reads, as 0.2.0 spelled them (lifecycle-v0.4,
+    subscription-v0.2, value-v0.2), and BOUND, which 0.3.0 adds
+    (lifecycle-v0.5)."""
+
+    STARTED = "lifecycle.started"
+    HEARTBEAT = "lifecycle.heartbeat"
+    STOPPED = "lifecycle.stopped"
+    NAK = "lifecycle.nak"
+    BOUND = "lifecycle.bound"
+    STOP = "control.stop"
+    SUBSCRIBE = "control.subscribe"
+    UNSUBSCRIBE = "control.unsubscribe"
+    VALUE = "value"
+
+
+_ANSWERS = (_Topic.UNSUBSCRIBE, _Topic.NAK)  # 0.2.0's answers to a subscribe
+
+# 0.2.0's leases: a schedule naming either atom anywhere in from/every/until,
+# through any/all (references_episode_local at 72d9c3f).
+_LEASE_ATOMS = frozenset({"time_seconds", "count"})
+
+
+def _is_lease(schedule: _Body) -> bool:
+    def hit(cond: object) -> bool:
+        if not isinstance(cond, dict):
+            return False
+        if "any" in cond and isinstance(cond["any"], list):
+            return any(hit(c) for c in cond["any"])
+        if "all" in cond and isinstance(cond["all"], list):
+            return any(hit(c) for c in cond["all"])
+        return bool(_LEASE_ATOMS & cond.keys())
+
+    return any(
+        hit(schedule.get(k))
+        for k in ("from", "every", "until")
+        if schedule.get(k) is not None
+    )
+
+
+def _dumps(body: _Body) -> str:
+    return json.dumps(body, separators=(",", ":"))  # as the channels write a body
+
+
+# ----- the rules ---------------------------------------------------------------
 
 
 def _fresh(base: str, taken: set[str]) -> str:
@@ -84,45 +151,46 @@ def _fresh(base: str, taken: set[str]) -> str:
 
 @dataclass
 class Backfill:
-    """A log as the rules rewrite it. ``envs`` holds the records in their input
-    order; ``appended`` the records after the last; ``rebodied`` the seqs whose
-    body changed; ``taken`` every request id in use, seeded with the run's own."""
+    """A log as the rules rewrite it. ``records`` holds the records in their
+    input order; ``appended`` the records after the last; ``rebodied`` the seqs
+    whose body changed; ``taken`` every request id in use, seeded with the
+    run's own."""
 
-    envs: list[Envelope]
+    records: list[_Record]
     taken: set[str]
     rebodied: set[int] = field(default_factory=set)
-    appended: list[Envelope] = field(default_factory=list)
+    appended: list[_Record] = field(default_factory=list)
 
     def mint(self, base: str) -> str:
         return _fresh(base, self.taken)
 
     def set_rid(self, i: int, rid: str) -> None:
-        self.envs[i] = replace(self.envs[i], request_id=rid)
+        self.records[i] = replace(self.records[i], request_id=rid)
 
     def name(self, i: int, **fields: Any) -> None:
-        e = self.envs[i]
-        self.envs[i] = replace(e, body={**e.body, **fields})
+        e = self.records[i]
+        self.records[i] = replace(e, body={**e.body, **fields})
         self.rebodied.add(e.seq)
 
 
-def _subscribed(envs: list[Envelope]) -> set[str]:
+def _subscribed(records: list[_Record]) -> set[str]:
     return {
         e.request_id
-        for e in envs
-        if e.topic == Topic.CONTROL_SUBSCRIBE and e.request_id is not None
+        for e in records
+        if e.topic == _Topic.SUBSCRIBE and e.request_id is not None
     }
 
 
-def _name_stops(log: Backfill, envs: list[Envelope]) -> None:
-    shared = _subscribed(envs)
+def _name_stops(log: Backfill, records: list[_Record]) -> None:
+    shared = _subscribed(records)
     uses = Counter(
         e.request_id
-        for e in envs
-        if e.topic == Topic.CONTROL_STOP and e.request_id is not None
+        for e in records
+        if e.topic == _Topic.STOP and e.request_id is not None
     )
     pending: list[str] = []  #  the stops since the last stopped
-    for i, e in enumerate(envs):
-        if e.topic == Topic.CONTROL_STOP:
+    for i, e in enumerate(records):
+        if e.topic == _Topic.STOP:
             rid = e.request_id
             if rid is None:
                 rid = log.mint(f"stop@{e.seq}")
@@ -131,19 +199,19 @@ def _name_stops(log: Backfill, envs: list[Envelope]) -> None:
                 rid = log.mint(f"{rid}#{e.seq}")
                 log.set_rid(i, rid)
             pending.append(rid)
-        elif e.topic == Topic.LIFECYCLE_STOPPED:
+        elif e.topic == _Topic.STOPPED:
             log.name(i, honored=sorted(pending))
             pending = []
 
 
-def _name_episodes(log: Backfill, envs: list[Envelope]) -> None:
+def _name_episodes(log: Backfill, records: list[_Record]) -> None:
     claim: int | None = None
-    for i, e in enumerate(envs):
-        if e.topic == Topic.LIFECYCLE_STARTED:
+    for i, e in enumerate(records):
+        if e.topic == _Topic.STARTED:
             claim = e.seq
-        elif e.topic == Topic.LIFECYCLE_STOPPED:
+        elif e.topic == _Topic.STOPPED:
             log.name(i, claim_seq=claim)
-        elif e.topic == Topic.LIFECYCLE_HEARTBEAT:
+        elif e.topic == _Topic.HEARTBEAT:
             if claim is None:
                 raise MigrationError(
                     f"the heartbeat at seq {e.seq} precedes every claim: format 0.3.0 "
@@ -163,15 +231,15 @@ class _Segment:
     live: bool = True
 
 
-def _segment_subscriptions(log: Backfill, envs: list[Envelope]) -> None:
-    subscribed = _subscribed(envs)
+def _segment_subscriptions(log: Backfill, records: list[_Record]) -> None:
+    subscribed = _subscribed(records)
     segments: dict[str, _Segment] = {}
-    for i, e in enumerate(envs):
+    for i, e in enumerate(records):
         rid = e.request_id
         if rid is None:
             continue
         seg = segments.get(rid)
-        if e.topic == Topic.CONTROL_SUBSCRIBE:
+        if e.topic == _Topic.SUBSCRIBE:
             if seg is None:
                 seg = segments[rid] = _Segment(rid)
             elif not seg.live:
@@ -180,12 +248,12 @@ def _segment_subscriptions(log: Backfill, envs: list[Envelope]) -> None:
                 seg.name = log.mint(f"{rid}#{seg.k}")
             if seg.name != rid:
                 log.set_rid(i, seg.name)
-        elif e.topic == Topic.VALUE:
+        elif e.topic == _Topic.VALUE:
             if seg is not None and seg.name != rid:
                 log.set_rid(i, seg.name)
-        elif e.topic in (Topic.CONTROL_UNSUBSCRIBE, Topic.LIFECYCLE_NAK):
+        elif e.topic in _ANSWERS:
             if seg is None:
-                if e.topic == Topic.CONTROL_UNSUBSCRIBE or rid in subscribed:
+                if e.topic == _Topic.UNSUBSCRIBE or rid in subscribed:
                     log.set_rid(i, log.mint(f"{rid}!orphan@{e.seq}"))
                 continue
             if seg.name != rid:
@@ -197,39 +265,37 @@ def _bind_voided_leases(log: Backfill) -> None:
     """The positional boundary rule voided an episode-local subscription when a
     claim lay strictly between it and the latest claim. Bind each such one to
     the first of those claims, which voids it by name."""
-    claims = [e.seq for e in log.envs if e.topic == Topic.LIFECYCLE_STARTED]
+    claims = [e.seq for e in log.records if e.topic == _Topic.STARTED]
     latest = claims[-1] if claims else 0
-    live: dict[str, Envelope] = {}
-    for e in log.envs:
+    live: dict[str, _Record] = {}
+    for e in log.records:
         if e.request_id is None:
             continue
-        if e.topic == Topic.CONTROL_SUBSCRIBE:
+        if e.topic == _Topic.SUBSCRIBE:
             live[e.request_id] = e
-        elif e.topic in (Topic.CONTROL_UNSUBSCRIBE, Topic.LIFECYCLE_NAK):
+        elif e.topic in _ANSWERS:
             live.pop(e.request_id, None)
-    last = log.envs[-1].seq if log.envs else 0
+    last = log.records[-1].seq if log.records else 0
     for rid, e in live.items():
-        if not references_episode_local(e.body):
+        if not _is_lease(e.body):
             continue
         between = [c for c in claims if e.seq < c < latest]
         if between:
-            body: Body = {"claim_seq": between[0]}
+            body: _Body = {"claim_seq": between[0]}
             seq = last + len(log.appended) + 1
-            log.appended.append(Envelope(seq, Topic.LIFECYCLE_BOUND, None, rid, body))
+            log.appended.append(_Record(seq, _Topic.BOUND, None, rid, body))
 
 
-def backfill(envs: list[Envelope]) -> Backfill:
+def backfill(records: list[_Record]) -> Backfill:
     """The names the positional rule implied, for one run's records in seq order."""
-    log = Backfill(list(envs), {e.request_id for e in envs if e.request_id is not None})
-    _name_stops(log, envs)
-    _name_episodes(log, envs)
-    _segment_subscriptions(log, envs)
+    log = Backfill(
+        list(records), {e.request_id for e in records if e.request_id is not None}
+    )
+    _name_stops(log, records)
+    _name_episodes(log, records)
+    _segment_subscriptions(log, records)
     _bind_voided_leases(log)
     return log
-
-
-def _dumps(body: Body) -> str:
-    return json.dumps(body, separators=(",", ":"))  # as the channels write a body
 
 
 class V0_2_0_to_V0_3_0:
@@ -241,12 +307,10 @@ class V0_2_0_to_V0_3_0:
         ``stopped`` follows it, whatever that record's body, or its handle
         resolves dead. An unresolvable foreign handle reads as live. The launcher
         tier does not participate."""
-        claim = next(
-            (x for x in reversed(rows) if x.topic == Topic.LIFECYCLE_STARTED), None
-        )
+        claim = next((x for x in reversed(rows) if x.topic == _Topic.STARTED), None)
         if claim is None:
             return False
-        if any(x.topic == Topic.LIFECYCLE_STOPPED and x.seq > claim.seq for x in rows):
+        if any(x.topic == _Topic.STOPPED and x.seq > claim.seq for x in rows):
             return False
         handle = json.loads(claim.body).get("handle")
         if not isinstance(handle, str):
@@ -260,17 +324,17 @@ class V0_2_0_to_V0_3_0:
         """Each record keeps its seq, topic, name and ``created_at``, and its body
         text byte for byte unless the body changed. An appended ``bound`` takes
         the latest ``created_at`` in the run."""
-        envs = [
-            Envelope(x.seq, x.topic, x.name, x.request_id, json.loads(x.body))
+        records = [
+            _Record(x.seq, x.topic, x.name, x.request_id, json.loads(x.body))
             for x in rows
         ]
-        log = backfill(envs)
+        log = backfill(records)
         out = [
             x._replace(
                 request_id=e.request_id,
                 body=_dumps(e.body) if x.seq in log.rebodied else x.body,
             )
-            for x, e in zip(rows, log.envs, strict=True)
+            for x, e in zip(rows, log.records, strict=True)
         ]
         created = max((x.created_at for x in rows), default=0.0)
         out += [

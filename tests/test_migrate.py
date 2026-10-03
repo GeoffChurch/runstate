@@ -13,16 +13,20 @@ from runstate.migrations.stores import PostgresStore, SqliteStore
 
 
 class Tag:
-    """A toy step: stamps {"tag": TO} into every body."""
+    """A toy step: stamps {"tag": TO} into every body. ``boom_at`` is the
+    0-based ``transform`` call that raises. On sqlite, call 0 is the dry run
+    before the seal and call 1 the transform after it; postgres makes one."""
 
     def __init__(self, src, dst, live=False, boom_at=None):
         self.FROM, self.TO, self._live, self._boom = src, dst, live, boom_at
+        self._calls = 0
 
     def is_live(self, rows):
         return self._live
 
     def transform(self, rows):
-        if self._boom is not None:
+        call, self._calls = self._calls, self._calls + 1
+        if call == self._boom:
             raise RuntimeError("boom")
         return [
             r._replace(body=json.dumps({**json.loads(r.body), "tag": self.TO}))
@@ -103,9 +107,26 @@ def test_a_live_run_is_refused_and_untouched(toy, monkeypatch, tmp_path):
     assert not DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1").exists()
 
 
-def test_a_failure_leaves_it_sealed_and_a_retry_completes(toy, monkeypatch, tmp_path):
+def test_a_refusal_by_the_step_comes_before_the_seal(toy, monkeypatch, tmp_path):
+    """Ruling 12: the step's transform is dry-run on the pre-seal rows, so a
+    deterministic refusal leaves the run untouched and writable, and a re-run
+    refuses it the same way instead of finding it sealed."""
     old = _seed(tmp_path, "8.0.0", "r1")
-    monkeypatch.setattr(migrations, "STEPS", (Tag("8.0.0", "8.1.0", boom_at=0),))
+    before = old.read_bytes()
+    for _ in range(2):
+        monkeypatch.setattr(migrations, "STEPS", (Tag("8.0.0", "8.1.0", boom_at=0),))
+        with pytest.raises(RuntimeError, match="boom"):
+            migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0")
+        assert os.stat(old).st_mode & 0o200  # not sealed
+        assert old.read_bytes() == before
+        assert not DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1").exists()
+
+
+def test_a_failure_after_the_seal_leaves_it_sealed_and_a_retry_completes(
+    toy, monkeypatch, tmp_path
+):
+    old = _seed(tmp_path, "8.0.0", "r1")
+    monkeypatch.setattr(migrations, "STEPS", (Tag("8.0.0", "8.1.0", boom_at=1),))
     with pytest.raises(RuntimeError, match="boom"):
         migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0")
     target = DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1")

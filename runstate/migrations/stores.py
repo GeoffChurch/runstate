@@ -57,16 +57,26 @@ class SqliteStore:
         return found
 
     def migrate_one(self, step: Step, run_id: str) -> None:
-        """Refuse a live run untouched; seal (unless an earlier failed attempt
-        already did); re-read, since the seal checkpoints any WAL frames; then
-        write the new log to a hidden temporary file and rename it into place."""
+        """Refuse untouched a run that is live, or that the step refuses: before
+        the seal, read the rows once, ask ``is_live``, and dry-run ``transform``,
+        so a deterministic refusal leaves the run writable and a re-run refuses
+        it the same way. Then seal (unless an earlier failed attempt already
+        did); re-read, since the seal checkpoints any WAL frames; transform; and
+        write the new log to a hidden temporary file, renamed into place.
+
+        One residual: on a run that is not live, records landing between the
+        pre-seal read and the seal can still make the post-seal transform
+        refuse. The run is then left sealed and unmigrated, and recovery is
+        log-formats.md §8's rollback."""
         src = formats.FORMATS[step.FROM].sqlite_path(self._root, run_id)
         dst = formats.FORMATS[step.TO].sqlite_path(self._root, run_id)
         if os.stat(src).st_mode & 0o222:  # not yet sealed
-            if step.is_live(_read_sqlite(src)):
+            rows = _read_sqlite(src)
+            if step.is_live(rows):
                 raise MigrationError(
                     f"run {run_id!r} has a live episode; stop it first"
                 )
+            step.transform(rows)  # the dry run: a refusal raises before the seal
             seal_sqlite(src)
         out = step.transform(_read_sqlite(src))
         dst.parent.mkdir(exist_ok=True)
@@ -124,7 +134,8 @@ class PostgresStore:
         dst = sql.Identifier(dst_name)
         with psycopg.connect(self._dsn) as conn, conn.transaction():
             # Seal first: its table lock keeps writers out, so the read sees every
-            # committed row. A live refusal raises and rolls the seal back.
+            # committed row. A refusal, of a live run or by the step's transform,
+            # raises and rolls the seal back.
             seal_postgres(conn, formats.FORMATS[step.FROM].pg_schema(), run_id)
             rows = [
                 Row(*r)

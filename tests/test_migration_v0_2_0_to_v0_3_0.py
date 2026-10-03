@@ -290,10 +290,12 @@ WELL_FORMED = ["stops", "subs", "episodes", "shared"]
 
 
 def _write(root: Path, rid: str, rows: list[Row]) -> Path:
-    """One log at its 0.2.0 address, every row as given."""
+    """One log at its 0.2.0 address, every row as given, in WAL mode as a
+    channel leaves it."""
     path = FORMATS["0.2.0"].sqlite_path(root, rid)
     path.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(path)
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_SCHEMA)
     conn.executemany(
         "INSERT INTO log (seq, topic, name, request_id, body, created_at)"
@@ -546,16 +548,80 @@ def test_a_heartbeat_before_any_claim_refuses_the_run():
         step.transform(rows)
 
 
-def test_a_heartbeat_before_any_claim_leaves_a_sqlite_run_sealed_and_unmigrated(
-    tmp_path,
-):
-    """log-formats §6: a failed step leaves the old log sealed. Here a retry
-    cannot complete it; the run stays at 0.2.0 until its owner unseals it."""
+def _journal_mode(path):
+    conn = sqlite3.connect(path)
+    try:
+        return conn.execute("PRAGMA journal_mode").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_a_refused_sqlite_run_is_refused_before_the_seal(tmp_path):
+    """Ruling 12: the refusal is deterministic, so it comes before the seal. The
+    run stays writable and unsealed, and a re-run refuses it the same way."""
     old = _write(tmp_path, "r", [r(1, "lifecycle.heartbeat", _beat(0, 0, 1.0))])
-    with pytest.raises(MigrationError, match="seq 1"):
-        migrate(SqliteStore(tmp_path), ["r"], to="0.3.0")
-    assert not FORMATS["0.3.0"].sqlite_path(tmp_path, "r").exists()
-    assert os.stat(old).st_mode & 0o222 == 0
+    for attempt in range(2):
+        with pytest.raises(MigrationError, match="seq 1"):
+            migrate(SqliteStore(tmp_path), ["r"], to="0.3.0")
+        assert os.stat(old).st_mode & 0o200  #          no read-only bit
+        assert _journal_mode(old) == "wal"  #   the seal would have left WAL
+        assert not FORMATS["0.3.0"].sqlite_path(tmp_path, "r").exists()
+        ch = SqliteChannel(old, create=False)
+        assert ch.send({"attempt": attempt}, topic="value", name="n") is not None
+        ch.close()
+
+
+@pytest.fixture
+def pg_v0_2_0_run(pg_ready):
+    """A run in the shared postgres test database's 0.2.0 schema. A 0.3.0 schema
+    left behind would make every later open there raise, so none may survive."""
+    import uuid
+
+    import psycopg
+
+    rid = f"t12-{uuid.uuid4().hex}"
+    with psycopg.connect(pg_ready, autocommit=True) as c:
+        assert c.execute("SELECT to_regnamespace('runstate_v0_3_0')").fetchone() == (
+            None,
+        )
+    try:
+        yield pg_ready, rid
+    finally:
+        with psycopg.connect(pg_ready, autocommit=True) as c:
+            c.execute("DROP SCHEMA IF EXISTS runstate_v0_3_0 CASCADE")
+            c.execute("DELETE FROM runstate_v0_2_0.log WHERE run_id = %s", [rid])
+
+
+def test_a_refused_postgres_run_rolls_back_its_seal(pg_v0_2_0_run):
+    """Ruling 12 on postgres: the seal, the read and the copy are one
+    transaction, so the refusal rolls the seal back with everything else."""
+    import psycopg
+
+    from runstate.migrations.stores import PostgresStore
+
+    dsn, rid = pg_v0_2_0_run
+    insert = (
+        "INSERT INTO runstate_v0_2_0.log (run_id, seq, topic, name, request_id, body,"
+        " created_at) VALUES (%s, %s, %s, %s, %s, %s, %s)"
+    )
+    with psycopg.connect(dsn) as c:
+        c.execute(insert, [rid, *r(1, "lifecycle.heartbeat", _beat(0, 0, 1.0))])
+    for attempt in range(2):
+        with pytest.raises(MigrationError, match="seq 1"):
+            migrate(PostgresStore(dsn), [rid], to="0.3.0")
+        with psycopg.connect(dsn) as c:
+            sealed = c.execute(
+                "SELECT to_regclass('runstate_v0_2_0.sealed_runs')"
+            ).fetchone()
+            if sealed != (None,):
+                assert c.execute(
+                    "SELECT count(*) FROM runstate_v0_2_0.sealed_runs WHERE run_id = %s",
+                    [rid],
+                ).fetchone() == (0,)
+            assert c.execute(
+                "SELECT to_regnamespace('runstate_v0_3_0')"
+            ).fetchone() == (None,)
+            c.execute(insert, [rid, 2 + attempt, "value", "n", None, "{}", 0.0])
 
 
 # ----- liveness, read as 0.2.0 read it -------------------------------------------
@@ -609,6 +675,38 @@ def test_well_formed_logs_come_out_valid_under_the_0_3_0_schemas(rid):
         envelope.validate(record)
         (convention,) = [v for k, v in conventions.items() if x.topic.startswith(k)]
         convention.validate(record)
+
+
+# ----- a retained step carries its formats' semantics ------------------------------
+
+
+def test_the_step_imports_no_record_semantics():
+    """Ruling 13 (log-formats §6): the step is retained forever, so it must read
+    0.2.0 and write 0.3.0 as they were defined, whatever later code does. From
+    the package it takes only Row, MigrationError and resolve(), an OS probe of a
+    handle rather than a format rule."""
+    import ast
+    import inspect
+
+    import runstate.migrations.v0_2_0_to_v0_3_0 as mod
+
+    tree = ast.parse(inspect.getsource(mod))
+    internal = {
+        (n.level, n.module, a.name)
+        for n in ast.walk(tree)
+        if isinstance(n, ast.ImportFrom)
+        and (n.level > 0 or (n.module or "").startswith("runstate"))
+        for a in n.names
+    }
+    assert internal == {
+        (1, None, "MigrationError"),
+        (1, None, "Row"),
+        (2, "vocabulary.handle", "resolve"),
+    }
+    plain = {
+        a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names
+    }
+    assert not {m for m in plain if m.startswith("runstate")}
 
 
 # ----- registration ----------------------------------------------------------------
