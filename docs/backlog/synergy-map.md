@@ -22,7 +22,8 @@ justified only by design taste.
 **State:** autonomous/sequence half shipped (memoizer + `ensure-until-condition`);
 **the service half SHIPPED 2026-06-10** (`../specs/service-worker.md` —
 `serve`/`retire`/`pinned`, the careful death, expiry counter-records, the
-positional answer fold / `live_demand`; dogfood `examples/monitor/`).
+answer fold / `live_demand` — positional as shipped, by name since log format
+0.3.0, `../specs/reference-by-name.md`; dogfood `examples/monitor/`).
 Episode-scoped time-leases shipped 2026-06-11
 (`../specs/time-lease-boundary.md` — the ghost-lease flap deleted by
 construction; the waker needs no policy). Lazy-launch shipped 2026-06-11

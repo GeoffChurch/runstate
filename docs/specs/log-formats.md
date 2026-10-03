@@ -152,8 +152,8 @@ migrated.
   2. Refuse if the step refuses the run's records. A step's refusal is deterministic, so it comes before
      the seal: on SQLite the runner dry-runs the transform on the records it read for step 1.
   3. Seal the old log.
-  4. Transform into the new format's address. On SQLite, write to a temporary file of its own in the target directory
-     and rename it into place; on Postgres, use the sealing transaction.
+  4. Transform into the new format's address. On SQLite, write to a temporary file of its own in the target
+     directory and rename it into place; on Postgres, use the sealing transaction.
 - **A refusal leaves the run untouched.** Every refusal is a `MigrationError` that names its run
   (`run '<rid>': …`), and `migrate` stops at the first. The refused run stays writable and unmigrated, and
   a re-run refuses it the same way. One residual on SQLite: records that land between the pre-seal read

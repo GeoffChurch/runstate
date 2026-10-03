@@ -115,6 +115,12 @@ Every currently-open defect in this area is one of the four it should not be ass
 - **#32** — the reclaim must impersonate the worker to release the claim, which is what manufactures
   the displacement in the first place. (Jobs 2 and 3.)
 
+*Since log format 0.3.0 (2026-10-03, `../specs/reference-by-name.md`) job 4 is by name.* A `stopped`
+discharges only the stops its `honored` list names, and `Worker._discharge_floor` is gone, so a third
+party's release written with `honored: []` discharges nothing: #39's harm is closed for any release
+that does not name the stop. The table and the #39 bullet above describe format 0.2.0's positional
+rule, under which any later `stopped` discharged every pending stop. A forger can still name a stop.
+
 ## 2. The hardest question splits; only one half was ever hard
 
 `cross-host-claim-gate.md` §4.2 calls **"who is allowed to write it, and on what evidence"** the
@@ -231,6 +237,10 @@ structural rather than four separate patches that have to stay correct.
 | `progress` / `_episode_stopped` | `STOPPED` | none — **no rewound frontier** |
 | `undischarged_stops` (`:444`), `Worker._discharge_floor` (`worker.py:88`) | `STOPPED` | none — **#39 fixed** |
 | `last_activity` via `_DATED_TOPICS` (`:326`) | five dated topics | none — **#42 fixed** |
+
+(The citations are format 0.2.0's tree. Under 0.3.0, `_discharge_floor` is gone and
+`undischarged_stops` folds `stopped.honored` and naks by name, so the `#39 fixed` row needs no
+eviction record: names fixed it, §1's note.)
 
 The one change — **below** the probe, and a range read, both for reasons revision 1 got wrong:
 
