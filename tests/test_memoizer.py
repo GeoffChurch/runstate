@@ -442,12 +442,8 @@ def test_ensure_redrives_when_extend_noops_onto_a_live_episode(tmp_path):
             stopped(launcher.attach_channel(rid), claim_seq=c, final_step=1)
 
     series = ensure(producer, "loss", until={"step": 4}, sleep=driver_sleep)
-    assert [b["step"] for b in series] == [
-        0,
-        1,
-        2,
-        3,
-    ]  #  foreign 0,1 + re-driven 2,3 = one series
+    # foreign 0,1 + re-driven 2,3 = one series
+    assert [b["step"] for b in series] == [0, 1, 2, 3]
 
 
 def test_public_exports_present():

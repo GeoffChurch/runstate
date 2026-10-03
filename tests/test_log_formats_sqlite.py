@@ -133,8 +133,9 @@ def test_concurrent_births_share_one_log(tmp_path):
 
 
 def test_create_does_not_create_a_missing_root(tmp_path):
-    with pytest.raises(Exception):
+    with pytest.raises(FileNotFoundError):
         create_channel("r1", root=tmp_path / "absent")
+    assert not (tmp_path / "absent").exists()
 
 
 # ----- onboarding: the LogFormatMissing instructions, run as written -------------

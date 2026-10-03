@@ -12,6 +12,7 @@ import os
 import socket
 import sqlite3
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
@@ -887,27 +888,36 @@ def test_a_refusal_through_migrate_names_its_run(tmp_path):
 # ----- schema validity -----------------------------------------------------------
 
 _HERE = Path(__file__).resolve().parent
+
+
+class SchemaStack(NamedTuple):
+    """One format's schema stack: where its files sit, and each schema's name."""
+
+    root: Path
+    envelope: str
+    control: str
+    lifecycle: str
+    launcher: str
+    value: str
+
+
 # 0.2.0's stack, vendored from master 72d9c3f: its lifecycle and subscription
 # schemas left protocol/ when 0.3.0 replaced them.
-STACK_0_2_0 = (
-    _HERE / "fixtures" / "log-format-0.2.0",
-    [
-        "envelope-v0.2",
-        "subscription-v0.2",
-        "lifecycle-v0.4",
-        "launcher-v0.4",
-        "value-v0.2",
-    ],
+STACK_0_2_0 = SchemaStack(
+    root=_HERE / "fixtures" / "log-format-0.2.0",
+    envelope="envelope-v0.2",
+    control="subscription-v0.2",
+    lifecycle="lifecycle-v0.4",
+    launcher="launcher-v0.4",
+    value="value-v0.2",
 )
-STACK_0_3_0 = (
-    _HERE.parent / "protocol",
-    [
-        "envelope-v0.2",
-        "subscription-v0.3",
-        "lifecycle-v0.5",
-        "launcher-v0.4",
-        "value-v0.2",
-    ],
+STACK_0_3_0 = SchemaStack(
+    root=_HERE.parent / "protocol",
+    envelope="envelope-v0.2",
+    control="subscription-v0.3",
+    lifecycle="lifecycle-v0.5",
+    launcher="launcher-v0.4",
+    value="value-v0.2",
 )
 
 
@@ -915,19 +925,18 @@ def _invalid_seqs(rows, stack):
     """The seqs of the rows the stack rejects: the envelope schema, then the
     convention schema of the record's topic."""
     jsonschema = pytest.importorskip("jsonschema")
-    root, (envelope, control, lifecycle, launcher, value) = stack
 
     def load(name):
         return jsonschema.Draft202012Validator(
-            json.loads((root / f"{name}.schema.json").read_text())
+            json.loads((stack.root / f"{name}.schema.json").read_text())
         )
 
-    env = load(envelope)
+    env = load(stack.envelope)
     conventions = {
-        "control.": load(control),
-        "lifecycle.": load(lifecycle),
-        "launcher.": load(launcher),
-        "value": load(value),
+        "control.": load(stack.control),
+        "lifecycle.": load(stack.lifecycle),
+        "launcher.": load(stack.launcher),
+        "value": load(stack.value),
     }
     bad = []
     for x in rows:
