@@ -78,7 +78,8 @@ false. mycooc's `graph_adapter.py` `input_provenance` register already reads uns
    halt obliges someone to lift it or the run never runs again. Filing an obligation in the plane
    defined by having none is exactly the lossy reuse `faithful-representation-over-lossy-reuse`
    bans — and it makes this the only standing fact in the system with no designated eliminator,
-   against L2's requirement that a standing fact's eliminator follow it by `seq`.
+   against L2's requirement that every standing fact have one (format 0.2.0's rule: an eliminator
+   that follows it by `seq`; since format 0.3.0, one that names it).
 3. **The "ordered against the claim" argument is inert.** Measured, 60 concurrent trials on sqlite
    and Postgres: **60/60 claims land provably later in the total order than the halt they ignore.**
    The claim CAS (`worker.py`) is `expected_seq=last` and arbitrates claim-vs-claim only; an

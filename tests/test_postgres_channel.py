@@ -45,13 +45,15 @@ def _hold_episode_forever(dsn, run_id, started_seq):
 
 
 def test_ensure_schema_creates_log_table(pg_dsn):
-    """``ensure_schema(dsn)`` provisions the shared ``log`` table (the DDL the
-    channel ``__init__`` deliberately does NOT run -- it only probes)."""
+    """``ensure_schema(dsn)`` provisions the shared ``log`` table in the current
+    format's schema (the DDL the channel ``__init__`` deliberately does NOT run
+    -- it only probes)."""
     from runstate.channel.postgres import ensure_schema
 
+    table = f"{FORMATS[LOG_FORMAT].pg_schema()}.log"
     ensure_schema(pg_dsn)
     with psycopg.connect(pg_dsn) as c:
-        assert c.execute("select to_regclass('log')").fetchone()[0] == "log"
+        assert c.execute("select to_regclass(%s)::text", [table]).fetchone() == (table,)
 
 
 def test_ensure_schema_creates_both_indexes(pg_dsn):

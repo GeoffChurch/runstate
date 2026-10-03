@@ -36,9 +36,10 @@ path is the one thing that breaks this layering** — see *Deferred* (the co-arb
 
 One shared server: worker (host A), dashboard (host B), BO (host C) all on one log.
 
-- **One total order.** The control folds are positional ("pending until the *next*
-  `lifecycle.stopped`"), well-defined only on a single shared log — so cross-host
-  `control.stop` just works. (Replication/rsync = many homes → the deferred causal regime.)
+- **One total order.** The control folds join on names (`reference-by-name.md`), but the
+  claims are ordered by the one sequencer: a claim's name is the log's `seq`, well-defined
+  only on a single shared log — so cross-host claims and `control.stop` just work.
+  (Replication/rsync = many homes → the deferred causal regime.)
 - **A reliable cross-host CAS.** The birth-CAS on the shared log serializes claims across
   hosts → cross-host single-spawn, which NFS-sqlite can't do.
 
@@ -93,7 +94,7 @@ startup so cold-start-many-workers is self-sufficient.
 ### The schema is per format
 
 *(Added 2026-10-03; [`log-formats.md`](log-formats.md).)* The shared `log` table above lives in a schema
-named for the log format, `runstate_v<format>` with dots as underscores (today `runstate_v0_2_0`).
+named for the log format, `runstate_v<format>` with dots as underscores (today `runstate_v0_3_0`).
 `ensure_schema` creates that schema and the table inside it, under the same advisory lock. The channel
 runs `SET search_path` to the schema at open, so its unqualified SQL (and `to_regclass('log')`) resolves
 there. That is a session setting: **a transaction-mode pooler drops it**, the same reason the advisory

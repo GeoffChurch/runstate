@@ -597,8 +597,8 @@ against `runstate/` at 2026-07-16.)
 | `ensure` | `RunFailedError` | the producer run reached a **failure** outcome (`errored`/`killed`/`presumed_dead`); carries the `RunResult` observed **at raise time** |
 | `ensure` | `NoProgressError` | `ensure`'s **own** spawn died without advancing the step frontier and no live episode owns the run (own-spawn-scoped; a foreign episode re-drives) |
 | `history` | `ValueError` | a conforming `value` point has `step: null` (this is a stepped-trajectory reader); a **time-referencing** schedule with **no epoch** (no `lifecycle.started.t` on the log) |
-| `peek_terminal`, `live_episode`, `await_consumed` | `MalformedRecordError` | a **verdict-plane** record cannot be interpreted (bad keys, a constraint violation, a launcher record with no `request_id`, a `stopped` that names no claim) |
-| `await_consumed` | `ValueError` | the request reuses a **spent** id (an answer named it before `seq`), or no record sits at `seq` |
+| `peek_terminal`, `live_episode`, `await_consumed` | `MalformedRecordError` | a **verdict-plane** record cannot be interpreted (bad keys, a constraint violation, a launcher record with no `request_id`; for `peek_terminal`, a `stopped` that names no claim — the claim gate `live_episode` skips such a record, deliberately) |
+| `await_consumed` | `ValueError` | the request reuses a **spent** id (an answer named it before `seq`), or no record sits at `seq` (checked with or without a `request_id`) |
 | `await_consumed` | `TimeoutError` | `timeout` elapsed (not-yet-drained is not a refusal) |
 | `ensure` | `RecordlessExitError` | the run was reaped with a clean exit code but left no worker verdict, and a full drive cycle did not move the frontier |
 | `Worker.emit` | `ValueError` | called before the first tick or on a stepless worker (a `step=null` point would poison `history` for the name) |
@@ -824,6 +824,7 @@ CREATE TABLE IF NOT EXISTS log (
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_log_topic_seq ON log (topic, seq);
+CREATE INDEX IF NOT EXISTS idx_log_topic_name_seq ON log (topic, name, seq);
 ```
 
 - `seq` is the SQLite autoincrement (the single sequencer); `created_at` is
@@ -836,7 +837,8 @@ CREATE INDEX IF NOT EXISTS idx_log_topic_seq ON log (topic, seq);
   per-connection).
 - The `idx_log_topic_seq` index makes `latest(topic)` a seek
   (`WHERE topic=? ORDER BY seq DESC LIMIT 1`) instead of a full scan on every
-  Watcher poll.
+  Watcher poll; `idx_log_topic_name_seq` does the same for `latest(topic,
+  name=)`, which the first index cannot serve (#19).
 
 ### 5.3 The Postgres layout (`runstate/channel/postgres.py`; `specs/channel-postgres.md`)
 
@@ -857,6 +859,7 @@ CREATE TABLE IF NOT EXISTS log (
     PRIMARY KEY (run_id, seq)
 );
 CREATE INDEX IF NOT EXISTS idx_log_run_topic_seq ON log (run_id, topic, seq);
+CREATE INDEX IF NOT EXISTS idx_log_run_topic_name_seq ON log (run_id, topic, name, seq);
 ```
 
 - **`PRIMARY KEY (run_id, seq)` is the CAS arbiter.** The CAS is a guarded

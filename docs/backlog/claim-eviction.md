@@ -380,21 +380,22 @@ So old logs keep their forged verdicts, forever, and there is **no** compatibili
 `stopped` as an eviction — that branch would be the exact wart the project bans. This is a
 correctness limit, not a cost one, and it is the kind that survives "old logs do not constrain us."
 
-Schema: `protocol/lifecycle-v0.4.schema.json` → **v0.5**, adding `lifecycle.evicted` to the topic
-enum and its body, replacing v0.4 rather than accumulating beside it.
+Schema: the current lifecycle schema (`protocol/lifecycle-v0.5.schema.json`) → **a later lifecycle
+version**, adding `lifecycle.evicted` to the topic enum and its body, replacing the current version
+rather than accumulating beside it.
 
 **That is a doc-wide edit, not a file rename.** Priced, because revision 1 undercounted it: **two**
 conformance assertions, not one — `test_schema.py` and `test_implementers_guide.py`, the latter
 requiring a valid `lifecycle.evicted` example in `../implementers-guide.md`. Plus
 `test_public_api.py::test_public_surface_is_stable`, `test_api_doc_covers_the_public_surface`,
-`../api.md`, and 11 `lifecycle-v0.4` references across `../api.md`, `../implementers-guide.md`,
+`../api.md`, and the lifecycle-version references across `../api.md`, `../implementers-guide.md`,
 `CHANGELOG.md`, `README.md`, `CLAUDE.md`, and `release-and-stability-contract.md`. And
 `live_episode`'s own docstring, which currently states the *opposite* of what this ships (*"Only a
 later `lifecycle.stopped` and a `resolve()`-dead handle release a claim"*).
 
-**No consumer pins a runstate version.** All three import the working tree by ambient `sys.path`, so
-a v0.4 → v0.5 bump has nothing to bump against: the flip is instantaneous and not opt-out-able. That
-is an argument for landing the consumer changes in the same window, not for a compatibility shim.
+**The consumers pin runstate by commit** (since 2026-10-03), so a lifecycle bump reaches each one
+when it upgrades: a log format change, carried by `runstate migrate` (`../specs/log-formats.md`). That
+is an argument for landing each consumer's changes in its upgrade, not for a compatibility shim.
 
 ## 10. The cost of the third read — MEASURED
 

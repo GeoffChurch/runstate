@@ -10,9 +10,10 @@ reproduce it.
 
 ## What this is for
 
-runstate relates records to each other **by log position**. Design §7: *"a standing fact's eliminator
-must follow it by `seq`."* Four rules rest on it: stop discharge, the subscription answer fold, the
-time-lease boundary, and episode terminality. Position is the common cause of a defect cluster:
+Until log format 0.3.0, runstate related records to each other **by log position**. Design §7 said: *"a
+standing fact's eliminator must follow it by `seq`."* Four rules rested on it: stop discharge, the
+subscription answer fold, the time-lease boundary, and episode terminality. Position was the common cause
+of a defect cluster:
 
 - the forged verdict that truncates `ensure`;
 - an unaimed heartbeat moving `progress`;

@@ -105,9 +105,9 @@ call.
 ## Addresses and formats
 
 *(Added 2026-10-03; the design is [`log-formats.md`](log-formats.md) §4 — not restated here.)* A log's
-format is part of its address. SQLite logs live at `<root>/v<format>/<rid>.db` (today `v0.2.0`; the root
+format is part of its address. SQLite logs live at `<root>/v<format>/<rid>.db` (today `v0.3.0`; the root
 must already exist, the `v<format>/` directory is made on birth); on Postgres each format is a schema
-(`runstate_v0_2_0`). Both locators run five checks, in order, before touching the log:
+(`runstate_v0_3_0`). Both locators run five checks, in order, before touching the log:
 
 1. a **newer** format present under the root / in the database → `LogFormatMismatch` (upgrade runstate);
 2. the current format's address exists → open it;

@@ -74,6 +74,7 @@ def test_legacy_public_log_holding_the_run_is_missing(dsn):
 
     rid = _rid()
     with psycopg.connect(dsn, autocommit=True) as c:
+        existed = c.execute("SELECT to_regclass('public.log')").fetchone() != (None,)
         c.execute(
             "CREATE TABLE IF NOT EXISTS public.log (LIKE "
             f"{FORMATS[LOG_FORMAT].pg_schema()}.log INCLUDING ALL)"
@@ -85,8 +86,13 @@ def test_legacy_public_log_holding_the_run_is_missing(dsn):
         with pytest.raises(LogFormatMissing, match="ALTER TABLE"):
             attach_channel(rid, root=dsn, backend="postgres")
     finally:
+        # leave the database as found: a leftover public.log is the table an
+        # unqualified `log` resolves to, which would let other tests pass vacuously
         with psycopg.connect(dsn, autocommit=True) as c:
-            c.execute("DELETE FROM public.log WHERE run_id = %s", [rid])
+            if existed:
+                c.execute("DELETE FROM public.log WHERE run_id = %s", [rid])
+            else:
+                c.execute("DROP TABLE public.log")
 
 
 def test_a_newer_schema_refuses(dsn):

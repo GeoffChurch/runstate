@@ -51,8 +51,9 @@ doing once, properly.**
 `seq` collisions across partitions look like an implementation detail with an obvious fix — a
 composite `(partition, seq)` key, which is what Dolt landed on and what the Postgres backend already
 does with `(run_id, seq)`. But the collision is the symptom. The disease is that **the protocol is
-positional**: `protocol-algebra.md` L2 requires that *"a standing fact's eliminator must **follow it
-by `seq`**."*
+positional**: format 0.2.0's L2 rule required that *"a standing fact's eliminator must **follow it by
+`seq`**."* Format 0.3.0 relates control records by name (`../specs/reference-by-name.md`), but a
+claim's name is still its `seq`, so the order among claims stays positional.
 
 Split the log and the order becomes **partial**. "Follows by `seq`" is defined within a partition
 and undefined across them. A composite key restores *uniqueness* and removes *comparability* —

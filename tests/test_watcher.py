@@ -623,6 +623,17 @@ def test_await_consumed_refuses_a_seq_that_holds_no_request(open_run):
         await_consumed(open_run(), 9, request_id="r", timeout=0.0, now=lambda: 0.0)
 
 
+def test_await_consumed_refuses_an_empty_seq_without_a_request_id(open_run):
+    """Ruling 15: a seq that holds no record names no request, so a watermark
+    past it is no evidence of acceptance. Without a request_id the check must
+    still run, or a beat past the empty seq reads as a false "accepted"."""
+    ch = open_run()
+    c = claim(ch)
+    hb(ch, 0, 999, c)  #                       a watermark past the empty seq
+    with pytest.raises(ValueError, match="no record at seq 9"):
+        await_consumed(open_run(), 9, timeout=0.0, now=lambda: 0.0)
+
+
 def test_await_consumed_resolves_refused_by_death(open_run):
     # a terminal stopped FOLLOWS the request with no later episode: no worker
     # will ever drain it -- return the terminal RunResult instead of blocking.

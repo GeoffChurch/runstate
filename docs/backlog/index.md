@@ -70,7 +70,7 @@ clusters that unlock each other, with a sequencing — see
   release + what SemVer means against per-convention wire versions; the public
   form of the migration doctrine (retain scripts once strangers hold logs); the
   end-of-schema-file-deletion trigger; deprecation policy; the version-naming
-  tension (`0.2.0.dev0` vs the docs' "v0.3" vs wire-`v0.4`); and the schemas-
+  tension (`0.3.0.dev0` vs the docs' "v0.3" vs wire-`v0.5`); and the schemas-
   not-in-the-wheel question. Six decision points, each with a recommendation;
   nothing ruled. Blocks the first `pip install runstate`.
 

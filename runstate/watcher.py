@@ -473,18 +473,24 @@ class Watcher:
             st.last_step = step
 
 
-def _refuse_a_spent_id(channel: Channel, seq: int, request_id: str) -> None:
-    """Raise ``ValueError`` if ``request_id`` was spent before ``seq``: the
-    request at ``seq`` reuses an answered id, so it is dead on arrival
-    (reference-by-name §2: an id is never reused; §3: a reuse is dead wherever
-    the answer sits). The request's own topic decides which answers count, by
-    the one answer rule the worker's drain folds with (``_SUBSCRIBE_ANSWERS``,
-    ``_STOP_ANSWERS``, ``_answer_names``). The prefix before ``seq`` is
-    append-only and complete, so this is decided once, never polled."""
+def _request_at(channel: Channel, seq: int) -> Envelope:
+    """The record at ``seq``, or ``ValueError``: an empty seq names no request,
+    so no watermark passing it could mean "accepted"."""
     found = channel.read(after=seq - 1, limit=1)
     if not found or found[0].seq != seq:
         raise ValueError(f"no record at seq {seq}: there is no request to await")
-    topic = found[0].topic
+    return found[0]
+
+
+def _refuse_a_spent_id(channel: Channel, request: Envelope, request_id: str) -> None:
+    """Raise ``ValueError`` if ``request_id`` was spent before ``request``: it
+    reuses an answered id, so it is dead on arrival (reference-by-name §2: an
+    id is never reused; §3: a reuse is dead wherever the answer sits). The
+    request's own topic decides which answers count, by the one answer rule the
+    worker's drain folds with (``_SUBSCRIBE_ANSWERS``, ``_STOP_ANSWERS``,
+    ``_answer_names``). The prefix before the request is append-only and
+    complete, so this is decided once, never polled."""
+    seq, topic = request.seq, request.topic
     if topic == Topic.CONTROL_SUBSCRIBE:
         answers = _SUBSCRIBE_ANSWERS
     elif topic == Topic.CONTROL_STOP:
@@ -530,16 +536,18 @@ def await_consumed(
     stopped's ``honored`` or a nak — the worker drops the request unanswered,
     so ``None`` would be a false "accepted" and there is no nak to return.
     Raises ``ValueError`` naming the id and the record that spent it, before
-    waiting at all; also ``ValueError`` if no record sits at ``seq``. Raises
-    ``TimeoutError`` if ``timeout`` elapses — not-yet-drained is not a refusal
-    — and ``MalformedRecordError`` on a nak body it cannot parse (the answer is
-    on the verdict plane). With ``request_id=None``, both the spent-id check
-    and nak detection are skipped. So the full codomain is the answer space:
+    waiting at all; also ``ValueError``, with or without a ``request_id``, if
+    no record sits at ``seq`` (an empty seq names no request, so a watermark
+    past it is no acceptance). Raises ``TimeoutError`` if ``timeout`` elapses —
+    not-yet-drained is not a refusal — and ``MalformedRecordError`` on a nak
+    body it cannot parse (the answer is on the verdict plane). With
+    ``request_id=None``, the spent-id check and nak detection are skipped. So the full codomain is the answer space:
     ``Nak`` (refused) | ``RunResult`` (the run died under the request) |
     ``None`` (accepted), with a reused id raised as the caller's error."""
     deadline = None if timeout is None else now() + timeout
+    request = _request_at(channel, seq)
     if request_id is not None:
-        _refuse_a_spent_id(channel, seq, request_id)
+        _refuse_a_spent_id(channel, request, request_id)
 
     def _answer() -> "Nak | None":
         # The window after the request is causal: a nak answering THIS request

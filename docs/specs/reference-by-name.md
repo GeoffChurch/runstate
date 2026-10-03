@@ -101,8 +101,8 @@ leases. A step-bounded subscription is not episode-local, and carries over betwe
 - **Residual cases:**
   - Two terminals naming one claim, for example a third-party release plus the worker's own `stopped`:
     the newest wins, as today.
-  - A lifecycle record naming nothing is malformed. Verdict reads raise `MalformedRecordError`;
-    measurement reads skip it.
+  - A lifecycle record naming nothing is malformed. The verdict read (`peek_terminal`) raises
+    `MalformedRecordError`; measurement reads and the claim gate (`live_episode`) skip it.
   - A launcher death with no claim at all: the latest wins, as today.
 
 ## 4. Schemas
@@ -114,7 +114,7 @@ leases. A step-bounded subscription is not episode-local, and carries over betwe
 
 The envelope, launcher and value schemas are unchanged. `additionalProperties: false` stays everywhere.
 The closed topic set and the public API gain `LIFECYCLE_BOUND` and a `Bound` payload. All of this is log
-format **0.3.0**, with the package bumped to 0.3.0 in the same commit.
+format **0.3.0**, with the package bumped to 0.3.0.dev0 in the same commit.
 
 ## 5. The reads
 
@@ -125,8 +125,9 @@ Two helpers carry the lookups:
 
 - **The current heartbeat:** the newest beat naming the current claim. It searches newest-first, and on a
   miss searches backward in a window that grows ×4 each time.
-- **A claim's terminal:** the `stopped` naming it. It is strict for verdict reads, tolerant for
-  measurement reads.
+- **A claim's terminal:** the `stopped` naming it. It is strict for the verdict (`peek_terminal`), and
+  tolerant for measurement reads and, deliberately, for the claim gate (`live_episode`): a record naming
+  nothing is no evidence that the claim ended.
 
 `last_activity` and the value plane are unchanged; the value plane is layer 2.
 

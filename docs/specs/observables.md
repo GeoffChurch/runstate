@@ -89,9 +89,10 @@ writer's own order, and the causal window after a claim.
   newest-first, and on a miss (a displaced worker beating over its successor) searches backward toward the
   claim in a window that grows ×4 each time. It feeds `progress`, the Watcher's staleness credit and
   cold-attach seed, and `await_consumed`'s watermark.
-- **A claim's terminal** is the `stopped` naming it (`_terminal_stopped`): strict on the verdict plane
-  (`peek_terminal`, `live_episode`), where a record that names nothing raises `MalformedRecordError`, and
-  tolerant on the measurement plane (`progress`), where it is skipped. Only records after the claim are
+- **A claim's terminal** is the `stopped` naming it (`_terminal_stopped`): strict for the verdict
+  (`peek_terminal`), where a `stopped` that names nothing raises `MalformedRecordError`, and tolerant
+  for `progress` and, deliberately, for the claim gate `live_episode`, which skip it (a record that
+  names nothing is no evidence that the claim ended). Only records after the claim are
   read: a record cannot name a claim it never saw. Two terminals naming one claim resolve newest-wins.
 - **The answer folds** join on `request_id`, wherever the answer sits: `live_demand` (a subscribe is live
   until an unsubscribe or nak names it, and a lease until its `lifecycle.bound` voids it) and

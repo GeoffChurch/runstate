@@ -347,11 +347,12 @@ def peek_terminal(channel: Channel) -> Optional[RunResult]:
     otherwise a reaped ``launcher.terminated`` gives the manner of death.
 
     **Episode-aware, and both tiers on the same rule: a terminal stands until a
-    new episode CLAIMS.** The stop tier reads the latest ``stopped`` unless a
-    newer ``started`` follows it. The launcher tier reads the death of the launch
-    that the latest claim answered (``_launcher_terminal``) — correlated by id,
-    because a third-party death record is neither self-identifying nor reliably
-    ordered."""
+    new episode CLAIMS.** The stop tier reads the ``stopped`` that NAMES the
+    latest claim (strict: a nameless ``stopped`` it meets after the claim,
+    searching newest-first, raises ``MalformedRecordError``). The launcher tier
+    reads the death of the launch that the latest claim answered
+    (``_launcher_terminal``) — correlated by id, because a third-party death
+    record is neither self-identifying nor reliably ordered."""
     record = _verdict_record(channel)
     if record is None:
         return None

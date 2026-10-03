@@ -35,7 +35,7 @@ contract becomes *at* the release boundary.
 
 Definitions used throughout:
 
-- **package version** — the `pyproject.toml` `version` (today `0.2.0.dev0`),
+- **package version** — the `pyproject.toml` `version` (today `0.3.0.dev0`),
   what `pip` resolves and PyPI orders.
 - **convention version** — the per-schema `-vX.Y` in `protocol/` (envelope
   `v0.2`; subscription/value `v0.2`; lifecycle/launcher `v0.4`), each on its own
@@ -158,14 +158,15 @@ do not expect wire graciousness. Reject Option 3 outright.
 
 **Tension.** Three sources disagree about "what version is this":
 
-- `pyproject.toml` says `0.2.0.dev0`;
+- `pyproject.toml` says `0.3.0.dev0` (bumped with log format 0.3.0,
+  `../specs/log-formats.md` §2 rule 3);
 - the docs (README status, `design-v0.2.md` revision history, `docs/backlog/`)
   call the shipped arc **"v0.3"** (the run-episodes / memoizer / service-worker
   thread);
-- the wire conventions are at **`v0.4`** (lifecycle, launcher).
+- the wire conventions run up to **`v0.5`** (lifecycle; launcher at `v0.4`,
+  subscription at `v0.3`).
 
-A newcomer cannot tell which number to trust, and `0.2.0.dev0` badly understates
-what has actually shipped.
+A newcomer cannot tell which number to trust.
 
 **Options.**
 
@@ -184,8 +185,9 @@ sentence to the README and `docs/README.md` making the decoupling explicit —
 "the package version (SemVer, PyPI) and the per-convention wire versions
 (`protocol/*-vX.Y`) are independent axes; do not read one from the other." This
 is the smallest change that makes all three sources honest simultaneously. The
-task that prepared release mechanics deliberately **did not** change
-`version = "0.2.0.dev0"` — bumping it is this decision, and it is the owner's.
+package is now `0.3.0.dev0`, bumped with log format 0.3.0 (a format change bumps
+the package in the same commit), which is Option 1's number; cutting the release
+is still this decision, and it is the owner's.
 
 ---
 

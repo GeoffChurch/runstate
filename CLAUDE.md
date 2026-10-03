@@ -275,8 +275,8 @@ export RUNSTATE_TEST_PG_DSN="postgresql:///runstate_test?host=/tmp/rs-pgsock&por
 ```
 
 The socket directory **must be a short path** -- the sun_path limit is 107 bytes and a scratchpad
-path blows it (`Unix-domain socket path ... is too long`). 1,011 passed / 259 skipped without the DSN
-and 1,269 passed / 1 skipped with it (2026-10-03); 1,270 collected in all.
+path blows it (`Unix-domain socket path ... is too long`). 1,014 passed / 260 skipped without the DSN
+and 1,273 passed / 1 skipped with it (2026-10-03); 1,274 collected in all.
 
 The pre-commit hook runs the whole CI gate set -- `black --check`,
 `mypy --strict`, `pytest` -- in ~9.4 s, almost all of it the suite. It exists

@@ -270,7 +270,8 @@ terminal record following the request with no later episode returns the terminal
 answer named `request_id` before `seq` (for a subscribe an unsubscribe or a nak,
 for a stop a stopped's `honored` or a nak), it raises `ValueError` naming the id
 and that record, at once, since the worker drops the request unanswered. Also
-`ValueError` if no record sits at `seq`. Raises `TimeoutError` if `timeout`
+`ValueError`, with or without a `request_id`, if no record sits at `seq` (an
+empty seq names no request, so no watermark could accept it). Raises `TimeoutError` if `timeout`
 elapses (not-yet-drained is not a refusal), and `MalformedRecordError` on a nak
 body it cannot parse. With `request_id=None` the spent-id check and the nak
 lookup are skipped.
