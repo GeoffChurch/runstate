@@ -493,15 +493,27 @@ def test_crash_births_that_never_drained_a_lease_do_not_void_it_by_name(open_run
     assert w.pinned is True
 
 
-def test_step_keyed_lease_crosses_boundaries(open_run):
-    # run-absolute schedules persist across episodes exactly as before.
+def test_a_step_keyed_subscription_crosses_episodes_and_a_lease_does_not(open_run):
+    """Run-absolute schedules persist across episodes; episode-local ones do not.
+    One episode registers a step-keyed subscription and a lease and ends; the
+    next serves the subscription and not the lease, which is bound to the
+    episode that registered it. (It replaces a test whose only episode was the
+    first to drain its subscription, where a lease fires as well, so it could
+    not tell the two apart.)"""
     orch = open_run()
-    _sub(orch, {"every": {"step": 1}}, "r1")
-    _dead_started(orch)
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.set("loss", 1.0)
-    w.tick(step=0)
-    assert len(open_run().read(topics=["value"])) == 1
+    _sub(orch, {"every": {"step": 1}}, "step-keyed")
+    _sub(orch, {"every": {"step": 1}, "until": {"time_seconds": 100}}, "lease")
+    with Worker(open_run(), now=lambda: 0.0) as w:
+        assert w.claimed is True  # a lost worker emits nothing -- vacuous-green guard
+        w.set("loss", 1.0)
+        w.tick(step=0)
+    w2 = Worker(open_run(), now=lambda: 0.0)
+    assert w2.claimed is True
+    w2.set("loss", 2.0)
+    w2.tick(step=1)
+    fired = [v.request_id for v in open_run().read(topics=["value"])]
+    assert fired.count("step-keyed") == 2  # carried over
+    assert fired.count("lease") == 1  # its registering episode ended
 
 
 def test_mixed_schedule_is_episode_scoped_by_name(open_run):
