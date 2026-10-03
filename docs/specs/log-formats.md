@@ -62,6 +62,13 @@ because only the outermost component leaves every future layout free.
   current format's module. The others exist for the opening checks and the migration steps.
 - **Memory logs are in-process and ephemeral,** so they are always in the current format and carry no
   address.
+- **The legacy Postgres table** is the `log` that an unqualified name resolves to under the connection's
+  own search path, because every statement of a runstate from before versioned addresses was unqualified.
+  That is `public.log` by default, and another schema when the DSN carries
+  `options=-csearch_path=...`. It counts only outside the `runstate_v…` schemas, and only if it has a
+  `run_id` column: another application's `log` is not runstate's. *Found in the final review:* the check
+  first looked only in `public`, so a run in another schema read as not found, and `create_channel`
+  birthed an empty run over it; and an unrelated `public.log` raised `UndefinedColumn` on every open.
 
 ## 4. Opening a log
 

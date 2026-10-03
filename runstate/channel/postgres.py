@@ -98,7 +98,8 @@ def ensure_schema(dsn: str) -> None:
 
 
 def _has_rows(conn: psycopg.Connection[Any], schema: str, run_id: str) -> bool:
-    reg = conn.execute("SELECT to_regclass(%s)", [f"{schema}.log"]).fetchone()
+    table = sql.SQL("{}.log").format(sql.Identifier(schema)).as_string(conn)
+    reg = conn.execute("SELECT to_regclass(%s)", [table]).fetchone()
     if reg is None or reg[0] is None:
         return False
     hit = conn.execute(
@@ -110,10 +111,24 @@ def _has_rows(conn: psycopg.Connection[Any], schema: str, run_id: str) -> bool:
     return hit is not None
 
 
+# The legacy table: the `log` that an UNQUALIFIED name resolves to under the
+# connection's own search path, as every statement of a runstate from before
+# versioned addresses was unqualified (a DSN may carry `options=-csearch_path=`).
+# It is runstate's only if it has a `run_id` column (another application's `log`
+# is not), and legacy only outside the versioned `runstate_v…` schemas.
+_LEGACY_LOG = """
+SELECT n.nspname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.oid = to_regclass('log') AND NOT starts_with(n.nspname, 'runstate_v')
+  AND EXISTS (SELECT 1 FROM pg_attribute a
+              WHERE a.attrelid = c.oid AND a.attname = 'run_id' AND NOT a.attisdropped)
+"""
+
+
 def check_format(conn: psycopg.Connection[Any], run_id: str) -> bool:
     """log-formats.md §4 on postgres. Raises for a newer format in the database,
     or for the run held by an older format or the legacy table. Returns whether
-    the run has rows at the current address."""
+    the run has rows at the current address. Call it before setting the
+    connection's search path: the legacy table is found under its own."""
     names = [r[0] for r in conn.execute("SELECT nspname FROM pg_namespace").fetchall()]
     newer = formats.newer_in(names, prefix="runstate_v", sep="_", than=LOG_FORMAT)
     if newer:
@@ -127,10 +142,11 @@ def check_format(conn: psycopg.Connection[Any], run_id: str) -> bool:
             raise LogFormatMismatch(
                 found=version, expected=LOG_FORMAT, where=f"schema {layout.pg_schema()}"
             )
-    if _has_rows(conn, "public", run_id):
+    legacy = conn.execute(_LEGACY_LOG).fetchone()
+    if legacy is not None and _has_rows(conn, legacy[0], run_id):
         raise LogFormatMissing(
-            where="public.log",
-            instructions=formats.postgres_onboarding(run_id, "public"),
+            where=f"{legacy[0]}.log",
+            instructions=formats.postgres_onboarding(run_id, legacy[0]),
         )
     return False
 

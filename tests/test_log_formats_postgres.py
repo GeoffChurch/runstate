@@ -167,18 +167,31 @@ def _onboarding_sql(dsn, run_id):
     return "\n".join(lines)
 
 
-def test_onboarding_leaves_a_tombstone_an_old_writer_cannot_use(scratch_db):
+def _with_search_path(dsn, schema):
+    """The DSN, its connections resolving unqualified names in ``schema`` first,
+    as a consumer's DSN may (``options=-csearch_path=...``)."""
+    import psycopg
+    from psycopg.conninfo import make_conninfo
+
+    with psycopg.connect(dsn, autocommit=True) as c:
+        c.execute(f"CREATE SCHEMA {schema}")
+    return make_conninfo(dsn, options=f"-csearch_path={schema}")
+
+
+@pytest.mark.parametrize("schema", ["public", "myapp"])
+def test_onboarding_leaves_a_tombstone_an_old_writer_cannot_use(scratch_db, schema):
     """C1 on postgres: master's ensure_schema recreates an absent ``log``, so
     moving the table, and nothing more, let a writer from before versioned
     addresses start every run over in a fresh one. The instructions leave an
-    empty ``log`` with the old columns, whose trigger refuses every insert. And
-    HEAD's checks answer as they would without it, before ``migrate`` and after."""
+    empty ``log`` with the old columns, whose trigger refuses every insert, in
+    the schema the table was found in. And HEAD's checks answer as they would
+    without it, before ``migrate`` and after."""
     import psycopg
 
     from runstate.channel.postgres import ensure_schema
     from runstate.migrations.stores import PostgresStore
 
-    dsn = scratch_db
+    dsn = scratch_db if schema == "public" else _with_search_path(scratch_db, schema)
     _master_log(dsn, "r1", 3)
     ensure_schema(dsn)
     onboard = _onboarding_sql(dsn, "r1").strip()
@@ -193,7 +206,7 @@ def test_onboarding_leaves_a_tombstone_an_old_writer_cannot_use(scratch_db):
         assert c.execute(
             "SELECT COALESCE(MAX(seq), 0) FROM log WHERE run_id = 'r1'"
         ).fetchone() == (0,)
-        assert c.execute("SELECT count(*) FROM public.log").fetchone() == (0,)
+        assert c.execute(f"SELECT count(*) FROM {schema}.log").fetchone() == (0,)
 
     for locate in (attach_channel, create_channel):  # an older format holds it
         with pytest.raises(LogFormatMismatch, match="runstate migrate"):
@@ -204,3 +217,46 @@ def test_onboarding_leaves_a_tombstone_an_old_writer_cannot_use(scratch_db):
     with pytest.raises(RunNotFound):
         attach_channel("r2", root=dsn, backend="postgres")
     assert onboard.startswith("BEGIN;") and onboard.endswith("COMMIT;")  # whole or not
+
+
+def test_a_legacy_log_on_the_dsns_own_search_path_is_missing(scratch_db):
+    """I3: master's statements were unqualified, so a DSN carrying its own
+    search path put master's log in that schema, not in ``public``. The legacy
+    check looks where master did, under the connection's own search path: the
+    run is missing (never not found), the instructions name the schema, and
+    create births nothing over the old run."""
+    import psycopg
+
+    from runstate.channel.postgres import ensure_schema
+
+    dsn = _with_search_path(scratch_db, "myapp")
+    _master_log(dsn, "r1", 3)
+    ensure_schema(dsn)
+    for locate in (attach_channel, create_channel):
+        with pytest.raises(LogFormatMissing, match='schema "myapp"') as exc:
+            locate("r1", root=dsn, backend="postgres")
+        assert exc.value.where == "myapp.log"
+    with psycopg.connect(dsn) as c:
+        assert c.execute(
+            f"SELECT count(*) FROM {FORMATS[LOG_FORMAT].pg_schema()}.log"
+        ).fetchone() == (0,)
+
+
+def test_an_unrelated_log_table_is_not_a_legacy_log(scratch_db):
+    """M4: another application's ``log``, with no ``run_id`` column, is none of
+    runstate's. The legacy check passes over it, where it raised UndefinedColumn
+    on every open."""
+    import psycopg
+
+    from runstate.channel.postgres import ensure_schema
+
+    with psycopg.connect(scratch_db, autocommit=True) as c:
+        c.execute("CREATE TABLE public.log (id int, message text)")
+        c.execute("INSERT INTO public.log VALUES (1, 'not ours')")
+    ensure_schema(scratch_db)
+    with pytest.raises(RunNotFound):
+        attach_channel("r1", root=scratch_db, backend="postgres")
+    with create_channel("r1", root=scratch_db, backend="postgres") as ch:
+        ch.send({}, topic="value", name="n")
+    with attach_channel("r1", root=scratch_db, backend="postgres") as ch:
+        assert ch.last_seq() == 1
