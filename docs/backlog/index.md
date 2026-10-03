@@ -159,6 +159,18 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
 
 ## Protocol extensions (control plane)
 
+- **Identity in records** — [identity-in-records](identity-in-records.md). DESIGN, not converged
+  (2026-10-03), with a measured spike behind each layer. Records name what they answer, end or concern,
+  instead of being related by position. In dependency order:
+  1. reference by name on control and lifecycle records (order-independent folds; fixes #39, the
+     cascade and the stale-beat leak; the startless run answered);
+  2. names on values;
+  3. episode-keyed artefacts read through the log's vouching;
+  4. time as a *trigger* for claims, which dissolves the cross-host wedge;
+  5. fenced worker writes, possibly optional given 1.
+
+  The target is that a wrong claim costs waste, never corruption. Overlaps with the episode-aim entry
+  below, and does its job by naming.
 - **A lifecycle record that speaks for an episode must name it** — [episode-aim](episode-aim.md).
   **Revision 2, attacked.** The launcher and control tiers aim; the lifecycle tier aims only where it
   *answers a request*, so `stopped` and `heartbeat` — the two records that speak for an episode
