@@ -228,3 +228,20 @@ def test_the_onboarding_loop_can_be_run_again(tmp_path, crashed_wal_writer):
     _run(loop)
     assert {p.name: p.read_bytes() for p in moved.parent.iterdir()} == before
     assert (tmp_path / "r1.db").stat().st_size == 0
+
+
+def test_a_crashed_delete_mode_writer_onboards_and_migrates(
+    tmp_path, crashed_journal_writer
+):
+    """I4: a writer in DELETE journal mode (mycooc's, on NFS) killed in the middle
+    of a transaction leaves a hot ``-journal`` holding the pages it overwrote.
+    The loop moves the journal with its log, and ``migrate`` rolls it back: the
+    copy holds the committed records and none of the uncommitted ones."""
+    crashed_journal_writer(tmp_path / "r1.db", 5)
+    _run(_onboarding_loop(tmp_path, "r1"))
+    moved = FORMATS["0.2.0"].sqlite_path(tmp_path, "r1")
+    assert sorted(p.name for p in moved.parent.iterdir()) == ["r1.db", "r1.db-journal"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["r1.db", "v0.2.0"]
+    assert migrate(SqliteStore(tmp_path), None, to=LOG_FORMAT) == ["r1"]
+    with attach_channel("r1", root=tmp_path) as ch:
+        assert [e.body for e in ch.read()] == [{"i": i} for i in range(5)]

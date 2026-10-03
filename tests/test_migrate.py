@@ -169,6 +169,20 @@ def test_wal_frames_of_a_crashed_writer_survive(toy, tmp_path, crashed_wal_write
     assert [b["i"] for b in _bodies(new)] == list(range(50))
 
 
+def test_a_hot_journal_of_a_crashed_writer_is_rolled_back(
+    toy, tmp_path, crashed_journal_writer
+):
+    """I4: the pre-seal read opens read-write, so it rolls back a hot journal
+    that a read-only open cannot, and the copy holds only committed records."""
+    path = DirectoryLayout("8.0.0").sqlite_path(tmp_path, "r1")
+    path.parent.mkdir()
+    crashed_journal_writer(path, 5)
+    assert migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0") == ["r1"]
+    new = DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1")
+    assert [b["i"] for b in _bodies(new)] == list(range(5))
+    assert not path.with_name("r1.db-journal").exists()
+
+
 def test_cli_migrate(toy, tmp_path, capsys):
     from runstate.cli import main
 

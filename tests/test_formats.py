@@ -60,7 +60,7 @@ def test_mismatch_message_says_which_way():
 def test_onboarding_text_names_the_move_and_the_sidecars(tmp_path):
     text = formats.sqlite_onboarding(tmp_path, "abc")
     assert "4729fcd" in text and "v0.2.0" in text and "runstate migrate" in text
-    assert "-wal" in text and "-shm" in text
+    assert "-wal" in text and "-shm" in text and "-journal" in text
     assert isinstance(
         LogFormatMissing(where="x", instructions=text), formats.LogFormatError
     )

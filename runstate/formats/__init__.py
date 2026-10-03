@@ -86,8 +86,10 @@ _BASE = "0.2.0"  # what every log written before versioned addresses can be onbo
 _BASE_COMMIT = "4729fcd (2026-07-16, lifecycle-v0.4 and launcher-v0.4)"
 
 
-# The legacy log's sidecars, moved with it: the -wal and -shm of WAL mode.
-_SIDECARS = ("-wal", "-shm")
+# The legacy log's sidecars, moved with it: the -wal and -shm of WAL mode, and
+# the -journal a writer in a rollback mode (DELETE, on NFS) leaves hot when it
+# dies mid-transaction, holding the pages it overwrote.
+_SIDECARS = ("-wal", "-shm", "-journal")
 
 _WHY_TOMBSTONE = (
     "A writer still running an older runstate resolves only the old address, so "
@@ -116,7 +118,7 @@ def sqlite_onboarding(root: Path, run_id: str) -> str:
         f"and nothing will infer it. If it was written by runstate at or after {_BASE_COMMIT}, "
         f"it is format {_BASE}: check that its lifecycle.heartbeat bodies carry a `t` field. "
         f"First stop every process that writes under {root}, and drain any queued jobs that "
-        f"would. Then move the log, with any {' and '.join(_SIDECARS)} files beside it, into "
+        f"would. Then move the log, with any {', '.join(_SIDECARS)} files beside it, into "
         f"{base}/, and leave a tombstone at its old address: an empty, read-only file. "
         f"{_WHY_TOMBSTONE} Then run `runstate migrate {q_root}`. To do this for every "
         f"legacy log under the root:\n  {loop}"

@@ -21,7 +21,11 @@ class Store(Protocol):
 
 
 def _read_sqlite(path: Path) -> list[Row]:
-    conn = sqlite3.connect(f"file:{pathname2url(str(path))}?mode=ro", uri=True)
+    """Every row, in seq order. Opened read-write, never ``mode=ro``: a writer in
+    a rollback journal mode that died mid-transaction leaves a hot ``-journal``,
+    and only a read-write open rolls it back, which every later opener would do
+    too. On a sealed log, read-write opens read-only."""
+    conn = sqlite3.connect(f"file:{pathname2url(str(path))}?mode=rw", uri=True)
     try:
         return [
             Row(*r)

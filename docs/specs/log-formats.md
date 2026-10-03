@@ -171,11 +171,16 @@ Logs written before format versioning sit at the legacy address. Nothing infers 
 > This log predates versioned addresses. If it was written by runstate at or after `4729fcd`
 > (2026-07-16, lifecycle-v0.4 and launcher-v0.4), it is format 0.2.0 (check: its `lifecycle.heartbeat`
 > bodies carry a `t` field). First stop every process that writes under the root, and drain any queued
-> jobs that would. Then move it, with its sidecar files, to `<root>/v0.2.0/<rid>.db`, leave a tombstone at
-> its old address, and run `runstate migrate <root>`.
+> jobs that would. Then move it, with its `-wal`, `-shm` and `-journal` files, to `<root>/v0.2.0/<rid>.db`,
+> leave a tombstone at its old address, and run `runstate migrate <root>`.
 
 It also gives a one-line shell loop that does this for every legacy log under a root. The loop skips empty
-files and logs already in place, so running it again is safe. On Postgres the instruction is one
+files and logs already in place, so running it again is safe.
+
+*Found in the final review.* A writer in a rollback journal mode (DELETE, which mycooc uses on NFS) that
+died mid-transaction leaves a hot `-journal` holding the pages it overwrote; the log is consistent only
+once the journal rolls back. So the loop moves the `-journal` with its log, and `runstate migrate`'s first
+read, before the seal, opens the log read-write, because a read-only open cannot roll a hot journal back. On Postgres the instruction is one
 transaction: create schema `runstate_v0_2_0`, `ALTER TABLE <schema>.log SET SCHEMA runstate_v0_2_0`, then
 create the tombstone (§5) in the schema the table was found in.
 

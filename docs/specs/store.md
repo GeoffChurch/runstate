@@ -269,7 +269,7 @@ Discipline, in order:
   the nested analyses with it.
 
 Collecting a run deletes its log at its format's address
-(`<home>/v<format>/<rid>.db`, plus any `-wal`/`-shm`), so a sweep over a root that
+(`<home>/v<format>/<rid>.db`, plus any `-wal`/`-shm`/`-journal`), so a sweep over a root that
 holds several formats must delete each run at the format it is in. It deletes the
 run's onboarding tombstone (`<home>/<rid>.db`, empty and read-only;
 [`log-formats.md`](log-formats.md) §5) with it: a tombstone left behind makes the
