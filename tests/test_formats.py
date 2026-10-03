@@ -25,7 +25,7 @@ def test_directory_layout_addresses():
 
 
 def test_registry_holds_the_current_format():
-    assert LOG_FORMAT == "0.2.0"
+    assert LOG_FORMAT == "0.3.0"
     assert formats.FORMATS[LOG_FORMAT].version == LOG_FORMAT
 
 

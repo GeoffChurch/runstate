@@ -654,22 +654,34 @@ def test_a_refused_sqlite_run_is_refused_before_the_seal(tmp_path):
 
 @pytest.fixture
 def pg_v0_2_0_run(pg_ready):
-    """A run in the shared postgres test database's 0.2.0 schema. A 0.3.0 schema
-    left behind would make every later open there raise, so none may survive."""
+    """A run id for the shared postgres test database's 0.2.0 schema, which the
+    fixture provisions with the channel's own DDL: no channel writes 0.2.0 now.
+    The 0.3.0 schema is the current one, shared by every postgres test, so the
+    fixture removes only its own run from either."""
     import uuid
 
     import psycopg
+    from psycopg import sql
+
+    from runstate.channel.postgres import (
+        _CREATE_INDEX,
+        _CREATE_NAME_INDEX,
+        _CREATE_TABLE,
+    )
 
     rid = f"t12-{uuid.uuid4().hex}"
+    old = sql.Identifier(FORMATS["0.2.0"].pg_schema())
     with psycopg.connect(pg_ready, autocommit=True) as c:
-        assert c.execute("SELECT to_regnamespace('runstate_v0_3_0')").fetchone() == (
-            None,
-        )
+        c.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(old))
+        with c.transaction():
+            c.execute(sql.SQL("SET LOCAL search_path TO {}").format(old))
+            for ddl in (_CREATE_TABLE, _CREATE_INDEX, _CREATE_NAME_INDEX):
+                c.execute(ddl)
     try:
         yield pg_ready, rid
     finally:
         with psycopg.connect(pg_ready, autocommit=True) as c:
-            c.execute("DROP SCHEMA IF EXISTS runstate_v0_3_0 CASCADE")
+            c.execute("DELETE FROM runstate_v0_3_0.log WHERE run_id = %s", [rid])
             c.execute("DELETE FROM runstate_v0_2_0.log WHERE run_id = %s", [rid])
 
 
@@ -700,8 +712,8 @@ def test_a_refused_postgres_run_rolls_back_its_seal(pg_v0_2_0_run):
                     [rid],
                 ).fetchone() == (0,)
             assert c.execute(
-                "SELECT to_regnamespace('runstate_v0_3_0')"
-            ).fetchone() == (None,)
+                "SELECT count(*) FROM runstate_v0_3_0.log WHERE run_id = %s", [rid]
+            ).fetchone() == (0,)
             c.execute(insert, [rid, 2 + attempt, "value", "n", None, "{}", 0.0])
 
 
@@ -842,6 +854,23 @@ def test_the_step_imports_no_record_semantics():
 
 def test_the_step_and_format_are_registered():
     assert FORMATS["0.3.0"] == DirectoryLayout("0.3.0")
-    assert LOG_FORMAT == "0.2.0"  # until the release that switches to it
+    assert LOG_FORMAT == "0.3.0"  # the release that introduced it
     assert [type(s) for s in STEPS] == [V0_2_0_to_V0_3_0]
     assert chain("0.2.0", "0.3.0") == list(STEPS)
+
+
+def test_the_cli_migrates_to_the_current_format_by_default(tmp_path, capsys):
+    """`runstate migrate` without --to targets LOG_FORMAT: a run the locators
+    refuse at 0.2.0 opens at its 0.3.0 address afterwards, its old log sealed."""
+    from runstate import LogFormatMismatch, attach_channel
+    from runstate.cli import main
+
+    old = _write(tmp_path, "episodes", GOLDEN["episodes"])
+    with pytest.raises(LogFormatMismatch, match="runstate migrate"):
+        attach_channel("episodes", root=tmp_path)
+    assert main(["migrate", str(tmp_path)]) == 0
+    assert capsys.readouterr().out.split() == ["episodes"]
+    assert not os.stat(old).st_mode & 0o200  # sealed
+    with attach_channel("episodes", root=tmp_path) as ch:
+        beats = ch.read(topics=["lifecycle.heartbeat"])
+        assert beats and all(e.body["claim_seq"] >= 1 for e in beats)

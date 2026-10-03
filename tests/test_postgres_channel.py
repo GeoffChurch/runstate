@@ -79,18 +79,19 @@ def test_latest_with_name_is_index_served_not_sorted(pg_ready):
     index the planner sorts the whole (run_id, topic) partition, so a rare,
     early-only or absent name pays that on every call, forever."""
     run = f"idx-{uuid.uuid4().hex[:8]}"
+    log = f"{FORMATS[LOG_FORMAT].pg_schema()}.log"
     with psycopg.connect(pg_ready) as c:
         c.execute(
-            "insert into log (run_id, seq, topic, name, request_id, body, created_at)"
+            f"insert into {log} (run_id, seq, topic, name, request_id, body, created_at)"
             " select %s, g, 'value', 'm'||(g %% 40), null, '{}', 0.0"
             " from generate_series(1, 5000) g",
             (run,),
         )
-        c.execute("analyze log")
+        c.execute(f"analyze {log}")
         plan = "\n".join(
             r[0]
             for r in c.execute(
-                "explain select seq from log where run_id = %s and topic = 'value'"
+                f"explain select seq from {log} where run_id = %s and topic = 'value'"
                 " and name = 'm7' order by seq desc limit 1",
                 (run,),
             )

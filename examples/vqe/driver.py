@@ -28,6 +28,7 @@ import math
 import os
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 
 import runstate
@@ -129,8 +130,10 @@ def main():
                 )
                 if not state["stop_sent"] and plateaued(energies):
                     ch.send(
-                        {}, topic=runstate.Topic.CONTROL_STOP, request_id="driver-stop"
-                    )  # {} = now
+                        {},  # {} = now
+                        topic=runstate.Topic.CONTROL_STOP,
+                        request_id=uuid.uuid4().hex,  # a stop id is never reused
+                    )
                     state["stop_sent"] = True
                     print(
                         f"[driver] no gain > {PLATEAU_TOL} in {PLATEAU_STEPS} steps "

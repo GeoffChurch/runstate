@@ -59,6 +59,22 @@ def test_an_older_format_holding_the_run_says_migrate(tmp_path, monkeypatch):
             locate("r1", root=tmp_path)
 
 
+def test_a_v0_2_0_log_says_migrate(tmp_path):
+    """Format 0.3.0 is current, so a run still at 0.2.0 is refused with the
+    instruction to migrate it: never read as 0.3.0, never not found."""
+    from runstate.channel.sqlite import SqliteChannel
+
+    old = FORMATS["0.2.0"].sqlite_path(tmp_path, "r1")
+    old.parent.mkdir()
+    with SqliteChannel(old) as ch:
+        ch.send({}, topic="value", name="n")
+    for locate in (attach_channel, create_channel):
+        with pytest.raises(LogFormatMismatch, match="runstate migrate") as exc:
+            locate("r1", root=tmp_path)
+        assert (exc.value.found, exc.value.expected) == ("0.2.0", "0.3.0")
+    assert not _path(tmp_path, "r1").exists()  # create did not birth beside it
+
+
 def test_a_legacy_log_is_missing_never_not_found(tmp_path):
     legacy = tmp_path / "r1.db"
     sqlite3.connect(legacy).close()

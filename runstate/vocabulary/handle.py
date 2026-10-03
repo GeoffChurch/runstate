@@ -49,8 +49,14 @@ def resolve(handle: str) -> bool | None:
     ``local://`` handle naming THIS host (via ``os.kill(pid, 0)``); None if
     the token isn't resolvable from here — a foreign scheme, or a
     ``local://`` handle for **another host** (probing the local pid table for
-    a foreign pid would answer garbage — specs/lazy-launch.md; the caller
-    falls back to heartbeat staleness).
+    a foreign pid would answer garbage — specs/lazy-launch.md).
+
+    None is no evidence either way, and each caller reads it by its own rule.
+    The claim gate (``observables.live_episode``) reads it as ALIVE, by
+    design: only definitive evidence releases a claim, so a foreign claim
+    stands until a ``stopped`` names it (lazy-launch's "conservative
+    off-host"). An observer reads it as unknown and falls back to heartbeat
+    staleness (the Watcher's tier 4).
 
     Best-effort: the bare-string probe is heuristic (PID reuse; ``?start=T``
     disambiguator deferred — see docs/backlog/conventions-hygiene.md F9).
