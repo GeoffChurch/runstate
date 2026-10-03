@@ -256,14 +256,17 @@ class PostgresChannel(Channel):
         self._json_default = json_default
         self._lock = threading.Lock()
         self._conn = psycopg.connect(dsn, autocommit=True)
-        # lock_timeout is the busy_timeout analogue: a wedged conflicting writer
-        # makes the CAS raise (indeterminate) rather than hang forever.
-        self._conn.execute("SET lock_timeout = '5000ms'")
-        try:
-            has_rows = check_format(self._conn, run_id)
+        try:  # one guard: a failure anywhere in the open closes the connection
+            self._open(run_id, create=create)
         except BaseException:
             self._conn.close()
             raise
+
+    def _open(self, run_id: str, *, create: bool) -> None:
+        # lock_timeout is the busy_timeout analogue: a wedged conflicting writer
+        # makes the CAS raise (indeterminate) rather than hang forever.
+        self._conn.execute("SET lock_timeout = '5000ms'")
+        has_rows = check_format(self._conn, run_id)  # before the search path
         self._conn.execute(
             sql.SQL("SET search_path TO {}").format(
                 sql.Identifier(FORMATS[LOG_FORMAT].pg_schema())
@@ -271,7 +274,6 @@ class PostgresChannel(Channel):
         )
         registered = self._conn.execute("SELECT to_regclass('log')").fetchone()
         if registered is None or registered[0] is None:
-            self._conn.close()
             raise RuntimeError(
                 "the postgres 'log' table is absent; call "
                 "runstate.channel.postgres.ensure_schema(dsn) first"
@@ -282,7 +284,6 @@ class PostgresChannel(Channel):
             # rows WHERE run_id=X == the run doesn't exist. This is the semantic
             # sqlite/memory now conform to -- postgres embodies it natively.
             if not has_rows:
-                self._conn.close()
                 raise RunNotFound(f"run {run_id!r} has no records (postgres backend)")
 
     def send(

@@ -56,6 +56,40 @@ def test_ensure_schema_creates_log_table(pg_dsn):
         assert c.execute("select to_regclass(%s)::text", [table]).fetchone() == (table,)
 
 
+def test_a_failed_open_closes_its_connection(pg_ready, monkeypatch):
+    """T3: every step of the open after the connect sits inside one close-on-
+    failure guard, so a failure anywhere in it (here, setting the search path)
+    leaks no connection."""
+    from psycopg import sql
+
+    from runstate.channel import postgres
+
+    class Boom(Exception):
+        pass
+
+    opened = []
+    real = postgres.psycopg.connect
+
+    def connect(*args, **kwargs):
+        conn = real(*args, **kwargs)
+        opened.append(conn)
+        execute = conn.execute
+
+        def failing(query, *a, **k):
+            text = query.as_string(conn) if isinstance(query, sql.Composable) else query
+            if "search_path" in text:
+                raise Boom
+            return execute(query, *a, **k)
+
+        conn.execute = failing
+        return conn
+
+    monkeypatch.setattr(postgres.psycopg, "connect", connect)
+    with pytest.raises(Boom):
+        postgres.PostgresChannel(pg_ready, f"leak-{uuid.uuid4().hex}")
+    assert len(opened) == 1 and opened[0].closed
+
+
 def test_ensure_schema_creates_both_indexes(pg_dsn):
     """Both, not one. ``(run_id, topic, name, seq)`` serves latest(topic, name=)
     -- measured 2504 shared buffers through a top-N heapsort vs 4 through an
