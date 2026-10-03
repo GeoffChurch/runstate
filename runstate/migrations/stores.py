@@ -123,6 +123,9 @@ class PostgresStore:
         dst_name = formats.FORMATS[step.TO].pg_schema()
         dst = sql.Identifier(dst_name)
         with psycopg.connect(self._dsn) as conn, conn.transaction():
+            # Seal first: its table lock keeps writers out, so the read sees every
+            # committed row. A live refusal raises and rolls the seal back.
+            seal_postgres(conn, formats.FORMATS[step.FROM].pg_schema(), run_id)
             rows = [
                 Row(*r)
                 for r in conn.execute(
@@ -137,7 +140,6 @@ class PostgresStore:
                 raise MigrationError(
                     f"run {run_id!r} has a live episode; stop it first"
                 )
-            seal_postgres(conn, formats.FORMATS[step.FROM].pg_schema(), run_id)
             from ..channel.postgres import (
                 _CREATE_INDEX,
                 _CREATE_NAME_INDEX,

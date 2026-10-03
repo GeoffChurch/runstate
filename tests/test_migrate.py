@@ -104,16 +104,38 @@ def test_a_live_run_is_refused_and_untouched(toy, monkeypatch, tmp_path):
 
 
 def test_a_failure_leaves_it_sealed_and_a_retry_completes(toy, monkeypatch, tmp_path):
-    _seed(tmp_path, "8.0.0", "r1")
+    old = _seed(tmp_path, "8.0.0", "r1")
     monkeypatch.setattr(migrations, "STEPS", (Tag("8.0.0", "8.1.0", boom_at=0),))
     with pytest.raises(RuntimeError, match="boom"):
         migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0")
     target = DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1")
     assert not target.exists()
-    assert not list(target.parent.glob(".*.tmp"))  # no partial file left visible
+    assert os.stat(old).st_mode & 0o222 == 0  # sealed, per §6
     monkeypatch.setattr(migrations, "STEPS", (Tag("8.0.0", "8.1.0"),))
     assert migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0") == ["r1"]
     assert target.exists()
+
+
+def test_a_write_path_failure_leaves_no_log_at_the_address(toy, monkeypatch, tmp_path):
+    from runstate.migrations import stores
+
+    old = _seed(tmp_path, "8.0.0", "r1")
+    target = DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1")
+    monkeypatch.setattr(migrations, "STEPS", (Tag("8.0.0", "8.1.0"),))
+    real = os.replace
+
+    def boom(*a, **k):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(stores.os, "replace", boom)
+    with pytest.raises(OSError, match="disk gone"):
+        migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0")
+    assert not target.exists()  # readers open the final address only
+    assert os.stat(old).st_mode & 0o222 == 0
+    monkeypatch.setattr(stores.os, "replace", real)
+    assert migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0") == ["r1"]
+    assert target.exists()
+    assert not list(target.parent.glob(".*.tmp"))
 
 
 def test_wal_frames_of_a_crashed_writer_survive(toy, tmp_path, crashed_wal_writer):
@@ -205,3 +227,36 @@ def test_postgres_failure_rolls_back_completely(pg_toy, monkeypatch):
     assert _pg_one(pg_toy, "SELECT to_regclass('runstate_v8_0_0.sealed_runs')") == [
         (None,)
     ]
+
+
+def test_postgres_seals_before_it_reads(pg_toy, monkeypatch):
+    from runstate.migrations import stores
+
+    sealed = []
+    real = stores.seal_postgres
+
+    def spy(conn, schema, run_id):
+        real(conn, schema, run_id)
+        sealed.append(run_id)
+
+    class Checked(Tag):
+        def is_live(self, rows):
+            assert sealed == ["r1"], "rows were read before the seal took its lock"
+            return False
+
+    monkeypatch.setattr(stores, "seal_postgres", spy)
+    monkeypatch.setattr(migrations, "STEPS", (Checked("8.0.0", "8.1.0"),))
+    assert migrate(PostgresStore(pg_toy), ["r1"], to="8.1.0") == ["r1"]
+
+
+def test_postgres_copy_holds_every_committed_row(pg_toy):
+    import psycopg
+
+    with psycopg.connect(pg_toy, autocommit=True) as c:
+        c.execute(
+            "INSERT INTO runstate_v8_0_0.log (run_id, seq, topic, name, request_id, body,"
+            " created_at) VALUES ('r1', 3, 'value', 'x', NULL, '{\"i\": 3}', 3.0)"
+        )
+    migrate(PostgresStore(pg_toy), ["r1"], to="8.1.0")
+    q = "SELECT seq FROM runstate_v8_{}.log WHERE run_id='r1' ORDER BY seq"
+    assert _pg_one(pg_toy, q.format("1_0")) == _pg_one(pg_toy, q.format("0_0"))
