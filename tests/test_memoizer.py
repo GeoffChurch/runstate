@@ -4,6 +4,8 @@ import time
 import pytest
 from pathlib import Path
 import runstate
+from runstate import LOG_FORMAT
+from runstate.formats import FORMATS
 from runstate.memoizer import (
     NoProgressError,
     RecordlessExitError,
@@ -989,7 +991,9 @@ def test_store_pin_reuse_is_extend_across_drivers(tmp_path):
     assert [b["step"] for b in series_b] == list(range(8))
 
     dbs = sorted((tmp_path / "runs").rglob("*.db"))
-    assert dbs == [home / f"{rid}.db"]  #                   one home, one log
+    assert dbs == [
+        FORMATS[LOG_FORMAT].sqlite_path(home, rid)
+    ]  #                   one home, one log
     episodes = driver_b.attach_channel(rid).read(topics=["lifecycle.started"])
     assert len(episodes) == 2  #                            A's prefix + B's extension
 

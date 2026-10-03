@@ -70,6 +70,12 @@ The uniform absence signal (a `LookupError`): `attach_channel` raises it when a
 run has no records, so a nonexistent and an empty run are identically "no run"
 (docs/specs/channel-locators.md).
 
+### Log formats
+
+- `LOG_FORMAT`: the log format this release reads and writes.
+- `LogFormatError`, `LogFormatMismatch` and `LogFormatMissing`: see
+  `docs/specs/log-formats.md` §4.
+
 ### `Channel`
 
 ```python

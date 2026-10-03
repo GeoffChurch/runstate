@@ -19,6 +19,7 @@ from .channel import (
     attach_channel,
     create_channel,
 )
+from .formats import LOG_FORMAT, LogFormatError, LogFormatMismatch, LogFormatMissing
 from .launcher import (
     Launcher,
     LaunchHandle,
@@ -98,6 +99,10 @@ __all__ = [
     "create_channel",
     "current_channel",
     "RunNotFound",
+    "LOG_FORMAT",
+    "LogFormatError",
+    "LogFormatMismatch",
+    "LogFormatMissing",
     "Channel",
     "Body",
     "Envelope",
