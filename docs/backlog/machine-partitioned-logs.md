@@ -105,3 +105,29 @@ exceeds the eviction design plus an honest documented gap.
 partition a claim can still strand, and a third party still needs a record that releases it without
 forging a verdict. This does not obviate that design; it would close the blind spot the design
 documents and cannot itself fix.
+
+## The gate, run in miniature (2026-10-02)
+
+A two-way split of one run's log — the worker's records in one stream, everyone else's in another — was
+red-teamed twice and measured. It is this entry's gate in miniature, and the positional rules fail it:
+
+- **Stop discharge:** a stop sent while the run is down sits at position 3 of one partition, the previous
+  episode's `stopped` at 5000 of the other, and the next episode drops the halt. Reverse the magnitudes
+  and an honoured stop re-arms every episode.
+- **Lease boundary:** when one partition's positions outpace the other's, the boundary void never fires,
+  and a ghost lease re-wakes forever.
+- **The death CAS** guards one partition only, so a subscribe racing `retire()` is orphaned.
+
+So the gate's answer is **no, not with positional rules**. Reference by name — each record names what it
+answers — is the prerequisite (`spike/reference-by-name`).
+
+Two findings from the same day change this entry's case:
+
+- **Containment no longer needs partitioning.** Fenced worker writes (`spike/fenced-worker-writes`) stop
+  a displaced worker landing anything on a shared log, and episode-keyed records let a reader separate two
+  lineages. Question 5, *"does it fix the splice or move it"*, is answered by identity, not by the
+  partition.
+- **What partitioning would still buy is writing without a shared sequencer**, for runs that cannot
+  reach one. That removes the claim's shared frontier, so single-spawn becomes best-effort deduplication.
+  `spike/time-triggered-claims` measured that a mistaken claim then costs only waste, provided every
+  writer is fenced or episode-keyed.
