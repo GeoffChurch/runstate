@@ -427,6 +427,19 @@ stop at once). The positional stop rule's public observer home, mirroring
 `live_demand`. Note **pending ≠ due** and **naked stops over-report**
 (conservative: never under-reports).
 
+### `Watcher.pending_stops`
+
+```python
+w.pending_stops(run_id: str) -> list[Envelope]
+```
+
+The run's stops no answer names — `undischarged_stops`, kept incrementally. Each
+call reads only records new since the last, so a long run costs O(new records)
+per poll, not O(log). The state tracks the unanswered stops by id, spent ids
+(every id an answer has named), and its own read cursor. A stop with a spent id
+is dead on arrival, exactly as the pure fold treats it. The cursor starts at 0,
+so the first call computes the pure fold and no separate seed is needed.
+
 ### `value_series`
 
 ```python

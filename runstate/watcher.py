@@ -31,6 +31,7 @@ from .launcher import LaunchHandle
 from .observables import (
     Outcome,
     RunResult,
+    _honored,
     _verdict_record,
     current_heartbeat,
     latest_episode,
@@ -171,6 +172,38 @@ def _heartbeat_seed(hb: Optional[Envelope], now: float) -> _HeartbeatSeed:
 
 
 @dataclass
+class _PendingStops:
+    """Incremental ``undischarged_stops`` for one run (reference-by-name §5).
+
+    The unanswered stops by id, every id an answer has named (spent: a later
+    stop reusing one is dead on arrival, exactly as the pure fold treats it),
+    and a read cursor of its own, never the event cursor. Each call reads only
+    what is new, so a long run costs O(new records) per poll, not O(log)."""
+
+    cursor: int = 0
+    pending: dict[str, Envelope] = field(default_factory=dict)
+    spent: set[str] = field(default_factory=set)
+
+    def update(self, channel: Channel) -> list[Envelope]:
+        for e in channel.read(
+            after=self.cursor,
+            topics=[Topic.CONTROL_STOP, Topic.LIFECYCLE_STOPPED, Topic.LIFECYCLE_NAK],
+        ):
+            self.cursor = e.seq
+            if e.topic == Topic.CONTROL_STOP:
+                if e.request_id is not None and e.request_id not in self.spent:
+                    self.pending[e.request_id] = e
+            elif e.topic == Topic.LIFECYCLE_STOPPED:
+                for rid in _honored(e):
+                    self.spent.add(rid)
+                    self.pending.pop(rid, None)
+            elif e.request_id is not None:  # a nak names what it refuses
+                self.spent.add(e.request_id)
+                self.pending.pop(e.request_id, None)
+        return sorted(self.pending.values(), key=lambda e: e.seq)
+
+
+@dataclass
 class _RunState:
     run_id: str
     channel: Channel
@@ -179,6 +212,7 @@ class _RunState:
     liveness: _LivenessProbe
     last_hb_seq: int = field(default=0)
     last_step: Optional[int] = field(default=None)
+    stops: _PendingStops = field(default_factory=_PendingStops)
 
 
 class Watcher:
@@ -382,6 +416,12 @@ class Watcher:
                 dict(schedule), topic=Topic.CONTROL_SUBSCRIBE, name=name, request_id=rid
             )
         return rid
+
+    def pending_stops(self, run_id: str) -> list[Envelope]:
+        """The run's stops no answer names -- ``undischarged_stops``, kept
+        incrementally: each call reads only records new since the last."""
+        st = self._runs[run_id]
+        return st.stops.update(st.channel)
 
     def iter_events(
         self, timeout: Optional[float] = None
