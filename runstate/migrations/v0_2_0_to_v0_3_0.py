@@ -12,7 +12,9 @@ spike's, which merged requests the positional rule kept apart, or let a nak
 answer a request it could not have refused: a stop id that other requests also
 bear, a nak before every subscribe of its id, and a nak before every stop of
 its id. None of these occurs in the real corpus or in the spike's synthetic
-world.
+world. A fourth binds a lease that only the latest claim follows, which the
+spike left unbound, so that the next worker served it again (the final
+review's Ruling 17); the real corpus has no subscribes.
 
 The rules:
 
@@ -35,9 +37,10 @@ The rules:
   refuse a stop that comes after it, so one with no stop of its id before it
   answered nothing either. A nak that keeps its id names its stop: the naked
   stop that names fix.
-- **Leases.** One ``lifecycle.bound`` for each episode-local subscription the
-  positional boundary rule voided, naming the first claim between it and the
-  latest claim.
+- **Leases.** One ``lifecycle.bound`` for each unanswered episode-local
+  subscription that a claim follows, naming the first claim after its latest
+  send. Positionally that claim was its last drainer: every later claim, the
+  next worker's included, found it between the lease and itself.
 
 Every minted name is fresh: ``_fresh`` checks it against every request id in the
 run and every name minted before it.
@@ -47,11 +50,14 @@ a required integer, so 0.3.0 cannot hold such a beat, and leaving it unnamed
 would put a 0.2.0 record in a 0.3.0 log (log-formats.md §2, rule 5). It is never
 dropped.
 
-Two reads differ from 0.2.0's, both positional defects that the names fix
-(the spike's T4): the **stale-beat leak**, where ``progress`` read an earlier
-episode's heartbeat because the current claim had none; and a **naked stop**,
-which ``undischarged_stops`` kept listing until the next ``stopped`` and which
-its nak now answers.
+Three reads differ from 0.2.0's, each a positional defect that the names fix.
+Two are the spike's (T4): the **stale-beat leak**, where ``progress`` read an
+earlier episode's heartbeat because the current claim had none; and a **naked
+stop**, which ``undischarged_stops`` kept listing until the next ``stopped`` and
+which its nak now answers. The third is an **ended lease**: when the first
+claim after a lease is the latest claim and a terminal names it,
+``live_demand`` listed the lease, though no 0.2.0 worker would serve it (a
+ghost launch); bound to that claim, it is void for every reader.
 
 **Known limits:**
 
@@ -282,12 +288,14 @@ def _segment_subscriptions(log: Backfill, records: list[_Record]) -> None:
             seg.live = False
 
 
-def _bind_voided_leases(log: Backfill) -> None:
-    """The positional boundary rule voided an episode-local subscription when a
-    claim lay strictly between it and the latest claim. Bind each such one to
-    the first of those claims, which voids it by name."""
+def _bind_leases(log: Backfill) -> None:
+    """The positional boundary rule voided an episode-local subscription for a
+    drainer when a claim lay strictly between it and the drainer's own claim
+    (``boundary_voided`` at 72d9c3f). So once any claim follows its latest
+    send, it is void for every later claim, the next worker's included: the
+    first claim after it was its last drainer. Bind each unanswered one to that
+    claim, latest or not, which voids it by name for every other episode."""
     claims = [e.seq for e in log.records if e.topic == _Topic.STARTED]
-    latest = claims[-1] if claims else 0
     live: dict[str, _Record] = {}
     for e in log.records:
         if e.request_id is None:
@@ -300,9 +308,9 @@ def _bind_voided_leases(log: Backfill) -> None:
     for rid, e in live.items():
         if not _is_lease(e.body):
             continue
-        between = [c for c in claims if e.seq < c < latest]
-        if between:
-            body: _Body = {"claim_seq": between[0]}
+        after = [c for c in claims if c > e.seq]
+        if after:
+            body: _Body = {"claim_seq": after[0]}
             seq = last + len(log.appended) + 1
             log.appended.append(_Record(seq, _Topic.BOUND.value, None, rid, body))
 
@@ -315,7 +323,7 @@ def backfill(records: list[_Record]) -> Backfill:
     _name_stops(log, records)
     _name_episodes(log, records)
     _segment_subscriptions(log, records)
-    _bind_voided_leases(log)
+    _bind_leases(log)
     return log
 
 

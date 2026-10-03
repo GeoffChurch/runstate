@@ -173,8 +173,15 @@ precise statement of the rules.
   subscription bears its id and a same-id stop precedes it. A nak with no same-id stop before it names
   nothing either, since a nak cannot refuse a stop that comes after it. A nak that keeps its id names
   its stop.
-- **Episode-local subscriptions.** One `lifecycle.bound` for each one the positional boundary rule
-  voided, naming the first claim between it and the latest claim.
+- **Episode-local subscriptions.** One `lifecycle.bound` for each unanswered one that a claim follows,
+  naming the first claim after its latest send. Positionally a lease was void for a drainer when a claim
+  lay strictly between the lease and the drainer's own claim, so once any claim follows it, every later
+  claim finds that one in between: the first claim after it was its last drainer. That holds when the
+  first claim is the latest one too, and then the next worker, which claims after migration, is the
+  drainer the binding voids it for. *Found in the final review* (Ruling 17): binding only to a claim
+  strictly before the latest one left a lease served by an ended latest episode unbound, and the next
+  0.3.0 worker served it again with a fresh `time_seconds`, which neither master nor a native 0.3.0 log
+  does.
 - **Every minted name is fresh:** it is checked against every request id in the run and every name minted
   before it.
 - **Refused: a heartbeat before any claim.** `Heartbeat.claim_seq` is a required integer, so format 0.3.0
@@ -196,9 +203,18 @@ precise statement of the rules.
 **Measured on the spike, on copies of 2,569 real consumer logs:** identical reads on 2,562. The 7
 differences are all one positional bug that names fix: `progress` reading a previous episode's heartbeat.
 The step's golden logs (`tests/test_migration_v0_2_0_to_v0_3_0.py`) read as 0.2.0's positional folds
-read them (computed at `72d9c3f`), except in two classes, both positional defects that names fix: that
-stale-beat leak, and a **naked stop**, which `undischarged_stops` kept listing until the next `stopped`
-and which its nak now answers.
+read them (computed at `72d9c3f`), except in three classes, each a positional defect that names fix:
+
+1. that **stale-beat leak**;
+2. a **naked stop**, which `undischarged_stops` kept listing until the next `stopped` and which its nak
+   now answers;
+3. an **ended lease**: a lease whose first claim after it is the latest claim, and a terminal names that
+   claim. Master's `live_demand` listed it, though no 0.2.0 worker would serve it, which cost a ghost
+   launch. Bound to that claim, it is void for every reader once a terminal names the claim.
+
+A worker resumed on a migrated log serves exactly the demand master's next worker would: a test resumes
+one on the golden logs. The final review's fuzz (7,000 synthetic logs, master's reads computed at
+`72d9c3f`) found no difference outside the three classes, and none in the demand a resumed worker faces.
 
 **Known limits:**
 - A historical misattribution is copied faithfully, not corrected: episode-aim's objection, stated in the

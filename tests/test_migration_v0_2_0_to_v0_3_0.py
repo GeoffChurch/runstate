@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from runstate import LOG_FORMAT
+from runstate import LOG_FORMAT, Worker, create_channel
 from runstate.channel.sqlite import _SCHEMA, SqliteChannel
 from runstate.formats import FORMATS, DirectoryLayout
 from runstate.migrations import STEPS, MigrationError, Row, chain, migrate
@@ -306,6 +306,43 @@ RELEASED = [
 ]
 
 
+# A lease subscribed while nothing runs, the lazy-launch shape. The first claim
+# serves it and is preempted before it expires. Master's next worker would void
+# it, since that claim lies between the lease and its own; so must 0.3.0's.
+LAZY = [
+    r(
+        1,
+        "control.subscribe",
+        {"every": {"step": 1}, "until": {"time_seconds": 10000}},
+        rid="lease",
+        name="loss",
+    ),
+    r(2, "launcher.launched", _launched("local://n5/61", 1.0), rid="L1"),
+    r(3, "lifecycle.started", _started("local://n5/61", 2.0), rid="L1"),
+    r(4, "value", _value(0.0, 0, 3.0), rid="lease", name="loss"),
+    r(5, "lifecycle.heartbeat", _beat(0, 1, 3.0)),
+    r(6, "value", _value(1.0, 1, 4.0), rid="lease", name="loss"),
+    r(7, "lifecycle.heartbeat", _beat(1, 1, 4.0)),
+    r(8, "lifecycle.stopped", _stopped(1, 5.0)),
+    r(9, "launcher.terminated", _exited(0, 6.0), rid="L1"),
+]
+
+# The same shape, with a count lease served by a claim whose worker crashed, so
+# no terminal names that claim.
+CRASHED = [
+    r(
+        1,
+        "control.subscribe",
+        {"every": {"step": 1}, "until": {"count": 5}},
+        rid="lease",
+        name="loss",
+    ),
+    r(2, "lifecycle.started", _started(DEAD, 1.0)),  # hand-run; dies
+    r(3, "value", _value(0.0, 0, 2.0), rid="lease", name="loss"),
+    r(4, "lifecycle.heartbeat", _beat(0, 1, 2.0)),
+]
+
+
 def _dated(rows):
     """Every record its own created_at, so the test can see each one kept."""
     assert [x.seq for x in rows] == list(range(1, len(rows) + 1))
@@ -321,6 +358,8 @@ GOLDEN = {
     "verbs": _dated(VERBS),
     "claimless": _dated(CLAIMLESS),
     "released": _dated(RELEASED),
+    "lazy": _dated(LAZY),
+    "crashed": _dated(CRASHED),
 }
 # The records each golden log holds that are invalid under 0.2.0's own schemas;
 # every other log is well-formed (test_golden_inputs_are_0_2_0_as_declared).
@@ -426,12 +465,32 @@ MASTER = {
         "live_demand": [],
         "progress": 3,
     },
+    "lazy": {
+        "peek_terminal": ("preempted", None, 1),
+        "live_episode": None,
+        "undischarged_stops": [],
+        "live_demand": [1],
+        "progress": 1,
+    },
+    "crashed": {
+        "peek_terminal": None,
+        "live_episode": None,
+        "undischarged_stops": [],
+        "live_demand": [1],
+        "progress": 0,
+    },
 }
 
-# The only reads allowed to differ: the spike's two classes (T4), each a positional
-# defect that names fix, and each asserted on its own below.
+# master 72d9c3f's live_demand on a golden log once one more claim lands: the
+# requests a new 0.2.0 worker would serve (the same scratch run)
+MASTER_RESUMED = {"subs": [18], "shared": [5], "lazy": [], "crashed": []}
+
+# The only reads allowed to differ: three classes, each a positional defect that
+# names fix, and each asserted on its own below. The first two are the spike's
+# (T4); the third is the final review's (Ruling 17).
 STALE_BEAT_LEAK = {"episodes": (999, None)}  # progress: master's -> 0.3.0's
 NAKED_STOP = {"stops": 15}  # the stop master still listed after its nak
+ENDED_LEASE = {"subs": 30, "lazy": 1}  # demand master listed that no worker served
 
 
 def _migrated(root, rid):
@@ -451,6 +510,11 @@ def test_golden_logs_read_as_master_read_them(tmp_path):
             assert NAKED_STOP[rid] in expected["undischarged_stops"]
             expected["undischarged_stops"] = [
                 s for s in expected["undischarged_stops"] if s != NAKED_STOP[rid]
+            ]
+        if rid in ENDED_LEASE:
+            assert ENDED_LEASE[rid] in expected["live_demand"]
+            expected["live_demand"] = [
+                s for s in expected["live_demand"] if s != ENDED_LEASE[rid]
             ]
         ch = _migrated(tmp_path, rid)
         assert reads(ch) == expected, rid
@@ -481,6 +545,64 @@ def test_the_naked_stop_is_answered_by_its_own_nak(tmp_path):
     naks = ch.read(topics=["lifecycle.nak"])
     assert [e.seq for e in naks if e.request_id == stop.request_id] == [17]
     assert [e.seq for e in ch.read() if e.request_id == stop.request_id] == [15, 17]
+    ch.close()
+
+
+def _bound_claims(ch, request_id):
+    return [
+        e.body["claim_seq"]
+        for e in ch.read(topics=["lifecycle.bound"])
+        if e.request_id == request_id
+    ]
+
+
+def test_a_lease_its_ended_latest_episode_served_is_no_longer_demand(tmp_path):
+    """The third class (Ruling 17). Positionally a lease was void for every claim
+    after the first claim following it: that claim lay between the lease and any
+    later one. When that first claim is the latest and has ended, master's
+    observer still listed the lease, though no 0.2.0 worker would serve it (one
+    ghost launch). Bound to that claim by name, it is void for every reader once
+    a terminal names the claim. The crashed log is the class's edge: no terminal
+    names its claim, so the lease stays demand, as master read it."""
+    write_v0_2_0(tmp_path)
+    migrate(SqliteStore(tmp_path), None, to="0.3.0")
+    for rid in [*ENDED_LEASE, "crashed"]:
+        ch = _migrated(tmp_path, rid)
+        seq = ENDED_LEASE.get(rid, 1)
+        (sub,) = [e for e in ch.read(topics=["control.subscribe"]) if e.seq == seq]
+        latest = max(e.seq for e in ch.read(topics=["lifecycle.started"]))
+        assert _bound_claims(ch, sub.request_id) == [latest]
+        named = [
+            e.seq
+            for e in ch.read(topics=["lifecycle.stopped"])
+            if e.body["claim_seq"] == latest
+        ]
+        assert bool(named) == (rid in ENDED_LEASE), rid
+        assert (seq in [e.seq for e in live_demand(ch)]) == (rid not in ENDED_LEASE)
+        assert seq in MASTER[rid]["live_demand"]
+        ch.close()
+
+
+@pytest.mark.parametrize("rid", sorted(MASTER_RESUMED))
+def test_a_worker_resumed_after_migration_serves_what_masters_would(tmp_path, rid):
+    """I1: the resume check. A 0.3.0 worker claims a migrated run, and the
+    demand it serves is master's demand once one more claim lands. Each lease a
+    claim since its send has already served stays unserved: its ``bound`` voids
+    it for every later episode, as the positional rule did."""
+    _write(tmp_path, rid, GOLDEN[rid])
+    migrate(SqliteStore(tmp_path), [rid], to=LOG_FORMAT)
+    ch = create_channel(rid, root=tmp_path)
+    before = {e.request_id for e in live_demand(ch)}
+    head = ch.last_seq()
+    with Worker(ch) as w:
+        demand = {e.request_id: e.seq for e in live_demand(ch)}
+        assert sorted(demand.values()) == MASTER_RESUMED[rid]
+        for s in w.steps(3, start=10):
+            w.set("loss", float(s))
+            w.set("load", float(s))
+    fired = {e.request_id for e in ch.read(after=head, topics=["value"])}
+    assert fired <= set(demand)
+    assert not fired & (before - set(demand))
     ch.close()
 
 
@@ -574,13 +696,28 @@ def test_a_stop_sharing_its_id_with_any_other_request_is_renamed():
     assert (out[3], out[7]) == ("p!orphan@3", "q")  # q now names no stop
 
 
-def test_leases_the_boundary_voided_get_an_inferred_bound():
-    """A known limit: 0.2.0 never recorded which episode registered a lease. Each
-    one the positional rule voided is bound to the first claim between it and the
-    latest claim, which is what voids it by name."""
+def test_leases_get_an_inferred_bound_to_the_first_claim_after_them():
+    """A known limit: 0.2.0 never recorded which episode registered a lease.
+    Positionally a lease was void for every claim after the first claim that
+    followed it, latest or not. So each unanswered one is bound to that first
+    claim, which voids it by name for every later episode (Ruling 17)."""
     out = step.transform(GOLDEN["subs"])
     bound = [(x.seq, x.request_id, json.loads(x.body)) for x in out[32:]]
-    assert bound == [(33, "tl", {"claim_seq": 22}), (34, "cnt", {"claim_seq": 22})]
+    assert bound == [
+        (33, "tl", {"claim_seq": 22}),
+        (34, "cnt", {"claim_seq": 22}),
+        (35, "tl2", {"claim_seq": 31}),  # the latest claim
+    ]
+    assert step.transform(GOLDEN["lazy"])[9:] == [
+        Row(10, "lifecycle.bound", None, "lease", '{"claim_seq":3}', 1002.25)
+    ]
+
+
+def test_a_lease_no_claim_follows_gets_no_bound():
+    """No claim since its send has taken it, so the next episode serves it, as
+    master's next worker would."""
+    rows = GOLDEN["shared"]  # the lease at 5 follows the only claim, at 1
+    assert [x for x in step.transform(rows) if x.topic == "lifecycle.bound"] == []
 
 
 def test_a_displaced_workers_late_records_name_its_successor():
