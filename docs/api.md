@@ -146,8 +146,12 @@ via `retire`). `set` updates the current-value register (observer-chosen
 cadence); `emit` logs a point unconditionally (worker-chosen cadence — the
 series `ensure`/`history` read) and **raises `ValueError` before the first tick
 or on a stepless worker**. `stopped(completed=True)` is the opt-in completion
-claim; the default projects to `preempted`. `retire()` is the careful death (the
-dying breath CAS'd against the drained log).
+claim; the default projects to `preempted`. `retire()` is the careful death.
+Both dying breaths name their claim (`claim_seq`) and every pending stop
+(`honored`), and are compare-and-appended over a fully read control tail:
+`retire()` takes in every control verb and returns False if new demand arrived,
+while a plain `stopped()` takes in only stops, leaving a racing subscribe live
+for the next episode.
 
 **What the episode claim guarantees — and where it stops.** The birth CAS gives
 **at most one claimant at the instant of claiming**. It does *not* give
@@ -393,9 +397,10 @@ record) in one place.
 live_episode(channel) -> str | None
 ```
 
-Handle of the currently-live episode, or None: the latest episode with no
-following `stopped` whose worker resolves alive (a started-then-crashed episode
-resolves dead → not live).
+Handle of the currently-live episode, or None: the latest claim with no
+`stopped` naming it (`claim_seq`), whose worker resolves alive (a
+started-then-crashed episode resolves dead → not live). An unresolvable foreign
+handle reads as alive.
 
 ### `live_demand`
 
@@ -403,11 +408,13 @@ resolves dead → not live).
 live_demand(channel) -> list[Envelope]
 ```
 
-The live leased demand: every `control.subscribe` envelope with no **answer**
-following it by seq (an answer is a `control.unsubscribe` or `lifecycle.nak`
-bearing its `request_id`), and — for time-referencing schedules — no episode
-boundary between it and the latest `lifecycle.started`. The one public home of
-the positional answer fold + the time-lease rule. Value-blind.
+The live leased demand: every `control.subscribe` whose `request_id` no
+**answer** names (an answer is a `control.unsubscribe` or `lifecycle.nak` bearing
+it, wherever it sits), each in its latest form; and, for a lease (a `time_seconds`
+or `count` atom anywhere in the schedule), not void: bound by `lifecycle.bound`
+to an episode other than the latest claim, or to the latest claim once a terminal
+names it. A spent id is dead on arrival. The one public home of the answer fold
+and the lease rule. Value-blind.
 
 ### `progress`
 
@@ -415,9 +422,10 @@ the positional answer fold + the time-lease rule. Value-blind.
 progress(channel) -> int | None
 ```
 
-Max step the trajectory reached, from the DENSE axis (the latest
-`lifecycle.heartbeat.step` and `lifecycle.stopped.final_step`, whichever is
-greater); None if neither has a value yet. **The window fencepost**: a target
+The current episode's step frontier, from the DENSE axis (the step of the
+newest heartbeat naming the latest claim and the `final_step` of the `stopped`
+naming it, whichever is greater); None if neither has a value yet. It may
+decrease across an episode boundary. **The window fencepost**: a target
 `until={"step": N}` is the half-open window `[0, N)`, reached iff
 `progress + 1 >= N`; `progress is None` is window-step 0.
 
@@ -427,11 +435,13 @@ greater); None if neither has a value yet. **The window fencepost**: a target
 undischarged_stops(channel) -> list[Envelope]
 ```
 
-The `control.stop` envelopes not yet discharged — pending from append until the
-next `lifecycle.stopped` follows by seq (one `stopped` discharges every pending
-stop at once). The positional stop rule's public observer home, mirroring
-`live_demand`. Note **pending ≠ due** and **naked stops over-report**
-(conservative: never under-reports).
+The `control.stop` envelopes no answer names — pending until a
+`lifecycle.stopped` lists the `request_id` in `honored` (the worker served it) or
+a `lifecycle.nak` bears it (the worker refused it), wherever that answer sits. A
+`stopped` that names no stop (a third party's release) discharges nothing. The
+stop rule's public observer home, mirroring `live_demand`. Note **pending ≠
+due**. It reads every stop, `stopped` and nak; a polled path uses
+`Watcher.pending_stops`.
 
 ### `Watcher.pending_stops`
 
@@ -729,13 +739,14 @@ and never parses `body`.
 
 | topic | body | produced by | consumed by | schema |
 |---|---|---|---|---|
-| `control.subscribe` | `Condition` (`{from?, every?, until?}`) | orchestrator | worker | `subscription-v0.2` |
-| `control.unsubscribe` | `{}` | orchestrator (or worker on expiry) | worker | `subscription-v0.2` |
-| `control.stop` | `{from?}` | orchestrator | worker | `subscription-v0.2` |
-| `lifecycle.started` | `Started {handle, t}` | worker | observers | `lifecycle-v0.4` |
-| `lifecycle.heartbeat` | `Heartbeat {step?, consumed_seq, t}` | worker | observers | `lifecycle-v0.4` |
-| `lifecycle.stopped` | `Stopped {completed, error, final_step, t}` | worker | observers | `lifecycle-v0.4` |
-| `lifecycle.nak` | `Nak {reason, message}` | worker | the requester (by `request_id`) | `lifecycle-v0.4` |
+| `control.subscribe` | `Condition` (`{from?, every?, until?}`) | orchestrator | worker | `subscription-v0.3` |
+| `control.unsubscribe` | `{}` | orchestrator (or worker on expiry) | worker | `subscription-v0.3` |
+| `control.stop` | `{from?}`; `request_id` required | orchestrator | worker | `subscription-v0.3` |
+| `lifecycle.started` | `Started {handle, t}` | worker | observers | `lifecycle-v0.5` |
+| `lifecycle.heartbeat` | `Heartbeat {step?, consumed_seq, claim_seq, t}` | worker | observers | `lifecycle-v0.5` |
+| `lifecycle.stopped` | `Stopped {completed, error, final_step, claim_seq, honored, t}` | worker | observers | `lifecycle-v0.5` |
+| `lifecycle.nak` | `Nak {reason, message}` | worker | the requester (by `request_id`) | `lifecycle-v0.5` |
+| `lifecycle.bound` | `Bound {claim_seq}`; `request_id` = the lease | worker | worker, observers | `lifecycle-v0.5` |
 | `launcher.launched` | `Launched {handle, t, status}` | launcher | observers | `launcher-v0.4` |
 | `launcher.terminated` | `Terminated {reason, exit_code?, signal?, t}` | launcher | observers | `launcher-v0.4` |
 | `value` | `Value {value, step?, t?}` | worker | observers | `value-v0.2` |

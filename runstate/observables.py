@@ -598,7 +598,7 @@ def current_heartbeat(channel: Channel, claim: Envelope | None) -> Envelope | No
     """The newest heartbeat NAMING ``claim``, or None. Latest-then-verify: the
     newest beat on the log usually names the live claim (O(1)); only on a miss
     (a displaced worker beating over its successor) is the tail searched,
-    newest-first, in a window that doubles back toward the claim -- so the miss
+    newest-first, in a window that grows x4 back toward the claim -- so the miss
     costs O(distance to this episode's newest beat), not O(episode length).
     Tolerant: an unnamed beat names nothing."""
     if claim is None:

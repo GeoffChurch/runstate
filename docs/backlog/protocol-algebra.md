@@ -59,10 +59,10 @@ Every control-plane fact is an **intro/elim pair**:
 
 | intro | designated eliminator | multiplicity |
 |---|---|---|
-| `lifecycle.started` | `lifecycle.stopped` | obligation (worker must eventually emit; `launcher.terminated` is the external backstop) |
-| `launcher.launched` | `launcher.terminated` | obligation (launcher viewpoint) |
-| `control.subscribe` | `control.unsubscribe` | **affine** — may never be consumed (standing state) |
-| `control.stop` | the next `lifecycle.stopped` (`../specs/stop-discharge.md`) | **linear** — must be consumed exactly once |
+| `lifecycle.started` | the `lifecycle.stopped` naming it (`claim_seq`) | obligation (worker must eventually emit; `launcher.terminated` is the external backstop) |
+| `launcher.launched` | `launcher.terminated` (by launch id) | obligation (launcher viewpoint) |
+| `control.subscribe` | the `control.unsubscribe` or `nak` naming its `request_id` | **affine** — may never be consumed (standing state) |
+| `control.stop` | the `lifecycle.stopped` whose `honored` names it, or a `nak` naming it (`../specs/stop-discharge.md`) | **linear** — must be consumed exactly once |
 
 Per-pair multiplicity varies, but the load-bearing invariant is uniform:
 **every fact has a designated eliminator** — *what consumes it is fixed by the
@@ -90,23 +90,32 @@ pair with a designated discharge (multiplicity declared), **or** be a pure
 value carrying no obligation. Anything else is ill-typed — sharper and more
 checkable than the rubric's prose form of the same instinct.
 
-**Corollary — the commutativity upgrade.** A fold over matched pairs is
-order-sensitive only *through the matching*; keying the pairs (discharge-by-
-`request_id`, see the backlog [index](index.md) protocol-extensions entry)
-turns Γ into a join-semilattice — the CRDT / multi-writer / replicated-log
-direction. One lens, and the "galaxy-scale" analysis (run-local total order +
-causal asynchrony between homes) drops out as a corollary.
+**Corollary — the commutativity upgrade (realised 2026-10-03).** A fold over
+matched pairs is order-sensitive only *through the matching*; keying the
+pairs turns Γ into a join-semilattice — the CRDT / multi-writer /
+replicated-log direction. Reference by name
+([`../specs/reference-by-name.md`](../specs/reference-by-name.md)) keyed the
+control pairs, and the control folds are now order-independent
+(`tests/test_order_independence.py`). What it cannot key is the order among
+claims: a claim's name is the arbiter's `seq`, so the "galaxy-scale" analysis
+(run-local total order + causal asynchrony between homes) still bottoms out
+at one sequencer per run for episodes.
 
-## L2 addendum (2026-06-10) — the pairing-by-`seq` rule, named
+## L2 addendum — the pairing rule, by name
 
-The intro/elim pairs are *positionally* paired: a standing fact's eliminator
-must **follow it by `seq`** (design §7 now states it once; instances, four:
-stop ↔ next `stopped`; subscribe ↔ next unsubscribe-or-nak bearing its
-`request_id` — the **answer fold**, public home `observables.live_demand`;
-time-referencing subscribe ↔ additionally the next episode boundary — a
-*second eliminator* for the time-leased case, so that affine resource is in
-fact always consumed (`specs/time-lease-boundary.md`); episode terminality ↔
-no opener following the terminal). The elimination is
+The intro/elim pairs are paired **by name**: a record that answers, ends or
+concerns another names it, by an identity that is never reused, and is never
+related to it by log position (design §7 states it once; instances, four:
+stop ↔ the `stopped` whose `honored` lists its `request_id`, or a nak bearing
+it; subscribe ↔ the unsubscribe or nak bearing its `request_id` — the
+**answer fold**, public home `observables.live_demand`, which spends the id
+wherever the answer sits; an episode-local subscribe ↔ additionally the
+`lifecycle.bound` naming its registering episode — a *second eliminator* for
+the leased case, voiding it for every other episode, so that affine resource
+is in fact always consumed (`specs/time-lease-boundary.md`); a heartbeat or
+`stopped` ↔ the claim it names by `claim_seq`). What stays ordered is the
+order among claims (the claim CAS), each writer's own order, and the causal
+window after a claim. The subscribe elimination is
 author-blind — the worker writing the expiry `control.unsubscribe` applies
 the same affine eliminator a client's rescind does (gc and `free` share an
 opcode), which is why no `lifecycle.expired` constructor exists: every

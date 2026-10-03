@@ -1,8 +1,9 @@
 # Spec: log formats — a log's format is part of its address
 
-**Status:** IMPLEMENTED 2026-10-03 (stage 1: format 0.2.0, the addresses, the opening checks, sealing and
-`runstate migrate`). Designed with the owner section by section. Its first
-user is [`reference-by-name.md`](reference-by-name.md), which introduces format 0.3.0.
+**Status:** IMPLEMENTED 2026-10-03: format 0.2.0, the addresses, the opening checks, sealing, and
+`runstate migrate`, which refuses a run before sealing it (§6). Designed with the owner section by section.
+Its first user is [`reference-by-name.md`](reference-by-name.md), which introduced format 0.3.0, the
+current one, with the first retained step (0.2.0 → 0.3.0) the same day.
 
 **What it gives:** every log has exactly one format, and every log can say which. A runstate release opens
 only logs of its own format and raises on any other. Logs move between formats only through retained,
@@ -120,15 +121,23 @@ migrated.
   1. Refuse if the run has a live episode, read with the `FROM` format's semantics; a step carries what it
      needs of its old format. An unresolvable foreign claim reads as live, so a stranded claim must be
      released first.
-  2. Seal the old log.
-  3. Transform into the new format's address. On SQLite, write to a temporary file in the target directory
+  2. Refuse if the step refuses the run's records. A step's refusal is deterministic, so it comes before
+     the seal: on SQLite the runner dry-runs the transform on the records it read for step 1.
+  3. Seal the old log.
+  4. Transform into the new format's address. On SQLite, write to a temporary file in the target directory
      and rename it into place; on Postgres, use the sealing transaction.
-- **A failure is recoverable by re-running `runstate migrate`, which completes it.** On SQLite the run is
-  left sealed and unmigrated: new code raises "migrate", and old code cannot write. On Postgres the seal and
-  the copy are one transaction, so a failure rolls back completely and leaves the run unsealed and
-  unmigrated. A chain that stops part-way leaves the run at an intermediate format, and re-running
-  continues from there.
-- **Steps are retained, never deleted.** This resolves `release-and-stability-contract.md` §(b) in favour
+- **A refusal leaves the run untouched.** Every refusal is a `MigrationError` that names its run
+  (`run '<rid>': …`), and `migrate` stops at the first. The refused run stays writable and unmigrated, and
+  a re-run refuses it the same way. One residual on SQLite: records that land between the pre-seal read
+  and the seal can still make the post-seal transform refuse, which leaves the run sealed and unmigrated;
+  recovery is §8's rollback. On Postgres there is no such window, because the seal is taken before the
+  read.
+- **A failure is recoverable by re-running `runstate migrate`, which completes it.** On SQLite a failure
+  after the seal leaves the run sealed and unmigrated: new code raises "migrate", and old code cannot
+  write. On Postgres the seal and the copy are one transaction, so a failure, a refusal included, rolls
+  back completely and leaves the run unsealed and unmigrated. A chain that stops part-way leaves the run
+  at an intermediate format, and re-running continues from there.
+- **Steps are retained, never deleted.** This resolves `release-and-stability-contract.md` §(b) in favor
   of its option 3, with the detection problem removed by the address.
 
 *Found in implementation.* The CLI is `runstate migrate <root> [<rid>...] [--to V] [--backend

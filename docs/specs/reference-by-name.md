@@ -1,7 +1,8 @@
 # Spec: reference by name — records name what they answer
 
-**Status:** SPECIFIED 2026-10-03, not implemented. Designed with the owner section by section, from the
-ground-truth spike (2026-10-02, since retired; the numbers below are its). It is layer 1 of
+**Status:** IMPLEMENTED 2026-10-03, as log format 0.3.0 (package 0.3.0.dev0). Designed with the owner
+section by section, from the ground-truth spike (2026-10-02, since retired; the measured numbers in §6
+and §8 are its). It is layer 1 of
 [`../backlog/identity-in-records.md`](../backlog/identity-in-records.md), and introduces **log format
 0.3.0** under [`log-formats.md`](log-formats.md).
 
@@ -12,8 +13,8 @@ supersedes [`../backlog/episode-aim.md`](../backlog/episode-aim.md).
 
 ## 1. The problem
 
-Design §7 relates records by position: *"a standing fact's eliminator must follow it by `seq`."* Four rules
-rest on it:
+Format 0.2.0 related records by position, by design §7's rule *"a standing fact's eliminator must follow
+it by `seq`."* Four rules rested on it:
 
 | standing record | answered or ended by | the positional part |
 |---|---|---|
@@ -85,10 +86,12 @@ leases. A step-bounded subscription is not episode-local, and carries over betwe
 - **It is void for every other episode,** and void for every reader once a terminal names its bound
   episode. One that no episode registered is never void.
 - **One predicate decides voidness** for the worker and the observers alike.
-- **The renewing-client gap is accepted.** A client that renews by re-sending the same id is unserved
-  between a crash and its next renewal, at most one renewal period. Today's behaviour re-anchors the
-  renewal into the next episode instead. A client-side helper that renews as soon as a new claim appears
-  could shrink the gap; this spec notes it and does not build it.
+- **The renewing-client gap is accepted.** Re-sending a live lease's id renews it within the episode
+  that bound it. Across a crash the binding voids that id for every later episode, re-sends included, so
+  a client renewing under one id is unserved until it resubscribes under a fresh id; one that renews
+  under a fresh id each time is unserved until its next renewal, at most one renewal period. A
+  client-side helper that resubscribes under a fresh id as soon as a new claim appears could shrink the
+  gap; this spec notes it and does not build it.
 
 ### Which episode a record belongs to
 
@@ -151,28 +154,60 @@ verdict plane an unnamed lifecycle record raises the existing `MalformedRecordEr
 
 `runstate/migrations/v0_2_0_to_v0_3_0.py`, under `log-formats.md` §6. It reads
 `<root>/v0.2.0/<rid>.db` and writes `<root>/v0.3.0/<rid>.db`, **preserving every record's seq**, because
-`claim_seq` values point at seqs. Every name it writes is exactly what the positional rule said:
+`claim_seq` values point at seqs. It deletes nothing, and appends only `lifecycle.bound` records, after the
+last record. Every name it writes is exactly what the positional rule said; the step's docstring is the
+precise statement of the rules.
 
-- **Stops.** A nameless stop gets the deterministic id `stop@<seq>`. An id reused after its stop was
-  cleared is renamed. Each `stopped.honored` lists the stops that `stopped` cleared under the old rule,
-  which was blind to both author and body.
-- **Episodes.** `claim_seq` is the latest claim before the record.
+- **Stops.** A nameless stop gets the deterministic id `stop@<seq>`. A stop keeps its id only if no other
+  control request bears it, unsubscribes aside: it is the only stop with that id, and no subscription or
+  unknown verb bears it. Otherwise every stop with that id gets a minted id, `<id>#<seq>`. Positionally
+  each stop record was its own request, while in 0.3.0 the requests of one id are one request, which
+  every nak bearing that id answers. Each `stopped.honored` lists the stops that `stopped` cleared under
+  the old rule: every stop since the previous `stopped`, blind to both author and body.
+- **Episodes.** The `claim_seq` of a heartbeat or a `stopped` is the latest claim before it. A `stopped`
+  before any claim names none (null).
 - **Subscriptions.** A reused id is split into segments at each answer, and the later segments become
-  `<id>#k`, along with their answers and value sends. An `unsubscribe` before every subscribe of its id
-  is renamed so that it names nothing.
-- **Episode-local subscriptions.** One `lifecycle.bound` for each one the positional rule voided,
-  appended after the last record.
-- **Liveness.** To refuse a run with a live episode, the step carries the 0.2.0 positional reading of
-  liveness.
+  `<id>#k`, along with their answers and value sends. An answer that precedes every subscribe of its id
+  answered nothing, so it is renamed to name nothing: an `unsubscribe` always, and a nak unless no
+  subscription bears its id and a same-id stop precedes it. A nak with no same-id stop before it names
+  nothing either, since a nak cannot refuse a stop that comes after it. A nak that keeps its id names
+  its stop.
+- **Episode-local subscriptions.** One `lifecycle.bound` for each one the positional boundary rule
+  voided, naming the first claim between it and the latest claim.
+- **Every minted name is fresh:** it is checked against every request id in the run and every name minted
+  before it.
+- **Refused: a heartbeat before any claim.** `Heartbeat.claim_seq` is a required integer, so format 0.3.0
+  cannot hold such a beat, and leaving it unnamed would put a 0.2.0 record in a 0.3.0 log
+  (`log-formats.md` §2, rule 5). The step refuses the run, naming the heartbeat's seq. It never drops
+  the record.
+- **Refusals come before sealing.** A refusal is deterministic, so the runner meets it on a dry run of
+  the transform before the seal (`log-formats.md` §6), and the refused run stays writable and
+  unmigrated.
+- **The step carries its own copy of the 0.2.0 semantics.** It is retained forever, so it must read 0.2.0
+  and write 0.3.0 as they were defined when it was written, whatever later code does. It imports no
+  record semantics from the package (not `Envelope`, not `Topic`, not the schedule predicates): only
+  `Row`, `MigrationError`, and `resolve()`, an OS probe of a handle rather than a format rule. A test
+  pins the import list.
+- **Liveness.** To refuse a run with a live episode, the step reads liveness as 0.2.0 did: the latest
+  claim is live unless a `stopped` follows it or its handle resolves dead, and an unresolvable foreign
+  handle reads as live.
 
 **Measured on the spike, on copies of 2,569 real consumer logs:** identical reads on 2,562. The 7
 differences are all one positional bug that names fix: `progress` reading a previous episode's heartbeat.
+The step's golden logs (`tests/test_migration_v0_2_0_to_v0_3_0.py`) read as 0.2.0's positional folds
+read them (computed at `72d9c3f`), except in two classes, both positional defects that names fix: that
+stale-beat leak, and a **naked stop**, which `undischarged_stops` kept listing until the next `stopped`
+and which its nak now answers.
 
 **Known limits:**
 - A historical misattribution is copied faithfully, not corrected: episode-aim's objection, stated in the
-  step's docstring.
+  step's docstring. A displaced worker's late heartbeat or `stopped` is named for its successor's claim,
+  because the positional rule attributed it there, and the log does not record which worker wrote it.
 - The `bound` records are inferred from the positional rule. The 0.2.0 log never recorded which episode
   registered a lease.
+- A nak bearing a uniquely named stop's id, after that stop, is presumed to be that stop's refusal. The
+  reference worker naks only the request it is handling, so only a nak it did not write (a third
+  party's, or another worker's) could make that wrong: a forged nak.
 - The real corpus has no subscribes, naks or unsubscribes, so those parts are tested only on synthetic
   logs.
 

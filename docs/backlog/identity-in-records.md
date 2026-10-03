@@ -1,8 +1,8 @@
 # Identity in records: names, fenced writes, episode-keyed artefacts, and time as a trigger
 
 **Status:** DESIGN, not converged (opened 2026-10-03). Every layer was measured in a throwaway spike on
-2026-10-02. Layer 1 is now specified and implemented ([`../specs/reference-by-name.md`](../specs/reference-by-name.md));
-the others are not adopted.
+2026-10-02. Layer 1 is IMPLEMENTED (2026-10-03, as log format 0.3.0:
+[`../specs/reference-by-name.md`](../specs/reference-by-name.md)); the others are not adopted.
 
 **Evidence:** the spike branches are retired. What each layer's case rests on — the mechanism's shape,
 how each experiment was set up, and its numbers — is inlined in that layer's section below, enough to
@@ -37,7 +37,7 @@ try*.
 
 | # | layer | what it buys | evidence | status |
 |---|---|---|---|---|
-| 1 | **Reference by name** on control and lifecycle records | order-independent control folds; #39, the cascade and the stale-beat leak fixed | [the spec](../specs/reference-by-name.md) and its tests | specified, implemented |
+| 1 | **Reference by name** on control and lifecycle records | order-independent control folds; #39, the cascade and the stale-beat leak fixed | [the spec](../specs/reference-by-name.md) and its tests | IMPLEMENTED (log format 0.3.0) |
 | 2 | **Names on values** | a displaced worker's values cannot splice the series | §2 | design open: encoding |
 | 3 | **Episode-keyed artefacts**, resumed through the log's vouching | a displaced worker cannot regress a checkpoint | §3 | recipe measured |
 | 4 | **Time as a trigger** (a staleness `ClaimGate`) | the cross-host wedge dissolves | §4 | holds, with conditions |
@@ -57,7 +57,7 @@ arrive in. This replaces §7's "must follow by `seq`".
 
 **As built:**
 
-- **Stop.** `lifecycle.stopped.honoured` lists the `request_id`s of every stop in the worker's
+- **Stop.** `lifecycle.stopped.honored` lists the `request_id`s of every stop in the worker's
   registered pending set when it stopped, due or not. A stop stays pending until a `stopped` names it or
   a `nak` bears its id. Stops are named by `request_id`, not by `seq`, because a `nak` can name only by
   request id. Otherwise a refused stop would have no eliminator.
@@ -76,7 +76,7 @@ arrive in. This replaces §7's "must follow by `seq`".
 - **Terminal.** `heartbeat` and `stopped` carry `claim_seq`.
 
 **Schemas:**
-- lifecycle-v0.5: `Heartbeat.claim_seq`; `Stopped.claim_seq` (nullable) and `Stopped.honoured`; the new
+- lifecycle-v0.5: `Heartbeat.claim_seq`; `Stopped.claim_seq` (nullable) and `Stopped.honored`; the new
   `lifecycle.bound` topic.
 - subscription-v0.3: `request_id` is required on `control.stop`.
 
@@ -102,7 +102,7 @@ arrive in. This replaces §7's "must follow by `seq`".
   - a stop landing just before or during the dying breath is named, not discharged unseen;
   - the cascade (a displaced worker's late `stopped` no longer releases its successor);
   - a displaced worker's beat no longer sets `progress`.
-- **The startless run** is answered. A stop sent before any worker exists is honoured exactly once,
+- **The startless run** is answered. A stop sent before any worker exists is honored exactly once,
   which [episode-aim](episode-aim.md) could not answer: a stop is named, not scoped to a claim.
 - **Migration.** On copies of 2,569 real consumer logs, the backfill is exact on 2,562. The 7
   differences are all a positional bug the names fix: progress reading a prior episode's beat. Where a
@@ -114,26 +114,31 @@ arrive in. This replaces §7's "must follow by `seq`".
   - **`undischarged_stops` is the one scaling cost:** about 10 ms at 2,000 stops, against about 10 µs,
     because an answer can sit anywhere.
 
-**Conditions:**
+**Conditions** (met 2026-10-03, at format 0.3.0):
 
 1. **Each consumer migrates when it bumps its pin, not all at once.** Since 2026-10-03 mycooc,
    translation and runstate-tui depend on runstate through a git pin (`72d9c3f`), so this work
-   never reaches them uninvited. A consumer upgrading runs the backfill on its logs, then bumps.
-2. **The new version must refuse an old-format log loudly.** On an unmigrated log, beats name nothing
-   and `ensure` and `await_consumed` **hang silently**. With pinned consumers, old logs and new readers
-   will meet, for example when a cockpit or a later upgrade reads them. A format check that raises
-   is required, not a compatibility reader.
+   never reaches them uninvited. A consumer upgrading bumps its pin, then runs `runstate migrate` on
+   its logs (`../specs/log-formats.md` §8, `../specs/reference-by-name.md` §7).
+2. **The new version refuses an old-format log loudly.** On an unmigrated log, beats name nothing
+   and `ensure` and `await_consumed` would **hang silently**. With pinned consumers, old logs and new
+   readers will meet, for example when a cockpit or a later upgrade reads them. So a log's format is
+   part of its address, and opening one of another format raises `LogFormatMismatch`
+   (`../specs/log-formats.md`), with no compatibility reader.
 3. **Consumer changes at upgrade time:**
    - mycooc's and translation's stop writers must mint `request_id`s (none of their 184 stops has one);
    - mycooc's `resume_fanout` must name the stop it discharges.
-4. **Accept the renewing-client gap.** A client renewing a lease with the same id is unserved between a
-   crash and its next renewal; it used to be re-anchored. The gap is bounded by the renewal period.
-5. **Decide** whether `undischarged_stops` needs an incremental (Watcher-side) form before anything
-   polls it on long runs.
-6. **Rewrite the docs:** design §7 (the rule becomes "answers name; the claim CAS orders claims; windows
-   are causal"), `../specs/stop-discharge.md`, `../specs/service-worker.md`,
-   `../specs/time-lease-boundary.md`, the implementers-guide examples, and the 36 tests that pin
-   positional semantics or the v0.4 shapes.
+4. **Accept the renewing-client gap.** Across a crash a lease's id is void for every later episode,
+   re-sends included, so a client renewing under one id is unserved until it resubscribes under a
+   fresh id; one that renews under a fresh id each time waits at most one renewal period
+   (`../specs/time-lease-boundary.md`, "Who pays"). *Open question for the owner:* the gap was accepted
+   as "bounded by the renewal period", which holds as built only for fresh-id renewals.
+5. **`undischarged_stops` has an incremental form,** `Watcher.pending_stops`, for anything that polls
+   it on long runs.
+6. **The docs are rewritten:** design §7 (the rule is "answers name; the claim CAS orders claims;
+   windows are causal"), `../specs/stop-discharge.md`, `../specs/service-worker.md`,
+   `../specs/time-lease-boundary.md`, the implementer's guide, and the tests that pinned positional
+   semantics or the v0.4 shapes, each replaced by one pinning the named behavior.
 
 **Not fixed:** forgery and authority (a forger names a claim or a stop as easily as before), the value
 plane, and `last_activity`.
@@ -379,7 +384,7 @@ That is efficiency, not correctness, **unless** layer 3 turns out to need it.
 
 ## What this does not do
 
-- **Forgery and authority.** It is still an honour system. Names make attribution checkable; they do
+- **Forgery and authority.** It is still an honor system. Names make attribution checkable; they do
   not authenticate.
 - **The artefact plane** is protected only by the consumer's convention (layer 3).
 - **Multi-home claims.** A claim's name is the arbiter's seq, so order among claims still needs one
@@ -388,7 +393,7 @@ That is efficiency, not correctness, **unless** layer 3 turns out to need it.
 
 ## Order of work
 
-1. **Layer 1: specified and being implemented** (`../specs/log-formats.md`, `../specs/reference-by-name.md`).
+1. **Layer 1: IMPLEMENTED 2026-10-03** (`../specs/log-formats.md`, `../specs/reference-by-name.md`).
    The consumers stay on their pins; each migrates and makes its stop-writer changes when it upgrades.
 2. **Layer 2:** the encoding experiment, then value names and the stamping helper.
 3. **Layer 3:** test R\* without the fence. That result decides layer 5.

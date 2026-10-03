@@ -69,7 +69,7 @@ runstate.ensure(producer, "loss", until={"step": 20})   # extend: resume 8..19, 
 ```python
 def on_event(rid, e):
     if e.topic == "value" and e.body["value"] > THRESHOLD:
-        ch.send({"from": {"step": 0}}, topic="control.stop", request_id="me")
+        ch.send({"from": {"step": 0}}, topic="control.stop", request_id=uuid.uuid4().hex)
 
 watcher.wait("run-1", on_event=on_event)
 ```
