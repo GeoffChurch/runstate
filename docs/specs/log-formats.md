@@ -94,7 +94,7 @@ A sealed log is readable and refuses every write.
   "attempt to write a readonly database".
 - **Postgres.** The old schema gains a `sealed_runs(run_id)` table and an insert-refusing trigger on its
   `log` table. Sealing a run and copying it happen in one transaction, holding a lock that blocks
-  concurrent inserts for that run.
+  concurrent inserts for that run (§6 gives the failure behavior).
 
 *Found in implementation.* SQLite sealing **raises rather than partially sealing** when another
 connection holds the log open. And sealing by file permissions **does not bind the root user**, who can
@@ -123,17 +123,16 @@ migrated.
   2. Seal the old log.
   3. Transform into the new format's address. On SQLite, write to a temporary file in the target directory
      and rename it into place; on Postgres, use the sealing transaction.
-- **A failure leaves the run sealed and unmigrated.** New code then raises "migrate"; old code cannot
-  write; re-running `runstate migrate` completes it. A chain that stops part-way leaves the run at an
-  intermediate format, and re-running continues from there.
+- **A failure is recoverable by re-running `runstate migrate`, which completes it.** On SQLite the run is
+  left sealed and unmigrated: new code raises "migrate", and old code cannot write. On Postgres the seal and
+  the copy are one transaction, so a failure rolls back completely and leaves the run unsealed and
+  unmigrated. A chain that stops part-way leaves the run at an intermediate format, and re-running
+  continues from there.
 - **Steps are retained, never deleted.** This resolves `release-and-stability-contract.md` §(b) in favour
   of its option 3, with the detection problem removed by the address.
 
 *Found in implementation.* The CLI is `runstate migrate <root> [<rid>...] [--to V] [--backend
-sqlite|postgres]`. On Postgres the seal is taken first, then the rows are read and copied **in the same
-transaction**, so any failure rolls back completely and **leaves the run unsealed and unmigrated**: stricter
-than SQLite, where a failure leaves the run sealed and unmigrated. Re-running `runstate migrate` completes
-either.
+sqlite|postgres]`. On Postgres the seal is taken first, then the rows are read and copied in that one transaction.
 
 ## 7. Onboarding legacy logs
 
