@@ -100,11 +100,13 @@ def test_ensure_schema_creates_both_indexes(pg_dsn):
     from runstate.channel.postgres import ensure_schema
 
     ensure_schema(pg_dsn)
-    with psycopg.connect(pg_dsn) as c:
+    with psycopg.connect(pg_dsn) as c:  # the current format's table, not any `log`
         names = {
             r[0]
             for r in c.execute(
-                "select indexname from pg_indexes where tablename = 'log'"
+                "select indexname from pg_indexes"
+                " where schemaname = %s and tablename = 'log'",
+                [FORMATS[LOG_FORMAT].pg_schema()],
             )
         }
     assert {"idx_log_run_topic_seq", "idx_log_run_topic_name_seq"} <= names
