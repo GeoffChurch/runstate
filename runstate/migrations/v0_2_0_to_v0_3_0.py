@@ -61,6 +61,10 @@ its nak now answers.
   there, and the log does not record which worker wrote it.
 - The ``bound`` records are inferred from the positional rule. The 0.2.0 log
   never recorded which episode registered a lease.
+- A nak bearing a uniquely named stop's id, after that stop, is presumed to be
+  that stop's refusal. The reference worker naks only the request it is
+  handling, so only a nak it did not write (a third party's, or another
+  worker's) could make that wrong.
 - The real corpus has no subscribes, naks or unsubscribes, so those rules are
   tested only on synthetic logs.
 """
