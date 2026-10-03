@@ -222,8 +222,9 @@ dropped — never fatal to the worker); otherwise the worker's **consumption
 watermark** (`consumed_seq`, on its heartbeat) passing your seq means
 registered-and-accepted; and a terminal `stopped` arriving instead means the run
 died under your request. `await_consumed()` is the blessed read, returning
-exactly that answer space (`Nak` | `RunResult` | `None`); it raises if your request
-reuses an id an answer already spent.
+exactly that answer space (`Nak` | `RunResult` | `None`), by the `request_id` your
+request bears; it raises if your request bears none or reuses an id an answer
+already spent.
 
 **(c) Lifecycle — the worker's self-report** (`worker → observers`, reserved
 `lifecycle.*`):

@@ -29,6 +29,15 @@ that produced each change.
   and seal. Format 0.2.0 names the logs written since `4729fcd`; format 0.3.0
   (reference by name, below) is current, and the package is `0.3.0.dev0`.
 
+### Library API (breaking)
+
+- **`await_consumed(channel, seq)` takes the request's id from its record**
+  (2026-10-03). The `request_id` parameter is gone: it was a second source of
+  truth, and a missing or mismatched one returned `None` ("accepted") while the
+  worker refused the request. A subscribe, unsubscribe or stop at `seq` with no
+  `request_id` now raises `ValueError`, and a stop its terminal `stopped` honored
+  returns `None` rather than the refused-by-death verdict.
+
 ### Wire protocol versions (breaking)
 
 Each convention schema in `protocol/` is versioned on its own timeline and is

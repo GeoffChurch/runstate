@@ -257,24 +257,29 @@ runs under a shared `request_id` — the **cross-run barrier**. `poll` raises
 ### `await_consumed`
 
 ```python
-await_consumed(channel, seq, *, request_id=None, timeout=None,
+await_consumed(channel, seq, *, timeout=None,
                poll_interval=0.05, now=time.time, sleep=time.sleep) -> Nak | RunResult | None
 ```
 
-Block until the control request at `seq` is answered or drained. **Answer-first**:
-a `lifecycle.nak` naming `request_id` that follows `seq` returns the `Nak`; a
-terminal record following the request with no later episode returns the terminal
-`RunResult` (refused-by-death); otherwise the heartbeat watermark
-(`consumed_seq >= seq`) passing means accepted (returns `None`). A request that
-**reuses a spent id** is dead on arrival (`specs/reference-by-name.md` §3): if an
-answer named `request_id` before `seq` (for a subscribe an unsubscribe or a nak,
-for a stop a stopped's `honored` or a nak), it raises `ValueError` naming the id
-and that record, at once, since the worker drops the request unanswered. Also
-`ValueError`, with or without a `request_id`, if no record sits at `seq` (an
-empty seq names no request, so no watermark could accept it). Raises `TimeoutError` if `timeout`
-elapses (not-yet-drained is not a refusal), and `MalformedRecordError` on a nak
-body it cannot parse. With `request_id=None` the spent-id check and the nak
-lookup are skipped.
+Block until the control request at `seq` is answered or drained. The request is
+the record at `seq`, and the `request_id` it bears is the name its answers carry,
+so the caller passes no id. **Answer-first**: the first answer naming the request
+that follows `seq` resolves it — a `lifecycle.nak` returns the `Nak`, and for a
+stop, a `lifecycle.stopped` whose `honored` lists it returns `None` (carried out).
+With no answer, a terminal record following the request with no later episode
+returns the terminal `RunResult` (refused-by-death), and the heartbeat watermark
+(`consumed_seq >= seq`) passing means accepted (returns `None`).
+
+Raises `ValueError` at once, before waiting, where `None` would be a false
+"accepted": no record sits at `seq` (an empty seq names no request); the
+`control.subscribe`, `control.unsubscribe` or `control.stop` at `seq` carries no
+`request_id` (malformed under subscription-v0.3; the worker naks it under no id);
+or the request **reuses a spent id** (`specs/reference-by-name.md` §3): an answer
+named its id before `seq` (for a subscribe an unsubscribe or a nak, for a stop a
+stopped's `honored` or a nak), so the worker drops it unanswered — the error names
+the id and that record. Raises `TimeoutError` if `timeout` elapses
+(not-yet-drained is not a refusal), and `MalformedRecordError` on a nak body it
+cannot parse.
 
 ### `RunStatus`
 

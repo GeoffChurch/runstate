@@ -424,10 +424,12 @@ If you build a worker that speaks the conventions, these steps are **normative**
 `control` order (design §11–12). "Did my request land?" is the **consumption
 watermark** (`consumed_seq ≥ its seq` and no `nak` naming it), and it is
 **answer-first**: a `nak` naming the request's `request_id` resolves it regardless
-of the watermark (design §6; `watcher.await_consumed`). A request whose id was
-already spent before it is dead on arrival — the worker drops it unanswered — so
-the reference `await_consumed` raises `ValueError` for it rather than report
-acceptance. The worker advances `consumed_seq` only
+of the watermark, and so, for a stop, does a `stopped` whose `honored` lists it
+(design §6; `watcher.await_consumed`, which takes the id from the request's own
+record). A request whose id was already spent before it is dead on arrival — the
+worker drops it unanswered — and a stop or subscription with no `request_id` is
+malformed and refused under no id, so the reference `await_consumed` raises
+`ValueError` for both rather than report acceptance. The worker advances `consumed_seq` only
 **after** durably registering/naking, so it is a true registration watermark,
 not merely "read past."
 
@@ -598,7 +600,7 @@ against `runstate/` at 2026-07-16.)
 | `ensure` | `NoProgressError` | `ensure`'s **own** spawn died without advancing the step frontier and no live episode owns the run (own-spawn-scoped; a foreign episode re-drives) |
 | `history` | `ValueError` | a conforming `value` point has `step: null` (this is a stepped-trajectory reader); a **time-referencing** schedule with **no epoch** (no `lifecycle.started.t` on the log) |
 | `peek_terminal`, `live_episode`, `await_consumed` | `MalformedRecordError` | a **verdict-plane** record cannot be interpreted (bad keys, a constraint violation, a launcher record with no `request_id`; for `peek_terminal`, a `stopped` that names no claim — the claim gate `live_episode` skips such a record, deliberately) |
-| `await_consumed` | `ValueError` | the request reuses a **spent** id (an answer named it before `seq`), or no record sits at `seq` (checked with or without a `request_id`) |
+| `await_consumed` | `ValueError` | the request reuses a **spent** id (an answer named it before `seq`), the subscribe, unsubscribe or stop at `seq` carries no `request_id`, or no record sits at `seq` |
 | `await_consumed` | `TimeoutError` | `timeout` elapsed (not-yet-drained is not a refusal) |
 | `ensure` | `RecordlessExitError` | the run was reaped with a clean exit code but left no worker verdict, and a full drive cycle did not move the frontier |
 | `Worker.emit` | `ValueError` | called before the first tick or on a stepless worker (a `step=null` point would poison `history` for the name) |

@@ -464,7 +464,7 @@ def test_await_consumed_returns_none_when_accepted(open_run):
         {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r"
     )
     hb(ch, 0, s, c)
-    assert await_consumed(open_run(), s, request_id="r") is None
+    assert await_consumed(open_run(), s) is None
 
 
 def test_await_consumed_returns_the_nak_when_refused(open_run):
@@ -479,7 +479,7 @@ def test_await_consumed_returns_the_nak_when_refused(open_run):
         request_id="r",
     )
     hb(ch, 0, s, c)
-    nak = await_consumed(open_run(), s, request_id="r")
+    nak = await_consumed(open_run(), s)
     assert nak is not None and nak.reason == "unsatisfiable"
 
 
@@ -491,7 +491,7 @@ def test_await_consumed_times_out_if_not_consumed(open_run):
         {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r"
     )
     with pytest.raises(TimeoutError):
-        await_consumed(open_run(), s, request_id="r", timeout=0.0, now=lambda: 0.0)
+        await_consumed(open_run(), s, timeout=0.0, now=lambda: 0.0)
 
 
 def test_await_consumed_blocks_below_watermark_then_returns_when_it_advances(
@@ -511,7 +511,7 @@ def test_await_consumed_blocks_below_watermark_then_returns_when_it_advances(
             advanced["done"] = True
             hb(ch, 1, s, c)
 
-    assert await_consumed(open_run(), s, request_id="r", sleep=driver_sleep) is None
+    assert await_consumed(open_run(), s, sleep=driver_sleep) is None
     assert advanced[
         "done"
     ]  # it actually blocked until the watermark advanced (not a premature return)
@@ -530,7 +530,7 @@ def test_await_consumed_resolves_a_nak_before_the_watermark(open_run):
         topic="lifecycle.nak",
         request_id="r",
     )
-    nak = await_consumed(open_run(), s, request_id="r", timeout=1.0)
+    nak = await_consumed(open_run(), s, timeout=1.0)
     assert nak is not None and nak.reason == "unsatisfiable"
 
 
@@ -561,7 +561,7 @@ def test_await_consumed_refuses_a_subscribe_reusing_a_spent_id(open_run, topic, 
     )
     hb(ch, 0, s, c)  #             the worker drained it -- and dropped it, unanswered
     with pytest.raises(ValueError, match=rf"'r'.*{topic} at seq {spent}\b"):
-        await_consumed(open_run(), s, request_id="r", timeout=1.0)
+        await_consumed(open_run(), s, timeout=1.0)
 
 
 def _honor(ch, claim_seq, rid):
@@ -589,7 +589,7 @@ def test_await_consumed_refuses_a_stop_reusing_a_spent_id(open_run, spend):
     s = ch.send({}, topic="control.stop", request_id="halt")
     hb(ch, 0, s, c2)  #           the next episode drained it -- and ignored it
     with pytest.raises(ValueError, match=rf"'halt'.* at seq {spent}\b"):
-        await_consumed(open_run(), s, request_id="halt", timeout=1.0)
+        await_consumed(open_run(), s, timeout=1.0)
 
 
 def test_await_consumed_returns_a_later_nak_by_name(open_run):
@@ -610,28 +610,74 @@ def test_await_consumed_returns_a_later_nak_by_name(open_run):
         request_id="halt",
     )
     hb(ch, 0, s, c)
-    nak = await_consumed(open_run(), s, request_id="halt", timeout=1.0)
+    nak = await_consumed(open_run(), s, timeout=1.0)
     assert nak is not None and nak.message == "bad trigger"
 
 
 def test_await_consumed_refuses_a_seq_that_holds_no_request(open_run):
-    # the request's topic decides which answers spend its id, so a seq with no
-    # record names no request to await
-    ch = open_run()
-    claim(ch)
-    with pytest.raises(ValueError, match="no record at seq 9"):
-        await_consumed(open_run(), 9, request_id="r", timeout=0.0, now=lambda: 0.0)
-
-
-def test_await_consumed_refuses_an_empty_seq_without_a_request_id(open_run):
     """Ruling 15: a seq that holds no record names no request, so a watermark
-    past it is no evidence of acceptance. Without a request_id the check must
-    still run, or a beat past the empty seq reads as a false "accepted"."""
+    past it is no evidence of acceptance, and a beat past the empty seq must
+    not read as a false "accepted"."""
     ch = open_run()
     c = claim(ch)
     hb(ch, 0, 999, c)  #                       a watermark past the empty seq
     with pytest.raises(ValueError, match="no record at seq 9"):
         await_consumed(open_run(), 9, timeout=0.0, now=lambda: 0.0)
+
+
+@pytest.mark.parametrize(
+    "topic, body",
+    [("control.stop", {}), ("control.subscribe", {"every": {"step": 1}})],
+    ids=["stop", "subscribe"],
+)
+def test_await_consumed_refuses_a_request_with_no_id(open_run, topic, body):
+    """Ruling 18 (I2): subscription-v0.3 requires a request_id on a stop and a
+    subscribe, so one without is malformed: the worker naks it under no id and
+    runs on, and a watermark past it is no acceptance. It names nothing a
+    caller could await, so await_consumed raises before waiting."""
+    ch = open_run()
+    c = claim(ch)
+    s = ch.send(body, topic=topic, name="loss")
+    ch.send(
+        {"reason": "malformed", "message": "requires a request_id"},
+        topic="lifecycle.nak",
+    )
+    hb(ch, 0, s, c)  #            the worker drained it: the watermark passed it
+    with pytest.raises(ValueError, match=rf"{topic} at seq {s} carries no request_id"):
+        await_consumed(open_run(), s, timeout=0.0, now=lambda: 0.0)
+
+
+def test_await_consumed_answers_by_the_requests_own_id(open_run):
+    """Ruling 18 (I2): the id is the one the record at ``seq`` bears, never a
+    second source of truth from the caller. A named stop the worker refuses is
+    answered by its nak, though the caller passes no id; and there is no
+    ``request_id`` argument left to disagree with the record."""
+    ch = open_run()
+    c = claim(ch)
+    s = ch.send({"from": {"bogus": 1}}, topic="control.stop", request_id="s2")
+    ch.send(
+        {"reason": "malformed", "message": "unknown key 'bogus'"},
+        topic="lifecycle.nak",
+        request_id="s2",
+    )
+    hb(ch, 0, s, c)
+    nak = await_consumed(open_run(), s, timeout=1.0)
+    assert nak is not None and nak.message == "unknown key 'bogus'"
+    with pytest.raises(TypeError):
+        await_consumed(open_run(), s, request_id="other", timeout=1.0)
+
+
+def test_await_consumed_a_stop_its_terminal_honored_was_accepted(open_run):
+    """M1: the worker honored the stop in its dying breath, so the stopped that
+    ends the run names it in ``honored`` and no later beat carries the
+    watermark. The request was carried out: None (accepted), never the
+    refused-by-death verdict."""
+    ch = open_run()
+    c = claim(ch)
+    hb(ch, 3, 0, c)
+    s = ch.send({}, topic="control.stop", request_id="halt")
+    stopped(ch, claim_seq=c, final_step=3, honored=["halt"])
+    assert await_consumed(open_run(), s, timeout=1.0) is None
 
 
 def test_await_consumed_resolves_refused_by_death(open_run):
@@ -644,7 +690,7 @@ def test_await_consumed_resolves_refused_by_death(open_run):
         {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r"
     )
     stopped(ch, claim_seq=None, final_step=3)
-    r = await_consumed(open_run(), s, request_id="r", timeout=1.0)
+    r = await_consumed(open_run(), s, timeout=1.0)
     assert isinstance(r, RunResult) and r.outcome == "preempted"
 
 
@@ -659,7 +705,7 @@ def test_await_consumed_typed_error_on_malformed_nak(open_run):
         {"reason": "malformed"}, topic="lifecycle.nak", request_id="r"
     )  # no message
     with pytest.raises(MalformedRecordError) as ei:
-        await_consumed(open_run(), s, request_id="r", timeout=1.0)
+        await_consumed(open_run(), s, timeout=1.0)
     assert ei.value.seq == nak_seq
     assert ei.value.topic == "lifecycle.nak"
 
@@ -675,7 +721,7 @@ def test_await_consumed_keeps_waiting_when_death_precedes_the_request(open_run):
         {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r"
     )
     with pytest.raises(TimeoutError):
-        await_consumed(open_run(), s, request_id="r", timeout=0.0, now=lambda: 0.0)
+        await_consumed(open_run(), s, timeout=0.0, now=lambda: 0.0)
 
 
 def test_poll_skips_junk_heartbeat_body(tmp_path):
@@ -707,7 +753,7 @@ def test_await_consumed_ignores_junk_heartbeat_watermark(open_run):
     # junk, but named: the watermark read reaches it, and must not trust it
     ch.send({"beat": "junk", "claim_seq": c}, topic="lifecycle.heartbeat")
     with pytest.raises(TimeoutError):
-        await_consumed(open_run(), s, request_id="r", timeout=0.0, now=lambda: 0.0)
+        await_consumed(open_run(), s, timeout=0.0, now=lambda: 0.0)
 
 
 def test_poll_skips_wrong_typed_heartbeat_step(tmp_path):
