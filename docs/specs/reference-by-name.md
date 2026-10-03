@@ -132,14 +132,17 @@ Two helpers carry the lookups:
 - **The pure fold is the definition:** stops no `stopped.honored` and no `nak` names. It reads every stop,
   `stopped` and nak.
 - **`Watcher.pending_stops(run_id)` is the incremental form.**
-  - Its state is a small object on the run's Watcher entry: the set of unanswered stops, plus its own read
-    cursor. The cursor is separate from the event cursor that `iter_events` callers advance.
-  - Each call reads only the three relevant topics after the cursor. A new stop is added; a `stopped` or
-    nak removes the ids it names.
+  - Its state is a small object on the run's Watcher entry: the unanswered stops by id, the **spent ids**
+    (every id an answer has named), and its own read cursor. The cursor is separate from the event cursor
+    that `iter_events` callers advance.
+  - Each call reads only the three relevant topics after the cursor:
+    - a stop is added, unless its id is spent, in which case it is dead on arrival;
+    - a `stopped` or nak marks the ids it names as spent and removes them.
+  - Keeping the spent ids is what makes it match the pure fold exactly, which treats an answered id as
+    spent wherever the answer sits. Memory grows by one short id per answered stop; time per call stays
+    proportional to the new records. Because answers are remembered, an answer that arrives before its
+    stop is also handled, so the form does not depend on log order.
   - The cursor starts at 0, so the first call computes the pure fold and no separate seed is needed.
-  - **It relies on the single-log premise:** an answer always follows the stop it names, because whoever
-    names a stop must have read it. A replicated or reordered log would also need a set of answers whose
-    stops are not yet seen.
 
 **Errors.** Opening a log can raise the `LogFormatError`s of `log-formats.md` §4, or `RunNotFound`. On the
 verdict plane an unnamed lifecycle record raises the existing `MalformedRecordError`.
