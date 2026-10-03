@@ -1,7 +1,7 @@
 # Spec: reference by name — records name what they answer
 
 **Status:** SPECIFIED 2026-10-03, not implemented. Designed with the owner section by section, from the
-ground-truth spike on branch `spike/reference-by-name`. It is layer 1 of
+ground-truth spike (2026-10-02, since retired; the numbers below are its). It is layer 1 of
 [`../backlog/identity-in-records.md`](../backlog/identity-in-records.md), and introduces **log format
 0.3.0** under [`log-formats.md`](log-formats.md).
 

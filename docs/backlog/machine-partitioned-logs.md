@@ -119,15 +119,15 @@ red-teamed twice and measured. It is this entry's gate in miniature, and the pos
 - **The death CAS** guards one partition only, so a subscribe racing `retire()` is orphaned.
 
 So the gate's answer is **no, not with positional rules**. Reference by name — each record names what it
-answers — is the prerequisite (`spike/reference-by-name`).
+answers — is the prerequisite ([`../specs/reference-by-name.md`](../specs/reference-by-name.md)).
 
 Two findings from the same day change this entry's case:
 
-- **Containment no longer needs partitioning.** Fenced worker writes (`spike/fenced-worker-writes`) stop
+- **Containment no longer needs partitioning.** Fenced worker writes ([identity-in-records](identity-in-records.md) §5) stop
   a displaced worker landing anything on a shared log, and episode-keyed records let a reader separate two
   lineages. Question 5, *"does it fix the splice or move it"*, is answered by identity, not by the
   partition.
 - **What partitioning would still buy is writing without a shared sequencer**, for runs that cannot
   reach one. That removes the claim's shared frontier, so single-spawn becomes best-effort deduplication.
-  `spike/time-triggered-claims` measured that a mistaken claim then costs only waste, provided every
+  [identity-in-records](identity-in-records.md) §4 measured that a mistaken claim then costs only waste, provided every
   writer is fenced or episode-keyed.
