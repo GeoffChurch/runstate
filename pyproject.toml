@@ -69,6 +69,10 @@ target-version = ["py311", "py312", "py313"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Tests import THIS checkout, whatever interpreter runs them. The consumers' envs carry a
+# pinned, non-editable runstate (since 2026-10-03); without this, a bare `pytest` from one of
+# them would test the pin and pass while the working tree is broken.
+pythonpath = ["."]
 markers = [
     "tier(name): the concurrency contention tier a test needs (in_process | cross_process | cross_host); the conc_backend fixture skips backends below it",
 ]
