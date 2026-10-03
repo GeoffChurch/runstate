@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import tempfile
 from pathlib import Path
 from typing import Protocol
 from urllib.request import pathname2url
@@ -91,21 +92,31 @@ class SqliteStore:
             seal_sqlite(src)
         out = step.transform(_read_sqlite(src))
         dst.parent.mkdir(exist_ok=True)
-        tmp = dst.with_name(f".{dst.name}.tmp")
-        tmp.unlink(missing_ok=True)
-        conn = sqlite3.connect(tmp, isolation_level=None)
+        # A temporary file of this call's own, beside the address: two migrators
+        # of one run never unlink or publish each other's. Hidden, and not
+        # *.db, so no run listing sees it; removed if the write fails.
+        fd, name = tempfile.mkstemp(
+            dir=dst.parent, prefix=f".{dst.name}.", suffix=".tmp"
+        )
+        os.close(fd)
+        tmp = Path(name)
         try:
-            conn.executescript(_SCHEMA)
-            conn.execute("BEGIN")
-            conn.executemany(
-                "INSERT INTO log (seq, topic, name, request_id, body, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                out,
-            )
-            conn.execute("COMMIT")
-        finally:
-            conn.close()
-        os.replace(tmp, dst)
+            conn = sqlite3.connect(tmp, isolation_level=None)
+            try:
+                conn.executescript(_SCHEMA)
+                conn.execute("BEGIN")
+                conn.executemany(
+                    "INSERT INTO log (seq, topic, name, request_id, body, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    out,
+                )
+                conn.execute("COMMIT")
+            finally:
+                conn.close()
+            os.replace(tmp, dst)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
 
 class PostgresStore:

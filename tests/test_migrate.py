@@ -159,6 +159,34 @@ def test_a_write_path_failure_leaves_no_log_at_the_address(toy, monkeypatch, tmp
     assert not list(target.parent.glob(".*.tmp"))
 
 
+def test_a_migrator_overtaken_by_another_still_publishes_a_whole_log(
+    toy, monkeypatch, tmp_path
+):
+    """T5: two migrators of one run, the second running whole while the first is
+    about to publish. Each writes a temporary file of its own, so neither
+    unlinks nor publishes the other's: both complete, the log at the address is
+    whole, and no temporary file is left."""
+    from runstate.migrations import stores
+
+    _seed(tmp_path, "8.0.0", "r1")
+    target = DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1")
+    step = Tag("8.0.0", "8.1.0")
+    real = os.replace
+    overtaken = []
+
+    def replace(src, dst):
+        if not overtaken:
+            overtaken.append(src)
+            SqliteStore(tmp_path).migrate_one(step, "r1")  # the second, whole
+        real(src, dst)
+
+    monkeypatch.setattr(stores.os, "replace", replace)
+    SqliteStore(tmp_path).migrate_one(step, "r1")
+    assert overtaken
+    assert [b["i"] for b in _bodies(target)] == [0, 1, 2]
+    assert not list(target.parent.glob(".*.tmp"))
+
+
 def test_wal_frames_of_a_crashed_writer_survive(toy, tmp_path, crashed_wal_writer):
     """Review focus 3: a writer that died leaves frames in the WAL; the copy holds them."""
     path = DirectoryLayout("8.0.0").sqlite_path(tmp_path, "r1")
