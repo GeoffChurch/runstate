@@ -1,0 +1,78 @@
+mode=layer: A=500857 B=500874; A froze after value step 5; SIGCONT when B's ckpt reached {'step': 9, 'state': {'w': 4.5}}
+artifact plane: ckpt.json just before SIGCONT={'step': 9, 'state': {'w': 4.5}}, 0.3s after={'step': 12, 'state': {'w': 6.0}}
+A's checkpoint writes after SIGCONT (unfenced): steps [6]
+B's checkpoint sequence: [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]  B regressions/rewinds=[]
+A's stream values accepted after SIGCONT (fenced): []
+stream rows=31 duplicate steps=[5]; values() steps contiguous 0..29: True
+A learned it was displaced? log: ["e.py:833) Workflow 2bb01218f54b.0 is no longer owned by this execution. Waiting for the owner's recorded outcome", ' 30, "stopped": false} after 9.15s']
+status=[('2bb01218f54b.0', 'SUCCESS', 'rtx6000-500874-f53287', 0, 2, 1790985144109, 1790985152235)]
+
+mode=layer: A=500902 B=500912; A froze after value step 5; SIGCONT when B's ckpt reached {'step': 18, 'state': {'w': 9.0}}
+artifact plane: ckpt.json just before SIGCONT={'step': 18, 'state': {'w': 9.0}}, 0.3s after={'step': 21, 'state': {'w': 10.5}}
+A's checkpoint writes after SIGCONT (unfenced): steps [6]
+B's checkpoint sequence: [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]  B regressions/rewinds=[]
+A's stream values accepted after SIGCONT (fenced): []
+stream rows=31 duplicate steps=[5]; values() steps contiguous 0..29: True
+A learned it was displaced? log: ["e.py:833) Workflow 2bb01218f54b.0 is no longer owned by this execution. Waiting for the owner's recorded outcome", ' 30, "stopped": false} after 9.01s']
+status=[('2bb01218f54b.0', 'SUCCESS', 'rtx6000-500912-f8e29d', 0, 2, 1790985153941, 1790985162025)]
+
+[500973] RESULT {"final_step": 40, "stopped": false} after 0.82s
+mode=layer: A=500931 B=500949; A froze after value step 5; SIGCONT when B's ckpt reached {'step': 30, 'state': {'w': 15.0}}
+artifact plane: ckpt.json just before SIGCONT={'step': 30, 'state': {'w': 15.0}}, 0.3s after={'step': 6, 'state': {'w': 3.0}}
+A's checkpoint writes after SIGCONT (unfenced): steps [6]
+B's checkpoint sequence: [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]  B regressions/rewinds=[]
+A's stream values accepted after SIGCONT (fenced): []
+stream rows=31 duplicate steps=[5]; values() steps contiguous 0..29: True
+A learned it was displaced? log: ["e.py:833) Workflow 2bb01218f54b.0 is no longer owned by this execution. Waiting for the owner's recorded outcome", ' 30, "stopped": false} after 8.65s']
+status=[('2bb01218f54b.0', 'SUCCESS', 'rtx6000-500949-b4fa4b', 0, 2, 1790985163627, 1790985171703)]
+B finished before SIGCONT; FINAL ckpt.json now={'step': 6, 'state': {'w': 3.0}} (B had reached 30)
+then ensure(config, 40): new ckpt writes started at step [7] -> recomputed steps 6..29 that were already done; returned 40 values; segments=['2bb01218f54b.0', '2bb01218f54b.1']
+
+mode=local: A=500996 B=501006; A froze after value step 5; SIGCONT when B's ckpt reached {'step': 9, 'state': {'w': 4.5}}
+artifact plane: ckpt.json just before SIGCONT={'step': 9, 'state': {'w': 4.5}}, 0.3s after={'step': 12, 'state': {'w': 6.0}}
+A's checkpoint writes after SIGCONT (unfenced): steps [6]
+B's checkpoint sequence: [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]  B regressions/rewinds=[]
+A's stream values accepted after SIGCONT (fenced): []
+stream rows=31 duplicate steps=[5]; values() steps contiguous 0..29: True
+A learned it was displaced? log: ["e.py:833) Workflow 2bb01218f54b.0 is no longer owned by this execution. Waiting for the owner's recorded outcome", ' 30, "stopped": false} after 5.64s']
+status=[('2bb01218f54b.0', 'SUCCESS', 'local', 0, 1, 1790985174247, 1790985178893)]
+
+mode=local: A=501031 B=501043; A froze after value step 5; SIGCONT when B's ckpt reached {'step': 18, 'state': {'w': 9.0}}
+artifact plane: ckpt.json just before SIGCONT={'step': 18, 'state': {'w': 9.0}}, 0.3s after={'step': 21, 'state': {'w': 10.5}}
+A's checkpoint writes after SIGCONT (unfenced): steps [6]
+B's checkpoint sequence: [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]  B regressions/rewinds=[]
+A's stream values accepted after SIGCONT (fenced): []
+stream rows=31 duplicate steps=[5]; values() steps contiguous 0..29: True
+A learned it was displaced? log: ["e.py:833) Workflow 2bb01218f54b.0 is no longer owned by this execution. Waiting for the owner's recorded outcome", ' 30, "stopped": false} after 5.55s']
+status=[('2bb01218f54b.0', 'SUCCESS', 'local', 0, 1, 1790985180580, 1790985185201)]
+
+mode=resume: A=501062 B=501072; A froze after value step 5; SIGCONT when B's ckpt reached {'step': 9, 'state': {'w': 4.5}}
+artifact plane: ckpt.json just before SIGCONT={'step': 9, 'state': {'w': 4.5}}, 0.3s after={'step': 11, 'state': {'w': 5.5}}
+A's checkpoint writes after SIGCONT (unfenced): steps [6]
+B's checkpoint sequence: [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]  B regressions/rewinds=[]
+A's stream values accepted after SIGCONT (fenced): []
+stream rows=31 duplicate steps=[5]; values() steps contiguous 0..29: True
+A learned it was displaced? log: ["e.py:833) Workflow 2bb01218f54b.0 is no longer owned by this execution. Waiting for the owner's recorded outcome", ' 30, "stopped": false} after 5.60s']
+status=[('2bb01218f54b.0', 'SUCCESS', 'rtx6000-501072-03ec9a', 0, 1, 1790985186820, 1790985191434)]
+
+mode=resume: A=501098 B=501108; A froze after value step 5; SIGCONT when B's ckpt reached {'step': 18, 'state': {'w': 9.0}}
+artifact plane: ckpt.json just before SIGCONT={'step': 18, 'state': {'w': 9.0}}, 0.3s after={'step': 21, 'state': {'w': 10.5}}
+A's checkpoint writes after SIGCONT (unfenced): steps [6]
+B's checkpoint sequence: [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]  B regressions/rewinds=[]
+A's stream values accepted after SIGCONT (fenced): []
+stream rows=31 duplicate steps=[5]; values() steps contiguous 0..29: True
+A learned it was displaced? log: ["e.py:833) Workflow 2bb01218f54b.0 is no longer owned by this execution. Waiting for the owner's recorded outcome", ' 30, "stopped": false} after 5.60s']
+status=[('2bb01218f54b.0', 'SUCCESS', 'rtx6000-501108-91d7c4', 0, 1, 1790985193106, 1790985197757)]
+
+SUMMARY (mode, B steps before SIGCONT, A's DB writes rejected, artifact plane untouched by A):
+   ('layer', 3, True, False)
+   ('layer', 12, True, False)
+   ('layer', 'done', True, False)
+   ('local', 3, True, False)
+   ('local', 12, True, False)
+   ('resume', 3, True, False)
+   ('resume', 12, True, False)
+
+=== B2 displaced writer: PARTIAL ===
+  DB writes fenced in every round: True
+  checkpoint file untouched by displaced A: False

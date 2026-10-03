@@ -1,0 +1,40 @@
+round 0: A=501143 killed; ckpt at kill={'step': 8, 'state': {'w': 4.0}}; stream rows at kill=8
+  DBOS status right after kill -9: [('2bb01218f54b.0', 'PENDING', 'rtx6000-501143-82f07c', 1, 1, 1790985199755, 1790985199755)]
+  B=501154 first trained step=8 (ckpt said 8); B result: ['[501154] RESULT {"final_step": 40, "stopped": false} after 3.04s']
+  raw stream rows=40 duplicate steps in raw stream=[]; values() contiguous 0..39 after take-latest dedupe=True
+  DBOS status after resume: [('2bb01218f54b.0', 'SUCCESS', 'rtx6000-501154-c19ab3', 0, 2, 1790985199755, 1790985206802)]
+  record of two attempts? DBOS: executor_id now B's only; recovery_attempts column above; _chunk step rows: [(4, '_chunk', '{"step":10}', 1790985205084), (7, '_chunk', '{"step":20}', 1790985205200), (10, '_chunk', '{"step":30}', 1790985205737), (13, '_chunk', '{"step":40}', 1790985206265)]
+  layer: beacon rows [('2bb01218f54b.0', 501143), ('2bb01218f54b.0', 501154)]; writer pids in values: [501143, 501154]
+round 1: A=501183 killed; ckpt at kill={'step': 24, 'state': {'w': 12.0}}; stream rows at kill=24
+  DBOS status right after kill -9: [('2bb01218f54b.0', 'PENDING', 'rtx6000-501183-585bde', 1, 1, 1790985207764, 1790985207764)]
+  B=501195 first trained step=24 (ckpt said 24); B result: ['[501195] RESULT {"final_step": 40, "stopped": false} after 2.04s']
+  raw stream rows=40 duplicate steps in raw stream=[]; values() contiguous 0..39 after take-latest dedupe=True
+  DBOS status after resume: [('2bb01218f54b.0', 'SUCCESS', 'rtx6000-501195-36b350', 0, 2, 1790985207764, 1790985214739)]
+  record of two attempts? DBOS: executor_id now B's only; recovery_attempts column above; _chunk step rows: [(4, '_chunk', '{"step":10}', 1790985207776), (7, '_chunk', '{"step":20}', 1790985208310), (10, '_chunk', '{"step":30}', 1790985213869), (13, '_chunk', '{"step":40}', 1790985214199)]
+  layer: beacon rows [('2bb01218f54b.0', 501183), ('2bb01218f54b.0', 501195)]; writer pids in values: [501183, 501195]
+round 2: A=501213 killed; ckpt at kill={'step': 21, 'state': {'w': 10.5}}; stream rows at kill=21
+  DBOS status right after kill -9: [('2bb01218f54b.0', 'PENDING', 'rtx6000-501213-b5279d', 1, 1, 1790985215605, 1790985215605)]
+  B=501230 first trained step=21 (ckpt said 21); B result: ['[501230] RESULT {"final_step": 40, "stopped": false} after 3.04s']
+  raw stream rows=40 duplicate steps in raw stream=[]; values() contiguous 0..39 after take-latest dedupe=True
+  DBOS status after resume: [('2bb01218f54b.0', 'SUCCESS', 'rtx6000-501230-1469dd', 0, 2, 1790985215605, 1790985222702)]
+  record of two attempts? DBOS: executor_id now B's only; recovery_attempts column above; _chunk step rows: [(4, '_chunk', '{"step":10}', 1790985215619), (7, '_chunk', '{"step":20}', 1790985216155), (10, '_chunk', '{"step":30}', 1790985221680), (13, '_chunk', '{"step":40}', 1790985222166)]
+  layer: beacon rows [('2bb01218f54b.0', 501213), ('2bb01218f54b.0', 501230)]; writer pids in values: [501213, 501230]
+round 3: A=501249 killed; ckpt at kill={'step': 10, 'state': {'w': 5.0}}; stream rows at kill=10
+  DBOS status right after kill -9: [('2bb01218f54b.0', 'PENDING', 'rtx6000-501249-b3750d', 1, 1, 1790985224350, 1790985224350)]
+  B=501271 first trained step=10 (ckpt said 10); B result: ['[501271] RESULT {"final_step": 40, "stopped": false} after 3.05s']
+  raw stream rows=40 duplicate steps in raw stream=[]; values() contiguous 0..39 after take-latest dedupe=True
+  DBOS status after resume: [('2bb01218f54b.0', 'SUCCESS', 'rtx6000-501271-a2d2a2', 0, 2, 1790985224350, 1790985231393)]
+  record of two attempts? DBOS: executor_id now B's only; recovery_attempts column above; _chunk step rows: [(4, '_chunk', '{"step":10}', 1790985224366), (7, '_chunk', '{"step":20}', 1790985229782), (10, '_chunk', '{"step":30}', 1790985230321), (13, '_chunk', '{"step":40}', 1790985230857)]
+  layer: beacon rows [('2bb01218f54b.0', 501249), ('2bb01218f54b.0', 501271)]; writer pids in values: [501249, 501271]
+round 9 (kill in value->ckpt window): A=501296 killed; ckpt at kill={'step': 13, 'state': {'w': 6.5}}; stream rows at kill=14
+  DBOS status right after kill -9: [('2bb01218f54b.0', 'PENDING', 'rtx6000-501296-6ff3b4', 1, 1, 1790985232465, 1790985232465)]
+  B=501326 first trained step=13 (ckpt said 13); B result: ['[501326] RESULT {"final_step": 40, "stopped": false} after 3.04s']
+  raw stream rows=41 duplicate steps in raw stream=[13]; values() contiguous 0..39 after take-latest dedupe=True
+  DBOS status after resume: [('2bb01218f54b.0', 'SUCCESS', 'rtx6000-501326-dd9d78', 0, 2, 1790985232465, 1790985239573)]
+  record of two attempts? DBOS: executor_id now B's only; recovery_attempts column above; _chunk step rows: [(4, '_chunk', '{"step":10}', 1790985232477), (7, '_chunk', '{"step":20}', 1790985238122), (10, '_chunk', '{"step":30}', 1790985238502), (13, '_chunk', '{"step":40}', 1790985239038)]
+  layer: beacon rows [('2bb01218f54b.0', 501296), ('2bb01218f54b.0', 501326)]; writer pids in values: [501296, 501326]
+
+=== B3 crash and resume: PASS ===
+  resumed from the checkpoint step and values() continuous in 5/5 rounds
+  raw stream had duplicate steps in 1/5 rounds (deduped only by the layer's take-latest read)
+  attempt history: see per-round lines (DBOS keeps a counter and overwrites executor_id; the layer's beacon/pids are the only per-attempt trace)

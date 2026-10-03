@@ -271,9 +271,10 @@ returns the terminal `RunResult` (refused-by-death), and the heartbeat watermark
 (`consumed_seq >= seq`) passing means accepted (returns `None`).
 
 Raises `ValueError` at once, before waiting, where `None` would be a false
-"accepted": no record sits at `seq` (an empty seq names no request); the
-`control.subscribe`, `control.unsubscribe` or `control.stop` at `seq` carries no
-`request_id` (malformed under subscription-v0.3; the worker naks it under no id);
+"accepted": no record sits at `seq` (an empty seq names no request); the record
+at `seq` is not a `control.*` request; a `control.*` record at `seq` carries no
+`request_id` (subscription-v0.3 closes the topic set to subscribe, unsubscribe and
+stop, each naming its request; the worker refuses any other under no id);
 or the request **reuses a spent id** (`specs/reference-by-name.md` §3): an answer
 named its id before `seq` (for a subscribe an unsubscribe or a nak, for a stop a
 stopped's `honored` or a nak), so the worker drops it unanswered — the error names

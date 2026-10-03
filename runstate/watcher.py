@@ -511,11 +511,6 @@ def _refuse_a_spent_id(channel: Channel, request: Envelope, request_id: str) -> 
             )
 
 
-# The control verbs subscription-v0.3 requires a request_id on: one without is
-# malformed, so the worker refuses it under no id and no answer can name it.
-_NAMED_VERBS = (Topic.CONTROL_SUBSCRIBE, Topic.CONTROL_UNSUBSCRIBE, Topic.CONTROL_STOP)
-
-
 def await_consumed(
     channel: Channel,
     seq: int,
@@ -542,10 +537,11 @@ def await_consumed(
 
     Raises ``ValueError``, before waiting at all, for a request that names no
     request the worker could answer, since ``None`` would then be a false
-    "accepted": no record at ``seq`` (an empty seq names no request); a
-    ``control.subscribe``, ``control.unsubscribe`` or ``control.stop`` with no
-    ``request_id`` (malformed under subscription-v0.3: the worker naks it under
-    no id); and a request whose id an answer already SPENT before ``seq``
+    "accepted": no record at ``seq`` (an empty seq names no request); a record
+    there that is not a ``control.*`` request; a ``control.*`` record with no
+    ``request_id`` (subscription-v0.3 closes the topic set to subscribe,
+    unsubscribe and stop, each naming its request, and the worker refuses any
+    other under no id); and a request whose id an answer already SPENT before ``seq``
     (reference-by-name §3: for a subscribe an unsubscribe, the worker's expiry
     record included, or a nak; for a stop a stopped's ``honored`` or a nak),
     which the worker drops unanswered. Raises ``TimeoutError`` if ``timeout``
@@ -556,15 +552,21 @@ def await_consumed(
     deadline = None if timeout is None else now() + timeout
     request = _request_at(channel, seq)
     request_id = request.request_id
+    if not request.topic.startswith("control."):
+        raise ValueError(
+            f"the record at seq {seq} is a {request.topic}, not a control request: "
+            f"there is no request to await"
+        )
     if request_id is None:
-        if request.topic in _NAMED_VERBS:
-            raise ValueError(
-                f"the {request.topic} at seq {seq} carries no request_id: it is "
-                f"malformed under subscription-v0.3, so the worker refuses it "
-                f"under no id and nothing can answer it -- send it with one"
-            )
-    else:
-        _refuse_a_spent_id(channel, request, request_id)
+        # subscription-v0.3 closes control.* to three verbs, each naming its
+        # request; the worker refuses an id-less one (or an unknown verb) under
+        # no id, so nothing can answer it.
+        raise ValueError(
+            f"the {request.topic} at seq {seq} carries no request_id: it is "
+            f"malformed under subscription-v0.3, so the worker refuses it "
+            f"under no id and nothing can answer it -- send it with one"
+        )
+    _refuse_a_spent_id(channel, request, request_id)
     answers = (
         _STOP_ANSWERS if request.topic == Topic.CONTROL_STOP else (Topic.LIFECYCLE_NAK,)
     )

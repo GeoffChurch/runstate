@@ -614,6 +614,33 @@ def test_await_consumed_returns_a_later_nak_by_name(open_run):
     assert nak is not None and nak.message == "bad trigger"
 
 
+def test_await_consumed_refuses_an_idless_unknown_control_verb(open_run):
+    """subscription-v0.3 closes control.* to three verbs, so an id-less unknown
+    verb is always refused under no id: None would be a false "accepted"."""
+    ch = open_run()
+    c = claim(ch)
+    s = ch.send({}, topic="control.pause")
+    hb(ch, 0, s, c)
+    with pytest.raises(
+        ValueError, match=rf"control\.pause at seq {s}\b.*no request_id"
+    ):
+        await_consumed(open_run(), s, timeout=1.0)
+
+
+def test_await_consumed_refuses_a_non_control_record(open_run):
+    """A record at seq that is no control request has nothing to answer it, even
+    when a terminal follows (which once returned the RunResult)."""
+    ch = open_run()
+    c = claim(ch)
+    s = ch.send({"x": 1}, topic="value", name="loss")
+    ch.send(
+        {"reason": "exited", "exit_code": 0, "signal": None, "t": 0.0},
+        topic="launcher.terminated",
+    )
+    with pytest.raises(ValueError, match="not a control request"):
+        await_consumed(open_run(), s, timeout=1.0)
+
+
 def test_await_consumed_refuses_a_seq_that_holds_no_request(open_run):
     """Ruling 15: a seq that holds no record names no request, so a watermark
     past it is no evidence of acceptance, and a beat past the empty seq must
