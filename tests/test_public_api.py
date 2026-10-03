@@ -57,6 +57,7 @@ EXPECTED = {
     "Started",
     "Heartbeat",
     "Stopped",
+    "Bound",
     "Nak",
     "Launched",
     "Terminated",

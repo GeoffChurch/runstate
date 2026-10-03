@@ -592,7 +592,7 @@ Callers catching only `(NoProgressError, RunFailedError)` must add this name.
 ```python
 Topic  # StrEnum: the closed, protocol-owned routing keys
 # VALUE, LIFECYCLE_STARTED, LIFECYCLE_HEARTBEAT, LIFECYCLE_STOPPED, LIFECYCLE_NAK,
-# LAUNCHER_LAUNCHED, LAUNCHER_TERMINATED, CONTROL_STOP, CONTROL_SUBSCRIBE, CONTROL_UNSUBSCRIBE
+# LIFECYCLE_BOUND, LAUNCHER_LAUNCHED, LAUNCHER_TERMINATED, CONTROL_STOP, CONTROL_SUBSCRIBE, CONTROL_UNSUBSCRIBE
 ```
 
 The CLOSED, protocol-owned routing keys (`Envelope.topic`) — the complete
@@ -642,23 +642,36 @@ measures); renamed from v0.3's `attached_at`.
 ### `Heartbeat`
 
 ```python
-Heartbeat(step: int | None, consumed_seq: int, t: float)
+Heartbeat(step: int | None, consumed_seq: int, claim_seq: int, t: float)
 ```
 
 Tick-driven liveness beacon: progress (`step`, null for a stepless service) + the
-consumption watermark (`consumed_seq`) + freshness (`t`). This is the record
+consumption watermark (`consumed_seq`) + the episode it speaks for (`claim_seq`, the
+`seq` of its `lifecycle.started`) + freshness (`t`). This is the record
 liveness reads, so `t` dates the newest beacon for a third-party observer.
 
 ### `Stopped`
 
 ```python
-Stopped(completed: bool, error: str | None, final_step: int | None, t: float)
+Stopped(completed: bool, error: str | None, final_step: int | None,
+        claim_seq: int | None, honored: list[str], t: float)
 ```
 
 The cooperative dying breath; its existence on the log = a clean, *resumable*
 halt. `completed=True` is the opt-in completion claim; otherwise it projects to
 `preempted`. `error` is the failure diagnostic; a completed stop carries no error
-(enforced).
+(enforced). `claim_seq` names the episode it ends (null: a run that never claimed);
+`honored` lists the `control.stop` `request_id`s it discharges.
+
+### `Bound`
+
+```python
+Bound(claim_seq: int)
+```
+
+`lifecycle.bound`: an episode-local subscription (a lease) bound to the episode
+`claim_seq` names; the envelope `request_id` is the lease. Written once per (lease,
+episode) at registration.
 
 ### `Nak`
 

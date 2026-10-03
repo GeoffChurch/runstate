@@ -54,6 +54,7 @@ from .observables import (
 from .vocabulary.handle import handle_pid
 from .vocabulary.schedule import Condition
 from .vocabulary.payloads import (
+    Bound,
     Heartbeat,
     Launched,
     Nak,
@@ -150,6 +151,7 @@ __all__ = [
     "Started",
     "Heartbeat",
     "Stopped",
+    "Bound",
     "Nak",
     "Launched",
     "Terminated",

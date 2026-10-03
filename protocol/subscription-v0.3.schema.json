@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://runstate.dev/protocol/subscription-v0.2.json",
-  "title": "runstate v0.2 subscription convention",
-  "description": "Pins the bodies of the control.* topics an orchestrator produces. control.subscribe / control.stop carry a Schedule (the condition-algebra of §6); control.unsubscribe carries an empty body (it cancels by request_id). Applied on top of the envelope schema, which validates structure. Independently versioned from the other conventions.",
+  "$id": "https://runstate.dev/protocol/subscription-v0.3.json",
+  "title": "runstate v0.3 subscription convention",
+  "description": "Pins the bodies of the control.* topics an orchestrator produces. control.subscribe / control.stop carry a Schedule (the condition-algebra of §6); control.unsubscribe carries an empty body (it cancels by request_id). Applied on top of the envelope schema, which validates structure. Independently versioned from the other conventions. v0.3 (reference by name): every control request is NAMED by its request_id, stop included -- a stop is answered by a lifecycle.stopped listing it in `honored` or a nak bearing it, so a nameless stop cannot be answered. A request_id names ONE request: a re-send while live is the same request, and once any answer names it the id is spent.",
 
   "allOf": [
     {
@@ -22,10 +22,10 @@
       "then": {"properties": {"body": {"$ref": "#/$defs/Empty"}}}
     },
     {
-      "comment": "subscribe/unsubscribe are correlated operations -- responses route by request_id and unsubscribe cancels by it -- so it MUST be present (a non-null string). stop is fire-once; its request_id is optional traceability.",
+      "comment": "Every control verb is correlated by request_id -- responses route by it, unsubscribe cancels by it, and a stop's answers (stopped.honored, nak) name it -- so it MUST be present (a non-null string).",
       "if": {
         "required": ["topic"],
-        "properties": {"topic": {"enum": ["control.subscribe", "control.unsubscribe"]}}
+        "properties": {"topic": {"enum": ["control.subscribe", "control.unsubscribe", "control.stop"]}}
       },
       "then": {"required": ["request_id"], "properties": {"request_id": {"type": "string"}}}
     }

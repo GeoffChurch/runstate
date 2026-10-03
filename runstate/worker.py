@@ -257,8 +257,16 @@ class Worker:
         self._last_step = step
         self._drain_control(step)
         self._service(step)
+        assert self._started_seq is not None  # ticking implies the claim was won
         self._ch.send(
-            asdict(Heartbeat(step=step, consumed_seq=self._cursor, t=self._now())),
+            asdict(
+                Heartbeat(
+                    step=step,
+                    consumed_seq=self._cursor,
+                    claim_seq=self._started_seq,
+                    t=self._now(),
+                )
+            ),
             topic=Heartbeat.TOPIC,
         )
         return self._stop_decision(step)
@@ -315,6 +323,8 @@ class Worker:
                     completed=False,
                     error=None,
                     final_step=self._last_step,
+                    claim_seq=self._started_seq,  # stopgap: the full port is the library task
+                    honored=[],
                     t=self._now(),
                 )
             )
@@ -351,7 +361,12 @@ class Worker:
             final_step = self._last_step  #  auto-fill from the last yielded step
         body = asdict(
             Stopped(
-                completed=completed, error=error, final_step=final_step, t=self._now()
+                completed=completed,
+                error=error,
+                final_step=final_step,
+                claim_seq=self._started_seq,  # stopgap: the full port is the library task
+                honored=[],
+                t=self._now(),
             )
         )
         self._ch.send(body, topic=Stopped.TOPIC)
