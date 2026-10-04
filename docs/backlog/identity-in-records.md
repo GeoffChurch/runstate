@@ -290,9 +290,32 @@ small heartbeat provides, and values stay ordinary records. This list states the
    - **Under S, `steps(total)`'s `total` counts loop iterations.** That is a driver convenience, not a
      protocol concept.
 
+10. **The checkpoint recipe: lineage lies are impossible by construction.**
+    - **A lineage lie** is a checkpoint whose state is not the state committed by the node it names.
+    - **When a save may happen.** A node is a heartbeat's seq, so a checkpoint can name only a commit that
+      has happened. A save at the end of an iteration, before its heartbeat, could name only the previous
+      node, which would label state s as node s−1.
+    - **Save: the driver calls it.** `w.steps(…, checkpoint=Every(k, save))`, or `w.tick(checkpoint=save)`,
+      runs `save(node)` immediately after a heartbeat lands. At that instant the state is exactly the state
+      that heartbeat commits. This also enforces "save after the commit", the measured condition for
+      resuming without lag (lineage-graph test 1).
+    - **Load: the checkpoint carries its node.** `resume_from` takes the checkpoint object, not a bare seq, so
+      the state loaded and the node named come from one place.
+    - **Resume choice is a required Strategy.** Only *complete* checkpoints qualify: the named heartbeat,
+      all its ancestors, and every value they commit are visible. Two policies are on the frontier:
+      - `OnHeadLineage(head)`: consistent with reads and the verdict, and respects rewinds. Cost: after a
+        mistaken takeover where the successor dies early, it ignores the displaced worker's further clean
+        work (13 and 11 extra steps measured).
+      - `MostProgress(stream)`: the least recompute. Cost: it can resume from a branch abandoned by a
+        rewind.
+
+      Suggested preset: `OnHeadLineage`, for consistency.
+    - **An optional fingerprint guard,** for what construction cannot reach: custom loops that bypass the
+      recipe, or a save that captures some other object's state. The user supplies a cheap fingerprint
+      (the optimizer's step counter, or a hash of a parameter slice). The Worker records it with each
+      commit, and the recipe compares it at save and at load. *Framework prediction, untested.*
+
 **Still open, in order:**
-- **The checkpoint recipe:** a checkpoint names the heartbeat that commits its state; resume from the most
-  advanced complete checkpoint; save after the commit, for no lag.
 - **The format change, and its migration.** lifecycle-v0.6 and value-v0.3 make format 0.4.0. The
   0.3.0 → 0.4.0 step must infer `commits` and `parent`, positionally, as "what the old rule said".
 
