@@ -152,7 +152,9 @@ not something the worker bakes in. The five outcomes:
 Inside `Watcher.wait`'s `on_event` callback, send a cooperative `control.stop`
 when you've seen enough. The worker stops cleanly at its next tick
 (`outcome → preempted`) — this is `examples/minimal/driver.py`'s divergence
-preempt, and `examples/redrive/` shows the killed-then-resume caller pattern.
+preempt, and `examples/redrive/` shows the killed-then-resume caller pattern. A
+stop is named by its `request_id`, which is required and never reused: mint a
+fresh one per stop (`uuid.uuid4().hex`).
 
 Spawn however you like — the launcher is opt-in. To run on SLURM (or AWS Batch,
 or locally) via submitit, `examples/submitit/` is a bring-your-own-launcher
@@ -266,12 +268,16 @@ demand — many episodes on one run.
 
 3. **A time-referencing subscription (`{"time_seconds": S}`) is
    episode-scoped.** Its countdown can't honestly outlive the worker that was
-   counting, so the next episode's `started` voids it. *Fix:* spell any bound
-   meant to *outlive workers* in steps (`{"until": {"step": N}}`), not seconds.
+   counting, so it is bound to the episode that registered it
+   (`lifecycle.bound`) and void for every other, re-sends of its id included.
+   *Fix:* spell any bound meant to *outlive workers* in steps
+   (`{"until": {"step": N}}`), not seconds; after a crash, resubscribe under a
+   fresh id.
 
 4. **A cross-run broadcast barrier must be step-keyed.**
    `Watcher.broadcast(name, schedule)` fans one subscription across tracked runs;
-   a time-keyed barrier on a run that *resumes* is boundary-voided (pitfall 3).
+   a time-keyed barrier on a run that *resumes* is void for the new episode
+   (pitfall 3).
    *Fix:* key broadcast barriers on `step`, not time.
 
 5. **Checkpoint what you *did*, not what you were *asked* to do.** Writing the

@@ -15,7 +15,15 @@ from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass
 
 from .channel import Channel, Envelope, EpisodeHolder
-from .vocabulary.payloads import Heartbeat, Nak, Started, Stopped, Topic, Value
+from .vocabulary.payloads import (
+    Bound,
+    Heartbeat,
+    Nak,
+    Started,
+    Stopped,
+    Topic,
+    Value,
+)
 from .vocabulary.handle import local_handle
 from .vocabulary.launch import current_launch_id
 from .vocabulary.schedule import (
@@ -27,16 +35,22 @@ from .vocabulary.schedule import (
     references_episode_local,
     satisfied,
 )
-from .observables import boundary_voided, live_episode
+from .observables import (
+    _STOP_ANSWERS,
+    _SUBSCRIBE_ANSWERS,
+    _answer_names,
+    _claim_name,
+    lease_void,
+    live_episode,
+)
 
 
 @dataclass
 class PendingStop:
-    """A drained, undischarged commanded stop -- the request half of a stop pair,
-    live until the next ``lifecycle.stopped`` discharges it (specs/stop-discharge.md).
-    """
+    """A drained, unanswered commanded stop -- the request half of a stop pair,
+    live until a ``lifecycle.stopped`` names it in ``honored``."""
 
-    request_id: str | None
+    request_id: str
     from_: Condition | None
     registered_at: float
 
@@ -49,17 +63,17 @@ class Worker:
         self._subs: dict[str, tuple[str | None, Subscription]] = (
             {}
         )  # request_id -> (name, sub)
-        # Drained, undischarged commanded stops: (request_id, from_, registered_at).
-        # A stop is the request half of a request/outcome pair -- live until the
-        # next lifecycle.stopped discharges it (specs/stop-discharge.md).
-        self._pending_stops: list[PendingStop] = []
+        # Drained, unanswered commanded stops, by request_id. A stop is the
+        # request half of a request/outcome pair -- live until a stopped NAMES it
+        # (honored) or a nak refuses it by name.
+        self._pending_stops: dict[str, PendingStop] = {}
         self._cursor = 0
         self._stopped = False
         self._last_step: int | None = None
         # Attaching CAS-claims the episode: a worker that loses (a live episode
         # already exists) sets _lost and exits without acting on the channel.
         self._lost = False
-        self._started_seq = None  #      this episode's own claim, once won
+        self._started_seq: int | None = None  #  this episode's own claim, once won
         while True:
             # HEAD-FIRST (§4): read the head the claim will assert, then compute
             # the folds from topic-filtered reads CAPPED at it. CAS success at
@@ -72,39 +86,36 @@ class Worker:
             envs = [
                 e
                 for e in self._ch.read(
+                    # (a nak answers both kinds; a repeated topic is harmless)
                     topics=[
-                        Topic.LIFECYCLE_STOPPED,
-                        Topic.LIFECYCLE_STARTED,
-                        Topic.CONTROL_UNSUBSCRIBE,
-                        Topic.LIFECYCLE_NAK,
+                        *_SUBSCRIBE_ANSWERS,
+                        *_STOP_ANSWERS,
+                        Topic.LIFECYCLE_BOUND,
                     ]
                 )
                 if e.seq <= last
             ]
-            # The discharge floor: the latest lifecycle.stopped already on the
-            # log. Every control.stop below it is answered (discharged) by that
-            # stopped -- its designated counter-record -- so the drain skips it
-            # (specs/stop-discharge.md).
-            self._discharge_floor = max(
-                (e.seq for e in envs if e.topic == Topic.LIFECYCLE_STOPPED), default=0
-            )
-            # The positional answer fold (specs/service-worker.md): a
-            # control.subscribe is live until an unsubscribe or nak bearing
-            # its request_id FOLLOWS it by seq; the drain skips answered
-            # subscribes (so a resumed episode neither resurrects an expired
-            # lease nor re-naks a refused request).
-            self._answers: dict[str, list[int]] = {}
+            # The answer folds, BY NAME (observables' one answer rule): a
+            # request_id is spent once any answer names it -- a subscribe by an
+            # unsubscribe or nak, a stop by a stopped's `honored` or a nak --
+            # wherever the answer sits. The drain skips spent ids (so a resumed
+            # episode neither re-honors a served stop, resurrects an expired
+            # lease, nor re-naks a refusal).
+            self._spent_subs: set[str] = set()
+            self._spent_stops: set[str] = set()
+            # Lease bindings (Bound): request_id -> the claims that registered it.
+            self._bound: dict[str, set[int]] = {}
             for e in envs:
-                if e.request_id is not None and e.topic in (
-                    Topic.CONTROL_UNSUBSCRIBE,
-                    Topic.LIFECYCLE_NAK,
-                ):
-                    self._answers.setdefault(e.request_id, []).append(e.seq)
-            # Prior episodes' boundaries, for the time-lease discharge
-            # (specs/time-lease-boundary.md) -- same capped read, zero extra I/O.
-            self._started_seqs = [
-                e.seq for e in envs if e.topic == Topic.LIFECYCLE_STARTED
-            ]
+                if e.topic == Topic.LIFECYCLE_BOUND:
+                    ok, k = _claim_name(e)
+                    if e.request_id is not None and ok and k is not None:
+                        self._bound.setdefault(e.request_id, set()).add(k)
+                    continue
+                names = _answer_names(e)
+                if e.topic in _SUBSCRIBE_ANSWERS:
+                    self._spent_subs.update(names)
+                if e.topic in _STOP_ANSWERS:
+                    self._spent_stops.update(names)
             if live_episode(self._ch) is not None:
                 # ORDER IS LOAD-BEARING, and a consumer depends on it off-repo:
                 # this precedes the claim send, so a loser has no claim of its
@@ -257,8 +268,16 @@ class Worker:
         self._last_step = step
         self._drain_control(step)
         self._service(step)
+        assert self._started_seq is not None  #  a claimed worker always has its claim
         self._ch.send(
-            asdict(Heartbeat(step=step, consumed_seq=self._cursor, t=self._now())),
+            asdict(
+                Heartbeat(
+                    step=step,
+                    consumed_seq=self._cursor,
+                    claim_seq=self._started_seq,
+                    t=self._now(),
+                )
+            ),
             topic=Heartbeat.TOPIC,
         )
         return self._stop_decision(step)
@@ -295,36 +314,9 @@ class Worker:
         only against a tail this loop has fully seen and drained."""
         if self._lost or self._stopped:
             return True
-        observed = self._cursor
-        while True:
-            tail = self._ch.read(after=observed)
-            if tail:
-                for e in tail:
-                    if e.topic.startswith("control."):
-                        self._cursor = e.seq
-                        try:
-                            self._handle_control(e, self._last_step)
-                        except Exception as exc:
-                            self._nak(e.request_id, "malformed", str(exc))
-                observed = tail[-1].seq
-                continue  #  re-read: the drain may have appended answers
-            if self._subs:
-                return False  #              new mail — keep serving
-            body = asdict(
-                Stopped(
-                    completed=False,
-                    error=None,
-                    final_step=self._last_step,
-                    t=self._now(),
-                )
-            )
-            if (
-                self._ch.send(body, topic=Stopped.TOPIC, expected_seq=observed)
-                is not None
-            ):
-                self._stopped = True  #      the idempotent latch; __exit__ no-ops
-                return True
-            # CAS lost: something landed after `observed` — loop re-reads.
+        return self._die(
+            completed=False, error=None, final_step=self._last_step, retiring=True
+        )
 
     def stopped(
         self,
@@ -343,18 +335,78 @@ class Worker:
         LOSER may not act on the channel, explicit calls included — else the
         minimal example's ``w.stopped(completed=True)`` idiom would, in a
         double-spawn, write a completed claim onto the winner's live log
-        (specs/lazy-launch.md)."""
+        (specs/lazy-launch.md).
+
+        The record NAMES its claim and the stops it honored, and it is
+        compare-and-appended against a tail whose stops this worker has drained
+        (``_die``): so no stop can land between the last drain and the dying
+        breath unseen -- one that lands before it is named, one that lands after
+        it is pending for the next episode."""
         if self._stopped or self._lost:
             return
-        self._stopped = True
         if final_step is None:
             final_step = self._last_step  #  auto-fill from the last yielded step
-        body = asdict(
-            Stopped(
-                completed=completed, error=error, final_step=final_step, t=self._now()
-            )
+        self._die(
+            completed=completed, error=error, final_step=final_step, retiring=False
         )
-        self._ch.send(body, topic=Stopped.TOPIC)
+
+    def _die(
+        self,
+        *,
+        completed: bool,
+        error: str | None,
+        final_step: int | None,
+        retiring: bool,
+    ) -> bool:
+        """The dying breath, CAS-appended against a fully-drained tail -- episodes
+        are CAS-claimed at both ends. True = the breath is on the log; False =
+        (``retiring`` only) new demand arrived, keep serving.
+
+        Discipline: ``expected_seq`` comes only from a read, never from an own
+        append's returned seq (an own append can land on top of an unseen racing
+        record); any record found -- including the worker's own naks -- forces one
+        more read, so the CAS fires only against a tail this loop has fully seen.
+
+        ``retiring`` (the careful death, specs/service-worker.md) drains every
+        control verb: a racing subscribe is new mail and cancels the death. A
+        plain ``stopped`` drains only STOPS -- to name them -- and leaves a racing
+        subscribe unregistered, live for the next episode (registering it here
+        would bind a lease to an episode that is already over)."""
+        assert self._started_seq is not None
+        while True:
+            # HEAD-FIRST, as at attach: read the head the CAS will assert, then
+            # drain control capped at it -- O(control), not O(tail). Any own
+            # append (a nak, a binding) moves the head, so the CAS fails and the
+            # loop re-reads: the CAS fires only on a tail fully drained.
+            observed = self._ch.last_seq()
+            for e in self._ch.read(after=self._cursor, topics=["control.>"]):
+                if e.seq > observed:
+                    break
+                self._cursor = e.seq
+                if retiring or e.topic == Topic.CONTROL_STOP:
+                    try:
+                        self._handle_control(e, self._last_step)
+                    except Exception as exc:
+                        self._nak(e.request_id, "malformed", str(exc))
+            if retiring and self._subs:
+                return False  #              new mail — keep serving
+            body = asdict(
+                Stopped(
+                    completed=completed,
+                    error=error,
+                    final_step=final_step,
+                    claim_seq=self._started_seq,
+                    honored=sorted(self._pending_stops),
+                    t=self._now(),
+                )
+            )
+            if (
+                self._ch.send(body, topic=Stopped.TOPIC, expected_seq=observed)
+                is not None
+            ):
+                self._stopped = True  #      the idempotent latch; __exit__ no-ops
+                return True
+            # CAS lost: something landed after `observed` — loop re-reads.
 
     # ----- internals -----
 
@@ -375,37 +427,43 @@ class Worker:
 
     def _handle_control(self, e: Envelope, step: int | None) -> None:
         if e.topic == Topic.CONTROL_SUBSCRIBE:
-            if e.request_id is None:
+            r = e.request_id
+            own = self._started_seq
+            if r is None:
                 self._nak(None, "malformed", "subscribe requires a request_id")
-            elif any(a > e.seq for a in self._answers.get(e.request_id, ())):
-                # Already answered (unsubscribed or naked) later on the log --
-                # history, never again input (the positional answer fold).
+            elif r in self._spent_subs:
+                # Answered by name (unsubscribed or naked), wherever the answer
+                # sits: a request_id names ONE request, so a reuse after its
+                # answer is the same, spent request -- history, never again input.
                 return
-            elif (
-                references_episode_local(e.body)
-                and self._started_seq is not None
-                and boundary_voided(e.seq, self._started_seqs, self._started_seq)
-            ):
-                # Episode-boundary discharge (specs/time-lease-boundary.md):
-                # a time-lease is a contract with one living episode, and a
-                # prior episode's started -- already on the log -- is its
-                # counter-record. Pop-then-skip: the void answers THIS
-                # subscribe, but its arrival still rescinds the same-id
-                # predecessor (registrations are slots, not a set -- a
-                # superseded immortal sub must not resurrect).
-                self._subs.pop(e.request_id, None)
+            elif lease_void(self._bound.get(r, set()), own, False):
+                # Bound to ANOTHER episode (specs/time-lease-boundary.md, by name):
+                # a lease is a contract with the one episode that registered it.
+                # The whole request is void here, every re-send included.
+                self._subs.pop(r, None)
                 return
             elif (problem := malformed_schedule(e.body)) is not None:
                 # The structural gate (design §6 `malformed`): the full grammar
                 # check, before any semantic check -- so a registered schedule
                 # is guaranteed to evaluate cleanly at every safe point.
-                self._nak(e.request_id, "malformed", problem)
+                self._nak(r, "malformed", problem)
             elif is_unsatisfiable(e.body, step=step):
-                self._nak(
-                    e.request_id, "unsatisfiable", "schedule can produce no fires"
-                )
+                self._nak(r, "unsatisfiable", "schedule can produce no fires")
             else:
-                self._subs[e.request_id] = (
+                if references_episode_local(e.body) and own not in self._bound.get(
+                    r, set()
+                ):
+                    # Emit-then-register: the binding lands before the
+                    # registration takes effect, so a crash between the two
+                    # leaves the lease bound (void elsewhere), never orphaned.
+                    assert own is not None
+                    self._ch.send(
+                        asdict(Bound(claim_seq=own)), topic=Bound.TOPIC, request_id=r
+                    )
+                    self._bound.setdefault(r, set()).add(own)
+                # A re-send of a live id is the same request: its latest
+                # schedule replaces the registration (the owner's write order).
+                self._subs[r] = (
                     e.name,
                     Subscription(e.body, registered_at=self._now()),
                 )
@@ -413,30 +471,32 @@ class Worker:
             if e.request_id is None:
                 self._nak(None, "malformed", "unsubscribe requires a request_id")
             else:
+                self._spent_subs.add(e.request_id)
                 self._subs.pop(e.request_id, None)
         elif e.topic == Topic.CONTROL_STOP:
-            if e.seq < self._discharge_floor:
-                # Already answered: a lifecycle.stopped follows this stop on
-                # the log, discharging it. History, never again input -- and
-                # silently so: "already answered" is not a refusal (the nak
-                # reasons have no word for it), and a discharged-but-malformed
-                # stop was already naked by its own era's worker. (The rule's
-                # public observer home: observables.undischarged_stops.)
+            r = e.request_id
+            if r is None:
+                # A stop is named by its request_id (subscription-v0.3): a
+                # nameless stop can be neither honored nor refused by name.
+                self._nak(None, "malformed", "stop requires a request_id")
+            elif r in self._spent_stops:
+                # Answered by name: a stopped honored it, or a nak refused it.
+                # History, never again input -- and silently so: "already
+                # answered" is not a refusal. (Observer home:
+                # observables.undischarged_stops.)
                 return
             # The structural gate again: naks a bad stop like a bad subscribe,
             # so the pending set only ever holds conditions the unguarded
             # tick-time eval site (`_stop_decision`) can't choke on.
-            if (problem := malformed_stop_trigger(e.body)) is not None:
-                self._nak(e.request_id, "malformed", problem)
+            elif (problem := malformed_stop_trigger(e.body)) is not None:
+                self._nak(r, "malformed", problem)
             elif is_unsatisfiable(e.body, step=step):
                 # e.g. a step-keyed stop on a stepless worker: it can never
                 # fire, so nak (parity with subscribe) rather than silently
                 # never auto-stopping.
-                self._nak(e.request_id, "unsatisfiable", "stop trigger can never fire")
+                self._nak(r, "unsatisfiable", "stop trigger can never fire")
             else:
-                self._pending_stops.append(
-                    PendingStop(e.request_id, e.body.get("from"), self._now())
-                )
+                self._pending_stops[r] = PendingStop(r, e.body.get("from"), self._now())
         else:
             self._nak(e.request_id, "unsupported", f"unknown control topic {e.topic!r}")
 
@@ -446,6 +506,9 @@ class Worker:
             topic=Nak.TOPIC,
             request_id=request_id,
         )
+        if request_id is not None:  #  a nak names what it refuses: spent
+            self._spent_subs.add(request_id)
+            self._spent_stops.add(request_id)
 
     def _send_value(
         self,
@@ -492,6 +555,7 @@ class Worker:
                 self._ch.send(
                     {}, topic=Topic.CONTROL_UNSUBSCRIBE, request_id=request_id
                 )
+                self._spent_subs.add(request_id)
                 del self._subs[request_id]
 
     def _stop_decision(self, step: int | None) -> bool:
@@ -509,5 +573,5 @@ class Worker:
             or satisfied(
                 stop.from_, step=step, time_seconds=now - stop.registered_at, count=0
             )
-            for stop in self._pending_stops
+            for stop in self._pending_stops.values()
         )

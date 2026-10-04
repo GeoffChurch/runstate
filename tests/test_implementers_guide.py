@@ -43,8 +43,8 @@ def _validator(name, version="v0.2"):
 
 ENVELOPE = _validator("envelope")
 CONVENTIONS = {
-    "control.": _validator("subscription"),
-    "lifecycle.": _validator("lifecycle", "v0.4"),
+    "control.": _validator("subscription", "v0.3"),
+    "lifecycle.": _validator("lifecycle", "v0.5"),
     "launcher.": _validator("launcher", "v0.4"),
     "value": _validator("value"),
 }

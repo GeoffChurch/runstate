@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://runstate.dev/protocol/subscription-v0.3.json",
+  "title": "runstate v0.3 subscription convention",
+  "description": "Pins the bodies of the control.* topics an orchestrator produces. control.subscribe / control.stop carry a Schedule (the condition-algebra of §6); control.unsubscribe carries an empty body (it cancels by request_id). Applied on top of the envelope schema, which validates structure. Independently versioned from the other conventions. v0.3 (reference by name): every control request is NAMED by its request_id, stop included -- a stop is answered by a lifecycle.stopped listing it in `honored` or a nak bearing it, so a nameless stop cannot be answered. A request_id names ONE request: a re-send while live is the same request, and once any answer names it the id is spent.",
+
+  "allOf": [
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"pattern": "^control\\."}}},
+      "then": {"properties": {"topic": {"enum": ["control.subscribe", "control.unsubscribe", "control.stop"]}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "control.subscribe"}}},
+      "then": {"properties": {"body": {"$ref": "#/$defs/Schedule"}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "control.stop"}}},
+      "then": {"properties": {"body": {"$ref": "#/$defs/StopTrigger"}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "control.unsubscribe"}}},
+      "then": {"properties": {"body": {"$ref": "#/$defs/Empty"}}}
+    },
+    {
+      "comment": "Every control verb is correlated by request_id -- responses route by it, unsubscribe cancels by it, and a stop's answers (stopped.honored, nak) name it -- so it MUST be present (a non-null string).",
+      "if": {
+        "required": ["topic"],
+        "properties": {"topic": {"enum": ["control.subscribe", "control.unsubscribe", "control.stop"]}}
+      },
+      "then": {"required": ["request_id"], "properties": {"request_id": {"type": "string"}}}
+    }
+  ],
+
+  "$defs": {
+    "Empty": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "control.unsubscribe cancels by request_id; the body carries nothing."
+    },
+
+    "StopTrigger": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "control.stop is one-shot: it carries at most a `from` (when to stop; absent = stop now). No `every`/`until` -- a stop fires once, and an `until` could perversely gate it from ever firing.",
+      "properties": {
+        "from": {"$ref": "#/$defs/Condition"}
+      }
+    },
+
+    "Schedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "from/every/until, each a Condition. Absent `every` => one-shot. `count` thresholds are valid only in `until` (a fire budget), so from/every use the count-free Condition.",
+      "properties": {
+        "from": {"$ref": "#/$defs/Condition"},
+        "every": {"$ref": "#/$defs/Condition"},
+        "until": {"$ref": "#/$defs/UntilCondition"}
+      }
+    },
+
+    "StepThreshold": {
+      "type": "object", "required": ["step"], "additionalProperties": false,
+      "properties": {"step": {"type": "integer", "minimum": 0}}
+    },
+    "TimeThreshold": {
+      "type": "object", "required": ["time_seconds"], "additionalProperties": false,
+      "properties": {"time_seconds": {"type": "number", "minimum": 0}}
+    },
+    "CountThreshold": {
+      "type": "object", "required": ["count"], "additionalProperties": false,
+      "properties": {"count": {"type": "integer", "minimum": 0}}
+    },
+
+    "Condition": {
+      "description": "Threshold over (step, time) or any/all of Conditions. No `count` here.",
+      "oneOf": [
+        {"$ref": "#/$defs/StepThreshold"},
+        {"$ref": "#/$defs/TimeThreshold"},
+        {"type": "object", "required": ["any"], "additionalProperties": false,
+         "properties": {"any": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/Condition"}}}},
+        {"type": "object", "required": ["all"], "additionalProperties": false,
+         "properties": {"all": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/Condition"}}}}
+      ]
+    },
+
+    "UntilCondition": {
+      "description": "The `until` slot's condition grammar: as Condition, plus `count` thresholds (a fire budget is meaningful only as an expiry).",
+      "oneOf": [
+        {"$ref": "#/$defs/StepThreshold"},
+        {"$ref": "#/$defs/TimeThreshold"},
+        {"$ref": "#/$defs/CountThreshold"},
+        {"type": "object", "required": ["any"], "additionalProperties": false,
+         "properties": {"any": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/UntilCondition"}}}},
+        {"type": "object", "required": ["all"], "additionalProperties": false,
+         "properties": {"all": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/UntilCondition"}}}}
+      ]
+    }
+  }
+}

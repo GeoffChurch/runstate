@@ -32,8 +32,8 @@ def _validator(name, version="v0.2"):
 
 ENVELOPE = _validator("envelope")
 CONVENTIONS = {
-    "control.": _validator("subscription"),
-    "lifecycle.": _validator("lifecycle", "v0.4"),  #  independently versioned
+    "control.": _validator("subscription", "v0.3"),
+    "lifecycle.": _validator("lifecycle", "v0.5"),  #  independently versioned
     "launcher.": _validator(
         "launcher", "v0.4"
     ),  #    (each convention on its own timeline)
@@ -48,6 +48,7 @@ ALL_RESERVED_TOPICS = {
     "lifecycle.heartbeat",
     "lifecycle.stopped",
     "lifecycle.nak",
+    "lifecycle.bound",
     "launcher.launched",
     "launcher.terminated",
     "value",
@@ -86,6 +87,12 @@ def test_every_emitted_envelope_conforms(tmp_path):
         name="loss",
         request_id="bad",
     )  # -> nak
+    obs.send(
+        {"every": {"step": 1}, "until": {"count": 2}},
+        topic="control.subscribe",
+        name="loss",
+        request_id="lease",
+    )  # episode-local (a count atom) -> the worker binds it: lifecycle.bound
     obs.send(
         {}, topic="control.subscribe", name="loss", request_id="once"
     )  # one-shot ->
@@ -237,7 +244,15 @@ def test_envelope_structural_constraints():
 def test_lifecycle_stopped_rejects_extra_body_field():
     bad = _env(
         "lifecycle.stopped",
-        {"completed": True, "error": None, "final_step": None, "oops": 1, "t": 0.0},
+        {
+            "completed": True,
+            "error": None,
+            "final_step": None,
+            "claim_seq": None,
+            "honored": [],
+            "oops": 1,
+            "t": 0.0,
+        },
     )
     with pytest.raises(jsonschema.ValidationError):
         CONVENTIONS["lifecycle."].validate(bad)
@@ -282,16 +297,23 @@ def test_value_wrapper_is_closed_and_requires_value():
 def test_heartbeat_body_is_pinned():
     L = CONVENTIONS["lifecycle."]
     L.validate(
-        _env("lifecycle.heartbeat", {"step": None, "consumed_seq": 0, "t": 0.0})
+        _env(
+            "lifecycle.heartbeat",
+            {"step": None, "consumed_seq": 0, "claim_seq": 1, "t": 0.0},
+        )
     )  # stepless
     for bad in (
         {"step": 1},  #                                 consumed_seq missing
         {
             "consumed_seq": 0,
+            "claim_seq": 1,
             "t": 0.0,
         },  #                         step omitted (present-nullable)
-        {"step": 1, "consumed_seq": -1, "t": 0.0},  #             negative watermark
-        {"step": 1, "consumed_seq": 0, "extra": 1, "t": 0.0},
+        {"step": 1, "consumed_seq": -1, "claim_seq": 1, "t": 0.0},  # negative watermark
+        {"step": 1, "consumed_seq": 0, "t": 0.0},  #              claim_seq omitted
+        {"step": 1, "consumed_seq": 0, "claim_seq": None, "t": 0.0},  # never null
+        {"step": 1, "consumed_seq": 0, "claim_seq": 0, "t": 0.0},  # seqs start at 1
+        {"step": 1, "consumed_seq": 0, "claim_seq": 1, "extra": 1, "t": 0.0},
     ):  # extra field
         with pytest.raises(jsonschema.ValidationError):
             L.validate(_env("lifecycle.heartbeat", bad))
@@ -302,22 +324,49 @@ def test_stopped_error_and_final_step_present_nullable():
     L.validate(
         _env(
             "lifecycle.stopped",
-            {"completed": True, "error": None, "final_step": None, "t": 0.0},
+            {
+                "completed": True,
+                "error": None,
+                "final_step": None,
+                "claim_seq": None,
+                "honored": [],
+                "t": 0.0,
+            },
         )
     )
     L.validate(
         _env(
             "lifecycle.stopped",
-            {"completed": False, "error": "boom", "final_step": 5, "t": 0.0},
+            {
+                "completed": False,
+                "error": "boom",
+                "final_step": 5,
+                "claim_seq": 2,
+                "honored": ["s1"],
+                "t": 0.0,
+            },
         )
     )
-    for missing in (
-        {"completed": True, "error": None},  #     final_step omitted
-        {"completed": True, "final_step": None, "t": 0.0},  # error omitted
-        {"completed": True},
-    ):  #                    both omitted
+    base = {
+        "completed": True,
+        "error": None,
+        "final_step": None,
+        "claim_seq": None,
+        "honored": [],
+        "t": 0.0,
+    }
+    for omitted in ("error", "final_step", "claim_seq", "honored"):
+        missing = {k: v for k, v in base.items() if k != omitted}
         with pytest.raises(jsonschema.ValidationError):
             L.validate(_env("lifecycle.stopped", missing))
+    for bad in (
+        {"honored": ["s1", "s1"]},  #  unique request_ids
+        {"honored": [1]},  #           strings only
+        {"honored": None},  #          an array, never null
+        {"claim_seq": 0},  #           seqs start at 1
+    ):
+        with pytest.raises(jsonschema.ValidationError):
+            L.validate(_env("lifecycle.stopped", {**base, **bad}))
 
 
 def test_stopped_rejects_completed_with_error():
@@ -327,7 +376,14 @@ def test_stopped_rejects_completed_with_error():
         L.validate(
             _env(
                 "lifecycle.stopped",
-                {"completed": True, "error": "x", "final_step": None, "t": 0.0},
+                {
+                    "completed": True,
+                    "error": "x",
+                    "final_step": None,
+                    "claim_seq": None,
+                    "honored": [],
+                    "t": 0.0,
+                },
             )
         )
 
@@ -369,8 +425,16 @@ def test_convention_dataclasses_serialize_to_schema_valid_bodies():
     bodies = [
         payloads.Value(value=0.5, step=10, t=0.0),
         payloads.Started(handle="local://h/1", t=0.0),
-        payloads.Heartbeat(step=7, consumed_seq=3, t=0.0),
-        payloads.Stopped(completed=True, error=None, final_step=9, t=0.0),
+        payloads.Heartbeat(step=7, consumed_seq=3, claim_seq=1, t=0.0),
+        payloads.Stopped(
+            completed=True,
+            error=None,
+            final_step=9,
+            claim_seq=1,
+            honored=["s1"],
+            t=0.0,
+        ),
+        payloads.Bound(claim_seq=1),
         payloads.Nak(reason="malformed", message="x"),
         payloads.Launched(handle="local://h/1", t=0.0),
         payloads.Terminated(reason="exited", exit_code=0, signal=None, t=0.0),
@@ -379,7 +443,11 @@ def test_convention_dataclasses_serialize_to_schema_valid_bodies():
     for body in bodies:
         topic = type(body).TOPIC
         # launcher-v0.3 requires the launch's correlation id on the envelope
-        extra = {"request_id": "L1"} if topic.startswith("launcher.") else {}
+        extra = (
+            {"request_id": "L1"}
+            if topic.startswith("launcher.") or topic == "lifecycle.bound"
+            else {}
+        )
         _convention_for(topic).validate(_env(topic, asdict(body), **extra))
 
 
@@ -454,11 +522,13 @@ def test_control_and_launcher_reject_unknown_subtopics():
 
 def test_control_stop_takes_only_from():
     C = CONVENTIONS["control."]
-    C.validate(_env("control.stop", {}))  # stop now
-    C.validate(_env("control.stop", {"from": {"step": 100}}))  # stop at step 100
+    C.validate(_env("control.stop", {}, request_id="s"))  # stop now
+    C.validate(
+        _env("control.stop", {"from": {"step": 100}}, request_id="s")
+    )  # stop at step 100
     for bad in ({"every": {"step": 1}}, {"until": {"count": 5}}):
         with pytest.raises(jsonschema.ValidationError):
-            C.validate(_env("control.stop", bad))
+            C.validate(_env("control.stop", bad, request_id="s"))
 
 
 def test_well_known_body_shapes_validate():
@@ -614,16 +684,27 @@ def test_subscribe_requires_request_id():
                 "body": schedule,
             }
         )
-    # stop does NOT require it (and takes only `from`)
-    CONVENTIONS["control."].validate(
-        {
-            "seq": 1,
-            "topic": "control.stop",
-            "name": None,
-            "request_id": None,
-            "body": {"from": {"step": 1}},
-        }
-    )
+    # stop requires it too (v0.3: a stop is answered by name) and takes only `from`
+    stop = {
+        "seq": 1,
+        "topic": "control.stop",
+        "name": None,
+        "request_id": "s",
+        "body": {"from": {"step": 1}},
+    }
+    CONVENTIONS["control."].validate(stop)
+    with pytest.raises(jsonschema.ValidationError):
+        CONVENTIONS["control."].validate({**stop, "request_id": None})
+
+
+def test_lifecycle_bound_requires_request_id_and_claim_seq():
+    L = CONVENTIONS["lifecycle."]
+    L.validate(_env("lifecycle.bound", {"claim_seq": 3}, request_id="lease"))
+    with pytest.raises(jsonschema.ValidationError):
+        L.validate(_env("lifecycle.bound", {"claim_seq": 3}))  # request_id null
+    for bad in ({}, {"claim_seq": None}, {"claim_seq": 0}, {"claim_seq": 1, "x": 1}):
+        with pytest.raises(jsonschema.ValidationError):
+            L.validate(_env("lifecycle.bound", bad, request_id="lease"))
 
 
 def test_unsubscribe_body_is_empty_and_request_id_required():

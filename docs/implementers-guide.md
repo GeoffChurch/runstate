@@ -1,6 +1,7 @@
 # Protocol-implementer's guide — writing a non-Python runstate
 
-**Status:** DERIVED, not authoritative. Dated 2026-07-16. This guide restates
+**Status:** DERIVED, not authoritative. Dated 2026-07-16; current to log format 0.3.0
+(2026-10-03). This guide restates
 the wire contract for someone building a **second implementation** (Rust, Go,
 TypeScript, …). It is a reading of the binding artifacts, never the tiebreaker.
 
@@ -162,9 +163,10 @@ reproduce:
 - `last_seq() == N == the record count` (contiguity makes these equal —
   `runstate/channel/memory.py:last_seq` returns `len(self._log)`).
 - The CAS base case is `expected_seq=0` for the empty log.
-- **The pairing-by-`seq` rule** (§3.6) compares positions *across* topics in
-  every instance, so a backend offering only per-topic FIFO **cannot host the
-  conventions**. The conformance suite pins contiguity on every backend
+- **The conventions compare positions *across* topics:** the claim CAS asserts
+  the head over every topic, a claim's `seq` is its rank, and the window after a
+  claim spans topics (§3.6), so a backend offering only per-topic FIFO **cannot
+  host the conventions**. The conformance suite pins contiguity on every backend
   (design §4; `tests/test_channel.py`).
 
 Assign `seq` from a single serialization point. SQLite uses `INTEGER PRIMARY KEY
@@ -213,9 +215,11 @@ full"; verified in `runstate/channel/memory.py:_topic_match` and
 
 ## 3. The conventions (current wire versions)
 
-Opt-in typed bodies over the substrate. Wire versions **as of 2026-07-16**:
-envelope/subscription/value at **v0.2**; lifecycle/launcher at **v0.4** (the
-observer-clock bump dated the beacon — [`specs/observer-clock.md`](specs/observer-clock.md)).
+Opt-in typed bodies over the substrate. Wire versions **as of 2026-10-03**
+(log format 0.3.0): envelope/value at **v0.2**; subscription at **v0.3**; launcher
+at **v0.4**; lifecycle at **v0.5** (reference by name —
+[`specs/reference-by-name.md`](specs/reference-by-name.md); the observer-clock bump
+before it dated the beacon — [`specs/observer-clock.md`](specs/observer-clock.md)).
 Each schema is `additionalProperties: false` and independently versioned; adding
 a field is a deliberate version bump, never silent (design §10).
 
@@ -233,7 +237,7 @@ must too:
 - **Omittable-slot** (orchestrator-authored **schedule** slots `from`/`every`/
   `until` in a subscription body): the key is *omittable and non-nullable* —
   **absence is itself the semantics** (fire-now / one-shot / never-expire), and
-  `{"from": null}` is **schema-invalid** (`subscription-v0.2` `$defs.Schedule`
+  `{"from": null}` is **schema-invalid** (`subscription-v0.3` `$defs.Schedule`
   has no null option). This is the one deliberate carve-out from present-nullable.
 - At the **envelope** level, `name`/`request_id` are genuinely
   *omittable-or-null* (either absent or explicitly `null`).
@@ -246,13 +250,14 @@ Reserved topics, producer, consumer, and pinning schema (design §5, §7, §8;
 
 | topic | body | produced by | consumed by | schema |
 |---|---|---|---|---|
-| `control.subscribe` | schedule `{from?, every?, until?}` | orchestrator | worker | `subscription-v0.2` |
-| `control.unsubscribe` | `{}` (cancels by `request_id`) | orchestrator (or worker on expiry) | worker | `subscription-v0.2` |
-| `control.stop` | `{from?}` | orchestrator | worker | `subscription-v0.2` |
-| `lifecycle.started` | `{handle, t}` | worker | observers | `lifecycle-v0.4` |
-| `lifecycle.heartbeat` | `{step?, consumed_seq, t}` | worker | observers | `lifecycle-v0.4` |
-| `lifecycle.stopped` | `{completed, error?, final_step?, t}` | worker | observers | `lifecycle-v0.4` |
-| `lifecycle.nak` | `{reason, message}` | worker | requester (by `request_id`) | `lifecycle-v0.4` |
+| `control.subscribe` | schedule `{from?, every?, until?}` | orchestrator | worker | `subscription-v0.3` |
+| `control.unsubscribe` | `{}` (cancels by `request_id`) | orchestrator (or worker on expiry) | worker | `subscription-v0.3` |
+| `control.stop` | `{from?}` (named by `request_id`) | orchestrator | worker | `subscription-v0.3` |
+| `lifecycle.started` | `{handle, t}` | worker | observers | `lifecycle-v0.5` |
+| `lifecycle.heartbeat` | `{step?, consumed_seq, claim_seq, t}` | worker | observers | `lifecycle-v0.5` |
+| `lifecycle.stopped` | `{completed, error?, final_step?, claim_seq?, honored, t}` | worker | observers | `lifecycle-v0.5` |
+| `lifecycle.nak` | `{reason, message}` | worker | requester (by `request_id`) | `lifecycle-v0.5` |
+| `lifecycle.bound` | `{claim_seq}` (`request_id` = the lease) | worker | worker, observers | `lifecycle-v0.5` |
 | `launcher.launched` | `{handle, status, t}` | launcher | observers | `launcher-v0.4` |
 | `launcher.terminated` | `{reason, exit_code?, signal?, t}` | launcher | observers | `launcher-v0.4` |
 | `value` | `{value, step?, t?}` | worker | observers | `value-v0.2` |
@@ -263,10 +268,17 @@ on `started`/`heartbeat`/`stopped`/`launched`/`terminated`. `Nak` is
 (the data plane's clock, a separate concern — observer-clock §3). See §4.6 for
 the three-clocks rules that govern `t`.
 
+`claim_seq` (v0.5) names the episode a record speaks for: the `seq` of its
+`lifecycle.started`. It is a **required integer ≥ 1** on `heartbeat` and on
+`bound`, and **present-nullable** on `stopped` (null for a run that never claimed,
+such as a release naming a stop before any worker exists). `honored` is a
+**required array of unique strings**, `[]` when the `stopped` honors no stop.
+`lifecycle.bound` requires its envelope `request_id`. §3.6 gives the semantics.
+
 ### 3.2 `control.*` (the subscription convention, design §6)
 
 The message kind **is the topic** — there is no `kind` discriminator (design §6;
-the closed topic vocabulary is the discriminator). `subscription-v0.2` pins:
+the closed topic vocabulary is the discriminator). `subscription-v0.3` pins:
 
 - `control.subscribe`: body is a **schedule** (§3.3); envelope `name` = the
   target value's name; `request_id` is **required, non-null** and correlates the
@@ -275,9 +287,14 @@ the closed topic vocabulary is the discriminator). `subscription-v0.2` pins:
   cancels by `request_id`, which is **required, non-null**.
 - `control.stop`: body `{from?}` — one-shot, **at most a `from`** (`every`/
   `until` are schema-rejected: a stop fires once, and an `until` could perversely
-  gate it from ever firing). `request_id` is optional (traceability only).
+  gate it from ever firing). `request_id` is **required, non-null**: it is the
+  stop's name, which the `stopped` that honors it and a nak that refuses it both
+  carry (§3.6).
 
-### 3.3 The schedule condition-algebra (design §6; `subscription-v0.2` `$defs`)
+Every `request_id` names **one request** and is never reused: once any answer
+names an id, the id is spent (§3.6).
+
+### 3.3 The schedule condition-algebra (design §6; `subscription-v0.3` `$defs`)
 
 A schedule is `{from?, every?, until?}`. It **fires at `from`** (default: the
 next safe point), **repeats every `every`** (**absent `every` ⟹ one-shot**), and
@@ -320,7 +337,7 @@ Binding semantics (verified in `runstate/vocabulary/schedule.py`):
   **not** normalize; a `maxDepth` resource guard is the only sanctioned
   restriction.
 
-### 3.4 `lifecycle.nak` — the closed reason enum (design §6; `lifecycle-v0.4`)
+### 3.4 `lifecycle.nak` — the closed reason enum (design §6; `lifecycle-v0.5`)
 
 A refused control request; envelope `request_id` = the offending request. Body
 `{reason, message}` with `reason ∈ {malformed, unsatisfiable, unsupported}`:
@@ -356,25 +373,34 @@ If you build a worker that speaks the conventions, these steps are **normative**
 1. **Drain `control.*`** after the persisted cursor, applying the folds in a
    **fixed order per subscribe** (`worker.py:_handle_control`):
    1. missing `request_id` → `nak(malformed)`;
-   2. **answered-skip** — an `unsubscribe` **or** `nak` *following* the subscribe
-      by `seq` and bearing its `request_id` means it is already answered →
-      **skip** (the positional answer fold, §3.6). A resumed episode thus never
-      resurrects an expired lease nor re-naks a refused request;
-   3. **boundary-void pop-then-skip** — a **time-referencing** subscribe with a
-      prior episode's `started` between it and this episode's own claim is voided
+   2. **answered-skip** — a `request_id` that an `unsubscribe` **or** `nak`
+      names is **spent**, wherever that answer sits → **skip**, silently (the
+      answer fold by name, §3.6). A resumed episode thus never resurrects an
+      expired lease nor re-naks a refused request, and a later subscribe reusing
+      a spent id is dead on arrival;
+   3. **bound-void pop-then-skip** — a **lease** (an episode-local subscribe,
+      §3.6) that a `lifecycle.bound` binds to **another** episode is void here
       ([`specs/time-lease-boundary.md`](specs/time-lease-boundary.md)); the skip
-      still **rescinds its same-id predecessor** (registrations are slots, not a
-      set — `worker.py` pops the id, then returns);
+      also **empties its registration slot** (a re-send of a live id is the same
+      request, so the whole request is void here, every re-send included —
+      `worker.py` pops the id, then returns);
    4. **structural `malformed` gate** — the full grammar check
       (`malformed_schedule`);
    5. **`unsatisfiable`** — the static zero-fire check (`is_unsatisfiable`);
-   6. else **register**.
+   6. else **register**. For a lease this episode has not bound yet, first
+      append `lifecycle.bound` `{claim_seq: <own claim>}` bearing the lease's
+      `request_id` (**emit-then-register**: a crash between the two leaves the
+      lease bound, void elsewhere, never orphaned). A re-send of a live id
+      replaces the registration: its latest schedule stands, and its clock
+      restarts.
    The order has **observable consequences** an implementation must reproduce
    (design §6 loop step 1): an answered-and-malformed subscribe is **never
-   re-naked** on resume, and a boundary-voided malformed time-lease gets **no
-   nak**. A `control.stop` is added to the **pending set** unless already
-   discharged by a `lifecycle.stopped` later on the log (the discharge floor,
-   §3.6). **Then** advance the cursor.
+   re-naked** on resume, and a voided malformed lease gets **no nak**. A
+   `control.stop` with no `request_id` is naked `malformed`; one whose id a
+   `stopped.honored` or a nak already names is skipped silently; any other
+   passes the same `malformed` and `unsatisfiable` gates and joins the
+   **pending set**, keyed by its `request_id`. An unknown `control.*` verb is
+   naked `unsupported`. **Then** advance the cursor.
 2. **Service due subscriptions** — emit `value`s. A registration **expires** the
    moment no future fire is possible (`until` met, one-shot consumed, recurrence
    impossible — *registered ⟺ fire-possible*, enforced). Expiry is
@@ -389,50 +415,82 @@ If you build a worker that speaks the conventions, these steps are **normative**
    Emitting it *after* the answers and services means its `consumed_seq` (the
    worker's read position in its **inbound `control` order**, design §11) is a
    **truthful watermark** for the same-tick records — every nak, registration
-   effect, value, and expiry counter-record is on the log before the beat.
+   effect, value, and expiry counter-record is on the log before the beat. The
+   beat names the worker's own claim (`claim_seq`).
 4. **Evaluate the stop decision** — the pending set's `any`-join, a **monotone
-   level** (§3.6). If stopping, emit `lifecycle.stopped` and exit.
+   level** (§3.6). If stopping, emit the named dying breath (§3.7) and exit.
 
 `consumed_seq` is **not** a global `seq` — it is the read position in the inbound
 `control` order (design §11–12). "Did my request land?" is the **consumption
-watermark** (`consumed_seq ≥ its seq` and no `nak`), and it is **answer-first**:
-a `nak` following the request resolves it regardless of the watermark
-(design §6; `watcher.await_consumed`). The worker advances `consumed_seq` only
+watermark** (`consumed_seq ≥ its seq` and no `nak` naming it), and it is
+**answer-first**: a `nak` naming the request's `request_id` resolves it regardless
+of the watermark, and so, for a stop, does a `stopped` whose `honored` lists it
+(design §6; `watcher.await_consumed`, which takes the id from the request's own
+record). A request whose id was already spent before it is dead on arrival — the
+worker drops it unanswered — and a `control.*` record with no `request_id` (any
+verb: the topic set is closed to three, so an unknown one is refused too) is
+malformed and refused under no id, and a record that is no `control.*` request
+has nothing to answer it, so the reference `await_consumed` raises
+`ValueError` for all three rather than report acceptance. It raises the same for a re-send of a
+**void lease id** (a lease is one id, one episode: `live_demand`'s predicate calls it void), since no
+episode will serve it; the caller resubscribes under a fresh id. The worker advances `consumed_seq` only
 **after** durably registering/naking, so it is a true registration watermark,
 not merely "read past."
 
-### 3.6 The pairing-by-`seq` rule (design §7; `specs/stop-discharge.md`)
+### 3.6 Reference by name (design §7; `specs/reference-by-name.md`)
 
-*A standing fact is paired with its counter-record by log position — the counter
-must **follow** it by `seq`.* This is the single rule behind the drain semantics,
-and it has **four instances** (design §7 states them once):
+*A record that answers, ends or concerns another names it, by an identity that is
+never reused. It is never related to it by log position.* This is the single rule
+behind the drain semantics, and it has **four instances** (design §7 states them
+once):
 
-1. **`control.stop` ↔ the next `lifecycle.stopped`** (the discharge). A stop is
-   pending from its append until the next `stopped` that follows it by `seq`; any
-   `stopped` **discharges every pending stop at once** (a broadcast answer,
-   matching the `stopped` record's broadcast nature). A discharged stop is
-   history, never again input. Public observer home:
-   `observables.undischarged_stops`.
-2. **`control.subscribe` ↔ the next `control.unsubscribe`-or-`nak`** bearing its
-   `request_id` (the **answer fold**). Public home: `observables.live_demand`.
+1. **`control.stop` ↔ the `lifecycle.stopped` whose `honored` lists its
+   `request_id`, or a `nak` bearing it.** A stop is pending until one of them
+   names it, wherever it sits. A `stopped` honors **every stop in the worker's
+   pending set when it stops**, due or not; a `stopped` that names no stop (a
+   third party releasing a stranded claim) discharges nothing. A discharged stop
+   is history, never again input. Public observer homes:
+   `observables.undischarged_stops`, and its incremental form
+   `Watcher.pending_stops` (`specs/stop-discharge.md`).
+2. **`control.subscribe` ↔ the `control.unsubscribe` or `nak` bearing its
+   `request_id`** (the **answer fold**). A re-send of a live id updates that
+   request; once any answer names the id, the id is **spent**, wherever the
+   answer sits, and a later subscribe reusing it is dead on arrival. To replace a
+   subscription, send a fresh id and an `unsubscribe` of the old one (the
+   unsubscribe first, for crash-safety). Public home: `observables.live_demand`.
    The worker's own **expiry counter-record** (§3.5) applies the same eliminator
    a client's rescind does — author-blind (design §5; the expiry record is
    bookkeeping, not a command).
-3. A **time-referencing subscribe ↔ additionally the next episode boundary**
-   (`specs/time-lease-boundary.md`): a time-lease is a contract with one living
-   episode, voided **recordlessly** by a foreign `started`, re-anchoring at most
-   once.
-4. **Episode terminality ↔ no `started`/`launched` following the terminal
-   record** (`specs/run-episodes.md`).
+3. **A lease ↔ additionally the `lifecycle.bound` naming its registering
+   episode** (`specs/time-lease-boundary.md`). A lease is a subscribe with a
+   `time_seconds` or `count` atom anywhere in `from`/`every`/`until`. It is void
+   for every episode but the one it is bound to, and for every reader once a
+   terminal names that episode; a lease no episode has bound is never void. One
+   predicate decides voidness for the worker and the observers
+   (`observables.lease_void`).
+4. **A heartbeat or `stopped` ↔ the claim it speaks for, by `claim_seq`.** The
+   current episode is the latest claim, and its terminal is the `stopped` naming
+   it (`specs/run-episodes.md`). A displaced worker's late records name its own
+   old claim, so they cannot release its successor or move its `progress`.
+
+**What stays ordered, and why:** the order among claims (the claim CAS totally
+orders them, so a claim's `seq` is both its name and its rank); each writer's own
+order (a re-sent request's latest schedule; one episode's newest heartbeat); and
+the **window after a claim**, which is causal, not attribution — a record cannot
+name a claim it never saw, and the window keeps a malformed record from a dead
+past out of the present. Two terminals naming one claim are the one conflict
+names cannot resolve: the newest wins. Within these, the named reads give the
+same answer whatever order records arrive in
+(`tests/test_order_independence.py`).
 
 `value` fires are **deliberately not answers** — the answer set stays
 schedule-independent and the fold body-light. The in-episode stop decision is the
 pending set's `any`-join — a **level** that latches by inheritance, never a
 consumed-once pulse (a host that misses one `True` recovers it at the next safe
 point; `Worker.stop_pending` is the side-effect-free poll). Both verbs re-derive
-from `seq 0` across episodes, which is why a stop sent while the run is down is
-answered by the next episode — **exactly once** (that episode's own `stopped`
-discharges it).
+across episodes, which is why a stop sent while the run is down — even before any
+worker exists — is answered by the next episode **exactly once** (that episode's
+own `stopped` honors it).
 
 ### 3.7 Episodes: the birth-CAS self-claim and the retire death-CAS
 
@@ -447,9 +505,14 @@ and the whole thing rests on the CAS (§2.1):
   past the cap, so the capped folds equal an unfiltered same-read's folds (the
   head-first capped attach, design §12.5 — a 10⁶-envelope attach went 3.4 s →
   1.5 ms). The claim re-emits the launch id on `request_id` (§3.8).
-- **Death CAS** (`worker.py.retire`): the dying breath of a service worker is
-  **compare-and-appended against the drained log** — episodes are CAS-claimed at
-  both ends, so a subscribe racing the death is never orphaned. **Discipline:
+- **Death CAS** (`worker.py._die`, shared by `retire()` and `stopped()`): the
+  dying breath is **compare-and-appended against a fully read control tail** —
+  episodes are CAS-claimed at both ends. Read the head, take in the control
+  records up to it, append with `expected_seq` at that head, and re-read
+  whenever the CAS loses. `retire()` takes in every control verb, so a subscribe
+  racing the death is never orphaned (it cancels the death); a plain `stopped()`
+  takes in only stops, to name every pending one in `honored`, and leaves a
+  racing subscribe live for the next episode. **Discipline:
   `expected_seq` comes only from a read, never from an own append's returned
   seq** (an own append can land on top of an unseen racing subscribe); **any
   record found — including the worker's own naks/expiry unsubscribes — forces one
@@ -531,6 +594,8 @@ against `runstate/` at 2026-07-16.)
 | `attach_channel` / `create_channel` | `ValueError` | `backend="sqlite"` with `root=None`; `backend="postgres"` with `root=None`; an unknown backend string |
 | `attach_channel` / `create_channel` | `ImportError` | `backend="postgres"` without `psycopg` installed (message names `pip install runstate[postgres]`) |
 | `attach_channel` | `RunNotFound` | the run has no records (a missing, empty, or foreign store) — the non-mutating open's absence signal |
+| `attach_channel` / `create_channel` | `LogFormatMismatch` | the root holds a format newer than this release's (upgrade runstate), or the run's log sits at an older format's address (run `runstate migrate`) — `specs/log-formats.md` §4 |
+| `attach_channel` / `create_channel` | `LogFormatMissing` | the run's log sits at the legacy unversioned address; the message carries the onboarding instructions |
 | `current_channel` | `KeyError` | `RUNSTATE_RUN_ID` unset (then propagates `create_channel`'s `ValueError`/`ImportError`) |
 | `Watcher.poll` | `KeyError` | `run_id` was never `add()`/`observe()`-tracked |
 | `ensure` | `ValueError` | `until` contains a `count` atom (no driven count axis); the default launch-producer got a non-`{"step": N}` `until` |
@@ -538,7 +603,10 @@ against `runstate/` at 2026-07-16.)
 | `ensure` | `RunFailedError` | the producer run reached a **failure** outcome (`errored`/`killed`/`presumed_dead`); carries the `RunResult` observed **at raise time** |
 | `ensure` | `NoProgressError` | `ensure`'s **own** spawn died without advancing the step frontier and no live episode owns the run (own-spawn-scoped; a foreign episode re-drives) |
 | `history` | `ValueError` | a conforming `value` point has `step: null` (this is a stepped-trajectory reader); a **time-referencing** schedule with **no epoch** (no `lifecycle.started.t` on the log) |
-| `peek_terminal`, `live_episode`, `await_consumed` | `MalformedRecordError` | a **verdict-plane** record cannot be interpreted (bad keys, a constraint violation, a launcher record with no `request_id`) |
+| `peek_terminal`, `live_episode`, `await_consumed` | `MalformedRecordError` | a **verdict-plane** record cannot be interpreted (bad keys, a constraint violation, a launcher record with no `request_id`; for `peek_terminal`, a `stopped` that names no claim — the claim gate `live_episode` skips such a record, deliberately) |
+| `await_consumed` | `ValueError` | the request reuses a **spent** id (an answer named it before `seq`), the `control.*` record at `seq` carries no `request_id`, the record at `seq` is not a `control.*` request, no record sits at `seq`, or the request is a `control.subscribe` re-sending a **void lease** id (bound to an episode that can no longer serve it) |
+| `await_consumed` | `TimeoutError` | `timeout` elapsed (not-yet-drained is not a refusal) |
+| `ensure` | `RecordlessExitError` | the run was reaped with a clean exit code but left no worker verdict, and a full drive cycle did not move the frontier |
 | `Worker.emit` | `ValueError` | called before the first tick or on a stepless worker (a `step=null` point would poison `history` for the name) |
 
 **Verified corrections to prior notes:** (1) `MalformedRecordError` is raised
@@ -555,10 +623,13 @@ first") if the shared `log` table is absent — so `create_channel` /
 `attach_channel` with `backend="postgres"` can surface a `RuntimeError` indirectly,
 in addition to the `ValueError`/`ImportError` above.
 
-Four of these exception types are part of the exported surface
+Eight of these exception types are part of the exported surface
 (`runstate.__all__`): **`MalformedRecordError`**, **`RunFailedError`**,
-**`NoProgressError`**, and **`RunNotFound`** (a `LookupError` subclass — the
-non-mutating-open absence signal). The rest are Python builtins.
+**`NoProgressError`**, **`RecordlessExitError`**, **`RunNotFound`** (a
+`LookupError` subclass — the non-mutating-open absence signal), and
+**`LogFormatError`** with its subclasses **`LogFormatMismatch`** and
+**`LogFormatMissing`** (never converted into `RunNotFound`). The rest are Python
+builtins.
 
 ### 4.2 The conformance tier ladder (`tests/conftest.py`)
 
@@ -611,8 +682,8 @@ PRESUMED_DEAD}`). The **record-based** projection (`peek_terminal`):
   - else → **errored**.
 
 **A terminal record stands until a new episode CLAIMS** (`peek_terminal` is
-episode-aware): the stop tier reads the latest `stopped` unless a newer `started`
-follows it; the launcher tier reads the death of the launch that the latest claim
+episode-aware): the stop tier reads the `stopped` that names the latest claim;
+the launcher tier reads the death of the launch that the latest claim
 answered (§3.8). There is deliberately **no `success` boolean** — that is a
 policy the consumer owns, not something the producer bakes in (design §9;
 `CLAUDE.md` rubric — the closed enum is the canonical projection of the liveness
@@ -743,8 +814,11 @@ many NFS mounts, so the birth-claim CAS can admit two winners and
 
 ### 5.2 The SQLite layout (`runstate/channel/sqlite.py`)
 
-**One file per run.** The per-run locator is **`<root>/<run_id>.db`**
-(`channel/__init__.py:_locate`). The `log` table DDL and index, verbatim:
+**One file per run, under its format's directory.** The per-run address is
+**`<root>/v<format>/<run_id>.db`** — `<root>/v0.3.0/<run_id>.db` for the current
+format (`formats/_layout.py`; `specs/log-formats.md` §3). The opening checks of
+`specs/log-formats.md` §4 run before any read or write, and an implementation that
+interoperates must compute the address and raise on the same five cases. The `log` table DDL and index, verbatim:
 
 ```sql
 CREATE TABLE IF NOT EXISTS log (
@@ -756,6 +830,7 @@ CREATE TABLE IF NOT EXISTS log (
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_log_topic_seq ON log (topic, seq);
+CREATE INDEX IF NOT EXISTS idx_log_topic_name_seq ON log (topic, name, seq);
 ```
 
 - `seq` is the SQLite autoincrement (the single sequencer); `created_at` is
@@ -768,12 +843,15 @@ CREATE INDEX IF NOT EXISTS idx_log_topic_seq ON log (topic, seq);
   per-connection).
 - The `idx_log_topic_seq` index makes `latest(topic)` a seek
   (`WHERE topic=? ORDER BY seq DESC LIMIT 1`) instead of a full scan on every
-  Watcher poll.
+  Watcher poll; `idx_log_topic_name_seq` does the same for `latest(topic,
+  name=)`, which the first index cannot serve (#19).
 
 ### 5.3 The Postgres layout (`runstate/channel/postgres.py`; `specs/channel-postgres.md`)
 
-**One shared `log` table for all runs**, so a cross-host viz/BO can query across
-runs with no per-run DDL. DDL + index, verbatim:
+**One shared `log` table for all runs, in its format's schema** — `runstate_v<X>_<Y>_<Z>`,
+`runstate_v0_3_0` for the current format (`specs/log-formats.md` §3) — so a
+cross-host viz/BO can query across runs with no per-run DDL. DDL + index,
+verbatim (run with that schema as the `search_path`):
 
 ```sql
 CREATE TABLE IF NOT EXISTS log (
@@ -787,6 +865,7 @@ CREATE TABLE IF NOT EXISTS log (
     PRIMARY KEY (run_id, seq)
 );
 CREATE INDEX IF NOT EXISTS idx_log_run_topic_seq ON log (run_id, topic, seq);
+CREATE INDEX IF NOT EXISTS idx_log_run_topic_name_seq ON log (run_id, topic, name, seq);
 ```
 
 - **`PRIMARY KEY (run_id, seq)` is the CAS arbiter.** The CAS is a guarded
@@ -853,8 +932,9 @@ A new implementation reproduces the shape of the Python suite ([`../tests/`](../
   `completed ⟹ error null` coupling). §8 embeds a wire-example set your own test
   can validate the same way.
 - **The convention behaviors**, if you speak them: the worker loop's fixed drain
-  order and its observable consequences (§3.5); the pairing-by-`seq` folds
-  (§3.6); the episode birth/death CAS discipline (§3.7); the verdict projection
+  order and its observable consequences (§3.5); the named folds
+  (§3.6) and their invariance under causal reordering
+  (`tests/test_order_independence.py`); the episode birth/death CAS discipline (§3.7); the verdict projection
   (§4.4). The reference pins these in `tests/test_worker.py`,
   `tests/test_observables.py`, `tests/test_run_episodes.py`,
   `tests/test_service_worker.py`.
@@ -888,15 +968,16 @@ rules:
 
   | intro | designated eliminator | multiplicity |
   |---|---|---|
-  | `lifecycle.started` | `lifecycle.stopped` | obligation (worker must eventually emit; `launcher.terminated` is the external backstop) |
-  | `launcher.launched` | `launcher.terminated` | obligation (launcher viewpoint) |
-  | `control.subscribe` | `control.unsubscribe` (or `nak`) | **affine** — may never be consumed (standing state); a time-lease additionally has the episode boundary as a *second* eliminator |
-  | `control.stop` | the next `lifecycle.stopped` | **linear** — consumed exactly once |
+  | `lifecycle.started` | the `lifecycle.stopped` naming it (`claim_seq`) | obligation (worker must eventually emit; `launcher.terminated` is the external backstop) |
+  | `launcher.launched` | `launcher.terminated` (by launch id) | obligation (launcher viewpoint) |
+  | `control.subscribe` | the `control.unsubscribe` or `nak` naming its `request_id` | **affine** — may never be consumed (standing state); a lease additionally has its `lifecycle.bound` as a *second* eliminator, voiding it for every other episode |
+  | `control.stop` | the `lifecycle.stopped` whose `honored` names it, or a `nak` naming it | **linear** — consumed exactly once |
 
   Pure `value` events are the **no-obligation** case (no eliminator, no entry in
-  Γ). The elimination is **author-blind** — the worker writing an expiry
-  `control.unsubscribe` applies the same affine eliminator a client's rescind
-  does (which is why there is no `lifecycle.expired` constructor: every consumer
+  Γ). Every eliminator **names** what it consumes (§3.6), so Γ is the same
+  whatever order records arrive in. The subscribe elimination is
+  **author-blind** — the worker writing an expiry `control.unsubscribe` applies
+  the same affine eliminator a client's rescind does (which is why there is no `lifecycle.expired` constructor: every consumer
   would immediately quotient the two). This lens catches ill-typed proposals: the
   original one-shot stop had *no designated eliminator* (its consumption was an
   ephemeral `tick() → True` return), which is precisely the bug the
@@ -934,6 +1015,10 @@ they can never drift from the wire format. **Convention used by the test:**
 
 ### 8.1 Valid records (one or more per reserved topic)
 
+Each record stands alone: together they are not one log (three `stopped`s below
+name one claim, which no single log would hold). The names agree, though: every
+record that names a claim names the `lifecycle.started` at seq 4.
+
 A subscribe with a compound schedule (fire from step 100; then every 10 steps or
 60 s, whichever first; until both step 5000 and 100 fires):
 
@@ -951,7 +1036,9 @@ An unsubscribe (cancels `sub-1`; empty body):
  "body": {}}
 ```
 
-A conditional stop (stop at step 500; `from` only):
+A conditional stop (stop at step 500; `from` only). Its `request_id` is
+**required** (`subscription-v0.3`): the `lifecycle.stopped` that honors the
+stop, or the `nak` that refuses it, answers it by that name:
 
 ```json
 {"seq": 3, "topic": "control.stop", "name": null, "request_id": "stop-1",
@@ -966,56 +1053,88 @@ The worker's claim, re-emitting its launch id on `request_id` (§3.8):
 ```
 
 A stepped heartbeat, and a **stepless** heartbeat (a `serve()` worker; `step`
-present-nullable):
+present-nullable). Each names the claim it follows (`claim_seq`, an integer
+≥ 1, never null):
 
 ```json
 {"seq": 5, "topic": "lifecycle.heartbeat", "name": null, "request_id": null,
- "body": {"step": 42, "consumed_seq": 3, "t": 1721145602.0}}
+ "body": {"step": 42, "consumed_seq": 3, "claim_seq": 4, "t": 1721145602.0}}
 ```
 
 ```json
 {"seq": 6, "topic": "lifecycle.heartbeat", "name": null, "request_id": null,
- "body": {"step": null, "consumed_seq": 3, "t": 1721145601.5}}
+ "body": {"step": null, "consumed_seq": 3, "claim_seq": 4, "t": 1721145601.5}}
 ```
 
 A **completed** stop and an **errored** stop (`error is not None` ⟹ errored,
-§4.4):
+§4.4). Every `stopped` names its claim (`claim_seq`) and the stops it honored
+(`honored`, the `request_id`s of every stop pending when it stopped, due or not;
+`[]` when none was). The errored worker died at step 412 holding `stop-1`, not
+yet due at 500, and still names it: a `stopped` clears every pending stop:
 
 ```json
 {"seq": 7, "topic": "lifecycle.stopped", "name": null, "request_id": null,
- "body": {"completed": true, "error": null, "final_step": 999, "t": 1721145700.0}}
+ "body": {"completed": true, "error": null, "final_step": 999, "claim_seq": 4,
+          "honored": [], "t": 1721145700.0}}
 ```
 
 ```json
 {"seq": 8, "topic": "lifecycle.stopped", "name": null, "request_id": null,
- "body": {"completed": false, "error": "CUDA OOM at step 512", "final_step": 512,
-          "t": 1721145710.0}}
+ "body": {"completed": false, "error": "CUDA OOM at step 412", "final_step": 412,
+          "claim_seq": 4, "honored": ["stop-1"], "t": 1721145710.0}}
+```
+
+A **commanded** stop: the worker carried out `stop-1` at step 500 and names it,
+which answers it (no completion claim, no error ⟹ preempted, §4.4):
+
+```json
+{"seq": 9, "topic": "lifecycle.stopped", "name": null, "request_id": null,
+ "body": {"completed": false, "error": null, "final_step": 500, "claim_seq": 4,
+          "honored": ["stop-1"], "t": 1721145705.0}}
+```
+
+A **claimless** `stopped`, written by a third party for a run no worker ever
+claimed: `claim_seq` is `null`, and it answers only the stops it names:
+
+```json
+{"seq": 10, "topic": "lifecycle.stopped", "name": null, "request_id": null,
+ "body": {"completed": false, "error": null, "final_step": null, "claim_seq": null,
+          "honored": ["stop-0"], "t": 1721145590.0}}
 ```
 
 A nak (closed reason enum; undated):
 
 ```json
-{"seq": 9, "topic": "lifecycle.nak", "name": null, "request_id": "sub-bad",
+{"seq": 11, "topic": "lifecycle.nak", "name": null, "request_id": "sub-bad",
  "body": {"reason": "unsatisfiable", "message": "schedule can produce no fires"}}
+```
+
+A binding: `sub-1`'s schedule has a `time_seconds` atom, so it is
+episode-local, and before registering it the worker binds it to its own claim
+(`request_id` required: the subscription it binds):
+
+```json
+{"seq": 12, "topic": "lifecycle.bound", "name": null, "request_id": "sub-1",
+ "body": {"claim_seq": 4}}
 ```
 
 A launcher record **with its required `request_id`**, and a killed termination
 (reason-field pairing: `signal` non-null, `exit_code` null):
 
 ```json
-{"seq": 10, "topic": "launcher.launched", "name": null, "request_id": "launch-abc",
+{"seq": 13, "topic": "launcher.launched", "name": null, "request_id": "launch-abc",
  "body": {"handle": "local://host42/12345", "status": "running", "t": 1721145599.0}}
 ```
 
 ```json
-{"seq": 11, "topic": "launcher.terminated", "name": null, "request_id": "launch-abc",
+{"seq": 14, "topic": "launcher.terminated", "name": null, "request_id": "launch-abc",
  "body": {"reason": "killed", "exit_code": null, "signal": 9, "t": 1721145720.0}}
 ```
 
 A value (answering `sub-1`; `step`/`t` present-nullable but stamped here):
 
 ```json
-{"seq": 12, "topic": "value", "name": "loss", "request_id": "sub-1",
+{"seq": 15, "topic": "value", "name": "loss", "request_id": "sub-1",
  "body": {"value": 0.5, "step": 42, "t": 1721145602.0}}
 ```
 
@@ -1032,36 +1151,62 @@ An **extra top-level envelope field** — rejected by `envelope-v0.2`
  "body": {"value": 0.5, "step": 1, "t": 1.0}, "author": "me"}
 ```
 
-A **heartbeat with no `t`** — rejected by `lifecycle-v0.4` (`t` is required
+A **heartbeat with no `t`** — rejected by `lifecycle-v0.5` (`t` is required
 non-null since the observer-clock bump):
 
 ```jsonc
 {"seq": 2, "topic": "lifecycle.heartbeat", "name": null, "request_id": null,
- "body": {"step": 1, "consumed_seq": 0}}
+ "body": {"step": 1, "consumed_seq": 0, "claim_seq": 1}}
+```
+
+A **heartbeat that names no claim** — rejected by `lifecycle-v0.5` (`claim_seq`
+is required and never null: a beat speaks for the one episode it names):
+
+```jsonc
+{"seq": 3, "topic": "lifecycle.heartbeat", "name": null, "request_id": null,
+ "body": {"step": 1, "consumed_seq": 0, "claim_seq": null, "t": 1.0}}
 ```
 
 A **launcher record with `request_id: null`** — rejected by `launcher-v0.4` (the
 launch's correlation id is required on both records, §3.8):
 
 ```jsonc
-{"seq": 3, "topic": "launcher.terminated", "name": null, "request_id": null,
+{"seq": 4, "topic": "launcher.terminated", "name": null, "request_id": null,
  "body": {"reason": "exited", "exit_code": 0, "signal": null, "t": 1.0}}
 ```
 
-A **`count` atom outside `until`** — rejected by `subscription-v0.2` (`count` is
+A **`count` atom outside `until`** — rejected by `subscription-v0.3` (`count` is
 grammatical only under `until`, §3.3):
 
 ```jsonc
-{"seq": 4, "topic": "control.subscribe", "name": "loss", "request_id": "r",
+{"seq": 5, "topic": "control.subscribe", "name": "loss", "request_id": "r",
  "body": {"from": {"count": 5}}}
 ```
 
-A **completed stop carrying an `error`** — rejected by `lifecycle-v0.4` (the
+A **stop with no `request_id`** — rejected by `subscription-v0.3` (a stop is
+answered by name, so it must carry one):
+
+```jsonc
+{"seq": 6, "topic": "control.stop", "name": null, "request_id": null,
+ "body": {}}
+```
+
+A **completed stop carrying an `error`** — rejected by `lifecycle-v0.5` (the
 `completed ⟹ error is null` coupling, §4.4):
 
 ```jsonc
-{"seq": 5, "topic": "lifecycle.stopped", "name": null, "request_id": null,
- "body": {"completed": true, "error": "boom", "final_step": null, "t": 1.0}}
+{"seq": 7, "topic": "lifecycle.stopped", "name": null, "request_id": null,
+ "body": {"completed": true, "error": "boom", "final_step": null, "claim_seq": 1,
+          "honored": [], "t": 1.0}}
+```
+
+A **`stopped` with no `honored`** — rejected by `lifecycle-v0.5` (the list is
+always present, `[]` when it honored nothing; never omitted, never null):
+
+```jsonc
+{"seq": 8, "topic": "lifecycle.stopped", "name": null, "request_id": null,
+ "body": {"completed": true, "error": null, "final_step": null, "claim_seq": 1,
+          "t": 1.0}}
 ```
 
 ---

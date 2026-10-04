@@ -13,8 +13,9 @@ The whole service story, end to end, twice:
 4. LAPSE: no refresh is sent; the worker writes the expiry counter-record
    (``control.unsubscribe`` — the worker completing the pair) and retires via
    the careful death (the CAS'd dying breath).
-5. RE-DEMAND, RE-WAKE: a fresh subscribe is live for the next episode (no
-   boundary follows it yet — specs/time-lease-boundary.md), and the same
+5. RE-DEMAND, RE-WAKE: a subscribe under a fresh id is live for the next
+   episode (no episode has bound it yet — specs/time-lease-boundary.md; the
+   lapsed id is spent by its expiry record), and the same
    ``ensure_served`` call starts episode 2 on the same run. Note: never gate
    wake logic on ``peek_terminal`` — between the launch and the child's
    claim it still shows the previous episode's terminal (the wake-gap).

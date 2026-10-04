@@ -24,6 +24,32 @@ from runstate.observables import (
 from runstate.vocabulary.handle import local_handle
 
 
+# Hand-composed lifecycle records in their 0.3.0 shape (lifecycle-v0.5): a beat
+# names the claim it follows; a stopped names its claim (None: a run that never
+# claimed) and the stops it honored.
+def hb(ch, step, consumed_seq, claim_seq, t=0.0):
+    return ch.send(
+        {"step": step, "consumed_seq": consumed_seq, "t": t, "claim_seq": claim_seq},
+        topic="lifecycle.heartbeat",
+    )
+
+
+def stopped(
+    ch, *, claim_seq, completed=False, error=None, final_step=None, honored=(), t=0.0
+):
+    return ch.send(
+        {
+            "completed": completed,
+            "error": error,
+            "final_step": final_step,
+            "claim_seq": claim_seq,
+            "honored": list(honored),
+            "t": t,
+        },
+        topic="lifecycle.stopped",
+    )
+
+
 def test_last_activity_never_reads_value_records(open_run):
     # value.t is the DATA plane's clock (present-nullable), a different concern:
     # freshness reads only the beacon/terminal records. The blind spot is
@@ -37,17 +63,14 @@ def test_last_activity_never_reads_value_records(open_run):
 def test_last_activity_is_the_newest_dated_record(open_run):
     ch = open_run()
     assert last_activity(open_run()) is None  #                      nothing dated yet
-    ch.send({"handle": "local://h/1", "t": 10.0}, topic="lifecycle.started")
+    c = ch.send({"handle": "local://h/1", "t": 10.0}, topic="lifecycle.started")
     assert (
         last_activity(open_run()) == 10.0
     )  #                      a just-started run HAS an age
-    ch.send({"step": 0, "consumed_seq": 0, "t": 20.0}, topic="lifecycle.heartbeat")
-    ch.send({"step": 1, "consumed_seq": 0, "t": 35.0}, topic="lifecycle.heartbeat")
+    hb(ch, 0, 0, c, t=20.0)
+    hb(ch, 1, 0, c, t=35.0)
     assert last_activity(open_run()) == 35.0  #                      newest beacon
-    ch.send(
-        {"completed": True, "error": None, "final_step": 1, "t": 40.0},
-        topic="lifecycle.stopped",
-    )
+    stopped(ch, claim_seq=c, completed=True, final_step=1, t=40.0)
     assert (
         last_activity(open_run()) == 40.0
     )  #                      max across the dated records
@@ -58,8 +81,8 @@ def test_last_activity_skips_a_junk_t_measurement_fold(open_run):
     # (that topic contributes nothing), not raised (tolerance split). last_activity reads
     # latest-per-topic, so it falls back to the other dated topics.
     ch = open_run()
-    ch.send({"handle": "local://h/1", "t": 10.0}, topic="lifecycle.started")
-    ch.send({"step": 0, "consumed_seq": 0, "t": "junk"}, topic="lifecycle.heartbeat")
+    c = ch.send({"handle": "local://h/1", "t": 10.0}, topic="lifecycle.started")
+    hb(ch, 0, 0, c, t="junk")
     assert (
         last_activity(open_run()) == 10.0
     )  #                      junk beacon skipped, started stands
@@ -67,15 +90,14 @@ def test_last_activity_skips_a_junk_t_measurement_fold(open_run):
 
 def test_none_while_running(open_run):
     ch = open_run()
-    ch.send({"step": 0, "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat")
+    c = ch.send({"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started")
+    hb(ch, 0, 0, c)
     assert peek_terminal(open_run()) is None
 
 
 def test_completed(open_run):
-    open_run().send(
-        {"completed": True, "error": None, "final_step": 500, "t": 0.0},
-        topic="lifecycle.stopped",
-    )
+    # no claim: the terminal of a run that never claimed (claim_seq None)
+    stopped(open_run(), claim_seq=None, completed=True, final_step=500)
     r = peek_terminal(open_run())
     assert isinstance(r, RunResult)
     assert r.outcome == "completed"
@@ -84,10 +106,7 @@ def test_completed(open_run):
 
 
 def test_errored(open_run):
-    open_run().send(
-        {"completed": False, "error": "boom", "final_step": None, "t": 0.0},
-        topic="lifecycle.stopped",
-    )
+    stopped(open_run(), claim_seq=None, error="boom")
     r = peek_terminal(open_run())
     assert r.outcome == "errored"
     assert r.reason == "errored"
@@ -96,10 +115,7 @@ def test_errored(open_run):
 
 def test_default_stop_is_preempted(open_run):
     # a clean stop with no completed claim -> preempted (the unmarked default)
-    open_run().send(
-        {"completed": False, "error": None, "final_step": 7, "t": 0.0},
-        topic="lifecycle.stopped",
-    )
+    stopped(open_run(), claim_seq=None, final_step=7)
     r = peek_terminal(open_run())
     assert r.outcome == "preempted"
     assert r.reason == "preempted"
@@ -120,10 +136,7 @@ def test_killed_from_launcher_terminated(open_run):
 
 def test_clean_stop_takes_precedence_over_terminated(open_run):
     ch = open_run()
-    ch.send(
-        {"completed": True, "error": None, "final_step": 9, "t": 0.0},
-        topic="lifecycle.stopped",
-    )
+    stopped(ch, claim_seq=None, completed=True, final_step=9)
     ch.send(
         {"reason": "exited", "exit_code": 0, "signal": None, "t": 0.0},
         topic="launcher.terminated",
@@ -143,7 +156,7 @@ def _episode(ch, *, launch, pid, at):
     ch.send(
         {"handle": f"local://h/{pid}"}, topic="launcher.launched", request_id=launch
     )
-    ch.send(
+    return ch.send(
         {"handle": f"local://h/{pid}", "t": at},
         topic="lifecycle.started",
         request_id=launch,
@@ -154,11 +167,8 @@ def test_a_late_reap_does_not_forge_the_live_episodes_verdict(open_run):
     # ep1 stops cleanly and lingers; ep2 launches, claims, and is LIVE; THEN
     # ep1's reap lands. Its death names ep1's launch -- it cannot speak for ep2.
     ch = open_run()
-    _episode(ch, launch="L1", pid=1, at=0.0)
-    ch.send(
-        {"completed": True, "error": None, "final_step": 5, "t": 0.0},
-        topic="lifecycle.stopped",
-    )
+    c1 = _episode(ch, launch="L1", pid=1, at=0.0)
+    stopped(ch, claim_seq=c1, completed=True, final_step=5)
     _episode(ch, launch="L2", pid=2, at=1.0)  #                      ep2 claims, live
     assert peek_terminal(open_run()) is None
     ch.send(
@@ -239,34 +249,25 @@ def test_a_hand_run_workers_episode_has_no_launcher_verdict(open_run):
 def test_live_episode_running_then_none_when_stopped(open_run):
     ch = open_run()
     assert live_episode(open_run()) is None  #                     nothing yet
-    ch.send({"handle": local_handle(), "t": 0.0}, topic="lifecycle.started")
+    c = ch.send({"handle": local_handle(), "t": 0.0}, topic="lifecycle.started")
     assert (
         live_episode(open_run()) == local_handle()
     )  #           running (our pid alive)
-    ch.send(
-        {"completed": True, "error": None, "final_step": 1, "t": 0.0},
-        topic="lifecycle.stopped",
-    )
+    stopped(ch, claim_seq=c, completed=True, final_step=1)
     assert live_episode(open_run()) is None  #                     stopped -> not live
 
 
 def test_peek_terminal_is_episode_aware(open_run):
     ch = open_run()
     # episode 1: started ... stopped
-    ch.send({"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started")
-    ch.send(
-        {"completed": True, "error": None, "final_step": 5, "t": 0.0},
-        topic="lifecycle.stopped",
-    )
+    c1 = ch.send({"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started")
+    stopped(ch, claim_seq=c1, completed=True, final_step=5)
     assert peek_terminal(open_run()).outcome == "completed"  #  ep1 terminal
-    # episode 2 attaches -> the old stopped is no longer terminal (a started follows it)
-    ch.send({"handle": "local://h/2", "t": 1.0}, topic="lifecycle.started")
+    # episode 2 attaches -> the old stopped is no longer terminal (it names ep1)
+    c2 = ch.send({"handle": "local://h/2", "t": 1.0}, topic="lifecycle.started")
     assert peek_terminal(open_run()) is None  #                 ep2 live
     # episode 2 stops -> terminal again, with ep2's verdict
-    ch.send(
-        {"completed": True, "error": None, "final_step": 9, "t": 0.0},
-        topic="lifecycle.stopped",
-    )
+    stopped(ch, claim_seq=c2, completed=True, final_step=9)
     assert peek_terminal(open_run()).final_step == 9
 
 
@@ -295,10 +296,7 @@ def test_latest_episode_survives_the_episodes_end(open_run):
     # status display shows: ended != absent.
     ch = open_run()
     seq = ch.send({"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started")
-    ch.send(
-        {"completed": True, "error": None, "final_step": 5, "t": 0.0},
-        topic="lifecycle.stopped",
-    )
+    stopped(ch, claim_seq=seq, completed=True, final_step=5)
     assert latest_episode(open_run()).seq == seq
 
 
@@ -306,11 +304,8 @@ def test_latest_episode_tracks_the_newest_started(open_run):
     # started...stopped...started -> the second episode's opener. The rule
     # whose misapplication (oldest started) was audit F7's stale-pid bug.
     ch = open_run()
-    ch.send({"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started")
-    ch.send(
-        {"completed": False, "error": None, "final_step": 5, "t": 0.0},
-        topic="lifecycle.stopped",
-    )
+    c1 = ch.send({"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started")
+    stopped(ch, claim_seq=c1, final_step=5)
     seq2 = ch.send({"handle": "local://h/2", "t": 1.0}, topic="lifecycle.started")
     e = latest_episode(open_run())
     assert e.seq == seq2
@@ -327,17 +322,14 @@ def test_progress_none_when_no_stepped_record(open_run):
 
 
 def test_progress_from_heartbeat(open_run):
-    open_run().send(
-        {"step": 7, "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat"
-    )
+    ch = open_run()
+    c = ch.send({"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started")
+    hb(ch, 7, 0, c)  #                  a beat names the claim it follows
     assert progress(open_run()) == 7
 
 
 def test_progress_from_stopped_final_step(open_run):
-    open_run().send(
-        {"completed": False, "error": None, "final_step": 12, "t": 0.0},
-        topic="lifecycle.stopped",
-    )
+    stopped(open_run(), claim_seq=None, final_step=12)
     assert progress(open_run()) == 12
 
 
@@ -347,33 +339,37 @@ def test_progress_ignores_a_previous_episode_terminal(open_run):
     # reading episode 1's `final_step` makes `ensure` treat the window as closed and
     # return a series spliced across two episodes, as complete (runstate#33).
     ch = open_run()
-    ch.send({"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started")
-    ch.send({"step": 5, "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat")
-    ch.send(
-        {"completed": False, "error": None, "final_step": 5, "t": 0.0},
-        topic="lifecycle.stopped",
-    )
-    ch.send({"handle": "local://h/2", "t": 1.0}, topic="lifecycle.started")
-    ch.send({"step": 3, "consumed_seq": 0, "t": 1.0}, topic="lifecycle.heartbeat")
+    c1 = ch.send({"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started")
+    hb(ch, 5, 0, c1)
+    stopped(ch, claim_seq=c1, final_step=5)
+    c2 = ch.send({"handle": "local://h/2", "t": 1.0}, topic="lifecycle.started")
+    hb(ch, 3, 0, c2, t=1.0)
     assert progress(open_run()) == 3
 
 
 def test_progress_is_the_max_of_both_axes(open_run):
-    # frontier of the two registers: a prior episode's stopped may be ahead of
-    # the live episode's heartbeat (extend resumed earlier) -- max wins.
+    # frontier of the two registers of the CURRENT episode (both read by the
+    # claim they name) -- max wins, whichever register is ahead and whichever
+    # landed last. (A prior episode's stopped is not this episode's frontier:
+    # test_progress_ignores_a_previous_episode_terminal.)
     ch = open_run()
-    ch.send(
-        {"completed": False, "error": None, "final_step": 50, "t": 0.0},
-        topic="lifecycle.stopped",
-    )
-    ch.send({"step": 30, "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat")
+    # the stopped is ahead and the beat is NEWER: kills "the newest record wins"
+    # (a reclaim tool's release naming c, then a straggler beat of c)
+    c1 = ch.send({"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started")
+    stopped(ch, claim_seq=c1, final_step=50)
+    hb(ch, 30, 0, c1)
     assert progress(open_run()) == 50
+    # the converse, the beat ahead of final_step: kills "the stopped wins"
+    c2 = ch.send({"handle": "local://h/2", "t": 1.0}, topic="lifecycle.started")
+    hb(ch, 70, 0, c2, t=1.0)
+    stopped(ch, claim_seq=c2, final_step=60, t=1.0)
+    assert progress(open_run()) == 70
 
 
 def test_progress_ignores_stepless_heartbeats(open_run):
-    open_run().send(
-        {"step": None, "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat"
-    )
+    ch = open_run()
+    c = ch.send({"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started")
+    hb(ch, None, 0, c)
     assert progress(open_run()) is None
 
 
@@ -433,7 +429,7 @@ def test_value_series_empty_channel(open_run):
     assert value_series(open_run()) == {}
 
 
-# ----- live_demand: the positional answer fold's public home -----
+# ----- live_demand: the answer fold's public home (by name) -----
 
 
 def test_live_demand_empty(open_run):
@@ -463,18 +459,28 @@ def test_live_demand_nak_answers(open_run):
     assert live_demand(open_run()) == []
 
 
-def test_live_demand_is_positional_not_an_id_set(open_run):
+def test_live_demand_treats_a_spent_id_as_dead_by_name(open_run):
+    """Replaces the positional ``test_live_demand_is_positional_not_an_id_set``
+    (reference-by-name §3, Subscriptions): a request_id names ONE request, and
+    once any answer names an id the id is spent -- wherever the answer sits. So
+    the leading unsubscribe, which positionally answered nothing, spends r1, and
+    neither later subscribe reusing it is live; positionally the last one was a
+    fresh request. Replacement takes a fresh id."""
     ch = open_run()
-    ch.send({}, topic="control.unsubscribe", request_id="r1")  #  answers nothing
+    ch.send({}, topic="control.unsubscribe", request_id="r1")  #  spends r1 already
     ch.send(
         {"every": {"step": 1}}, topic="control.subscribe", name="a", request_id="r1"
     )
-    ch.send({}, topic="control.unsubscribe", request_id="r1")  #  answers the above
+    ch.send({}, topic="control.unsubscribe", request_id="r1")
     ch.send(
         {"every": {"step": 1}}, topic="control.subscribe", name="b", request_id="r1"
     )
+    assert live_demand(open_run()) == []  #       a spent id is dead on arrival
+    ch.send(
+        {"every": {"step": 1}}, topic="control.subscribe", name="c", request_id="r2"
+    )
     live = live_demand(open_run())
-    assert [e.name for e in live] == ["b"]  #     the later same-id subscribe is fresh
+    assert [e.name for e in live] == ["c"]  #     a fresh id is a fresh request
 
 
 def test_live_demand_agrees_with_the_worker(open_run):
@@ -498,10 +504,14 @@ def test_live_demand_agrees_with_the_worker(open_run):
     assert live_demand(open_run()) == []  #    the fold sees the expiry record
 
 
-def test_live_demand_excludes_boundary_voided_time_leases(open_run):
-    # the observer form (specs/time-lease-boundary.md): a time-referencing
-    # subscribe is live only while the latest episode is still its first
-    # possible drainer.
+def test_live_demand_voids_a_time_lease_only_through_its_binding_by_name(open_run):
+    """Replaces the positional ``test_live_demand_excludes_boundary_voided_time_leases``
+    (reference-by-name §3, Episode-local subscriptions): a lease is void only
+    through the episode that registered it, recorded as ``lifecycle.bound``.
+    The old fixture's second started never took the lease in, so it voids
+    nothing (positionally it did: the zero-fire void). The observer form of
+    ``lease_void``: void once bound to an episode other than the latest claim,
+    or to the latest claim once a terminal names it."""
     ch = open_run()
     ch.send(
         {"every": {"step": 1}, "until": {"time_seconds": 60}},
@@ -509,11 +519,17 @@ def test_live_demand_excludes_boundary_voided_time_leases(open_run):
         name="loss",
         request_id="r1",
     )
-    assert len(live_demand(open_run())) == 1  #    no boundary yet
+    assert len(live_demand(open_run())) == 1  #    no episode yet
     ch.send({"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started")
-    assert len(live_demand(open_run())) == 1  #    its first possible drainer
-    ch.send({"handle": "local://h/2", "t": 1.0}, topic="lifecycle.started")
-    assert live_demand(open_run()) == []  #        a boundary intervenes
+    assert len(live_demand(open_run())) == 1
+    c2 = ch.send({"handle": "local://h/2", "t": 1.0}, topic="lifecycle.started")
+    assert len(live_demand(open_run())) == 1  #    no episode took it in: not void
+    ch.send({"claim_seq": c2}, topic="lifecycle.bound", request_id="r1")
+    assert len(live_demand(open_run())) == 1  #    bound to the live latest claim
+    stopped(ch, claim_seq=c2)
+    assert live_demand(open_run()) == []  #        a terminal names its episode
+    ch.send({"handle": "local://h/3", "t": 2.0}, topic="lifecycle.started")
+    assert live_demand(open_run()) == []  #        bound to another episode
 
 
 def test_live_demand_keeps_step_keyed_subs_across_boundaries(open_run):
@@ -533,30 +549,39 @@ def test_peek_terminal_typed_error_on_extra_key_stopped(open_run):
     # a verdict fold must not guess at an uninterpretable record: typed and
     # catchable, never the accidental bare TypeError of Stopped(**body).
     seq = open_run().send(
-        {"completed": True, "error": None, "final_step": None, "oops": 1, "t": 0.0},
+        {
+            "completed": True,
+            "error": None,
+            "final_step": None,
+            "claim_seq": None,
+            "honored": [],
+            "oops": 1,
+            "t": 0.0,
+        },
         topic="lifecycle.stopped",
     )
     with pytest.raises(MalformedRecordError) as ei:
         peek_terminal(open_run())
     assert ei.value.seq == seq
     assert ei.value.topic == "lifecycle.stopped"
+    assert "oops" in ei.value.detail  #           the extra key, not a missing name
     assert str(seq) in str(ei.value) and "lifecycle.stopped" in str(ei.value)
 
 
 def test_peek_terminal_typed_error_on_missing_key_stopped(open_run):
-    open_run().send({"completed": True}, topic="lifecycle.stopped")
-    with pytest.raises(MalformedRecordError):
+    open_run().send(
+        {"completed": True, "claim_seq": None, "honored": []},
+        topic="lifecycle.stopped",
+    )
+    with pytest.raises(MalformedRecordError, match="missing.*'error', 'final_step'"):
         peek_terminal(open_run())
 
 
 def test_peek_terminal_typed_error_on_completed_with_error(open_run):
     # the payload constraint (completed => error is None) is a convention
     # violation like any other: ValueError from __post_init__ is wrapped too.
-    open_run().send(
-        {"completed": True, "error": "x", "final_step": None, "t": 0.0},
-        topic="lifecycle.stopped",
-    )
-    with pytest.raises(MalformedRecordError):
+    stopped(open_run(), claim_seq=None, completed=True, error="x")
+    with pytest.raises(MalformedRecordError, match="completed stop cannot carry"):
         peek_terminal(open_run())
 
 
@@ -602,7 +627,8 @@ def test_measurement_folds_skip_junk_records(open_run):
     # the other half of the split: progress / value_series / live_demand are
     # measurement folds -- one junk record is one lost point, skipped silently.
     ch = open_run()
-    ch.send({"junk": True}, topic="lifecycle.heartbeat")
+    ch.send({"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started")
+    ch.send({"junk": True}, topic="lifecycle.heartbeat")  #  names no claim, either
     ch.send({"junk": True}, topic="value", name="loss")
     ch.send(
         {"frm": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r1"
@@ -620,14 +646,11 @@ def test_undischarged_stops_pending_until_the_next_stopped(open_run):
     ch = open_run()
     assert undischarged_stops(open_run()) == []
     s1 = ch.send({}, topic="control.stop", request_id="a")
-    s2 = ch.send({}, topic="control.stop")  #                    id-less: still a stop
+    s2 = ch.send({}, topic="control.stop", request_id="b")
     assert [e.seq for e in undischarged_stops(open_run())] == [s1, s2]
-    ch.send(
-        {"completed": False, "error": None, "final_step": 3, "t": 0.0},
-        topic="lifecycle.stopped",
-    )
-    assert undischarged_stops(open_run()) == []  #           ONE stopped discharges ALL
-    s3 = ch.send({}, topic="control.stop", request_id="b")
+    stopped(ch, claim_seq=None, final_step=3, honored=["a", "b"])
+    assert undischarged_stops(open_run()) == []  #           ONE stopped names ALL
+    s3 = ch.send({}, topic="control.stop", request_id="c")
     assert [e.seq for e in undischarged_stops(open_run())] == [s3]
 
 
@@ -640,19 +663,23 @@ def test_undischarged_stops_pending_is_not_due(open_run):
     assert [e.request_id for e in undischarged_stops(open_run())] == ["late"]
 
 
-def test_undischarged_stops_overreports_naked_stops(open_run):
-    # a malformed stop is refused by the worker (never in its pending set),
-    # but no nak discharges a stop -- the fold conservatively lists it until
-    # the next stopped discharges everything (never under-reports).
+def test_undischarged_stops_drops_a_naked_stop_at_its_nak_by_name(open_run):
+    """Replaces the positional ``test_undischarged_stops_overreports_naked_stops``
+    (reference-by-name §3, Stops): a stop is pending until a stopped lists it or
+    a nak names its id, so a refused stop is answered by its nak. Positionally no
+    nak discharged a stop, and the fold over-reported a naked stop until the next
+    stopped cleared everything."""
     from runstate.worker import Worker
 
     ch = open_run()
     ch.send({"bogus": 1}, topic="control.stop", request_id="bad")
+    assert [e.request_id for e in undischarged_stops(open_run())] == ["bad"]
     w = Worker(open_run(), now=lambda: 0.0)
     w.tick(step=0)  #                                            the worker naks it...
-    assert ch.latest("lifecycle.nak") is not None
-    assert [e.request_id for e in undischarged_stops(open_run())] == ["bad"]
-    w.stopped()  #                                               ...the next stopped discharges
+    assert ch.latest("lifecycle.nak").request_id == "bad"
+    assert undischarged_stops(open_run()) == []  #               ...which answers it
+    w.stopped()
+    assert ch.latest("lifecycle.stopped").body["honored"] == []  # never pending there
     assert undischarged_stops(open_run()) == []
 
 
@@ -660,12 +687,10 @@ def test_measurement_folds_skip_wrong_typed_junk(open_run):
     # type-junk is junk too: a wrong-typed step is not a measurement --
     # skipped, never leaked into the frontier or compared (no TypeError).
     ch = open_run()
-    ch.send({"step": "abc", "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat")
+    c = ch.send({"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started")
+    hb(ch, "abc", 0, c)  #                     named, so it is read -- and skipped
     assert progress(open_run()) is None
-    ch.send(
-        {"completed": True, "error": None, "final_step": 3, "t": 0.0},
-        topic="lifecycle.stopped",
-    )
+    stopped(ch, claim_seq=c, completed=True, final_step=3)
     assert progress(open_run()) == 3  #  the junk axis contributes nothing
     ch.send({"value": 1.0, "step": 0, "t": 0.0}, topic="value", name="loss")
     ch.send({"value": 9.9, "step": "x", "t": 1.0}, topic="value", name="loss")
@@ -727,21 +752,26 @@ def test_a_malformed_stop_is_repairable_by_appending_a_good_one(open_run):
     # does exactly this. A fold that grew a full-history parse would silently take the
     # property away. (The launcher tier does not share it -- a known asymmetry.)
     ch = open_run()
-    ch.send({"handle": "local://otherhost/1", "t": 0.0}, topic="lifecycle.started")
+    c = ch.send({"handle": "local://otherhost/1", "t": 0.0}, topic="lifecycle.started")
     ch.send(
-        {"completed": False, "error": None, "final_step": 1, "t": 1.0, "note": "junk"},
+        {
+            "completed": False,
+            "error": None,
+            "final_step": 1,
+            "claim_seq": c,
+            "honored": [],
+            "t": 1.0,
+            "note": "junk",
+        },
         topic="lifecycle.stopped",
     )
-    with pytest.raises(MalformedRecordError):
+    with pytest.raises(MalformedRecordError, match="note"):
         peek_terminal(open_run())
-    ch.send(
-        {"completed": False, "error": None, "final_step": 1, "t": 2.0},
-        topic="lifecycle.stopped",
-    )
+    stopped(ch, claim_seq=c, final_step=1, t=2.0)
     assert peek_terminal(open_run()).outcome == "preempted"
 
 
-def test_live_episode_ignores_a_launcher_death_that_peek_terminal_honours(open_run):
+def test_live_episode_ignores_a_launcher_death_that_peek_terminal_honors(open_run):
     # CHARACTERISATION, not an endorsement. The two folds have non-nested eliminator
     # sets: peek_terminal reads the launch-correlated `terminated`; live_episode reads
     # only `stopped` + resolve(). So a provably-dead run reads as still-claimed, and
@@ -821,7 +851,7 @@ def test_worker_completed_splits_the_two_completed_sources(open_run):
     # own stopped(completed=True) does; a reaped launcher.terminated(exited, 0)
     # is a fact about a PROCESS -- an sbatch exits 0 at submit time.
     ch = open_run()
-    ch.send(
+    c = ch.send(
         {"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started", request_id="L1"
     )
     ch.send(
@@ -835,10 +865,7 @@ def test_worker_completed_splits_the_two_completed_sources(open_run):
     assert peek_terminal(open_run()).outcome == "completed"  # the launcher tier
     assert worker_completed(peek_terminal(open_run())) is False
 
-    ch.send(
-        {"completed": True, "error": None, "final_step": 2, "t": 2.0},
-        topic="lifecycle.stopped",
-    )
+    stopped(ch, claim_seq=c, completed=True, final_step=2, t=2.0)
     assert worker_completed(peek_terminal(open_run())) is True
     assert worker_completed(None) is False
 
@@ -867,8 +894,8 @@ def test_a_verdict_fold_refuses_a_junk_typed_field(open_run, body, bad):
     # record as junk -- the documented split exactly backwards (verdict folds
     # refuse to guess; measurement folds degrade).
     ch = open_run()
-    ch.send({"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started")
-    ch.send(body, topic="lifecycle.stopped")
+    c = ch.send({"handle": "local://h/1", "t": 0.0}, topic="lifecycle.started")
+    ch.send({**body, "claim_seq": c, "honored": []}, topic="lifecycle.stopped")
     with pytest.raises(MalformedRecordError, match=bad):
         peek_terminal(open_run())
     # The measurement fold degrades rather than raising -- and note it reads the

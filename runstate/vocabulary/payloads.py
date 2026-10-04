@@ -36,6 +36,7 @@ class Topic(StrEnum):
     LIFECYCLE_HEARTBEAT = "lifecycle.heartbeat"
     LIFECYCLE_STOPPED = "lifecycle.stopped"
     LIFECYCLE_NAK = "lifecycle.nak"
+    LIFECYCLE_BOUND = "lifecycle.bound"
     LAUNCHER_LAUNCHED = "launcher.launched"
     LAUNCHER_TERMINATED = "launcher.terminated"
     CONTROL_STOP = "control.stop"
@@ -100,10 +101,15 @@ class Heartbeat:
 
     ``t`` (the worker's wall-clock when it beat) is what lets a third-party observer date
     the beacon and so answer staleness for a run it did not launch (specs/observer-clock.md).
-    """
+
+    ``claim_seq`` names the episode the beat speaks for -- the ``seq`` of its claim
+    (``lifecycle.started``). Readers attribute a beat by that name, never by where it
+    sits: a displaced worker's beat names its own (old) claim and so cannot move the
+    live successor's frontier (reference by name; lifecycle-v0.5)."""
 
     step: Optional[int]
     consumed_seq: int
+    claim_seq: int
     t: float
     TOPIC: ClassVar[str] = Topic.LIFECYCLE_HEARTBEAT
 
@@ -113,11 +119,23 @@ class Stopped:
     """The cooperative dying breath; its existence on the log = a clean, *resumable*
     halt (§7). ``completed=True`` is the worker's opt-in claim of intrinsic, permanent
     completion; otherwise the stop projects to ``preempted``. ``error`` is the failure
-    diagnostic; a completed stop carries no error (enforced)."""
+    diagnostic; a completed stop carries no error (enforced).
+
+    Two names (lifecycle-v0.5, reference by name):
+
+    - ``claim_seq`` -- the claim this terminal speaks for (the ``seq`` of its
+      ``lifecycle.started``), or None for a run that never claimed (a third party
+      halting a startless run). A terminal ends the episode it NAMES, wherever it lands.
+    - ``honored`` -- the ``request_id``s of the ``control.stop``s in the worker's
+      registered pending set when it stopped, due or not. A stop is pending until
+      some ``stopped`` names it (or a ``nak`` refuses it by name); a ``stopped`` that
+      names none -- a third party's claim release -- discharges nothing."""
 
     completed: bool
     error: Optional[str]
     final_step: Optional[int]
+    claim_seq: Optional[int]
+    honored: list[str]
     t: float  #                      the worker's wall-clock at the dying breath (§ observer-clock)
     TOPIC: ClassVar[str] = Topic.LIFECYCLE_STOPPED
 
@@ -125,13 +143,39 @@ class Stopped:
         _require("completed", self.completed, kind="bool", optional=False)
         _require("error", self.error, kind="str", optional=True)
         _require("final_step", self.final_step, kind="int", optional=True)
+        _require("claim_seq", self.claim_seq, kind="int", optional=True)
         _require("t", self.t, kind="number", optional=False)
+        if not isinstance(self.honored, list) or not all(
+            isinstance(r, str) for r in self.honored
+        ):
+            raise ValueError(
+                f"honored must be a list of request_id strings, got {self.honored!r}"
+            )
         # completed ⟹ error is None: keeps the two content fields non-overlapping, so
         # `error is not None` ⟺ errored holds globally (mirrors Terminated's exited-XOR-killed).
         if self.completed and self.error is not None:
             raise ValueError(
                 "a completed stop cannot carry an error (completed ⟹ error is None)"
             )
+
+
+@dataclass(frozen=True)
+class Bound:
+    """An episode-local subscription (a lease: ``time_seconds`` or ``count`` anywhere
+    in its schedule) registered by the episode ``claim_seq`` names. Envelope
+    ``request_id`` = the lease. Written once per (lease, episode), at registration,
+    before the registration takes effect (emit-then-register).
+
+    The lease is a contract with that one episode: every OTHER episode treats it as
+    answered, and so does every reader once the binding episode has a terminal --
+    the boundary rule as a join on names instead of a ``started`` lying between two
+    positions (specs/time-lease-boundary.md, converted)."""
+
+    claim_seq: int
+    TOPIC: ClassVar[str] = Topic.LIFECYCLE_BOUND
+
+    def __post_init__(self) -> None:
+        _require("claim_seq", self.claim_seq, kind="int", optional=False)
 
 
 @dataclass(frozen=True)

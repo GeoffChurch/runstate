@@ -1,0 +1,12 @@
+t_kill+0.38s:
+   LIVE   {'dbos_status': 'PENDING', 'dbos_updated_at_age_s': 1.44, 'dbos_executor_id': 'rtx6000-502512-4f7528', 'dbos_steps_recorded': 3, 'layer_verdict': 'running', 'layer_is_alive': True}
+   KILLED {'dbos_status': 'PENDING', 'dbos_updated_at_age_s': 1.44, 'dbos_executor_id': 'rtx6000-502513-a158fd', 'dbos_steps_recorded': 3, 'layer_verdict': 'running', 'layer_is_alive': True}
+t_kill+5.91s:
+   LIVE   {'dbos_status': 'PENDING', 'dbos_updated_at_age_s': 6.95, 'dbos_executor_id': 'rtx6000-502512-4f7528', 'dbos_steps_recorded': 6, 'layer_verdict': 'running', 'layer_is_alive': True}
+   KILLED {'dbos_status': 'PENDING', 'dbos_updated_at_age_s': 6.96, 'dbos_executor_id': 'rtx6000-502513-a158fd', 'dbos_steps_recorded': 3, 'layer_verdict': 'presumed_dead', 'layer_is_alive': False}
+DBOS status identical (PENDING) for live and killed at every observation: True
+layer: killed run first reported not-alive at t_kill+3.55s (STALE=3.0, beacon every 0.5s); live run reported alive at all 8 observations: True
+
+=== B7 cold liveness: PASS ===
+  DBOS alone cannot tell them apart: True
+  layer (beacon table + staleness rule) tells them apart after <= 3.55s

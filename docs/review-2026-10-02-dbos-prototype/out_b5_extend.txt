@@ -1,0 +1,17 @@
+[502272] RESULT {"final_step": 10, "stopped": false} after 0.58s
+[502386] RESULT {"final_step": 20, "stopped": false} after 0.58s
+ensure(config, 10) -> 10 values; segments=[('2bb01218f54b.0', 'SUCCESS')]; ckpt={'step': 10, 'state': {'w': 5.0}}
+  native start_same_id_new_until: {'final_step': 10, 'stopped': False}
+  native stored_inputs_after_start: {'args': ['2bb01218f54b', 10, 10, False, False], 'kwargs': {}}
+  native resume_on_SUCCESS: {'status': 'SUCCESS', 'result': {'final_step': 10, 'stopped': False}}
+  native fork: {'new_id': 'c8bdec80-88ea-40bc-973d-cfc3c0315ce4', 'inputs': {'args': ['2bb01218f54b', 10, 10, False, False], 'kwargs': {}}, 'result': {'final_step': 10, 'stopped': False}}
+  -> starting the finished id with until=20 returned final_step=10 with no error: silently ignored=True
+ensure(config, 20) -> 20 values, steps=0..19 contiguous=True
+  steps trained during the extend: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19] by pids [502386]  (recomputed any of 0..9: False)
+  segments (DBOS workflow ids) now: [('2bb01218f54b.0', 'SUCCESS'), ('2bb01218f54b.1', 'SUCCESS')]; fork rows left behind by the probe: ['c8bdec80-88ea-40bc-973d-cfc3c0315ce4']
+  stream rows per workflow id (min step, max step, n): [('2bb01218f54b.0', 0, 9, 10), ('2bb01218f54b.1', 10, 19, 10)]
+
+=== B5 extend after completion: PASS ===
+  values 0..19 returned, only 10..19 trained, resumed from ckpt {'step': 10, 'state': {'w': 5.0}}: True
+  identity: run = '2bb01218f54b' (layer); DBOS workflow ids = ['2bb01218f54b.0', '2bb01218f54b.1'] -- a NEW workflow id per extension
+  DBOS-native extension: start(same id, until=20) silently returned the old result=True; resume on SUCCESS = no-op; fork = new id with the ORIGINAL inputs

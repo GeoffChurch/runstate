@@ -35,11 +35,12 @@ contract becomes *at* the release boundary.
 
 Definitions used throughout:
 
-- **package version** — the `pyproject.toml` `version` (today `0.2.0.dev0`),
+- **package version** — the `pyproject.toml` `version` (today `0.3.0.dev0`),
   what `pip` resolves and PyPI orders.
 - **convention version** — the per-schema `-vX.Y` in `protocol/` (envelope
-  `v0.2`; subscription/value `v0.2`; lifecycle/launcher `v0.4`), each on its own
-  timeline. These are **not** the package version and never have been.
+  `v0.2`; value `v0.2`; subscription `v0.3`; launcher `v0.4`; lifecycle `v0.5`,
+  since log format 0.3.0), each on its own timeline. These are **not** the
+  package version and never have been.
 
 ---
 
@@ -64,8 +65,8 @@ five independently-versioned schemas?
 
 **Recommendation (not ruled).** Option 1 for the package number, with the
 freeze scoped explicitly: at first release, **freeze the envelope
-(`envelope-v0.2`) and each convention at its shipped version** (subscription
-`v0.2`, value `v0.2`, lifecycle `v0.4`, launcher `v0.4`). State in the release
+(`envelope-v0.2`) and each convention at its shipped version** (today
+subscription `v0.3`, value `v0.2`, lifecycle `v0.5`, launcher `v0.4`). State in the release
 notes that, pre-1.0, a breaking wire bump rides a MINOR package bump *with a
 retained migration script* (see (b)); post-1.0 a breaking wire bump is a MAJOR.
 The per-convention `-vX.Y` stays the ground truth for *which* shape a given log
@@ -77,6 +78,10 @@ it since v0.2.
 ---
 
 ## (b) The public form of the migration doctrine
+
+> **RESOLVED 2026-10-03 by [`docs/specs/log-formats.md`](../specs/log-formats.md): option 3, with
+> detection replaced by the address.** A log's format is part of where it lives, so `runstate migrate`
+> never has to detect a version; steps are retained and chained. The text below is the trail.
 
 **Tension.** "Delete the migration script once it converges" is right for a
 solo author and wrong for a library with users, who upgrade on their own
@@ -150,25 +155,28 @@ do not expect wire graciousness. Reject Option 3 outright.
 
 ---
 
-## (e) The version-naming tension (three numbers, no agreement)
+## (e) The version-naming tension (three numbers, two now agreeing)
 
-**Tension.** Three sources disagree about "what version is this":
+**Tension.** Three sources answer "what version is this", and until log format
+0.3.0 bumped the package they all disagreed. Two now agree, 0.3 and "v0.3"; the
+wire does not:
 
-- `pyproject.toml` says `0.2.0.dev0`;
+- `pyproject.toml` says `0.3.0.dev0` (bumped with log format 0.3.0,
+  `../specs/log-formats.md` §2 rule 3);
 - the docs (README status, `design-v0.2.md` revision history, `docs/backlog/`)
   call the shipped arc **"v0.3"** (the run-episodes / memoizer / service-worker
   thread);
-- the wire conventions are at **`v0.4`** (lifecycle, launcher).
+- the wire conventions run up to **`v0.5`** (lifecycle; launcher at `v0.4`,
+  subscription at `v0.3`).
 
-A newcomer cannot tell which number to trust, and `0.2.0.dev0` badly understates
-what has actually shipped.
+A newcomer cannot tell which number to trust.
 
 **Options.**
 
 1. Release as **0.3.0**, matching the docs' "v0.3" narrative; state in the
    release notes that the package version and the per-convention wire versions
-   are **decoupled** (the package is 0.3.0; lifecycle/launcher happen to be at
-   wire-v0.4, which is fine and expected).
+   are **decoupled** (the package is 0.3.0; lifecycle happens to be at
+   wire-v0.5 and launcher at v0.4, which is fine and expected).
 2. Release as **0.4.0** to match the highest wire version (rejected:
    conflates the two axes — it implies the package tracks the max convention
    version, which is not a rule anyone wants to maintain).
@@ -180,8 +188,9 @@ sentence to the README and `docs/README.md` making the decoupling explicit —
 "the package version (SemVer, PyPI) and the per-convention wire versions
 (`protocol/*-vX.Y`) are independent axes; do not read one from the other." This
 is the smallest change that makes all three sources honest simultaneously. The
-task that prepared release mechanics deliberately **did not** change
-`version = "0.2.0.dev0"` — bumping it is this decision, and it is the owner's.
+package is now `0.3.0.dev0`, bumped with log format 0.3.0 (a format change bumps
+the package in the same commit), which is Option 1's number; cutting the release
+is still this decision, and it is the owner's.
 
 ---
 

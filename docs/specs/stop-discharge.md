@@ -13,6 +13,13 @@ three of which independently arrived at the same fix** (the discharge fold
 below), and two of which independently *refuted* the first-proposed fix
 (episode-start fencing, A2 below).
 
+**Converted to reference by name 2026-10-03** ([`reference-by-name.md`](reference-by-name.md), log
+format 0.3.0). A stop is named by its `request_id`, now required; it is discharged by the `stopped` whose
+`honored` list names it, or refused by a nak naming it; and the dying breath is a compare-and-swap over a
+fully read control tail. The sections below state the converted rule. The case for the request/outcome
+pair, the level and the OR-join is unchanged, and A3 below records why the explicit field it once
+rejected is right after all.
+
 ## The problem: three symptoms, one type error
 
 1. **Cross-episode replay (the failing test).** The worker drains `control.>`
@@ -44,13 +51,14 @@ an accident of mechanism.
 ## The model
 
 > **A `control.stop` is the *request half* of a request/outcome pair.** It is a
-> durable log fact, **pending from its append until the next
-> `lifecycle.stopped` that follows it by `seq`** — the record the design already
-> designates as the stop's *effect* (design §7: *"`control.stop` 'landed' = the
-> watermark; its **effect** = `lifecycle.stopped`; there is no separate stop
-> receipt"*). Any `stopped` discharges **every** pending stop at once (broadcast
-> answer, matching the `stopped` record's own broadcast nature). A discharged
-> stop is *history* — provenance, never again input.
+> durable log fact, named by its `request_id`, **pending until a
+> `lifecycle.stopped` names it in `honored`, or a `lifecycle.nak` names its id**
+> — the `stopped` being the record the design already designates as the stop's
+> *effect* (design §7: *"`control.stop` 'landed' = the watermark; its **effect**
+> = `lifecycle.stopped`; there is no separate stop receipt"*). A `stopped`
+> honors **every** stop in the worker's pending set when it stops, due or not:
+> one answer for all of them, which says which. A discharged stop is *history*
+> — provenance, never again input.
 
 Within an episode, the pending stops form a **set of monotone predicates**:
 
@@ -71,17 +79,14 @@ Within an episode, the pending stops form a **set of monotone predicates**:
   gate and recovers bootstrap heartbeats.
 
 **The unifying drain rule** (one rule, both verbs — supersedes the earlier
-"state-vs-event" framing): *every control fact is live until its
-counter-record, and the worker folds the **whole** log applying
-counter-records.* Subscribe's counter-record is `unsubscribe` (an explicit
-rescind); stop's counter-record is the next `stopped` (a discharge). Both
-re-derive from `seq 0` across episodes; subscriptions persist because their
-*(forward note, 2026-06-10: this clause was incomplete until
-`specs/service-worker.md` — natural expiry left no rescission on the log, so
-expired leases resurrected per episode. The worker now writes expiry
-counter-records, the counter-record set is {unsubscribe, nak}, and the
-pairing is positional — design §7's pairing-by-`seq` rule.)*
-rescissions are on the log, and stops expire because their discharges are too.
+"state-vs-event" framing): *every control fact is live until a counter-record
+names it, and the worker folds the **whole** log applying counter-records.*
+Subscribe's counter-records are `unsubscribe` (an explicit rescind, or the
+worker's expiry record, `specs/service-worker.md`) and `nak`; stop's are a
+`stopped` that honors it (a discharge) and `nak` (a refusal). Each names the
+request by its `request_id` — design §7's reference-by-name rule. Both
+re-derive across episodes; subscriptions persist because their rescissions
+are on the log, and stops expire because their discharges are too.
 The subscribe/stop asymmetry (no `un-stop` verb) is principled: **a stop is
 self-clearing — its receipt is the very thing it requests.**
 
@@ -89,32 +94,34 @@ self-clearing — its receipt is the very thing it requests.**
 
 - **Extracted, not invented.** The discharge record was designated in design §7
   a month before this bug; the code was reading half the pair.
-- **Mirror of a shipped rule.** Episode-aware `peek_terminal`: *a `stopped` is
-  terminal iff no `started` follows it by `seq`*. The discharge rule is the same
-  follow-by-`seq` fold on the opposite pair. One derivation shape, two
-  directions.
-- **Independence / net deletion.** No new vocabulary, no schema change, no new
-  record; the `Subscription`-for-stop machinery is *deleted* (stops have no
-  `every`/`until` — the schema already rejects them — so all that type ever
-  provided was `satisfied(from)`).
+- **Mirror of a shipped rule.** Episode-aware `peek_terminal`: an episode's
+  terminal is the `stopped` that names its claim (`claim_seq`). The discharge
+  is the same join on the opposite pair: a stop's discharge is the `stopped`
+  that names it. One derivation shape, two directions.
+- **Independence / net deletion.** No new verb and no new record; the
+  `Subscription`-for-stop machinery is *deleted* (stops have no `every`/`until`
+  — the schema already rejects them — so all that type ever provided was
+  `satisfied(from)`). The one field the discharge needs, `stopped.honored`, is
+  what makes it attributable (A3).
 - **Orthogonality.** Subscribe = rescinded standing configuration; stop =
   discharged command-fact. Neither borrows the other's machinery.
 - **Serendipity (the signature it's right).** The F2 latch and the F3 OR-join
   fall out of the re-typing with zero added state; and B′'s "commandedness is
   recoverable from the log" becomes *precise*: the commanding stop(s) for a
-  given `stopped` = exactly the pending set at its `seq` — the same fold read
-  from the other side.
+  given `stopped` = exactly its `honored` list — the fold, written down.
 
 ## Semantics (scenario matrix)
 
-| scenario | today | this spec |
+| scenario | before this spec | this spec |
 |---|---|---|
 | S1: stop fires mid-episode; host loop ignores `tick()`'s return once | lost forever | honored at the next safe point (level, not pulse) |
-| S2: stop sent while the run is **down** (between episodes) | honored by ep N+1 **and re-honored by every later episode** (poisoned) | honored **exactly once** — ep N+1 stops cleanly at its first safe point (the "blip"); the blip's own `stopped` discharges it; ep N+2 runs free |
-| S3: stop honored by ep1; ep2 resumes (the failing test) | ep2 dies at its first step | discharged by ep1's `stopped`; ep2 runs |
-| S4: two pending stops with different `from`s | later clobbers earlier | OR-join — first satisfied condition stops the run; the resulting `stopped` discharges both |
-| pre-staged stop (sent before the worker attaches — the test idiom) | honored | honored (pending: no `stopped` follows it) |
-| crash edge: ep1 *drains* a conditional stop, crashes before honoring it | n/a (re-drained anyway) | still pending (no `stopped` followed) → resumed episode re-arms it. At-least-once toward an idempotent effect (halt + emit `stopped`), which converges |
+| S2: stop sent while the run is **down** (between episodes) | honored by ep N+1 **and re-honored by every later episode** (poisoned) | honored **exactly once** — ep N+1 stops cleanly at its first safe point (the "blip"); the blip's own `stopped` honors it; ep N+2 runs free. A stop sent before any worker exists is the same case |
+| S3: stop honored by ep1; ep2 resumes (the failing test) | ep2 dies at its first step | honored by ep1's `stopped`; ep2 runs |
+| S4: two pending stops with different `from`s | later clobbers earlier | OR-join — first satisfied condition stops the run; the resulting `stopped` honors both |
+| pre-staged stop (sent before the worker attaches — the test idiom) | honored | honored (pending: no `stopped` names it) |
+| crash edge: ep1 *drains* a conditional stop, crashes before honoring it | n/a (re-drained anyway) | still pending (no `stopped` names it) → resumed episode re-arms it. At-least-once toward an idempotent effect (halt + emit `stopped`), which converges |
+| a stop lands between the worker's last drain and its dying breath | discharged unseen | named in the breath, whose CAS re-reads the tail; one landing after the breath stays pending for the next episode |
+| a third party releases a stranded claim with a `stopped` that names no stop (#39) | — | discharges nothing |
 
 **The S2 "blip" is a deliberate semantic choice, surfaced loudly:** a stop sent
 while no episode is live is *not* dropped — it is answered by the next episode
@@ -153,7 +160,15 @@ error: fencing (Chubby sequencers, Kafka producer epochs, Raft terms) answers
 **"who may act,"** but this problem is **"has this intent been served."**
 
 **A3 — correlated acknowledgment: `stopped` carries the discharged stop's
-`request_id` (or a new `lifecycle.ack`).** Two schema version bumps
+`request_id` (or a new `lifecycle.ack`). ADOPTED 2026-10-03, as `stopped.honored`
+carrying the whole pending list ([`reference-by-name.md`](reference-by-name.md)).**
+The case against it below fails at its last step. Carrying the whole pending list
+does avoid the S4 haunting, but the ids are not decorative: position is blind to
+author, so a third party's `stopped` discharged every pending stop (#39: 11 of 37
+real stops), and position is order, so a stop landing between the last drain and
+the breath was discharged unseen. `seq`-juxtaposition encodes the pairing only for
+one honest writer in one order. The original argument, kept because it is
+seductive: two schema version bumps
 (`additionalProperties: false`), `request_id` becomes mandatory on stops (a
 wire-compat break), and it re-litigates two settled decisions — §7's "there is
 no separate stop receipt" and B′'s removal of `Stopped.reason` in favor of log
@@ -205,45 +220,50 @@ now the cell-local `.skip` policy file / the caller's relaunch policy.)
 
 ## Implementation
 
-Two near-independent changes in `runstate/worker.py`, no wire change:
+Three changes in `runstate/worker.py`, and the names on the wire
+(`subscription`-`v0.3`, `lifecycle`-`v0.5`):
 
-1. **The discharge floor (fixes S3, S2-exactly-once).** `Worker.__init__`
-   already reads the whole log for the CAS claim; from that same read, record
-   `self._discharge_floor = max(seq of lifecycle.stopped envelopes, default 0)`
-   — zero extra I/O, exact at claim time (the CAS serializes attach against any
-   concurrent append). The same-read fusion generalizes: the positional answer
-   fold (`specs/service-worker.md`) and the episode-boundary list
-   (`specs/time-lease-boundary.md`) are computed from that **same read** the
-   claim CAS is issued against — which is what makes all three exact. In
-   `_handle_control`'s `control.stop` branch, first:
-   `if e.seq < self._discharge_floor: return` — **silently**, before
-   validation/nak (a discharged-but-malformed stop was already naked by its own
-   era's worker; and "already answered" is not a refusal — the nak `reason`
-   enum (`malformed`/`unsatisfiable`/`unsupported`) rightly has no word for it).
-   *(2026-07-11: the rule gained its public observer home,
-   `observables.undischarged_stops` — the fold a status surface or dispatch
-   gate reads; pending ≠ due and naked-stop over-reporting documented there.)*
+1. **The spent stops (fixes S3, S2-exactly-once).** The attach read the claim
+   CAS is issued against collects every stop id an answer names — each
+   `stopped.honored` entry and each nak's `request_id` — as the spent set: zero
+   extra I/O, exact at claim time (the CAS serializes attach against any
+   concurrent append). The same read collects the subscription answers
+   (`specs/service-worker.md`) and the lease bindings
+   (`specs/time-lease-boundary.md`). In `_handle_control`'s `control.stop`
+   branch, a stop with no `request_id` is naked `malformed` (it could be neither
+   honored nor refused by name), and a stop whose id is spent is skipped
+   **silently**, before validation (a discharged-but-malformed stop was already
+   naked by its own era's worker; and "already answered" is not a refusal — the
+   nak `reason` enum (`malformed`/`unsatisfiable`/`unsupported`) rightly has no
+   word for it). The public observer home is `observables.undischarged_stops`,
+   the fold a status surface or dispatch gate reads, and `Watcher.pending_stops`
+   keeps it incrementally for a polled path; pending ≠ due.
 2. **The re-typing (fixes S1, S4).** Delete the `Subscription`-for-stop
-   machinery; `self._stop` (slot) → `self._stops` (list of
-   `(request_id, from_, registered_at)`); the tick decision and the new
-   `stop_pending` property are `any(from_ is None or satisfied(from_,
-   step=step, time_seconds=now - registered_at, count=0) for …)`. Validation
-   (nak on `every`/`until`, malformed `from`, unsatisfiable) is unchanged.
+   machinery; the pending stops are a map `request_id → (from_,
+   registered_at)`; the tick decision and the `stop_pending` property are
+   `any(from_ is None or satisfied(from_, step=step, time_seconds=now -
+   registered_at, count=0) for …)`. Validation (nak on `every`/`until`,
+   malformed `from`, unsatisfiable) is unchanged.
+3. **The named dying breath.** A `stopped` carries `honored`, the sorted ids of
+   every pending stop, and is compare-and-appended over a fully read control
+   tail: read the head, take in every stop up to it, append with
+   `expected_seq` at that head, and re-read whenever the CAS loses. `stopped()`
+   and `retire()` share the loop; `retire()` takes in every control verb, a
+   plain `stopped()` only stops.
 
 Note on the time axis: a time-keyed `from` (`{time_seconds: 60}`) re-anchors
 `registered_at` at each episode's drain — the worker's time coordinate is
 seconds-since-registration and episodes re-register. Documented, accepted
 (step-keyed conditions, the common case, are run-absolute and unaffected).
-*(Forward note, 2026-06-11: this acceptance now applies to STOPS ONLY —
-time-referencing SUBSCRIBES no longer re-anchor indefinitely; they are
-episode-scoped, discharged by the next episode boundary
+This acceptance applies to stops only. An episode-local subscribe is bound to
+the episode that registered it and void for every other
 (`specs/time-lease-boundary.md`). Stops deliberately keep the re-anchor:
 at-least-once toward an idempotent effect is their spec'd posture, and no
-relaunch flap is reachable through them.)*
+relaunch flap is reachable through them.
 
 ## Deliverables
 
-- **worker:** the discharge floor + the pending-set re-typing +
+- **worker:** the spent stops + the pending-set re-typing +
   `Worker.stop_pending`.
 - **tests:** see TDD targets below.
 - **docs:** the request/outcome contract + the unifying drain rule into design
@@ -257,9 +277,9 @@ relaunch flap is reachable through them.)*
 
 - A standing "never run again" / hold verb (caller's relaunch policy; cf. A7).
 - Worker control-cursor persistence (§12.5 — an efficiency item, untouched).
-- Any schema/wire change. The substrate and all convention bodies are
-  unchanged; this is convention-layer *read semantics*, keyed on envelope
-  fields (`topic`, `seq`) only.
+- Any wire change beyond the names. The substrate is unchanged; the discharge
+  needs the stop's `request_id` (required since `subscription`-`v0.3`) and
+  `stopped.honored` (`lifecycle`-`v0.5`), and nothing else.
 
 ## Tests (TDD targets)
 

@@ -267,7 +267,7 @@ def malformed_schedule(body: Condition) -> str | None:
     """Why ``body`` fails the Schedule grammar, or None if it conforms.
 
     The full structural check against the subscription schema
-    (protocol/subscription-v0.2.schema.json ``$defs.Schedule``), spelled in
+    (protocol/subscription-v0.3.schema.json ``$defs.Schedule``), spelled in
     Python so the worker needs no jsonschema dependency: top-level keys ⊆
     ``from``/``every``/``until``, each a Condition -- with ``count``
     grammatical only under ``until`` (elsewhere it is a circular gate: count

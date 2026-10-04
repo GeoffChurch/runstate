@@ -1,18 +1,21 @@
-# Spec: episode-scoped time-leases (the boundary is the counter-record)
+# Spec: episode-scoped leases (`lifecycle.bound` names the episode)
 
-**Status:** pipeline cleared 2026-06-11 (adversarial attack:
-survives-with-amendments, all four folded — pop-then-skip, the ≤2 bound,
-zero-fire-void documented, the purity amendment; consistency sweep: 15
-fold-backs catalogued below + the barrier finding). Implementing. Supersedes
-the ghost-lease "flap bound" deliberation (backoff/give-up/cadence-knob all
-rejected as waker-side compensation for a log gap) and amends
+**Status:** shipped 2026-06-11 (adversarial attack: survives-with-amendments,
+all four folded — pop-then-skip, the ghost bound, zero-fire-void documented,
+the purity amendment; consistency sweep: 15 fold-backs catalogued below + the
+barrier finding). **Converted to reference by name 2026-10-03**
+([`reference-by-name.md`](reference-by-name.md), log format 0.3.0): the
+recordless boundary void became the `lifecycle.bound` record, which names the
+episode that registered a lease. The sections below state the converted rule.
+Supersedes the ghost-lease "flap bound" deliberation (backoff/give-up/
+cadence-knob all rejected as waker-side compensation for a log gap) and amends
 `specs/service-worker.md`'s bounded-hysteresis row and its recorded
 lazy-launch constraint.
 
 ## The disease (why backoff felt janky)
 
 Every other piece of standing protocol state re-derives from the log across
-episodes — subscriptions, stops, answers, the discharge floor. One does not:
+episodes — subscriptions, stops, answers, the spent ids. One does not:
 **a time-lease's elapsed countdown** lives only in the worker's memory, dies
 with it, and resurrects at zero in the next episode (the "re-anchor",
 documented in stop-discharge's time-axis note and accepted at the time). The
@@ -25,39 +28,43 @@ wrong layer.
 
 > **A registration referencing an EPISODE-LOCAL coordinate is a contract with
 > one living episode.**
-> A `control.subscribe` whose schedule references the time axis
-> (`time_seconds` anywhere in `from`/`every`/`until`) is **discharged by the
-> next episode boundary after it** — pairing-by-`seq`'s fourth instance, and
-> like the stop discharge, **the counter-record already exists** (the
-> boundary `lifecycle.started`): nothing new is written, the worker simply
-> skips a boundary-voided lease at drain, silently (already-answered is not a
-> refusal — the same posture as a discharged stop), **except that the skip
-> still rescinds its same-`request_id` predecessor (pop-then-skip)**. The
-> discharge-floor mirror is sound for stops (a *set*) but not for subscribes
-> (per-id last-write-wins *slots*): a voided subscribe behaves as
-> "registered, then instantly voided" — the slot ends empty — else a
-> superseded earlier subscribe (e.g. an unbounded step-sub the client had
-> tightened with a time-leased replacement) would resurrect on re-drain,
-> pinning the worker forever while `live_demand` reads zero.
+> A `control.subscribe` whose schedule references an episode-local coordinate
+> (`time_seconds` or `count` anywhere in `from`/`every`/`until`; the amendment
+> below) is a **lease**. The episode that registers it first writes
+> **`lifecycle.bound`** — envelope `request_id` = the lease, body `{claim_seq}`
+> naming its own claim — and then registers it (emit-then-register: a crash
+> between the two leaves the lease bound, so void elsewhere, never orphaned).
+> The lease is **void for every other episode**, and **void for every reader
+> once a terminal names its bound episode**. A lease that no episode has bound
+> is never void: the next episode to drain it binds it.
 
-Precisely, two equivalent forms:
+A void lease is skipped at drain silently (already-answered is not a refusal —
+the same posture as a discharged stop), **and the skip still empties its
+registration slot (pop-then-skip)**. A `request_id` names one request, so a
+re-send of a live id is the same request; once that request is a lease bound
+elsewhere, the whole request is void here, every re-send included. Without the
+pop, a superseded earlier schedule under the same id (e.g. an unbounded
+step-sub the client had tightened into a time lease) would resurrect on
+re-drain, pinning the worker forever while `live_demand` reads zero.
 
-- **Worker form (at drain):** a time-referencing subscribe at seq *s* is
-  voided iff a `lifecycle.started` **other than the draining episode's own**
-  follows *s*. (Equivalently: ∃ `started` with `s < b < own_started.seq` —
-  the drainer's own `started` is the latest, so any other later `started`
-  lies strictly between.)
-- **Observer form (`live_demand`, the waker):** voided iff a `started` lies
-  **strictly between** *s* and the latest `started`'s seq. ("Live" = the
-  latest episode is still this lease's *first possible drainer*.) The two
-  forms agree because a live drainer is always the latest episode.
+**One predicate** (`observables.lease_void(bound_claims, drainer_claim,
+drainer_ended)`), shared by the worker and the observers, in two forms:
 
-Pure step/count schedules are untouched — they are run-absolute and persist
-across episodes exactly as today (`test_relaunch_extends_one_series`). A
-schedule containing *any* time atom is episode-scoped *in toto*: a time
-atom's meaning (seconds since registration) cannot be honestly reconstructed
-across a boundary, and partially reconstructing the step arms of a mixed
-schedule would silently change its meaning — blunt-but-crisp wins.
+- **Worker form (at drain):** the drainer is the worker's own live claim,
+  never ended. Void iff the lease is bound to any other claim.
+- **Observer form (`live_demand`, the waker):** the drainer is the latest
+  claim, ended iff a terminal names it (a `stopped` naming it, or a
+  `launcher.terminated` naming the launch it answered). Void iff the lease is
+  bound to any other claim, or bound to the latest claim once it has ended.
+
+The two forms agree because a live drainer is always the latest claim.
+
+Pure step schedules are untouched — they are run-absolute and persist across
+episodes, unbound (`test_relaunch_extends_one_series`). A schedule containing
+*any* episode-local atom is episode-scoped *in toto*: a time atom's meaning
+(seconds since registration) cannot be honestly reconstructed across a
+boundary, and partially reconstructing the step arms of a mixed schedule would
+silently change its meaning — blunt-but-crisp wins.
 
 ## Amendment — `count` is the second episode-local coordinate
 
@@ -86,22 +93,19 @@ rules.
 
 ## What it buys
 
-- **The ghost terminates by construction: at most TWO relaunches, no
-  policy.** The exact bound: a lease can be re-anchored at most once (into
-  its *first possible drainer* — the first episode whose `started` follows
-  it), and is voided by the boundary after that; so a waker acting on fresh
-  `live_demand` reads relaunches a dead lease at most twice (one re-anchored
-  serve + one voiding visit), and **at most once if any boundary already
-  follows the lease**. Walkthrough of the worst case — lease lands at seq *s*
-  *during* episode K (K's `started` *precedes* it, so K's boundary does not
-  count against it); K dies young. `live_demand` counts it (no `started`
-  strictly after *s* yet) → relaunch #1: K+1 registers it fresh (the one
-  re-anchor), dies young. Relaunch #2: K+2 sees K+1's `started` between *s*
-  and its own → pop-then-skip, retires. From K+1's `started` onward the
-  observer form already excludes it, so no further relaunch fires. Backoff,
-  give-up rules, and cadence knobs are all deleted from the waker design.
-- **The re-anchor becomes bounded and principled:** at most once, into the
-  first-possible-drainer — instead of indefinitely.
+- **The ghost terminates by construction, with no policy.** A lease nobody
+  will renew is served by at most one episode: the one that binds it. A waker
+  acting on fresh `live_demand` reads launches a worker for a dead lease once
+  to serve it; once that episode's terminal is on the log, the binding voids
+  the lease for every reader. At most one more launch follows, and only when
+  the serving episode died with no terminal naming it (a crash nobody reaped):
+  the observer form cannot yet tell that episode ended, so `live_demand` still
+  counts the lease, and the next episode's drain sees the binding and retires.
+  `test_ghost_relaunch_bound` pins the clean case at exactly one launch.
+  Backoff, give-up rules, and cadence knobs are all deleted from the waker
+  design.
+- **The re-anchor is gone.** A lease's countdown is never restarted by a later
+  episode.
 - **The lazy-launch spec loses its hardest input** — `service-worker.md`'s
   recorded constraint "the decider must bound its own relaunch cadence" is
   void; the waker needs no flap policy at all (the tell that the fix is at
@@ -109,22 +113,30 @@ rules.
 
 ## Who pays
 
-- A renewing client (the documented lease discipline) notices nothing — its
-  next renewal is a fresh subscribe, live for the new episode.
+- **A renewing client.** Re-sending a live lease's id is the same request: its
+  latest schedule replaces the registration and restarts its clock, so a
+  client renewing under one id keeps its lease alive within the episode that
+  bound it. Across a crash the binding voids that id for every later episode,
+  re-sends included, so such a client is **unserved until it resubscribes
+  under a fresh id**. A client that renews under a fresh id each time
+  (unsubscribing the old one) is unserved between a crash and its next
+  renewal, at most one renewal period. **The renewing-client gap is
+  accepted**, and `await_consumed` raises `ValueError` for a re-send of a
+  void lease id, so a same-id renewer learns to resubscribe under a fresh id
+  rather than being told "accepted". A client-side helper that resubscribes under a fresh id as
+  soon as a new claim appears could shrink it; this spec notes it and does
+  not build it.
 - A non-renewing long-lease client ("keep alive an hour, no renewals") is cut
-  off by any episode boundary (crash, extend, blip) and must resubscribe.
-  Today that client gets the *silently wrong* opposite — a fresh full
-  countdown per boundary, so a 60 s lease can last hours. The rule replaces
-  unpredictable generosity with a crisp, log-readable answer. (No-warts: this
-  deletes the documented-and-shrugged-at re-anchor squishiness.)
-- **A time-lease can be voided with ZERO fires** — if consecutive episodes
-  die between birth and first drain, nobody ever evaluates it before the
-  boundary rule answers it. Stated plainly: **acceptance ≠ will-serve**; the
-  rule guarantees a drain *attempt* only if some episode survives birth →
-  drain, and the client's detection mechanism is its own renewal cadence (a
-  renewing client is never stranded — each renewal is a fresh latest same-id
-  subscribe with no boundary after it yet, registered cleanly by every next
-  episode no matter how many die young).
+  off by any episode boundary (crash, extend, blip) and must resubscribe. The
+  alternative is the *silently wrong* opposite — a fresh full countdown per
+  boundary, so a 60 s lease could last hours. The rule replaces unpredictable
+  generosity with a crisp, log-readable answer.
+- **A lease can be voided with ZERO fires** — if the episode that binds it
+  dies before its first fire (a `from` not yet reached, or a crash right
+  after the drain). Stated plainly: **acceptance ≠ will-serve**. Episodes
+  that die before draining the lease bind nothing and void nothing, so a
+  lease is never voided by a boundary no episode drained it at; the client's
+  detection mechanism is its own renewal cadence.
 - `await_consumed` nuance, stated honestly: a voided lease was *processed*
   (the watermark passes it; no nak), so `await_consumed` reports acceptance —
   true at drain time, and per the above, not a service guarantee. The lease's
@@ -138,15 +150,16 @@ rules.
   unanswered stop re-arms — at-least-once toward an idempotent effect). Stops
   pin nothing (no flap exists); their at-least-once is the *spec'd* behavior;
   and a stop's discharge already has its own counter-record (`stopped`). If
-  the asymmetry ever bites, the same boundary rule extends — recorded, not
-  built.
-- No schema or wire change; no new records. This is drain/fold *semantics*:
-  `worker._handle_control` (the pop-then-skip clause), `observables.live_demand`
-  (the observer form), `schedule.references_time` (the one shared predicate:
-  a `time_seconds` atom anywhere in `from`/`every`/`until`; an unparseable
-  schedule is NOT time-referencing — the worker naks it, which answers it),
-  and the `__init__` read additionally retains the `started` seqs it already
-  fetches.
+  the asymmetry ever bites, the same binding extends — recorded, not built.
+- **One record, `lifecycle.bound`** (`lifecycle`-`v0.5`): body `{claim_seq}`,
+  envelope `request_id` required. Written once per (lease, registering
+  episode), before the registration. The rest is drain/fold semantics:
+  `worker._handle_control` (the binding and the pop-then-skip clause),
+  `observables.live_demand` (the observer form), `observables.lease_void` (the
+  one predicate), `schedule.references_episode_local` (a `time_seconds` or
+  `count` atom anywhere in `from`/`every`/`until`; an unparseable schedule is
+  NOT a lease — the worker naks it, which answers it), and the worker's attach
+  read, which collects the bindings beside the answers.
 - **`live_demand` loses one purity stripe, honestly:** it must peek at
   subscribe bodies for the time-atom check, so service-worker.md's
   "envelope-level fold, body untouched" claim is amended (it remains
@@ -156,10 +169,10 @@ rules.
   registration a lease** — degenerate cases included (`{from:
   {time_seconds: 0}}`, huge time-`until`s) — blunt-but-crisp, no per-atom
   carve-outs. Likewise **`Watcher.broadcast` barriers should be step-keyed**:
-  a time-keyed barrier subscription on a run that resumes is boundary-voided
-  with no record — the fifth never-fire cause, whose handler is the boundary
-  `started` itself — so a capless pure-sync would otherwise wait on a healthy
-  run forever (design §9 gains the cause; a boundary-aware re-broadcasting
+  a time-keyed barrier subscription is a lease, so on a run that resumes it
+  is void for the new episode — the fifth never-fire cause, whose handler is
+  the binding — and a capless pure-sync would otherwise wait on a healthy run
+  forever (design §9 gains the cause; a boundary-aware re-broadcasting
   Watcher is a backlog note, not this spec). And "anticipatory warmth" in
   service-worker.md becomes honest **renewed** periodic demand — standing
   warmth without renewal was the immortal-pin smell all along.
@@ -170,7 +183,7 @@ rules.
   replays time atoms run-epoch-anchored — is named in the backlog
   (time-axis unification) rather than touched here.
 
-## Docs deliverables (the consistency sweep's fold list)
+## Docs deliverables (the consistency sweep's fold list, 2026-06-11)
 
 service-worker.md: the `live_demand` purity claim amended; the "answered by
 exactly one of the two" rule gains the boundary forward-note; the
@@ -195,30 +208,38 @@ episode-scoped, stops re-anchored). CLAUDE.md post-implementation.
 specs/run-episodes.md "re-derives standing subscriptions" → FOLD-LATER
 qualifier.
 
-## Tests (TDD targets; all backends)
+## Tests (all backends)
 
-- Founding idiom regression: a pre-staged time-lease is registered by
-  episode 1 (no boundary between them).
-- Boundary void: time-lease served by ep1 (clean stop), resumed ep2 does NOT
-  re-register it (no values, no nak, no expiry record — silent skip; the
-  `started` is the answer); same with ep1 crashed (fabricated dead-pid
-  `started`).
-- Re-anchor-once: a lease arriving DURING ep1 (after its `started`) is
-  registered fresh by ep2 (its first possible drainer), then voided by ep3.
-- Step-keyed lease unaffected: `{every: {step: 1}}` carries across episodes
-  (the existing relaunch-extends test stays green; add the explicit sibling).
-- Mixed schedule (`until: {any: [{step}, {time_seconds}]}`) is episode-scoped.
-- Supersession regression (the A1 attack): step-sub at seq *a*, time-sub same
-  `request_id` at seq *b* > *a*, boundary, re-drain → the worker registers
-  NOTHING (pop-then-skip rescinds the predecessor) and `live_demand` agrees
-  (empty) — the superseded immortal sub must not resurrect.
-- Zero-fire void (the A3 attack): two crash-births (claims that die before
-  any drain) around a pre-staged lease → the third episode voids it with zero
-  fires; documented behavior, asserted.
-- `live_demand` observer form: counts the lease before any foreign `started`
-  follows; excludes it after; agrees with the worker at every step of the
-  ghost walkthrough (the ≤2-relaunch bound asserted end-to-end, and ≤1 when a
-  boundary already follows the lease).
-- `serve()`/ghost integration: waker-shaped loop over fresh `live_demand`
-  reads relaunches a Worker against a dead pre-boundary lease exactly once;
-  the next `live_demand` read is empty.
+`tests/test_service_worker.py`, `tests/test_reference_by_name.py`,
+`tests/test_observables.py`:
+
+- The founding idiom: a pre-staged lease is bound and served by the first
+  episode that drains it (`test_founding_prestaged_time_lease_registers`).
+- The binding: the registering episode writes one `lifecycle.bound` naming its
+  claim, and a later episode does not serve the lease — no values, no nak, no
+  expiry record; the binding is the answer
+  (`test_a_time_lease_is_void_only_through_its_binding_by_name`,
+  `test_the_registering_episode_binds_the_lease`).
+- A lease arriving during an episode that is already dead is bound by the
+  first episode that drains it, and void for the one after
+  (`test_reanchor_once_then_void`).
+- Crash-births that never drained a lease bind nothing and void nothing
+  (`test_crash_births_that_never_drained_a_lease_do_not_void_it_by_name`,
+  `test_a_lease_no_episode_drained_survives_crash_births`).
+- A step-keyed subscription carries across episodes unbound
+  (`test_step_keyed_lease_crosses_boundaries`); a mixed schedule is a lease,
+  and only it is bound (`test_mixed_schedule_is_episode_scoped_by_name`).
+- Supersession (the A1 attack): a step-sub tightened into a lease under the
+  same id is one request, a lease; once its episode ends the superseded
+  immortal schedule does not resurrect, and `live_demand` agrees
+  (`test_voided_lease_pops_its_same_id_predecessor_by_name`).
+- The observer form: `live_demand` counts a lease until its binding voids it,
+  and a clean stop voids it for every reader
+  (`test_live_demand_voids_a_time_lease_only_through_its_binding_by_name`,
+  `test_a_lease_is_void_once_a_terminal_names_its_episode`).
+- The ghost: a waker-shaped loop over fresh `live_demand` reads launches a
+  worker for a dead lease exactly once, and the next read is empty
+  (`test_ghost_relaunch_bound`).
+- `count` is episode-local like time, and a count lease does not refund its
+  budget each episode
+  (`test_a_count_lease_does_not_refund_its_budget_each_episode_by_name`).

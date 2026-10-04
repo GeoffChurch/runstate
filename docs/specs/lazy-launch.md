@@ -182,7 +182,8 @@ loser's corpse IS recorded and speaks for nobody — see
 
 - `ensure_served`: launches when demand ∧ no live episode; `None` when no
   demand (even with no episode); `None` when already served (live episode);
-  demand that is boundary-voided or answered does not wake (it consumes
+  demand that is voided by its binding (`lifecycle.bound`) or answered does
+  not wake (it consumes
   `live_demand`, so the lease semantics ride along free).
 - Double-waker race (LocalLauncher): two concurrent `ensure_served` calls →
   exactly one winning episode; the loser exits clean; **no `terminated`

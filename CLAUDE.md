@@ -23,8 +23,8 @@ with opt-in **conventions** on top. The design rationale lives in
 
 1. **The JSON Schema stack in `protocol/`** — `envelope-v0.2.schema.json`
    (the substrate record: structure only, opaque body) plus the
-   per-convention schemas (`subscription` / `value`-`v0.2`,
-   `lifecycle` / `launcher`-`v0.4`), each `additionalProperties: false` and
+   per-convention schemas (`value`-`v0.2`, `subscription`-`v0.3`,
+   `launcher`-`v0.4`, `lifecycle`-`v0.5`), each `additionalProperties: false` and
    independently versioned. Authoritative for the wire format.
 2. **`docs/design-v0.2.md`** — prose. Defines the two-layer model and
    semantics: the topic-log substrate, the conventions, the liveness
@@ -51,10 +51,24 @@ The substrate + opt-in conventions + reference orchestration, in
   base, isinstance-detected; the Watcher consumes it). A per-run append-only
   **topic log** of envelopes `{seq, topic, name?, request_id?, body}`; the
   substrate routes/indexes on the envelope and never parses `body`.
+- **`formats/`** — the log format registry (`docs/specs/log-formats.md`): a log's
+  format is the outermost part of its address (`<root>/v0.3.0/<rid>.db`; schema
+  `runstate_v0_3_0` on Postgres), `LOG_FORMAT` is the one this release reads and
+  writes, one module per format holds its layout, and the locators raise
+  `LogFormatMismatch` / `LogFormatMissing` on any other.
+- **`migrations/`** + **`cli.py`** — `runstate migrate`: retained, chained steps
+  that copy a run's log to the next format and seal the old one, refusing a
+  live run or a run the step refuses before sealing it. One module per step
+  (`v0_2_0_to_v0_3_0.py`, the names the positional rule implied), each carrying
+  its own copy of the old format's semantics.
 - **`vocabulary/`** — the L2 **convention vocabulary** (the typed terms another
   language reimplements to interop): `payloads.py` (frozen body dataclasses
   mirroring the schemas — `Value`/`Started`/`Heartbeat`/`Stopped`/`Nak`/
-  `Launched`/`Terminated`; serialize via `asdict`, parse via `Cls(**body)`),
+  `Bound`/`Launched`/`Terminated`; serialize via `asdict`, parse via
+  `Cls(**body)`. Records name what they speak for: `Heartbeat.claim_seq` and
+  `Stopped.claim_seq` the episode, `Stopped.honored` the stops it answers, and
+  `Bound` (`lifecycle.bound`) the episode a lease is bound to —
+  `docs/specs/reference-by-name.md`),
   `schedule.py` (the subscription **condition-algebra**: `satisfied()`,
   `Subscription`, `is_unsatisfiable()` — `from`/`every`/`until` over
   `step`/time/count), `handle.py` (portable liveness handles `local://host/pid`;
@@ -66,20 +80,26 @@ The substrate + opt-in conventions + reference orchestration, in
   `RUNSTATE_LAUNCH_ID` / a ContextVar).
 - **`worker.py`** — the reference `Worker` loop (context manager + the two
   drivers: `steps(total)` runs on the launch contract's target, `serve()` on
-  leased demand): drains `control.*` (positional answer fold; expiry
+  leased demand): drains `control.*` (the answer fold by name: a spent id is
+  skipped, a lease is bound to its episode by `lifecycle.bound`; expiry
   counter-records), services subscriptions into `value` events (`set`, the
   demand-sampled register) beside the unconditional `emit` (the broadcast
-  point the memoizer reads), emits
-  `lifecycle.*`, exposes the levels (`stop_pending`, `pinned`), and dies
-  carefully (`retire()` — the death-CAS; specs/service-worker.md).
+  point the memoizer reads), emits `lifecycle.*` naming its claim
+  (`claim_seq`), exposes the levels (`stop_pending`, `pinned`), and dies by a
+  CAS over a fully read control tail whose `stopped` names the stops it
+  honored (`honored`): `retire()` the careful death (specs/service-worker.md),
+  `stopped()` the plain one (specs/stop-discharge.md).
 - **`observables.py`** — the **stateless observer plane**: pure body-aware
-  folds log → derived view (`docs/specs/observables.md`). `peek_terminal` →
-  `RunResult` (the terminal verdict; closed `outcome`, verbatim `reason`, no
+  folds log → derived view (`docs/specs/observables.md`), each reading the
+  records that NAME what it asks about, so its answer does not depend on
+  arrival order. `peek_terminal` → `RunResult` (the terminal verdict: the
+  `stopped` naming the latest claim; closed `outcome`, verbatim `reason`, no
   `success`), `live_episode`, `latest_episode` (the episode-boundary rule),
-  `progress` (the step frontier), `value_series` (the per-(name, step)
-  register projection), `live_demand` (the positional answer fold —
-  unanswered subscribes), `undischarged_stops` (the stop fold's observer
-  twin), `last_activity` (max-`t` among the dated finalists — freshness off
+  `progress` (the current episode's step frontier), `value_series` (the
+  per-(name, step) register projection), `live_demand` (the answer fold by
+  name — subscribes no answer names, leases not voided by their binding),
+  `undischarged_stops` (stops no `stopped.honored` or nak names),
+  `last_activity` (max-`t` among the dated finalists — freshness off
   the log, so a third party can age a run it never launched;
   `docs/specs/observer-clock.md`). Membership test: needs a cursor or clock → it's the
   `Watcher`'s; parses a handle string → it's `vocabulary/`'s.
@@ -95,8 +115,10 @@ The substrate + opt-in conventions + reference orchestration, in
   factory) + `foreign_episode` (the gate's foreign half — specs/store.md
   Recipe 2; the no-progress guard is own-spawn-scoped).
 - **`watcher.py`** — `Watcher`, the stateful failure detector
-  (`poll`/`wait`/`wait_all`/`iter_events`/`broadcast`) + `RunStatus`
-  (`Running | RunResult`).
+  (`poll`/`wait`/`wait_all`/`iter_events`/`broadcast`, and `pending_stops`,
+  the incremental `undischarged_stops`) + `RunStatus` (`Running | RunResult`)
+  + `await_consumed` (did my control request land: a `Nak`, the terminal
+  `RunResult`, or `None` for accepted; a reused spent id raises).
 - **`sweep.py`** — sequential multi-run helper (`sweep` + `Variant`).
 - **`__init__.py`** — `current_channel()` (worker-side Channel factory reading
   `RUNSTATE_RUN_ID` / `RUNSTATE_CHANNEL_ROOT` / `RUNSTATE_CHANNEL_BACKEND`
@@ -219,17 +241,30 @@ scores above.
 
 ## Test commands
 
+**Develop in the repo-local env `./.conda`, never in a consumer's.** Since 2026-10-03 the
+consumers (mycooc, translation, runstate-tui) depend on runstate through a **git pin**, installed
+non-editable into their own envs (`cooc`, `base`). So work here never changes what they import.
+Upgrading a consumer means bumping its pin, and running any migration its logs need, in that repo.
+The procedure (`docs/specs/log-formats.md` §8): stop the consumer's old processes and drain its queued
+jobs; bump its pin; onboard any legacy logs (`<root>/<rid>.db`) exactly as the `LogFormatMissing`
+message instructs, which leaves a tombstone at each old address so a stale writer fails loudly; then
+`runstate migrate <root>`
+(add `--backend postgres` for a DSN), which moves format-0.2.0 logs to the current format, 0.3.0.
+Until then every open raises rather than reading a log of another format.
+`pythonpath = ["."]` in `pyproject.toml` makes the tests import this checkout whatever env runs
+them. The pre-commit hook prefers `./.conda/bin/python` when it exists.
+
 ```bash
-pip install -e .                    # install editable
-pip install -e .[test]              # + jsonschema for the schema tests
-pytest tests/                       # run all tests (~1040, ~5-9s; +Postgres if a DSN is set)
+conda activate ./.conda             # the dev env: editable install + test + postgres extras
+conda create -p ./.conda python=3.12 && ./.conda/bin/pip install -e .[test,postgres]  # (re)create it
+pytest tests/                       # run all tests (~1270, ~10-15s; +Postgres if a DSN is set)
 pytest tests/test_channel.py -v     # one module
 pytest tests/test_schema.py -v      # emitted messages conform to the schema stack
 
 git config core.hooksPath scripts/githooks   # opt in to the local gates (per clone)
 ```
 
-**Run the Postgres suite locally.** Without a DSN, **~240 tests silently skip** -- every test of the
+**Run the Postgres suite locally.** Without a DSN, **~260 tests silently skip** -- every test of the
 CAS under real cross-process contention, the advisory-lock probe, and the shared-table paths. A
 throwaway server takes seconds (conda ships the binaries):
 
@@ -242,15 +277,15 @@ export RUNSTATE_TEST_PG_DSN="postgresql:///runstate_test?host=/tmp/rs-pgsock&por
 ```
 
 The socket directory **must be a short path** -- the sun_path limit is 107 bytes and a scratchpad
-path blows it (`Unix-domain socket path ... is too long`). 814 passed / 224 skipped without the DSN
-(2026-10-02); 1,038 collected in all.
+path blows it (`Unix-domain socket path ... is too long`). 1,014 passed / 260 skipped without the DSN
+and 1,273 passed / 1 skipped with it (2026-10-03); 1,274 collected in all.
 
 The pre-commit hook runs the whole CI gate set -- `black --check`,
 `mypy --strict`, `pytest` -- in ~9.4 s, almost all of it the suite. It exists
 because the formatter gate is the one that gets skipped: run the checks, add
 code, commit, and CI goes red on a branch that looked green. `--no-verify`
 bypasses it. It is a *weaker* gate than CI in one respect: without
-`RUNSTATE_TEST_PG_DSN` the ~215 Postgres tests skip locally and CI runs them, so
+`RUNSTATE_TEST_PG_DSN` the ~260 Postgres tests skip locally and CI runs them, so
 green here does not imply green there.
 
 The Channel conformance tests and the substrate-level convention tests are
@@ -287,6 +322,19 @@ add or change a convention body.
    `cross_host`) in `tests/conftest.py`'s `_MAX_TIER` ladder, so the
    tier-gated concurrency suite covers it up to that tier.
 5. All existing Channel conformance tests must pass against it unchanged.
+6. A persistent backend (anything but memory) also meets the log-format obligations
+   (`docs/specs/log-formats.md` §3–§6 and §9; the address scheme and the opening
+   checks are part of the protocol):
+   - **a layout per format** — an address method on the `Layout` Protocol
+     (`runstate/formats/_layout.py`), defined for every registered format;
+   - **the five opening checks** (§4), in order, in its `_locate` branch: a newer
+     format present, the current address, an older format, the legacy address
+     (only for a backend that held logs before versioned addresses), nothing;
+   - **a migration store** — a `Store` (`formats_of`, `migrate_one`) in
+     `runstate/migrations/stores.py`, and a `--backend` choice in `runstate/cli.py`;
+   - **a seal** (`runstate/migrations/seal.py`): a sealed log reads and refuses
+     every write, and is taken before the copy reads its rows;
+   - the tests §10 lists, for each.
 
 ## Where to put new ideas
 
@@ -326,6 +374,13 @@ plan as the remaining work; and the deferred design-§12 items mirrored there).
   (`EpisodeHolder`/`EpisodeProbe`, resolved at the Watcher's boundary into a per-run
   probe — never a claim arbiter). Optional `[postgres]` extra; the repo's first CI
   workflow runs it against a Postgres service.
+- **Log formats** (`docs/specs/log-formats.md`): a log's format is part of its
+  address, every open checks it, and `runstate migrate` moves logs forward
+  through retained, sealing steps.
+- **Reference by name**, log format 0.3.0 (`docs/specs/reference-by-name.md`):
+  records name what they answer, end or concern (`claim_seq`, `honored`,
+  `lifecycle.bound`, a required stop `request_id`), so the control-plane folds
+  do not depend on arrival order; `Watcher.pending_stops`. Package 0.3.0.dev0.
 
 **Deferred (v0.3+)** (see `docs/backlog/index.md`):
 - ~~Store Protocol + backends~~ — **DISSOLVED 2026-06-11**

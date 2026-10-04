@@ -28,6 +28,7 @@ import math
 import os
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 
 import runstate
@@ -107,9 +108,7 @@ def main():
         # resolves once a LIVING worker's watermark passes the subscribe
         # (accepted -> None), or hands back a nak / a terminal that followed
         # the request (refused-by-death).
-        answer = runstate.await_consumed(
-            ch, sub_seq, request_id="driver", timeout=120.0
-        )
+        answer = runstate.await_consumed(ch, sub_seq, timeout=120.0)
         if answer is not None:
             raise SystemExit(f"[driver] subscribe was not serviced: {answer}")
 
@@ -129,8 +128,10 @@ def main():
                 )
                 if not state["stop_sent"] and plateaued(energies):
                     ch.send(
-                        {}, topic=runstate.Topic.CONTROL_STOP, request_id="driver-stop"
-                    )  # {} = now
+                        {},  # {} = now
+                        topic=runstate.Topic.CONTROL_STOP,
+                        request_id=uuid.uuid4().hex,  # a stop id is never reused
+                    )
                     state["stop_sent"] = True
                     print(
                         f"[driver] no gain > {PLATEAU_TOL} in {PLATEAU_STEPS} steps "

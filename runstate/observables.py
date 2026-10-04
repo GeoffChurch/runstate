@@ -36,7 +36,6 @@ from typing import Any, Optional, TypeVar
 from .channel import Channel, Envelope
 from .vocabulary.payloads import Stopped, Terminated, Topic
 from .vocabulary.handle import resolve
-from .vocabulary.schedule import references_episode_local
 
 _T = TypeVar("_T")
 
@@ -119,8 +118,14 @@ def latest_episode(channel: Channel) -> Envelope | None:
     attached. *Latest* means latest — live, cleanly ended, or crashed alike
     (liveness is ``live_episode``'s composition; None = the run was never
     started, which is information, not a degenerate case). The envelope's
-    ``seq`` is the episode-window watermark (``channel.read(after=e.seq, …)``
-    reads this episode's events); its body parses via ``Started(**e.body)``.
+    ``seq`` is the episode's NAME: every lifecycle record that speaks for the
+    episode carries it as ``claim_seq`` (reference by name, lifecycle-v0.5).
+
+    THE ONE ORDER THE EPISODE FOLDS STILL NEED is the order among claims, and it
+    comes from the claim CAS (``send(expected_seq=)``): a claim lands only on a
+    tail it has fully read, so claims are totally ordered by the log's single
+    arbiter, and a claim's ``seq`` is at once its name and its rank. "Latest
+    claim" consults no other record's position.
 
     The fold is one ``latest`` call; what this function owns is the
     episode-boundary *rule* (specs/run-episodes.md Decision 1: an episode is a
@@ -130,10 +135,97 @@ def latest_episode(channel: Channel) -> Envelope | None:
     return channel.latest(Topic.LIFECYCLE_STARTED)
 
 
+def _claim_name(e: Envelope) -> tuple[bool, Optional[int]]:
+    """``(interpretable, claim_seq)`` for a record that speaks for an episode.
+    ``claim_seq`` may be None (a terminal for a run that never claimed);
+    ``interpretable`` is False when the record carries no usable name at all --
+    a pre-v0.5 or hand-composed body, which names nothing."""
+    if "claim_seq" not in e.body:
+        return False, None
+    c = e.body["claim_seq"]
+    if c is None or is_step(c):
+        return True, c
+    return False, None
+
+
+def _honored(e: Envelope) -> list[str]:
+    """The stop ``request_id``s a ``lifecycle.stopped`` names as honored --
+    tolerant: a body that names none (malformed, or a third party's release)
+    discharges nothing."""
+    h = e.body.get("honored")
+    if isinstance(h, list):
+        return [r for r in h if isinstance(r, str)]
+    return []
+
+
+# THE ANSWER RULE, in one place (reference-by-name §3): which records answer a
+# request, and which ids an answer names. A subscribe is answered by an
+# unsubscribe (the client's, or the worker's own expiry record) or a nak; a
+# stop by a stopped that honors it or a nak. Once any answer names an id, the
+# id is spent, wherever the answer sits. The worker's drain, ``live_demand``,
+# ``undischarged_stops``, the Watcher's ``pending_stops`` and
+# ``await_consumed`` all fold with these, so they cannot disagree.
+_SUBSCRIBE_ANSWERS = (Topic.CONTROL_UNSUBSCRIBE, Topic.LIFECYCLE_NAK)
+_STOP_ANSWERS = (Topic.LIFECYCLE_STOPPED, Topic.LIFECYCLE_NAK)
+
+
+def _answer_names(e: Envelope) -> list[str]:
+    """The request_ids an answer record NAMES: a ``stopped`` names the stops in
+    its ``honored`` (tolerant, ``_honored``); an unsubscribe or a nak names its
+    own ``request_id``, and a null one names nothing."""
+    if e.topic == Topic.LIFECYCLE_STOPPED:
+        return _honored(e)
+    return [] if e.request_id is None else [e.request_id]
+
+
+def _terminal_stopped(
+    channel: Channel, claim: Envelope | None, *, strict: bool
+) -> Envelope | None:
+    """The ``lifecycle.stopped`` that NAMES ``claim`` (its ``claim_seq``), or the
+    claimless terminal (``claim_seq`` None) when nothing ever claimed. A terminal
+    ends the episode it names, wherever it lands: a displaced worker's honest
+    dying breath names its own old claim and cannot release its successor.
+
+    Latest-then-verify: the newest ``stopped`` usually names the current claim
+    (O(1)); only on a miss is the window scanned, newest-first.
+
+    THE WINDOW IS CAUSAL, NOT ATTRIBUTION. Only records after the claim are read:
+    a record cannot name a claim it never saw, so nothing at or before the claim
+    can speak for it -- and a malformed record from a dead past stays out of
+    scope instead of poisoning the present forever (an append-only log cannot
+    retract it). Inside the window, ``strict`` (the verdict plane) raises on a
+    record that names nothing; tolerant callers skip it. Several terminals
+    naming one claim (a third party's release beside the worker's own) are a
+    conflict names cannot resolve: the newest wins, the one residual order."""
+    floor = claim.seq if claim is not None else 0
+    want = claim.seq if claim is not None else None
+    latest = channel.latest(Topic.LIFECYCLE_STOPPED)
+    if latest is None or latest.seq <= floor:
+        return None
+    candidates: list[Envelope] = [latest]
+    scanned = False
+    while candidates:
+        e = candidates.pop(0)
+        ok, named = _claim_name(e)
+        if not ok:
+            if strict:
+                raise MalformedRecordError(
+                    e.seq, e.topic, "names no claim (claim_seq missing or junk)"
+                )
+        elif named == want:
+            return e
+        if not candidates and not scanned:
+            scanned = True
+            window = channel.read(after=floor, topics=[Topic.LIFECYCLE_STOPPED])
+            candidates = [w for w in reversed(window) if w.seq != latest.seq]
+    return None
+
+
 def live_episode(channel: Channel) -> Optional[str]:
-    """Handle of the currently-live episode, or None: the latest episode
-    (``latest_episode``) with no following ``stopped`` whose worker resolves
-    alive (a started-then-crashed episode resolves dead -> not live).
+    """Handle of the currently-live episode, or None: the latest claim
+    (``latest_episode``) with no ``stopped`` NAMING it, whose worker resolves
+    alive (a started-then-crashed episode resolves dead -> not live). A
+    ``stopped`` that names no claim releases nothing (it is not evidence).
 
     THE LAUNCHER TIER DOES NOT PARTICIPATE. Only a later ``lifecycle.stopped``
     and a ``resolve()``-dead handle release a claim; a ``launcher.terminated``
@@ -147,8 +239,7 @@ def live_episode(channel: Channel) -> Optional[str]:
     started = latest_episode(channel)
     if started is None:
         return None
-    stopped = channel.latest(Topic.LIFECYCLE_STOPPED)
-    if stopped is not None and stopped.seq > started.seq:
+    if _terminal_stopped(channel, started, strict=False) is not None:
         return None
     try:
         handle = started.body["handle"]
@@ -166,15 +257,9 @@ def live_episode(channel: Channel) -> Optional[str]:
 
 
 def _episode_stopped(channel: Channel) -> Envelope | None:
-    """The latest ``lifecycle.stopped``, unless a newer episode CLAIMED after it
-    — then it is a past episode's dying breath, not the run's verdict."""
-    stopped = channel.latest(Topic.LIFECYCLE_STOPPED)
-    if stopped is None:
-        return None
-    started = channel.latest(Topic.LIFECYCLE_STARTED)
-    if started is not None and started.seq > stopped.seq:
-        return None
-    return stopped
+    """The current episode's terminal ``stopped`` (the one naming the latest
+    claim), tolerant -- the measurement plane's selector (``progress``)."""
+    return _terminal_stopped(channel, latest_episode(channel), strict=False)
 
 
 def _launch_id(e: Envelope) -> str:
@@ -246,7 +331,7 @@ def _verdict_record(channel: Channel) -> Envelope | None:
     Watcher can ask *where* the verdict sits (its seq) without re-deriving
     "which terminal counts" — a re-derivation that is exactly what forges
     verdicts."""
-    stopped = _episode_stopped(channel)
+    stopped = _terminal_stopped(channel, latest_episode(channel), strict=True)
     if stopped is not None:
         return stopped
     return _launcher_terminal(channel)
@@ -262,11 +347,12 @@ def peek_terminal(channel: Channel) -> Optional[RunResult]:
     otherwise a reaped ``launcher.terminated`` gives the manner of death.
 
     **Episode-aware, and both tiers on the same rule: a terminal stands until a
-    new episode CLAIMS.** The stop tier reads the latest ``stopped`` unless a
-    newer ``started`` follows it. The launcher tier reads the death of the launch
-    that the latest claim answered (``_launcher_terminal``) — correlated by id,
-    because a third-party death record is neither self-identifying nor reliably
-    ordered."""
+    new episode CLAIMS.** The stop tier reads the ``stopped`` that NAMES the
+    latest claim (strict: a nameless ``stopped`` it meets after the claim,
+    searching newest-first, raises ``MalformedRecordError``). The launcher tier
+    reads the death of the launch that the latest claim answered
+    (``_launcher_terminal``) — correlated by id, because a third-party death
+    record is neither self-identifying nor reliably ordered."""
     record = _verdict_record(channel)
     if record is None:
         return None
@@ -362,101 +448,110 @@ def last_activity(channel: Channel) -> Optional[float]:
     return max(ts) if ts else None
 
 
-def boundary_voided(
-    sub_seq: int, started_seqs: list[int], drainer_started_seq: int
+def lease_void(
+    bound_claims: set[int], drainer_claim: Optional[int], drainer_ended: bool
 ) -> bool:
-    """The episode-boundary discharge (specs/time-lease-boundary.md): a
-    time-referencing subscribe is voided iff a ``lifecycle.started`` other
-    than the draining episode's own follows it — equivalently, a ``started``
-    strictly between the subscribe and the drainer's own. ONE predicate,
-    shared by the worker (drain form: drainer = its own claim) and
-    ``live_demand`` (observer form: drainer = the latest ``started``)."""
-    return any(sub_seq < b < drainer_started_seq for b in started_seqs)
+    """The episode-boundary discharge, by name (specs/time-lease-boundary.md,
+    converted): a lease is a contract with the ONE episode that registered it,
+    recorded as ``lifecycle.bound`` naming that claim. It is void for every
+    other episode, and for everyone once its own episode has a terminal.
+    ONE predicate, shared by the worker (drain form: drainer = its own live
+    claim, never ended) and ``live_demand`` (observer form: drainer = the
+    latest claim, ended iff a terminal names it). A lease nobody bound yet is
+    not void: no episode has taken it, so the next one to drain it will."""
+    return any(k != drainer_claim for k in bound_claims) or (
+        drainer_claim in bound_claims and drainer_ended
+    )
+
+
+def _episode_ended(channel: Channel, claim: Envelope) -> bool:
+    """Does a terminal NAME ``claim``? A ``stopped`` naming it, or a
+    ``launcher.terminated`` naming the launch it answered. Tolerant (the
+    measurement plane): junk names nothing."""
+    if _terminal_stopped(channel, claim, strict=False) is not None:
+        return True
+    if claim.request_id is None:
+        return False
+    return any(
+        e.request_id == claim.request_id
+        for e in channel.read(
+            after=claim.seq,
+            topics=[Topic.LAUNCHER_TERMINATED],
+            request_ids=[claim.request_id],
+        )
+    )
 
 
 def live_demand(channel: Channel) -> list[Envelope]:
-    """The live leased demand: every ``control.subscribe`` envelope with no
-    **answer** following it by seq (specs/service-worker.md: the positional
-    answer fold — an answer is a ``control.unsubscribe`` or ``lifecycle.nak``
-    bearing its ``request_id``; null-id naks answer nothing, and an answer
-    never reaches a *later* same-id subscribe, so resubscribe-after-answer is
-    live), and — for time-referencing schedules — no episode boundary between
-    it and the latest ``lifecycle.started`` (specs/time-lease-boundary.md:
-    a time-lease is live only while the latest episode is still its first
-    possible drainer; the boundary ``started`` is its counter-record). The
-    one public home of the rule the worker's refold and the relaunch decider
-    both consume. Value-blind: it reads schedule *shape* for the time-atom
-    check, never payloads."""
-    pending: dict[str, Envelope] = {}  #  request_id -> the latest unanswered subscribe
-    starteds: list[int] = []
-    # Only the four topics the fold routes on -- the answer fold's inputs plus
-    # the episode boundaries. An unfiltered read would materialize the whole
-    # log (values + heartbeats dominate it) for a fold that skips them; the
-    # topic filter is index-served on every backend (the same economy as the
-    # Worker's head-first attach, design §12.5).
+    """The live leased demand: every ``control.subscribe`` whose ``request_id``
+    no answer NAMES -- an answer is a ``control.unsubscribe`` or ``lifecycle.nak``
+    bearing that id, wherever it lands -- and, if it is a lease, that is not
+    void (``lease_void``: bound by ``lifecycle.bound`` to an episode other than
+    the latest claim, or to the latest claim once a terminal names it).
+
+    Reference by name (specs/service-worker.md, converted): a ``request_id``
+    names ONE request. Re-sending a live id is the same request -- its latest
+    schedule stands (the owner's own write order, which any log preserves) --
+    and once any answer names it the id is spent: a later subscribe reusing it
+    is dead on arrival, never a fresh request. So the answer is the same
+    whatever order the records arrive in. Null-id records answer nothing.
+    The one public home of the rule the worker's refold and the relaunch
+    decider both consume. Value-blind: it reads schedule *shape*, never payloads."""
+    subs: dict[str, Envelope] = {}  #  request_id -> its latest form
+    answered: set[str] = set()
+    bound: dict[str, set[int]] = {}
     for e in channel.read(
-        topics=[
-            Topic.CONTROL_SUBSCRIBE,
-            Topic.CONTROL_UNSUBSCRIBE,
-            Topic.LIFECYCLE_NAK,
-            Topic.LIFECYCLE_STARTED,
-        ]
+        topics=[Topic.CONTROL_SUBSCRIBE, *_SUBSCRIBE_ANSWERS, Topic.LIFECYCLE_BOUND]
     ):
-        if e.topic == Topic.LIFECYCLE_STARTED:
-            starteds.append(e.seq)
-            continue
         if e.request_id is None:
             continue
         if e.topic == Topic.CONTROL_SUBSCRIBE:
-            pending[e.request_id] = e
-        elif e.topic in (Topic.CONTROL_UNSUBSCRIBE, Topic.LIFECYCLE_NAK):
-            pending.pop(e.request_id, None)
-    latest = starteds[-1] if starteds else 0
+            subs[e.request_id] = e
+        elif e.topic == Topic.LIFECYCLE_BOUND:
+            ok, k = _claim_name(e)
+            if ok and k is not None:
+                bound.setdefault(e.request_id, set()).add(k)
+        else:
+            answered.update(_answer_names(e))
+    claim = latest_episode(channel)
+    current = claim.seq if claim is not None else None
+    ended = claim is not None and bool(bound) and _episode_ended(channel, claim)
     return sorted(
         (
             e
-            for e in pending.values()
-            if not (
-                references_episode_local(e.body)
-                and boundary_voided(e.seq, starteds, latest)
-            )
+            for r, e in subs.items()
+            if r not in answered and not lease_void(bound.get(r, set()), current, ended)
         ),
         key=lambda e: e.seq,
     )
 
 
 def undischarged_stops(channel: Channel) -> list[Envelope]:
-    """The ``control.stop`` envelopes not yet discharged — pending from append
-    until the next ``lifecycle.stopped`` FOLLOWS by seq, when one ``stopped``
-    discharges every pending stop at once (specs/stop-discharge.md). The
-    positional stop rule's public observer home, mirroring ``live_demand``
-    (the subscribe fold's): "is there an unhonored stop?" for a status
-    surface or a dispatch gate. The worker's drain applies the same rule
-    (its ``_discharge_floor`` skip).
+    """The ``control.stop`` envelopes no answer NAMES -- pending until a
+    ``lifecycle.stopped`` lists its ``request_id`` in ``honored`` (the worker
+    served it) or a ``lifecycle.nak`` bears it (the worker refused it). The
+    stop rule's public observer home, mirroring ``live_demand``: "is there an
+    unhonored stop?" for a status surface or a dispatch gate. The worker's
+    drain applies the same rule.
 
-    Two edges an observer cannot avoid: **pending ≠ due** — a stop with a
-    ``from`` condition is pending the moment it lands but fires only when the
-    condition crosses (due-evaluation needs the worker's coordinates), so a
-    gate refusing work on "pending" may be gating on a not-yet-due stop. And
-    **naked stops over-report**: a malformed stop was refused by the worker
-    (never in its pending set), but no nak discharges a stop — it stays
-    listed until the next ``stopped`` discharges everything.
-
-    IT DOES UNDER-REPORT, and this docstring claimed otherwise until measured.
-    The discharge is **author-blind AND body-blind**: *any* record on
-    ``lifecycle.stopped``, written by anyone, well-formed or not, discharges
-    every pending stop. So a third party releasing a stranded claim — the only
-    way to release one today — silently answers commands it never carried out,
-    and this fold then reports nothing pending (runstate#39). Measured on the
-    real corpus: 11 of 37 stops were discharged by a record the worker did not
-    write, 6 of them by a *malformed* one that simultaneously raises
-    ``MalformedRecordError`` from ``peek_terminal``. No harm had landed — in
-    every case the halt was already served exogenously — but the mechanism is
-    live, and a consumer gating "refuse the next chunk" on this fold is
-    deciding on it."""
-    stopped = channel.latest(Topic.LIFECYCLE_STOPPED)
-    return channel.read(
-        after=stopped.seq if stopped is not None else 0, topics=[Topic.CONTROL_STOP]
+    Reference by name, so the answer is the same whatever order records arrive
+    in, and **the discharge is no longer author-blind**: a ``stopped`` that
+    names no stop -- a third party releasing a stranded claim -- discharges
+    nothing (runstate#39's mechanism, closed for attribution; a forger can
+    still name a stop, and no representation stops that). A stop with no
+    ``request_id`` is malformed (subscription-v0.3) and refused by every worker,
+    so it is never pending. **Pending ≠ due** still: a stop with a ``from``
+    is pending the moment it lands but fires only when its condition crosses."""
+    stops: dict[str, Envelope] = {}
+    answered: set[str] = set()
+    for e in channel.read(topics=[Topic.CONTROL_STOP, *_STOP_ANSWERS]):
+        if e.topic == Topic.CONTROL_STOP:
+            if e.request_id is not None:
+                stops[e.request_id] = e
+        else:
+            answered.update(_answer_names(e))
+    return sorted(
+        (e for r, e in stops.items() if r not in answered), key=lambda e: e.seq
     )
 
 
@@ -472,11 +567,9 @@ def progress(channel: Channel) -> Optional[int]:
     positionally reported a preempted episode-1 terminal while episode 2 was still
     climbing, which closed the window early and made ``ensure`` return a series
     spliced across both episodes **as complete** — no error, no re-drive.
-    Episode-scoping only the ``stopped`` register suffices: the heartbeat register
-    is self-correcting, since the latest beat already belongs to the live episode
-    — under the design's single-writer premise. A displaced worker that keeps
-    beating violates that premise and drives this frontier (runstate#32); the
-    remedy is upstream, at the claim, not a second scope here.
+    Both registers are selected by NAME (lifecycle-v0.5): the heartbeat and the
+    ``stopped`` that name the latest claim. A displaced worker that keeps beating
+    names its own old claim, so it no longer drives this frontier (runstate#32).
 
     It follows that this value may DECREASE across an episode boundary. That is
     correct, not a defect to smooth over: a resumed episode genuinely rolled the
@@ -492,13 +585,39 @@ def progress(channel: Channel) -> Optional[int]:
     (``memoizer._window_step``); a consumer asking "did this run reach its
     target?" uses this arithmetic, not a bespoke off-by-one."""
     steps = []
-    hb = channel.latest(Topic.LIFECYCLE_HEARTBEAT)
+    claim = latest_episode(channel)
+    hb = current_heartbeat(channel, claim)
     if hb is not None and is_step(hb.body.get("step")):
         steps.append(hb.body["step"])
-    stopped = _episode_stopped(channel)
+    stopped = _terminal_stopped(channel, claim, strict=False)
     if stopped is not None and is_step(stopped.body.get("final_step")):
         steps.append(stopped.body["final_step"])
     return max(steps) if steps else None
+
+
+def current_heartbeat(channel: Channel, claim: Envelope | None) -> Envelope | None:
+    """The newest heartbeat NAMING ``claim``, or None. Latest-then-verify: the
+    newest beat on the log usually names the live claim (O(1)); only on a miss
+    (a displaced worker beating over its successor) is the tail searched,
+    newest-first, in a window that grows x4 back toward the claim -- so the miss
+    costs O(distance to this episode's newest beat), not O(episode length).
+    Tolerant: an unnamed beat names nothing."""
+    if claim is None:
+        return None
+    hb = channel.latest(Topic.LIFECYCLE_HEARTBEAT)
+    if hb is None or hb.seq <= claim.seq:
+        return None
+    if _claim_name(hb) == (True, claim.seq):
+        return hb
+    hi, width = hb.seq, 64
+    while hi > claim.seq:
+        lo = max(claim.seq, hi - width)
+        window = channel.read(after=lo, topics=[Topic.LIFECYCLE_HEARTBEAT])
+        for e in reversed(window):
+            if e.seq <= hi and _claim_name(e) == (True, claim.seq):
+                return e
+        hi, width = lo, width * 4
+    return None
 
 
 def is_step(v: object) -> bool:

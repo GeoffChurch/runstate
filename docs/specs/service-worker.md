@@ -14,6 +14,11 @@ on-demand host-metrics monitor (`examples/monitor/`, this spec's deliverable);
 the second half (lazy-launch, the relaunch decider) is `specs/lazy-launch.md` (shipped 2026-06-11), a follow-on spec that
 consumes the demand fold this one makes possible.
 
+**Converted to reference by name 2026-10-03** ([`reference-by-name.md`](reference-by-name.md), log
+format 0.3.0): the answer fold joins on names, so a `request_id` that any answer names is **spent**,
+wherever the answer sits; and a lease is bound to its registering episode by `lifecycle.bound`
+(`specs/time-lease-boundary.md`). The sections below state the converted rule.
+
 ## The model
 
 > **One worker primitive, two demand durabilities.** *Durable* demand is the
@@ -64,16 +69,20 @@ not log-derivable (the fact the relaunch decider needs), and until-expiry is
 an *unsignalled* never-fire case (design-v0.2.md §6 has three handlers; this
 was a silent fourth).
 
-**The completed fold rule — positional, the discharge floor's third
-instance:** *a `control.subscribe` is live until an **answer** — a
-`control.unsubscribe` or a `lifecycle.nak` bearing its `request_id` — **follows
-it by `seq`**.* (Strictly positional, never an id-set: a later subscribe
-reusing an answered `request_id` is a fresh, live request — so
-resubscribe-after-refusal needs no fresh id, a keepalive refresh that crashed
-mid-cycle refolds live, and an unsubscribe that *precedes* its subscribe
-answers nothing, matching the in-memory drain exactly. Naks with
-`request_id = null` answer nothing.) The worker guarantees every drained
-subscribe is eventually answered by exactly one of the two:
+**The completed fold rule — by name** (`reference-by-name.md` §3): *a
+`control.subscribe` is live until an **answer** — a `control.unsubscribe` or a
+`lifecycle.nak` — **names its `request_id`**, wherever that answer sits.* A
+`request_id` names **one request**: re-sending it while the request is live
+updates that request (its latest schedule stands), and once any answer names
+the id, the id is **spent** — a later subscribe reusing it is dead on arrival,
+skipped silently by the worker and by `live_demand` alike, and an unsubscribe
+that lands before its subscribe spends the id just the same. So resubscribing
+after a refusal or a lapse takes a **fresh id**, and replacing a subscription
+is a fresh id plus an `unsubscribe` of the old one (written first, so the
+replacement is crash-safe). Naks with `request_id = null` answer nothing.
+"Refuse a reuse and nak it" is unsound: the nak names the live original too,
+and kills it (measured). The worker guarantees every drained subscribe is
+eventually answered by exactly one of the two:
 
 - **Expiry → the worker appends `control.unsubscribe`** with that
   `request_id` (body `{}`, exactly the client's verb), *then* deletes
@@ -92,28 +101,27 @@ subscribe is eventually answered by exactly one of the two:
   subscribe whose nak is on the log, so resumed episodes stop re-nakking the
   same bad request (today's unbounded duplicate-nak growth), and a subscribe
   refused under one episode's conditions (e.g. step-keyed, stepless episode)
-  stays refused; the requester was told, and resubscribes under conditions
-  that admit it.
+  stays refused; the requester was told, and resubscribes, under a fresh id,
+  under conditions that admit it.
 
 **The fold gets one public home: `observables.live_demand(channel) ->
-list[Envelope]`** — the subscribe envelopes with no following answer. The
+list[Envelope]`** — the subscribes no answer names, each in its latest form. The
 worker's refold and the relaunch decider consume the *same named rule*; two
 private copies of one boundary rule is the F7 failure class `latest_episode`
 exists to prevent, and a cli-status "pinned" column plus log-derivable
 idle-vs-dead fall out of the public form for free. (Value-blind: it reads
-schedule *shape* — the time-atom check of `specs/time-lease-boundary.md` —
-never payloads. *Amended 2026-06-11*: the original "body-untouched" purity
-claim was consumed by that spec, which also added a third answer kind —
-**a time-referencing subscribe can be discharged recordlessly by the next
-episode boundary**, so "answered by exactly one of the two" reads "…or by
-the boundary `started` already on the log.")
+schedule *shape* — the episode-local atom check of
+`specs/time-lease-boundary.md` — never payloads. That spec adds a third way
+out for a lease: it is void for every episode but the one a `lifecycle.bound`
+binds it to, so "answered by exactly one of the two" reads "…or voided
+through its binding.")
 
-Implementation shape: the refold's answer-awareness mirrors the discharge
-floor — `__init__` already reads the whole log for the CAS claim; the same
-read computes the positional fold (zero extra I/O; at implementation,
-consolidate the claim's read, the discharge floor, the answer fold, and the
-liveness check onto that one read). Mid-episode the worker's
-own answers are in-memory knowledge. The worker also re-drains its **own**
+Implementation shape: the refold's answer-awareness mirrors the stop
+discharge — the attach read the claim CAS is issued against (head-first,
+topic-filtered, capped at the asserted head) collects every id an answer
+names, the spent set, and every lease binding, so the refold skips spent ids
+with zero extra I/O. Mid-episode the worker's own answers are in-memory
+knowledge. The worker also re-drains its **own**
 unsubscribes next tick (the cursor sits behind them): an unsubscribe for an
 unknown `request_id` is a **silent no-op**, never a nak — else the worker
 naks itself once per expiry.
@@ -165,8 +173,11 @@ backend wedge), the shipped backends guarantee nothing was written — retire
 may simply re-loop; an unhandled raise reaching `__exit__` verdicts
 `errored`, which is correct for a wedged backend. A conditional stop drained
 inside `retire()` that has not yet triggered is simply pending — and the
-retire's own `stopped` discharges it, by stop-discharge's shipped broadcast
-rule; stated here so no one "fixes" it.
+retire's own `stopped` names it in `honored`, since a `stopped` honors every
+pending stop, due or not; stated here so no one "fixes" it. A plain
+`stopped()` shares this loop but takes in only stops, to name them: a
+subscribe racing it is left unregistered, live for the next episode
+(registering it would bind a lease to an episode that is already over).
 
 Episodes are now CAS-claimed at **both ends**; the log cannot lose a message
 in either gap. The reap's `stopped` makes no claim (`completed=False` →
@@ -297,7 +308,7 @@ handled by the enforced invariant in piece 1: fire once, then expire.
 - **Worker-side "park until conditions admit it"** (the would-be revisit
   trigger for nak-finality): already a consumer composition — the lifecycle
   is logged, so the parked client watches for the next `lifecycle.started`
-  and resubscribes (same `request_id` is fine; the fold is positional). A
+  and resubscribes (under a fresh `request_id`: the refused one is spent). A
   worker-side park would add a *third* registration state to a two-state
   fold, for something derivable. No trigger remains.
 
@@ -310,12 +321,12 @@ handled by the enforced invariant in piece 1: fire once, then expire.
 | refresh genuinely separated in time | retire, then relaunch on the new subscribe — correct service behavior, not a bug |
 | subscribe lands between final drain and dying breath | death-CAS loses → re-drain → `pinned` again → keep serving |
 | client dies; keepalive `until` lapses while the worker is live | expiry unsubscribe written; demand fold drops it; **episode N+1 does not resurrect it** |
-| client dies; the worker also dies (crash) before noticing the lapse | *(amended by `specs/time-lease-boundary.md`)* the lease re-anchors **at most once** (into its first possible drainer) and is recordlessly voided by the boundary after that — the relaunch decider expects nothing |
-| a subscribe nak'd in episode N re-encountered by episode N+1 | skipped — the nak is its answer (no duplicate nak per episode; resubscribe to be re-considered) |
+| client dies; the worker also dies (crash) before noticing the lapse | the lease is bound (`lifecycle.bound`) to the episode that registered it and void for every other, so it is served by **at most one episode** (`specs/time-lease-boundary.md`) — the relaunch decider expects nothing |
+| a subscribe nak'd in episode N re-encountered by episode N+1 | skipped — the nak is its answer (no duplicate nak per episode; resubscribe under a fresh id to be re-considered) |
 | one-shot served, nothing else | its expiry record lands; worker retires — a query-response service in one episode |
 | a subscribe raced into `retire()` | registered during the retire drain; `pinned` again → keep serving; first serviced at the next full tick (one body-cycle of latency, by design) |
-| commanded stop while pinned | the stop fold is unchanged and wins; `stopped` discharges it |
-| conditional stop drained during `retire()`, not yet triggered | pending; the retire's own `stopped` discharges it (the shipped broadcast rule) |
+| commanded stop while pinned | the stop fold is unchanged and wins; `stopped` honors it |
+| conditional stop drained during `retire()`, not yet triggered | pending; the retire's own `stopped` honors it (a `stopped` honors every pending stop, due or not) |
 | autonomous run, dashboard attached/detached | never calls `serve`/`retire` ⇒ no term couples its life to observation |
 
 ## Implementation sketch
@@ -323,16 +334,17 @@ handled by the enforced invariant in piece 1: fire once, then expire.
 `worker.py`: emit-then-delete `control.unsubscribe` at `_service`'s
 `decision.expired` site (the naked-at-service site keeps its nak as the
 answer — no unsubscribe); unknown-id unsubscribe stays a silent no-op; the
-`__init__` whole-log read additionally computes the positional answer fold
-(the discharge-floor pattern) so the refold skips answered subscribes;
+attach read collects the spent ids, so the refold skips answered subscribes
+by name;
 `pinned` property; `retire()` (the fused read→process→CAS loop above; sets
 the idempotent stopped-latch on win only); `serve()` generator.
 `schedule.py`: `Subscription` expires when no future fire is possible (the
 never-recur `every` case); count atoms in `from`/`every` nak as `malformed`
 (subscribe and stop). `watcher.py`: `await_consumed` treats an answer as an
-answer — a nak bearing the `request_id` resolves it regardless of the
-heartbeat watermark, and a terminal `stopped` with no following episode
-resolves it as refused-by-death (else a request answered inside a winning
+answer — a nak naming the `request_id` resolves it regardless of the
+heartbeat watermark, a terminal `stopped` with no following episode
+resolves it as refused-by-death, and a request reusing a spent id raises
+`ValueError` (the worker drops it unanswered, so there is nothing to wait for) (else a request answered inside a winning
 `retire()` drain deadlocks its waiter, whose nak arrives after the final
 heartbeat).
 `observables.py`: `live_demand` (above). Implementation note: the static
@@ -381,9 +393,9 @@ README's "next up" line. CLAUDE.md architecture/test lines post-implementation.
   service is unsupported (no step axis to fold progress on — its no-progress
   guard is disarmed exactly when it would be needed). *(The originally
   recorded second constraint — bound the relaunch cadence against re-anchored
-  leases — was deleted by `specs/time-lease-boundary.md`: the boundary rule
-  bounds the ghost at ≤2 relaunches by construction; the waker needs no flap
-  policy.)*
+  leases — was deleted by `specs/time-lease-boundary.md`: a lease is served by
+  at most one episode, the one it is bound to, so the ghost is bounded by
+  construction; the waker needs no flap policy.)*
 - The second `ensure` producer and the index algebra (after lazy-launch).
 - Prewarm helpers, grace windows, a time-indexed value series.
 - Any constructor flag, mode, or wire declaration of worker class.
@@ -421,9 +433,10 @@ README's "next up" line. CLAUDE.md architecture/test lines post-implementation.
   carries the watermark (the retire-win path); resolves refused-by-death on
   terminal `stopped` with no following episode.
 - `live_demand`: empty log → []; subscribe → [it]; subscribe…unsubscribe →
-  []; subscribe…nak(its id) → []; answered id re-subscribed later → [the
-  later one] (positional, not id-set); unsubscribe-before-subscribe answers
-  nothing; agrees with the worker's `pinned` after every scenario row above.
+  []; subscribe…nak(its id) → []; answered id re-subscribed later → [] (the
+  id is spent); an unsubscribe before its subscribe spends the id too; a
+  fresh id is a fresh request; agrees with the worker's `pinned` after every
+  scenario row above.
 - `examples/monitor/`: an on-demand host-metrics service (stepless,
   `latest`-read, keepalive-leased) driven by a small client — the dogfood.
   Carries the cadence guidance: the body's sleep must be ≪ min(lease period,

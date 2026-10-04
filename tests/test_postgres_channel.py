@@ -16,6 +16,8 @@ import pytest
 
 psycopg = pytest.importorskip("psycopg")
 
+from runstate.formats import FORMATS, LOG_FORMAT  # noqa: E402
+
 
 def _poll_until(fn, target, *, timeout=10.0, interval=0.05):
     """Poll ``fn()`` until it equals ``target`` or the timeout elapses; return the
@@ -43,13 +45,49 @@ def _hold_episode_forever(dsn, run_id, started_seq):
 
 
 def test_ensure_schema_creates_log_table(pg_dsn):
-    """``ensure_schema(dsn)`` provisions the shared ``log`` table (the DDL the
-    channel ``__init__`` deliberately does NOT run -- it only probes)."""
+    """``ensure_schema(dsn)`` provisions the shared ``log`` table in the current
+    format's schema (the DDL the channel ``__init__`` deliberately does NOT run
+    -- it only probes)."""
     from runstate.channel.postgres import ensure_schema
 
+    table = f"{FORMATS[LOG_FORMAT].pg_schema()}.log"
     ensure_schema(pg_dsn)
     with psycopg.connect(pg_dsn) as c:
-        assert c.execute("select to_regclass('log')").fetchone()[0] == "log"
+        assert c.execute("select to_regclass(%s)::text", [table]).fetchone() == (table,)
+
+
+def test_a_failed_open_closes_its_connection(pg_ready, monkeypatch):
+    """T3: every step of the open after the connect sits inside one close-on-
+    failure guard, so a failure anywhere in it (here, setting the search path)
+    leaks no connection."""
+    from psycopg import sql
+
+    from runstate.channel import postgres
+
+    class Boom(Exception):
+        pass
+
+    opened = []
+    real = postgres.psycopg.connect
+
+    def connect(*args, **kwargs):
+        conn = real(*args, **kwargs)
+        opened.append(conn)
+        execute = conn.execute
+
+        def failing(query, *a, **k):
+            text = query.as_string(conn) if isinstance(query, sql.Composable) else query
+            if "search_path" in text:
+                raise Boom
+            return execute(query, *a, **k)
+
+        conn.execute = failing
+        return conn
+
+    monkeypatch.setattr(postgres.psycopg, "connect", connect)
+    with pytest.raises(Boom):
+        postgres.PostgresChannel(pg_ready, f"leak-{uuid.uuid4().hex}")
+    assert len(opened) == 1 and opened[0].closed
 
 
 def test_ensure_schema_creates_both_indexes(pg_dsn):
@@ -62,11 +100,13 @@ def test_ensure_schema_creates_both_indexes(pg_dsn):
     from runstate.channel.postgres import ensure_schema
 
     ensure_schema(pg_dsn)
-    with psycopg.connect(pg_dsn) as c:
+    with psycopg.connect(pg_dsn) as c:  # the current format's table, not any `log`
         names = {
             r[0]
             for r in c.execute(
-                "select indexname from pg_indexes where tablename = 'log'"
+                "select indexname from pg_indexes"
+                " where schemaname = %s and tablename = 'log'",
+                [FORMATS[LOG_FORMAT].pg_schema()],
             )
         }
     assert {"idx_log_run_topic_seq", "idx_log_run_topic_name_seq"} <= names
@@ -77,18 +117,19 @@ def test_latest_with_name_is_index_served_not_sorted(pg_ready):
     index the planner sorts the whole (run_id, topic) partition, so a rare,
     early-only or absent name pays that on every call, forever."""
     run = f"idx-{uuid.uuid4().hex[:8]}"
+    log = f"{FORMATS[LOG_FORMAT].pg_schema()}.log"
     with psycopg.connect(pg_ready) as c:
         c.execute(
-            "insert into log (run_id, seq, topic, name, request_id, body, created_at)"
+            f"insert into {log} (run_id, seq, topic, name, request_id, body, created_at)"
             " select %s, g, 'value', 'm'||(g %% 40), null, '{}', 0.0"
             " from generate_series(1, 5000) g",
             (run,),
         )
-        c.execute("analyze log")
+        c.execute(f"analyze {log}")
         plan = "\n".join(
             r[0]
             for r in c.execute(
-                "explain select seq from log where run_id = %s and topic = 'value'"
+                f"explain select seq from {log} where run_id = %s and topic = 'value'"
                 " and name = 'm7' order by seq desc limit 1",
                 (run,),
             )
@@ -294,7 +335,10 @@ def test_watcher_staleness_floor_is_not_vetoed_by_a_held_lock(pg_ready):
     try:
         s = obs.send({}, topic="lifecycle.started", expected_seq=0)
         holder.hold_episode(s)  #                                      lock HELD (alive)
-        obs.send({"step": 0, "consumed_seq": 0, "t": 0.0}, topic="lifecycle.heartbeat")
+        obs.send(
+            {"step": 0, "consumed_seq": 0, "claim_seq": s, "t": 0.0},
+            topic="lifecycle.heartbeat",
+        )  #                                             the beat names its claim
         clock = {"t": 0.0}
         w = Watcher(now=lambda: clock["t"], heartbeat_timeout=1.0)
         w.observe(run_id, obs)
@@ -386,7 +430,8 @@ def test_cas_wedged_writer_raises_not_false_loss(pg_ready):
     wedger = psycopg.connect(pg_ready)  #                     autocommit=False
     try:
         wedger.execute(  # an uncommitted (run, seed+1) holds the PK index slot
-            "INSERT INTO log (run_id, seq, topic, name, request_id, body, created_at)"
+            f"INSERT INTO {FORMATS[LOG_FORMAT].pg_schema()}.log"
+            " (run_id, seq, topic, name, request_id, body, created_at)"
             " VALUES (%s, %s, 'lifecycle.started', NULL, NULL, '{}', 0)",
             (run_id, seed + 1),
         )

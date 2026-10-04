@@ -1,0 +1,6 @@
+A (v1) killed at ckpt {'step': 12, 'state': {'w': 6.0}}; B (v2) after 15 s: hung=True, trained=[]; rows=[('2bb01218f54b.0', 'PENDING', 'v1', 'rtx6000-501365-7684eb')]
+B log tail: []
+
+=== B3b resume after a code edit (application_version change): FAIL ===
+  a run started under one application_version is not recovered/dequeued by a process running another;
+  the layer avoids it only by pinning application_version, which makes DBOS replay recorded steps against edited code

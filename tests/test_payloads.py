@@ -8,6 +8,7 @@ from dataclasses import asdict
 import pytest
 
 from runstate.vocabulary.payloads import (
+    Bound,
     Heartbeat,
     Launched,
     Nak,
@@ -21,10 +22,18 @@ _SAMPLES = [
     Value(value=0.5, step=10, t=0.0),
     Value(value={"x": 1}, step=None, t=1.5),
     Started(handle="local://h/1", t=0.0),
-    Heartbeat(step=7, consumed_seq=3, t=0.0),
-    Heartbeat(step=None, consumed_seq=0, t=1.5),
-    Stopped(completed=True, error=None, final_step=9, t=0.0),
-    Stopped(completed=False, error="boom", final_step=1, t=2.0),
+    Heartbeat(step=7, consumed_seq=3, claim_seq=1, t=0.0),
+    Heartbeat(step=None, consumed_seq=0, claim_seq=4, t=1.5),
+    Stopped(completed=True, error=None, final_step=9, claim_seq=1, honored=[], t=0.0),
+    Stopped(
+        completed=False,
+        error="boom",
+        final_step=1,
+        claim_seq=None,
+        honored=["s1"],
+        t=2.0,
+    ),
+    Bound(claim_seq=3),
     Nak(reason="malformed", message="bad request"),
     Launched(handle="local://h/1", status="running", t=0.0),
     Terminated(reason="exited", exit_code=0, signal=None, t=0.0),
@@ -81,4 +90,32 @@ def test_terminated_coupling_rejects_illegal_states():
 def test_completed_with_error_rejected():
     # completed=True ⟹ error is None: the invariant is enforced in __post_init__
     with pytest.raises(ValueError):
-        Stopped(completed=True, error="x", final_step=None, t=0.0)
+        Stopped(
+            completed=True,
+            error="x",
+            final_step=None,
+            claim_seq=None,
+            honored=[],
+            t=0.0,
+        )
+
+
+def test_bound_and_stopped_round_trip_through_the_schema():
+    assert asdict(Bound(claim_seq=3)) == {"claim_seq": 3}
+    s = Stopped(
+        completed=True, error=None, final_step=9, t=1.0, claim_seq=3, honored=["s1"]
+    )
+    assert asdict(s)["honored"] == ["s1"]
+
+
+def test_stopped_honored_must_be_a_list_of_strings():
+    for bad in (None, [1], "s1"):
+        with pytest.raises(ValueError):
+            Stopped(
+                completed=False,
+                error=None,
+                final_step=None,
+                claim_seq=None,
+                honored=bad,  # type: ignore[arg-type]
+                t=0.0,
+            )

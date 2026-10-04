@@ -220,7 +220,14 @@ def test_stopped_emits_dying_breath(open_run):
     w = Worker(open_run(), now=lambda: 0.0)
     w.stopped(completed=True, final_step=500)
     e = open_run().latest("lifecycle.stopped")
-    assert e.body == {"completed": True, "error": None, "final_step": 500, "t": 0.0}
+    assert e.body == {
+        "completed": True,
+        "error": None,
+        "final_step": 500,
+        "claim_seq": open_run().latest("lifecycle.started").seq,  # names its claim
+        "honored": [],  #                                     no stop was pending
+        "t": 0.0,
+    }
     assert e.request_id is None  # broadcast — every observer sees it
 
 
@@ -231,6 +238,8 @@ def test_stopped_with_error(open_run):
         "completed": False,
         "error": "boom",
         "final_step": None,
+        "claim_seq": open_run().latest("lifecycle.started").seq,
+        "honored": [],
         "t": 0.0,
     }
 
@@ -242,8 +251,14 @@ def test_tick_emits_heartbeat_with_step_and_consumed_seq(open_run):
     w.tick(step=7)
     hb = open_run().latest("lifecycle.heartbeat")
     # consumed_seq is the worker's read position in the inbound control order:
-    # after draining, it has processed the subscribe at sub_seq.
-    assert hb.body == {"step": 7, "consumed_seq": sub_seq, "t": 0.0}
+    # after draining, it has processed the subscribe at sub_seq. claim_seq names
+    # the claim the beat follows (lifecycle-v0.5).
+    assert hb.body == {
+        "step": 7,
+        "consumed_seq": sub_seq,
+        "claim_seq": open_run().latest("lifecycle.started").seq,
+        "t": 0.0,
+    }
     assert hb.request_id is None
 
 
@@ -590,6 +605,8 @@ def test_steps_drives_ticks_default_preempted(open_run):
         "completed": False,
         "error": None,
         "final_step": 2,
+        "claim_seq": obs.latest("lifecycle.started").seq,
+        "honored": [],
         "t": 0.0,
     }
 
@@ -628,6 +645,8 @@ def test_steps_breaks_on_commanded_stop(open_run):
         "completed": False,
         "error": None,
         "final_step": 2,
+        "claim_seq": open_run().latest("lifecycle.started").seq,
+        "honored": ["s1"],  #                     the stop it carried out, by name
         "t": 0.0,
     }
 
@@ -639,7 +658,14 @@ def test_context_manager_reports_errored_on_exception(open_run):
                 if step == 1:
                     raise ValueError("boom")
     e = open_run().latest("lifecycle.stopped")
-    assert e.body == {"completed": False, "error": "boom", "final_step": 1, "t": 0.0}
+    assert e.body == {
+        "completed": False,
+        "error": "boom",
+        "final_step": 1,
+        "claim_seq": open_run().latest("lifecycle.started").seq,
+        "honored": [],
+        "t": 0.0,
+    }
 
 
 def test_stopped_is_idempotent(open_run):
@@ -651,6 +677,8 @@ def test_stopped_is_idempotent(open_run):
         "completed": True,
         "error": None,
         "final_step": None,
+        "claim_seq": open_run().latest("lifecycle.started").seq,
+        "honored": [],
         "t": 0.0,
     }
 

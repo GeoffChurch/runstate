@@ -7,7 +7,8 @@ need state a single log read can't have:
 
   3. **probe the handle** — if a tracked handle resolves dead and the log has no
      terminal record, the worker died without reporting → ``presumed_dead``;
-  4. **heartbeat staleness** — if the newest ``lifecycle.heartbeat`` is older than
+  4. **heartbeat staleness** — if the current episode's newest heartbeat (the
+     newest ``lifecycle.heartbeat`` naming the latest claim) is older than
      ``heartbeat_timeout`` (wall-clock since it *arrived*), the worker is hung or
      crashed → ``presumed_dead``. Off unless a timeout is given (the dead-vs-busy
      threshold is per-workload, §8). The clock seeds at registration (so a
@@ -29,9 +30,17 @@ from typing import Optional, Protocol, Union
 from .channel import Channel, EpisodeProbe, Envelope
 from .launcher import LaunchHandle
 from .observables import (
+    _STOP_ANSWERS,
+    _SUBSCRIBE_ANSWERS,
     Outcome,
     RunResult,
+    _answer_names,
+    _claim_name,
+    _episode_ended,
     _verdict_record,
+    lease_void,
+    current_heartbeat,
+    latest_episode,
     verdict_parse,
     peek_terminal,
 )
@@ -169,6 +178,34 @@ def _heartbeat_seed(hb: Optional[Envelope], now: float) -> _HeartbeatSeed:
 
 
 @dataclass
+class _PendingStops:
+    """Incremental ``undischarged_stops`` for one run (reference-by-name §5).
+
+    The unanswered stops by id, every id an answer has named (spent: a later
+    stop reusing one is dead on arrival, exactly as the pure fold treats it),
+    and a read cursor of its own, never the event cursor. Each call reads only
+    what is new, so a long run costs O(new records) per poll, not O(log)."""
+
+    cursor: int = 0
+    pending: dict[str, Envelope] = field(default_factory=dict)
+    spent: set[str] = field(default_factory=set)
+
+    def update(self, channel: Channel) -> list[Envelope]:
+        for e in channel.read(
+            after=self.cursor, topics=[Topic.CONTROL_STOP, *_STOP_ANSWERS]
+        ):
+            self.cursor = e.seq
+            if e.topic == Topic.CONTROL_STOP:
+                if e.request_id is not None and e.request_id not in self.spent:
+                    self.pending[e.request_id] = e
+            else:  # a stopped's honored, or a nak's own id: spent
+                for rid in _answer_names(e):
+                    self.spent.add(rid)
+                    self.pending.pop(rid, None)
+        return sorted(self.pending.values(), key=lambda e: e.seq)
+
+
+@dataclass
 class _RunState:
     run_id: str
     channel: Channel
@@ -177,6 +214,7 @@ class _RunState:
     liveness: _LivenessProbe
     last_hb_seq: int = field(default=0)
     last_step: Optional[int] = field(default=None)
+    stops: _PendingStops = field(default_factory=_PendingStops)
 
 
 class Watcher:
@@ -228,7 +266,7 @@ class Watcher:
         # and clobbered, a silent no-op. Seeding last_hb_seq too makes only a GENUINELY
         # newer beacon upgrade to now() (witnessed, skew-immune). No heartbeat on the
         # log -> seed now() (the never-beaconed-startup-death catch tier 4 exists for).
-        hb = channel.latest(Topic.LIFECYCLE_HEARTBEAT)
+        hb = current_heartbeat(channel, latest_episode(channel))
         seed = _heartbeat_seed(hb, self._now())
         self._runs[run_id] = _RunState(
             run_id=run_id,
@@ -381,6 +419,12 @@ class Watcher:
             )
         return rid
 
+    def pending_stops(self, run_id: str) -> list[Envelope]:
+        """The run's stops no answer names -- ``undischarged_stops``, kept
+        incrementally: each call reads only records new since the last."""
+        st = self._runs[run_id]
+        return st.stops.update(st.channel)
+
     def iter_events(
         self, timeout: Optional[float] = None
     ) -> Iterator[tuple[str, Envelope]]:
@@ -415,7 +459,9 @@ class Watcher:
         return out
 
     def _note_heartbeat(self, st: _RunState) -> None:
-        hb = st.channel.latest(Topic.LIFECYCLE_HEARTBEAT)
+        # Only a beat NAMING the latest claim is liveness evidence for the run: a
+        # displaced worker's beacon names its own old claim (lifecycle-v0.5).
+        hb = current_heartbeat(st.channel, latest_episode(st.channel))
         if hb is not None and hb.seq > st.last_hb_seq:
             st.last_hb_seq = hb.seq
             try:
@@ -431,73 +477,191 @@ class Watcher:
             st.last_step = step
 
 
+def _request_at(channel: Channel, seq: int) -> Envelope:
+    """The record at ``seq``, or ``ValueError``: an empty seq names no request,
+    so no watermark passing it could mean "accepted"."""
+    found = channel.read(after=seq - 1, limit=1)
+    if not found or found[0].seq != seq:
+        raise ValueError(f"no record at seq {seq}: there is no request to await")
+    return found[0]
+
+
+def _refuse_a_spent_id(channel: Channel, request: Envelope, request_id: str) -> None:
+    """Raise ``ValueError`` if ``request_id`` was spent before ``request``: it
+    reuses an answered id, so it is dead on arrival (reference-by-name §2: an
+    id is never reused; §3: a reuse is dead wherever the answer sits). The
+    request's own topic decides which answers count, by the one answer rule the
+    worker's drain folds with (``_SUBSCRIBE_ANSWERS``, ``_STOP_ANSWERS``,
+    ``_answer_names``). The prefix before the request is append-only and
+    complete, so this is decided once, never polled."""
+    seq, topic = request.seq, request.topic
+    if topic == Topic.CONTROL_SUBSCRIBE:
+        answers = _SUBSCRIBE_ANSWERS
+    elif topic == Topic.CONTROL_STOP:
+        answers = _STOP_ANSWERS
+    else:
+        return  #       only a subscribe or a stop is answered, so only they spend
+    # request_ids= keeps this id's own answers plus the null-id broadcasts --
+    # the stoppeds, whose `honored` lists name stops.
+    for e in channel.read(topics=[*answers], request_ids=[request_id]):
+        if e.seq >= seq:
+            break
+        if request_id in _answer_names(e):
+            raise ValueError(
+                f"request_id {request_id!r} at seq {seq} is dead on arrival: the "
+                f"{e.topic} at seq {e.seq} already answered it, and an answered "
+                f"id is spent (reference-by-name §3) -- send a fresh request_id"
+            )
+
+
+def _refuse_a_void_lease(channel: Channel, request: Envelope, request_id: str) -> None:
+    """Raise ``ValueError`` if ``request`` is a ``control.subscribe`` whose id is
+    a VOID lease: bound (``lifecycle.bound``) to an episode that can no longer
+    serve it, by the one predicate (``lease_void``, observer form: the drainer
+    is the latest claim, ended iff a terminal names it). A re-send of such an id
+    is never served -- the lease is one id = one lease = one episode
+    (specs/reference-by-name.md, Episode-local subscriptions) -- so ``None``
+    would be a false "accepted". A lease nobody bound yet is not void. Bounded
+    reads: this id's bound records, the latest claim, its terminal."""
+    if request.topic != Topic.CONTROL_SUBSCRIBE:
+        return
+    bound: set[int] = set()
+    for e in channel.read(topics=[Topic.LIFECYCLE_BOUND], request_ids=[request_id]):
+        ok, k = _claim_name(e)
+        if ok and k is not None and e.request_id == request_id:
+            bound.add(k)
+    if not bound:
+        return
+    claim = latest_episode(channel)
+    current = claim.seq if claim is not None else None
+    ended = claim is not None and _episode_ended(channel, claim)
+    if lease_void(bound, current, ended):
+        raise ValueError(
+            f"the lease {request_id!r} at seq {request.seq} is bound to "
+            f"episode {sorted(bound)[0]}, which can no longer serve it: a "
+            f"lease is one id, one episode -- resubscribe under a fresh request_id"
+        )
+
+
 def await_consumed(
     channel: Channel,
     seq: int,
     *,
-    request_id: str | None = None,
     timeout: float | None = None,
     poll_interval: float = 0.05,
     now: Callable[[], float] = time.time,
     sleep: Callable[[float], None] = time.sleep,
 ) -> "Nak | RunResult | None":
-    """Block until the control request at ``seq`` is ANSWERED or drained.
-    Answer-first (specs/service-worker.md): a ``lifecycle.nak`` bearing
-    ``request_id`` that *follows* ``seq`` resolves immediately (returns the
-    ``Nak``) — the watermark (the latest heartbeat's ``consumed_seq >= seq``,
-    §6) is only the no-answer-yet probe for acceptance (returns ``None``). If
-    a terminal record *follows* the request with no later episode, no worker
-    will ever drain it: returns the terminal ``RunResult`` (refused-by-death)
-    instead of blocking — while a request sent *after* a death correctly waits
-    for the next episode. Raises ``TimeoutError`` if ``timeout`` elapses —
-    not-yet-drained is not a refusal — and ``MalformedRecordError`` on a nak
-    body it cannot parse (the answer is on the verdict plane). With
-    ``request_id=None``, nak detection is skipped. So the full codomain is the
-    answer space: ``Nak`` (refused) | ``RunResult`` (the run died under the
-    request) | ``None`` (accepted)."""
-    deadline = None if timeout is None else now() + timeout
+    """Block until the control request at ``seq`` is ANSWERED or drained. The
+    request is the record at ``seq``, and its ``request_id`` is the name its
+    answers bear: the one source of truth, so the caller passes no id.
 
-    def _answer() -> "Nak | None":
-        # Positional: only a nak FOLLOWING the request answers it.
+    Answer-first (specs/service-worker.md): the first answer naming the request
+    that *follows* ``seq`` resolves it at once, whatever the watermark says. A
+    ``lifecycle.nak`` is a refusal (returns the ``Nak``); for a stop, a
+    ``lifecycle.stopped`` whose ``honored`` lists it is acceptance (returns
+    ``None``): the worker carried the stop out, in its dying breath. With no
+    answer yet, the watermark (the current heartbeat's ``consumed_seq >= seq``,
+    §6) is the probe for acceptance (returns ``None``). If a terminal record
+    *follows* the request with no later episode, no worker will ever drain it:
+    returns the terminal ``RunResult`` (refused-by-death) instead of blocking,
+    while a request sent *after* a death correctly waits for the next episode.
+
+    Raises ``ValueError``, before waiting at all, for a request that names no
+    request the worker could answer, since ``None`` would then be a false
+    "accepted": no record at ``seq`` (an empty seq names no request); a record
+    there that is not a ``control.*`` request; a ``control.*`` record with no
+    ``request_id`` (subscription-v0.3 closes the topic set to subscribe,
+    unsubscribe and stop, each naming its request, and the worker refuses any
+    other under no id); and a request whose id an answer already SPENT before ``seq``
+    (reference-by-name §3: for a subscribe an unsubscribe, the worker's expiry
+    record included, or a nak; for a stop a stopped's ``honored`` or a nak),
+    which the worker drops unanswered. Raises ``TimeoutError`` if ``timeout``
+    elapses (not-yet-drained is not a refusal), and ``MalformedRecordError`` on
+    a nak body it cannot parse (the answer is on the verdict plane). So the full
+    codomain is the answer space: ``Nak`` (refused) | ``RunResult`` (the run
+    died under the request) | ``None`` (accepted).
+
+    Raises ``ValueError`` too for a ``control.subscribe`` whose id is a VOID
+    lease (``lease_void``): bound to an episode that has since ended or been
+    superseded, so no episode will ever serve a re-send of it, and ``None``
+    would be a false "accepted". The message names the bound episode and the
+    remedy: resubscribe under a fresh ``request_id``. A lease nobody has bound
+    yet is not void; it waits as usual. Evaluated at entry and again before any
+    ``None``, so a lease voided while the caller waits is never accepted."""
+    deadline = None if timeout is None else now() + timeout
+    request = _request_at(channel, seq)
+    request_id = request.request_id
+    if not request.topic.startswith("control."):
+        raise ValueError(
+            f"the record at seq {seq} is a {request.topic}, not a control request: "
+            f"there is no request to await"
+        )
+    if request_id is None:
+        # subscription-v0.3 closes control.* to three verbs, each naming its
+        # request; the worker refuses an id-less one (or an unknown verb) under
+        # no id, so nothing can answer it.
+        raise ValueError(
+            f"the {request.topic} at seq {seq} carries no request_id: it is "
+            f"malformed under subscription-v0.3, so the worker refuses it "
+            f"under no id and nothing can answer it -- send it with one"
+        )
+    _refuse_a_spent_id(channel, request, request_id)
+    _refuse_a_void_lease(channel, request, request_id)
+    answers = (
+        _STOP_ANSWERS if request.topic == Topic.CONTROL_STOP else (Topic.LIFECYCLE_NAK,)
+    )
+
+    def _answer() -> Envelope | None:
+        # The window after the request is causal: an answer to THIS request
+        # follows it. One before it would have spent the id, refused above.
         if request_id is None:
             return None
         # request_ids= pushes the id filter into the backend (audit F9: no
-        # per-poll rescan of every nak); the visibility filter also admits
-        # null-id broadcasts, which answer nothing -- the exact-id check
-        # drops them.
-        naks = [
-            e
-            for e in channel.read(
-                after=seq, topics=[Topic.LIFECYCLE_NAK], request_ids=[request_id]
-            )
-            if e.request_id == request_id
-        ]
-        return verdict_parse(Nak, naks[-1]) if naks else None
+        # per-poll rescan of every nak); it also admits null-id records -- the
+        # stoppeds, whose honored lists name stops, and broadcasts that name
+        # nothing, which the name check drops.
+        for e in channel.read(after=seq, topics=[*answers], request_ids=[request_id]):
+            if request_id in _answer_names(e):
+                return e
+        return None
+
+    def _resolved(answer: Envelope) -> "Nak | None":
+        if answer.topic == Topic.LIFECYCLE_STOPPED:
+            return None  #               honored: the worker carried it out
+        return verdict_parse(Nak, answer)
 
     while True:
-        # Answer-first (specs/service-worker.md): a nak IS the answer; the
+        # Answer-first (specs/service-worker.md): an answer IS the answer; the
         # watermark is only the no-answer-yet probe. A request answered inside
         # a winning retire() drain gets its nak but never a later heartbeat —
         # watermark-first would deadlock its waiter.
-        nak = _answer()
-        if nak is not None:
-            return nak
-        hb = channel.latest(Topic.LIFECYCLE_HEARTBEAT)
+        answer = _answer()
+        if answer is not None:
+            return _resolved(answer)
+        hb = current_heartbeat(channel, latest_episode(channel))
         if hb is not None:
             try:
                 consumed = Heartbeat(**hb.body).consumed_seq >= seq
             except TypeError:
                 consumed = False  # a junk beacon is no watermark evidence
             if consumed:
-                # Re-check once: the nak and its heartbeat may both have landed
-                # between this iteration's two reads.
-                return _answer()
+                # Re-check once: the answer and its heartbeat may both have
+                # landed between this iteration's two reads.
+                answer = _answer()
+                if answer is not None:
+                    return _resolved(answer)
+                # A lease voided while we waited is not accepted: the later
+                # episode's beat passed it without serving it.
+                _refuse_a_void_lease(channel, request, request_id)
+                return None
         # Refused-by-death: the terminal record FOLLOWING the request means no
         # worker will ever drain it — return the terminal verdict. A terminal
         # that PRECEDES the request leaves it waiting for the next episode. The
         # record is the one peek_terminal speaks for (_verdict_record), not the
         # latest terminal-topic envelope: an unrelated launch's death (a
-        # claim-race loser's) is not this request's refusal.
+        # claim-race loser's) is not this request's refusal. A terminal that
+        # honored the request was its answer, taken above.
         record = _verdict_record(channel)
         if record is not None and record.seq > seq:
             term = peek_terminal(channel)

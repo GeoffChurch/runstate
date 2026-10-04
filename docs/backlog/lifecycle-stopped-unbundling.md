@@ -56,5 +56,8 @@ and if it lands the way it looks, this entry closes without a protocol change.
 ## Related
 
 - `claim-eviction.md` — job 1, the design in flight
-- `../specs/stop-discharge.md` — the positional rule job 4 implements
+- `../specs/stop-discharge.md` — the rule job 4 implements: positional under log format 0.2.0 (any
+  later `stopped` discharged every pending stop), by name since 0.3.0 (a `stopped` discharges the
+  stops its `honored` lists; `../specs/reference-by-name.md`). Its §7 has `resume_fanout` write a
+  claimless `stopped` naming the stops it clears, which, naming no claim, releases none.
 - `protocol-algebra.md` L2 — intro/eliminator discipline, and the standing bar for a new eliminator
