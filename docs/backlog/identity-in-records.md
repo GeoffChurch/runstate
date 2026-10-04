@@ -272,13 +272,18 @@ small heartbeat provides, and values stay ordinary records. This list states the
 8. **Dense data goes in blobs referenced by name,** never inline. Bodies are JSON text on every backend.
    Large values belong to the data-plane project.
 
+9. **The condition algebra's progress measure is a stream the user chooses** (option A).
+   - **Forms:** `every: {stream: "loss", n: 10}` (each time `loss` gains 10 more elements) and
+     `until: {stream: "loss", n: 1000}`.
+   - **With batching**, `every` means crossing a multiple since the last firing, so 95 → 105 fires once.
+   - **Time and firing count stay.** The basis is time, count and stream progress, with no
+     protocol-level notion of an iteration.
+   - **A user who emits a `step` stream** gets today's step semantics by their own choice.
+   - **`ensure` becomes the same demand:** "stream `loss` has n elements".
+   - **Under S, `steps(total)`'s `total` counts loop iterations.** That is a driver convenience, not a
+     protocol concept.
+
 **Still open, in order:**
-- **The condition algebra under S.**
-  - Register sampling keeps heartbeat, time and count cadence.
-  - Progress conditions become conditions on stream prefixes.
-  - Under S, `steps(total)`'s `total` counts loop iterations, which is a driver convenience, not a protocol
-    concept.
-- **`ensure`'s signature**, as a stream-prefix demand.
 - **The checkpoint recipe:** a checkpoint names the heartbeat that commits its state; resume from the most
   advanced complete checkpoint; save after the commit, for no lag.
 - **The format change, and its migration.** lifecycle-v0.6 and value-v0.3 make format 0.4.0. The
