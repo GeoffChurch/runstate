@@ -315,9 +315,48 @@ small heartbeat provides, and values stay ordinary records. This list states the
       (the optimizer's step counter, or a hash of a parameter slice). The Worker records it with each
       commit, and the recipe compares it at save and at load. *Framework prediction, untested.*
 
+11. **A completed exit commits first.** `stopped(completed=True)` writes one last heartbeat committing any
+    pending values, then names it as `final_beat`.
+    - **Why.** Values written after the loop, such as mycooc's final metric, are otherwise committed by
+      nothing, and lineage reads would drop them.
+    - **Error exits are different.** On an error inside an iteration, its pending values belong to
+      unfinished work and stay uncommitted. The Worker can tell the two cases apart, because it knows
+      whether it is inside a `steps()` iteration.
+    - **What it makes obsolete:**
+      - `progress`'s second source (`stopped.final_step`), since heartbeats alone define the frontier;
+      - the vouching recipe's `stopped` clause;
+      - any need for `stopped` to carry commits.
+12. **The 0.3.0 → 0.4.0 migration repairs missing ticks and keeps no step stream.** Each rule copies what
+    the old positional reading implied.
+    - **`parent`.** The previous heartbeat of the same claim. For an episode's first heartbeat, the latest
+      earlier heartbeat one step behind it, otherwise null.
+    - **`commits`.** The values each heartbeat commits, attributed by their own step labels within the
+      claim's window.
+    - **A step whose values carry a label with no heartbeat** gets a **synthetic heartbeat** inserted where
+      the tick should have been. The copied log is renumbered, and every seq reference is renamed with it:
+      `claim_seq`, `parent`, `commits`, `final_beat` and `bound`.
+    - **Values after an episode's last heartbeat** are committed by an appended final heartbeat
+      (decision 11).
+    - **`stopped.final_step`** becomes `final_beat`.
+    - **Subscriptions' `{step: k}`** becomes `{stream: …}` (decision 9). The stream it targets is still to
+      be set in the spec.
+    - **Measured 2026-10-04 on the real-log corpus:**
+      - translation's lineage depth equals its old step on all 1,010,405 heartbeats;
+      - mycooc's does not on 53,757 of 215,529 heartbeats, in 789 runs, all from 891 skipped ticks (the
+        upgrade checklist's mycooc item, in `../specs/reference-by-name.md` §7). Each of those 891 skipped
+        steps carried a full metric set.
+    - **With the ticks repaired, depth should equal the old step everywhere,** so no synthetic step stream
+      is needed. The migration's tests must confirm that on the corpus.
+    - **Why not a synthetic `step` stream** (considered and rejected): per heartbeat, it would label a
+      skipped step's values with the *next* step.
+
 **Still open, in order:**
-- **The format change, and its migration.** lifecycle-v0.6 and value-v0.3 make format 0.4.0. The
-  0.3.0 → 0.4.0 step must infer `commits` and `parent`, positionally, as "what the old rule said".
+- **Alignment across metrics, proposed and awaiting the owner.** Reads should offer a node-aligned view
+  as well as the per-stream index: every metric committed at each node of a lineage, with the node's
+  depth as the x-axis. Metrics that start late or have gaps, such as mycooc's 952 late-starting and 833
+  gapped streams, then align by their shared commit. This would amend decision 5's "emit `{step, loss}`
+  together".
+- **The format change.** lifecycle-v0.6 and value-v0.3 make format 0.4.0. Write the spec.
 
 ## 3. Episode-keyed artefacts
 

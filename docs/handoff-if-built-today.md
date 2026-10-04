@@ -105,7 +105,16 @@ same way. Grep it with `grep -rn '<phrase>' docs/backlog/if-built-today/`. Items
     - **Specs approved.** The plan is written: `docs/plans/2026-10-03-log-formats-and-reference-by-name.md`
       (`537e1de`), 13 tasks in 2 stages. It also corrected spec §5: the incremental pending-stops form
       keeps the spent ids too.
-    - **Next:** owner review of the plan, then subagent-driven execution, the owner's standing preference.
+    - **SHIPPED 2026-10-03: PR #53, merged by merge commit `2fd6b99`.** Log format 0.3.0, package
+      `0.3.0.dev0`. Executed subagent-driven, with per-task reviews and a whole-branch review. That review
+      found one Critical: an onboarded log was unprotected from an old writer, now fixed by a tombstone at
+      the legacy address. The renewing-client gap was decided as **A**: one id is one lease is one
+      episode, and `await_consumed` refuses a void lease id. Deferred items are in
+      `docs/backlog/log-formats-followups.md`. All spike branches are deleted; their evidence is
+      inlined in `identity-in-records.md`. `master` is the only branch.
+    - **Next (owner's call):** each consumer upgrades when it chooses, by bumping its pin and following
+      `log-formats.md` §8 and `reference-by-name.md` §7. Or start identity-in-records layer 2, the
+      encoding experiment for names on values.
   - **Consumers PINNED (2026-10-03)** instead of migrated, at `72d9c3f`:
     - **mycooc** `36167c11`: the pin in `pyproject.toml` and `requirements-pinned.txt`, installed into
       `cooc`. The cluster sync now `git archive`s the pin instead of rsyncing the working tree;
@@ -121,8 +130,8 @@ same way. Grep it with `grep -rn '<phrase>' docs/backlog/if-built-today/`. Items
   4. **`machine-partitioned-logs.md` note: DONE** (§"The gate, run in miniature").
 - **Reference by name** (the owner's term; "pairing" was the special case): a record names what it
   answers, ends or concerns, rather than being related to it by position.
-  - **Spike DONE: adopt with conditions.** `spike/reference-by-name` from master, pushed with no PR.
-    Report: `docs/review-2026-10-02-reference-by-name.md`.
+  - **SHIPPED** as log format 0.3.0 (PR #53, above). The spike branch is deleted. Report:
+    `docs/review-2026-10-02-reference-by-name.md`.
   - **The change:** library and schemas +455/−225, plus a backfill script and 19 new tests (×4
     backends). Committed with `--no-verify`, because 36 pre-existing tests fail by design and were
     deliberately left unedited.
