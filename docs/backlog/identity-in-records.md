@@ -209,6 +209,72 @@ history. An episode that rolls back and recomputes a step leaves two values name
 lineage read cannot tell them apart. The candidates are one value per (episode, step, name), or a
 checkpoint manifest that names its values by seq. The encoding experiment should include them.
 
+### Design decisions so far (2026-10-04, converging with the owner)
+
+The measurements in §3 and [lineage-graph](lineage-graph.md) shaped layer 2 into the **tick record**. The
+owner settled the following one question at a time. They supersede the per-value-stamp options above, and
+the rollback finding is answered by decision 2.
+
+1. **One record per tick: `lifecycle.tick`, which replaces `lifecycle.heartbeat`.**
+   - **What it is.** It is the tick's commit, the worker's liveness beacon, and a lineage node, all at once.
+     The three are always written together, at the same moment, by the same writer.
+   - **Why one record.** The heartbeat was already the only per-step commit marker (§3), so splitting them
+     would encode no real independence.
+   - **What it costs.** Liveness reads now carry the value payload, which keeps that payload bounded (decision
+     8). This is log format 0.4.0.
+2. **A node is named by its tick record's seq,** exactly as a claim is named by its `started`'s seq.
+   - `parent` is a seq, or null for a fresh start. No new id space is introduced.
+   - The rollback case resolves itself, because the key is the tick, not the claim.
+3. **Resume and rewind are one call.** `steps(…, resume_from=node)` names the parent of the next tick.
+   - A rewind is the same call with an older node.
+   - Without it, the run is a fresh start. Its lineage is then truncated, never spliced.
+   - Inferring the parent from the log was rejected, as a positional guess.
+4. **The tick's data.** The record carries `values: {name: value | [values…]}` and `answered: [request_id…]`.
+   - **Values.** A name appears if it was emitted this tick, or if a fired subscription sampled it. A list
+     means the tick carries several elements of that stream (batching).
+   - **Answers.** `answered` names the subscriptions this tick served.
+   - **Time.** Every value takes the tick's `t`.
+   - **Subscriptions** already fire only at ticks, so snapping them to ticks loses nothing.
+   - **What it costs.** A request id moves from the envelope into the body, so the backend's `request_ids=`
+     index stops serving samples. Nothing in the library or in runstate-tui uses that index for values; the
+     TUI follows logs by cursor.
+5. **No step in the protocol: option S.** Each value name is a **stream**. Its coordinate is intrinsic:
+   the element's index along the lineage.
+   - **Batching** advances the index by the length of a list.
+   - **Liveness ticks inside slow steps** carry no element of the stream.
+   - **Alignment across metrics** is the user's choice: emit `{step, loss}` together.
+   - **Alternatives rejected.** An optional step label (P) is an opinion; this one has no scale at all.
+     Tick depth (T) breaks once liveness ticks fall inside steps. Conditions over arbitrary values (V)
+     reduce to P plus target conditions, and target conditions belong to shipped programs
+     ([programmable-subscriptions](programmable-subscriptions.md)).
+6. **Reads.**
+   - **The default head** is the newest tick of the newest claim that has written one. It uses no clocks:
+     the sequencer's order, the claim order and each writer's own order.
+   - **Every read** takes `head=`.
+   - `value_series`, `history` and `ensure` walk parents from the head.
+   - **The take-the-latest collapse is deleted.** A stream index is unique along a lineage, so nothing needs
+     collapsing.
+7. **The `value` convention is retired.** The 0.3.0 → 0.4.0 migration folds existing `value` records into
+   the ticks that commit them. A point outside lineage goes on a topic of the consumer's choosing.
+8. **Dense data goes in blobs referenced by name,** never inline. Bodies are JSON text on every backend, so
+   a 1M-float array costs about 18–20 MB as JSON against 8 MB raw. Large values belong to the data-plane
+   project.
+9. **Known cost: the name index.** A single-name `history` now reads every value in the lineage, about 20
+   times the bytes at mycooc's shape. This is not a polled path. Measure it in the encoding experiment; if
+   it matters, the remedy is a derived index that is never authoritative.
+
+**Still open, in order:**
+- **`stopped.final_tick` replacing `final_step`.** It names the last committed tick, which fixes §3's
+  stopped-clause defect by construction.
+- **The condition algebra under S.**
+  - Register sampling keeps tick, time and count cadence.
+  - Progress conditions become conditions on stream prefixes.
+  - Under S, `steps(total)`'s `total` counts loop iterations, which is a driver convenience, not a protocol
+    concept.
+- **`ensure`'s signature**, as a stream-prefix demand.
+- **The checkpoint recipe:** resume from the most advanced complete checkpoint, and save after the commit.
+- **The 0.3.0 → 0.4.0 migration.**
+
 ## 3. Episode-keyed artefacts
 
 runstate gives no directory, so this is a **recipe**, not a guarantee.
