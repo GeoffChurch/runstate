@@ -171,14 +171,18 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
   5. fenced worker writes, possibly optional given 1.
 
   The target is that a wrong claim costs waste, never corruption. It supersedes episode-aim, below.
-- **Lineage graph** — [lineage-graph](lineage-graph.md). DESIGN SKETCH, untested (2026-10-04). It is the
+- **Lineage graph** — [lineage-graph](lineage-graph.md). DESIGN SKETCH, partly measured (2026-10-04). It is the
   long-term direction from identity-in-records:
   - each computed step is a node that names its parent and carries its values, and is that step's commit;
   - checkpoints name nodes, and reads choose a head and walk parents;
   - claims become deduplication, not correctness, so double claims branch and never corrupt, and logs from
     different machines combine by union.
 
-  Two falsification tests are attached.
+  Both falsification tests ran:
+  - the lineage plane held, with no arbiter;
+  - the observer plane, head choice and stops still speak for "the latest claim".
+
+  Its step record is a candidate shape for layer 2.
 - **Log formats and reference by name: follow-ups** — [log-formats-followups](log-formats-followups.md).
   LIVING (2026-10-03). What the shipping branch's final review left real but not merge-blocking: the
   uncached per-open listing, migration robustness (cycle guard, DDL without the lock, raw tracebacks),

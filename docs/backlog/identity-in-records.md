@@ -220,6 +220,11 @@ runstate gives no directory, so this is a **recipe**, not a guarantee.
 - **Resume rule, as measured (R\*).**
   - A checkpoint `<E>/<s>.<X>` is **vouched** if E's heartbeat lands in E's window at a seq greater than
     `X`, the head when the checkpoint was published. E's own `stopped` with `final_step ≥ s` also vouches.
+    **That clause is unsound as written** (measured 2026-10-04, [lineage-graph](lineage-graph.md)). The
+    Worker's `final_step` is the last step it *yielded*, set before that step's tick (`worker.py`). So a
+    worker that saves before emitting and then raises reports a step whose values never landed, and the
+    `stopped` vouches it. Every resume built on that checkpoint keeps the gap permanently. The clause must
+    use the last *ticked* step.
   - Values never vouch.
   - Resume takes the **latest episode with a vouched checkpoint**, then its highest vouched step.
   - The first rule proposed (R0: "a landed heartbeat or value at step `s`") failed: it vouched a
