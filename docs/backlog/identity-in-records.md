@@ -396,10 +396,50 @@ edge sets.
   - re-driving workers and gates under a new interleaving, since the records and files were fixed;
   - lagging visibility of values relative to the checkpoint.
 
-**Open, untested: under layer 2, is vouching needed at all?** Correctness now rests on the lineage read.
-What vouching may still buy is a causal witness that E's values written before the publish are visible to
-the reader, which guards against holes. Holes never occurred here, but no test made visibility lag. If
-holes can be ruled out otherwise, the rule reduces to "the latest episode's highest published checkpoint".
+### Is vouching needed at all? Yes, in today's record shapes (measured 2026-10-04)
+
+**The prediction, written before the run.** Heartbeat vouching is replaceable by a direct **presence**
+check, V∅+P:
+- resume from the latest episode's highest published checkpoint whose values, named in its manifest by
+  seq, are all present;
+- the predicted result was no more holes or recompute than V2.
+
+**Refuted.** The manifest can name only records that already exist. A worker that **saves before
+emitting** publishes checkpoint s before step s's values are written. Two things then look the same:
+- "not written yet";
+- "not expected", for example the `set()` values of a step nobody subscribed to.
+
+**The measured cases:**
+- **Killed between the publish and the emit.** V∅+P resumed past step s, and step s's values never
+  exist: a permanent gap of 4 cells. A demand-sampled variant lost a demanded step the same way.
+- **V2 was clean in both.** The reference Worker writes `emit` and `set()` **before** the heartbeat. So a
+  heartbeat after X is, by accident, **the only per-step commit marker on the log**: "this step's writes
+  are complete".
+- **Expecting values by (claim, step, name)** fixes the gap. But it then expects `set()` values nobody
+  subscribed to, and falls back needlessly.
+
+What held:
+- V∅+P has no lag where a worker published and died before beating: 6–12 steps saved per case against V2.
+- 0 splices everywhere, including the in-episode rewind; the seq key handles it.
+- Order-invariant under reordering.
+- It is sound when every value of step s is written before checkpoint s is published.
+
+*How it was measured:*
+- **Scenarios:** the l3 matrix, plus:
+  - kill orders around save, emit and beat;
+  - two forms of visibility lag: a lagging prefix, which is causally consistent, and per-topic lag, which
+    is not (V2 shows 18 transient holes under it);
+  - demand-sampled `set()` workers.
+- **The causal-reordering replay:** 273 histories × 44 orderings. No rule's pick varied.
+
+**The lesson for the design.** What vouching really supplies is a **per-step commit record**. Values written
+as separate records carry no "this step is done", so the heartbeat stands in for it. A design whose step
+record **is** the commit, with the step's values inside it, makes a direct presence check sound. That design
+is [lineage-graph](lineage-graph.md). *Prediction, untested; its falsification test is there.*
+
+**Also:** "latest episode first" made V∅+P resume from a successor's unvouched checkpoint (13 more steps)
+where V2 fell back to the displaced predecessor's further, clean one. Head choice by "most advanced
+complete step" is the alternative. It is untested.
 
 **A condition the prediction missed: a claim names an episode, not a history.** One episode computing a
 step twice breaks the lineage read under every rule. In the probe:
@@ -578,8 +618,9 @@ a displaced worker's unnamed values splice the series under every vouching rule 
 2. **Layer 2:** the encoding experiment, then value names and the stamping helper.
 3. **Layer 3:** MEASURED (2026-10-04). Without the fence, V1 is sound. V2 with named values and a lineage
    manifest is equally correct, recomputes less, and is free of log position apart from the order among
-   claims, provided the lineage key is finer than the claim. **V2 is the target**, built with layer 2. Open:
-   whether vouching is needed at all once reads go by lineage.
+   claims, provided the lineage key is finer than the claim. **V2 is the target**, built with layer 2.
+   Heartbeat vouching stays: it is today's only per-step commit marker. The long-term direction that would
+   retire it is [lineage-graph](lineage-graph.md).
 4. **Layer 4:** the gate, with witnessed staleness and by-name beat selection. Decide the NFS question
    before any SQLite-over-NFS deployment uses it.
 5. **Layer 5:** optional for correctness, given V1 and layer 2. It stays on the list for efficiency: the
