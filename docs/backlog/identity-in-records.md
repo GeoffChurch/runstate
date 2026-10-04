@@ -333,9 +333,73 @@ needed. A single remaining splice would have refuted it.
 - V2 trained **1,144 fewer steps** than V1, fewer in 28 of 66 paired configurations and never more. The
   saving comes from reusing a displaced worker's genuine late checkpoints instead of recomputing them.
 - So V2 plus layer 2 plus the manifest beats V1 on recompute and ties it on correctness.
-- It also drops the dependence on a sequencer ordering beats against claims. That part is *argued, not
-  measured*: every backend here is linearizable, where V1 is sound too. The case that would separate them,
-  a weak sequencer, is untested.
+- It also drops the dependence on a sequencer ordering beats against claims. The next probe measures this.
+
+### V2 is free of log position, apart from the order among claims (measured 2026-10-04)
+
+*The argument, written before the probe.* V2 reads three things:
+- a beat that **names** E;
+- `seq > X`, which compares E's own beat with E's own frontier. Since E writes nothing between reading X
+  and publishing, this means "E beat after it published", a fact of E's program order alone;
+- the **order among claims**, which is fixed by the claim CAS and already conceded (see "What this does
+  not do").
+
+V1 also compares E's beat with the *next* claim. That is another writer's record, concurrent with E's late
+beat whenever E has been displaced.
+
+*The probe.* It used the order-independence machinery shipped with layer 1. Each recorded history was
+replayed in random and adversarial linear extensions of its causal order:
+- each writer's program order, including the frontiers it read: a claim follows its CAS head's prefix, and
+  a publish follows its X;
+- "a record follows what it names";
+- the chain of claims.
+
+Nothing encodes real time. `claim_seq`, X and the lineage manifests were alpha-renamed to match each
+ordering. The run covered 198 histories × 44 orderings, about 8.8M graded cells per edge set, under five
+edge sets.
+
+| rule | histories whose pick varied (of the 66 it drove) | splices | holes |
+|---|---|---|---|
+| V0 | 15 | 0 | 0 |
+| V1 | 18 | 0 | 0 |
+| **V2** | **0** | 0 | 0 |
+
+**Results:**
+- **V2's pick never moved,** under all five edge sets.
+- **The checks bite.**
+  - The positive control, the latest-wins reader, varied in 186 views.
+  - Baseline replays reproduced the harness's own picks exactly.
+  - 61% of orderings moved a record, and 8% moved a beat or `stopped` across another writer's claim.
+- **V1 varies where a displaced writer's late beat is concurrent with the successor's claim**, as argued.
+  The predicted list of histories was wrong in detail, in both directions:
+  - E2b never varies, because A reads X after B's claim, so its late beat causally follows it.
+  - R2 does vary.
+  - A later episode's vouched checkpoint masks the difference.
+- **Every pick, under every rule, was clean under the lineage read: 0 splices, 0 holes.** That includes
+  V0's picks vouched by a foreign beat. Once the series is read by lineage over named values, the vouching
+  rule no longer carries correctness. It decides only **which** clean checkpoint to resume from, and so
+  how much is recomputed and whether the choice depends on how concurrent events interleaved.
+- **On that axis V2 dominates.** It never varies, and it recomputes least.
+- **The "owned the run at publish" criterion is itself position-dependent.** In R2, B's publish is
+  concurrent with C's claim, and V1 picks the post-claim checkpoint in 34 of 45 orderings. That is a second
+  reason not to grade by it.
+
+**Caveats:**
+- **The orderings where V1 and V0 vary need conditions that today's deployment lacks.** With the staleness
+  gate, honest clocks and a CAS claim, a fresh beat landing before the claim makes the gate refuse. So those
+  orderings arise only under skewed clocks, a weaker gate, or a weak sequencer. That is the slow,
+  inconsistent regime this design targets, and V2's invariance covers it.
+- **Topic-scoped reads are load-bearing for V0 and V1, not for V2.** If every read counted as a
+  full-prefix frontier, nothing would cross a claim and all three rules would be invariant.
+- **Not tested:**
+  - a weak sequencer for claims themselves (layer 6);
+  - re-driving workers and gates under a new interleaving, since the records and files were fixed;
+  - lagging visibility of values relative to the checkpoint.
+
+**Open, untested: under layer 2, is vouching needed at all?** Correctness now rests on the lineage read.
+What vouching may still buy is a causal witness that E's values written before the publish are visible to
+the reader, which guards against holes. Holes never occurred here, but no test made visibility lag. If
+holes can be ruled out otherwise, the rule reduces to "the latest episode's highest published checkpoint".
 
 **A condition the prediction missed: a claim names an episode, not a history.** One episode computing a
 step twice breaks the lineage read under every rule. In the probe:
@@ -513,8 +577,9 @@ a displaced worker's unnamed values splice the series under every vouching rule 
    The consumers stay on their pins; each migrates and makes its stop-writer changes when it upgrades.
 2. **Layer 2:** the encoding experiment, then value names and the stamping helper.
 3. **Layer 3:** MEASURED (2026-10-04). Without the fence, V1 is sound. V2 with named values and a lineage
-   manifest is equally correct and recomputes less, provided the lineage key is finer than the claim.
-   Choosing between them waits on layer 2's design.
+   manifest is equally correct, recomputes less, and is free of log position apart from the order among
+   claims, provided the lineage key is finer than the claim. **V2 is the target**, built with layer 2. Open:
+   whether vouching is needed at all once reads go by lineage.
 4. **Layer 4:** the gate, with witnessed staleness and by-name beat selection. Decide the NFS question
    before any SQLite-over-NFS deployment uses it.
 5. **Layer 5:** optional for correctness, given V1 and layer 2. It stays on the list for efficiency: the
