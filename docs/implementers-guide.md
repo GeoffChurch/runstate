@@ -431,7 +431,9 @@ worker drops it unanswered — and a `control.*` record with no `request_id` (an
 verb: the topic set is closed to three, so an unknown one is refused too) is
 malformed and refused under no id, and a record that is no `control.*` request
 has nothing to answer it, so the reference `await_consumed` raises
-`ValueError` for all three rather than report acceptance. The worker advances `consumed_seq` only
+`ValueError` for all three rather than report acceptance. It raises the same for a re-send of a
+**void lease id** (a lease is one id, one episode: `live_demand`'s predicate calls it void), since no
+episode will serve it; the caller resubscribes under a fresh id. The worker advances `consumed_seq` only
 **after** durably registering/naking, so it is a true registration watermark,
 not merely "read past."
 
@@ -602,7 +604,7 @@ against `runstate/` at 2026-07-16.)
 | `ensure` | `NoProgressError` | `ensure`'s **own** spawn died without advancing the step frontier and no live episode owns the run (own-spawn-scoped; a foreign episode re-drives) |
 | `history` | `ValueError` | a conforming `value` point has `step: null` (this is a stepped-trajectory reader); a **time-referencing** schedule with **no epoch** (no `lifecycle.started.t` on the log) |
 | `peek_terminal`, `live_episode`, `await_consumed` | `MalformedRecordError` | a **verdict-plane** record cannot be interpreted (bad keys, a constraint violation, a launcher record with no `request_id`; for `peek_terminal`, a `stopped` that names no claim — the claim gate `live_episode` skips such a record, deliberately) |
-| `await_consumed` | `ValueError` | the request reuses a **spent** id (an answer named it before `seq`), the `control.*` record at `seq` carries no `request_id`, the record at `seq` is not a `control.*` request, or no record sits at `seq` |
+| `await_consumed` | `ValueError` | the request reuses a **spent** id (an answer named it before `seq`), the `control.*` record at `seq` carries no `request_id`, the record at `seq` is not a `control.*` request, no record sits at `seq`, or the request is a `control.subscribe` re-sending a **void lease** id (bound to an episode that can no longer serve it) |
 | `await_consumed` | `TimeoutError` | `timeout` elapsed (not-yet-drained is not a refusal) |
 | `ensure` | `RecordlessExitError` | the run was reaped with a clean exit code but left no worker verdict, and a full drive cycle did not move the frontier |
 | `Worker.emit` | `ValueError` | called before the first tick or on a stepless worker (a `step=null` point would poison `history` for the name) |

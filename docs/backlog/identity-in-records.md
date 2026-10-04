@@ -132,8 +132,9 @@ arrive in. This replaces §7's "must follow by `seq`".
 4. **Accept the renewing-client gap.** Across a crash a lease's id is void for every later episode,
    re-sends included, so a client renewing under one id is unserved until it resubscribes under a
    fresh id; one that renews under a fresh id each time waits at most one renewal period
-   (`../specs/time-lease-boundary.md`, "Who pays"). *Open question for the owner:* the gap was accepted
-   as "bounded by the renewal period", which holds as built only for fresh-id renewals.
+   (`../specs/time-lease-boundary.md`, "Who pays"). The owner chose this (2026-10-03): one id = one
+   lease = one episode, and `await_consumed` refuses a void lease id with a `ValueError` telling the
+   caller to resubscribe under a fresh id.
 5. **`undischarged_stops` has an incremental form,** `Watcher.pending_stops`, for anything that polls
    it on long runs.
 6. **The docs are rewritten:** design §7 (the rule is "answers name; the claim CAS orders claims;

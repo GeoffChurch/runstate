@@ -86,10 +86,13 @@ leases. A step-bounded subscription is not episode-local, and carries over betwe
 - **It is void for every other episode,** and void for every reader once a terminal names its bound
   episode. One that no episode registered is never void.
 - **One predicate decides voidness** for the worker and the observers alike.
-- **The renewing-client gap is accepted.** Re-sending a live lease's id renews it within the episode
+- **The renewing-client gap is accepted, and `await_consumed` makes it visible.** Re-sending a live lease's id renews it within the episode
   that bound it. Across a crash the binding voids that id for every later episode, re-sends included, so
   a client renewing under one id is unserved until it resubscribes under a fresh id; one that renews
-  under a fresh id each time is unserved until its next renewal, at most one renewal period. A
+  under a fresh id each time is unserved until its next renewal, at most one renewal period.
+  `await_consumed` raises `ValueError` for a re-send of a void lease id (one id is one lease is one
+  episode), telling the same-id renewer to resubscribe under a fresh id, so the gap is never reported
+  as an acceptance. A lease nobody has bound yet is not void and waits as usual. A
   client-side helper that resubscribes under a fresh id as soon as a new claim appears could shrink the
   gap; this spec notes it and does not build it.
 

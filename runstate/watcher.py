@@ -35,7 +35,10 @@ from .observables import (
     Outcome,
     RunResult,
     _answer_names,
+    _claim_name,
+    _episode_ended,
     _verdict_record,
+    lease_void,
     current_heartbeat,
     latest_episode,
     verdict_parse,
@@ -511,6 +514,35 @@ def _refuse_a_spent_id(channel: Channel, request: Envelope, request_id: str) -> 
             )
 
 
+def _refuse_a_void_lease(channel: Channel, request: Envelope, request_id: str) -> None:
+    """Raise ``ValueError`` if ``request`` is a ``control.subscribe`` whose id is
+    a VOID lease: bound (``lifecycle.bound``) to an episode that can no longer
+    serve it, by the one predicate (``lease_void``, observer form: the drainer
+    is the latest claim, ended iff a terminal names it). A re-send of such an id
+    is never served -- the lease is one id = one lease = one episode
+    (specs/reference-by-name.md, Episode-local subscriptions) -- so ``None``
+    would be a false "accepted". A lease nobody bound yet is not void. Bounded
+    reads: this id's bound records, the latest claim, its terminal."""
+    if request.topic != Topic.CONTROL_SUBSCRIBE:
+        return
+    bound: set[int] = set()
+    for e in channel.read(topics=[Topic.LIFECYCLE_BOUND], request_ids=[request_id]):
+        ok, k = _claim_name(e)
+        if ok and k is not None and e.request_id == request_id:
+            bound.add(k)
+    if not bound:
+        return
+    claim = latest_episode(channel)
+    current = claim.seq if claim is not None else None
+    ended = claim is not None and _episode_ended(channel, claim)
+    if lease_void(bound, current, ended):
+        raise ValueError(
+            f"the lease {request_id!r} at seq {request.seq} is bound to "
+            f"episode {sorted(bound)[0]}, which can no longer serve it: a "
+            f"lease is one id, one episode -- resubscribe under a fresh request_id"
+        )
+
+
 def await_consumed(
     channel: Channel,
     seq: int,
@@ -548,7 +580,15 @@ def await_consumed(
     elapses (not-yet-drained is not a refusal), and ``MalformedRecordError`` on
     a nak body it cannot parse (the answer is on the verdict plane). So the full
     codomain is the answer space: ``Nak`` (refused) | ``RunResult`` (the run
-    died under the request) | ``None`` (accepted)."""
+    died under the request) | ``None`` (accepted).
+
+    Raises ``ValueError`` too for a ``control.subscribe`` whose id is a VOID
+    lease (``lease_void``): bound to an episode that has since ended or been
+    superseded, so no episode will ever serve a re-send of it, and ``None``
+    would be a false "accepted". The message names the bound episode and the
+    remedy: resubscribe under a fresh ``request_id``. A lease nobody has bound
+    yet is not void; it waits as usual. Evaluated at entry and again before any
+    ``None``, so a lease voided while the caller waits is never accepted."""
     deadline = None if timeout is None else now() + timeout
     request = _request_at(channel, seq)
     request_id = request.request_id
@@ -567,6 +607,7 @@ def await_consumed(
             f"under no id and nothing can answer it -- send it with one"
         )
     _refuse_a_spent_id(channel, request, request_id)
+    _refuse_a_void_lease(channel, request, request_id)
     answers = (
         _STOP_ANSWERS if request.topic == Topic.CONTROL_STOP else (Topic.LIFECYCLE_NAK,)
     )
@@ -608,7 +649,12 @@ def await_consumed(
                 # Re-check once: the answer and its heartbeat may both have
                 # landed between this iteration's two reads.
                 answer = _answer()
-                return None if answer is None else _resolved(answer)
+                if answer is not None:
+                    return _resolved(answer)
+                # A lease voided while we waited is not accepted: the later
+                # episode's beat passed it without serving it.
+                _refuse_a_void_lease(channel, request, request_id)
+                return None
         # Refused-by-death: the terminal record FOLLOWING the request means no
         # worker will ever drain it — return the terminal verdict. A terminal
         # that PRECEDES the request leaves it waiting for the next episode. The

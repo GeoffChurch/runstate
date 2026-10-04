@@ -121,7 +121,9 @@ rules.
   under a fresh id**. A client that renews under a fresh id each time
   (unsubscribing the old one) is unserved between a crash and its next
   renewal, at most one renewal period. **The renewing-client gap is
-  accepted.** A client-side helper that resubscribes under a fresh id as
+  accepted**, and `await_consumed` raises `ValueError` for a re-send of a
+  void lease id, so a same-id renewer learns to resubscribe under a fresh id
+  rather than being told "accepted". A client-side helper that resubscribes under a fresh id as
   soon as a new claim appears could shrink it; this spec notes it and does
   not build it.
 - A non-renewing long-lease client ("keep alive an hour, no renewals") is cut

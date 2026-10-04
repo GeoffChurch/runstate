@@ -614,6 +614,105 @@ def test_await_consumed_returns_a_later_nak_by_name(open_run):
     assert nak is not None and nak.message == "bad trigger"
 
 
+# ----- await_consumed(): the void-lease refusal (specs/reference-by-name.md) -----
+
+_LEASE = {"every": {"step": 1}, "until": {"time_seconds": 100}}
+
+
+def _lease(ch, rid):
+    return ch.send(_LEASE, topic="control.subscribe", name="loss", request_id=rid)
+
+
+def _bound_to_a_first_episode_that_has_ended(open_run):
+    """E1 registers (and so binds) the lease ``r1``, then ends."""
+    _lease(open_run(), "r1")
+    w1 = Worker(open_run(), now=lambda: 0.0)
+    w1.set("loss", 1.0)
+    w1.tick(step=0)
+    w1.stopped()
+
+
+def test_await_consumed_refuses_a_same_id_resend_after_the_bound_episode_ended(
+    open_run,
+):
+    _bound_to_a_first_episode_that_has_ended(open_run)
+    w2 = Worker(open_run(), now=lambda: 0.0)
+    assert w2.claimed is True
+    s = _lease(open_run(), "r1")  #  the client renews under the same id
+    w2.set("loss", 2.0)
+    w2.tick(step=1)  #                       E2 drains it past the watermark
+    bound = open_run().read(topics=["lifecycle.bound"])
+    with pytest.raises(ValueError, match=r"episode \d+.*fresh request_id"):
+        await_consumed(open_run(), s, timeout=1.0)
+    assert [b.request_id for b in bound] == ["r1"]  #  E2 never bound it
+
+
+def test_await_consumed_refuses_a_same_id_resend_after_a_third_party_release(
+    open_run,
+):
+    """E1 is released by a third-party ``stopped`` naming its claim (no honored
+    stop): still a terminal naming the claim, so the lease is void."""
+    _lease(open_run(), "r1")
+    w1 = Worker(open_run(), now=lambda: 0.0)
+    w1.set("loss", 1.0)
+    w1.tick(step=0)
+    c1 = open_run().latest("lifecycle.started").seq
+    stopped(open_run(), claim_seq=c1)
+    w2 = Worker(open_run(), now=lambda: 0.0)
+    assert w2.claimed is True
+    s = _lease(open_run(), "r1")
+    w2.tick(step=1)
+    with pytest.raises(ValueError, match="fresh request_id"):
+        await_consumed(open_run(), s, timeout=1.0)
+
+
+def test_await_consumed_accepts_a_fresh_id_after_the_bound_episode_ended(open_run):
+    _bound_to_a_first_episode_that_has_ended(open_run)
+    w2 = Worker(open_run(), now=lambda: 0.0)
+    assert w2.claimed is True
+    s = _lease(open_run(), "r2")  #  the client resubscribes under a fresh id
+    w2.set("loss", 2.0)
+    w2.tick(step=1)
+    assert await_consumed(open_run(), s, timeout=1.0) is None
+
+
+def test_await_consumed_accepts_a_same_id_resend_within_the_bound_episode(open_run):
+    _lease(open_run(), "r1")
+    w1 = Worker(open_run(), now=lambda: 0.0)
+    w1.set("loss", 1.0)
+    w1.tick(step=0)  #                       binds r1 to E1
+    s = _lease(open_run(), "r1")  #          a renewal, E1 still live
+    w1.tick(step=1)
+    assert await_consumed(open_run(), s, timeout=1.0) is None
+
+
+def test_await_consumed_waits_on_an_unbound_lease(open_run):
+    s = _lease(open_run(), "r1")  #  no worker yet: nobody has bound it
+    with pytest.raises(TimeoutError):
+        await_consumed(open_run(), s, timeout=0.0, now=lambda: 0.0)
+
+
+def test_await_consumed_does_not_accept_a_lease_voided_while_it_waits(open_run):
+    _lease(open_run(), "r1")
+    w1 = Worker(open_run(), now=lambda: 0.0)
+    w1.set("loss", 1.0)
+    w1.tick(step=0)
+    s = _lease(open_run(), "r1")  #  a renewal, not yet drained
+    turns = []
+
+    def driver_sleep(_):
+        if turns:
+            return
+        turns.append(1)
+        w1.stopped()  #                  E1 ends while the caller waits...
+        w2 = Worker(open_run(), now=lambda: 0.0)
+        assert w2.claimed is True
+        w2.tick(step=1)  #               ...and E2's beat passes the request
+
+    with pytest.raises(ValueError, match="fresh request_id"):
+        await_consumed(open_run(), s, sleep=driver_sleep)
+
+
 def test_await_consumed_refuses_an_idless_unknown_control_verb(open_run):
     """subscription-v0.3 closes control.* to three verbs, so an id-less unknown
     verb is always refused under no id: None would be a false "accepted"."""

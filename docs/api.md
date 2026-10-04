@@ -278,7 +278,11 @@ stop, each naming its request; the worker refuses any other under no id);
 or the request **reuses a spent id** (`specs/reference-by-name.md` §3): an answer
 named its id before `seq` (for a subscribe an unsubscribe or a nak, for a stop a
 stopped's `honored` or a nak), so the worker drops it unanswered — the error names
-the id and that record. Raises `TimeoutError` if `timeout` elapses
+the id and that record; or the request is a `control.subscribe` whose id is a **void lease**
+(`lifecycle.bound` to an episode that has ended or been superseded: no episode will serve a re-send,
+so the error names the bound episode and says to resubscribe under a fresh `request_id`). A lease
+nobody has bound yet is not void and waits as usual; the check runs again before any `None`, so a
+lease voided while the caller waits is never accepted. Raises `TimeoutError` if `timeout` elapses
 (not-yet-drained is not a refusal), and `MalformedRecordError` on a nak body it
 cannot parse.
 
