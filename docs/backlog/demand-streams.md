@@ -46,11 +46,17 @@ A worker may **offer** an expensive metric that is computed only when demanded. 
 `set()` register.
 
 - **The log then depends on its observers,** and that is sound: their demands are on the log, and each tick's
-  `answered` names the demand each value answers. The log records the joint computation of worker and
-  observers, not everything the worker *could* have produced.
-- **Demanded computations must not perturb the worker's state.** Evaluation that advances the RNG, updates
-  BatchNorm statistics or warms a cache would make the mandatory trajectory depend on who was watching.
-  The protocol cannot enforce this; the recipe must require it.
+  `answered` names the demand each value answers.
+- **The contract is a durable record of an interaction, not a cache of a pure function** (owner,
+  2026-10-04). The log records what the worker produced, given what was demanded of it. Reuse means "you
+  get what happened", which is what `ensure` already returns.
+- **The protocol claims no purity it cannot enforce.** GPU nondeterminism already made "same config, same
+  trajectory" an idealization.
+- **Reproducibility becomes advice, not a rule.** A user who wants a trajectory that does not depend on who
+  watched keeps demanded computations free of side effects: no RNG advance, no BatchNorm update, no cache
+  warming.
+- **Content-addressed run ids** (`../specs/run-id-recipe.md`) must state their assumption: observers'
+  demands count as inputs wherever they perturb.
 - **Undemanded history is gone.** A past prefix nobody demanded comes back only by re-running from a
   checkpoint. Under nondeterminism, that re-run is a different lineage.
 
@@ -61,7 +67,8 @@ trainer's checkpointed nodes, computes on its own log, and names the trainer nod
 is [`../specs/derived-runs.md`](../specs/derived-runs.md) with lineage names. It removes both costs of
 offered metrics:
 
-- **No perturbation.** The trainer never runs the evaluation.
+- **No perturbation.** The trainer never runs the evaluation, so its own log needs no advice to stay
+  independent of its observers.
 - **No lost history.** Any checkpointed node can be evaluated later, on the trainer's *same* lineage,
   because the evaluator reads that node's saved state rather than re-running training.
 

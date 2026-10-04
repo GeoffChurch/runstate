@@ -21,10 +21,24 @@ The goal is to leave observers unhampered:
 - **CALM** (Hellerstein and Alvaro, *consistency as logical monotonicity*) says a program whose output only
   grows with its input needs no coordination. A non-monotone program needs to know its input is complete.
   Most rich stopping conditions are non-monotone: "no improvement in 5 evaluations", "plateaued".
-  - Evaluated by a remote observer, such a condition needs coordination.
-  - Evaluated at the worker, it does not, because the worker holds the complete committed prefix of its own
-    lineage. It is the only writer of its own stream.
-  - *That application of CALM is a framework prediction, untested. CALM itself is established.*
+
+**Revised 2026-10-04: no exposed non-monotone reasoning is needed, anywhere.** *Framework prediction,
+untested.*
+- **The input is already closed.** Layer 2's stream index makes every prefix a closed input. "The first n
+  elements of `loss` on this lineage" is fixed forever once the n-th element exists, and the parent chain
+  says exactly which elements those are.
+- **So the interface can be pure.** Users write ordinary functions of a finite list, `f(prefix)`, and the
+  system evaluates `f(prefix[:n])` as each prefix completes.
+- **Everything stored is monotone.** The facts "on this lineage, f(prefix[:n]) = v" only accumulate.
+  "Stop if no improvement in 5" is the first n where f holds.
+- **Users never see** negation-as-failure or completeness assumptions.
+- **This corrects an earlier claim of this entry.** It had said worker-side evaluation was needed to avoid
+  coordination. Any observer can evaluate `f(prefix[:n])` without coordination, once it sees that prefix's
+  tick and all of its ancestors (the presence check from [lineage-graph](lineage-graph.md) test 1).
+  Worker-side evaluation buys only two things:
+  - **latency:** acting without a round trip;
+  - **bandwidth:** reducing data that is never logged.
+- **Both matter in a slow regime; neither is needed for correctness.**
 
 ## The ladder of expressiveness
 
