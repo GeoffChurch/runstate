@@ -233,8 +233,10 @@ small heartbeat provides, and values stay ordinary records. This list states the
      id space is introduced.
    - The rollback case resolves itself, because the key is the commit, not the claim.
 3. **Resume and rewind are one call.** `steps(…, resume_from=node)` names the parent of the next heartbeat.
+   - **`resume_from` is required, keyword-only**, under the owner's no-defaults-below-the-edge rule.
+     `None` means a fresh start and must be written explicitly, so forgetting to name the resume point
+     is a `TypeError`, not a silent fresh start.
    - A rewind is the same call with an older node.
-   - Without it, the run is a fresh start. Its lineage is then truncated, never spliced.
    - Inferring the parent from the log was rejected, as a positional guess.
 4. **Values are ordinary `value` records, and the heartbeat names the ones it commits.**
    - **Shape:** today's, unstamped, with one value per record. Users batch if they want one step's metrics
@@ -258,7 +260,12 @@ small heartbeat provides, and values stay ordinary records. This list states the
 6. **Reads.**
    - **The default head** is the newest heartbeat of the newest claim that has written one. It uses no
      clocks: the sequencer's order, the claim order and each writer's own order.
-   - **Every read** takes `head=`.
+   - **`head` is a required, keyword-only Strategy on every read**, under the same rule: `value_series(ch,
+     head=…)`, `history(ch, name, schedule, head=…)`, `ensure(…, head=…)`.
+     - **Implementations:** `LatestClaimHead()` (the policy above) and `AtNode(seq)` (forensics). A
+       most-advanced policy can be added later.
+     - **The policy is chosen once, at the edge** (the cockpit, a script or a consumer's config) and passed
+       down. No read re-decides it.
    - `value_series`, `history` and `ensure` walk parents from the head.
    - **A read is complete** only when the heartbeats and every value they name are visible. Under
      visibility lag the read waits or falls back, so it never reads a hole.
