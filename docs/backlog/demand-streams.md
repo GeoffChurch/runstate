@@ -45,8 +45,8 @@ pull-based functional reactive programming, and tabling with answer subsumption.
 A worker may **offer** an expensive metric that is computed only when demanded. This generalizes today's
 `set()` register.
 
-- **The log then depends on its observers,** and that is sound: their demands are on the log, and each tick's
-  `answered` names the demand each value answers.
+- **The log then depends on its observers,** and that is sound: their demands are on the log, and each value
+  that answers a demand names it, by its `request_id`.
 - **The contract is a durable record of an interaction, not a cache of a pure function** (owner,
   2026-10-04). The log records what the worker produced, given what was demanded of it. Reuse means "you
   get what happened", which is what `ensure` already returns.

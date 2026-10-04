@@ -11,7 +11,8 @@ this does not do"). Names make attribution checkable, but they do not authentica
 
 - **Signed control records** would let a worker refuse a stop or a subscription from an unauthorized
   observer.
-- **Signed lifecycle and tick records** would make a forged claim or a forged verdict *detectable*.
+- **Signed lifecycle records** (claims, heartbeats, `stopped`) would make a forged claim or a forged verdict
+  *detectable*.
 - **Signatures cover content, not position.** A record is signed before it is appended, when its seq is not
   yet known.
 - **No round trips.** Verification is local.
@@ -21,9 +22,9 @@ this does not do"). Names make attribution checkable, but they do not authentica
 **Ciphertext in the open log fits the substrate exactly,** because the substrate never parses bodies.
 
 - **Structure stays plaintext.** Anything a fold reads to decide liveness, verdicts or answers must stay
-  readable. That covers `claim_seq`, `honored`, `answered`, `parent` and the stream keys. Otherwise a third
+  readable. That covers `claim_seq`, `honored`, `commits`, `parent`, and the envelope's names and request ids. Otherwise a third
   party could neither age a run nor compute its verdict.
-- **Data is encrypted per audience:** a tick's `values`, and the values that answer subscriptions.
+- **Data is encrypted per audience:** the `value` bodies, including those that answer subscriptions.
 - **With several observers,** each record is encrypted with a fresh key, which is then wrapped for each
   recipient, as age and PGP do. Group key agreement (MLS, RFC 9420) is needed only if membership changes
   and revocation matter.
