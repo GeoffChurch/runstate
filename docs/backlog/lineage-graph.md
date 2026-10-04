@@ -195,3 +195,9 @@ above:
 
 The node-record half of this design is therefore a candidate shape for layer 2 itself. The observer, head
 and stop problems above belong to layer 6.
+
+**Layer 2 chose the split form** ([identity-in-records](identity-in-records.md) §2, revised 2026-10-04).
+The node is a small heartbeat that **names the value records it commits, by seq**; values stay ordinary
+records. The commit semantics are the same as the node records measured above, with one difference: a
+commit can now be visible before the values it names. A read must therefore check that the named values are
+present too, and it waits or falls back rather than reading a hole. *Not re-measured in this form.*

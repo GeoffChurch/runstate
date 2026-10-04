@@ -209,6 +209,86 @@ history. An episode that rolls back and recomputes a step leaves two values name
 lineage read cannot tell them apart. The candidates are one value per (episode, step, name), or a
 checkpoint manifest that names its values by seq. The encoding experiment should include them.
 
+### Design decisions so far (2026-10-04, converging with the owner)
+
+The measurements in §3 and [lineage-graph](lineage-graph.md) shaped layer 2. The owner settled the
+following one question at a time. They supersede the per-value-stamp options above.
+
+*An earlier round chose one merged `lifecycle.tick` record carrying the tick's values. The owner then asked
+whether ticks were needed at all. They are not, as a container for data. A **commit** is needed, which a
+small heartbeat provides, and values stay ordinary records. This list states the revised design.*
+
+1. **One heartbeat per loop iteration: `lifecycle.heartbeat`, carrying no data.**
+   - **What it is.** It is the iteration's **commit**, the worker's liveness beacon, the control
+     acknowledgement (`consumed_seq`), and a lineage node.
+   - **Its body:** `{claim_seq, consumed_seq, parent, commits, t}`.
+   - **Why the protocol keeps the commit.** Without one, a checkpoint can name only the past. A user who
+     writes `save(); log(metrics)` and is killed in between loses step s's values *silently*: the
+     resumer continues from s+1, and nothing says those values were expected (§3, H1a). With a commit, the
+     checkpoint names the commit that completes its state. If that commit never lands, the checkpoint is
+     visibly unusable, and the resumer falls back one step.
+   - **Liveness and the acknowledgement** also need some record from a worker that is otherwise silent.
+2. **A node is named by its heartbeat's seq,** exactly as a claim is named by its `started`'s seq.
+   - `parent` is the previous heartbeat's seq, or the node resumed from, or null for a fresh start. No new
+     id space is introduced.
+   - The rollback case resolves itself, because the key is the commit, not the claim.
+3. **Resume and rewind are one call.** `steps(…, resume_from=node)` names the parent of the next heartbeat.
+   - A rewind is the same call with an older node.
+   - Without it, the run is a fresh start. Its lineage is then truncated, never spliced.
+   - Inferring the parent from the log was rejected, as a positional guess.
+4. **Values are ordinary `value` records, and the heartbeat names the ones it commits.**
+   - **Shape:** today's, unstamped, with one value per record. Users batch if they want one step's metrics
+     tied together; grouping is theirs, not the protocol's.
+   - **`commits: [seq…]`** names the iteration's value records. A record names what it commits (reference
+     by name), so values themselves need no claim stamp.
+   - **A value no heartbeat commits** is outside every lineage: uncommitted, or foreign.
+   - **Subscription samples** are `value` records answering a `request_id` on the envelope, as today. The
+     backend's `name=` and `request_ids=` indices keep serving values.
+   - **What it costs.** A raw send through a separate handle must give its seq to the Worker, or go
+     through it.
+5. **No step in the protocol: option S.** Each value name is a **stream**. Its coordinate is intrinsic:
+   the element's index along the lineage, found by walking heartbeats and the values they commit.
+   - **The `value` body loses `step`** and becomes `{value, t}`. A user who wants alignment across metrics
+     emits `{step, loss}` as the value.
+   - **Liveness heartbeats inside slow steps** commit nothing.
+   - **Alternatives rejected.** An optional step label (P) is an opinion; this one has no scale at all.
+     Tick depth (T) breaks once liveness beats fall inside steps. Conditions over arbitrary values (V)
+     reduce to P plus target conditions, and target conditions belong to shipped programs
+     ([programmable-subscriptions](programmable-subscriptions.md)).
+6. **Reads.**
+   - **The default head** is the newest heartbeat of the newest claim that has written one. It uses no
+     clocks: the sequencer's order, the claim order and each writer's own order.
+   - **Every read** takes `head=`.
+   - `value_series`, `history` and `ensure` walk parents from the head.
+   - **A read is complete** only when the heartbeats and every value they name are visible. Under
+     visibility lag the read waits or falls back, so it never reads a hole.
+   - **The take-the-latest collapse is deleted.** A stream index is unique along a lineage.
+7. **`stopped.final_beat` replaces `final_step`.** It is the seq of the episode's last committed heartbeat,
+   or null if the episode never committed one.
+   - **It fixes §3's stopped-clause defect by construction.** `final_step` was the last step *yielded*,
+     not the last committed.
+   - **It ties the verdict to a node.** A worker stopped partway through an iteration names the previous
+     heartbeat, because that iteration's values died uncommitted.
+8. **Dense data goes in blobs referenced by name,** never inline. Bodies are JSON text on every backend.
+   Large values belong to the data-plane project.
+
+9. **The condition algebra's progress measure is a stream the user chooses** (option A).
+   - **Forms:** `every: {stream: "loss", n: 10}` (each time `loss` gains 10 more elements) and
+     `until: {stream: "loss", n: 1000}`.
+   - **With batching**, `every` means crossing a multiple since the last firing, so 95 → 105 fires once.
+   - **Time and firing count stay.** The basis is time, count and stream progress, with no
+     protocol-level notion of an iteration.
+   - **A user who emits a `step` stream** gets today's step semantics by their own choice.
+   - **`ensure` becomes the same demand:** "stream `loss` has n elements".
+   - **Under S, `steps(total)`'s `total` counts loop iterations.** That is a driver convenience, not a
+     protocol concept.
+
+**Still open, in order:**
+- **The checkpoint recipe:** a checkpoint names the heartbeat that commits its state; resume from the most
+  advanced complete checkpoint; save after the commit, for no lag.
+- **The format change, and its migration.** lifecycle-v0.6 and value-v0.3 make format 0.4.0. The
+  0.3.0 → 0.4.0 step must infer `commits` and `parent`, positionally, as "what the old rule said".
+
 ## 3. Episode-keyed artefacts
 
 runstate gives no directory, so this is a **recipe**, not a guarantee.

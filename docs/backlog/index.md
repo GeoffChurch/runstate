@@ -171,6 +171,21 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
   5. fenced worker writes, possibly optional given 1.
 
   The target is that a wrong claim costs waste, never corruption. It supersedes episode-aim, below.
+- **Demand on lazy streams** — [demand-streams](demand-streams.md). DIRECTION (2026-10-04).
+  - **The idea:** one primitive, demand on a prefix of a lazy, memoized stream. It would subsume `ensure`,
+    `history`, subscriptions, lazy launch, leases, early stopping, and stopping as withdrawn demand.
+  - **Also covered:** offered metrics, derived providers, and one log per run with many streams.
+  - **First probe:** `run.stream(name)[:n]` as a read-side helper.
+- **Programmable subscriptions** — [programmable-subscriptions](programmable-subscriptions.md). DIRECTION
+  (2026-10-04).
+  - **The idea:** ship expressive, total programs to workers, for reductions at the source and stops that
+    need no coordination (CALM).
+  - **Detail:** a ladder of expressiveness, which points to definite clauses, and a split between programs
+    that can be replayed and those that cannot.
+- **Authenticated and confidential records** — [authenticated-records](authenticated-records.md). DIRECTION
+  (2026-10-04).
+  - **The idea:** signed control and lifecycle records close the "honor system" gap.
+  - **Also:** values encrypted per audience inside the open log, with structure kept plaintext.
 - **Lineage graph** — [lineage-graph](lineage-graph.md). DESIGN SKETCH, partly measured (2026-10-04). It is the
   long-term direction from identity-in-records:
   - each computed step is a node that names its parent and carries its values, and is that step's commit;
