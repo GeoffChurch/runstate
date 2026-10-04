@@ -40,9 +40,9 @@ try*.
 |---|---|---|---|---|
 | 1 | **Reference by name** on control and lifecycle records | order-independent control folds; #39, the cascade and the stale-beat leak fixed | [the spec](../specs/reference-by-name.md) and its tests | IMPLEMENTED (log format 0.3.0) |
 | 2 | **Names on values** | a displaced worker's values cannot splice the series | §2 | design open: encoding |
-| 3 | **Episode-keyed artefacts**, resumed through the log's vouching | a displaced worker cannot regress a checkpoint | §3 | recipe measured |
+| 3 | **Episode-keyed artefacts**, resumed through the log's vouching | a displaced worker cannot regress a checkpoint | §3 | sound without layer 5: V1, or V2 with layer 2 |
 | 4 | **Time as a trigger** (a staleness `ClaimGate`) | the cross-host wedge dissolves | §4 | holds, with conditions |
-| 5 | **Fenced worker writes** | the displaced worker learns at once; its writes never land | §5 | adopt, with conditions; **may be optional given 1** |
+| 5 | **Fenced worker writes** | the displaced worker learns at once; its writes never land | §5 | **optional for correctness** given 1, 2 and V1; efficiency only |
 | 6 | Writing without a shared sequencer | single-spawn becomes best-effort deduplication | — | out of scope here ([machine-partitioned-logs](machine-partitioned-logs.md)) |
 
 Each layer needs the ones above it. Layer 4 is safe only with 1–3 in place. Layer 6 would need 1–4,
@@ -204,6 +204,11 @@ Run-length encoding belongs in storage, not in the protocol.
 per-tick batches on real-shaped data. Then the schema change (value-v0.3, or an envelope field) and
 tag-aware `value_series`, `history` and `latest`.
 
+**The key must be finer than the claim** (measured 2026-10-04, §3). A claim names an episode, not a
+history. An episode that rolls back and recomputes a step leaves two values named by one claim, and a
+lineage read cannot tell them apart. The candidates are one value per (episode, step, name), or a
+checkpoint manifest that names its values by seq. The encoding experiment should include them.
+
 ## 3. Episode-keyed artefacts
 
 runstate gives no directory, so this is a **recipe**, not a guarantee.
@@ -247,9 +252,112 @@ none.
   translation's `store.put` outputs;
 - unvouched episode directories need garbage collection.
 
-**Open:** R\*'s soundness argument, as measured, used the fence: "only E can land a heartbeat in E's
-window". Under layer 1 a heartbeat names E, so the name can do that job instead. Whether the lineage
-choice stays correct **without** layer 5 is untested, and it decides layer 5.
+### R\* without the fence (measured 2026-10-04)
+
+R\* as first measured attributed beats by position. That was sound only on top of the fence, which
+guaranteed that only E lands records in E's window. A throwaway spike on master (format 0.3.0: named,
+unfenced) ported the episode-keyed writer and the staleness gate, and compared three vouching rules for
+`E/s.X`. E's own `stopped` with `final_step ≥ s` vouches under the same condition as a beat.
+
+| rule | condition on the vouching beat | checkpoint-plane mismatches (940 decisions) | regressions |
+|---|---|---|---|
+| V0, R\* as first written | any heartbeat in E's window, seq > X | 8 (the constructed race R2 only) | 0 |
+| **V1** | names E, seq > X, **before the next claim** | **0** | 0 |
+| V2 | names E, seq > X, anywhere | 172 | 0 |
+
+*How it was measured:*
+- **The reference.** The spike's E2 (`SIGSTOP`), E2b and 36-configuration false-death scenarios. The fenced
+  reference was reproduced byte for byte first, not cited.
+- **Two constructed races.**
+  - R1: freeze between reading X and publishing.
+  - R2: A is displaced by B, B by C, and B publishes after C while A's late beat lands in B's window.
+- **Backends:** memory, SQLite WAL, SQLite DELETE and Postgres; the deterministic runs were identical on all four.
+- **What counted as a mismatch:** resuming from a checkpoint whose episode did not own the run when it was
+  published.
+
+*Analytic predictions*, written before the results, got V0 and V1 right and V2 half right (see the
+open question below).
+
+**Results:**
+
+- **V0 is unsound unfenced.** In R2, A's late beat vouches the checkpoint that B published after C
+  displaced it. The spike's own scenarios never build that race, so they showed 0.
+- **V1 is sound, and depends on position.** Its argument has three steps:
+  1. a record naming E was written by E;
+  2. E published before writing it, by program order;
+  3. a seq below C's means the record was appended before C.
+
+  The load-bearing comparison is the **beat's** seq against the next claim, not X's. In R1, X sits inside
+  A's window while the only beat naming A lands after B's claim. So V1 needs **one sequencer ordering
+  beats against claims**, which is stronger than "order among claims needs one arbiter" (below).
+- **V2 mismatches under that criterion, but the criterion itself is in doubt.** Two false-death histories
+  produce byte-identical logs and identical checkpoint files. A checkpoint published before the takeover in
+  one is published after it in the other. Identical logs and files mean identical futures, so "owned the
+  run at publish" cannot cause harm by itself. Every harm V2 actually caused, in 40 configurations, came
+  through unnamed values: the series held the successor's value at a step where the resumed model was the
+  predecessor's.
+- **Without the fence, layer 2 is mandatory.** Under every rule, a displaced worker's unnamed values
+  disagreed with the resumed model: 1 cell per E2 round when it notices displacement at its next tick, 23
+  when it never notices. Fenced, it was 0.
+
+**Conditions V1 needs (untested):**
+- a linearizable sequencer for claims and every vouching record (SQLite over NFS is not one);
+- no record of E's between its read of X and its publish (no background heartbeat thread);
+- X read on E's own handle, so it sees E's own appends;
+- a third party's release carries `final_step = null`, otherwise it vouches.
+
+### V2 plus named values: the prediction held (measured 2026-10-04)
+
+The prediction, written before the run: V2 is sound if values name their writer's claim (layer 2) and each
+checkpoint records its lineage (the claim that computed each step it covers), and the series is read by
+that lineage. A recipe-level manifest beside the checkpoint holds the lineage; no protocol change is
+needed. A single remaining splice would have refuted it.
+
+| rule | splices: lineage read / latest-wins read | holes | regressions | steps trained (deterministic runs) |
+|---|---|---|---|---|
+| V0 | 0 / 20,144 | 0 | 0 | 16,476 |
+| V1 | 0 / 20,128 | 0 | 0 | 16,492 |
+| **V2** | **0** / 20,208 | 0 | 0 | **15,348** |
+
+*How it was measured:*
+- **Which runs.** The same matrix as above, under all three rules, on all four backends: 80,160 cells per
+  rule, where a cell is one (name, step) at one reader point.
+- **Throwaway changes.** Values carry their writer's claim, and the checkpoint writer stores the model's
+  lineage.
+- **The reader.** For each step it takes the value named by `lineage[s]`.
+- **Scoring.** Splices are judged against a hash of the model's history, never against the claim stamp.
+  The latest-wins reader still splices on the same runs; it is the control.
+- **Fidelity.** Every earlier count reproduced exactly, so the stamp changed nothing else.
+
+**Results:**
+- V2 trained **1,144 fewer steps** than V1, fewer in 28 of 66 paired configurations and never more. The
+  saving comes from reusing a displaced worker's genuine late checkpoints instead of recomputing them.
+- So V2 plus layer 2 plus the manifest beats V1 on recompute and ties it on correctness.
+- It also drops the dependence on a sequencer ordering beats against claims. That part is *argued, not
+  measured*: every backend here is linearizable, where V1 is sound too. The case that would separate them,
+  a weak sequencer, is untested.
+
+**A condition the prediction missed: a claim names an episode, not a history.** One episode computing a
+step twice breaks the lineage read under every rule. In the probe:
+1. A trains 0–5.
+2. A rolls back to its own `A/3`; a second `steps(start=4)` loop is legal.
+3. A retrains 4–5 and saves 4, then is killed.
+4. The resumed `A/5` from the first pass meets two values named A at steps 4 and 5. It splices whichever
+   one the reader takes.
+
+So the lineage key must be finer than the claim. Two candidates, both *untested*:
+- one value per (episode, step, name);
+- the manifest names each step's value records by seq.
+
+The second is reference by name again. This feeds layer 2's open encoding question (§2).
+
+**Not covered:**
+- a manifest that is itself wrong (here it is faithful by construction);
+- hole shapes: saving before emitting, a kill between publishing and emitting, `set()`-only values,
+  asynchronous or batched value writers;
+- `ensure` and `history`, which still read latest-wins and splice under every rule until layer 2 makes
+  them lineage-aware;
+- a weak sequencer.
 
 ## 4. Time as a trigger
 
@@ -280,6 +388,11 @@ class StaleTakeover:     # admits when no episode is live, OR the live episode's
 ```
 
 - The gate is a Strategy, injected as `Worker(..., gate=)`.
+- **Under layer 1, the gate must read the latest claim's own beat by name** (master's `current_heartbeat`),
+  not "the last beat" by position as built. Measured 2026-10-04: a displaced worker's beat, though it names
+  its own claim, kept a dead successor looking fresh. B's last beat was 35 s old and the threshold 30 s,
+  but A's beat, 15 s old, made the positional gate refuse the takeover. The by-name variant admits it. This
+  is a liveness delay, bounded by how long the zombie keeps beating, not a safety fault.
 - **The gate must be used at three sites,** not one: the worker's claim, the spawn decision
   (`relaunch_if_needed`, `ensure_served`) and the foreign wait (`foreign_episode`). With the claim site
   alone, `ensure` stays wedged.
@@ -373,9 +486,10 @@ flag is separate from `_lost`, so `claimed` and the `tick`/`stop_pending` contra
 ignore them. What fencing adds:
 1. The displaced worker **learns** and can exit, which saves compute.
 2. Its records never land.
-3. R\*'s measured soundness used it (see layer 3, Open).
+3. ~~R\*'s measured soundness used it.~~ Not needed: V1 is sound unfenced (§3, measured 2026-10-04).
 
-That is efficiency, not correctness, **unless** layer 3 turns out to need it.
+That is efficiency, not correctness, for checkpoints. **But dropping it makes layer 2 mandatory.** Unfenced,
+a displaced worker's unnamed values splice the series under every vouching rule (§3).
 
 **If adopted:**
 - silent surfacing plus a public `displaced` property;
@@ -398,10 +512,13 @@ That is efficiency, not correctness, **unless** layer 3 turns out to need it.
 1. **Layer 1: IMPLEMENTED 2026-10-03** (`../specs/log-formats.md`, `../specs/reference-by-name.md`).
    The consumers stay on their pins; each migrates and makes its stop-writer changes when it upgrades.
 2. **Layer 2:** the encoding experiment, then value names and the stamping helper.
-3. **Layer 3:** test R\* without the fence. That result decides layer 5.
-4. **Layer 4:** the gate, with witnessed staleness. Decide the NFS question before any SQLite-over-NFS
-   deployment uses it.
-5. **Layer 5:** adopt or drop, on layer 3's result.
+3. **Layer 3:** MEASURED (2026-10-04). Without the fence, V1 is sound. V2 with named values and a lineage
+   manifest is equally correct and recomputes less, provided the lineage key is finer than the claim.
+   Choosing between them waits on layer 2's design.
+4. **Layer 4:** the gate, with witnessed staleness and by-name beat selection. Decide the NFS question
+   before any SQLite-over-NFS deployment uses it.
+5. **Layer 5:** optional for correctness, given V1 and layer 2. It stays on the list for efficiency: the
+   displaced worker learns at once and stops computing.
 
 ## Relationship to existing entries
 
