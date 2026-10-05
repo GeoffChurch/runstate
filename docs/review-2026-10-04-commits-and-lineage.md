@@ -873,3 +873,13 @@ cells are always tuples; `streams()` returns names only).
   - dynamic sources and demand-named derived streams;
   - the fingerprint recipe;
   - minted ids (layer 6).
+
+**Group E (accepted):**
+- **The rules:** 0.13 (M2, the step label wins), 0.14 (M3, stepless values go to the next commit in 0.3.0
+  order), 0.15 (M4, values after `stopped` stay uncommitted; its effect is named), 0.16 (M6, move and
+  renumber: appending would leave shapes no 0.4.0 writer produces), 0.17 (M7, the rename list comes from
+  the schemas), 0.18 (M8, the fields of a synthetic commit), 0.19 (M10, a malformed exit is copied as-is;
+  its refinement waits for item 5).
+- **The tests:** 0.20 (P1; P2 with its exceptions; P3 as per-cell attribution).
+- **The rule about renumbering:** 0.21 (the only renumbering step, enforced by the runner).
+- **The forced batch is complete.**
