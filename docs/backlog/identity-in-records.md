@@ -233,8 +233,10 @@ small heartbeat provides, and values stay ordinary records. This list states the
      id space is introduced.
    - The rollback case resolves itself, because the key is the commit, not the claim.
 3. **Resume and rewind are one call.** `steps(…, resume_from=node)` names the parent of the next heartbeat.
+   - **`resume_from` is required, keyword-only**, under the owner's no-defaults-below-the-edge rule.
+     `None` means a fresh start and must be written explicitly, so forgetting to name the resume point
+     is a `TypeError`, not a silent fresh start.
    - A rewind is the same call with an older node.
-   - Without it, the run is a fresh start. Its lineage is then truncated, never spliced.
    - Inferring the parent from the log was rejected, as a positional guess.
 4. **Values are ordinary `value` records, and the heartbeat names the ones it commits.**
    - **Shape:** today's, unstamped, with one value per record. Users batch if they want one step's metrics
@@ -258,7 +260,12 @@ small heartbeat provides, and values stay ordinary records. This list states the
 6. **Reads.**
    - **The default head** is the newest heartbeat of the newest claim that has written one. It uses no
      clocks: the sequencer's order, the claim order and each writer's own order.
-   - **Every read** takes `head=`.
+   - **`head` is a required, keyword-only Strategy on every read**, under the same rule: `value_series(ch,
+     head=…)`, `history(ch, name, schedule, head=…)`, `ensure(…, head=…)`.
+     - **Implementations:** `LatestClaimHead()` (the policy above) and `AtNode(seq)` (forensics). A
+       most-advanced policy can be added later.
+     - **The policy is chosen once, at the edge** (the cockpit, a script or a consumer's config) and passed
+       down. No read re-decides it.
    - `value_series`, `history` and `ensure` walk parents from the head.
    - **A read is complete** only when the heartbeats and every value they name are visible. Under
      visibility lag the read waits or falls back, so it never reads a hole.
@@ -283,11 +290,105 @@ small heartbeat provides, and values stay ordinary records. This list states the
    - **Under S, `steps(total)`'s `total` counts loop iterations.** That is a driver convenience, not a
      protocol concept.
 
+10. **The checkpoint recipe: lineage lies are impossible by construction.**
+    - **A lineage lie** is a checkpoint whose state is not the state committed by the node it names.
+    - **When a save may happen.** A node is a heartbeat's seq, so a checkpoint can name only a commit that
+      has happened. A save at the end of an iteration, before its heartbeat, could name only the previous
+      node, which would label state s as node s−1.
+    - **Save: the driver calls it.** `w.steps(…, checkpoint=Every(k, save))`, or `w.tick(checkpoint=save)`,
+      runs `save(node)` immediately after a heartbeat lands. At that instant the state is exactly the state
+      that heartbeat commits. This also enforces "save after the commit", the measured condition for
+      resuming without lag (lineage-graph test 1).
+    - **Load: the checkpoint carries its node.** `resume_from` takes the checkpoint object, not a bare seq, so
+      the state loaded and the node named come from one place.
+    - **Resume choice is a required Strategy.** Only *complete* checkpoints qualify: the named heartbeat,
+      all its ancestors, and every value they commit are visible. Two policies are on the frontier:
+      - `OnHeadLineage(head)`: consistent with reads and the verdict, and respects rewinds. Cost: after a
+        mistaken takeover where the successor dies early, it ignores the displaced worker's further clean
+        work (13 and 11 extra steps measured).
+      - `MostProgress(stream)`: the least recompute. Cost: it can resume from a branch abandoned by a
+        rewind.
+
+      Suggested preset: `OnHeadLineage`, for consistency.
+    - **An optional fingerprint guard,** for what construction cannot reach: custom loops that bypass the
+      recipe, or a save that captures some other object's state. The user supplies a cheap fingerprint
+      (the optimizer's step counter, or a hash of a parameter slice). The Worker records it with each
+      commit, and the recipe compares it at save and at load. *Framework prediction, untested.*
+
+11. **A completed exit commits first.** `stopped(completed=True)` writes one last heartbeat committing any
+    pending values, then names it as `final_beat`.
+    - **Why.** Values written after the loop, such as mycooc's final metric, are otherwise committed by
+      nothing, and lineage reads would drop them.
+    - **Error exits are different.** On an error inside an iteration, its pending values belong to
+      unfinished work and stay uncommitted. The Worker can tell the two cases apart, because it knows
+      whether it is inside a `steps()` iteration.
+    - **What it makes obsolete:**
+      - `progress`'s second source (`stopped.final_step`), since heartbeats alone define the frontier;
+      - the vouching recipe's `stopped` clause;
+      - any need for `stopped` to carry commits.
+12. **The 0.3.0 → 0.4.0 migration repairs missing ticks and keeps no step stream.** Each rule copies what
+    the old positional reading implied.
+    - **`parent`.** The previous heartbeat of the same claim. For an episode's first heartbeat, the latest
+      earlier heartbeat one step behind it, otherwise null.
+    - **`commits`.** The values each heartbeat commits, attributed by their own step labels within the
+      claim's window.
+    - **A step whose values carry a label with no heartbeat** gets a **synthetic heartbeat** inserted where
+      the tick should have been. The copied log is renumbered, and every seq reference is renamed with it:
+      `claim_seq`, `parent`, `commits`, `final_beat` and `bound`.
+    - **Values after an episode's last heartbeat** are committed by an appended final heartbeat
+      (decision 11).
+    - **`stopped.final_step`** becomes `final_beat`.
+    - **Subscriptions' `{step: k}`** becomes `{stream: …}` (decision 9). The stream it targets is still to
+      be set in the spec.
+    - **Measured 2026-10-04 on the real-log corpus:**
+      - translation's lineage depth equals its old step on all 1,010,405 heartbeats;
+      - mycooc's does not on 53,757 of 215,529 heartbeats, in 789 runs, all from 891 skipped ticks (the
+        upgrade checklist's mycooc item, in `../specs/reference-by-name.md` §7). Each of those 891 skipped
+        steps carried a full metric set.
+    - **With the ticks repaired, depth should equal the old step everywhere,** so no synthetic step stream
+      is needed. The migration's tests must confirm that on the corpus.
+    - **Why not a synthetic `step` stream** (considered and rejected): per heartbeat, it would label a
+      skipped step's values with the *next* step.
+
+13. **Metrics align by the heartbeat that committed them, and the axis is counted in a progress stream the
+    caller chooses.** This amends decision 5.
+    - **Two coordinates, two jobs.**
+      - The per-stream index is for one stream's progress: `until`, `every`, `ensure`.
+      - Cross-metric reads align values by their **shared commit**.
+    - **What it fixes.** A metric that starts late or has gaps still lines up. In the census that is 952 of
+      mycooc's streams starting late and 833 with gaps. Per-stream indices would shift every one of them.
+    - **The axis.** A node's x is the prefix length of the chosen progress stream at that node: the same
+      notion of progress as decision 9. Under the no-defaults rule it is a required argument, chosen at
+      the edge.
+    - **Why not heartbeat depth.** Depth inflates when liveness heartbeats fall inside slow steps. Choosing
+      the heartbeats themselves as progress is allowed where they mean iterations, as in mycooc's migrated
+      logs.
+    - **Writing `{step, value}` into each value** stays available to users. The protocol does not need it.
+
+14. **Each stream is eager or offered, never both.** This is the data model of
+    [demand-streams](demand-streams.md), brought into layer 2 so that no interim rule ships.
+    - **The two kinds.** `emit` makes a name eager. `set` makes it offered, sampled only at iterations some
+      live subscription demands.
+    - **One element per demanded iteration.** Two subscriptions firing on one offered stream at the same
+      tick write one sample.
+    - **No answer-tagging.** Values carry no `request_id`. A subscription's answers are derived by
+      replaying its schedule.
+    - **Circular demand is refused with a `nak`:** a progress atom naming the offered stream it demands.
+    - **What it replaces.** It supersedes the spec draft's interim rule "samples are not stream elements",
+      which existed only because one name could be written both ways.
+    - **The owner's framing.** A stream is a list whose tail is still unbound. Consuming it triggers the
+      producer: attributed variables (attrvars) in a client binding, and explicit demand records on the
+      wire.
+15. **Reads can know they are finished: settledness.** A completed exit closes its lineage for every
+    stream. A preempted or errored exit, or an abandoned branch, closes nothing.
+    - **The threshold read `prefix(…, n)`** returns `Complete`, `Pending` or `SettledShort`.
+    - **`ensure`** returns settled-short without producing.
+    - **Where it comes from:** [if-built-today](if-built-today/README.md)'s requirement that a query be able
+      to know it is finished.
+
 **Still open, in order:**
-- **The checkpoint recipe:** a checkpoint names the heartbeat that commits its state; resume from the most
-  advanced complete checkpoint; save after the commit, for no lag.
-- **The format change, and its migration.** lifecycle-v0.6 and value-v0.3 make format 0.4.0. The
-  0.3.0 → 0.4.0 step must infer `commits` and `parent`, positionally, as "what the old rule said".
+- **The format change.** lifecycle-v0.6 and value-v0.3 make format 0.4.0. The spec is
+  [`../specs/commits-and-lineage.md`](../specs/commits-and-lineage.md), DRAFT, under the owner's review.
 
 ## 3. Episode-keyed artefacts
 
