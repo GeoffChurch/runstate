@@ -837,3 +837,17 @@ conformance test), 0.3 (D9's bounded polled reads).
 envelope; a malformed body raises on read, never on count), 0.6 (`Element(node, seq, value, t)`; `aligned`
 cells are always tuples; `streams()` returns names only).
 - **The owner asked why the offered set must be known up front.** That reopens D5's framing; see item 6.
+
+**D5 reframed (the owner's questions, accepted):**
+- **The real requirement** is that a name's kind is set *by the worker, recorded on the log, before the name
+  is used*. Declaring on the claim is just the simplest way to meet it.
+- **What gets declared is the worker's _sources_:** what it exposes to delegates, such as a register,
+  weights or gradients. Derived metrics are not declared.
+- **A delegate's input never reaches the log.** It runs inside the worker, and only its outputs are logged.
+  Derived streams are named by the demand that creates them, and today's offered register is the identity
+  delegate.
+- **Sources can change at runtime, by the worker only.** Dynamic declaration (a worker-written record, in
+  force from its commit onward along the lineage) and derived streams named by their demand go to the
+  programmable-subscriptions backlog. Observers change demand, not sources.
+- **E2 becomes "the declaration in force at the committing node".** It is identical to per-claim
+  declaration today, and it generalizes. This adjusts items 6 and 7.
