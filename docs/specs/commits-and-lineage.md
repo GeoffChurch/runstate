@@ -29,23 +29,33 @@ Today's value reads keep the latest value per (name, step).
 ## 2. The rule
 
 > **A heartbeat commits the value records it names. A lineage is the chain of heartbeats, by `parent`. A
-> stream is a value name; its elements are the committed values of that name that answer no
-> subscription, and an element's coordinate is its index along the lineage.**
+> stream is a value name; its elements are the committed values of that name, and an element's coordinate
+> is its index along the lineage. Each stream is eager or offered, never both.**
 
 - **The commit.** A value belongs to exactly the heartbeat whose `commits` names its seq. A value no
   heartbeat names is outside every lineage: uncommitted, or foreign.
-- **Samples are not stream elements.** A subscription sample (a value with a `request_id`) is committed
-  like any value, but it belongs to its subscription and is read by that id. It never counts toward a
-  stream, so an emitted value and a sample of the same name cannot double-count, and a subscription
-  cannot feed its own progress condition.
-  - **This is an interim rule, and is labelled as one.** Two primitives write values of one name: `emit`
-    (a stream, at the worker's cadence) and `set` plus a subscription (a sampled cell, at the observer's
-    cadence). They overlap in one concept, which the orthogonality test (CLAUDE.md, design rubric) flags.
-    This rule keeps that overlap consistent.
-  - **The direction that removes it** is [`../backlog/demand-streams.md`](../backlog/demand-streams.md),
-    where a sample is a demanded element of an *offered* stream.
-  - **Layer 2 makes that step cleaner, not harder.** Samples keep today's `request_id` behaviour, so a later
-    unification is an extension, not an undo.
+- **Eager and offered streams.** One primitive covers both ways a value reaches the log.
+  - An **eager** stream gets an element whenever the worker `emit`s it.
+  - An **offered** stream gets an element only at an iteration where some live subscription demands it,
+    and that element is a sample of the worker's register.
+  - **One kind per name.** A name is one kind or the other, so each stream has exactly one producer, and
+    nothing can double-count.
+  - **One element per iteration.** Two subscriptions demanding the same offered stream at the same
+    iteration produce one element.
+  - **No answer-tagging.** A value carries no `request_id`. Which elements answered a subscription is
+    derived by replaying its schedule.
+  - **Why this shape.** It replaces an earlier draft's interim rule, "samples are not stream elements".
+    That rule existed only because a name could be both emitted and sampled, which the orthogonality test
+    in CLAUDE.md's design rubric flags. The shape is
+    [`../backlog/demand-streams.md`](../backlog/demand-streams.md)'s data model, which a later
+    demand-as-questions control plane builds on.
+- **Settledness.** A completed exit (`stopped` with `completed = true`) tells that **no further element
+  will appear on its lineage**. The stopped record names its `final_beat`, and so the lineage ending at
+  that node is closed for every stream.
+  - A preempted or errored exit settles nothing, because a resume may continue the lineage.
+  - A lineage abandoned by a rewind settles nothing either.
+  - Reads use this to answer "settled short" instead of waiting forever (§5). The principle is
+    [if-built-today](../backlog/if-built-today/README.md)'s: a query must be able to know it is finished.
 - **The node.** A node is a heartbeat, named by its own seq, exactly as a claim is named by its
   `lifecycle.started`'s seq. `parent` names the node the worker's state was computed from.
 - **Positions not compared.** No rule compares the positions of records written by different writers. The
@@ -79,7 +89,8 @@ These are the convention bumps. The envelope is unchanged.
 
 - **Body:** `{value, t}`. `step` is removed.
 - **The envelope `name`** is the stream.
-- **The envelope `request_id`** names the subscription a sample answers, or is null for an emitted value.
+- **The envelope `request_id`** is null. A value never names a subscription (§2, eager and offered
+  streams).
 
 Dense data (arrays, tensors) goes in blobs referenced by name, never inline. Large values belong to the
 data-plane project.
@@ -98,17 +109,27 @@ data-plane project.
 - **`StopTrigger.from`** takes the same atoms.
 - **The step atom** (`{step: N}`) is removed.
 
-**Evaluation:** subscriptions are evaluated at each `tick()`, never at a liveness `beat()`. Samples are
-written before the heartbeat that commits them.
+**Evaluation:**
+- **When.** Subscriptions are evaluated at each `tick()`, never at a liveness `beat()`.
+- **Offered streams.** At a tick where at least one live subscription fires for an offered stream, the
+  Worker writes **one** sample of its register, just before the heartbeat that commits it.
+- **Eager streams.** A subscription on an eager stream writes nothing extra. Its answers are the emitted
+  elements at its firing points.
+- **Circular demand is refused.** A subscription whose progress atom names the offered stream it demands
+  is circular, because that stream grows only when demanded, so the subscription could never fire. The
+  Worker refuses it with a `nak`, reason `"circular"`.
 
 ## 4. The Worker
 
-- **`emit(name, value)`** sends a `value` record at once and adds its seq to the pending commits.
-- **`set(name, value)`** updates the register. A fired subscription samples it as a `value` record
-  answering that subscription. The sample is sent just before the heartbeat and is committed by it.
+- **`emit(name, value)`** makes `name` eager. It sends a `value` record at once and adds its seq to the
+  pending commits.
+- **`set(name, value)`** makes `name` offered. It updates the register, and the register is sampled only
+  when demanded (§3, evaluation).
+- **One kind per name.** The first `emit` or `set` of a name fixes its kind for the episode, and using it
+  the other way raises.
 - **`tick()`** has no step argument. It does three things, in order:
   1. drains control;
-  2. fires due subscriptions, writing their samples;
+  2. fires due subscriptions, writing one sample per demanded offered stream;
   3. writes the heartbeat, which commits all pending values and whose `consumed_seq` reports the drain.
 - **`beat()`** drains control and writes a heartbeat committing **nothing**. It fires no subscriptions. It
   is the liveness beat for inside a slow step. Pending values wait for the iteration's `tick()`, so one
@@ -147,7 +168,16 @@ edge (the owner's no-defaults rule).
   value it commits. Under visibility lag the read waits, or raises with the missing seqs. It never reads a
   hole.
 - **`series(ch, name, *, head)`** gives one stream's elements in lineage order, by index. Use it for
-  progress.
+  progress. It works for eager and offered streams alike.
+- **`prefix(ch, stream, n, *, head)`** is the threshold read, and returns one of three outcomes:
+  - **`Complete(elements)`:** the lineage holds at least `n` elements;
+  - **`Pending(have)`:** it holds fewer, and the lineage is not settled;
+  - **`SettledShort(elements)`:** it holds fewer, and a completed exit has closed the lineage (§2). No more
+    will ever come.
+
+  It never waits forever on a stream that has finished.
+- **`answers(ch, request_id, *, head)`** derives which elements answered a subscription, by replaying its
+  schedule over the stream it names.
 - **`aligned(ch, names, *, head, progress)`** aligns values by shared commit. Each node that commits any of
   `names` becomes one row.
   - The row's x is the prefix length of the `progress` stream through that node, including that node's
@@ -159,6 +189,8 @@ edge (the owner's no-defaults rule).
     so nothing needs collapsing.
 - **`ensure(…, stream, n, *, head)`** demands the first `n` elements of `stream`.
   - **Read first:** it is satisfied from the log when the head's lineage already holds them.
+  - **Settled short:** if the lineage is closed below `n`, it returns that outcome without producing. This
+    generalizes today's "never re-drive a completed run".
   - **Otherwise it produces:** it drives the producer, then follows the new episode's lineage.
 - **`progress(ch, stream, *, head)`** is the prefix length of `stream` along the head's lineage. It
   replaces the step frontier.
@@ -213,8 +245,13 @@ positional reading implied, the same standard as the 0.2.0 → 0.3.0 step.
   - Otherwise null.
 - **`final_beat`** is the claim's last heartbeat, synthetic or not.
 - **Field removals.** `step` is dropped from heartbeats and values.
-- **Subscriptions with a step atom refuse the run.** The real corpus has none. A refusal names the run and
-  the seq, and refuses before sealing (log-formats §6).
+- **A run that holds any subscription is refused.** That covers its subscribe records and the samples that
+  answer them, including subscriptions with a step atom.
+  - **Why refuse:** a 0.3.0 name could be both emitted and sampled, which 0.4.0's eager/offered rule
+    forbids, and a step atom has no faithful progress-atom translation.
+  - **The cost:** none today. The real corpus holds no subscribes, naks or unsubscribes.
+  - **How it refuses:** the refusal names the run and the seq, and happens before sealing (log-formats §6).
+  - **Revival:** a consumer that later holds such logs revives the question with that log in hand.
 - **Measured 2026-10-04 on the real-log corpus:**
   - **translation:** depth along the inferred lineages equals the old step on all 1,010,405 heartbeats.
   - **mycooc:** 53,757 of 215,529 heartbeats do not, all from 891 skipped ticks (§8), each skipped step
@@ -245,6 +282,10 @@ These additions extend [`reference-by-name.md`](reference-by-name.md) §7:
 These are protocol, and another implementation must match them:
 - the commit rule;
 - the lineage walk and its completeness check;
+- eager and offered streams: one kind per name, one element per demanded iteration, and answers derived
+  rather than tagged;
+- the refusal of circular demand;
+- settledness, and the three outcomes of the threshold read;
 - the progress atom's crossing rule;
 - the `final_beat` semantics.
 
@@ -272,8 +313,17 @@ On every backend:
   - the fingerprint guard catches a planted mismatch.
 - **The progress atom:**
   - `every` crossings under batching (95 → 105 fires once);
-  - `until` and `from`;
-  - a sample does not count toward its own `every`.
+  - `until` and `from`.
+- **Eager and offered streams:**
+  - mixed use of one name raises;
+  - two subscriptions firing on one offered stream at the same tick write one element;
+  - a subscription on an eager stream writes nothing extra;
+  - `answers` derives each subscription's elements by replay;
+  - circular demand is refused with a `nak`.
+- **Settledness:**
+  - a completed exit closes its lineage, and a preempted or errored exit does not;
+  - `prefix` returns `Complete`, `Pending` and `SettledShort` correctly;
+  - `ensure` returns settled-short without producing.
 - **Aligned reads:** metrics that start late or have gaps align by commit.
 - **Order independence:** extend `tests/test_order_independence.py` with heartbeats, commits and parents.
   Every read stays invariant under causal reordering.
@@ -304,3 +354,7 @@ On every backend:
 - **Bytes.** Values lose `step`, and heartbeats gain `commits`, about one integer per value. Users may batch.
   The encoding experiment (identity-in-records §2) should measure the net effect on the real corpus.
 - **A historical misattribution is copied faithfully** by the migration, as before.
+- **The control plane is the next layer.** Demand as `asked` facts ([if-built-today](../backlog/if-built-today/3-questions.md)
+  §"Demand is control"; [`../backlog/demand-streams.md`](../backlog/demand-streams.md)) would replace
+  subscriptions. This spec's data model, eager and offered streams with settledness, is what that layer
+  demands, so the step is an extension.

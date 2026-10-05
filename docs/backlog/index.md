@@ -171,6 +171,15 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
   5. fenced worker writes, possibly optional given 1.
 
   The target is that a wrong claim costs waste, never corruption. It supersedes episode-aim, below.
+- **What carries over from if-built-today** — [if-built-today-carryover](if-built-today-carryover.md).
+  LIVING (2026-10-04).
+  - **Adopted:** identity as data (layers 1–2) and settledness (layer 2).
+  - **Next:** demand as `asked` facts.
+  - **Open:**
+    - keeping identity attached through aggregation;
+    - objections rather than retraction;
+    - naming runstate's non-monotone core: the claim CAS, leases, "latest claim" reads, registers, the dying
+      breath.
 - **Demand on lazy streams** — [demand-streams](demand-streams.md). DIRECTION (2026-10-04).
   - **The idea:** one primitive, demand on a prefix of a lazy, memoized stream. It would subsume `ensure`,
     `history`, subscriptions, lazy launch, leases, early stopping, and stopping as withdrawn demand.

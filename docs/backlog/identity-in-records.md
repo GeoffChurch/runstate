@@ -365,8 +365,30 @@ small heartbeat provides, and values stay ordinary records. This list states the
       logs.
     - **Writing `{step, value}` into each value** stays available to users. The protocol does not need it.
 
+14. **Each stream is eager or offered, never both.** This is the data model of
+    [demand-streams](demand-streams.md), brought into layer 2 so that no interim rule ships.
+    - **The two kinds.** `emit` makes a name eager. `set` makes it offered, sampled only at iterations some
+      live subscription demands.
+    - **One element per demanded iteration.** Two subscriptions firing on one offered stream at the same
+      tick write one sample.
+    - **No answer-tagging.** Values carry no `request_id`. A subscription's answers are derived by
+      replaying its schedule.
+    - **Circular demand is refused with a `nak`:** a progress atom naming the offered stream it demands.
+    - **What it replaces.** It supersedes the spec draft's interim rule "samples are not stream elements",
+      which existed only because one name could be written both ways.
+    - **The owner's framing.** A stream is a list whose tail is still unbound. Consuming it triggers the
+      producer: attributed variables (attrvars) in a client binding, and explicit demand records on the
+      wire.
+15. **Reads can know they are finished: settledness.** A completed exit closes its lineage for every
+    stream. A preempted or errored exit, or an abandoned branch, closes nothing.
+    - **The threshold read `prefix(…, n)`** returns `Complete`, `Pending` or `SettledShort`.
+    - **`ensure`** returns settled-short without producing.
+    - **Where it comes from:** [if-built-today](if-built-today/README.md)'s requirement that a query be able
+      to know it is finished.
+
 **Still open, in order:**
-- **The format change.** lifecycle-v0.6 and value-v0.3 make format 0.4.0. Write the spec.
+- **The format change.** lifecycle-v0.6 and value-v0.3 make format 0.4.0. The spec is
+  [`../specs/commits-and-lineage.md`](../specs/commits-and-lineage.md), DRAFT, under the owner's review.
 
 ## 3. Episode-keyed artefacts
 

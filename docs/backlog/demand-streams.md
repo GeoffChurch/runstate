@@ -96,6 +96,31 @@ single-run streams are the everyday special case.
 2. relational demand over it;
 3. streams as the common case.
 
+## Status of the pieces (2026-10-04)
+
+- **The data model is adopted into layer 2:**
+  - eager and offered streams;
+  - samples as elements, with answers derived;
+  - circular demand refused;
+  - settledness, giving a threshold read with `Complete`, `Pending` or `SettledShort`.
+
+  See [`../specs/commits-and-lineage.md`](../specs/commits-and-lineage.md) and identity-in-records
+  §2, decisions 14–15.
+- **The control plane is the next layer: demand as `asked` facts.**
+  [if-built-today](if-built-today/3-questions.md) already designs it:
+  - a question is a told `asked` fact;
+  - quantifiers live in questions;
+  - demand subsumption merges overlapping demands;
+  - the residual tells a producer what is still wanted;
+  - self-withdrawal is not renewing, as leases do today.
+
+  It would replace subscriptions, and bring `ensure` and lazy launch under one primitive.
+- **What it leaves unsolved:** an operator withdrawing *someone else's* demand still needs a write and an
+  authority rule ([authenticated-records](authenticated-records.md)).
+- **On the wire, a trigger is an explicit record.** Binding a variable shared across processes is itself
+  a message. Open lists with attributed variables, as in Mozart/Oz's distributed by-need dataflow
+  variables or the streams of concurrent logic programming, are the client binding.
+
 ## Offered metrics
 
 A worker may **offer** an expensive metric that is computed only when demanded. This generalizes today's
