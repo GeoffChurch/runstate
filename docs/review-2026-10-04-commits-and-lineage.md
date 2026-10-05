@@ -903,3 +903,13 @@ cells are always tuples; `streams()` returns names only).
   sets `heartbeat_timeout` or not.
 - **A worker-declared liveness promise** (the threshold belongs with the run, not each observer) is under
   discussion as a backlog entry; see the next entry.
+
+**Liveness promises go to the backlog** ([liveness-promise](backlog/liveness-promise.md)), in the
+owner's form:
+- **Every liveness record carries `next_within`,** a duration timed from witnessed arrival. `null` means
+  no promise.
+- **This is better than one promise on the claim:** it varies by phase, and needs no background beating
+  thread.
+- **A cadence stream on the value plane was rejected:** it has no claim at arrival, and would be
+  unattributed during exactly the window it governs.
+- **It is not in layer 2.** It adds cleanly later, because `null` truthfully migrates older records.

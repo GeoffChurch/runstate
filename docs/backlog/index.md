@@ -191,6 +191,11 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
     need no coordination (CALM).
   - **Detail:** a ladder of expressiveness, which points to definite clauses, and a split between programs
     that can be replayed and those that cannot.
+- **Liveness promises** — [liveness-promise](liveness-promise.md). DIRECTION, form chosen (2026-10-05).
+  - **The idea:** each liveness record (`started`, commit, heartbeat) says within how many seconds the next
+    is due, so the dead-vs-busy threshold is declared by the worker, per phase, instead of guessed by each
+    observer.
+  - **Replaces** the Watcher's `heartbeat_timeout`, and the need for background beating threads.
 - **Authenticated and confidential records** — [authenticated-records](authenticated-records.md). DIRECTION
   (2026-10-04).
   - **The idea:** signed control and lifecycle records close the "honor system" gap.
