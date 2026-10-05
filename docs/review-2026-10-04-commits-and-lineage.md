@@ -936,3 +936,17 @@ owner's form:
     not via `allOf`, which does not compose with `additionalProperties: false`).
   - **In the vocabulary,** a `Node` Protocol is satisfied by both `Commit` and `Stopped`, and lineage walks
     take a `Node`.
+
+**Item 3: D2 adopted.**
+- **The resume point:** `Worker(channel, *, resume_from)` is required and recorded on `started`.
+- **The head of a commitless claim** is its resume node.
+- **Two checks:** the Worker validates the named commit at construction, and the recipe asserts it at load.
+- **The owner asked whether mycooc should use `steps()` instead. No:**
+  - mycooc's aligner owns its loop and calls a per-step callback (mycooc main.py:714, :922). Calling
+    `commit()` from a callback is a first-class driver, as in Lightning, the HF Trainer and Keras.
+  - Failure 2 holds under any driver.
+  - The resume point must be on the claim, which is written when the Worker is entered, before any driver
+    runs. So a driver argument is too late whichever driver is used.
+- **mycooc's upgrade gains two items:**
+  - choose the checkpoint before claiming (read its node, then claim, then load, then assert);
+  - move `_emitter.step` before the commit (main.py:922–923, D7).
