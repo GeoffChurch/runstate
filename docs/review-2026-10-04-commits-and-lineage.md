@@ -851,3 +851,11 @@ cells are always tuples; `streams()` returns names only).
   programmable-subscriptions backlog. Observers change demand, not sources.
 - **E2 becomes "the declaration in force at the committing node".** It is identical to per-claim
   declaration today, and it generalizes. This adjusts items 6 and 7.
+
+**Group C (accepted):**
+- **0.7:** `every` uses the delta rule, with its baseline read from the lineage and rebuilt at resume and
+  rewind.
+- **0.8:** `tick()`'s order, with expiries after the commit and fire counts rebuilt at resume and rewind.
+- **0.9:** `commit_external`'s checks, including that the name is not a declared source.
+- **0.10:** the fingerprint guard is deleted. It moves to the backlog as a recipe needing nothing on the
+  wire; mycooc's upgrade gains "save via `tick(checkpoint=save)`".
