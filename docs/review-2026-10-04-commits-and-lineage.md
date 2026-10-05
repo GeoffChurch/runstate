@@ -95,8 +95,10 @@ step is a liveness event with no commit. Three measured consequences:
 - **`LatestClaimHead`'s fallback is a regression.** "The newest claim *that has written one*" falls back to
   an older claim's beats, which is the stale-beat leak layer 1 fixed. Example: A is preempted at 150, and
   B claims and resumes from node 100. Before B's first commit, `prefix(loss, 120)` reads Complete off A's
-  branch; afterwards it reads Pending (L1, L2, L3, L5: 105–111 corpus runs have a latest claim with no
-  heartbeat).
+  branch; afterwards it reads Pending (L1, L2, L3, L5).
+  - **Corpus count, corrected in §11:** 25 mycooc runs and 1 empty translation run end on a latest claim
+    that never beat, and 8 of them have earlier history. L5's first count of 105–111 was an artifact of
+    comparing seqs before and after renumbering.
 - **A rewind followed by an error.** If the worker errors or is killed before the rewound branch's first
   commit, reads follow the abandoned branch (L3 P2a).
 
@@ -393,6 +395,15 @@ In the table, L is lineage length, c the commits per node, and V_S the number of
 
 ## 5. Migration (§7): fixes
 
+**Correction, from the alternatives round (§11):**
+- **The figures below are superseded.** They came from L5's harness in its parent-by-step mode, which
+  implements none of M4, M5 or D2's head.
+- **What an implementation of M1–M11 as written gives on mycooc:**
+  - P1 fails on 37 heartbeats;
+  - P3 differs in 1,191 of 1,348 runs;
+  - five classes of difference appear that this section never names.
+- **§11 has M5 rewritten, the added rule M12, and figures re-measured under the rewrite.**
+
 Measured by L5 on the corpus, after the shipped 0.2.0 → 0.3.0 step. translation passes everything as written.
 On mycooc the rules conflict.
 
@@ -617,3 +628,191 @@ The direction these follow is if-built-today taking what runstate has measured:
 - **Layer 6:** minted ids, verdicts relative to a head, a stable head choice, and stop scope without an arbiter.
 - **The encoding experiment** (bytes, including `commits` and `fired`) on the real corpus.
 - **A runtime guard for custom loops that bypass the checkpoint recipe** (was the fingerprint guard).
+
+---
+
+## 11. After the alternatives round (2026-10-04)
+
+Six further reviewers each took one cluster of fixes and looked for a compelling alternative:
+- D1 and D8;
+- D2 and D3;
+- D4 to D6;
+- D7 and D9;
+- the migration;
+- the pins in §3 and the convergence actions C1–C3.
+
+Each one:
+- generated at least two genuinely different alternatives;
+- held each alternative to the same failure cases as the fix it would replace;
+- probed or measured where that was cheap: models of 20,000 random histories, the real corpus, and
+  Postgres and SQLite under concurrency.
+
+An alternative counted as compelling only if it fixed the same failures and won on some axis without losing
+on correctness.
+
+**The outcome:**
+- **No decision was overturned.** D1, D2, D4, D5, D6, D7 and D9 are kept, most with high confidence.
+- **Two decisions grew a better mechanism:** D3's terminal join, and D8's exit commit.
+- **Several gaps closed:** the progress atom, the membership rule, and the migration's M5.
+- **The migration's published figures were wrong** (corrected in §5).
+
+### 11.1 New decisions for the owner
+
+| # | Decision | Recommendation | Why |
+|---|---|---|---|
+| E1 | **Fold the exit commit into `stopped`.** `stopped` carries `{parent, commits}` and is itself the exit node, replacing a separate closing commit. `commits` holds the pending values unless the exit is an error; a third party writes nulls. `final_commit` goes; the exit node is the `stopped`. | **Adopt** (the reviewer was about 65% confident) | It applies D1's rule, one record per event, to the exit. Its gains: <ul><li>no kill between two appends leaves a post-loop commit under a killed verdict;</li><li>`Commits()` counts iterations exactly;</li><li>D3's sink falls out of "a parent must be a commit";</li><li>the migration needs **no** synthetic closing commits. Otherwise it needs 736 for mycooc and 1,139 for translation, and translation's logs would have to be renumbered.</li></ul>The cost: it reverses decision 11's "no commits on `stopped`", and readers must treat a `stopped` as a possible head. |
+| E2 | **Classify membership by the committing claim.** A committed value is an element of its stream if and only if its committing claim did not declare its name offered. The stricter alternative: offered anywhere on the lineage means offered for the whole lineage. | **Per committing claim** | Kinds are declared per claim, but a lineage spans claims, and offered samples share the eager envelope. Without this, a demand-dependent count leaks silently into an eager stream. Going per claim lets code change a name's kind across resumes. |
+| E3 | **Add a `{commits: n}` progress atom,** counting iteration commits. | **Adopt** (raised independently by two reviewers) | Under D6, a worker that emits nothing eager has no every-iteration condition, and that covers 4 of the 6 in-repo examples. The atom is sound: commits grow regardless of demand, so it cannot be circular. And with D1 plus E1, commit depth equals iterations. It also gives `ensure`'s `{step: N}` an exact translation. |
+| E4 | **A rewind inside one claim.** Either it is a re-claim with `resume_from`, or it stays in-claim with a marker. | **A re-claim** | The corpus has 0 in-claim rewinds. A re-claim needs no marker record, keeps `Commits()` exact, and covers a kill right after the rewind. Its costs: episode-local leases are voided, and clients renew them as they do anyway; and the claim CAS runs once per rewind. The in-claim form stays on the frontier for cost and for lease continuity; it would need a marker that `Commits()` excludes. |
+| E5 | **Retire the name `progress`.** The new number is a 1-based count, against today's 0-based step label. Keep one read, `prefix_len`. | **Adopt** | A new name makes the shift visible at every call site that must change (mycooc `p >= req` becomes `p > req`; translation `progress+1 >= n` becomes `prefix_len >= n`). And today `progress` and `prefix_len` are the same number, which the design rubric's independence test rejects. |
+
+### 11.2 Revised recommendations (no reversals)
+
+- **D1 is kept, with two pins.**
+  - **Liveness follows observer-clock.md §5:** witnessed arrival, not the record's `t`. A new seq on either
+    topic naming the latest claim resets the witnessed clock. The acknowledgement is the `consumed_seq` of
+    the newer of the two records.
+  - **mycooc's 1,114 stepless 0.3.0 heartbeats are beats.** Every one sits in the 150 stepless-only claims,
+    after only `status` values. So they migrate as `lifecycle.heartbeat`, and M11 disappears.
+  - **Dropping the beat altogether was measured out.** mycooc's 129 silences longer than 1,800 s (up to
+    10,031 s) all fall inside those claims' phases, so its Watcher would presume them dead.
+- **D2 is kept.**
+  - **Modelled across 696,000 reads:** 0 forged settledness, 0 stale-branch reads and 0 dark reads. The
+    draft's fallback gave 84,343 forged and 81,253 stale.
+  - **Add:** the Worker validates `resume_from` with one point read (it must name a commit of this run).
+  - **Add:** the checkpoint recipe asserts at load that `loaded.node == started.resume_from`. mycooc loads
+    from a mutable `checkpoint_last.pt` after it claims.
+- **D3 is kept, with its guarantee strengthened and its join made total.**
+  - **The guarantee:** with the sink plus the join, the (outcome, node) pair a read returns is **permanent
+    under `LatestClaimHead` too**. Only the choice of head is a report. Modelled across 741,000 reads: 0
+    flips, against 14,063 with newest-wins and 36,874 without the sink.
+  - **The non-monotone list** says "`LatestClaimHead`'s choice of head", not "its outcomes". That resolves
+    the convergence map's conflict on permanence instead of budgeting it.
+  - **The join is a total rank:** completed > errored > preempted, then a non-null node over a null one, and
+    malformed bodies are skipped. Six real claims carry terminals of two kinds. In one, a completed run of
+    600 steps got a release 13 hours later, and master's `peek_terminal` reads it as preempted today.
+  - **The test invariant:** `settled(h)` holds if and only if some completed exit names `h`. In the model it
+    equals the definition with 0 divergences.
+  - **The sink is kept,** and costs nothing in the corpus.
+- **D4 is kept** (confidence about 0.7).
+  - **Measured on the hard case:** replay was right in 142 of 172 executions, `fired` in 172 of 172.
+  - **Tagging samples with `request_id` is also correct.** It loses by putting routing on the fact, against
+    if-built-today and design §7.
+  - **Add:** an incremental form of `answers` for live subscribers, which the examples' `on_event` pattern
+    needs.
+  - **Pin:** a one-shot subscription on an eager stream, fired at a node with no element, answers `[]` and is
+    spent.
+- **D5 is kept,** with E2 as its membership pin.
+- **D6 is kept,** with E3.
+  - **Refusal reason:** refuse a progress atom on an offered stream with `unsatisfiable`, not `malformed`.
+    That is design §6's precedent, and `malformed` is reserved for a body that does not conform.
+  - **§6 gains the in-repo examples.** All six use `set` plus a subscription. reuse and redrive call `ensure`
+    on a sampled `loss` and must switch to `emit`.
+- **D7 is kept, with a stronger rationale.**
+  - **The real failure:** emitting after the tick, combined with the checkpoint recipe, saves node s before
+    step s's metrics exist. A crash then loses them for good, which is the spec's own §1 failure, not merely
+    an off-by-one.
+  - **Measured:** moving all 214,415 stepped mycooc commits gives 0 order inversions and 0 parents after
+    their children, and no move crosses a `stopped`.
+  - **Pin:** M3's "next commit" is read in 0.3.0 order, before the moves; the two readings differ on 3
+    values.
+  - **Optional:** a `with w.iteration():` scope.
+- **D8:**
+  - **Delete "inside an iteration".** It is vacuous: it equals "something is pending".
+  - **Replace it with a contract.** A non-error exit asserts that its pending values are complete; to discard
+    a torn iteration, raise.
+  - **The rule itself stands,** with E1 as its mechanism.
+- **D9 is kept and refined.**
+  - **Make the premise a substrate-contract clause** in design-v0.2 §4 and the backend checklist, with a
+    concurrent "read W, then read the tail" conformance test for each backend, by tier.
+    - **Measured to hold:** Postgres with 12 writers, 0 of 17,585 checks failing; slow committers, 0 of
+      138,495; SQLite across processes, 0 of 188,787.
+    - **Why make it a clause:** a sequence allocator broke it 30,780 times while still leaving a contiguous
+      log, so contiguity alone does not guarantee it. Layer 1's cursors already depend on it without saying
+      so.
+  - **Make the incremental fold public and standalone,** like `pending_stops`. `ensure`'s loop has no Watcher,
+    and the TUI may use public API only.
+  - **Add** a latest-element read, which the TUI polls.
+  - **Drop** the delta form of `aligned`: no consumer polls `aligned`.
+  - **Resolve the head once per poll** into one value (node, settled, W) that both reads take.
+  - **State the criterion for a polled read:** cost independent of lineage length and log age, given held
+    state.
+  - **Scope the well-formedness check:** structure on every commit walked; membership only for the records a
+    read resolves.
+  - **Memory backend:** a tail read is a slice (seq = index + 1), plus a per-topic index.
+  - **Counts stored on each commit are rejected:** +24% bytes on mycooc, for a cold-start gain only.
+- **§3 pins:**
+  - **`every`'s delta baseline lives on the lineage:** the count at the newest commit whose `fired` names the
+    request. It is rebuilt at resume and at rewind, otherwise a rewind to 50 delays the next firing from 51
+    to 101.
+  - **At resume and rewind, the Worker rebuilds fire counts from `fired` and writes any missing expiry
+    before it evaluates.** In the model: the old order loses the answer, the new order with a naive resume
+    answers twice, and with the rebuild it answers exactly once.
+  - **Order within a node** follows the `commits` array, and **membership** is decided by the envelope (about
+    7× cheaper). A malformed body raises when its value is read, never when it is counted.
+  - **`aligned` cells are uniform `tuple[Element, …]`.** `None | value | list` is ambiguous when a value is
+    itself a JSON array.
+  - **`Element` gains `seq`.**
+  - **`streams()` returns names only.**
+  - **`commit_external` refuses a name declared offered.**
+  - **The fingerprint guard's deletion is kept.** The backlog records its form with nothing on the wire, and a
+    live trigger: mycooc saves 3 of 4 checkpoints before the tick that would name their node (training.py
+    :1332, :1346, :1354 against :1369), so §6 gains "save via `tick(checkpoint=save)`".
+- **C1 is kept.** Cite if-built-today's sections rather than paraphrasing them: four paraphrases produced four
+  drifts.
+- **C2 is refined.**
+  - Adopt node keys, with N an opaque node name: a seq under one sequencer, minted in layer 6.
+  - Keep `at(R,S,M)` as a derived view relative to a head, and put it on the non-monotone list.
+  - Lineage as a mere annotation leaves `at(R,S,M)` non-functional (8 of 36 splices).
+- **C3:** hash-reveal waits.
+  - **Bundling it now saves no migration:** the corpus holds 0 subscribes and 0 unsubscribes.
+  - **Its ordering argument is stale:** 0.3.0 already forbids reusing a request id.
+  - **Revival trigger:** a second independent asker on shared runs, or authenticated-records being taken up.
+  - **A self-report versus external-report split for releases** (`lifecycle.released`) joins the backlog with
+    it.
+
+### 11.3 The migration, revised
+
+- **M1 gains a rule for claims with no commit.** A claim whose first commit has no step, or that never
+  commits, takes the newest earlier claim's newest commit as its parent. It is an inference, labelled as such.
+  Without it, 7 runs read empty (8,449 cells), because a retry that crashed while loading is recorded as a
+  fresh start.
+- **M4 is kept, and its effect named:** the teardown "done" status no longer wins its cell in 1,204 cells.
+- **M5 is rewritten.** The text as written failed three ways:
+  - it took in the step-0 loading statuses (1,469 P1 failures);
+  - it contradicted D8 on preempted exits (317 cells);
+  - it dropped skipped ticks that a later claim had resumed from (all 37 P1 failures).
+
+  **The rewrite** synthesizes a step commit only in three places:
+  - for a skipped tick between two real beats;
+  - for a trailing step at or below a clean exit's last step;
+  - for a trailing step s, when a later claim's first real beat is s+1.
+
+  Two further rules: leading values below a claim's first real beat go to its first commit, and the exit's
+  pending values go to the exit node (E1).
+- **M6 is kept.** Appending instead of renumbering would add about 1.23M records and leave shapes no 0.4.0
+  writer produces.
+- **M9's alternative, refusing runs that need synthetic commits, is out.** It would strand 60% of mycooc runs.
+- **M11 disappears.** Stepless heartbeats migrate as heartbeats (D1 pin).
+- **P2** carries its two by-design exceptions: leading values, and values held by the exit node.
+- **P3 becomes per-cell attribution.** Every differing cell must trace to a named rule, and an unattributed
+  cell fails the test.
+- **Measured under the rewrite:**
+  - P1 fails on 0 of 214,415 heartbeats;
+  - 0 commits name a later value, 0 parents follow their child, and 0 exit nodes follow their own `stopped`;
+  - the named classes:
+    - 3,937 cells beyond the head's lineage;
+    - 94 cells at steps the lineage revisited;
+    - 3,896 stepless values now committed (before the D1 pin, which removes up to 1,780 of them);
+    - 2,725 nodes holding several values;
+    - 60 loading cells;
+    - 1,205 cells from M4;
+    - 70 cells from error exits.
+  - **Still unattributed:** 39 cells in one run (625dda74…) plus 2 added cells. They need a decision or a
+    golden log.
+  - **These figures predate E1 and the D1 pin,** and must be re-measured from an implementation of the final
+    rules.
+- **The only renumbering step.** Reword: 0.2.0 → 0.3.0 only appended, so this is the only step that
+  renumbers. The runner **enforces** it: every later step must keep each input record's seq and topic.
+- **§6 gains a one-time conversion** of mycooc's step-holding `checkpoint_last` files to nodes, after the log
+  migration (L1 #8, which the first draft dropped).
