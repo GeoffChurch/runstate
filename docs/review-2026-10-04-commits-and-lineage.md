@@ -714,6 +714,11 @@ on correctness.
     an off-by-one.
   - **Measured:** moving all 214,415 stepped mycooc commits gives 0 order inversions and 0 parents after
     their children, and no move crosses a `stopped`.
+  - **Why move the commits, not the values** (corrected in the walkthrough: migration cost is no
+    tiebreaker). A commit asserts that its values are complete, which is true only once the last value
+    exists. Moving the commit keeps every record at an honest position: the values stay where they were
+    produced, and the commit lands at the first moment its assertion held. Moving the values would instead
+    place them before a beat that preceded their computation, against their own `t`.
   - **Pin:** M3's "next commit" is read in 0.3.0 order, before the moves; the two readings differ on 3
     values.
   - **Optional:** a `with w.iteration():` scope.
@@ -816,3 +821,14 @@ on correctness.
   renumbers. The runner **enforces** it: every later step must keep each input record's seq and topic.
 - **§6 gains a one-time conversion** of mycooc's step-holding `checkpoint_last` files to nodes, after the log
   migration (L1 #8, which the first draft dropped).
+
+---
+
+## 12. Walkthrough decisions (with the owner, 2026-10-05)
+
+Answers are recorded as they settle, each with what it knocks out.
+
+**Group A (accepted):** 0.1 (D7), 0.2 (D9's visibility premise becomes a substrate-contract clause with a
+conformance test), 0.3 (D9's bounded polled reads).
+- **The owner's correction:** "moving the values means 4.2M moves" is not an argument, because migration
+  cost never breaks a tie. D7's reason is the end state (§11.2, D7).
