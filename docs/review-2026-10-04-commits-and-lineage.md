@@ -913,3 +913,26 @@ owner's form:
 - **A cadence stream on the value plane was rejected:** it has no claim at arrival, and would be
   unattributed during exactly the window it governs.
 - **It is not in layer 2.** It adds cleanly later, because `null` truthfully migrates older records.
+
+**Item 2: E1 adopted. `stopped` is the exit node.**
+- **The record:** `lifecycle.stopped {completed, error, claim_seq, honored, parent, values, fired, t}`.
+  - **`parent`:** the claim's newest commit, else its resume point, else null.
+  - **`values`:** the pending values, or `[]` on an error exit. A third party writes `parent: null,
+    values: null`, meaning not a node.
+  - **`fired`:** kept so the exit can still answer a subscription on its final values.
+- **What goes:** `final_commit`, and the migration's synthetic closing commits.
+- **What follows:**
+  - `{commits: n}` counts iterations exactly;
+  - D3's finished node is structural, because `parent` and `resume_from` must name a `lifecycle.commit`;
+  - settled if and only if the head is a completed `stopped`.
+- **Considered and rejected: the exit as a commit with a final marker.**
+  - **`next_within: null` or infinity cannot mark the end:** null already means "alive, no promise".
+  - **A body flag hides terminality from routing:** `peek_terminal` and the Watcher would parse commit
+    bodies.
+  - **Ordinary commits would carry null verdict fields,** and `{commits: n}` would have to parse bodies.
+  - **The topic is the final marker.**
+- **The shared type is made explicit:**
+  - **In the schemas,** `parent`, `values` and `fired` each reference one shared definition (per property,
+    not via `allOf`, which does not compose with `additionalProperties: false`).
+  - **In the vocabulary,** a `Node` Protocol is satisfied by both `Commit` and `Stopped`, and lineage walks
+    take a `Node`.
