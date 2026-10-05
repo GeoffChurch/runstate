@@ -350,12 +350,22 @@ small heartbeat provides, and values stay ordinary records. This list states the
     - **Why not a synthetic `step` stream** (considered and rejected): per heartbeat, it would label a
       skipped step's values with the *next* step.
 
+13. **Metrics align by the heartbeat that committed them, and the axis is counted in a progress stream the
+    caller chooses.** This amends decision 5.
+    - **Two coordinates, two jobs.**
+      - The per-stream index is for one stream's progress: `until`, `every`, `ensure`.
+      - Cross-metric reads align values by their **shared commit**.
+    - **What it fixes.** A metric that starts late or has gaps still lines up. In the census that is 952 of
+      mycooc's streams starting late and 833 with gaps. Per-stream indices would shift every one of them.
+    - **The axis.** A node's x is the prefix length of the chosen progress stream at that node: the same
+      notion of progress as decision 9. Under the no-defaults rule it is a required argument, chosen at
+      the edge.
+    - **Why not heartbeat depth.** Depth inflates when liveness heartbeats fall inside slow steps. Choosing
+      the heartbeats themselves as progress is allowed where they mean iterations, as in mycooc's migrated
+      logs.
+    - **Writing `{step, value}` into each value** stays available to users. The protocol does not need it.
+
 **Still open, in order:**
-- **Alignment across metrics, proposed and awaiting the owner.** Reads should offer a node-aligned view
-  as well as the per-stream index: every metric committed at each node of a lineage, with the node's
-  depth as the x-axis. Metrics that start late or have gaps, such as mycooc's 952 late-starting and 833
-  gapped streams, then align by their shared commit. This would amend decision 5's "emit `{step, loss}`
-  together".
 - **The format change.** lifecycle-v0.6 and value-v0.3 make format 0.4.0. Write the spec.
 
 ## 3. Episode-keyed artefacts
