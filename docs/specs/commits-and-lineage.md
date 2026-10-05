@@ -38,6 +38,14 @@ Today's value reads keep the latest value per (name, step).
   like any value, but it belongs to its subscription and is read by that id. It never counts toward a
   stream, so an emitted value and a sample of the same name cannot double-count, and a subscription
   cannot feed its own progress condition.
+  - **This is an interim rule, and is labelled as one.** Two primitives write values of one name: `emit`
+    (a stream, at the worker's cadence) and `set` plus a subscription (a sampled cell, at the observer's
+    cadence). They overlap in one concept, which the orthogonality test (CLAUDE.md, design rubric) flags.
+    This rule keeps that overlap consistent.
+  - **The direction that removes it** is [`../backlog/demand-streams.md`](../backlog/demand-streams.md),
+    where a sample is a demanded element of an *offered* stream.
+  - **Layer 2 makes that step cleaner, not harder.** Samples keep today's `request_id` behaviour, so a later
+    unification is an extension, not an undo.
 - **The node.** A node is a heartbeat, named by its own seq, exactly as a claim is named by its
   `lifecycle.started`'s seq. `parent` names the node the worker's state was computed from.
 - **Positions not compared.** No rule compares the positions of records written by different writers. The

@@ -40,6 +40,62 @@ run.stream("loss").every(10).take_while(gt(0.1))   # shipped as data; evaluated 
 **Precedent:** demand-driven build systems (Shake, Bazel), demand-driven incremental computation (Adapton),
 pull-based functional reactive programming, and tabling with answer subsumption.
 
+## The semantic foundation: lattices with threshold reads
+
+*Framework claim, untested in runstate. The cited results are established.*
+
+**The idea.** Every shared value only ever *grows* in a lattice, and every read is a **threshold read**:
+"block until at least this much is known". Such reads are deterministic under any scheduling and any network
+delay.
+- **Sources:** LVars (Kuper and Newton) are lattice variables with threshold reads. Bloom^L (Conway et al.)
+  and CALM (Hellerstein and Alvaro) are the same idea in distributed logic programming.
+- **Why it matters here.** Being deterministic under any delay is exactly the property the slow, inconsistent
+  regime needs.
+
+**How it maps onto runstate:**
+- **A stream's prefix is a lattice element.** It is ordered by "is a prefix of", and its least upper bound
+  (join) is the longer of two compatible prefixes. Layer 2's commits and lineage
+  ([`../specs/commits-and-lineage.md`](../specs/commits-and-lineage.md)) are what make that ordering
+  well defined.
+- **Reads become threshold reads:**
+  - `ensure(loss, 1000)` is a threshold read on the prefix length;
+  - a demand is a registered threshold;
+  - a stop is a threshold on a derived lattice value.
+- **A register is modelled as its history.** A register's "current value" read is *non-monotone*: its answer
+  changes as the register is overwritten. The foundation says to model the register as its history, a
+  stream, and read only thresholds of it.
+
+**This explains a symptom.** Layer 2 needed the interim rule "samples are not stream elements" because two
+primitives write values of one name:
+- `emit`, a stream at the worker's cadence;
+- `set` plus a subscription, a sampled cell at the observer's cadence.
+
+Under this foundation there is one primitive. Each name is a stream, either:
+- **eager:** emitted every iteration;
+- **offered:** computed only at the iterations someone demands.
+
+A "sample" is a demanded element of an offered stream. As a result:
+- it carries no `request_id`;
+- it cannot double-count, because each name has one producer;
+- it is memoized across demanders.
+
+A demand whose progress condition refers to an offered stream it is itself demanding is circular, and is
+rejected as ill-formed.
+
+**The most general form is relational.** This is the [if-built-today](if-built-today/README.md) and
+[demand-driven-reads](demand-driven-reads.md) direction.
+- A run's streams are relations in a monotone fact store.
+- Demands are queries, which may span runs.
+- Tuples not yet computed are produced by launching workers.
+
+Sweeps, hyperparameter search and bandits are then demand over a mostly unmaterialized relation, and
+single-run streams are the everyday special case.
+
+**The order this suggests:**
+1. a monotone foundation of lattices with threshold reads;
+2. relational demand over it;
+3. streams as the common case.
+
 ## Offered metrics
 
 A worker may **offer** an expensive metric that is computed only when demanded. This generalizes today's
