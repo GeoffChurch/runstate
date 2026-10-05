@@ -859,3 +859,17 @@ cells are always tuples; `streams()` returns names only).
 - **0.9:** `commit_external`'s checks, including that the name is not a declared source.
 - **0.10:** the fingerprint guard is deleted. It moves to the backlog as a recipe needing nothing on the
   wire; mycooc's upgrade gains "save via `tick(checkpoint=save)`".
+
+**Group D (accepted):**
+- **0.11 (C1):** correct demand-streams' three misstatements and the carryover's overclaims. Cite
+  if-built-today rather than paraphrase it, and turn the carryover into `if-built-today-convergence.md`.
+- **0.12 (C3):** the backlog rows, each with its revival trigger:
+  - hash-reveal withdrawal;
+  - monotonic durations;
+  - reclamation tiers;
+  - dispute records;
+  - identity kept in summaries;
+  - a separate `lifecycle.released`;
+  - dynamic sources and demand-named derived streams;
+  - the fingerprint recipe;
+  - minted ids (layer 6).
