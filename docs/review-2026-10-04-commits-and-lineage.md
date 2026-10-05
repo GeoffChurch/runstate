@@ -832,3 +832,8 @@ Answers are recorded as they settle, each with what it knocks out.
 conformance test), 0.3 (D9's bounded polled reads).
 - **The owner's correction:** "moving the values means 4.2M moves" is not an argument, because migration
   cost never breaks a tie. D7's reason is the end state (§11.2, D7).
+
+**Group B (accepted):** 0.4 (order within a commit follows the `commits` list), 0.5 (membership by
+envelope; a malformed body raises on read, never on count), 0.6 (`Element(node, seq, value, t)`; `aligned`
+cells are always tuples; `streams()` returns names only).
+- **The owner asked why the offered set must be known up front.** That reopens D5's framing; see item 6.
