@@ -29,10 +29,15 @@ Today's value reads keep the latest value per (name, step).
 ## 2. The rule
 
 > **A heartbeat commits the value records it names. A lineage is the chain of heartbeats, by `parent`. A
-> stream is a value name, and its coordinate is the element's index along the lineage.**
+> stream is a value name; its elements are the committed values of that name that answer no
+> subscription, and an element's coordinate is its index along the lineage.**
 
 - **The commit.** A value belongs to exactly the heartbeat whose `commits` names its seq. A value no
   heartbeat names is outside every lineage: uncommitted, or foreign.
+- **Samples are not stream elements.** A subscription sample (a value with a `request_id`) is committed
+  like any value, but it belongs to its subscription and is read by that id. It never counts toward a
+  stream, so an emitted value and a sample of the same name cannot double-count, and a subscription
+  cannot feed its own progress condition.
 - **The node.** A node is a heartbeat, named by its own seq, exactly as a claim is named by its
   `lifecycle.started`'s seq. `parent` names the node the worker's state was computed from.
 - **Positions not compared.** No rule compares the positions of records written by different writers. The
@@ -85,21 +90,21 @@ data-plane project.
 - **`StopTrigger.from`** takes the same atoms.
 - **The step atom** (`{step: N}`) is removed.
 
-**Evaluation:**
-- Subscriptions are evaluated at each heartbeat that commits values, and samples are written before that
-  heartbeat.
-- A sample's own stream does not count toward its own `every`.
+**Evaluation:** subscriptions are evaluated at each `tick()`, never at a liveness `beat()`. Samples are
+written before the heartbeat that commits them.
 
 ## 4. The Worker
 
 - **`emit(name, value)`** sends a `value` record at once and adds its seq to the pending commits.
 - **`set(name, value)`** updates the register. A fired subscription samples it as a `value` record
   answering that subscription. The sample is sent just before the heartbeat and is committed by it.
-- **`tick()`** fires due subscriptions, then writes the heartbeat committing all pending values, then
-  drains control. It has no step argument.
-- **`beat()`** writes a heartbeat committing **nothing** and drains control. It is the liveness beat for
-  inside a slow step. Pending values wait for the iteration's `tick()`, so one iteration is still one
-  commit.
+- **`tick()`** has no step argument. It does three things, in order:
+  1. drains control;
+  2. fires due subscriptions, writing their samples;
+  3. writes the heartbeat, which commits all pending values and whose `consumed_seq` reports the drain.
+- **`beat()`** drains control and writes a heartbeat committing **nothing**. It fires no subscriptions. It
+  is the liveness beat for inside a slow step. Pending values wait for the iteration's `tick()`, so one
+  iteration is still one commit.
 - **`commit_external(seq)`** adds the seq of a value sent through a separate channel handle to the pending
   commits. Without it, such a value is uncommitted.
 - **`steps(total, *, resume_from, checkpoint=None)`:**
@@ -108,7 +113,9 @@ data-plane project.
     with an older checkpoint.
   - **`total` counts the driver's iterations,** which is a convenience. The driver's position is saved and
     restored with the checkpoint (§6), and is never stored on the log.
-  - **`checkpoint=`** is described in §6.
+  - **`checkpoint=`** is described in §6. Its default, `None`, means no checkpoints. That is allowed under
+    the no-defaults rule because it cannot change a result: it changes only what can be resumed, never a
+    value.
 - **The completed exit.** `stopped(completed=True)` first writes one last heartbeat committing any pending
   values, such as metrics written after the loop. It then names that heartbeat as `final_beat`.
 - **The error exit.** An error exit inside an iteration commits nothing, because the unfinished
@@ -135,7 +142,8 @@ edge (the owner's no-defaults rule).
   progress.
 - **`aligned(ch, names, *, head, progress)`** aligns values by shared commit. Each node that commits any of
   `names` becomes one row.
-  - The row's x is the prefix length of the `progress` stream at that node.
+  - The row's x is the prefix length of the `progress` stream through that node, including that node's
+    own commits.
   - Metrics that start late or have gaps line up by commit.
   - `progress` is required. Choosing the heartbeats themselves is allowed where they mean iterations.
 - **`history(ch, name, schedule, *, head)`** replays a schedule over `series`.
@@ -181,6 +189,8 @@ positional reading implied, the same standard as the 0.2.0 → 0.3.0 step.
 - **Commits.** A `value` record is committed by the heartbeat of its own claim whose old `step` equals the
   value's old `step`. The claim is the latest claim before the value: the old window rule, with
   misattribution copied faithfully as a known limit.
+- **Stepless values** (old `step` null; 1,843 metric names in mycooc) are committed by the next heartbeat
+  of their claim, by position, as the old reading implied.
 - **Missing ticks are repaired.** Where a claim's values carry a step label that no heartbeat of that claim
   carries, a **synthetic heartbeat** is inserted where the tick should have been, and commits them.
   - **Renumbering.** The copied log is renumbered, and every seq reference is renamed with it:
