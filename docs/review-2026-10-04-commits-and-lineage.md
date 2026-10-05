@@ -883,3 +883,23 @@ cells are always tuples; `streams()` returns names only).
 - **The tests:** 0.20 (P1; P2 with its exceptions; P3 as per-cell attribution).
 - **The rule about renumbering:** 0.21 (the only renumbering step, enforced by the runner).
 - **The forced batch is complete.**
+
+**Item 1: D1 adopted, with renames (the owner, for lexical economy):**
+- **The methods are named after the records they write,** as `stopped()` already is: `commit()` writes
+  `lifecycle.commit`, and `heartbeat()` writes `lifecycle.heartbeat`. "Tick" and "beat" leave the vocabulary.
+  - **Why the rename helps:** like E5, it forces every call site to be examined for D7's "emit before you
+    commit": mycooc's 9 `tick(` calls and the 2 in the examples.
+- **`commit_external(seq)` becomes `include(seq)`.** It adds an outside value to the *next* commit, which
+  under the drivers the driver writes, so the old name would misread as "commit now".
+- **The commit's field `commits` becomes `values`,** so "commits" no longer means both a list of value seqs
+  and E3's count of commits:
+  `lifecycle.commit {claim_seq, consumed_seq, parent, values, fired, t}`.
+- **A heartbeat on the value plane was considered and rejected:**
+  - it must name its claim at arrival, which values do not;
+  - it carries the acknowledgement;
+  - it would need a reserved metric name;
+  - committed, it puts wall-clock-rate elements into the lineage's data.
+- **Liveness is already opt-in on both sides:** the writer calls `heartbeat()` or not, and the observer
+  sets `heartbeat_timeout` or not.
+- **A worker-declared liveness promise** (the threshold belongs with the run, not each observer) is under
+  discussion as a backlog entry; see the next entry.
