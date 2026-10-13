@@ -60,3 +60,29 @@ is exactly where coordination is paid. Name that core, and every later design qu
 
 **Next step:** confirm or extend the list against the code, then record it in `design-v0.2.md` as the
 coordination budget.
+
+## Where layer 2 is stricter than if-built-today
+
+From the layer-2 walkthrough (item 8, [review](../review-2026-10-04-commits-and-lineage.md) §12).
+
+**Where the two agree.** The source/eager duality is if-built-today's own split between **demand** and
+**subscription** (`3-questions.md` §"What to internalise").
+- Notification about eager data becomes the reader's own cursor.
+- Only demand for values that exist on demand reaches the worker.
+
+**Stricter 1: a `nak` for sampling demand on an eager name.** if-built-today leaves a question that
+matches no producer rule unanswered, and serves demand for told-anyway facts by scheduling (runstate's
+`ensure`). The `nak` is the explicit form of "matches no producer rule", given declared sources. It is kept
+because a silently unanswered subscription would pin a `serve()` worker. This is a mild tension.
+
+**Stricter 2: one kind per name.**
+- **The case if-built-today allows:** one relation with some instances told eagerly and others produced on
+  demand ("loss every 100 iterations, sampled on request in between").
+- **What layer 2 does instead:** it takes two names. Today's code supports the mixed case, because `emit`
+  updates the register.
+- **Where it comes from:** option S's indices, since an index over demand-dependent instances depends on the
+  asker (D6). if-built-today has only identity keys.
+- **How it converges:** through C2's node keys. Indices apply only to names that are eager throughout the
+  lineage, and any declared source can be sampled at any node, with sampling a node that is already told
+  answered from the log (if-built-today's residual). This adds capabilities and changes no record.
+- **Revival trigger:** a consumer that wants sparse eager points and on-demand samples under one name.

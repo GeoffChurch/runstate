@@ -1095,3 +1095,8 @@ commit marker.**
   - tagging samples with request ids (routing on the fact; cannot cover eager streams);
   - a separate `answered` record per firing (two records for one event).
 - **Applicability:** the corpus has 0 subscriptions, and the in-repo examples already target sources.
+- **Against if-built-today (the owner's question):** the duality is its own demand/subscription split.
+  It is stricter in two places: a `nak` where if-built-today leaves a question unanswered (mild, kept for
+  `serve()`), and one kind per name (real but latent, inherited from option S's indices; converges via
+  C2's node keys). Both are recorded in if-built-today-carryover.md, which becomes the convergence map per
+  0.11.
