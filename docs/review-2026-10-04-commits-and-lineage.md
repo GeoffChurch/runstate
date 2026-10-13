@@ -1114,3 +1114,43 @@ commit marker.**
   - today's fencepost paragraph (observables.py:579);
   - the memoizer's -1 sentinel;
   - translation's mirror has drifted (keys.py:75, `floor_ok(None, 0)` is False).
+
+**Item 10: the migration's remaining rules (adopted).**
+- **(a) A commitless claim's `resume_from`** is the newest earlier claim's newest commit, labelled as an
+  inference. `null` would make 7 runs read empty (8,449 cells), and mycooc's `checkpoint_last.pt` is a
+  consumer's file, while the generic migration uses the log alone.
+- **(b) M5 as rewritten** (§11.3). A step commit is synthesized only:
+  - for a tick skipped between two real beats;
+  - for a trailing step at or below a clean exit's last step;
+  - for a trailing step s, when a later claim's first real beat is s+1.
+
+  Leading values go to the claim's first commit.
+- **(c) A worker-written 0.3.0 `stopped` becomes the exit node (E1):**
+  - `parent` is the newest commit, else the resume point;
+  - `values` are those between the last beat and the stop, or `[]` on an error exit;
+  - `fired` is `[]`;
+  - `final_step` is dropped.
+- **(d) Third-party stops are reclassified (item 5).**
+  - **mycooc's four writers:**
+    1. the runner's hard-crash backstop (run_experiment.py:689, which copies `final_step=progress(...)`;
+       hence d5763f's step 600);
+    2. the "clear staged stop" path (run_experiment.py:3926);
+    3. the reclaim tool;
+    4. the repair script.
+  - **Classification:**
+    - a second `stopped` for an already-stopped claim is external;
+    - writer 1's error text, "subprocess exited N with no terminal record", is external;
+    - the rest goes to a census in the implementation round.
+  - **The fallback for an unclassifiable lone stop** is a self-report that commits nothing. It never
+    vouches for a possibly torn iteration, and errs towards committing too little, as M4 does.
+- **(e) In the implementation round:** implement the final rules, re-measure P1–P3 with per-cell
+  attribution, run (d)'s census, and resolve the 41 cells in 625dda74. Each must get a named rule or a
+  golden log, never a tolerance.
+- **Already gone:** M11 (D1's pin), M12 (E1), and any migration of subscriptions or in-claim rewinds (none
+  exist).
+- **mycooc's upgrade:**
+  - writers 1 and 3 write the claim-named external death report;
+  - writer 2 withdraws its stops (see the next entry);
+  - writer 4 is deleted;
+  - the `checkpoint_last` files are converted from steps to nodes.
+- **The owner pulled withdrawal into layer 2,** rather than leaving writer 2 as a known gap.
