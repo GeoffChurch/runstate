@@ -1046,3 +1046,18 @@ commit marker.**
   - first use fixes the kind;
   - one kind for the whole run, which needs a run-level arbiter and refuses code changes;
   - a kind flag on each value, which is derivable and costs bytes on every value.
+
+**Item 7: D6 and E3 adopted.**
+- **A source's samples are keyed by their committing node,** read through `aligned` and `answers`. Their
+  identity (name, node) does not depend on the asker; their existence does.
+- **Progress atoms, `prefix` and `ensure(n)` name eager streams only.** A progress atom naming a source
+  gets a `nak` of reason `unsatisfiable`. The circularity check is deleted.
+- **`{commits: n}` is the lineage's own clock.** It is a position coordinate (class (i)), durable across
+  claims, and takes over `step`'s place as the run-absolute atom in time-lease-boundary.
+- **The atom set:** time, firing count, `{stream, n}` on eager streams, and `{commits: n}`.
+- **Pin:** a subscription is judged against the declaration of the claim evaluating it. A progress atom on
+  a name that claim declares a source gets `unsatisfiable`, keeping "registered ⟺ a future firing is
+  possible" for `serve()`. The request id is spent, so the asker resubscribes if the kind changes back.
+- **The examples:**
+  - four switch `every {step: 1}` to `{commits: 1}`;
+  - reuse and redrive switch `loss` to `emit`.
