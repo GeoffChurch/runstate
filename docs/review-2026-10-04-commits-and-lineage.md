@@ -1061,3 +1061,37 @@ commit marker.**
 - **The examples:**
   - four switch `every {step: 1}` to `{commits: 1}`;
   - reuse and redrive switch `loss` to `emit`.
+
+**Item 8: D4 adopted, with the source/eager duality.**
+- **The wart (the owner's question about ergonomics).** As drafted, a subscription could *target* an eager
+  stream, which merges two acts:
+  - asking for a value that exists only on demand (a source), where firing immediately is natural;
+  - selecting from values that exist regardless (eager), where firing on events is natural.
+
+  The `[]` first answers and the `until {count: 2}` idiom were the symptoms. Worse, a one-shot for "the
+  next `eval_acc`" would be answered `[]` and spent, silently. Today's code avoided this by accident:
+  `emit` also updates the register (worker.py:247).
+- **The duality:**
+  - **Subscription targets are sources,** which are sampled, or nothing, which is pure demand (a keepalive;
+    worker.py:547 already allows it). Targeting an eager name gets a `nak` of `unsatisfiable`: "eager
+    streams are read, not subscribed".
+  - **Progress atoms are eager streams or `{commits: n}`** (item 7).
+  - In short: you ask for sources and measure by eager streams. This matches if-built-today (asking applies
+    to facts that exist on demand) and the lazy-stream direction (demanding an existing element is a read).
+- **What follows:**
+  - **`fired`** names source subscriptions only; time atoms, the registration point, resume and rewind
+    still need it.
+  - **`answers()`** returns samples, one per firing.
+  - **The immediate first firing stays,** now natural everywhere.
+  - **Live observers of eager data read the log incrementally,** via `Watcher.iter_events` and D9's fold,
+    with no latency penalty.
+- **Pins:**
+  - **An incremental `answers`** for live subscribers.
+  - **A source with no value yet does not fire.** The subscription waits for the first `set`, as reading
+    an unbound dataflow variable blocks; today it answers `None`, at worker.py:547.
+  - **The `[]` pin and the idiom are dropped.**
+- **Rejected:**
+  - replaying the schedule;
+  - tagging samples with request ids (routing on the fact; cannot cover eager streams);
+  - a separate `answered` record per firing (two records for one event).
+- **Applicability:** the corpus has 0 subscriptions, and the in-repo examples already target sources.
