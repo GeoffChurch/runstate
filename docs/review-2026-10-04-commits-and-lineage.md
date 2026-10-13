@@ -1100,3 +1100,17 @@ commit marker.**
   `serve()`), and one kind per name (real but latent, inherited from option S's indices; converges via
   C2's node keys). Both are recorded in if-built-today-carryover.md, which becomes the convergence map per
   0.11.
+
+**Item 9: E5 adopted.**
+- **Every progress number is a count:** elements or commits along the lineage up to the head. Empty is 0,
+  with no sentinel, and a target n is reached if and only if count ≥ n.
+- **Elements are accessed from 0,** so counts and indices are `len` and `range(N)` of one convention.
+- **One read, `prefix_len(ch, X, *, head)`,** where X is a stream or `Commits()`.
+- **`progress` is retired, not redefined.** Rubric 1 (it was the same number as `prefix_len`), and a new
+  name breaks every unedited call site loudly instead of leaving a silent off-by-one.
+- **The rest:** `aligned`'s x-axis is the count at each node, and `Running.step` becomes `Running.head`
+  plus its commit count.
+- **Evidence for the change:**
+  - today's fencepost paragraph (observables.py:579);
+  - the memoizer's -1 sentinel;
+  - translation's mirror has drifted (keys.py:75, `floor_ok(None, 0)` is False).
