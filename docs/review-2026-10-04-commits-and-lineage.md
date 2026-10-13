@@ -967,8 +967,8 @@ commit marker.**
   - **Commits advance the position.**
   - **`w.rewind(checkpoint)` writes `lifecycle.rewind {claim_seq, resume_from, t}`,** which restates the
     position only. The field name is reused from `started`.
-- **The head:** the newest claim's newest position-bearing record, whether a commit, a rewind or the claim
-  itself.
+- **The head:** the newest claim's newest position-bearing record: a commit, a rewind, the claim itself,
+  or its `stopped` (under E1 a worker's `stopped` is the exit node; corrected at item 5).
 - **One rebuild trigger:** "the position was declared", by a claim or a rewind. It covers 0.8's rebuild at
   resume and at rewind.
 - **Pins:**
@@ -990,3 +990,40 @@ commit marker.**
 - **`serve()` explained for the record.** It is the driver for leased demand: it runs while live
   subscriptions exist and retires at zero (examples/monitor). Leases (time or count atoms) are bound to
   their episode by `lifecycle.bound` (time-lease-boundary.md).
+
+**Item 5: D3 adopted in a refined form.**
+- **Settledness is a property of a node.**
+  - **A node is closed if and only if it is a completed exit.** By E1 and item 4, nothing extends it.
+  - **A read is settled if and only if its subject cannot grow:** always under `AtNode(x)`, and under
+    `LatestClaimHead` if and only if the head is closed.
+  - **The "newest claim" clause is dropped.** Item 4's head rule already confines the head to the newest
+    claim.
+  - **Permanence is trivial,** because a node's kind never changes.
+  - **Test invariant:** settled if and only if the head is a completed `stopped`.
+- **Verdicts separate the two viewpoints by record,** replacing the outcome-kind rank as the primary rule.
+  - **`lifecycle.stopped` is the worker's self-report only.** There is at most one per claim, by the
+    dying-breath CAS, and under E1 it is always a node. E1's `values: null` case is removed.
+  - **A third party's death report names the claim** and carries its evidence (for example
+    `slurm:TIMEOUT`). It sits on the external plane beside `launcher.terminated`, which names a launch;
+    its name is still to settle. This is the backlog's `lifecycle.released`, corrected to the external
+    plane and moved into layer 2.
+  - **The verdict is the readable self-report if one exists, else the external reports.** That is the
+    precedence `peek_terminal` already applies between `stopped` and `launcher.terminated`
+    (observables.py:346).
+  - **An unreadable self-report counts as absent.** It is reported, not raised.
+  - **A fixed rank survives only among disagreeing external reports.** There are none in the corpus.
+- **The evidence (mycooc):**
+  - **The reclaim tool is a reaper.** It reads SLURM accounting, and writes "the `lifecycle.stopped` record
+    the killed runner would have emitted" (scripts/reclaim_experiment.py:21), because no external record
+    can name a claim: mycooc's claims carry no launch ids.
+  - **`repair_malformed_stopped.py` exists only because a malformed terminal raises forever.**
+  - **The six corpus conflicts** (d5763f completed and 94a78 errored, then released; four malformed, then
+    repaired) all resolve as the rank did, now for a stated reason.
+- **mycooc's upgrade gains two items:**
+  - the reclaim tool writes the external report instead of `stopped`;
+  - the repair script is deleted.
+- **Item 10's migration census:** reclassify 0.3.0's third-party stops.
+  - **By structure:** a second `stopped` for an already-stopped claim is external.
+  - **A lone release for a stranded claim** needs more evidence.
+  - **A stop that cannot be classified** stays as written, which repeats the original misattribution and
+    adds none.
