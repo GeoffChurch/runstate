@@ -1154,3 +1154,29 @@ commit marker.**
   - writer 4 is deleted;
   - the `checkpoint_last` files are converted from steps to nodes.
 - **The owner pulled withdrawal into layer 2,** rather than leaving writer 2 as a known gap.
+
+**Item 10b: withdrawal, pulled into layer 2 (adopted).**
+- **The finding:** `control.unsubscribe` mixed two viewpoints. Askers wrote it to withdraw a subscription,
+  and the worker wrote it as the expiry record (design-v0.2 §107). Stops had no withdrawal at all, so
+  mycooc's runner forged a `stopped` (writer 2).
+- **The split by viewpoint:**
+  - **`control.withdraw`** is the asker's record (`request_id` = the request; body `{t}`), for stops and
+    subscriptions alike.
+  - **`lifecycle.expired`** is the worker's record (`request_id` = the subscription; body
+    `{claim_seq, t}`), written after the commit at which the subscription ended.
+  - **`control.unsubscribe` is retired.**
+- **The answer fold, by name and order-free:**
+  - a subscription is spent by `expired`, `withdraw` or `nak`;
+  - a stop is spent by `stopped.honored`, `withdraw` or `nak`.
+- **Expiry is not a field on the commit,** because the polled "is R spent?" fold must route on the envelope
+  `request_id` (as in item 2).
+- **Pins:**
+  - **A withdrawal after `commit()` has returned True for a stop is too late.** The `stopped` honours only
+    stops still pending, and the outcome is preempted.
+  - **A withdrawn lease is spent, and so void.**
+  - **Honor-system authority, as before.** Hash-reveal (C3) stays backlogged with no reserved field.
+- **The migration:**
+  - there is nothing to split, since the corpus has 0 subscribes and 0 unsubscribes;
+  - a 0.3.0 `stopped` that names no claim becomes one `control.withdraw` for each stop it honours. That
+    writer 2's records name no claim joins (d)'s census.
+- **mycooc's writer 2** writes one `control.withdraw` for each id in `undischarged_stops`.
