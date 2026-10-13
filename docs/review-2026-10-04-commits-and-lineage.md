@@ -847,8 +847,9 @@ cells are always tuples; `streams()` returns names only).
   Derived streams are named by the demand that creates them, and today's offered register is the identity
   delegate.
 - **Sources can change at runtime, by the worker only.** Dynamic declaration (a worker-written record, in
-  force from its commit onward along the lineage) and derived streams named by their demand go to the
-  programmable-subscriptions backlog. Observers change demand, not sources.
+  force from its record onward *within its claim*; corrected at item 6, since "along the lineage" was
+  wrong across a rewind) and derived streams named by their demand go to the programmable-subscriptions
+  backlog. Observers change demand, not sources.
 - **E2 becomes "the declaration in force at the committing node".** It is identical to per-claim
   declaration today, and it generalizes. This adjusts items 6 and 7.
 
@@ -1027,3 +1028,21 @@ commit marker.**
   - **A lone release for a stranded claim** needs more evidence.
   - **A stop that cannot be classified** stays as written, which repeats the original misattribution and
     adds none.
+
+**Item 6: D5 and E2 adopted, with the source framing.**
+- **The declaration:** `Worker(…, sources=[names])` is required and keyword-only, and is recorded on
+  `lifecycle.started {…, sources}`.
+- **Misuse raises:** `set` on an undeclared name, `emit` on a source, and `include` of a source.
+- **Membership:** a committed value is an element if and only if the claim that committed it did not
+  declare the name a source. It costs one point read per claim, cacheable.
+- **Why this is natural (who/where):**
+  - sources are a property of the witness, so they go on the claim;
+  - membership asks which witness committed the value, so it is decided by name;
+  - a name may change kind between claims (code edited, then resumed).
+- **Correction:** a future dynamic declaration is in force within its claim, from its record onward (a
+  witness property, like class (ii)). It is not in force "along the lineage", which fails across a
+  rewind: the process still exposes the source after rewinding past the declaration.
+- **Rejected:**
+  - first use fixes the kind;
+  - one kind for the whole run, which needs a run-level arbiter and refuses code changes;
+  - a kind flag on each value, which is derivable and costs bytes on every value.
