@@ -950,3 +950,43 @@ owner's form:
 - **mycooc's upgrade gains two items:**
   - choose the checkpoint before claiming (read its node, then claim, then load, then assert);
   - move `_emitter.step` before the commit (main.py:922–923, D7).
+
+**Item 4: a rewind is its own record, (C). It replaces both E4's re-claim and the drafted in-claim
+commit marker.**
+- **The diagnosis (from the owner's question about delegates).** The episode did two jobs:
+  - *who* is computing: the witness, given exclusive ownership by the claim CAS, which holds liveness,
+    leases and process-memory state;
+  - *where* it is computing from: the position.
+
+  A rewind changes only *where*.
+  - **The re-claim forced *who* to change too.** Hence its costs: void leases, `serve()` retiring at zero
+    demand, a relaunch race window, and a stop pin.
+  - **The drafted marker put *where* in a commit.** Hence the over-count.
+- **The records:**
+  - **The claim states *who*, plus where it starts.** It must, or failure 2 returns.
+  - **Commits advance the position.**
+  - **`w.rewind(checkpoint)` writes `lifecycle.rewind {claim_seq, resume_from, t}`,** which restates the
+    position only. The field name is reused from `started`.
+- **The head:** the newest claim's newest position-bearing record, whether a commit, a rewind or the claim
+  itself.
+- **One rebuild trigger:** "the position was declared", by a claim or a rewind. It covers 0.8's rebuild at
+  resume and at rewind.
+- **Pins:**
+  - **The target** is any commit of the run, validated as `resume_from` is, with the same load assertion.
+  - **Pending values at a rewind are discarded.** They stay on the log outside every lineage, as M4 does;
+    commit first to keep them.
+  - **A pending stop stays pending** and is honoured at the next commit or exit, with no special rule.
+  - **The rewind record witnesses liveness,** as commits and heartbeats do (liveness-promise updated).
+- **Against the rubric:**
+  - *independence*: a rewind cannot be derived without changing ownership;
+  - *orthogonality*: each record carries one concern.
+- **The earlier objection was backwards.** "The marker carries what a claim carries, minus the claim" is
+  the claim's factorization into its two concerns, not redundancy.
+- **The state classes** ((i) lineage folds, rebuilt at any position change; (ii) wall time, which survives
+  a rewind and dies with the witness; (iii) unlogged-source folds, reset at any position change) are
+  recorded in [programmable-subscriptions](backlog/programmable-subscriptions.md). State with no declared
+  class is treated as (iii), which reproduces the re-claim's behaviour, so (C) weakly dominates.
+- **Removed from the tracked list:** time-lease continuity across an in-process rewind. (C) provides it.
+- **`serve()` explained for the record.** It is the driver for leased demand: it runs while live
+  subscriptions exist and retires at zero (examples/monitor). Leases (time or count atoms) are bound to
+  their episode by `lifecycle.bound` (time-lease-boundary.md).

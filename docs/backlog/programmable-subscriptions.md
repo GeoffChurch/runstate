@@ -63,6 +63,26 @@ untested.*
   - **Over unlogged worker data:** they cannot be replayed. This is the bandwidth case, such as reducing a
     large array the worker `set`s into a histogram. Only the logged output survives.
 
+## State across rewinds and claims
+
+From the layer-2 walkthrough (item 4, [review](../review-2026-10-04-commits-and-lineage.md) §12). A program's
+state falls into three classes. Each class binds to what it depends on:
+- **who is computing:** the witness, changed only by a claim;
+- **where it is computing from:** the position, changed by a claim or a rewind.
+
+| Class | Example | At a position change (claim or `lifecycle.rewind`) | At a witness change (claim) |
+|---|---|---|---|
+| (i) a fold over the lineage | `every`'s baseline; "fire when the loss beats its best so far" | rebuilt from the lineage | rebuilt |
+| (ii) a function of wall time | a keepalive lease | survives | dies (bound to its episode) |
+| (iii) a fold over unlogged sources | an average of gradient norms | reset | dies |
+
+- **A program is in class (i) only if all of its state is.** That is time-lease-boundary's "no per-atom
+  carve-out", applied to programs.
+- **State with no declared class is treated as (iii).** That safe default reproduces "every rewind is a new
+  episode", while classified state does better.
+- **Class (iii) is new with programs.** Today's schedule atoms reference only time, counts and logged
+  streams.
+
 ## Relation to the condition algebra and `ensure`
 
 - **Target conditions belong here,** as shipped programs, and not in the schedule algebra. `control.target`

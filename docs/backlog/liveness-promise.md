@@ -23,8 +23,9 @@ the workload. Design §8 calls the result the irreducible dead-vs-busy ambiguity
 **Every liveness record carries `next_within`:** the number of seconds within which the worker promises its
 next liveness record.
 
-- **Which records:** `started`, `lifecycle.commit` and `lifecycle.heartbeat`, the records that witness
-  liveness under layer 2 (D1's pin). `stopped` needs none, since nothing follows it.
+- **Which records:** `started`, `lifecycle.commit`, `lifecycle.heartbeat` and `lifecycle.rewind`, the
+  records a live worker writes for its claim, which witness liveness under layer 2 (D1's pin; the rewind
+  record from walkthrough item 4). `stopped` needs none, since nothing follows it.
 - **Each record is self-contained,** so the latest record alone decides. A field meaning "unchanged" would
   force a search back through history.
 - **`started` carries the first promise,** so startup and loading, often the longest silence, are covered
