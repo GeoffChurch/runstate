@@ -321,10 +321,9 @@ Production is triggered by a demand matching a producer's rule. A subscription t
 body literal that fires on arrival, seen from the transport's side, and it needs no object in the store —
 what a subscriber missed is still there when it returns, since nothing retracts. No `Open` sort and no
 `denote` are needed, so no reflection is bought. The shipped `control.subscribe` is what this replaces:
-three concerns in one record (a read, a route, a trigger), pairing answers to requests **by log position**
-— the positional answer fold — which [`README.md`](README.md) §"Two commitments" forbids. Its `request_id` survives only as a
-routing handle — who asked, so who is told — kept outside the question's identity, or identical questions
-stop being one record.
+three concerns in one record (a read, a route, a trigger). Its `request_id` survives only as a routing
+handle — who asked, so who is told — kept outside the question's identity, or identical questions stop
+being one record.
 
 **It does not carry a dependency graph, and the logical layer needs none.** When a handler serving
 `g` posts an `asked` record for `p`, the store cannot tell that from an unrelated querier — symmetric

@@ -171,6 +171,15 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
   5. fenced worker writes, possibly optional given 1.
 
   The target is that a wrong claim costs waste, never corruption. It supersedes episode-aim, below.
+- **What carries over from if-built-today** — [if-built-today-carryover](if-built-today-carryover.md).
+  LIVING (2026-10-04).
+  - **Adopted:** identity as data (layers 1–2) and settledness (layer 2).
+  - **Next:** demand as `asked` facts.
+  - **Open:**
+    - keeping identity attached through aggregation;
+    - objections rather than retraction;
+    - naming runstate's non-monotone core: the claim CAS, leases, "latest claim" reads, registers, the dying
+      breath.
 - **Demand on lazy streams** — [demand-streams](demand-streams.md). DIRECTION (2026-10-04).
   - **The idea:** one primitive, demand on a prefix of a lazy, memoized stream. It would subsume `ensure`,
     `history`, subscriptions, lazy launch, leases, early stopping, and stopping as withdrawn demand.
@@ -182,6 +191,11 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
     need no coordination (CALM).
   - **Detail:** a ladder of expressiveness, which points to definite clauses, and a split between programs
     that can be replayed and those that cannot.
+- **Liveness promises** — [liveness-promise](liveness-promise.md). DIRECTION, form chosen (2026-10-05).
+  - **The idea:** each liveness record (`started`, commit, heartbeat) says within how many seconds the next
+    is due, so the dead-vs-busy threshold is declared by the worker, per phase, instead of guessed by each
+    observer.
+  - **Replaces** the Watcher's `heartbeat_timeout`, and the need for background beating threads.
 - **Authenticated and confidential records** — [authenticated-records](authenticated-records.md). DIRECTION
   (2026-10-04).
   - **The idea:** signed control and lifecycle records close the "honor system" gap.
