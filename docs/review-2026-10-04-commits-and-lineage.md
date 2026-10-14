@@ -569,7 +569,7 @@ From L4's inventory, with file and line references:
   residual, and *refuses* merging, because anti-unification over-approximates (`3-questions.md` §181–184,
   §305–311).
 - **"Withdrawal is retraction; polarity is the answer."** `asked` is unpolarised. "Still wanted" is
-  control. Withdrawal is a lapse plus a positive `withdrawn(k)`: ordinary facts (`5-domain.md` §232–235).
+  control. Withdrawal is a lapse plus a positive `withdrawn(k)`: ordinary facts (`5-domain.md` §"Still wanted: leases").
 - **"A stop is withdrawn demand."** An operator's stop is a told fact that needs authority (README §189–191).
 - **Its interim-rule note** becomes moot under D5 and D6.
 
@@ -593,7 +593,7 @@ From L4's inventory, with file and line references:
 - **Rows it lacks:** hash-reveal withdrawal, monotonic clocks, declared kinds (D5), reclamation tiers, and
   vouching as commit, which layer 2 already adopted without saying so.
 
-### C2. Edits to if-built-today itself (proposed; the owner approves before any commit)
+### C2. Edits to if-built-today itself (adopted at §12, item 11)
 
 The direction these follow is if-built-today taking what runstate has measured:
 - **Re-key `5-domain.md`'s values** from `at(R,S,M)` and `at(E,S,M)` to `at(N,M)` with `parent(N,P)`,
@@ -609,7 +609,7 @@ The direction these follow is if-built-today taking what runstate has measured:
 
 ### C3. New backlog rows (runstate adopting from if-built-today)
 
-- **Hash-reveal withdrawal** (`5-domain.md` §205–254): subscribe carries a commitment, and unsubscribe reveals
+- **Hash-reveal withdrawal** (`5-domain.md` §"Still wanted: leases"): subscribe carries a commitment, and unsubscribe reveals
   it. It is unforgeable, needs no ordering, and one asker cannot withdraw another's demand.
 - **`time.monotonic` for durations** (`1-logic.md` §309–312). The witnessed-staleness measurement supports it.
 - **if-built-today's reclamation tiers** for collecting abandoned branches and unvouched checkpoints.
@@ -1180,3 +1180,36 @@ commit marker.**
   - a 0.3.0 `stopped` that names no claim becomes one `control.withdraw` for each stop it honours. That
     writer 2's records name no claim joins (d)'s census.
 - **mycooc's writer 2** writes one `control.withdraw` for each id in `undischarged_stops`.
+
+**Item 11: C2, carried into if-built-today (adopted).**
+- **How:** seven drafts and seven independent reviews: four rounds of fixes, a scoped check and two
+  holistic reads. The forms withdrawn along the way are recorded by topic in
+  [if-built-today/decisions/5-domain.md](backlog/if-built-today/decisions/5-domain.md).
+- **The C2 list, as adopted:**
+  - **values keyed by node,** one record per event: `commit(c(E, K), P, Ms)` and
+    `exit(end(E), P, Ms, O, Hs)`, with `claim(E, I, From)` and `rewind(E, K, To)`. The run is the root
+    node, at depth 0, and every node vouches for its values, honestly whatever the determinism;
+  - **completion per lineage:** `finished(H, A)` from a completed exit replaces the run-keyed tail;
+  - **stops scoped:** a stop names a claim;
+  - **the claim order carries the observer plane,** and the head is the one report for lineage reads;
+  - **the stale positional text struck:** README's calibration, 3-questions' positional pairing, the
+    `discharged` example and the `unsubscribe` claim;
+  - **mapped:** verdicts by viewpoint, the per-node dual of progress, withdrawal and the source/eager
+    split;
+  - **noted:** the liveness promise as a lease run the other way.
+- **Beyond the C2 list, each approved during the reviews:**
+  - **the step is depth,** not a user stream; a user's own step label is a metric;
+  - **node names carry claim, order and kind,** so "an exit cannot be extended" is a check on the message
+    alone;
+  - **the claim order `I` is data;** without an arbiter it is a Lamport clock (`open.md` 5);
+  - **a forbid,** `forbidden(F, N)`: forbidding further computation, separate from a stop, halting the
+    claims running in its scope and needing no roster. It is if-built-today's own; layer 2 has none;
+  - **stops and forbids named by hash commitments** and withdrawn by reveal, as leases are, with a
+    `withdrawn` record always ground;
+  - **`refused` and `died`** in if-built-today's vocabulary, and a stop discharged once its claim has
+    ended;
+  - **layout:** a new §"Halting and withdrawing", and §"Runstate, mapped" (formerly "Today's runstate,
+    mapped") with shipped and decided kept apart.
+- **For the spec round:** whether runstate's backlog gains a forbid row, and what its revival trigger is.
+  Hash-reveal withdrawal is C3's row; for runstate it would reach stops through item 10b's
+  `control.withdraw`.
