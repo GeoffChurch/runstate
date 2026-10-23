@@ -1553,3 +1553,13 @@ as each settles.
   (`backlog/log-tiering.md`) until a second consumer wants a tier. Per-episode logs as storage were weighed
   and set aside there: sound only with the frontier kept in Postgres, and every reader would stitch files to
   rows.
+- **12d, running jobs depending on the coordination server: accepted** (approved). With runs' logs on
+  `PostgresChannel`, an outage of the server ends every running job's session: its next write raises, and the
+  iteration in flight is lost. It is never a correctness failure, with no double claim and no committed record
+  lost while `synchronous_commit` and `fsync` are on, and nothing hides it, since buffering through an outage
+  would be a silent reconnect. The worker cannot write its own exit either, so its claim stays held until a
+  report ends it. The long-term shape is recorded in `backlog/outage-as-pause.md`: a worker re-claims after a
+  lost session, ending its own old claim on session evidence and resuming from its last landed node, so an
+  outage costs a pause. It is decided with 12b, which it needs. The server's placement is the consumer's:
+  where its failure coincides with one the jobs already suffer, as mycooc's login node did before it lost on
+  disk, CPU and the admins' consent.

@@ -373,6 +373,9 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
   on and in a file once its latest claim has `ended`. mycooc tiers its own (move and re-import, where every
   write must re-import first); runstate builds the general form, copy-not-move, when a second consumer wants a
   tier.
+- **outage-as-pause — DEFERRED** ([`outage-as-pause.md`](outage-as-pause.md)): a worker whose Postgres session
+  drops waits for the server, ends its own old claim on session evidence, and claims afresh from its last
+  landed node, so an outage costs a pause, not a requeue. Decided with mycooc's 12b.
 - **channel-redis** — a Redis backend; an alternative to Postgres for cross-host scenarios
   (lighter daemon, weaker durability). Dominated by the shipped channel-postgres for the
   same use case; revisit only if the lighter-daemon tradeoff is specifically wanted.
