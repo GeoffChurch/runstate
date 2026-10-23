@@ -569,8 +569,9 @@ RESUMED_FROM_A_STEP_COMMITTED_AFTER_THE_CLAIM = _dated(
 # wrote a step-3 value after B's claim, which pass 1 gives B. B beat 1, and,
 # displaced by C in turn, beat 2 after C's claim. C first beat 4. Pass 3's third
 # place synthesizes B's trailing step 3 for C, since B is the newest claim to
-# reach it; but B's step 3 is placed after its parent, B's step 2, which is
-# above C's started, so pass 4 passes over it. No other claim holds step 3.
+# reach it; but B's step 3 is placed after its parent, B's step 2, beaten above
+# C's started, so pass 4 passes over it. No other claim holds step 3: C's first
+# commit is a parentless resume, and nothing continues B's step 3.
 DOUBLY_DISPLACED = _dated(
     [
         r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
@@ -583,6 +584,24 @@ DOUBLY_DISPLACED = _dated(
         r(8, "lifecycle.started", _started("local://n3/33", 8.0)),
         r(9, "lifecycle.heartbeat", _beat(2, 0, 5, 9.0)),  # B's
         r(10, "lifecycle.heartbeat", _beat(4, 0, 8, 10.0)),
+    ]
+)
+
+# A resume from a tick a displaced worker skipped after the claim: A beat 0; B
+# claimed; A, displaced, beat 1 and 3 after B's claim, skipping step 2's tick,
+# and B, loading A's step-2 checkpoint, first beat 3. A's step 2 is synthesized
+# (a skipped tick), and is placed after its parent, A's step 1, beaten above B's
+# started: it is no candidate, as A's real step 2 would not be, and B's first
+# commit is a parentless resume.
+RESUMED_FROM_A_TICK_SKIPPED_AFTER_THE_CLAIM = _dated(
+    [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+        r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+        r(3, "lifecycle.started", _started("local://n2/22", 3.0)),
+        r(4, "lifecycle.heartbeat", _beat(1, 0, 1, 4.0)),  # A's
+        r(5, "lifecycle.heartbeat", _beat(3, 0, 1, 5.0)),  # A's
+        r(6, "lifecycle.heartbeat", _beat(3, 0, 3, 6.0)),
+        r(7, "lifecycle.stopped", _stopped(True, None, 3, 3, [], 7.0)),
     ]
 )
 
@@ -801,6 +820,9 @@ GOLDEN = {
     ),
     "resumed_on_an_older_claims_step": RESUMED_ON_AN_OLDER_CLAIMS_STEP,
     "doubly_displaced": DOUBLY_DISPLACED,
+    "resumed_from_a_tick_skipped_after_the_claim": (
+        RESUMED_FROM_A_TICK_SKIPPED_AFTER_THE_CLAIM
+    ),
 }
 
 
@@ -1412,11 +1434,25 @@ def test_m1_takes_an_older_claims_candidate_below_a_newer_claims_later_step():
     )
 
 
-def test_a_candidate_waits_for_its_parent():
-    """Pass 3 and pass 4 choose apart (a known limit): B's step 3 is synthesized
-    for C, but its parent, B's step 2, was beaten after C's claim, so it is no
-    candidate. C's first commit is a parentless resume, and nothing continues B's
-    step 3."""
+def test_a_synthetic_commit_waits_for_the_beat_before_it():
+    """A synthetic commit is placed after its parent: A's skipped tick at step 2
+    follows A's step-1 beat, which follows B's started, so it is no candidate."""
+    assert _synth(RESUMED_FROM_A_TICK_SKIPPED_AFTER_THE_CLAIM).commits[1] == [
+        (0, 2, []),
+        (1, 4, []),
+        (2, SKIP, []),
+        (3, 5, []),
+    ]
+    assert _links(RESUMED_FROM_A_TICK_SKIPPED_AFTER_THE_CLAIM).resume_from == {
+        1: Fresh(),
+        3: Parentless(),
+    }
+
+
+def test_pass_3_and_pass_4_choose_apart_past_a_doubly_displaced_worker():
+    """A known limit: B's step 3 is synthesized for C, but the beat before it,
+    B's step 2, follows C's started, so it is no candidate. C's first commit is a
+    parentless resume, and nothing continues B's step 3."""
     links = _links(DOUBLY_DISPLACED)
     assert _synth(DOUBLY_DISPLACED).commits[5] == [
         (1, 7, []),
@@ -1566,24 +1602,17 @@ def test_a_claims_commits_chain_from_its_resume_point_to_its_exit(rid):
             assert out.exits[claim] == (refs[-1] if refs else start.node)
 
 
-def _placed_after(s, parents):
-    """For every commit, the newest input record its placement depends on,
-    written out apart from ``link``: its heartbeat when it is real, its values,
-    the record its consumed_seq names, and the same of its parent, recursively.
-    A commit is a candidate for a claim when this precedes the claim's
-    started."""
-    commits = {_ref(c, k): k for c in s.claims for k in c.commits}
-
-    def after(ref):
-        k = commits[ref]
-        if isinstance(k.origin, Real):
-            inputs = [k.origin.beat.seq, k.origin.beat.consumed_seq, *k.values]
-        else:
-            inputs = [k.origin.consumed_seq, *k.values]
-        parent = parents[ref]
-        return max(inputs + ([] if parent is None else [after(parent)]))
-
-    return {ref: after(ref) for ref in commits}
+def _deciding_beats(s):
+    """For every commit, written out apart from ``link``: the seq of its
+    claim's newest heartbeat at an integer step at or below its own. A commit
+    is a candidate for a claim when this precedes the claim's started."""
+    return {
+        _ref(c, k): max(
+            b.seq for b in c.claim.beats if b.step is not None and b.step <= k.step
+        )
+        for c in s.claims
+        for k in c.commits
+    }
 
 
 @pytest.mark.parametrize("rid", list(GOLDEN))
@@ -1596,7 +1625,7 @@ def test_a_resume_point_is_the_newest_earlier_claims_candidate_one_step_below(ri
     earlier claim to hold one."""
     s = _synthesis(GOLDEN[rid])
     out = link(s)
-    after = _placed_after(s, out.parents)
+    after = _deciding_beats(s)
     for i, c in enumerate(s.claims):
         start = out.resume_from[c.claim.started.seq]
         candidates = [

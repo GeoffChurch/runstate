@@ -91,8 +91,9 @@ The rules:
   fallbacks never apply.
 - **M1** (``link``) reads the commits after synthesis, in claim order, never
   by step nearness, and chooses a claim's resume point among its
-  **candidates**: the commits placed below its ``started``, whose placement
-  depends on no later record, through their parents too. A claim's later
+  **candidates**: the commits placed below its ``started``, which only a
+  beat can decide (``_beaten``): a real commit's own heartbeat, a synthetic
+  one's real heartbeat before it in its claim. A claim's later
   commits take its previous commit as ``parent``. Its first commit, at old
   step s, takes the candidate at s-1 of the newest claim before it to hold
   one; at step 0 it is a fresh start, and with no candidate at s-1 its parent
@@ -150,10 +151,13 @@ The rules:
   its ``started``.
 - M5's third place and M1 can choose different claims. The third place asks
   which claim before a resuming one reached step s at all; M1 asks only among
-  the candidates, which depend on the parents M1 itself sets, so pass 3
-  cannot ask it. They differ only where a displaced worker beat after the
+  the candidates. They differ only where a displaced worker beat after the
   resuming claim began. M1 then takes an older claim's candidate at s, or
-  none, a parentless resume. The third place synthesizes a commit M1 then
+  none, a parentless resume. The third place stays unfiltered: it decides
+  only whether a trailing step finished, and moving the synthesis to an older
+  claim would credit it with a checkpoint the displaced worker may have
+  saved. It errs, as M4 does, towards committing too little. The third place
+  synthesizes a commit M1 then
   passes over only when values pass 1 gives its claim precede the resuming
   claim while that claim's own beat below them follows it, which takes a
   second displaced worker's values; nothing continues such a commit. Either
@@ -992,35 +996,52 @@ class Linkage:
     exits: Mapping[int, CommitRef | None]
 
 
-def _placed_after(k: Commit) -> int:
-    """The newest input record a commit's placement depends on, its parent's
-    aside: its own heartbeat when it is real, its values, and the record its
-    ``consumed_seq`` names (0 names none). M6 places a commit after its last
-    value, its parent and that record. For a candidate the beats decide it,
-    its own and its parents': pass 1 gives an earlier claim only values below
-    the next claim's ``started``, and a watermark is below its beat."""
-    match k.origin:
-        case Real(beat):
-            return max((beat.seq, beat.consumed_seq, *k.values))
-        case Synthetic(consumed_seq=consumed):
-            return max((consumed, *k.values))
-        case _:
-            assert_never(k.origin)
+class _Beaten(NamedTuple):
+    """A commit, and the seq of the beat that decides whether it is a
+    candidate for a later claim."""
+
+    commit: CommitRef
+    beat: int
 
 
-def _refs(c: ClaimCommits) -> list[CommitRef]:
-    return [CommitRef(c.claim.started.seq, k.step) for k in c.commits]
+def _beaten(c: ClaimCommits) -> list[_Beaten]:
+    """A claim's commits, in its order, each with the beat that decides whether
+    it is placed below a later claim's ``started``: its own heartbeat when it is
+    real, else the real heartbeat before it in its claim, the one M8 dates it
+    by. A synthetic commit is placed after its parent, so that beat binds it
+    too.
+
+    Only beats can follow that ``started``, of all M6 places a commit after.
+    Pass 1 attributes values by position, so an earlier claim's committed values
+    precede it. A ``consumed_seq`` names a record before its heartbeat, and a
+    synthetic commit's is the heartbeat's before it (M8). A first commit's
+    parent is a candidate of an earlier claim. A later commit's parents are its
+    claim's commits below it, whose beats precede the one that decides it. If
+    pass 1 ever attributes values by name rather than by position, revisit this
+    rule."""
+    beats: list[int] = []
+    for k in c.commits:
+        match k.origin:
+            case Real(beat):
+                beats.append(beat.seq)
+            case Synthetic():
+                beats.append(beats[-1])  # M5 synthesizes above the first real beat
+            case _:
+                assert_never(k.origin)
+    return [
+        _Beaten(CommitRef(c.claim.started.seq, k.step), beat)
+        for k, beat in zip(c.commits, beats, strict=True)
+    ]
 
 
 def _resume_from(
-    claims: Sequence[ClaimCommits], placed_after: Mapping[CommitRef, int], i: int
+    claims: Sequence[ClaimCommits], beaten: Sequence[Sequence[_Beaten]], i: int
 ) -> ResumeFrom:
     """M1's resume point for the claim at index ``i``, among its candidates:
-    the commits of the claims before it whose placement depends only on records
-    below its ``started``. ``placed_after`` maps each of their commits to the
-    newest such record, its parents' included."""
+    the commits of the claims before it whose deciding beat (``beaten``, each
+    claim's) precedes its ``started``."""
     below = claims[i].claim.started.seq
-    held = [[x for x in _refs(c) if placed_after[x] < below] for c in claims[:i]]
+    held = [[x.commit for x in b if x.beat < below] for b in beaten[:i]]
     commits = claims[i].commits
     if not commits:  # it beat no integer step
         return Inferred(next((h[-1] for h in reversed(held) if h), None))
@@ -1043,26 +1064,22 @@ def link(synthesis: Synthesis) -> Linkage:
 
     The claims are read in claim order, after synthesis, so every commit M5
     synthesized can be a parent. A resume point is chosen among the
-    candidates, the commits placed below the claim's ``started``: one whose
-    placement depends on a later record, a displaced worker's commit made or
-    completed after the claim, is never its resume point."""
+    candidates, the commits placed below the claim's ``started``: a displaced
+    worker's commit made or completed after the claim began is never its
+    resume point."""
     claims = synthesis.claims
+    beaten = [_beaten(c) for c in claims]
     resume_from: dict[int, ResumeFrom] = {}
     parents: dict[CommitRef, CommitRef | None] = {}
     exits: dict[int, CommitRef | None] = {}
-    placed_after: dict[CommitRef, int] = {}
     for i, c in enumerate(claims):
         claim = c.claim.started.seq
-        start = _resume_from(claims, placed_after, i)
+        start = _resume_from(claims, beaten, i)
         resume_from[claim] = start
         position = start.node  # a started leaves its resume point
         for k in c.commits:
-            ref = CommitRef(claim, k.step)
-            parents[ref] = position
-            placed_after[ref] = max(
-                _placed_after(k), 0 if position is None else placed_after[position]
-            )
-            position = ref  # a commit leaves itself
+            parents[CommitRef(claim, k.step)] = position
+            position = CommitRef(claim, k.step)  # a commit leaves itself
         if c.exit is not None:
             exits[claim] = position
     return Linkage(resume_from, parents, exits)
