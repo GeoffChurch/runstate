@@ -22,10 +22,12 @@ from runstate.migrations.v0_3_0_to_v0_4_0 import (
     Classification,
     CommitRef,
     ExitNode,
+    Fresh,
+    Inferred,
     Place,
+    Parentless,
     Real,
-    ResumeFrom,
-    Start,
+    Resumed,
     Synthetic,
     Uncommitted,
     V0_3_0_to_V0_4_0,
@@ -491,7 +493,7 @@ COMMITLESS = _dated(
 # says A reached step 2, so no claim holds it (M5 synthesizes only where values
 # say a step was reached). M1 does not fall back to A's step 1, the nearest step
 # below: B's first commit has no parent, a parentless resume, named so.
-PARENTLESS = _dated(
+RESUMED_PAST_AN_UNRECORDED_STEP = _dated(
     [
         r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
         r(2, "value", _value(0.9, 0, 2.0), name="loss"),
@@ -527,6 +529,81 @@ RESUMED_PAST_A_PREEMPTED_EXIT = _dated(
         r(9, "value", _value(0.7, 2, 6.0), name="loss"),
         r(10, "lifecycle.heartbeat", _beat(2, 0, 8, 6.0)),
         r(11, "lifecycle.stopped", _stopped(True, None, 2, 8, [], 7.0)),
+    ]
+)
+
+# A loading retry beside a displaced worker: A beat 0 and 1; B claimed and
+# crashed while loading; A, displaced, beat 2 after B's claim, and after B's
+# exit. M1's candidates for B are the commits placed below B's started, so A's
+# step 2 is none: B's inferred resume point, and its exit's parent, is A's
+# step 1.
+LOADING_RETRY_BESIDE_A_DISPLACED_WORKER = _dated(
+    [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+        r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+        r(3, "lifecycle.heartbeat", _beat(1, 0, 1, 3.0)),
+        r(4, "lifecycle.started", _started("local://n2/22", 4.0)),
+        r(5, "lifecycle.stopped", _stopped(False, "OSError", None, 4, [], 5.0)),
+        r(6, "lifecycle.heartbeat", _beat(2, 0, 1, 6.0)),  # A's
+    ]
+)
+
+# A resume from a step a displaced worker committed after the claim (a known
+# limit): A beat 0 and 1; B claimed; A, displaced, saved step 2's checkpoint and
+# beat 2 after B's claim, and B, loading it, first beat 3. A's step 2 is placed
+# above B's started, so it is no candidate, and no other claim holds step 2:
+# B's first commit is a parentless resume, which P3 names.
+RESUMED_FROM_A_STEP_COMMITTED_AFTER_THE_CLAIM = _dated(
+    [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+        r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+        r(3, "lifecycle.heartbeat", _beat(1, 0, 1, 3.0)),
+        r(4, "lifecycle.started", _started("local://n2/22", 4.0)),
+        r(5, "lifecycle.heartbeat", _beat(2, 0, 1, 5.0)),  # A's
+        r(6, "lifecycle.heartbeat", _beat(3, 0, 4, 6.0)),
+        r(7, "lifecycle.stopped", _stopped(True, None, 3, 4, [], 7.0)),
+    ]
+)
+
+# Doubly displaced: A beat 0, 1 and 2. B branched from A's step 0; A, displaced,
+# wrote a step-3 value after B's claim, which pass 1 gives B. B beat 1, and,
+# displaced by C in turn, beat 2 after C's claim. C first beat 4. Pass 3's third
+# place synthesizes B's trailing step 3 for C, since B is the newest claim to
+# reach it; but B's step 3 is placed after its parent, B's step 2, which is
+# above C's started, so pass 4 passes over it. No other claim holds step 3.
+DOUBLY_DISPLACED = _dated(
+    [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+        r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+        r(3, "lifecycle.heartbeat", _beat(1, 0, 1, 3.0)),
+        r(4, "lifecycle.heartbeat", _beat(2, 0, 1, 4.0)),
+        r(5, "lifecycle.started", _started("local://n2/22", 5.0)),
+        r(6, "value", _value(0.5, 3, 6.0), name="loss"),  # A's
+        r(7, "lifecycle.heartbeat", _beat(1, 0, 5, 7.0)),
+        r(8, "lifecycle.started", _started("local://n3/33", 8.0)),
+        r(9, "lifecycle.heartbeat", _beat(2, 0, 5, 9.0)),  # B's
+        r(10, "lifecycle.heartbeat", _beat(4, 0, 8, 10.0)),
+    ]
+)
+
+# An older claim's candidate below a newer claim's later step: A beat 0, 1 and 2
+# and was preempted. B branched from A's step 0, beat 1, and, displaced by C,
+# beat 2 after C's claim. C first beat 3. B is the newest claim to hold step 2,
+# but its step 2 is placed above C's started, so M1 takes A's, the newest
+# candidate.
+RESUMED_ON_AN_OLDER_CLAIMS_STEP = _dated(
+    [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+        r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+        r(3, "lifecycle.heartbeat", _beat(1, 0, 1, 3.0)),
+        r(4, "lifecycle.heartbeat", _beat(2, 0, 1, 4.0)),
+        r(5, "lifecycle.stopped", _stopped(False, None, 2, 1, [], 5.0)),
+        r(6, "lifecycle.started", _started("local://n2/22", 6.0)),
+        r(7, "lifecycle.heartbeat", _beat(1, 0, 6, 7.0)),
+        r(8, "lifecycle.started", _started("local://n3/33", 8.0)),
+        r(9, "lifecycle.heartbeat", _beat(2, 0, 6, 9.0)),  # B's
+        r(10, "lifecycle.heartbeat", _beat(3, 0, 8, 10.0)),
+        r(11, "lifecycle.stopped", _stopped(True, None, 3, 8, [], 11.0)),
     ]
 )
 
@@ -716,8 +793,14 @@ GOLDEN = {
     "beatless_full_step": BEATLESS_FULL_STEP,
     "displacement_parent": DISPLACEMENT_PARENT,
     "commitless": COMMITLESS,
-    "parentless": PARENTLESS,
+    "resumed_past_an_unrecorded_step": RESUMED_PAST_AN_UNRECORDED_STEP,
     "resumed_past_a_preempted_exit": RESUMED_PAST_A_PREEMPTED_EXIT,
+    "loading_retry_beside_a_displaced_worker": LOADING_RETRY_BESIDE_A_DISPLACED_WORKER,
+    "resumed_from_a_step_committed_after_the_claim": (
+        RESUMED_FROM_A_STEP_COMMITTED_AFTER_THE_CLAIM
+    ),
+    "resumed_on_an_older_claims_step": RESUMED_ON_AN_OLDER_CLAIMS_STEP,
+    "doubly_displaced": DOUBLY_DISPLACED,
 }
 
 
@@ -1177,10 +1260,10 @@ def test_a_claims_exit_node_is_its_self_reported_end(rid):
 
 class Links(NamedTuple):
     """A linkage as a test reads it, by pass 3's identity, a commit being its
-    (claim seq, old step): each claim's resume point as (rule, commit or None),
-    each commit's parent, and each exit node's parent by its claim."""
+    (claim seq, old step): each claim's resume point, each commit's parent, and
+    each exit node's parent by its claim."""
 
-    resume_from: dict[int, tuple[Start, tuple[int, int] | None]]
+    resume_from: dict[int, Fresh | Resumed | Parentless | Inferred]
     parents: dict[tuple[int, int], tuple[int, int] | None]
     exits: dict[int, tuple[int, int] | None]
 
@@ -1188,18 +1271,10 @@ class Links(NamedTuple):
 def _links(rows):
     out = link(_synthesis(rows))
     return Links(
-        resume_from={claim: (x.how, x.node) for claim, x in out.resume_from.items()},
+        resume_from=dict(out.resume_from),
         parents=dict(out.parents),
         exits=dict(out.exits),
     )
-
-
-FRESH, RESUMES, PARENTLESS_RESUME, INFERRED = (
-    Start.FRESH,
-    Start.RESUMED,
-    Start.PARENTLESS,
-    Start.INFERRED,
-)
 
 
 def test_the_displacement_parent_history_parents_in_claim_order():
@@ -1209,7 +1284,7 @@ def test_the_displacement_parent_history_parents_in_claim_order():
     latest = [b for b in beats if b.step == 2 and b.seq < 13][-1]
     assert latest.claim_seq == 1  # the golden discriminates: by position, A's
     assert _links(DISPLACEMENT_PARENT) == Links(
-        resume_from={1: (FRESH, None), 6: (RESUMES, (1, 1)), 13: (RESUMES, (6, 2))},
+        resume_from={1: Fresh(), 6: Resumed((1, 1)), 13: Resumed((6, 2))},
         parents={
             (1, 0): None,
             (1, 1): (1, 0),
@@ -1240,8 +1315,8 @@ def test_m1_parents_in_claim_order_however_the_displaced_worker_interleaves(a_at
     """Review Focus 2, under every reordering of the two writers: positions
     across writers are never compared."""
     links = _links(_displacement_reordered(a_at))
-    assert links.resume_from[6] == (RESUMES, (1, 1))
-    assert links.resume_from[13] == (RESUMES, (6, 2))
+    assert links.resume_from[6] == Resumed((1, 1))
+    assert links.resume_from[13] == Resumed((6, 2))
     assert links.parents[(13, 3)] == (6, 2)
 
 
@@ -1261,9 +1336,9 @@ def test_m1_takes_the_newest_claim_holding_the_step_not_the_nearest_end():
     ]
     links = _links(rows)
     assert links.resume_from == {
-        1: (FRESH, None),
-        5: (FRESH, None),  # a first commit at step 0 resumes from nothing
-        11: (RESUMES, (5, 1)),
+        1: Fresh(),
+        5: Fresh(),  # a first commit at step 0 resumes from nothing
+        11: Resumed((5, 1)),
     }
     assert links.exits == {1: (1, 1), 5: (5, 3)}  # C has no end, so no exit
 
@@ -1271,9 +1346,9 @@ def test_m1_takes_the_newest_claim_holding_the_step_not_the_nearest_end():
 def test_a_commitless_claim_resumes_from_an_inferred_commit():
     assert _links(COMMITLESS) == Links(
         resume_from={
-            1: (FRESH, None),
-            5: (INFERRED, (1, 1)),
-            11: (RESUMES, (1, 1)),
+            1: Fresh(),
+            5: Inferred((1, 1)),
+            11: Resumed((1, 1)),
         },
         parents={(1, 0): None, (1, 1): (1, 0), (11, 2): (1, 1)},
         exits={1: (1, 1), 5: (1, 1), 11: (11, 2)},
@@ -1299,8 +1374,68 @@ def test_a_commitless_claim_infers_from_the_newest_claim_in_claim_order():
         r(12, "lifecycle.stopped", _stopped(False, "OSError", None, 10, [], 9.0)),
     ]
     links = _links(rows)
-    assert links.resume_from[10] == (INFERRED, (4, 2))
+    assert links.resume_from[10] == Inferred((4, 2))
     assert links.exits[10] == (4, 2)
+
+
+def test_a_displaced_workers_step_after_the_claim_is_no_inferred_resume_point():
+    """The ruling on candidates: A's step 2 is placed above B's started."""
+    assert _links(LOADING_RETRY_BESIDE_A_DISPLACED_WORKER) == Links(
+        resume_from={1: Fresh(), 4: Inferred((1, 1))},
+        parents={(1, 0): None, (1, 1): (1, 0), (1, 2): (1, 1)},
+        exits={4: (1, 1)},
+    )
+
+
+def test_a_resume_from_a_step_committed_after_the_claim_is_parentless():
+    """A known limit: B loaded a checkpoint A saved after B claimed, so the
+    only step-2 commit is no candidate."""
+    assert _links(RESUMED_FROM_A_STEP_COMMITTED_AFTER_THE_CLAIM) == Links(
+        resume_from={1: Fresh(), 4: Parentless()},
+        parents={(1, 0): None, (1, 1): (1, 0), (1, 2): (1, 1), (4, 3): None},
+        exits={4: (4, 3)},
+    )
+
+
+def test_m1_takes_an_older_claims_candidate_below_a_newer_claims_later_step():
+    assert _links(RESUMED_ON_AN_OLDER_CLAIMS_STEP) == Links(
+        resume_from={1: Fresh(), 6: Resumed((1, 0)), 8: Resumed((1, 2))},
+        parents={
+            (1, 0): None,
+            (1, 1): (1, 0),
+            (1, 2): (1, 1),
+            (6, 1): (1, 0),
+            (6, 2): (6, 1),
+            (8, 3): (1, 2),
+        },
+        exits={1: (1, 2), 8: (8, 3)},
+    )
+
+
+def test_a_candidate_waits_for_its_parent():
+    """Pass 3 and pass 4 choose apart (a known limit): B's step 3 is synthesized
+    for C, but its parent, B's step 2, was beaten after C's claim, so it is no
+    candidate. C's first commit is a parentless resume, and nothing continues B's
+    step 3."""
+    links = _links(DOUBLY_DISPLACED)
+    assert _synth(DOUBLY_DISPLACED).commits[5] == [
+        (1, 7, []),
+        (2, 9, []),
+        (3, RESUMED, [6]),
+    ]
+    assert links == Links(
+        resume_from={1: Fresh(), 5: Resumed((1, 0)), 8: Parentless()},
+        parents={
+            (1, 0): None,
+            (1, 1): (1, 0),
+            (1, 2): (1, 1),
+            (5, 1): (1, 0),
+            (5, 2): (5, 1),
+            (5, 3): (5, 2),
+            (8, 4): None,
+        },
+        exits={},
+    )
 
 
 def test_a_commitless_first_claim_infers_no_resume_point():
@@ -1312,13 +1447,13 @@ def test_a_commitless_first_claim_infers_no_resume_point():
         r(3, "lifecycle.stopped", _stopped(False, "OSError", None, 1, [], 2.0)),
     ]
     assert _links(rows) == Links(
-        resume_from={1: (INFERRED, None)}, parents={}, exits={1: None}
+        resume_from={1: Inferred(None)}, parents={}, exits={1: None}
     )
 
 
 def test_a_parentless_resume_is_named():
-    assert _links(PARENTLESS) == Links(
-        resume_from={1: (FRESH, None), 7: (PARENTLESS_RESUME, None)},
+    assert _links(RESUMED_PAST_AN_UNRECORDED_STEP) == Links(
+        resume_from={1: Fresh(), 7: Parentless()},
         parents={(1, 0): None, (1, 1): (1, 0), (7, 3): None, (7, 4): (7, 3)},
         exits={7: (7, 4)},  # A's end is a release, no exit node
     )
@@ -1328,7 +1463,7 @@ def test_a_resume_past_a_preempted_exit_parents_on_the_commit():
     """Review §12, item 14: A's exit and B's first commit both parent on A's
     step-1 commit."""
     assert _links(RESUMED_PAST_A_PREEMPTED_EXIT) == Links(
-        resume_from={1: (FRESH, None), 8: (RESUMES, (1, 1))},
+        resume_from={1: Fresh(), 8: Resumed((1, 1))},
         parents={(1, 0): None, (1, 1): (1, 0), (8, 2): (1, 1)},
         exits={1: (1, 1), 8: (8, 2)},
     )
@@ -1342,7 +1477,7 @@ def test_a_resume_past_a_trailing_step_parents_on_the_synthesized_commit():
         r(7, "lifecycle.heartbeat", _beat(2, 0, 6, 6.0)),
     ]
     assert _links(rows) == Links(
-        resume_from={1: (FRESH, None), 6: (RESUMES, (1, 1))},
+        resume_from={1: Fresh(), 6: Resumed((1, 1))},
         parents={(1, 0): None, (1, 1): (1, 0), (6, 2): (1, 1)},
         exits={1: (1, 1)},
     )
@@ -1350,7 +1485,7 @@ def test_a_resume_past_a_trailing_step_parents_on_the_synthesized_commit():
 
 def test_a_displaced_workers_branch_keeps_its_claims_parents():
     assert _links(DISPLACED) == Links(
-        resume_from={1: (FRESH, None), 5: (RESUMES, (1, 1))},
+        resume_from={1: Fresh(), 5: Resumed((1, 1))},
         parents={
             (1, 0): None,
             (1, 1): (1, 0),
@@ -1371,9 +1506,9 @@ def test_a_loading_retry_infers_its_resume_point_after_synthesis(rid):
     B, parents on the same commit."""
     links = _links(GOLDEN[rid])
     assert links.resume_from == {
-        1: (FRESH, None),
-        8: (INFERRED, (1, 2)),
-        11: (RESUMES, (1, 2)),
+        1: Fresh(),
+        8: Inferred((1, 2)),
+        11: Resumed((1, 2)),
     }
     assert links.parents[(11, 3)] == (1, 2)
 
@@ -1381,7 +1516,7 @@ def test_a_loading_retry_infers_its_resume_point_after_synthesis(rid):
 @pytest.mark.parametrize("rid", ["loading_retry_released", "loading_retry_unended"])
 def test_a_loading_retry_nothing_ended_or_a_third_party_released_has_no_exit(rid):
     assert _links(GOLDEN[rid]) == Links(
-        resume_from={1: (FRESH, None), 5: (INFERRED, (1, 0)), 8: (RESUMES, (1, 0))},
+        resume_from={1: Fresh(), 5: Inferred((1, 0)), 8: Resumed((1, 0))},
         parents={(1, 0): None, (8, 1): (1, 0)},
         exits={1: (1, 0), 8: (8, 1)},
     )
@@ -1391,17 +1526,17 @@ def test_a_beatless_claim_that_finished_a_step_leaves_a_parentless_resume():
     """The cost pass 3 names: no claim holds step 2, so C's first commit has no
     parent, while B's resume point is inferred."""
     assert _links(BEATLESS_FULL_STEP).resume_from == {
-        1: (FRESH, None),
-        5: (INFERRED, (1, 1)),
-        9: (PARENTLESS_RESUME, None),
+        1: Fresh(),
+        5: Inferred((1, 1)),
+        9: Parentless(),
     }
 
 
 def test_m1_parents_on_the_newer_claims_real_beat_beside_a_crashed_step():
     assert _links(RESUMED_BESIDE_A_REAL_BEAT).resume_from == {
-        1: (FRESH, None),
-        8: (RESUMES, (1, 1)),
-        12: (RESUMES, (8, 2)),
+        1: Fresh(),
+        8: Resumed((1, 1)),
+        12: Resumed((8, 2)),
     }
 
 
@@ -1431,29 +1566,55 @@ def test_a_claims_commits_chain_from_its_resume_point_to_its_exit(rid):
             assert out.exits[claim] == (refs[-1] if refs else start.node)
 
 
+def _placed_after(s, parents):
+    """For every commit, the newest input record its placement depends on,
+    written out apart from ``link``: its heartbeat when it is real, its values,
+    the record its consumed_seq names, and the same of its parent, recursively.
+    A commit is a candidate for a claim when this precedes the claim's
+    started."""
+    commits = {_ref(c, k): k for c in s.claims for k in c.commits}
+
+    def after(ref):
+        k = commits[ref]
+        if isinstance(k.origin, Real):
+            inputs = [k.origin.beat.seq, k.origin.beat.consumed_seq, *k.values]
+        else:
+            inputs = [k.origin.consumed_seq, *k.values]
+        parent = parents[ref]
+        return max(inputs + ([] if parent is None else [after(parent)]))
+
+    return {ref: after(ref) for ref in commits}
+
+
 @pytest.mark.parametrize("rid", list(GOLDEN))
-def test_a_resume_point_is_the_newest_earlier_claims_commit_one_step_below(rid):
-    """Review Focus 2 over every golden log: a first commit at step s resumes
-    from the commit at s - 1 of the newest earlier claim, in claim order, to hold
-    one, and is a parentless resume only when none does; a claim with no commit
-    resumes from the newest commit before it, by inference."""
+def test_a_resume_point_is_the_newest_earlier_claims_candidate_one_step_below(rid):
+    """Review Focus 2 over every golden log, among the candidates, the commits
+    placed below the claim's started: a first commit at step s resumes from the
+    candidate at s - 1 of the newest earlier claim, in claim order, to hold
+    one, and is a parentless resume only when none does; a claim with no
+    commit resumes, by inference, from the newest candidate of the newest
+    earlier claim to hold one."""
     s = _synthesis(GOLDEN[rid])
     out = link(s)
+    after = _placed_after(s, out.parents)
     for i, c in enumerate(s.claims):
         start = out.resume_from[c.claim.started.seq]
-        earlier = s.claims[:i]
+        candidates = [
+            [_ref(e, k) for k in e.commits if after[_ref(e, k)] < c.claim.started.seq]
+            for e in s.claims[:i]
+        ]
         if not c.commits:
-            newest = [_ref(e, e.commits[-1]) for e in earlier if e.commits]
-            assert start == ResumeFrom(newest[-1] if newest else None, INFERRED)
+            newest = [held[-1] for held in candidates if held]
+            assert start == Inferred(newest[-1] if newest else None)
             continue
         below = c.commits[0].step - 1
-        holding = [_ref(e, k) for e in earlier for k in e.commits if k.step == below]
+        holding = [x for held in candidates for x in held if x.step == below]
         if below < 0:
-            assert start == ResumeFrom(None, FRESH)
+            assert start == Fresh()
         elif holding:
-            assert start == ResumeFrom(holding[-1], RESUMES)
+            assert start == Resumed(holding[-1])
         else:
-            assert start == ResumeFrom(None, PARENTLESS_RESUME)
+            assert start == Parentless()
 
 
 @pytest.mark.parametrize("rid", list(GOLDEN))
@@ -1472,10 +1633,10 @@ def test_p1_a_real_commit_linked_back_to_step_0_counts_its_step(rid):
                 chain.append(parent)
             root = chain[-1]
             if root.step == 0:
-                assert out.resume_from[root.claim].how is FRESH
+                assert out.resume_from[root.claim] == Fresh()
                 assert len(chain) == k.step + 1
             else:
-                assert out.resume_from[root.claim].how is PARENTLESS_RESUME
+                assert out.resume_from[root.claim] == Parentless()
 
 
 # ----- the boundary: what the step reads, and what it refuses ----------------------------
