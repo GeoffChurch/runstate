@@ -32,21 +32,23 @@ The rules:
   every 0.3.0 read of it did. A value names none, so it belongs to the latest
   claim before it: the positional rule the 0.2.0 -> 0.3.0 step stated for
   episodes, an inference. A value before every claim belongs to none.
-- **Classification.** Each ``stopped`` is exactly one of four:
-  - **a worker's exit:** the first ``stopped`` naming a claim, when well-formed,
-    as the old read implied, unless the rule for lone stops says it is a third
-    party's;
-  - **a third party's release,** which ends its claim: the first ``stopped``
-    naming a claim when it is the reclaim tool's malformed body (M10), or when
-    the rule for lone stops says so;
-  - **a third party's later stop:** any ``stopped`` after the first naming the
-    same claim, a malformed first one included. The claim has already ended;
-  - **claimless:** one naming no claim, whatever its shape.
-- **Lone stops** (``_first_is_the_workers``): the census of who wrote them
-  yields the rule, which reads the log alone. Until it lands, the rule knows one
-  third party: the runner's hard-crash backstop, identified by its error text,
-  "subprocess exited N with no terminal record", is a third party's wherever it
-  falls. Every other well-formed first ``stopped`` is its claim's exit.
+- **Classification.** The first ``stopped`` naming a claim is the claim's
+  **end**, one of three:
+  - **a third party's release,** when it is the reclaim tool's malformed body
+    (M10), or the runner's hard-crash backstop, identified by its error text,
+    "subprocess exited N with no terminal record": the backstop is a third
+    party's wherever it falls;
+  - otherwise the rule for lone stops decides, from the log alone: **the
+    worker's exit**, as the old read implied; **a third party's release**; or
+    **unattributable**, a self-report that commits nothing.
+
+  Every later ``stopped`` naming the same claim is **a third party's later
+  stop**: the claim has already ended. A ``stopped`` naming no claim is
+  **claimless**, whatever its shape, the backstop's included: a death report
+  must name a claim.
+- **Lone stops** (``_lone_stop_rule``): the implementation round's census of
+  who wrote them yields the rule. Until it lands, the placeholder reads every
+  one as its claim's exit.
 
 **Refused**, each naming the seq:
 
@@ -68,7 +70,8 @@ The rules:
 - A value before every claim is no claim's, so no lineage holds it, where
   0.3.0's ``value_series`` read it.
 - The rule for lone stops is a placeholder until the census replaces it: a
-  third party's lone stop that is not the backstop is read as its claim's exit.
+  third party's lone stop that is not the backstop is read as its claim's exit,
+  and none is read as unattributable.
 """
 
 from __future__ import annotations
@@ -79,7 +82,7 @@ from bisect import bisect_right
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, ClassVar, TypeGuard
+from typing import Any, ClassVar, NamedTuple, TypeGuard
 
 from ..vocabulary.handle import resolve
 from . import MigrationError, Row
@@ -128,11 +131,15 @@ class _Topic(StrEnum):
 
 @dataclass(frozen=True)
 class _Started:
-    """A claim (lifecycle-v0.5 ``started``), named by its seq."""
+    """A claim (lifecycle-v0.5 ``started``), named by its seq. ``launch_id`` is
+    its envelope ``request_id``: the id of the launch it answers, which the
+    worker re-emits (launcher-record-identity.md), or None when no launcher
+    minted one."""
 
     seq: int
     handle: str
     t: float
+    launch_id: str | None
 
 
 @dataclass(frozen=True)
@@ -174,12 +181,14 @@ class _Stopped:
 class _Malformed:
     """A ``stopped`` in the one malformed shape the step reads (M10): mycooc's
     reclaim tool wrote ``{reason}``, a third party's release, and the 0.2.0 ->
-    0.3.0 step named what it ended and honored."""
+    0.3.0 step named what it ended and honored. It carries no ``t``, so its
+    record's ``created_at`` is the only time it has."""
 
     seq: int
     reason: str
     honored: tuple[str, ...]
     claim_seq: int | None
+    created_at: float
 
 
 _Stop = _Stopped | _Malformed
@@ -276,7 +285,9 @@ def _unreadable(r: _Record, shape: str) -> MigrationError:
 def _started(r: _Record) -> _Started:
     if not _fits(r.body, _STARTED):
         raise _unreadable(r, "format 0.3.0's (lifecycle-v0.5)")
-    return _Started(r.seq, handle=r.body["handle"], t=r.body["t"])
+    return _Started(
+        r.seq, handle=r.body["handle"], t=r.body["t"], launch_id=r.request_id
+    )
 
 
 def _beat(r: _Record) -> _Beat:
@@ -316,6 +327,7 @@ def _stop(r: _Record) -> _Stop:
             reason=b["reason"],
             honored=tuple(b["honored"]),
             claim_seq=b["claim_seq"],
+            created_at=r.created_at,
         )
     raise _unreadable(
         r,
@@ -338,9 +350,10 @@ class _Log:
 
 
 def _names_a_claim_before_it(
-    seq: int, topic: str, claim_seq: int | None, claims: set[int]
+    seq: int, topic: _Topic, claim_seq: int | None, claims: set[int]
 ) -> None:
-    if claim_seq is not None and (claim_seq not in claims or claim_seq > seq):
+    """``claims`` holds the claims before the record at ``seq``."""
+    if claim_seq is not None and claim_seq not in claims:
         raise MigrationError(
             f"the {topic} at seq {seq} names claim {claim_seq}, which is not a "
             "claim before it"
@@ -348,24 +361,36 @@ def _names_a_claim_before_it(
 
 
 def parse(rows: list[Row]) -> _Log:
-    """One run's rows, in seq order, read as format 0.3.0 defines them."""
-    records = tuple(
-        _Record(x.seq, x.topic, x.name, x.request_id, json.loads(x.body), x.created_at)
-        for x in rows
+    """One run's rows, in seq order, read as format 0.3.0 defines them. A
+    refusal names the first record, by seq, that the step cannot read."""
+    records: list[_Record] = []
+    claims: list[_Started] = []
+    beats: list[_Beat] = []
+    values: list[_Value] = []
+    stops: list[_Stop] = []
+    before: set[int] = set()  # the claims so far
+    for x in rows:
+        r = _Record(
+            x.seq, x.topic, x.name, x.request_id, json.loads(x.body), x.created_at
+        )
+        records.append(r)
+        match r.topic:
+            case _Topic.STARTED:
+                claims.append(_started(r))
+                before.add(r.seq)
+            case _Topic.HEARTBEAT:
+                b = _beat(r)
+                _names_a_claim_before_it(r.seq, _Topic.HEARTBEAT, b.claim_seq, before)
+                beats.append(b)
+            case _Topic.VALUE:
+                values.append(_value(r))
+            case _Topic.STOPPED:
+                stop = _stop(r)
+                _names_a_claim_before_it(r.seq, _Topic.STOPPED, stop.claim_seq, before)
+                stops.append(stop)
+    return _Log(
+        tuple(records), tuple(claims), tuple(beats), tuple(values), tuple(stops)
     )
-    log = _Log(
-        records,
-        claims=tuple(_started(r) for r in records if r.topic == _Topic.STARTED),
-        beats=tuple(_beat(r) for r in records if r.topic == _Topic.HEARTBEAT),
-        values=tuple(_value(r) for r in records if r.topic == _Topic.VALUE),
-        stops=tuple(_stop(r) for r in records if r.topic == _Topic.STOPPED),
-    )
-    claims = {c.seq for c in log.claims}
-    for b in log.beats:
-        _names_a_claim_before_it(b.seq, _Topic.HEARTBEAT, b.claim_seq, claims)
-    for s in log.stops:
-        _names_a_claim_before_it(s.seq, _Topic.STOPPED, s.claim_seq, claims)
-    return log
 
 
 # ----- pass 1: claim attribution --------------------------------------------------
@@ -423,48 +448,80 @@ def _is_backstop(stop: _Stopped) -> bool:
     return stop.error is not None and _BACKSTOP.fullmatch(stop.error) is not None
 
 
-def _first_is_the_workers(stop: _Stopped) -> bool:
-    """Whether the first well-formed ``stopped`` naming a claim is the worker's
-    own exit rather than a third party's release. The backstop never is: §7
-    gives it to a third party by its text, wherever it falls, and that clause
-    stays. The rest is THE RULE FOR LONE STOPS, a placeholder (§7, "lone
-    stops"): the implementation round's census of who wrote them yields a rule
-    that reads the log alone, and replaces it. Until then every other first
-    ``stopped`` is the worker's."""
-    return not _is_backstop(stop)
+@dataclass(frozen=True)
+class _Exit:
+    """The worker's own exit: it becomes the exit node."""
+
+    stop: _Stopped
+
+
+@dataclass(frozen=True)
+class _Release:
+    """A third party's stop that ends its claim: it becomes a ``died``."""
+
+    stop: _Stop
+
+
+@dataclass(frozen=True)
+class _Unattributed:
+    """A lone stop the rule for lone stops cannot attribute: it stays a
+    self-report that commits nothing (``values: null``)."""
+
+    stop: _Stopped
+
+
+End = _Exit | _Release | _Unattributed
+"""How a claim ended: the first ``stopped`` naming it, by who wrote it. A later
+pass matches on the variant, ending in ``assert_never``."""
+
+
+class _Later(NamedTuple):
+    """A third party's ``stopped`` after the first naming the same claim."""
+
+    claim: int
+    stop: _Stop
+
+
+def _lone_stop_rule(stop: _Stopped) -> End:
+    """THE RULE FOR LONE STOPS, a placeholder (§7, "lone stops"): how the first
+    ``stopped`` naming a claim ended it, when it is well-formed and not the
+    backstop. The implementation round's census of who wrote such stops yields
+    a rule that reads the log alone, and replaces this body. Until then every
+    one is the worker's exit."""
+    return _Exit(stop)
 
 
 @dataclass(frozen=True)
 class Classification:
     """Pass 2: every ``stopped``, by who wrote it and what it ends. Each is in
-    exactly one field. ``exits`` and ``releases`` map a claim's seq to the record
-    that ends it, the first ``stopped`` naming it, so no claim is in both.
-    ``later`` and ``claimless`` are in seq order."""
+    exactly one field. ``ends`` maps each ended claim's seq to its end, the
+    first ``stopped`` naming it. ``later`` and ``claimless`` are in seq
+    order."""
 
-    exits: Mapping[int, _Stopped]  # the worker's own exit
-    releases: Mapping[int, _Stop]  # a third party's stop that ends its claim
-    later: tuple[_Stop, ...]  # a third party's, after its claim ended
-    claimless: tuple[_Stop, ...]  # names no claim
+    ends: Mapping[int, End]
+    later: tuple[_Later, ...]
+    claimless: tuple[_Stop, ...]  # names no claim, so ends none
 
 
 def classify(log: _Log) -> Classification:
-    """The first ``stopped`` naming a claim ends it: the worker's exit, unless it
-    is malformed (M10) or the rule for lone stops gives it to a third party.
+    """The first ``stopped`` naming a claim ends it. It is a third party's
+    release when it is malformed (M10) or the backstop, which is a third
+    party's wherever it falls; otherwise the rule for lone stops decides.
     Every later one naming that claim is a third party's."""
-    exits: dict[int, _Stopped] = {}
-    releases: dict[int, _Stop] = {}
-    later: list[_Stop] = []
+    ends: dict[int, End] = {}
+    later: list[_Later] = []
     claimless: list[_Stop] = []
     for s in log.stops:
-        if s.claim_seq is None:
+        claim = s.claim_seq
+        if claim is None:
             claimless.append(s)
-        elif s.claim_seq in exits or s.claim_seq in releases:
-            later.append(s)
-        elif isinstance(s, _Stopped) and _first_is_the_workers(s):
-            exits[s.claim_seq] = s
+        elif claim in ends:
+            later.append(_Later(claim, s))
+        elif isinstance(s, _Malformed) or _is_backstop(s):
+            ends[claim] = _Release(s)
         else:
-            releases[s.claim_seq] = s
-    return Classification(exits, releases, tuple(later), tuple(claimless))
+            ends[claim] = _lone_stop_rule(s)
+    return Classification(ends, tuple(later), tuple(claimless))
 
 
 # ----- the step ---------------------------------------------------------------------

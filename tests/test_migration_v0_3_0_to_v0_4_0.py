@@ -19,7 +19,9 @@ from runstate.formats import FORMATS
 from runstate.migrations import RENUMBERING_FROM, STEPS, MigrationError, Row
 from runstate.migrations.v0_3_0_to_v0_4_0 import (
     V0_3_0_to_V0_4_0,
+    _Exit,
     _Malformed,
+    _Release,
     _Stopped,
     attribute,
     classify,
@@ -197,31 +199,31 @@ def test_attribution_reads_the_typed_bodies():
 
 
 class Classes(NamedTuple):
-    """A classification by seqs: each class's stops, as a test reads them."""
+    """A classification by seqs, as a test reads it: each claim's end as its
+    variant and its stop's seq, each later stop as its claim and seq, and each
+    claimless stop's seq."""
 
-    exits: dict[int, int]
-    releases: dict[int, int]
-    later: list[int]
+    ends: dict[int, tuple[type, int]]
+    later: list[tuple[int, int]]
     claimless: list[int]
 
 
 def _classes(rows):
     c = classify(parse(rows))
     return Classes(
-        exits={claim: s.seq for claim, s in c.exits.items()},
-        releases={claim: s.seq for claim, s in c.releases.items()},
-        later=[s.seq for s in c.later],
+        ends={claim: (type(end), end.stop.seq) for claim, end in c.ends.items()},
+        later=[(x.claim, x.stop.seq) for x in c.later],
         claimless=[s.seq for s in c.claimless],
     )
 
 
 def test_the_first_well_formed_stopped_naming_a_claim_is_its_exit():
-    assert _classes(EXIT) == Classes(exits={1: 4}, releases={}, later=[], claimless=[])
+    assert _classes(EXIT) == Classes(ends={1: (_Exit, 4)}, later=[], claimless=[])
 
 
 def test_a_displaced_workers_exit_ends_its_own_claim():
     assert _classes(DISPLACED) == Classes(
-        exits={1: 11, 5: 12}, releases={}, later=[], claimless=[]
+        ends={1: (_Exit, 11), 5: (_Exit, 12)}, later=[], claimless=[]
     )
 
 
@@ -229,7 +231,7 @@ def test_the_backstop_ends_its_claim_as_a_third_partys():
     """The backstop is identified by its text; the default body after it is a
     third party's later stop."""
     assert _classes(BACKSTOPPED) == Classes(
-        exits={}, releases={1: 3}, later=[5], claimless=[]
+        ends={1: (_Release, 3)}, later=[(1, 5)], claimless=[]
     )
 
 
@@ -245,7 +247,7 @@ def test_the_backstop_is_known_by_its_text_whatever_the_code(code):
             ),
         ),
     ]
-    assert _classes(rows).releases == {1: 2}
+    assert _classes(rows).ends == {1: (_Release, 2)}
 
 
 @pytest.mark.parametrize(
@@ -262,12 +264,12 @@ def test_an_error_exit_that_is_not_the_backstop_is_the_workers(error):
         r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
         r(2, "lifecycle.stopped", _stopped(False, error, 0, 1, [], 2.0)),
     ]
-    assert _classes(rows).exits == {1: 2}
+    assert _classes(rows).ends == {1: (_Exit, 2)}
 
 
 def test_the_backstop_after_an_exit_is_a_later_third_partys():
     assert _classes(LATE_BACKSTOP) == Classes(
-        exits={1: 3}, releases={}, later=[4], claimless=[]
+        ends={1: (_Exit, 3)}, later=[(1, 4)], claimless=[]
     )
 
 
@@ -275,19 +277,28 @@ def test_a_malformed_release_ends_its_claim_and_its_repair_is_later():
     """M10: the reclaim tool's body is a third party's release, and counts as the
     first stopped naming its claim."""
     assert _classes(RECLAIMED) == Classes(
-        exits={}, releases={1: 4}, later=[5], claimless=[]
+        ends={1: (_Release, 4)}, later=[(1, 5)], claimless=[]
     )
 
 
 def test_a_stopped_naming_no_claim_is_claimless():
-    assert _classes(CLAIMLESS) == Classes(
-        exits={}, releases={}, later=[], claimless=[2]
-    )
+    assert _classes(CLAIMLESS) == Classes(ends={}, later=[], claimless=[2])
 
 
 def test_a_malformed_release_naming_no_claim_is_claimless():
     rows = [r(1, "lifecycle.stopped", _release("x", [], None))]
     assert _classes(rows).claimless == [1]
+
+
+def test_a_backstop_naming_no_claim_is_claimless():
+    """It becomes withdrawals only: a died must name a claim (supervisor-v0.5's
+    required integer claim_seq), whoever wrote it."""
+    rows = [
+        r(1, "control.stop", {}, rid="pre"),
+        r(2, "lifecycle.stopped", _stopped(False, BACKSTOP, None, None, ["pre"], 1.0)),
+        r(3, "lifecycle.started", _started("local://n1/11", 2.0)),
+    ]
+    assert _classes(rows) == Classes(ends={}, later=[], claimless=[2])
 
 
 def test_every_stop_is_in_exactly_one_class():
@@ -297,8 +308,40 @@ def test_every_stop_is_in_exactly_one_class():
         r(15, "lifecycle.stopped", _release("x", [], 5)),
     ]
     assert _classes(log) == Classes(
-        exits={1: 11, 5: 12}, releases={}, later=[13, 14, 15], claimless=[]
+        ends={1: (_Exit, 11), 5: (_Exit, 12)},
+        later=[(5, 13), (1, 14), (5, 15)],
+        claimless=[],
     )
+
+
+GOLDEN = {
+    "displaced": DISPLACED,
+    "exit": EXIT,
+    "backstopped": BACKSTOPPED,
+    "late_backstop": LATE_BACKSTOP,
+    "reclaimed": RECLAIMED,
+    "claimless": CLAIMLESS,
+}
+
+
+@pytest.mark.parametrize("rid", list(GOLDEN))
+def test_every_stop_is_classified_once_and_every_claim_ends_at_most_once(rid):
+    """The classified seqs are exactly the stop seqs, each once; an end and a
+    later stop name the claim they are filed under; and an end is the first
+    stop naming its claim, every later one after it."""
+    rows = GOLDEN[rid]
+    log = parse(rows)
+    c = classify(log)
+    stops = [x.seq for x in rows if x.topic == "lifecycle.stopped"]
+    ends = [end.stop.seq for end in c.ends.values()]
+    later = [x.stop.seq for x in c.later]
+    claimless = [s.seq for s in c.claimless]
+    assert sorted(ends + later + claimless) == stops
+    assert set(c.ends) <= {claim.seq for claim in log.claims}
+    assert all(end.stop.claim_seq == claim for claim, end in c.ends.items())
+    assert all(x.stop.claim_seq == x.claim for x in c.later)
+    assert all(c.ends[x.claim].stop.seq < x.stop.seq for x in c.later)
+    assert all(s.claim_seq is None for s in c.claimless)
 
 
 # ----- the boundary: what the step reads, and what it refuses ----------------------------
@@ -313,6 +356,15 @@ def test_the_malformed_release_is_read_as_such():
         ("stop@3",),
         1,
     )
+    assert stop.created_at == 1001.0  # its only time: the body has no t
+
+
+def test_a_claim_carries_its_launch_id():
+    rows = [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0), rid="L1"),
+        r(2, "lifecycle.started", _started("local://n1/12", 2.0)),  # hand-run
+    ]
+    assert [c.launch_id for c in parse(rows).claims] == ["L1", None]
 
 
 def test_a_well_formed_stopped_is_read_as_such():
@@ -373,6 +425,27 @@ def test_a_record_the_step_reads_must_be_0_3_0s(topic, body):
         r(2, topic, body),
     ]
     with pytest.raises(MigrationError, match=rf"{topic} at seq 2 "):
+        parse(rows)
+
+
+@pytest.mark.parametrize(
+    "first",
+    [
+        ("lifecycle.stopped", {"reason": "x"}),
+        ("value", {"value": 1.0}),
+        ("lifecycle.heartbeat", _beat(0, 0, 9, 1.0)),  # names no claim
+    ],
+)
+def test_a_refusal_names_the_first_record_the_step_cannot_read(first):
+    """In seq order, whatever the topics: a malformed claim after it does not
+    pre-empt it."""
+    rows = [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+        r(2, *first),
+        r(3, "lifecycle.started", {"t": 2.0}),
+        r(4, "lifecycle.heartbeat", {"step": 0}),
+    ]
+    with pytest.raises(MigrationError, match=r" at seq 2 "):
         parse(rows)
 
 
