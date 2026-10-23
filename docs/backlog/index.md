@@ -462,6 +462,11 @@ reasoning, listed here so they're discoverable as work (cross-ref, not moved):
 
 ## Tactical
 
+- **`hold_episode` runs after the claim CAS** (`runstate/worker.py:144`), so a raise inside it, such as the
+  pooler self-check, leaves a claim on the log that no exit will ever end. Found by mycooc's 12b attack
+  ([review](../review-2026-10-04-commits-and-lineage.md) §12, item 15). Layer 2's session probe fixes it by
+  taking the lock before the connection's first write; until then, a claimant that raises there should end
+  its own claim.
 - **Windows support** — untested, unclaimed. The old rationale ("uses
   `fcntl.flock`") died with the v0.1 file backend — v0.2 holds no file locks
   (sqlite serializes internally; memory uses a threading lock). The actual

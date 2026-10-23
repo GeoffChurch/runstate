@@ -1532,9 +1532,9 @@ as each settled; none is open.
   - **The claim path calls `report_if_dead`** where it restated the probe, whose "otherwise" read as the
     opposite of what was meant.
 
-**Item 15: GeoffChurch/mycooc's stage-3 decisions, ruled here (2026-10-23).** mycooc's Postgres plan
-(`docs/plans/2026-10-21-postgres-staged.md` there) sends its decisions 12a–d and 14 to this session. Recorded
-as each settles.
+**Item 15: GeoffChurch/mycooc's stage-3 decisions, ruled here (2026-10-23; all ruled).** mycooc's Postgres
+plan (`docs/plans/2026-10-21-postgres-staged.md` there) sends its decisions 12a–d and 14 to this session.
+Recorded as each settled.
 - **12a, approving this spec: after the migration implementation round** (approved). That round comes next:
   it implements §7's rules, re-measures P1–P4 on mycooc's logs, runs item 10(d)'s census of lone stops, and
   resolves the 41 cells of 625dda74. Then the owner approves revision 2 as a whole, and #59 merges. Approving
@@ -1587,3 +1587,14 @@ as each settles.
   self-check that raises there strands a claim with no exit. Not measured: release time under a true network
   partition, which needs root. The spec's open known limit becomes the session-probe rule (§3), and
   `channel-postgres.md` takes the rest at implementation.
+- **14, automating `reclaim` before 3c: yes, from accounting, and permanently** (approved). After 12b the
+  session probe reports `lost` with no cause, so an accounting reporter is what turns a walltime kill into
+  `preempted`: it is the permanent reporter of a death's cause, not an interim. `squeue` is only its trigger.
+  "No longer listed" says that a job ended, not how, and a finished job leaves `squeue` within minutes. Before
+  3a there is no `lost` to write, and a `stopped` with no error reads `preempted`, a cause the evidence lacks.
+  So `sacct` decides, through the mapping `reclaim` already uses. The job is matched to its claim by name:
+  mycooc exports `RUNSTATE_LAUNCH_ID="$SLURM_JOB_ID:$SLURM_RESTART_COUNT"` (`scripts/cluster.py:138`), and a
+  claim carries its launch id, once a count of recent claims confirms its pin writes it, since the July census
+  found none. `correlation_refusal` remains for older claims. It is the SLURM counterpart of `LocalLauncher`'s
+  reap, which §3 allows a custom producer's launcher, and it covers every SLURM launch. It writes a `stopped`
+  naming the claim at 0.3.0, and `supervisor.died` through `report_death` after 3a.
