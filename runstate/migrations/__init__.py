@@ -6,7 +6,7 @@ their own schedule, so any old format may still need moving forward."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NamedTuple, Protocol
+from typing import TYPE_CHECKING, ClassVar, NamedTuple, Protocol
 
 from .. import formats
 
@@ -26,6 +26,7 @@ class Row(NamedTuple):
 class Step(Protocol):
     FROM: str
     TO: str
+    RENUMBERS: ClassVar[bool]  # may change a seq or a topic; at most one step does
 
     def is_live(self, rows: list[Row]) -> bool: ...
 
@@ -36,7 +37,51 @@ class MigrationError(Exception):
     pass
 
 
+# The one format a renumbering step may leave (log-formats.md §6).
+RENUMBERING_FROM = "0.3.0"
+
+
+def _check_one_renumberer() -> None:
+    renumberers = [s for s in STEPS if s.RENUMBERS]
+    if len(renumberers) > 1:
+        raise MigrationError(
+            "more than one step renumbers: "
+            + ", ".join(f"{s.FROM} -> {s.TO}" for s in renumberers)
+        )
+    for s in renumberers:
+        if s.FROM != RENUMBERING_FROM:
+            raise MigrationError(
+                f"the renumbering step leaves format {s.FROM}, not {RENUMBERING_FROM}"
+            )
+
+
+def transform_checked(step: Step, rows: list[Row]) -> list[Row]:
+    """``step.transform(rows)``, refused unless a step that does not renumber
+    returned every input row with its seq and topic, any rows it appended
+    sitting above the input's last seq (log-formats.md §6)."""
+    out = step.transform(rows)
+    if step.RENUMBERS:
+        return out
+    topics = {r.seq: r.topic for r in out}
+    for r in rows:
+        if topics.get(r.seq) != r.topic:
+            raise MigrationError(
+                f"step {step.FROM} -> {step.TO} does not renumber, but its output"
+                f" has no row at seq {r.seq} with topic {r.topic!r}"
+            )
+    last = max((r.seq for r in rows), default=-1)
+    kept = {r.seq for r in rows}
+    appended = [r.seq for r in out if r.seq not in kept]
+    if any(q <= last for q in appended) or len(topics) != len(out):
+        raise MigrationError(
+            f"step {step.FROM} -> {step.TO} does not renumber, but it appended a row"
+            f" at or below seq {last}, or repeated a seq"
+        )
+    return out
+
+
 def chain(start: str, target: str) -> list[Step]:
+    _check_one_renumberer()
     edges: dict[str, Step] = {}
     for s in STEPS:
         if s.FROM in edges:

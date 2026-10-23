@@ -11,7 +11,7 @@ from urllib.request import pathname2url
 
 from .. import formats
 from ..channel.sqlite import _SCHEMA
-from . import MigrationError, Row, Step
+from . import MigrationError, Row, Step, transform_checked
 from .seal import seal_postgres, seal_sqlite
 
 
@@ -88,9 +88,11 @@ class SqliteStore:
             rows = _read_sqlite(src)
             if step.is_live(rows):
                 raise MigrationError("it has a live episode; stop it first")
-            step.transform(rows)  # the dry run: a refusal raises before the seal
+            transform_checked(
+                step, rows
+            )  # the dry run: a refusal raises before the seal
             seal_sqlite(src)
-        out = step.transform(_read_sqlite(src))
+        out = transform_checked(step, _read_sqlite(src))
         dst.parent.mkdir(exist_ok=True)
         # A temporary file of this call's own, beside the address: two migrators
         # of one run never unlink or publish each other's. Hidden, and not
@@ -182,5 +184,5 @@ class PostgresStore:
                 cur.executemany(
                     "INSERT INTO log (run_id, seq, topic, name, request_id, body, created_at)"
                     " VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                    [(run_id, *r) for r in step.transform(rows)],
+                    [(run_id, *r) for r in transform_checked(step, rows)],
                 )

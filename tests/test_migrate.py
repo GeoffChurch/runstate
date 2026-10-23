@@ -18,6 +18,8 @@ class Tag:
     0-based ``transform`` call that raises. On sqlite, call 0 is the dry run
     before the seal and call 1 the transform after it; postgres makes one."""
 
+    RENUMBERS = False
+
     def __init__(self, src, dst, live=False, boom_at=None):
         self.FROM, self.TO, self._live, self._boom = src, dst, live, boom_at
         self._calls = 0
@@ -385,3 +387,128 @@ def test_a_migrated_log_has_the_mode_a_native_birth_has(toy, tmp_path, mask):
         )
     finally:
         os.umask(old)
+
+
+class Rewrite(Tag):
+    """A toy step that rewrites each row with ``edit`` (seq/topic changes) and
+    may append ``extra`` rows; ``RENUMBERS`` is per instance."""
+
+    def __init__(self, src, dst, edit=lambda r: r, extra=(), renumbers=False):
+        super().__init__(src, dst)
+        self._edit, self._extra = edit, tuple(extra)
+        self.RENUMBERS = renumbers
+
+    def transform(self, rows):
+        return [self._edit(r) for r in rows] + list(self._extra)
+
+
+class Dropper(Rewrite):
+    def transform(self, rows):
+        return rows[1:]
+
+
+def _row(seq, topic="value"):
+    return Row(seq, topic, "x", None, "{}", 0.0)
+
+
+_BAD_EDITS = {
+    "seq": lambda r: r._replace(seq=r.seq + 10),
+    "topic": lambda r: r._replace(topic="other"),
+}
+
+
+@pytest.mark.parametrize("what", sorted(_BAD_EDITS))
+def test_a_step_that_does_not_renumber_may_not_change_a_seq_or_topic(
+    what, toy, monkeypatch, tmp_path
+):
+    old = _seed(tmp_path, "8.0.0", "r1")
+    before = old.read_bytes()
+    step = Rewrite("8.0.0", "8.1.0", edit=_BAD_EDITS[what])
+    monkeypatch.setattr(migrations, "STEPS", (step,))
+    with pytest.raises(MigrationError, match=r"^run 'r1': .*does not renumber"):
+        migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0")
+    assert os.stat(old).st_mode & 0o200  # refused before the seal
+    assert old.read_bytes() == before
+    assert not DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1").exists()
+
+
+def test_a_step_that_does_not_renumber_may_not_drop_or_insert_below(
+    toy, monkeypatch, tmp_path
+):
+    _seed(tmp_path, "8.0.0", "r1")
+    for step in (
+        Rewrite("8.0.0", "8.1.0", edit=lambda r: r, extra=[_row(1)]),
+        Dropper("8.0.0", "8.1.0"),
+    ):
+        monkeypatch.setattr(migrations, "STEPS", (step,))
+        with pytest.raises(MigrationError, match="does not renumber"):
+            migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0")
+
+
+def test_a_step_that_does_not_renumber_may_append_above(toy, monkeypatch, tmp_path):
+    _seed(tmp_path, "8.0.0", "r1")
+    step = Rewrite("8.0.0", "8.1.0", extra=[_row(4), _row(5, "lifecycle.bound")])
+    monkeypatch.setattr(migrations, "STEPS", (step,))
+    assert migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0") == ["r1"]
+    assert len(_bodies(DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1"))) == 5
+
+
+def test_a_renumbering_steps_new_seqs_reach_the_new_sqlite_log(monkeypatch, tmp_path):
+    import sqlite3
+
+    for v in ["0.3.0", "8.1.0"]:
+        monkeypatch.setitem(formats.FORMATS, v, DirectoryLayout(v))
+    _seed(tmp_path, "0.3.0", "r1")
+    step = Rewrite(
+        "0.3.0", "8.1.0", edit=lambda r: r._replace(seq=r.seq + 10), renumbers=True
+    )
+    monkeypatch.setattr(migrations, "STEPS", (step,))
+    assert migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0") == ["r1"]
+    new = DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1")
+    c = sqlite3.connect(new)
+    assert [q for (q,) in c.execute("SELECT seq FROM log ORDER BY seq")] == [11, 12, 13]
+    c.close()
+
+
+def test_chain_refuses_a_second_renumbering_step(toy, monkeypatch):
+    steps = (
+        Rewrite("8.0.0", "8.1.0", renumbers=True),
+        Rewrite("8.1.0", "8.2.0", renumbers=True),
+    )
+    monkeypatch.setattr(migrations, "STEPS", steps)
+    with pytest.raises(MigrationError, match="more than one step renumbers"):
+        chain("8.0.0", "8.2.0")
+
+
+def test_chain_refuses_a_renumbering_step_that_leaves_another_format(toy, monkeypatch):
+    steps = (Rewrite("8.0.0", "8.1.0", renumbers=True), Tag("8.1.0", "8.2.0"))
+    monkeypatch.setattr(migrations, "STEPS", steps)
+    with pytest.raises(MigrationError, match="not 0.3.0"):
+        chain("8.0.0", "8.2.0")
+
+
+@pytest.mark.parametrize("what", sorted(_BAD_EDITS))
+def test_postgres_preservation_refusal_rolls_back(what, pg_toy, monkeypatch):
+    step = Rewrite("8.0.0", "8.1.0", edit=_BAD_EDITS[what])
+    monkeypatch.setattr(migrations, "STEPS", (step,))
+    with pytest.raises(MigrationError, match=r"^run 'r1': .*does not renumber"):
+        migrate(PostgresStore(pg_toy), ["r1"], to="8.1.0")
+    assert _pg_one(pg_toy, "SELECT count(*) FROM runstate_v8_0_0.log") == [(3,)]
+    assert _pg_one(pg_toy, "SELECT to_regclass('runstate_v8_0_0.sealed_runs')") == [
+        (None,)
+    ]
+    assert _pg_one(pg_toy, "SELECT to_regclass('runstate_v8_1_0.log')") == [(None,)]
+
+
+def test_a_renumbering_steps_new_seqs_reach_the_new_postgres_log(pg_toy, monkeypatch):
+    step = Rewrite(
+        "0.3.0", "8.1.0", edit=lambda r: r._replace(seq=r.seq + 10), renumbers=True
+    )
+    step.FROM = "8.0.0"  # the toy schema stands in; chain's 0.3.0 rule is tested above
+    monkeypatch.setattr(migrations, "RENUMBERING_FROM", "8.0.0")
+    monkeypatch.setattr(migrations, "STEPS", (step,))
+    assert migrate(PostgresStore(pg_toy), ["r1"], to="8.1.0") == ["r1"]
+    new = _pg_one(
+        pg_toy, "SELECT seq FROM runstate_v8_1_0.log WHERE run_id='r1' ORDER BY seq"
+    )
+    assert new == [(10,), (11,), (12,)]

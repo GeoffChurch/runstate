@@ -82,7 +82,7 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from typing import Any
+from typing import Any, ClassVar
 
 from ..vocabulary.handle import resolve
 from . import MigrationError, Row
@@ -330,6 +330,7 @@ def backfill(records: list[_Record]) -> Backfill:
 class V0_2_0_to_V0_3_0:
     FROM = "0.2.0"
     TO = "0.3.0"
+    RENUMBERS: ClassVar[bool] = False
 
     def is_live(self, rows: list[Row]) -> bool:
         """0.2.0's liveness, positional: the latest claim is live unless a

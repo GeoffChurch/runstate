@@ -145,6 +145,13 @@ migrated.
   versions and a transform from a run's records in `FROM` to its records in `TO`.
 - **The runner chains steps** from each log's format to `--to`, which defaults to `LOG_FORMAT`. It refuses
   if there is no path, or if two steps leave the same format.
+- **A step preserves seq and topic, except one.** A step returns every input row with its `seq` and `topic`
+  unchanged; it may rewrite a body, and it may append rows above the input's last seq. The runner refuses a
+  step that changes a seq or a topic, drops a row, or appends at or below the last seq, and it refuses
+  before the seal (on Postgres, before any insert, so the transaction rolls back). Exactly one step is
+  exempt, declared by `RENUMBERS`: 0.3.0 -> 0.4.0 renumbers. The runner also refuses to build a chain
+  if more than one registered step sets `RENUMBERS`, or if the one that does leaves a format other than
+  0.3.0. Every other format boundary is a place where a pinned reader's seq cursors stay valid.
 - **Each step, per run:**
   1. Refuse if the run has a live episode, read with the `FROM` format's semantics; a step carries what it
      needs of its old format. An unresolvable foreign claim reads as live, so a stranded claim must be
