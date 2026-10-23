@@ -67,7 +67,7 @@ Each of these inputs is one a reasonable person expects to work, and the tests n
 1. **Renumbering remaps every seq-valued field.** Every `claim_seq` (a `died`'s included), `consumed_seq`,
    `parent`, `values` entry, `resume_from` and `bound.claim_seq` must name the right record after M6. A missed
    field still holds an integer of the right type, pointing at the wrong record. Task 6 checks that every
-   such field names a record of the expected topic, in every golden log; Task 13 checks it across the corpus.
+   such field names a record of the expected topic, in every golden log; Task 11's runner checks it across the corpus.
 2. **A claim's first commit parents in claim order (M1), never by step nearness.** Task 5's
    displacement-parent history fixes this: the draft's step rule picked a displaced worker's branch in 9 of 21
    reorderings.
