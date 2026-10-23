@@ -369,6 +369,10 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
   open (deferred in the spec): low-latency push (LISTEN/NOTIFY — issue #16), cross-host auto-relaunch
   (the rejected co-arbiter — see "Cross-host liveness for the claim gate" above), sharding,
   HA.
+- **log-tiering — DEFERRED** ([`log-tiering.md`](log-tiering.md)): a run's log in Postgres while it is worked
+  on and in a file once its latest claim has `ended`. mycooc tiers its own (move and re-import, where every
+  write must re-import first); runstate builds the general form, copy-not-move, when a second consumer wants a
+  tier.
 - **channel-redis** — a Redis backend; an alternative to Postgres for cross-host scenarios
   (lighter daemon, weaker durability). Dominated by the shipped channel-postgres for the
   same use case; revisit only if the lighter-daemon tradeoff is specifically wanted.

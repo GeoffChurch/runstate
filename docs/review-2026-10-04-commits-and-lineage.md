@@ -1531,3 +1531,25 @@ as each settled; none is open.
     serves both.
   - **The claim path calls `report_if_dead`** where it restated the probe, whose "otherwise" read as the
     opposite of what was meant.
+
+**Item 15: GeoffChurch/mycooc's stage-3 decisions, ruled here (2026-10-23).** mycooc's Postgres plan
+(`docs/plans/2026-10-21-postgres-staged.md` there) sends its decisions 12a–d and 14 to this session. Recorded
+as each settles.
+- **12a, approving this spec: after the migration implementation round** (approved). That round comes next:
+  it implements §7's rules, re-measures P1–P4 on mycooc's logs, runs item 10(d)'s census of lone stops, and
+  resolves the 41 cells of 625dda74. Then the owner approves revision 2 as a whole, and #59 merges. Approving
+  the live design now and leaving the migration to the round was rejected: on 2026-10-04 working through
+  mycooc's logs found a gap in the live design itself, values written after the loop that nothing committed,
+  which is why the exit node holds pending values. So the two are not judged apart. mycooc loses little,
+  since its stage 3a needs layer 2 implemented, not only approved.
+- **12c, where a run's log leaves Postgres: when its latest claim has `ended`** (approved), the predicate
+  every fold uses and `runstate migrate` refuses a live run by. A line at `completed` would keep every run
+  stopped at its budget, `preempted` by design, in Postgres for good. mycooc may move a log out and re-import
+  it, since the tier is its own, with one condition: **every write to an archived run re-imports first, not
+  only a claim.** The compare-and-append and the plain append both compute `MAX(seq)` over the run's rows in
+  Postgres, so a `--stop`, a reclaim's death report or a launcher record written to an archived run would land
+  at seq 1 and start a second log, unseen by readers of the file. The general form, Postgres keeping every row
+  with the file a snapshot that every writer retires before writing, goes to the backlog
+  (`backlog/log-tiering.md`) until a second consumer wants a tier. Per-episode logs as storage were weighed
+  and set aside there: sound only with the frontier kept in Postgres, and every reader would stitch files to
+  rows.
