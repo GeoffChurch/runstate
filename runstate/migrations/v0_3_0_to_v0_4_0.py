@@ -55,6 +55,13 @@ The rules:
     beat;
   - **leading values,** below the claim's first real beat, go to its first
     commit;
+  - **a claim's position,** the reading the migration takes of where it
+    stood, is its last real beat. A claim with no integer-step beat takes the
+    resume point M1 infers for it: the newest commit of the newest earlier
+    claim with an integer-step beat, at that commit's old step, among the
+    commits M2 and M5's first two places give it. Only values above the
+    position are trailing, so a loading retry's step-0 status reaches no step.
+    M1's rule for such a claim (pass 4) must agree with this position;
   - **M5** synthesizes a commit in exactly three places (``Place``): a tick
     skipped between two real beats, even one with no values; a trailing step,
     above the claim's last real beat, at or below a non-error exit's last
@@ -68,8 +75,9 @@ The rules:
   nothing ended, has no last step to be above. Every other value is left
   uncommitted, with the first reason that holds (``Uncommitted``): stepless,
   a register (M3); before every claim; after its claim's end, whatever
-  ended it (M4); above its claim's exit's last step; or a trailing step no
-  exit vouches for, which M5's third place does not reach.
+  ended it (M4); a beatless claim's, at or below its position (loading); above
+  its claim's exit's last step; or a trailing step no exit vouches for, which
+  M5's third place does not reach.
 - **The exit node.** The worker's exit holds ``[]``, or null when it errored:
   it discarded its open iteration. A stop the rule for lone stops cannot
   attribute holds null, since it never vouches. A third party's release
@@ -109,6 +117,11 @@ The rules:
 - The rule for lone stops is a placeholder until the census replaces it: a
   third party's lone stop that is not the backstop is read as its claim's exit,
   and none is read as unattributable.
+- An unattributable stop's ``final_step`` caps its claim's trailing values,
+  as a worker's exit's does, though who wrote it is unknown. The census's rule
+  for lone stops must revisit this.
+- A beatless claim's position is taken before M5's third place, so a later
+  synthesis in the claim it was inferred from does not move it.
 """
 
 from __future__ import annotations
@@ -609,6 +622,8 @@ class Uncommitted(StrEnum):
     - it is stepless, a register (M3), wherever it stands;
     - it is before every claim, so no claim's (pass 1);
     - it is after its claim's end, whatever ended the claim (M4);
+    - it is a beatless claim's, at or below its position, the resume point M1
+      infers for it: what it wrote while it loaded (P3's loading cells);
     - it is a trailing step above its claim's exit's last step;
     - it is a trailing step no exit vouches for, which M5's third place does
       not reach: nothing says its iteration finished."""
@@ -616,6 +631,7 @@ class Uncommitted(StrEnum):
     STEPLESS = "stepless"
     BEFORE_EVERY_CLAIM = "before every claim"
     AFTER_ITS_END = "after its claim's end"
+    LOADING = "a beatless claim's, at or below its resume point"
     ABOVE_THE_LAST_STEP = "above its exit's last step"
     UNREACHED = "an unreached trailing step"
 
@@ -677,11 +693,21 @@ class Left(NamedTuple):
 @dataclass(frozen=True)
 class ClaimCommits:
     """A claim's commits, real and synthetic, in its order, which is old-step
-    order; and its exit node, when its end is one."""
+    order; its exit node, when its end is one; and its position.
+
+    ``position`` is an old step, the reading the migration takes of where the
+    claim stood: its last real beat's step. A claim with no integer-step beat
+    takes the resume point M1 infers for it: the newest commit of the newest
+    earlier claim with an integer-step beat, among the commits M2 and M5's
+    first two places give that claim, before the third place. It is None when
+    no earlier claim has one. Only values above the position are trailing.
+    M1's rule for a claim with no integer-step beat (pass 4) must agree with
+    it."""
 
     claim: Claim
     commits: tuple[Commit, ...]
     exit: ExitNode | None
+    position: int | None
 
 
 @dataclass(frozen=True)
@@ -705,10 +731,11 @@ def _exit_node(end: End | None) -> ExitNode | None:
             assert_never(end)
 
 
-def _at_or_below_the_last_step(node: ExitNode | None, step: int) -> bool:
+def _under_the_ceiling(node: ExitNode | None, step: int) -> bool:
     """Whether a trailing step is at or below its claim's exit's last step, the
-    0.3.0 ``final_step``. A claim with no exit node has no last step to be
-    above; an exit whose ``final_step`` is null reached no step."""
+    0.3.0 ``final_step``, its ceiling. A claim with no exit node has no ceiling,
+    so every step is under it; an exit whose ``final_step`` is null reached no
+    step, so none is."""
     if node is None:
         return True
     last = node.stop.final_step
@@ -721,15 +748,16 @@ class _Reading:
     place looks across claims.
 
     ``real`` holds its heartbeats with an integer step, by step, ascending.
-    ``placed`` maps each commit's step (real, or synthesized at ``places``) to
-    the values it commits. ``trailing`` maps each trailing step that only M5's
-    third place can commit to its values. ``left`` holds the values no commit
-    can hold."""
+    ``position`` is ``ClaimCommits.position``. ``placed`` maps each commit's
+    step (real, or synthesized at a ``synthesized_at`` place) to the values it
+    commits. ``trailing`` maps each trailing step that only M5's third place
+    can commit to its values. ``left`` holds the values no commit can hold."""
 
     claim: Claim
     exit: ExitNode | None
     real: Mapping[int, _Beat]
-    places: Mapping[int, Place]
+    position: int | None
+    synthesized_at: Mapping[int, Place]
     placed: Mapping[int, tuple[_Value, ...]]
     trailing: Mapping[int, tuple[_Value, ...]]
     left: tuple[Left, ...]
@@ -745,19 +773,24 @@ class _Reading:
         return frozenset(self.placed) | frozenset(self.trailing)
 
 
-def _read(claim: Claim, end: End | None) -> _Reading:
+def _read(claim: Claim, end: End | None, inferred: int | None) -> _Reading:
+    """``inferred`` is the resume point M1 infers for the claim, which is its
+    position when it beat no integer step."""
     node = _exit_node(end)
     real: dict[int, _Beat] = {}
     for b in claim.beats:
         if b.step is not None:
             real[b.step] = b  # ascending: parse refuses an in-claim rewind
     steps = list(real)
-    places: dict[int, Place] = {}
+    position = steps[-1] if steps else inferred
+    synthesized_at: dict[int, Place] = {}
     if steps:
         for s in range(steps[0] + 1, steps[-1]):
             if s not in real:
-                places[s] = Place.SKIPPED_TICK
-    placed: dict[int, list[_Value]] = {s: [] for s in sorted(real.keys() | places)}
+                synthesized_at[s] = Place.SKIPPED_TICK
+    placed: dict[int, list[_Value]] = {
+        s: [] for s in sorted(real.keys() | synthesized_at)
+    }
     trailing: dict[int, list[_Value]] = {}
     left: list[Left] = []
     for v in claim.values:
@@ -769,10 +802,13 @@ def _read(claim: Claim, end: End | None) -> _Reading:
             placed[v.step].append(v)
         elif steps and v.step < steps[0]:  # a leading value
             placed[steps[0]].append(v)
-        elif not _at_or_below_the_last_step(node, v.step):
+        elif position is not None and v.step <= position:
+            # only a beatless claim's: up to a real beat, every step is placed
+            left.append(Left(v, Uncommitted.LOADING))
+        elif not _under_the_ceiling(node, v.step):
             left.append(Left(v, Uncommitted.ABOVE_THE_LAST_STEP))
         elif node is not None and node.values is not None:  # the exit vouches
-            places[v.step] = Place.BEFORE_A_CLEAN_EXIT
+            synthesized_at[v.step] = Place.BEFORE_A_CLEAN_EXIT
             placed[v.step] = [v]
         else:
             trailing.setdefault(v.step, []).append(v)
@@ -780,7 +816,8 @@ def _read(claim: Claim, end: End | None) -> _Reading:
         claim,
         node,
         real,
-        places,
+        position,
+        synthesized_at,
         {s: tuple(vs) for s, vs in placed.items()},
         {s: tuple(vs) for s, vs in trailing.items()},
         tuple(left),
@@ -807,51 +844,60 @@ def _newest_reaching(
 
 
 def _synthetic(
-    place: Place, values: Sequence[_Value], before: _Beat | None
+    place: Place, values: Sequence[_Value], previous: _Beat | None
 ) -> Synthetic:
-    """M8. ``before`` is the claim's real heartbeat before the commit."""
+    """M8. ``previous`` is the claim's real heartbeat before the commit."""
     dated = [v.t for v in values if v.t is not None]
     if dated:
         t: float | None = dated[-1]
-    elif before is not None:
-        t = before.t
+    elif previous is not None:
+        t = previous.t
     else:
         t = None
-    return Synthetic(place, t, 0 if before is None else before.consumed_seq)
+    return Synthetic(place, t, 0 if previous is None else previous.consumed_seq)
 
 
 def _claim_commits(r: _Reading, resumed: set[int]) -> tuple[ClaimCommits, list[Left]]:
     """A claim's commits, once M5's third place has chosen ``resumed``, the
     trailing steps it commits in this claim."""
-    places = dict(r.places)
+    synthesized_at = dict(r.synthesized_at)
     placed = dict(r.placed)
     left = list(r.left)
     for s, values in r.trailing.items():
         if s in resumed:
-            places[s] = Place.RESUMED_FROM
+            synthesized_at[s] = Place.RESUMED_FROM
             placed[s] = values
         else:
             left.extend(Left(v, Uncommitted.UNREACHED) for v in values)
     commits: list[Commit] = []
-    before: _Beat | None = None  # the real heartbeat before each step
+    previous: _Beat | None = None  # the real heartbeat before each step
     for s in sorted(placed):
         values = placed[s]
         beat = r.real.get(s)
         if beat is None:
-            origin: Real | Synthetic = _synthetic(places[s], values, before)
+            origin: Real | Synthetic = _synthetic(synthesized_at[s], values, previous)
         else:
             origin = Real(beat)
-            before = beat
+            previous = beat
         commits.append(Commit(s, tuple(v.seq for v in values), origin))
-    return ClaimCommits(r.claim, tuple(commits), r.exit), left
+    return ClaimCommits(r.claim, tuple(commits), r.exit, r.position), left
 
 
 def synthesize(attribution: Attribution, classification: Classification) -> Synthesis:
     """M2 and M5 assign each value to a commit of its claim, synthesizing the
-    commits M5 names; every other value is left, with its reason."""
-    readings = [
-        _read(c, classification.ends.get(c.started.seq)) for c in attribution.claims
-    ]
+    commits M5 names; every other value is left, with its reason.
+
+    In three steps, so that nothing is circular: each claim's own commits, from
+    M2 and M5's first two places, in claim order, which gives each beatless
+    claim its position from the claims before it; then M5's third place, across
+    claims; then each claim's commits."""
+    readings: list[_Reading] = []
+    inferred: int | None = None  # the newest commit of the newest claim beaten
+    for c in attribution.claims:
+        r = _read(c, classification.ends.get(c.started.seq), inferred)
+        readings.append(r)
+        if r.real:
+            inferred = max(r.placed)
     reached = [r.reached for r in readings]
     resumed: list[set[int]] = [set() for _ in readings]
     for i, r in enumerate(readings):
