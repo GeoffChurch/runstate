@@ -265,8 +265,8 @@ ERRORED = _dated(
 # loading status, crashed while loading and beat nothing. C resumed from step
 # 2's checkpoint: its first real beat is 3. A is the newest claim before C to
 # reach step 2, by trailing values, so A's step 2 is synthesized, though A's
-# exit is an error. B's status is at its position, A's step 1, so it is no
-# trailing value: it reaches nothing, and stays uncommitted as loading.
+# exit is an error. B beat nothing, so it reached no step: its status stays
+# uncommitted as loading.
 RESUMED_PAST_A_LOADING_CRASH = _dated(
     [
         r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
@@ -354,14 +354,62 @@ def _loading_retry(end):
 
 
 # A loading retry that nothing vouches for still reaches no step (review of
-# 6ea3fd8): B has no exit node, so no last step caps it, but its step-0 status
-# sits at its position, the resume point M1 infers for it (A's step 0), so it
-# is no trailing value. Nothing is synthesized in B, and C will parent on A's
-# step 0. Once with the runner's backstop releasing B, once with nothing.
+# 6ea3fd8): B has no exit node, so no last step caps it, but B beat nothing, so
+# its step-0 status is a loading value. Nothing is synthesized in B, and C will
+# parent on A's step 0. Once with the runner's backstop releasing B, once with
+# nothing.
 LOADING_RETRY_RELEASED = _loading_retry(
     ("lifecycle.stopped", _stopped(False, BACKSTOP, None, 5, [], 5.0))
 )
 LOADING_RETRY_UNENDED = _loading_retry(("user.note", {"killed": True}))
+
+# The retry's loading status at its resume step, 2, not 0 (review of 32c6f97).
+# A crashed in step 2 after writing its values; B, released by the backstop,
+# wrote its status at step 2 while it loaded; C's first real beat is 3. B beat
+# nothing, so it reaches no step, and A's step 2 is synthesized. Inferring B a
+# position from A gave two self-consistent answers here: at A's step 1 the
+# status trailed and B took the synthesis, at A's step 2 it was loading and A
+# took it.
+LOADING_RETRY_AT_ITS_RESUME_STEP = _dated(
+    [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+        r(2, "value", _value(0.9, 0, 2.0), name="loss"),
+        r(3, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+        r(4, "value", _value(0.8, 1, 3.0), name="loss"),
+        r(5, "lifecycle.heartbeat", _beat(1, 4, 1, 3.0)),
+        r(6, "value", _value(0.7, 2, 4.0), name="loss"),
+        r(7, "lifecycle.stopped", _stopped(False, "CUDA out of memory", 2, 1, [], 5.0)),
+        r(8, "lifecycle.started", _started("local://n1/12", 6.0)),
+        r(9, "value", _value(LOADING_STATUS, 2, 6.5), name="status"),
+        r(10, "lifecycle.stopped", _stopped(False, BACKSTOP, None, 8, [], 7.0)),
+        r(11, "lifecycle.started", _started("local://n1/13", 8.0)),
+        r(12, "value", _value(0.6, 3, 9.0), name="loss"),
+        r(13, "lifecycle.heartbeat", _beat(3, 0, 11, 9.0)),
+        r(14, "lifecycle.stopped", _stopped(True, None, 3, 11, [], 10.0)),
+    ]
+)
+
+# The cost of that reading (a known limit): B resumed from A's step 1, wrote
+# all of step 2's values and its checkpoint, and the backstop released it
+# before its first tick; C resumed from step 2: its first real beat is 3. B
+# beat nothing, so nothing is synthesized in B, and no claim holds step 2:
+# C's first commit will be a parentless resume, which P3 names.
+BEATLESS_FULL_STEP = _dated(
+    [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+        r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+        r(3, "lifecycle.heartbeat", _beat(1, 0, 1, 3.0)),
+        r(4, "lifecycle.stopped", _stopped(False, None, 1, 1, [], 4.0)),
+        r(5, "lifecycle.started", _started("local://n1/12", 5.0)),
+        r(6, "value", _value(0.7, 2, 6.0), name="loss"),
+        r(7, "value", _value({"status": "aligning step 2"}, 2, 6.5), name="status"),
+        r(8, "lifecycle.stopped", _stopped(False, BACKSTOP, 1, 5, [], 7.0)),
+        r(9, "lifecycle.started", _started("local://n1/13", 8.0)),
+        r(10, "value", _value(0.6, 3, 9.0), name="loss"),
+        r(11, "lifecycle.heartbeat", _beat(3, 0, 9, 9.0)),
+        r(12, "lifecycle.stopped", _stopped(True, None, 3, 9, [], 10.0)),
+    ]
+)
 
 # A displaced worker's value above its successor's exit's last step: A, still
 # running after B claimed, beats 2 and writes step 3's value, which pass 1 gives
@@ -563,6 +611,8 @@ GOLDEN = {
     "above": ABOVE,
     "loading_retry_released": LOADING_RETRY_RELEASED,
     "loading_retry_unended": LOADING_RETRY_UNENDED,
+    "loading_retry_at_its_resume_step": LOADING_RETRY_AT_ITS_RESUME_STEP,
+    "beatless_full_step": BEATLESS_FULL_STEP,
 }
 
 
@@ -703,8 +753,8 @@ def test_m5s_third_case_reaches_past_a_retry_that_crashed_while_loading():
 
 @pytest.mark.parametrize("rid", ["loading_retry_released", "loading_retry_unended"])
 def test_a_loading_retry_nothing_vouches_for_reaches_no_step(rid):
-    """B's step-0 status is at its position, A's step 0, so B reaches no step:
-    nothing is synthesized in B, and its status stays uncommitted as loading."""
+    """B beat nothing, so it reaches no step: nothing is synthesized in B, and
+    its step-0 status stays uncommitted as loading."""
     assert _synth(GOLDEN[rid]) == Synth(
         commits={1: [(0, 3, [2])], 5: [], 8: [(1, 10, [9])]},
         exits={1: None, 8: ()},
@@ -712,56 +762,40 @@ def test_a_loading_retry_nothing_vouches_for_reaches_no_step(rid):
     )
 
 
-def _positions(rows):
-    return {c.claim.started.seq: c.position for c in _synthesis(rows).claims}
+def test_a_loading_retry_at_its_resume_step_reaches_no_step():
+    """One answer, not two: B's status at step 2 is a loading value, so A, the
+    newest claim before C to reach step 2, takes the synthesis."""
+    assert _synth(LOADING_RETRY_AT_ITS_RESUME_STEP) == Synth(
+        commits={
+            1: [(0, 3, [2]), (1, 5, [4]), (2, RESUMED, [6])],
+            8: [],
+            11: [(3, 13, [12])],
+        },
+        exits={1: None, 11: ()},
+        left={9: Uncommitted.LOADING},
+    )
 
 
-def test_a_claims_position_is_its_last_real_beat_else_its_inferred_resume_point():
-    """A beatless claim takes the resume point M1 infers for it: the newest
-    commit of the newest earlier claim with an integer-step beat, among the
-    commits M2 and M5's first two places give it, before the third place. With
-    no such claim it has none."""
-    assert _positions(SKIPPED) == {1: 5}
-    assert _positions(TRAILING) == {1: 1}
-    assert _positions(RESUMED_PAST_A_LOADING_CRASH) == {1: 1, 8: 1, 11: 3}
-    assert _positions(LOADING_RETRY_RELEASED) == {1: 0, 5: 0, 8: 1}
-    newest = RESUMED_BESIDE_A_REAL_BEAT + [
-        r(16, "lifecycle.started", _started("x", 12.0))
-    ]
-    assert _positions(newest) == {1: 1, 8: 2, 12: 3, 16: 3}  # C's, the newest
+def test_a_beatless_claim_that_finished_a_step_reaches_no_step():
+    """The reading's cost: B's step-2 values stay loading values, and nothing is
+    synthesized, though C resumed from step 2."""
+    assert _synth(BEATLESS_FULL_STEP) == Synth(
+        commits={1: [(0, 2, []), (1, 3, [])], 5: [], 9: [(3, 11, [10])]},
+        exits={1: (), 9: ()},
+        left={6: Uncommitted.LOADING, 7: Uncommitted.LOADING},
+    )
+
+
+def test_a_beatless_claim_commits_nothing_even_before_a_clean_exit():
+    """It reaches no step, so M5's second place, which needs a trailing step,
+    does not apply: its values are loading values."""
     rows = [
         r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
         r(2, "value", _value(0.9, 0, None), name="loss"),
         r(3, "lifecycle.stopped", _stopped(True, None, 0, 1, [], 2.0)),
-        r(4, "lifecycle.started", _started("local://n1/12", 3.0)),
-    ]
-    assert _positions(rows) == {1: None, 4: None}  # a beatless claim's commit
-    assert _positions(TRAILING + [r(8, "lifecycle.started", _started("x", 6.0))]) == {
-        1: 1,
-        8: 2,  # A's step 2, from M5's second place
-    }
-
-
-def test_a_beatless_claims_value_above_its_position_is_trailing():
-    """B resumed from A's step 1 and wrote step 2's status before the runner's
-    backstop released it, with no beat; C's first real beat is 3. B is the
-    newest claim before C to reach step 2, so B's step 2 is synthesized."""
-    rows = [
-        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
-        r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
-        r(3, "lifecycle.heartbeat", _beat(1, 0, 1, 3.0)),
-        r(4, "lifecycle.stopped", _stopped(False, None, 1, 1, [], 4.0)),
-        r(5, "lifecycle.started", _started("local://n1/12", 5.0)),
-        r(6, "value", _value(LOADING_STATUS, 0, 5.5), name="status"),
-        r(7, "value", _value({"status": "aligning step 2"}, 2, 6.0), name="status"),
-        r(8, "lifecycle.stopped", _stopped(False, BACKSTOP, 1, 5, [], 7.0)),
-        r(9, "lifecycle.started", _started("local://n1/13", 8.0)),
-        r(10, "lifecycle.heartbeat", _beat(3, 0, 9, 9.0)),
     ]
     assert _synth(rows) == Synth(
-        commits={1: [(0, 2, []), (1, 3, [])], 5: [(2, RESUMED, [7])], 9: [(3, 10, [])]},
-        exits={1: ()},
-        left={6: Uncommitted.LOADING},
+        commits={1: []}, exits={1: ()}, left={2: Uncommitted.LOADING}
     )
 
 
@@ -876,25 +910,27 @@ def test_an_unattributed_stop_is_an_exit_node_that_vouches_for_nothing():
     )
 
 
-def test_an_exit_that_reached_no_step_vouches_for_no_step():
-    """A worker that exits before its first step writes ``final_step: null``:
-    its exit reached no step, so every integer-step value of its claim is above
-    it, a step-0 loading status included."""
+def test_an_exit_whose_last_step_is_null_vouches_for_no_trailing_step():
+    """A ``stopped`` with ``final_step: null`` that the placeholder reads as
+    the worker's exit (the "clear staged stop" default body, say): its exit
+    reached no step, so every trailing value of its claim is above it."""
     rows = [
         r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
-        r(2, "value", _value(LOADING_STATUS, 0, 1.5), name="status"),
-        r(3, "lifecycle.stopped", _stopped(False, None, None, 1, [], 2.0)),
+        r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+        r(3, "value", _value(0.8, 1, 3.0), name="loss"),
+        r(4, "lifecycle.stopped", _stopped(False, None, None, 1, [], 4.0)),
     ]
     assert _synth(rows) == Synth(
-        commits={1: []}, exits={1: ()}, left={2: Uncommitted.ABOVE_THE_LAST_STEP}
+        commits={1: [(0, 2, [])]},
+        exits={1: ()},
+        left={3: Uncommitted.ABOVE_THE_LAST_STEP},
     )
 
 
 def test_a_retrys_loading_status_reaches_no_step():
     """A retry that crashed while loading wrote its status at step 0; C resumed
-    from A's step 0. The status is at the retry's position, A's step 0, so the
-    retry did not reach step 0 and nothing is synthesized in it: A is the claim
-    M1 will choose."""
+    from A's step 0. The retry beat nothing, so it did not reach step 0 and
+    nothing is synthesized in it: A is the claim M1 will choose."""
     rows = [
         r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
         r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
@@ -934,18 +970,6 @@ def test_m8_dates_a_synthetic_commit_by_its_last_dated_value_else_the_beat_befor
     assert _synthetics(SKIPPED) == {(1, 2): (SKIP, 4.0, 4), (1, 4): (SKIP, 5.0, 8)}
     assert _synthetics(TRAILING) == {(1, 2): (CLEAN, 4.0, 4)}
     assert _synthetics(RESUMED_PAST_A_LOADING_CRASH) == {(1, 2): (RESUMED, 4.0, 4)}
-
-
-def test_m8_leaves_t_to_placement_when_there_is_none_to_carry():
-    """A synthetic commit whose values carry no t, with no real heartbeat before
-    it, takes the created_at of the record it is placed after (pass 5): t is
-    None here. Its consumed_seq is 0: its claim witnessed no drain."""
-    rows = [
-        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
-        r(2, "value", _value(0.9, 0, None), name="loss"),
-        r(3, "lifecycle.stopped", _stopped(True, None, 0, 1, [], 2.0)),
-    ]
-    assert _synthetics(rows) == {(1, 0): (CLEAN, None, 0)}
 
 
 def test_the_claim_m1_will_choose_is_the_newest_before_it_to_reach_the_step():
@@ -989,10 +1013,10 @@ def test_p2_a_committed_value_is_its_claims_commit_at_its_step(rid):
 
 @pytest.mark.parametrize("rid", list(GOLDEN))
 def test_a_claims_commits_are_its_real_beats_and_m5s_three_places(rid):
-    """Real commits are exactly the claim's integer-step heartbeats. Commits run
-    in step order, gapless from the first real beat to the last, which is the
-    claim's position. A skipped tick sits between them; a trailing step sits
-    above the position and holds values."""
+    """Real commits are exactly the claim's integer-step heartbeats, and a claim
+    with none commits nothing. Commits run in step order, gapless from the first
+    real beat to the last. A skipped tick sits between them; a trailing step
+    sits above the last and holds values."""
     for c in _synthesis(GOLDEN[rid]).claims:
         steps = [k.step for k in c.commits]
         assert steps == sorted(set(steps))
@@ -1003,17 +1027,17 @@ def test_a_claims_commits_are_its_real_beats_and_m5s_three_places(rid):
             for k in c.commits
             if isinstance(k.origin, Real)
         )
-        if real:
-            assert set(range(real[0].step, real[-1].step + 1)) <= set(steps)
-        if real:
-            assert c.position == real[-1].step
+        if not real:
+            assert c.commits == ()
+            continue
+        assert set(range(real[0].step, real[-1].step + 1)) <= set(steps)
         for k in c.commits:
             if not isinstance(k.origin, Synthetic):
                 continue
             if k.origin.place is SKIP:
                 assert real and real[0].step < k.step < real[-1].step
             else:
-                assert k.values and (c.position is None or k.step > c.position)
+                assert k.values and k.step > real[-1].step
 
 
 @pytest.mark.parametrize("rid", list(GOLDEN))
