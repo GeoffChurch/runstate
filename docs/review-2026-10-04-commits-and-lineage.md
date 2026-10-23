@@ -1,6 +1,9 @@
 # Review of `specs/commits-and-lineage.md` (draft): proposed fixes for everything
 
-**Status:** PROPOSAL, 2026-10-04, awaiting the owner's decisions. Nothing here is applied to the spec yet.
+**Status:** DECIDED and APPLIED. Proposed 2026-10-04; the owner's decisions are §12 (2026-10-05 to
+2026-10-14), and [`specs/commits-and-lineage.md`](specs/commits-and-lineage.md) revision 2 applies them
+(2026-10-14). The spec is current wherever the two differ; this review keeps the evidence and the
+alternatives rejected.
 
 **What was reviewed:** the draft layer-2 spec (log format 0.4.0) on PR #59. Seven independent reviewers each
 took one lens, and each had to give a concrete breaking case for every finding:
@@ -562,7 +565,7 @@ From L4's inventory, with file and line references:
 
 ## 9. Convergence with if-built-today
 
-### C1. Correct runstate's own docs (part of this fix round)
+### C1. Correct runstate's own docs (applied 2026-10-14)
 
 **`demand-streams.md` misstates if-built-today in four places (CM):**
 - **"Demand subsumption merges overlapping demands."** if-built-today gets subsumption free from an empty
@@ -607,7 +610,7 @@ The direction these follow is if-built-today taking what runstate has measured:
 - **Strike the stale positional text** that layer 1 removed: README §90–99 ("the mechanism is live"),
   `3-questions.md` §323–326, and `5-domain.md` §135–137 and §243–246.
 
-### C3. New backlog rows (runstate adopting from if-built-today)
+### C3. New backlog rows (runstate adopting from if-built-today; applied 2026-10-14)
 
 - **Hash-reveal withdrawal** (`5-domain.md` §"Still wanted: leases"): subscribe carries a commitment, and unsubscribe reveals
   it. It is unforgeable, needs no ordering, and one asker cannot withdraw another's demand.
@@ -1213,3 +1216,318 @@ commit marker.**
 - **For the spec round:** whether runstate's backlog gains a forbid row, and what its revival trigger is.
   Hash-reveal withdrawal is C3's row; for runstate it would reach stops through item 10b's
   `control.withdraw`.
+
+**Item 12: the external-report plane is `supervisor.*`, and the forbid joins run-scoped-halt (adopted).**
+- **The plane is a viewpoint, not a role.** [design-v0.3-exploration](design-v0.3-exploration.md) §7 defines it
+  as "an external observer's report", whose writer must outlive the worker: "a supervisor writing about a
+  *child*". `launcher` named the first such survivor runstate had. The death report is the record that shows
+  the gap: its usual writer, mycooc's reclaim tool reading SLURM accounting, launched nothing.
+- **The records,** renamed with the convention's bump:
+  - `supervisor.launched` and `supervisor.terminated`, changed only in prefix;
+  - `supervisor.died {claim_seq, outcome, evidence, t}`, item 5's death report. `outcome` is `preempted`,
+    `errored` or `killed`, since a death is never a completion; `evidence` is free text no fold reads (for
+    example `slurm:TIMEOUT`); `t` is the reporter's clock when it saw the death, as on `terminated`.
+- **What a record names is not the plane's business.** `launched` and `terminated` name a launch, and `died`
+  names a claim. Prefixes already mix aims (`lifecycle.nak` names a request as well as a claim); what a prefix
+  fixes is the viewpoint. The launch id stays required on the first two so that a death can be attributed;
+  `died` is attributed by `claim_seq`.
+- **Unchanged:** the Python `Launcher` classes keep their names, since they launch; so does the launch id
+  (`RUNSTATE_LAUNCH_ID`).
+- **Rejected:**
+  - keeping `launcher.*`: it names one survivor, not the viewpoint;
+  - `reaper.died`: one viewpoint split across two prefixes;
+  - `lifecycle.died`: it breaks item 5's rule that `lifecycle.*` is the worker's own word, which the
+    verdict's precedence routes on;
+  - `external.*`: exact, but defined by negation.
+- **The forbid goes into [run-scoped-halt](backlog/run-scoped-halt.md),** not a new row. That entry is R6's
+  durable ceiling, an open need waiting on "the write path first", and if-built-today's forbid is a write
+  path. It answers the entry's objections 1–3: a forbid is a positive record by its poster, needs no arbiter,
+  and gates commits as well as claims, so a claim that lands after it is halted at its first commit; only its
+  poster's withdrawal ends it. Objection 4 (one run id shared across experiments, so a halt's natural scope
+  is the demand) and the authority rule stay open, and the trigger stays the entry's existing need.
+
+**Item 13: the drafting round's three open questions, decided for the long term; the registers (adopted).**
+- **How:** three independent reviews of revision 2 (rubric, precision, fidelity) raised three questions the
+  walkthrough had not settled. The owner asked for the right long-term design, accepting more machinery if the
+  design is more natural. Proposals were tested by two adversaries, one arguing from first principles and the
+  alternatives, one building breaking histories and running them on today's code. Both kept each proposal's
+  core and broke a sub-claim of each; the decisions below are the proposals with their fixes.
+- **Q1. A death report ends the claim it names, and the evidence is gathered by writers.**
+  - **One predicate:** a claim has ended once its own `lifecycle.stopped` or a `supervisor.died` naming it is
+    on the log. The claim gate, lease voiding, the verdict and the Watcher all use it, and nothing else. No
+    fold calls `resolve()`, and no fold matches a `supervisor.terminated` to a claim.
+  - **Writers report deaths,** through one library helper that appends with a CAS against the tail it
+    inspected, and refuses when the claim's handle probes alive unless forced. `LocalLauncher.reap` writes
+    `died` when the process it reaped is the claimant; a claimant that finds the held claim's same-host handle
+    dead reports it before claiming; mycooc's reclaim tool reports from SLURM accounting. Observers never
+    write it: the Watcher's inference tiers stay display-only.
+  - **`terminated` never ends a claim and never enters a claimed run's verdict.** It stays the verdict of a
+    run nothing claimed, and forensics. That deletes the case where a submit-time `sbatch` exit 0 outranked a
+    death report and read as COMPLETED, and the last rule comparing a supervisor's position with a worker's.
+  - **The Worker fences itself:** its drain reads `supervisor.died`, and one naming its own claim latches it.
+    It then honours no stop, commits nothing and writes nothing more.
+  - **Evidence:** "a mistaken release costs waste, not corruption" was false. Run on today's code, a worker
+    released by mistake took the operator's stop, so no later claim honoured it; and mycooc's four checkpoint
+    files, written one after another, would interleave two writers, which §6's load assertion cannot see. With
+    the latch, a mistaken release costs at most the iteration in flight. The reader-side probe veto was inert
+    for the consumer that motivates the record (its targets are foreign-host, where the probe returns `None`).
+  - **Left open:** pid reuse fools the helper's probe while the reusing process lives; the `?start=T` handle
+    disambiguator (conventions-hygiene F9) closes it.
+- **Q2. Leases live per claim, durable requests per lineage, and the launch decision reads demand by name.**
+  - **Firing and expiry are facts at a node:** commits and exits carry `fired` and `expired`, written in one
+    record. `lifecycle.expired` (item 10b) is retired, and with it the crash window between a node and its
+    expiry.
+  - **A lease** is a subscription with any time or count atom. As in 0.3.0 it is bound to its claim at drain,
+    its firing state is the claim's (kept across a rewind), and it is void once the claim has ended.
+    Rebuilding count from the lineage was rejected: a service that dies at its first firing was relaunched
+    once under the count lease, and forever without it (run on today's code).
+  - **A durable subscription,** whose atoms are all lineage coordinates, is served per lineage: the Worker
+    re-arms it on any lineage that has not expired it, and rebuilds its counts from `fired`. Its answers are
+    per lineage.
+  - **Demand is by name:** a request is spent once any node expires it, or a `withdraw` or `nak` names it, and
+    nothing is demanded of a run whose head is closed. A fresh claim that crashes before its first commit
+    cannot revive answered demand, which a head-relative read let it do, looping relaunches.
+  - **A worker that holds no state resumes from the head,** so a stateless service does not re-serve every
+    request that expired on an older branch. Q3 lets that head be a retire exit.
+  - **The boundary:** a request whose answers are lineage data is per lineage; a stop, a request about the
+    process, is by name.
+- **Q3. Closed means completed; extendable means the exit's iteration is whole.**
+  - **The exit records whether its open iteration is whole:** `values` is the committed pending values, or
+    null when a torn iteration was discarded. Every error exit writes null, and so does a non-error exit after
+    `w.discard()`. This is the rubric review's B1: how a claim ended and whether its iteration is whole were
+    one bit. It amends item 2's "an error exit writes `values: []`".
+  - **A node is closed iff it is a completed exit, and extendable iff it is a commit or an exit that is
+    neither completed nor torn.** `parent`, `resume_from` and a rewind's target name an extendable node, and
+    the checkpoint recipe saves after an exit only when it is extendable.
+  - **Evidence:** extending a torn exit duplicated values mid-lineage (15 `params` elements for 12 commits);
+    with a bare discard, the recipe saved state half an iteration ahead of its node. Revision 2's "an exit is
+    never a parent" made a chunk's post-loop values invisible to every later claim, so `ensure` on them never
+    completed.
+  - **"Step" is the `Commits()` count everywhere,** not depth, since a lineage may now pass through an exit.
+    if-built-today's step is depth; a follow-up there.
+- **Q4. Registers stay outside every lineage, in the migration as natively:** M3 is dropped. The migration
+  no longer produces a shape no 0.4.0 writer produces, and registers are read by
+  [completed-opt-in](specs/completed-opt-in.md)'s register recipe.
+
+**Item 14: the owner's pass over the spec's drafting choices (2026-10-19 to 2026-10-23; adopted).** Recorded
+as each settled; none is open.
+- **`honored` names every stop whose condition held at a node of the claim, even one withdrawn since**
+  (approved). It amends a pin in item 10b's proposal: under it, a `withdraw` that landed between a stop's
+  decision and the exit gave a `preempted` exit naming no stop, and one that landed a seq later named it,
+  for the same worker doing the same thing.
+- **An `until` that already holds at registration expires at the next node** (approved), where 0.3.0
+  refused it. Whether it holds depends on the position, which a rewind moves: an expiry is a fact on one
+  lineage, a refusal a fact on none. Read at commit 99 or at 101, the same request now ends the same way.
+- **Pure demand has a lifetime, not a schedule** (adopted; amends item 8). The draft had `fired` name pure
+  demand, to rebuild its `every` baseline after a rewind. That was circular: the baseline decides only when
+  a pure demand next fires, and its firing changes nothing but `fired`. No reader uses the entry: `answers`
+  is empty either way, the demand fold reads `expired`, `withdraw` and `nak`, a lease's count is the
+  claim's, and `await_consumed` has the watermark.
+  - **The principle:** a firing takes a sample. A pure demand takes none, so it never fires, and `fired`
+    needs no exception.
+  - **Its lifetime** is layer 2's "live while not spent": until its `until` holds at a node, or a
+    withdrawal or refusal names it; a lease is also void with its claim. With no `until`, it lasts until
+    withdrawn, as an `every` with no `until` does in 0.3.0.
+  - **A `from`, an `every` or a `{count: n}` atom on a pure demand** is refused as `malformed`. In 0.3.0's
+    algebra, `every`'s period changed nothing there: it was the switch between a one-shot demand and a
+    lasting one, and "live until X" had many spellings. Accepting the fields and ignoring them was
+    rejected: it would silently turn 0.3.0's `{from: F}`, "live until F", into "live forever".
+  - **Lost:** the firing-budget lease (`every E` with `until {count: n}`), a horizon relative to
+    registration. The asker writes the absolute target instead, which is durable and survives a relaunch.
+  - **Against if-built-today:** a demand there has a lifetime, its lease, and a subscription adds routing;
+    a pure demand is now that bare demand.
+- **A claim already reported dead may be reported again** (approved). Under first-report-wins the verdict
+  would depend on timing: a claimant, which reports only while the claim is held, tends to arrive first and
+  knows least, and the launcher's reap, which knows the exit code or signal, often arrives second.
+- **The verdict keeps every death report: its outcomes are a set** (adopted, the owner's proposal; it
+  replaces the drafted order errored, killed, preempted).
+  - **Why nothing is chosen:** the reports do not compete. They describe a death at different levels, and
+    several can be true at once: SLURM delivers a preemption by a signal. A single outcome is a projection
+    of the set, so it is a policy, and a policy belongs to the consumer: the argument that keeps a `success`
+    bool out of `RunResult`, one level up.
+  - **What follows for free:** union is order-free and idempotent, so the protocol needs no precedence among
+    outcomes, and the order comes off the interop list. The set only grows as reports arrive, so a test such
+    as "some report says errored" stays true once true, and one such as "only preempted" visibly may not.
+  - **`lost`,** a new outcome, is what a claimant's dead probe writes: it saw the process gone and nothing of
+    how. The drafted probe wrote `killed`, a guess that outranked SLURM's `preempted` under the order. In the
+    verdict, `lost` is dropped beside any other outcome, since it says only what every death report says, and
+    alone it is a failure, as `presumed_dead` is.
+  - **`RunResult`** takes `outcomes: frozenset[Outcome]`, one element under every other viewpoint, and
+    `reports`, the death reports with their evidence. Consumers test membership: `ERRORED in outcomes`, or
+    `outcomes & Outcome.failures()`; `ensure` and `sweep` state their rules so.
+  - **Left open:** a report cannot contest another; dispute records stay backlogged, with their revival
+    trigger.
+- **Two death-report writers beyond item 13's list** (approved): `ThreadLauncher`, when its thread finishes
+  with no exit, since a thread shares its launcher's pid and no claimant's probe can see it gone, and so it
+  passes `force=True`; and `ensure` on each poll while it waits on a claim, since a layer-2 claim is held
+  until a record ends it and a custom producer's re-drive would otherwise loop on a dead foreign claim.
+- **Who writes a death report is a matter of acts and evidence, not of kinds of party** (the owner: observer,
+  writer and the rest are roles, and one entity may hold several). It replaces the drafted "observers never
+  write one":
+  - **evidence, never inference:** a reap, a same-host dead probe and an accounting record are evidence;
+    staleness, silence and a cross-host absence are not, since a report would fence a slow, live worker;
+  - **evidence without a cause reports only while the claim is held:** a probe's `lost` adds nothing once
+    anything has ended it, while a reap or an accounting record adds a cause;
+  - **a read never writes:** `peek_terminal`, `Watcher.poll`, the folds and every `is_alive()` stay pure,
+    and a party that watches and wants its probe recorded calls the helper. A reap is the one exception:
+    `waitpid` yields the status once, so whoever reaps records it there.
+  - **So the drafted foreign-episode writer moves:** `is_alive()` writing on every poll was a query with a
+    side effect. `report_if_dead(ch)` (working name), the probe's report, is called explicitly by the
+    library's actors: the claim path, `relaunch_if_needed` and `ensure_served` before acting, and `ensure`
+    on each poll.
+- **What a reap and a finished thread report** (approved, amending the draft's exit 0 as `errored`): a signal
+  is `killed`, a nonzero exit code or a raise `errored`, and an exit 0 or a thread's return `lost`, which
+  reports only while the claim is held.
+  - **Why exit 0 is `lost`:** it says the process ended by its own choice, and nothing of why it left no
+    exit. `errored` asserts an error the process denied.
+  - **The fence makes this case:** a worker released by a mistaken report sees its stop, writes nothing, and
+    exits 0. As `errored`, its reap turned a mistaken `preempted` into {preempted, errored}, and `ensure`
+    raised on a preemption; as `lost`, the reap adds nothing to an ended claim. `terminated` still records
+    the exit 0 against the launch. mycooc's hard-crash backstop already writes nothing for an exit 0
+    (run_experiment.py:718).
+  - **A signal stays `killed`:** mycooc's backstop calls one `errored`, because in its deployment a signal
+    that reaches it is a crash. The library's reap knows only that a signal ended the process.
+- **`RunResult.reason` becomes `tier: Tier`** (approved): a closed enum naming the viewpoint the verdict rests
+  on. `reason` repeated the outcome under a self-report and under `terminated`, and under death reports would
+  have been the constant `"died"`. Only the Watcher's inference tiers said anything new. No consumer reads
+  it, and its one reader in runstate, `worker_completed`, telling a worker's completion from a reaped exit 0,
+  loses that reading in layer 2 and becomes "the head is closed" (spec §5).
+- **`last_activity` dates no `died` and no `terminated`** (approved): it asks when the run itself last did
+  something, and a report's `t` is when its writer saw an end (#42). Dating a report by the death fails for
+  a probe, which cannot know when it was. mycooc's reclaim tool, which dates its forged `stopped` by SLURM's
+  end time to work around #42, no longer needs to.
+- **An unreadable record that ends a claim counts as `lost`** (approved, replacing the drafted
+  `presumed_dead` for a claim only unreadable records ended): it says only that the claim ended, which is all
+  `lost` says, so alone it is the verdict and beside a readable report it drops, and the special case goes.
+  `presumed_dead` keeps one meaning, the Watcher's inference about a claim the log has not ended.
+  - **Nothing is lost:** the record stays on the log, and `RunResult.malformed` names its seq.
+  - **Reading more of it was rejected:** a lenient parse is a second reader that another implementation need
+    not share, so one log could get two verdicts, and reading a malformed exit as completed would close its
+    lineage for good. Recording what happened stays an ordinary act: a death report from anyone with
+    evidence, or, for a completion, a relaunch that writes a valid exit. Only the claim's own exit closes a
+    lineage.
+- **Cluster 2 of the drafting choices: subscriptions, leases and stops** (approved).
+  - **A re-send may change the schedule, not the target or the class:** a re-send may change what only the
+    worker reads, never what readers read. `answers` reads the target, and voiding reads the class; letting
+    either change would make every reader find which send was in force at each node. The refusal spends the
+    id, since its `nak` names the original too: the unsoundness reference-by-name measured, accepted here
+    because the asker contradicted itself. Renewal by a fresh id and a withdrawal was rejected, at about three
+    records per renewal for lazy-launch's keepalives.
+  - **An accepted re-send registers afresh what the claim holds:** a lease's time atoms count from the
+    re-send, its fire count returns to 0 and its time baseline is dropped, as in 0.3.0, which is how a lease
+    is renewed. What the lineage holds stays. The draft left this unsaid.
+  - **A stop's `from` is evaluated at heartbeats too,** with the position's counts and the heartbeat's
+    clock, and the decision stays latched. Evaluating only at nodes was a seam: a stop with no `from` already
+    landed at a heartbeat, while `from {time_seconds: 0}`, or a time `from` come due inside a slow iteration,
+    waited for the next commit. Lineage counts change only at nodes, so only time atoms and stops drained
+    at the heartbeat decide differently. `honored` names a stop that held at a heartbeat, by decision (1).
+  - **A lease binding is written by CAS,** re-draining on a lost CAS. A binding that landed after an unread
+    death report would void the request for good, where a racing commit costs one iteration. Ignoring such a
+    binding by a reader rule was rejected: it depends on position, so `live_demand` would depend on order.
+  - **A lineage atom's baseline is read on the lineage, for a lease too** (amending item 13's "its firing
+    state is the claim's" for lineage baselines only). The draft clamped a lease's baseline to a rewind's
+    target, which counts from a position no firing happened at: with `from {commits: 50}, every {commits:
+    10}`, fired at 50, 60 and 70 and rewound to 45, it fired at 55, 65, and so on, where the lineage gives
+    50, 60, and so on. Item 13's reason for keeping a lease's state on the claim was the fire count, which a
+    relaunch loop would otherwise refund; the clock, fire count and expiry stay the claim's.
+  - **Every threshold takes n ≥ 0** (amending §3's schema list, which had `{stream, n}` from 1, and the
+    draft's n ≥ 1 for `{commits: n}`). The draft argued that a 0 only re-spells an absent `from` or an
+    `until` that holds. That missed `every`, where a 0 fires at every evaluation, the exit included: an
+    `every {commits: 1}` that fired at the last commit does not fire at the exit, so a source `set` after the
+    loop went unsampled, and only a lease could say it, with `every {time_seconds: 0}`. Re-spelling is no
+    reason to refuse in a free algebra, which `{any: [a, a]}` already shows. One minimum serves all four
+    atoms, as one served 0.3.0's three.
+- **Cluster 3 of the drafting choices: the Worker's and `ensure`'s API.**
+  - **`ensure` returns `Reached(node)` or `Unreachable(closed_at)`** (approved: "a different field name on a
+    different type"). Both stay values, not exceptions: a target the run completed short of, as by early
+    stopping, is an answer about the run, unlike the failure exits. The drafted `Unreachable(node)` shared
+    `.node` with `Reached`, so `ensure(...).node` type-checked on the union and a run that ended at 80 read as
+    one that reached 100, a truncation no log shows. With the field named apart, the checker makes the caller
+    narrow first. `prefix` gets the same fix: `elements` only on `Complete`, and `partial` on `Pending` and
+    `SettledShort`, where D3's `Pending(have, node)` had once kept them apart.
+  - **After `discard()`, `commit()` and `heartbeat()` write nothing and return True** (approved). The state
+    in memory is part of an iteration ahead of the position, so nothing after it can commit honestly. A
+    return of True ends every driver, and a callback host that calls its hook once more is not crashed by a
+    raise. `emit`, `set`, `include` and `rewind` raise, as the worker's own misuse, unlike the fence's silent
+    no-ops for a release the worker cannot see. Added: `heartbeat()` does not drain, since a lease it bound
+    would be voided at once by the exit, which registers nothing.
+  - **Checkpoint saves are a required `save=` Strategy, the `SavePolicy` Protocol** (approved). The Worker,
+    not the loop, runs the save: only it sees the instant a node lands, before the caller's code changes
+    state, and only it knows whether the exit it wrote is extendable. Saving before the commit is the lag
+    lineage-graph test 1 measured, and saving after a torn exit writes a checkpoint ahead of its node. Added:
+    the draft named `NoSave` and `Every` but no interface, which made them a closed set; with
+    `after(node, *, commits, exit)` the Worker fixes when a save may happen, and the policy only whether, so
+    a wall-time cadence is the caller's own few lines.
+  - **One `Target(x, n)` serves `steps()`, `ensure` and the producer seam** (approved, unchanged). One target
+    crosses `ensure` → `extend` → `steps(until)` with no conversion for the two sides to disagree in, and its
+    constructor checks `n` and the kind of `x` once. `Commits()` is a marker type, which no stream name can
+    collide with. `prefix` keeps `(stream, n)`, since taking a `Target` would need a runtime refusal of
+    `Commits()`.
+  - **`resume_from: NodeRef | LatestClaimHead | None`, and `rewind(target: NodeRef | None)`** (approved).
+    The draft took a checkpoint or any head Strategy, and refused a resolved `Head` at runtime: a `Head` is a
+    `HeadStrategy` too, and a `LatestClaimHead` resolved before the claim may miss a commit made in between,
+    so a woken service would branch from an older node and re-serve what the newer branch expired (item 13).
+    The refusal was also inconsistent, since `AtNode(x)` names a fixed node just as a stale `Head` at x does.
+    Added: the draft's `Checkpoint` Protocol had one member, `.node: int`, so any object with an integer
+    `.node` satisfied it; its name claimed "state saved here" and it checked "names a node". (The approval
+    cited `Reached`, `Complete`, `Pending` and `SettledShort` as such objects. The holistic read below found
+    each one's `.node` is `int | None`, since a head may be the empty lineage, so none of them is one; the
+    decision stands on the rest.) A nominal checkpoint would check nothing the Worker reads, which is only
+    `.node`; the mistake it would catch, loading one checkpoint and naming another node, the load assertion
+    already catches; and it would make consumers inherit from runstate. So the Protocol is renamed for what it
+    checks, `NodeRef`. A checkpoint is one, `AtNode(x)` is one, and so a stateless worker's fixed node is not
+    an extra case but the checkpoint case without state. It is rare at a claim's start (branching from before
+    a faulty version's commits), but `rewind` needs it, since a stateless worker that rewinds has no
+    checkpoint. A `Head` fails to type-check, since its node may be `None`, and the runtime refusal goes.
+    `choose` becomes generic in the caller's checkpoint type, which `-> Checkpoint | None` had lost.
+- **Cluster 4 of the drafting choices: migration.**
+  - **M1 parents a resumed claim's first commit on the commit, even where an extendable exit follows it**
+    (approved, unchanged). A parent names where the resumed state came from, and every 0.3.0 checkpoint was
+    saved at a step, never after an exit. Nothing in 0.3.0 asserted that a clean exit sat between iterations
+    either, since `discard()` is new. The shape, a one-node side branch at each preemption, is one a native
+    log has when a claim resumes from a commit's checkpoint rather than the exit's, and no read of values,
+    counts or the verdict differs, since a migrated exit holds no values and fires nothing. One rule serves
+    every kind of exit, where parenting on the exit needs a case for the preempted one.
+  - **M5's third case synthesizes a trailing step s only in the claim M1 will choose** for a later claim
+    whose first real beat is s+1: the newest claim before it to reach step s, by a commit or by trailing
+    values (approved). The draft's "any later claim" was right against "only the next": a retry that crashed
+    while loading beats nothing, and looking only at it would leave the claim after it parentless. Added: "any
+    later claim" also synthesized where M1 would not use the commit. A crashes with step 5's values; B
+    resumes from 4 and beats 5; C starts at 6. The draft synthesized A's step 5, though M1 parents C on B's,
+    so a commit nothing continues asserted that a crashed iteration finished, on evidence that points at B.
+    No read of the head changes. P2 names the exception, which it lacked already for a crashed claim nobody
+    resumed after, and the records' "every integer-step value" sentence says the same.
+  - **A third party's `stopped` that ends its claim becomes a `died`, mapped as drafted; a later one becomes
+    a `died` only when its `error` is set, and otherwise only its withdrawals** (approved). The draft's
+    mapping matches what each of mycooc's writers documented for the stop that ends a claim: the backstop's
+    `errored`, or preempted for the runner's own kill, and the reclaim tool's preempted walltime kill, which
+    M10 keeps for its 7 bodies. But the writers of later stops, the repair script and the "clear staged stop"
+    path, wrote a default body and saw no death, and the verdict keeps every report's outcome: a crash
+    reported by the backstop and then cleared would read `{errored, preempted}`, which a consumer testing
+    for `preempted` relaunches. The rule mirrors the live one above, that evidence without a cause reports
+    only while the claim is held: once it has ended, only a report with a cause is written. A third party's
+    `completed: true` stays `preempted`, now because a death is never a completion, since the draft's
+    reason, that the claim's own exit carries the verdict, held only for later stops.
+  - **A claim that 0.3.0 saw ended only by its launch's `terminated` gets a `died` from it when the launch's
+    handle is the claim's, compared whole** (approved). In 0.4.0 no fold matches a `terminated` to a claim,
+    so without the report such a claim never ends: its verdict is lost, and it still looks held, so no
+    worker on another host can claim the run. The report mirrors the live reap's mapping, and it attributes
+    a reap, which is evidence, as a live launcher does. A wrapper's exit says nothing of its worker, so a
+    launch whose handle differs gets none. Added: the draft compared pids; the whole `local://host/pid` is
+    string equality, which is simpler, and stricter, since two hosts can share a pid. A ThreadLauncher's
+    launch still matches, since it carries its worker's own handle.
+- **The holistic read** (2026-10-23), one independent reader over the whole spec after these edits, found 18
+  seams. Most were stale text, cross-references and terms, fixed as found: `{commits: 0}` was still a
+  negative schema case; a completed exit after `discard()` was counted among the exits that evaluate;
+  `store.md`'s ripple still had the foreign episode reporting; "void" was used for "spent"; "held" was never
+  defined. Four fixes go beyond wording, for the owner to confirm:
+  - **`Reached.node` is `int | None`,** `None` only where a target of 0 meets the empty lineage, and the
+    `prefix` outcomes' `node` is the head's, `None` on the empty lineage. Every threshold takes n ≥ 0, so
+    `ensure` can be reached at a head with no node.
+  - **`report_death` returns `None` for a `lost` report on a claim that has ended.** The rule that evidence
+    without a cause reports only while the claim is held had no place that enforced it; the helper checks it
+    at the W of its CAS, for every caller.
+  - **The live `LocalLauncher` attributes by the whole handle,** as the migration now does, so one rule
+    serves both.
+  - **The claim path calls `report_if_dead`** where it restated the probe, whose "otherwise" read as the
+    opposite of what was meant.
