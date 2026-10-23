@@ -250,7 +250,16 @@ At the consumer's own time, in this order:
      `honored: [...]`);
    - mycooc's reclaim tool names the claim it releases, with `honored: []`, so it no longer clears pending
      stops;
-   - anything that builds `{rid}.db` paths by hand goes through the locator.
+   - anything that builds `{rid}.db` paths by hand goes through the locator;
+   - **mycooc: tick on every step.** `training.py`'s `on_step` ticks at its end, and three
+     "patience exhausted" branches return early, before the tick (`training.py:1256`, `:1287`, `:1313`).
+     - **What it costs today.** At those steps the step's metrics land with no heartbeat, the control drain
+       is skipped (so a stop takes effect one step late), and liveness has a one-step gap.
+     - **How often** (2026-10-04 census): 891 times, every one a +2 heartbeat jump with a full metric set at
+       the skipped step.
+     - **Why it matters more under layer 2.** Commits make the skip *visible*: the skipped step's values
+       would be committed one step late ([`../backlog/identity-in-records.md`](../backlog/identity-in-records.md) §2).
+     - **The fix:** move the tick ahead of the early returns, or into a `finally`.
 
 ## 8. Measured cost (spike)
 

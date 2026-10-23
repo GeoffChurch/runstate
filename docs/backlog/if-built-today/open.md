@@ -9,6 +9,11 @@
    exhaustion question ([`2-polarity.md`](2-polarity.md) §"How a party comes to know a negative fact"), and it needs a shape that is not
    `¬Q`. What is settled is settled by witnesses: for a question that binds the value, the halted
    producer's prefix is decided, and only the tail is open.
+
+   Under [`5-domain.md`](5-domain.md)'s node keys, part of this is answered: a lineage ends at its head, so the
+   series along any node — a halted claim's last commit, or its exit — is decided past that node by
+   structure. What stays open is only whether *any* lineage finishes, `∃H. finished(H, r)`, which nobody
+   ever tells negative.
 2. **Provenance.** Not built. What it blocks meanwhile: diagnosing `{t,f}`, taint after a premise becomes
    disputed, and attributing a wrong `¬Q` — positive facts need it equally, so it is one mechanism. What it
    would unlock is the annotation branch of [`README.md`](README.md) §"What gets built on top", including the whole dispute story,
@@ -51,6 +56,17 @@
    agent is running this"* is a mutual-exclusion requirement, not a query, so the theorem does not speak
    to it. What CALM does say is that any *query* whose answer needs the participant roster is
    non-monotone; single-spawn needs the roster for a different reason, and needs it just as badly.
+
+   **The claim order without an arbiter.** [`5-domain.md`](5-domain.md) §"The schema" makes a claim's place `I`
+   in its run's claim order data, which one sequencer per run supplies. Without one, a claimant writes one
+   more than the highest `I` among the claims it has seen, of any run, so that it need not first resolve
+   which run another claim belongs to, or `1` if it has seen none. And it resumes only from a node whose
+   lineage's claim records it also holds, so its `I` exceeds that of every claim whose nodes it extends;
+   tracing the lineage through commit records alone would let it resume from a claim it never saw, and
+   then rank below it. That makes `I` a Lamport clock over claims: a claim made after seeing another is
+   newer, and only concurrent claims can tie, the case an arbiter exists to exclude. Open: how a tie is
+   broken, and whether the head stays stable enough for a poller's series to be monotone
+   ([`../lineage-graph.md`](../lineage-graph.md), next step 2).
 6. **Whether demand should be the only interconnect**, and not merely the only one that *means* anything.
    The semantics already reads the second way: an answer is truth restricted to the demand, so anything
    arriving unbidden is a cache warm-up with no semantic status, and an implementation may broadcast

@@ -6,6 +6,17 @@ has fired in one author's four repos (`../../CLAUDE.md`: *a census bounds applic
 never soundness*). Kept as a worked design, and the day it is justified this is where to start.
 Not in `../specs/`: nothing here ships.
 
+**2026-10-14: the record is superseded by layer 2's death report.** `supervisor.died {claim_seq, outcome,
+evidence, t}` ([`../specs/commits-and-lineage.md`](../specs/commits-and-lineage.md) revision 2, §2–§3) names
+the claim, ends it, and gives the verdict when the worker left none. It differs from `lifecycle.evicted` on
+purpose: it sits on the external plane, not `lifecycle.*`; it carries an outcome, so the reclaim tool keeps
+its `preempted` projection; and its `t` is read by no freshness fold, which keeps §3's #42 argument.
+**§4's probe veto moves to the writer** ([review](../review-2026-10-04-commits-and-lineage.md) §12, item 13).
+The library's `report_death` refuses a claim whose handle probes alive unless forced, so every reader agrees
+on which claims have ended. A veto in the claim gate protected a live claim only when the claimant landed on
+its host, and was inert for the reclaim tool, whose targets probe `None`. A worker that reads a death report
+naming its own claim stops writing, so a mistaken release costs the iteration in flight.
+
 ## What holds by argument — these survive any corpus
 
 - **#42's harm does not exist as described.** In its own repro the branch is **unreachable**: the

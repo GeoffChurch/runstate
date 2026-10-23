@@ -184,6 +184,10 @@ latest claim" stays well defined.
    say which computations it stops, and a stop already honored must still reach a claimant that was
    concurrent with it.
 5. **The commit point.** Save after the commit to avoid the lag measured in test 1.
+6. **Layer 2's writes that one sequencer decides.** Layer 2
+   ([commits-and-lineage](../specs/commits-and-lineage.md)) appends the exit, a death report and a lease's
+   binding each by a compare-and-swap on the shared log. Its fence assumes that a worker reads the log its
+   death report was written to. Each needs its own answer without a shared sequencer. *Noted 2026-10-20.*
 
 ## Consequence for layer 2 (*framework prediction*)
 

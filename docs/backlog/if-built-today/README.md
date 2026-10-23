@@ -90,13 +90,15 @@ know about a record has to be **in the record, at write time**. Position is exac
 **Calibration, since the second commitment sounds cheap.** It is the one place this design's problem class
 has been measured, in an existing system with the opposite convention: **11 of 37 stops were discharged by
 a record the worker did not write, 6 of them malformed.** Each was a third party releasing a stranded claim
-with the only record that can release one, and a discharge paired by position answered every stop pending
-before it. No harm had landed, since each halt had already been served another way, but the mechanism is
-live (`runstate/observables.py`, `undischarged_stops`). Those records are forgeries in form; the defect
-they caused is attribution, since a release paired by name, naming no stop, discharges none. Two more
-instances were reproduced in a prototype rather than counted: a late heartbeat from a dead episode read as
-current, and a displaced worker's terminal read as the run's verdict ([`../episode-aim.md`](../episode-aim.md)). Position-derived
-identity does not fail rarely.
+with the only record that could then release one, and a discharge paired by position answered every stop
+pending before it. No harm had landed, since each halt had already been served another way. Those records
+were forgeries in form; the defect they caused was attribution, since a release paired by name, naming no
+stop, discharges none. Two more instances were reproduced in a prototype rather than counted: a late
+heartbeat from a dead episode read as current, and a displaced worker's terminal read as the run's verdict
+([`../episode-aim.md`](../episode-aim.md)). Position-derived identity does not fail rarely. Runstate has since moved to
+this convention: its log format 0.3.0 pairs a discharge by name, and its layer-2 design gives a third
+party a record of its own, a death report naming the claim, and an asker one, a withdrawal naming the stop
+([`../../review-2026-10-04-commits-and-lineage.md`](../../review-2026-10-04-commits-and-lineage.md) §12).
 
 Two things that measurement does **not** do. It does not support the rest of this document — identity-as-
 data would work in a plain mutable database, and nothing here is measured against a system that exists.
@@ -183,12 +185,14 @@ whatever lattice they like, and nothing underneath changes.
   that abstention must not become a stored verdict. A connection-oriented backend's lock can observe a death
   across hosts, as runstate's Postgres backend does, but arbitrating the claim on it is a further step
   runstate has not taken.
-- **The artifact plane.** Checkpoints on a filesystem remain unmodelled, and remain where a double-live
-  worker's real damage lands.
+- **The artifact plane.** What a checkpoint holds remains unmodelled — [`5-domain.md`](5-domain.md) records that a
+  state was saved, not the state — and it remains where a double-live worker's real damage lands.
 - **Enforcement.** Still honour-system. This is why forgery defects survive.
 - **The halt does not dissolve.** Self-withdrawal is free — an asker that stops wanting a question stops
   renewing it, and nothing is posted or retracted ([`3-questions.md`](3-questions.md) §"Demand is control"). But the measured case is an **operator** stopping a run a **scheduler** relaunches,
   i.e. withdrawing *someone else's* demand. That needs a write and an authority rule, and always did.
+  [`5-domain.md`](5-domain.md)'s `forbidden` is that write — a veto posted beside the demand, not a withdrawal of
+  it — and the authority rule is still owed.
 - **Diagnosing a conflict.** `{t,f}` is affirmable; telling a genuine disagreement from an over-claimed
   region is not, without provenance nobody has built.
 

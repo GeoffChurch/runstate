@@ -144,6 +144,29 @@ hold*. So A7 pointed at the right layer and the wrong artifact.
    2 runs, from one experiment and one tool"*). This need has had **one hand-run repro and no corpus
    count**. Claiming it clears a bar that another design failed requires measuring the same thing.
 
+### A candidate write path (2026-10-14)
+
+if-built-today's forbid ([`if-built-today/5-domain.md`](if-built-today/5-domain.md) §"Halting and withdrawing") designs the write
+path first, as point 1 asks. It entered this entry rather than a new row ([review](../review-2026-10-04-commits-and-lineage.md) §12, item 12).
+Nothing in runstate implements it; layer 2 has no forbid.
+- **The record:** a positive fact its author posts beside the demand: nothing may extend node N, or
+  any node below it. It gates every claim, commit or rewind in that scope, except the exit, which
+  adds no iteration, so a claim running there writes its `preempted` exit and stops.
+- **Against §4's five objections:**
+  1. **The write path:** each forbid has one writer, its poster, and no rival to arbitrate.
+     Forbids accumulate, and one ends only by its poster's withdrawal, a reveal of the secret its
+     name commits to.
+  2. **An obligation with an eliminator:** the withdrawal is the designated eliminator, and the
+     record is not on the value plane.
+  3. **Ordering against the claim** is not needed: a claim that lands after the forbid, or races
+     it, is gated at its first commit, so winning the claim CAS gets it nowhere.
+  4. **Scope** stays open. A forbid's scope is a node and everything below it, finer than the run,
+     but a run id shared across experiments still shares the node, and whether a halt belongs to
+     the demand (point 3 above) is not answered.
+  5. **Observability** is unchanged: it needs the TUI change §4 priced.
+- **Also open:** the authority rule for forbidding someone else's demand (if-built-today [README](if-built-today/README.md)
+  §"What it does NOT solve"), and R6's ceiling/floor question (point 2 above).
+
 ## 6. What this rules out
 
 - **Patching the consumer's reclaim tool** to re-issue swallowed stops — wrong layer; it

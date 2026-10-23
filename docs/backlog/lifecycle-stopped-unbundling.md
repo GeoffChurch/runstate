@@ -1,5 +1,19 @@
 # `lifecycle.stopped` does five jobs; two parties now want one each
 
+**Status: RESOLVED by layer 2 (2026-10-14),** [`../specs/commits-and-lineage.md`](../specs/commits-and-lineage.md) revision 2. Each job
+now has a record from the viewpoint that owns it:
+- **Job 1, releasing the claim,** and the verdict when the worker left none: a supervisor's death
+  report, `supervisor.died`, naming the claim and carrying its evidence ([review](../review-2026-10-04-commits-and-lineage.md) §12, items 5 and
+  12).
+- **Job 4, discharging stops:** `control.withdraw`, the asker's record, naming the stop (item 10b).
+  That answers the cheap question below: no third party discharges a stop by ending a claim.
+  mycooc's `resume_fanout` withdraws each pending stop by name instead of forging an exit; whether
+  each is its own to withdraw is the authority question, still an honor system.
+- **Jobs 2, 3 and 5,** the verdict, the frontier and freshness, stay with the worker's own exit,
+  which is now its last node.
+
+The analysis below is kept as the record of the question.
+
 **The observation.** `lifecycle.stopped` releases the claim, declares the verdict, reports the step
 frontier, discharges pending `control.stop`s, and dates the run's freshness. It is the only record
 that does any of them, so anyone who wants *one* must assert all five.
