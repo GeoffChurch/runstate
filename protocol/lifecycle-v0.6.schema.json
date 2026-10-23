@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://runstate.dev/protocol/lifecycle-v0.6.json",
+  "title": "runstate v0.6 lifecycle convention",
+  "description": "Pins the bodies of the lifecycle.* topics (log format 0.4.0; docs/specs/commits-and-lineage.md section 3): started (the claim: who computes, where it starts, which names are sources), commit (a lineage node, one per commit()), heartbeat (liveness only, not a node), rewind (restates the position), stopped (the worker's exit, always a node), nak (a refused control request), bound (a lease bound to its claim). Applied on top of the envelope schema. Every lifecycle record carries name null. request_id is the launch id on started (null for a launcher-less run), the request on bound and nak, and null on commit, heartbeat, rewind and stopped. Present-nullable throughout: every field is present, null or [] when not applicable. CONSTRAINTS THE SCHEMA CANNOT CHECK (spec section 3, 'The fields', marked prose): (1) resume_from, on started and rewind, names an extendable node of this run below its record's own seq; (2) parent, on commit and stopped, names an extendable node and equals the claim's position (before a commit; at the exit for stopped); (3) every seq in values is lower than the record's own seq; (4) every request id in fired names a source subscription the claim had registered; (5) a request in expired fires at no later node of that lineage. Also outside the schema: a seq named twice along one lineage is malformed, and an extendable/closed/torn judgment of a node is made from the log, not the body alone.",
+
+  "allOf": [
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"pattern": "^lifecycle\\."}}},
+      "then": {
+        "properties": {
+          "topic": {"enum": ["lifecycle.started", "lifecycle.commit", "lifecycle.heartbeat", "lifecycle.rewind", "lifecycle.stopped", "lifecycle.nak", "lifecycle.bound"]},
+          "name": {"type": "null"}
+        },
+        "required": ["name"]
+      }
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "lifecycle.started"}}},
+      "then": {"properties": {"body": {"$ref": "#/$defs/Started"}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "lifecycle.commit"}}},
+      "then": {"required": ["request_id"], "properties": {"request_id": {"type": "null"}, "body": {"$ref": "#/$defs/Commit"}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "lifecycle.heartbeat"}}},
+      "then": {"required": ["request_id"], "properties": {"request_id": {"type": "null"}, "body": {"$ref": "#/$defs/Heartbeat"}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "lifecycle.rewind"}}},
+      "then": {"required": ["request_id"], "properties": {"request_id": {"type": "null"}, "body": {"$ref": "#/$defs/Rewind"}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "lifecycle.stopped"}}},
+      "then": {"required": ["request_id"], "properties": {"request_id": {"type": "null"}, "body": {"$ref": "#/$defs/Stopped"}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "lifecycle.bound"}}},
+      "then": {"required": ["request_id"], "properties": {"request_id": {"type": "string"}, "body": {"$ref": "#/$defs/Bound"}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "lifecycle.nak"}}},
+      "then": {"properties": {"body": {"$ref": "#/$defs/Nak"}}}
+    }
+  ],
+
+  "$defs": {
+    "Seq": {
+      "description": "A seq: an integer >= 1.",
+      "type": "integer", "minimum": 1
+    },
+    "Parent": {
+      "description": "The shared type of `parent`: the seq of a node, or null (the first node after a fresh start or a rewind to the root).",
+      "type": ["integer", "null"], "minimum": 1
+    },
+    "Values": {
+      "description": "The shared type of `values`: unique seqs >= 1, order significant (the writer's own order). No maxItems. On stopped it is wrapped as nullable.",
+      "type": "array", "items": {"type": "integer", "minimum": 1}, "uniqueItems": true
+    },
+    "Requests": {
+      "description": "The shared type of `fired` and `expired` (and, as a set of names, of `sources`): unique, non-empty strings.",
+      "type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true
+    },
+    "Time": {
+      "description": "The writer's wall-clock seconds.",
+      "type": "number", "minimum": 0
+    },
+
+    "Started": {
+      "type": "object", "required": ["handle", "t", "resume_from", "sources"], "additionalProperties": false,
+      "description": "The claim: who computes (handle, the worker's self-reported liveness handle), when (t, the run epoch), where it starts (resume_from: an extendable node of this run, or null for a fresh start), and which names it exposes as sources, sampled on demand (sources: [] declares none). Prose: resume_from names an extendable node below this record's seq.",
+      "properties": {
+        "handle": {"type": "string"},
+        "t": {"$ref": "#/$defs/Time"},
+        "resume_from": {"$ref": "#/$defs/Parent"},
+        "sources": {"$ref": "#/$defs/Requests"}
+      }
+    },
+    "Commit": {
+      "type": "object", "required": ["claim_seq", "consumed_seq", "parent", "values", "fired", "expired", "t"], "additionalProperties": false,
+      "description": "A lineage node, one per commit(). claim_seq names the claim it speaks for; consumed_seq is the control-drain watermark; parent is the claim's position before it; values are the seqs it commits; fired the subscriptions that fired here; expired those whose schedule ended here. Prose: parent names an extendable node and equals the claim's position; every seq in values is lower than the record's own; each fired names a source subscription the claim registered.",
+      "properties": {
+        "claim_seq": {"$ref": "#/$defs/Seq"},
+        "consumed_seq": {"type": "integer", "minimum": 0},
+        "parent": {"$ref": "#/$defs/Parent"},
+        "values": {"$ref": "#/$defs/Values"},
+        "fired": {"$ref": "#/$defs/Requests"},
+        "expired": {"$ref": "#/$defs/Requests"},
+        "t": {"$ref": "#/$defs/Time"}
+      }
+    },
+    "Heartbeat": {
+      "type": "object", "required": ["claim_seq", "consumed_seq", "t"], "additionalProperties": false,
+      "description": "Liveness only; not a node. step is removed. claim_seq names the episode the beat speaks for; consumed_seq is the control-drain watermark; t dates the beacon.",
+      "properties": {
+        "claim_seq": {"$ref": "#/$defs/Seq"},
+        "consumed_seq": {"type": "integer", "minimum": 0},
+        "t": {"$ref": "#/$defs/Time"}
+      }
+    },
+    "Rewind": {
+      "type": "object", "required": ["claim_seq", "resume_from", "t"], "additionalProperties": false,
+      "description": "Restates the position only: where, never who. resume_from is an extendable node of this run, or null for the root. Prose: resume_from names an extendable node below this record's seq.",
+      "properties": {
+        "claim_seq": {"$ref": "#/$defs/Seq"},
+        "resume_from": {"$ref": "#/$defs/Parent"},
+        "t": {"$ref": "#/$defs/Time"}
+      }
+    },
+    "Stopped": {
+      "type": "object", "required": ["completed", "error", "claim_seq", "honored", "parent", "values", "fired", "expired", "t"], "additionalProperties": false,
+      "description": "The worker's exit, always a node; at most one per claim. completed=true is the worker's claim of intrinsic completion (a closed node); a completed stop carries no error. error non-null implies values null. values is null when the exit discarded its open iteration (a torn exit if it did not complete), and then fired and expired are []; otherwise the pending values then the samples, [] if none. claim_seq names the episode it ends (never null). honored names the control.stop request_ids it honored. parent is the position at the exit. Prose: parent names an extendable node and equals the position at the exit; every seq in values is lower than the record's own; each fired names a source subscription the claim registered.",
+      "properties": {
+        "completed": {"type": "boolean"},
+        "error": {"type": ["string", "null"]},
+        "claim_seq": {"$ref": "#/$defs/Seq"},
+        "honored": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "parent": {"$ref": "#/$defs/Parent"},
+        "values": {"anyOf": [{"$ref": "#/$defs/Values"}, {"type": "null"}]},
+        "fired": {"$ref": "#/$defs/Requests"},
+        "expired": {"$ref": "#/$defs/Requests"},
+        "t": {"$ref": "#/$defs/Time"}
+      },
+      "allOf": [
+        {"if": {"required": ["completed"], "properties": {"completed": {"const": true}}},
+         "then": {"properties": {"error": {"const": null}}}},
+        {"if": {"required": ["error"], "properties": {"error": {"type": "string"}}},
+         "then": {"properties": {"values": {"const": null}}}},
+        {"if": {"required": ["values"], "properties": {"values": {"const": null}}},
+         "then": {"properties": {"fired": {"maxItems": 0}, "expired": {"maxItems": 0}}}}
+      ]
+    },
+    "Bound": {
+      "type": "object", "required": ["claim_seq"], "additionalProperties": false,
+      "description": "A lease (a subscription with a time or count atom), named by the envelope request_id, bound to the episode claim_seq names. Unchanged from lifecycle-v0.5.",
+      "properties": {
+        "claim_seq": {"$ref": "#/$defs/Seq"}
+      }
+    },
+    "Nak": {
+      "type": "object", "required": ["reason", "message"], "additionalProperties": false,
+      "description": "A refused control request, correlated by request_id. reason is a closed enum: malformed, unsatisfiable, unsupported. message is free human detail. Unchanged from lifecycle-v0.5.",
+      "properties": {
+        "reason": {"type": "string", "enum": ["malformed", "unsatisfiable", "unsupported"]},
+        "message": {"type": "string"}
+      }
+    }
+  }
+}

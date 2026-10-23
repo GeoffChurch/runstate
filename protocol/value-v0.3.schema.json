@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://runstate.dev/protocol/value-v0.3.json",
+  "title": "runstate v0.3 value convention",
+  "description": "Pins only the WRAPPER of the `value` topic (log format 0.4.0; docs/specs/commits-and-lineage.md section 3). Body {value, t}: `step` is removed; t stays nullable (absolute wall-clock seconds, or null if unstamped). The envelope `name` is required and non-null (the stream or source) and the envelope `request_id` is null: a value never names a subscription, a node's `fired` does. The `value` payload is arbitrary JSON. Applied on top of the envelope schema. No prose-only constraints.",
+
+  "allOf": [
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "value"}}},
+      "then": {
+        "required": ["name", "request_id"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "request_id": {"type": "null"},
+          "body": {"$ref": "#/$defs/Value"}
+        }
+      }
+    }
+  ],
+
+  "$defs": {
+    "Value": {
+      "type": "object", "required": ["value", "t"], "additionalProperties": false,
+      "properties": {
+        "value": true,
+        "t": {"type": ["number", "null"], "minimum": 0}
+      }
+    }
+  }
+}
