@@ -48,8 +48,9 @@ pytest, mypy `--strict`, black. No new runtime dependencies.
     layer 2's last.
   - The 0.3.0 schemas stay in `protocol/` until then. The 0.4.0 ones sit beside them, and
     `tests/test_schema.py` keeps validating 0.3.0.
-- **The step carries its own semantics.** It imports nothing from the package but `Row` and `MigrationError`,
-  as the 0.2.0 step does, and an AST test enforces it. It never imports `runstate.lineage`.
+- **The step carries its own semantics.** It imports nothing from the package but `Row`, `MigrationError` and
+  `vocabulary.handle.resolve`, as the 0.2.0 step does, and an AST test enforces it. It never imports
+  `runstate.lineage`.
 - **Consumer repositories are read-only.**
   - The corpus is opened with `sqlite3.connect("file:...?mode=ro&immutable=1", uri=True)`, or read from a
     copy in the session scratchpad.
@@ -175,14 +176,14 @@ The golden logs go in `tests/test_migration_v0_3_0_to_v0_4_0.py`.
     `started` before it.
   - **Pass 2** classifies each `stopped` as one of four: a worker's exit; a third party's later stop; the
     backstop, identified by its text; or claimless.
-  - **Lone stops get a placeholder rule:** the first `stopped` naming a claim is its exit. Task 14 replaces
+  - **Lone stops get a placeholder rule:** the first `stopped` naming a claim is its exit. Task 13 replaces
     this with the census's rule.
 
 - [ ] **Step 1: Failing tests.**
   - Golden log: a displaced worker's beats keep their claim.
   - Classification: each of the four classes.
   - M10's malformed `{reason, honored, claim_seq}` body is recognized as such.
-  - An AST test: the module imports only `Row` and `MigrationError` from the package.
+  - An AST test: the module imports only `Row`, `MigrationError` and `vocabulary.handle.resolve` from the package.
 - [ ] **Steps 2–4:** run them (they fail), implement, run them (they pass).
 - [ ] **Step 5: Commit.** `feat(migrations): 0.3.0 → 0.4.0, attribution and classification`.
 
