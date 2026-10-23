@@ -1563,3 +1563,27 @@ as each settles.
   outage costs a pause. It is decided with 12b, which it needs. The server's placement is the consumer's:
   where its failure coincides with one the jobs already suffer, as mycooc's login node did before it lost on
   disk, CPU and the admins' consent.
+- **12b, a lost Postgres session as evidence for a death report: yes, in a corrected form** (approved).
+  Attacked by two independent adversaries, on the protocol and on Postgres's semantics, and tested against a
+  real server (PostgreSQL 18.4, psycopg 3.3.6, 294 trials over termination, client and backend kills, fast and
+  immediate restarts, a lost commit acknowledgement and `idle_session_timeout`): no lock ever read released
+  while its session could still write, and no row of that session became visible afterwards. By the source, an
+  ending session aborts its unfinished write before it releases its locks, and a commit cannot be interrupted.
+  The form adopted, against mycooc's proposal: (1) a fresh random key per connection, taken by try-lock before
+  its first write, since a key derived from the run and the claim's seq is shared by every racing claimant and
+  turns the lock into a claim gate; (2) no wire field: the backend stamps each row with its writer's key,
+  qualified by the server's identity, and the probe asks whether the claim's writer still holds it; (3) every
+  record naming a claim travels on the claim's session, never re-established, so a value sent through another
+  handle can land after the report but nothing can commit it; (4) the channel sets `synchronous_commit = on`
+  and refuses `fsync = off`, after the experiment lost 14 to 2,386 already-visible rows in 40 of 40 crash
+  trials with it off and reused their seqs, and the probe reads only the server that wrote the stamp; (5)
+  `lost` says the claim ended without an exit, not that the process is gone, so session evidence outranks a
+  live same-host pid, and a launcher there kills the orphan rather than launch beside it; (6) accounting stays
+  beside it, since the lock carries no cause and a walltime kill alone would read `lost`, a failure, where
+  sacct says `preempted`, so mycooc's step deleting `reclaim` is wrong; (7) mycooc's gate that no checkpoint
+  follows the report is too strong, since a save runs right after a commit lands, so it is at most the
+  iteration in flight, with checkpoints written by temp file and rename. Taking the lock before the first
+  write also fixes a live bug: `hold_episode` runs after the claim CAS (`worker.py:144`), so a pooler
+  self-check that raises there strands a claim with no exit. Not measured: release time under a true network
+  partition, which needs root. The spec's open known limit becomes the session-probe rule (§3), and
+  `channel-postgres.md` takes the rest at implementation.

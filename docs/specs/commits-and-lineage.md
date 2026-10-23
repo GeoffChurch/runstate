@@ -352,8 +352,9 @@ and reports on it from outside: "a supervisor writing about a child"
 - **What each names.** `launched` and `terminated` name a launch: the envelope `request_id` is the launch id,
   required as before. `died` names a claim by `claim_seq`, and its `request_id` is null. launcher-v0.4's
   prefix-wide `request_id` rule is split per record.
-- **`outcome`** is `preempted`, `errored`, `killed` or `lost`. `lost` says that its writer saw the claim's
-  process gone without an exit, and nothing of how (review §12, item 14). A death is never a completion.
+- **`outcome`** is `preempted`, `errored`, `killed` or `lost`. `lost` says that its writer saw the claim end
+  without an exit, and nothing of how (review §12, items 14 and 15): its process gone, or the session that
+  wrote it ended (below). A death is never a completion.
 - **`evidence`** is a non-empty string that no fold parses: for example `slurm:TIMEOUT`.
 - **`t`** is the reporter's clock when it saw the death, as on `terminated`.
 - **Unchanged:** the Python `Launcher` classes keep their names, since they launch, and so does the launch id
@@ -362,8 +363,16 @@ and reports on it from outside: "a supervisor writing about a child"
 **Who writes a death report** (review §12, items 13 and 14). Writing one is an act, not a kind of party: any
 party, whatever else it does, an observer included, may write one for a death it holds evidence of.
 - **Evidence, never inference.** A reap (the exit code or signal), a same-host probe that finds the claim's
-  process gone, and an accounting record are evidence. Staleness, silence and a cross-host absence are not:
-  a slow worker is alive, and a report would fence it (§4), turning a slow run into a dead one.
+  process gone, an accounting record, and a backend's session probe that finds ended the session that wrote
+  the claim are evidence. Staleness, silence and a cross-host absence are not: a slow worker is alive, and a
+  report would fence it (§4), turning a slow run into a dead one.
+- **A session probe** (review §12, item 15) is an opt-in backend capability. Postgres offers it
+  (`channel-postgres.md`): each connection holds an advisory lock under a fresh key from before its first
+  write, the backend stamps every row with its writer's key, and the probe asks whether the key on the
+  claim's row is still held. Its evidence is that the claim can write nothing more, since a channel never
+  reconnects and every record naming a claim travels on the session that wrote it. It is not about the
+  process, which may outlive its session until its next write raises, so it outranks a live pid on the same
+  host, and a launcher there kills such an orphan rather than launch a successor beside it.
 - **Evidence without a cause reports only while the claim is held.** A probe that finds the process gone, an
   exit 0 and a thread that returned say that it is gone and nothing of how, or of why it left no exit. Each
   reports `lost`, which adds nothing once anything has ended the claim (§5). A signal, a nonzero exit code, a
@@ -384,8 +393,10 @@ party, whatever else it does, an observer included, may write one for a death it
   while the claim is held, and the helper checks it at the W of its CAS. It appends `died` with a CAS at W,
   reads again on a lost CAS, and returns the report's seq.
 - **`report_if_dead(ch) -> int | None`** is the probe's report (working name): when the latest claim is held,
-  and its handle is on this host and probes dead, it reports `lost` through `report_death`, with the handle
-  as the evidence, and returns the report's seq; otherwise it returns `None`.
+  and its handle is on this host and probes dead, or the channel's session probe finds the claim's session
+  ended, it reports `lost` through `report_death`, with the handle or the session as the evidence, and
+  returns the report's seq; otherwise it returns `None`. On session evidence it passes `force=True`, which
+  the evidence earns over a live pid (above).
 
 **The writers:**
 - **The launchers** write `died` beside `terminated` when the launch has ended and the newest claim naming the
@@ -1185,10 +1196,11 @@ On every backend:
     they differ; `ThreadLauncher` writes `died` when its thread finishes with no exit;
   - a signal reports `killed`, and a nonzero exit code or a raise `errored`, whether or not the claim has
     ended; an exit 0 or a return reports `lost` while the claim is held, and nothing after a release;
-  - `report_if_dead` reports a held claim's same-host dead handle as `lost`, and nothing once the claim has
-    ended; the claim path, `relaunch_if_needed` and `ensure_served` call it before acting, and `ensure` on
-    each poll, its own drive's or a foreign one; `Watcher.poll` and `is_alive()` write nothing, but for a
-    Watcher's reap of a handle it holds, which writes through the launcher's reap;
+  - `report_if_dead` reports a held claim's same-host dead handle as `lost`, and on a backend with a session
+    probe a held claim whose session has ended, though its pid lives, and nothing once the claim has ended;
+    the claim path, `relaunch_if_needed` and `ensure_served` call it before acting, and `ensure` on each poll,
+    its own drive's or a foreign one; `Watcher.poll` and `is_alive()` write nothing, but for a Watcher's reap
+    of a handle it holds, which writes through the launcher's reap;
   - a released worker latches before it handles the batch that holds the report: it honours no stop, binds
     no lease, writes nothing more, and a later claim honours the stop.
 - **Settledness:**
@@ -1277,6 +1289,15 @@ On every backend:
   lease voiding reads `ended`, so a reaped crash voids its leases through the launcher's `died`.
 - **`stop-discharge.md` and `reference-by-name.md`:** the answer fold gains `control.withdraw` and `expired`,
   and `control.unsubscribe` is retired.
+- **`channel-postgres.md`** (review §12, item 15): the session probe. A fresh random key per connection,
+  taken by try-lock before its first write and carried losslessly; a column stamping each row with its
+  writer's key, qualified by the server's identity so a probe elsewhere abstains; the probe reading only the
+  server that wrote the stamp, never a standby; the clause that every record naming a claim travels on the
+  claim's session, never re-established; `synchronous_commit = on` set on the channel's own connection, and
+  a server with `fsync = off` refused, since a crash under either loses rows readers saw and reuses their
+  seqs; no transaction-mode pooler. The lock taken after the claim CAS, and its birth grace, go. Its design
+  principle is restated: the probe yields evidence for a record, which `report_if_dead` writes, and the CAS
+  stays the only arbiter of a claim.
 - **`launcher-record-identity.md` and `observer-clock.md`:** the `supervisor.*` rename, `supervisor.died`, and
   `terminated` leaving a claimed run's verdict; observer-clock's dated topics lose `terminated` and gain
   `commit` and `rewind`, and date no `died`.
@@ -1341,8 +1362,11 @@ On every backend:
   (conventions-hygiene F9) closes it. A mistaken release costs the iteration in flight, and its verdict
   stands, since the fenced worker writes no exit to correct it.
 - **A same-host crash that nobody reports reads as held,** where 0.3.0's claim gate probed it. The parties
-  that hold the evidence report it: a claimant on that host, a launcher's reap, a reclaim tool. Whether a
-  claimant may also report from Postgres's `EpisodeProbe`, cross-host evidence of a lost session, is open.
+  that hold the evidence report it: a claimant on that host, a launcher's reap, a reclaim tool, and on
+  Postgres any caller of `report_if_dead`, from the claim's session (review §12, item 15).
+- **A session probe carries no cause.** A walltime kill seen only by it reads `lost`, which is a failure,
+  where accounting would say `preempted`. A deployment that wants the cause keeps an accounting reporter
+  beside it; the verdict drops `lost` once a cause arrives (§5).
 - **A custom producer's launcher** that does not report its claimant's death leaves the claim held, and
   `ensure` waiting on it, since an ended handle may be a wrapper's.
 - **A death report cannot contest another.** The verdict shows every report's outcome, so a disagreement is
