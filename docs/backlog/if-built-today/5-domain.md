@@ -482,9 +482,10 @@ death — stays pending for the next claim.
 ### What layer 2 has decided
 
 **Who and where.** The claim carries its resume point, `resume_from`, and a rollback is its own record,
-`lifecycle.rewind` (§12, items 3 and 4): §"The schema"'s split of a claim into who and where. Layer 2's
-count of commits along a lineage, `{commits: n}`, equals the lineage's depth, less one where the lineage
-ends in an exit.
+`lifecycle.rewind` (§12, items 3 and 4): §"The schema"'s split of a claim into who and where. Layer 2's count
+of commits along a lineage, `{commits: n}`, is the lineage's depth less the exits on it, since an exit that
+neither completed nor discarded a torn iteration can be extended there (§12, item 13), where this design's
+exits cannot. Its step is that count, not depth; whether this design's should follow is open.
 
 **Values apart from their commit.** Layer 2 keeps a commit's values in records of their own, named by the
 commit, and closes lineage-graph's hole by ordering the commit after its values, on a transport that shows
@@ -492,23 +493,28 @@ every reader a prefix (§12, group A and item 1). This design's transport promis
 its values go inside the commit.
 
 **A death report, and with it the join this file opens with.** A third party that saw a worker die posts a
-death report naming the claim (`died(E, Why)` here), beside `launcher.terminated`, which names a launch.
+death report naming the claim (`died(E, Why)` here), beside `supervisor.terminated`, which names a launch.
 Without it, a reaper that could name no launch wrote the dead worker's own `lifecycle.stopped` for it: a
-forgery in form ([`README.md`](README.md) §"Two commitments"). The verdict is §"The schema"'s: the worker's
-self-report if one is readable, else the external reports (§12, item 5). Its *else* is the emptiness test
-of §"The honest cost"'s residuals.
+forgery in form ([`README.md`](README.md) §"Two commitments"). The verdict is §"The schema"'s: the worker's self-report if
+one is readable, else the external reports (§12, item 5). Its *else* is the emptiness test of §"The honest
+cost"'s residuals. The report ends its claim, as `ended(E)` does here, and is written from evidence of the
+death, never inferred from staleness or silence (§12, items 13 and 14). Unlike here, a worker that reads a
+report naming its own claim stops writing, so a mistaken report costs at most the iteration in flight, never
+two live writers.
 
 **Withdrawing a stop.** Layer 2 adds the asker's `control.withdraw`, which spends a stop by name
 (§12, item 10b), so any party that can name a stop can withdraw it; §"Halting and withdrawing" withdraws by
 reveal instead. Its stops also address a claim, not the run, so a stop the claim did not honour lapses with
 it, and the next claim is a forbid's business. Layer 2 has no forbid.
 
-**Sources and eager streams.** Layer 2 narrows the gap the shipped subscribe leaves. A subscription there
-targets only a **source**, a value that exists on demand and is sampled when asked, which is a demand;
-values told anyway are read from the log and never subscribed, which is the reader's own routing. That is
-[`3-questions.md`](3-questions.md) §"What to internalise"'s split between demand and subscription. A source with no value
-yet waits instead of answering `None`. What remains is the gap itself, made smaller: a source is still
-computed every iteration, and only its logging waits on demand.
+**Sources and eager streams.** The shipped `control.subscribe` is the record [`3-questions.md`](3-questions.md) §"Demand is
+control" replaces: a read, a route and a trigger in one record, whose `request_id` survives only as a routing
+handle. Layer 2 narrows the gap the shipped subscribe leaves. A subscription there targets a **source**, a
+value that exists on demand and is sampled when asked, or nothing: a pure demand, which only keeps a worker
+serving. Either is a demand; values told anyway are read from the log and never subscribed, which is the
+reader's own routing. That is [`3-questions.md`](3-questions.md) §"What to internalise"'s split between demand and
+subscription. A source with no value yet waits instead of answering `None`. What remains is the gap itself,
+made smaller: a source is still computed every iteration, and only its logging waits on demand.
 
 ## Still wanted: leases
 
@@ -562,9 +568,9 @@ demand ([`../../specs/lazy-launch.md`](../../specs/lazy-launch.md)). The policy:
   - **Stops and forbids share it,** named by the same commitments (§"Halting and withdrawing").
 - **Withdrawal adds to lapse; it does not replace it.** An asker that crashes cannot reveal anything, so
   expiry stays the backstop. The pair mirrors runstate's `lifecycle.stopped` for a clean exit and heartbeat
-  staleness for a crash. Runstate's layer 2 also records the lapse, as `lifecycle.expired`: the worker
-  dating its own observation that a subscription ended, which is [`1-logic.md`](1-logic.md) §"Two layers"'s repair —
-  timestamp the observation and make it a fact about the past.
+  staleness for a crash. Runstate's layer 2 also records the lapse, in the `expired` field of the node at
+  which a subscription ended: the worker dating its own observation that it ended, which is [`1-logic.md`](1-logic.md) §"Two
+  layers"'s repair — timestamp the observation and make it a fact about the past.
 - **The same mechanism runs the other way.** A lease is an asker telling the scheduler how long its demand
   lasts; a liveness promise is a worker telling observers how long until its next sign of life. Runstate
   has backlogged exactly that form ([`../liveness-promise.md`](../liveness-promise.md)): each liveness record carries
@@ -603,3 +609,8 @@ namespace, where a typo is a new atom; §"The schema" puts each declared metric 
 instead, which the measured names — all known when the schema is written — fit without exception.
 
 (The 821-vs-823 discrepancy is unexplained; the two figures may be one corpus counted twice.)
+
+**A relaunch loop the guard did not stop** (for [`3-questions.md`](3-questions.md) §"The residual, assembled"'s residuals that
+never empty). When runstate's `control.target` design was refuted ([`../../specs/control-target.md`](../../specs/control-target.md), R5), a
+relaunch loop its no-progress guard did not stop made **373 spawns in 3 s**: the failure shape of a residual
+that never empties, there because the guard could not fire on time targets.

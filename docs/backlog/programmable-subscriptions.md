@@ -83,11 +83,29 @@ state falls into three classes. Each class binds to what it depends on:
 - **Class (iii) is new with programs.** Today's schedule atoms reference only time, counts and logged
   streams.
 
+## Dynamic sources
+
+From the layer-2 walkthrough ([review](../review-2026-10-04-commits-and-lineage.md) §12, "D5 reframed" and
+item 6). Layer 2 declares a worker's **sources**, the names it exposes to be sampled on demand, once per claim,
+on `lifecycle.started` ([`../specs/commits-and-lineage.md`](../specs/commits-and-lineage.md) §2). Two
+extensions wait here:
+- **A dynamic declaration:** a worker-written record that changes its sources, in force **within its claim,
+  from its record onward**. It is a property of the witness, like class (ii) above, not of the position: in
+  force "along the lineage", it would fail across a rewind, since the process still exposes the source after
+  rewinding past the declaration. Only the worker changes its sources; observers change demand.
+- **Derived streams named by their demand.** What a worker exposes is a source: a register, weights,
+  gradients. A metric derived from it on demand is computed by a delegate inside the worker, and only its
+  output reaches the log, so the stream is named by the demand that creates it. Today's sampled register is
+  the identity delegate.
+- **Revive when** a worker's exposed sources change during a claim (say, gradients exposed only while
+  training), or a consumer demands a metric derived from a source rather than the source itself.
+
 ## Relation to the condition algebra and `ensure`
 
 - **Target conditions belong here,** as shipped programs, and not in the schedule algebra. `control.target`
   died because it designed a fixed wire surface for an imagined consumer.
-- **`ensure` still needs a coordinate that only increases:** the stream index (layer 2, option S).
+- **`ensure` still needs a coordinate that only increases:** an eager stream's count, or `{commits: n}`
+  (layer 2).
 
 ## Before building
 

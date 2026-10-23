@@ -218,6 +218,25 @@ following one question at a time. They supersede the per-value-stamp options abo
 whether ticks were needed at all. They are not, as a container for data. A **commit** is needed, which a
 small heartbeat provides, and values stay ordinary records. This list states the revised design.*
 
+**Amended since (2026-10-14).** These fifteen decisions are the spec's revision 1. Its review
+([`../review-2026-10-04-commits-and-lineage.md`](../review-2026-10-04-commits-and-lineage.md)) amended most
+of them, and [`../specs/commits-and-lineage.md`](../specs/commits-and-lineage.md), revision 2, is current.
+What each became:
+- **1, 2:** one record per event: a `lifecycle.commit` per iteration is the node, a `lifecycle.heartbeat` is
+  liveness only (review D1, §12 item 1).
+- **3:** the claim names its resume point; a rewind is its own record, `lifecycle.rewind` (D2, items 3–4).
+- **4:** a sample carries no `request_id`; the commit's `fired` names the subscriptions it answered, and
+  `commits` is renamed `values` (D4, items 1 and 8).
+- **5, 9, 13:** kept for eager streams, with every progress number a count and `{commits: n}` added; a
+  source's samples are keyed by node, never counted (D6, E3, E5, items 7 and 9).
+- **6:** the reads are revision 2's §5.
+- **7, 11:** the exit is itself a node, `stopped` with `parent` and `values`, and every non-error exit
+  commits its pending values unless it discards a torn iteration (E1, D8, items 2 and 13).
+- **8, 10:** kept; the fingerprint guard is deleted (§12 item 0.10).
+- **12:** rewritten (review §5, §11.3, item 10); subscriptions are refused, not translated.
+- **14:** sources declared on the claim, and eager streams (D5, items 6–8).
+- **15:** settledness is a property of a node (D3, item 5).
+
 1. **One heartbeat per loop iteration: `lifecycle.heartbeat`, carrying no data.**
    - **What it is.** It is the iteration's **commit**, the worker's liveness beacon, the control
      acknowledgement (`consumed_seq`), and a lineage node.
@@ -245,7 +264,8 @@ small heartbeat provides, and values stay ordinary records. This list states the
      by name), so values themselves need no claim stamp.
    - **A value no heartbeat commits** is outside every lineage: uncommitted, or foreign.
    - **Subscription samples** are `value` records answering a `request_id` on the envelope, as today. The
-     backend's `name=` and `request_ids=` indices keep serving values.
+     backend's `name=` and `request_ids=` indices keep serving values. *Superseded: a sample carries no
+     `request_id`, and the commit's `fired` names the subscriptions it answered (above).*
    - **What it costs.** A raw send through a separate handle must give its seq to the Worker, or go
      through it.
 5. **No step in the protocol: option S.** Each value name is a **stream**. Its coordinate is intrinsic:
@@ -339,7 +359,8 @@ small heartbeat provides, and values stay ordinary records. This list states the
       (decision 11).
     - **`stopped.final_step`** becomes `final_beat`.
     - **Subscriptions' `{step: k}`** becomes `{stream: …}` (decision 9). The stream it targets is still to
-      be set in the spec.
+      be set in the spec. *Superseded: a run holding any subscription is refused before sealing, since a
+      step atom has no faithful translation (revision 2, §7, M9).*
     - **Measured 2026-10-04 on the real-log corpus:**
       - translation's lineage depth equals its old step on all 1,010,405 heartbeats;
       - mycooc's does not on 53,757 of 215,529 heartbeats, in 789 runs, all from 891 skipped ticks (the
