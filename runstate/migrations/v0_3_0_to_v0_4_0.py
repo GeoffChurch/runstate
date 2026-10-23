@@ -20,11 +20,11 @@ earlier passes' results to a frozen result:
    what it ends.
 3. **Synthesis** (``synthesize``): M2 and M5 assign values to commits,
    synthesizing the commits M5 names, with M8's fields.
-4. **M1:** parents and ``resume_from``.
+4. **M1** (``link``): parents and ``resume_from``.
 5. **M6:** the moves, then renumbering.
 6. **M7 and M8:** the renames and the synthetic fields.
 
-Passes 4-6 are not written yet, so ``transform`` refuses to write anything.
+Passes 5 and 6 are not written yet, so ``transform`` refuses to write anything.
 
 The rules:
 
@@ -89,6 +89,16 @@ The rules:
   ``consumed_seq`` from that heartbeat. M5 synthesizes only above a claim's
   first real beat, so that heartbeat always exists, and M8's further
   fallbacks never apply.
+- **M1** (``link``) reads the commits after synthesis, in claim order, never
+  by step nearness. A claim's later commits take its previous commit as
+  ``parent``. Its first commit, at old step s, takes the commit at s-1 of the
+  newest claim before it to hold one; at step 0 it is a fresh start, and with
+  no claim holding s-1 its parent is null, a parentless resume, which is named
+  (``Start``). A commit is the parent even where an extendable exit follows
+  it. ``started.resume_from`` is the first commit's parent, and a claim that
+  beat no integer step takes, as an inference, the newest commit of the
+  newest claim before it to hold one. The exit node's ``parent`` is the
+  claim's position: its newest commit, else its resume point.
 
 **Refused**, each naming the seq:
 
@@ -114,7 +124,8 @@ The rules:
   node has no last step, so the value counts as that claim reaching its step.
 - M5 synthesizes a trailing step only where values say it was reached. A
   trailing step above a gap of steps with no values leaves the gap without
-  commits. A 0.3.0 worker's trailing values sit one step above its last beat.
+  commits, so a claim that resumes from above it counts too few (P1). A
+  0.3.0 worker's trailing values sit one step above its last beat.
 - A value before every claim is no claim's, so no lineage holds it, where
   0.3.0's ``value_series`` read it.
 - The rule for lone stops is a placeholder until the census replaces it: a
@@ -127,6 +138,8 @@ The rules:
   a whole step and checkpointed it before it crashed: nothing is synthesized
   in it, so the next claim's first commit may be a parentless resume, which
   P3 names.
+- A claim that beat no integer step resumes, by inference, from the newest
+  commit before it: the log does not say which checkpoint it loaded.
 """
 
 from __future__ import annotations
@@ -898,6 +911,108 @@ def synthesize(attribution: Attribution, classification: Classification) -> Synt
     return Synthesis(tuple(claims), tuple(sorted(left, key=lambda x: x.value.seq)))
 
 
+# ----- pass 4: parents and resume points (M1) -------------------------------------
+
+
+class CommitRef(NamedTuple):
+    """A commit by pass 3's identity: its claim's seq and its old step, unique
+    within the claim, whose steps rise (M9). Pass 4 writes no seqs: pass 5
+    places the commits and renumbers."""
+
+    claim: int
+    step: int
+
+
+class Start(StrEnum):
+    """The rule M1 decided a claim's resume point by, named so a report can
+    count it:
+
+    - its first commit is at old step 0, with no step below it: a fresh start,
+      with no resume point;
+    - its first commit, at old step s, resumes from the commit at s-1 of the
+      newest claim before it, in claim order, to hold one;
+    - no claim before it holds a commit at s-1: a parentless resume, with no
+      resume point, which P1 counts and P3 names;
+    - it beat no integer step, so it commits nothing: by inference, the newest
+      commit of the newest claim before it to hold one, or none when no claim
+      does."""
+
+    FRESH = "a fresh start"
+    RESUMED = "resumed from the step below its first"
+    PARENTLESS = "a parentless resume"
+    INFERRED = "inferred for a claim that beat no step"
+
+
+@dataclass(frozen=True)
+class ResumeFrom:
+    """A claim's ``started.resume_from``: the commit it names, or None, and the
+    rule that decided it."""
+
+    node: CommitRef | None
+    how: Start
+
+
+@dataclass(frozen=True)
+class Linkage:
+    """Pass 4: every claim's resume point, by its seq, in claim order; every
+    commit's ``parent``; and each exit node's ``parent``, by its claim's seq.
+    Each names a commit or nothing, never an exit node."""
+
+    resume_from: Mapping[int, ResumeFrom]
+    parents: Mapping[CommitRef, CommitRef | None]
+    exits: Mapping[int, CommitRef | None]
+
+
+def _resume_from(
+    claims: Sequence[ClaimCommits], held: Sequence[frozenset[int]], i: int
+) -> ResumeFrom:
+    """M1's resume point for the claim at index ``i``. ``held`` holds each
+    claim's commits' old steps, after synthesis."""
+    commits = claims[i].commits
+    if not commits:  # it beat no integer step
+        j = next((j for j in range(i - 1, -1, -1) if claims[j].commits), None)
+        if j is None:
+            return ResumeFrom(None, Start.INFERRED)
+        newest = claims[j].commits[-1]
+        return ResumeFrom(
+            CommitRef(claims[j].claim.started.seq, newest.step), Start.INFERRED
+        )
+    first = commits[0].step
+    if first == 0:
+        return ResumeFrom(None, Start.FRESH)
+    j = _newest_reaching(held, i, first - 1)
+    if j is None:
+        return ResumeFrom(None, Start.PARENTLESS)
+    # its steps rise, so the chosen claim's last commit at s-1 is its only one
+    return ResumeFrom(CommitRef(claims[j].claim.started.seq, first - 1), Start.RESUMED)
+
+
+def link(synthesis: Synthesis) -> Linkage:
+    """M1. A claim's first commit takes its resume point as ``parent``, and each
+    later commit the claim's previous commit; its exit node takes its position
+    at the exit: its newest commit, else its resume point. A commit is the
+    parent even where an extendable exit follows it, since every 0.3.0
+    checkpoint was saved at a step, never after an exit (review §12, item 14).
+    The claims are read in claim order, after synthesis, so every commit M5
+    synthesized can be a parent."""
+    claims = synthesis.claims
+    held = [frozenset(k.step for k in c.commits) for c in claims]
+    resume_from: dict[int, ResumeFrom] = {}
+    parents: dict[CommitRef, CommitRef | None] = {}
+    exits: dict[int, CommitRef | None] = {}
+    for i, c in enumerate(claims):
+        claim = c.claim.started.seq
+        start = _resume_from(claims, held, i)
+        resume_from[claim] = start
+        position = start.node  # a started leaves its resume point
+        for k in c.commits:
+            parents[CommitRef(claim, k.step)] = position
+            position = CommitRef(claim, k.step)  # a commit leaves itself
+        if c.exit is not None:
+            exits[claim] = position
+    return Linkage(resume_from, parents, exits)
+
+
 # ----- the step ---------------------------------------------------------------------
 
 
@@ -944,11 +1059,10 @@ class V0_3_0_to_V0_4_0:
 
     def transform(self, rows: list[Row]) -> list[Row]:
         """Runs the passes written so far, whose refusals stand, then refuses
-        to write: passes 4-6 are not written."""
+        to write: passes 5 and 6 are not written."""
         log = parse(rows)
-        synthesize(attribute(log), classify(log))
+        link(synthesize(attribute(log), classify(log)))
         raise NotImplementedError(
-            "the 0.3.0 -> 0.4.0 step writes nothing yet: pass 4 (M1), pass 5 "
-            "(M6) and pass 6 (M7, and the records M8's fields go on) are not "
-            "written"
+            "the 0.3.0 -> 0.4.0 step writes nothing yet: pass 5 (M6) and pass 6 "
+            "(M7, and the records M8's fields go on) are not written"
         )
