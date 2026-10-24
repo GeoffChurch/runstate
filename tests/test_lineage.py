@@ -1653,10 +1653,13 @@ def _golden_verdicts():
     """Every golden's verdict, by hand from its rows: the newest claim's
     readable exit, else the death reports naming it; none of them leaves an
     unclaimed run with a ``terminated``."""
-    from test_migration_v0_3_0_to_v0_4_0 import BACKSTOP
+    from test_migration_v0_3_0_to_v0_4_0 import BACKSTOP, MIGRATED, SACCT
 
     def backstopped(seq, claim, t):
         return by_deaths(claim, {E}, [DeathReport(seq, E, BACKSTOP, t)])
+
+    def released(seq, claim, t):
+        return by_deaths(claim, {P}, [DeathReport(seq, P, MIGRATED, t)])
 
     return {
         "displaced": by_exit(12, 5, C),
@@ -1708,6 +1711,11 @@ def _golden_verdicts():
         "late_reap": by_exit(7, 5, C),
         "two_claims_one_launch": by_deaths(4, {L}, [DeathReport(7, L, "exit 0", 5.0)]),
         "after_an_attributed_death": None,
+        "reclaim_reported_later": released(5, 1, 5.0),
+        "reclaim_of_10_23": by_deaths(1, {E}, [DeathReport(5, E, SACCT, 5.0)]),
+        "beaten_after": released(3, 1, 3.0),  # the beat after it ends nothing
+        "reported_later_boundary": released(6, 4, 6.0),
+        "cooperative": by_exit(8, 1, P),
     }
 
 

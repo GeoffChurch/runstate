@@ -32,14 +32,12 @@ from test_migration_v0_3_0_to_v0_4_0 import (  # noqa: E402
     BACKSTOP_AT_5,
     GOLDEN,
     NO_END,
-    TRAILING,
     _beat,
     _crashed_in_step_1,
     _dated,
     _release,
     _started,
     _stopped,
-    _Unattributed,
     _value,
     r,
 )
@@ -295,6 +293,8 @@ GOLDEN_CELLS = {
     },
     "doubly_displaced": {("loss", 3): {P3.PARENTLESS_BY_CANDIDACY}},
     "after_an_attributed_death": {("loss", 1): {P3.M4}},
+    "reclaim_reported_later": {("loss", 2): {P3.UNREACHED_UNENDED}},
+    "reclaim_of_10_23": {("loss", 2): {P3.UNREACHED_UNENDED}},
 }
 
 # The goldens' verdicts that differ, each by the rule that changes it (Task 10's
@@ -434,16 +434,6 @@ def test_a_cell_two_classes_claim_is_reported_as_both(tmp_path):
         "+".join(sorted([P3.LEADING, P3.SEVERAL])): 1
     }
     assert summary["p3"]["by_class"] == {P3.LEADING: 1, P3.SEVERAL: 1}
-
-
-def test_an_unattributable_stops_unreached_step_is_its_class(tmp_path, monkeypatch):
-    """The rule for lone stops (Task 13) may leave a stop unattributed, which
-    vouches for nothing, so its claim's trailing step stays unreached."""
-    import runstate.migrations.v0_3_0_to_v0_4_0 as step
-
-    monkeypatch.setattr(step, "_lone_stop_rule", _Unattributed)
-    runs, _ = _run(tmp_path, {"trailing": TRAILING})
-    assert _cells(runs["trailing"]) == {("loss", 2): {P3.UNREACHED_UNATTRIBUTABLE}}
 
 
 def test_a_value_before_every_claim_has_no_p3_class_yet(tmp_path):
@@ -597,26 +587,6 @@ def test_a_value_moved_off_the_lineage_reads_unattributed_not_revisited(
     assert _cells(runs["beyond"])[("loss", 2)] == {P3.UNATTRIBUTED}
 
 
-def test_a_new_read_that_raises_is_recorded_and_the_also_check_names_it(tmp_path):
-    """The placeholder rule for lone stops reads a third party's lone stop as
-    its claim's exit, so the worker's later beat is a commit the exit's parent
-    names (Task 13's shape): the head fold raises, and P3 is not compared."""
-    rows = _dated(
-        [
-            r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
-            r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
-            r(3, "lifecycle.stopped", _stopped(False, None, 0, 1, [], 3.0)),
-            r(4, "lifecycle.heartbeat", _beat(1, 0, 1, 4.0)),
-        ]
-    )
-    runs, summary = _run(tmp_path, {"placeholder": rows})
-    x = runs["placeholder"]
-    assert x["status"] == "measured"
-    assert "MalformedRecordError" in x["p3"]["not_compared"]
-    assert x["also"][mr.Also.PARENT_AT_OR_AFTER] == 1
-    assert summary["p3"]["runs_not_compared"] == {"the new reads raise": 1}
-
-
 # ----- P1 and P2 ------------------------------------------------------------------------
 
 
@@ -676,7 +646,7 @@ def test_the_census_counts_lone_stops_by_signature(goldens):
         "completed": False,
         "final_step_null": False,
         "honored_empty": True,
-        "t_minus_created_at": 4.0 - 1001.25,
+        "t_minus_created_at": 0.0,
         "beats_after": 0,
         "values_after": 0,
         "latest_claim": True,
@@ -684,6 +654,15 @@ def test_the_census_counts_lone_stops_by_signature(goldens):
     }
     (lone,) = runs["loading_retry_released"]["census"]["lone_stops"][1:2]
     assert (lone["error_kind"], lone["read_as"]) == ("backstop", "release")
+    # the rule for lone stops: written later, beaten after, or the worker's own
+    (lone,) = runs["reclaim_reported_later"]["census"]["lone_stops"]
+    assert (lone["t_minus_created_at"], lone["read_as"]) == (-1500.0, "release")
+    assert "t=before" in mr.LoneStop(**lone).signature()
+    (lone,) = runs["beaten_after"]["census"]["lone_stops"]
+    assert (lone["beats_after"], lone["read_as"]) == (1, "release")
+    assert runs["beaten_after"]["census"]["beats_after_end"] == {"commit": 1}
+    (lone,) = runs["cooperative"]["census"]["lone_stops"]
+    assert (lone["honored_empty"], lone["read_as"]) == (False, "exit")
     assert sum(summary["census"]["lone_stops"].values()) == sum(
         len(x["census"]["lone_stops"]) for x in runs.values()
     )

@@ -143,19 +143,13 @@ from runstate.migrations.v0_3_0_to_v0_4_0 import (  # noqa: E402
     Uncommitted,
     _Exit,
     _Release,
-    _Unattributed,
+    _REPORTED_LATER,
 )
 
 _PROTOCOL = Path(__file__).resolve().parent.parent / "protocol"
 _COLUMNS = {"seq", "topic", "name", "request_id", "body", "created_at"}
 _SIDECARS = ("-wal", "-journal")  # what immutable=1 leaves unread
 _VERSIONED = re.compile(r"^v\d+\.\d+\.\d+$")
-
-# The census buckets a lone stop's t against its created_at with this tolerance,
-# in seconds: a writer stamps t just before the row lands, while the reclaim tool
-# stamps SLURM's end time, well before it (the plan's Task 13). The exact
-# difference is in the run's record; the summary echoes the tolerance.
-_T_TOLERANCE_S = 60.0
 
 _COMMIT = "lifecycle.commit"
 _STOPPED = "lifecycle.stopped"
@@ -235,10 +229,9 @@ class P3Class(StrEnum):
     - ``LOADING`` (§7 P3 "loading cells"; PROVISIONAL ruling of Task 4), ``M4``,
       ``ABOVE`` (§7 P3, "a displaced worker's values above its successor's exit";
       the ledger adds a crashed iteration's), ``ERROR_EXIT`` (§7 P3, "error
-      exits"), ``UNREACHED_UNENDED`` (§7 M5: "a trailing step that no such claim
-      needs stays uncommitted"; the ledger's P2 list names it for claims a third
-      party released or nothing ended) and ``UNREACHED_UNATTRIBUTABLE`` (§7, lone
-      stops: an unattributable stop vouches for nothing): the old value is left
+      exits") and ``UNREACHED_UNENDED`` (§7 M5: "a trailing step that no such
+      claim needs stays uncommitted"; the ledger's P2 list names it for claims a
+      third party released or nothing ended): the old value is left
       uncommitted, for that reason (``_left_p3``). A value left before every claim
       has no class: the ledger rules that Task 14 names it if the corpus shows
       any (Task 3), so it reads unattributed."""
@@ -257,7 +250,6 @@ class P3Class(StrEnum):
     UNREACHED_UNENDED = (
         "an unreached trailing step of a claim a third party released or nothing ended"
     )
-    UNREACHED_UNATTRIBUTABLE = "an unreached trailing step of an unattributable stop"
     UNATTRIBUTED = "unattributed"
 
 
@@ -297,7 +289,6 @@ class P2Exception(StrEnum):
     UNREACHED_UNENDED = (
         "an unreached trailing step of a claim a third party released or nothing ended"
     )
-    UNREACHED_UNATTRIBUTABLE = "an unreached trailing step of an unattributable stop"
     AFTER_ITS_END = "after its claim's end (M4)"
     BEFORE_EVERY_CLAIM = "before every claim"
     LOADING = "loading: a claim that beat no step"
@@ -358,14 +349,20 @@ class LoneStop:
     beats_after: int  # heartbeats naming its claim after it
     values_after: int  # values pass 1 gives its claim after it
     latest_claim: bool
-    read_as: str | None  # how the step classified it: exit, release, unattributable
+    read_as: str | None  # how the step classified it: exit or release
 
     def signature(self) -> str:
+        """Its body's shape, with its ``t`` bucketed against its ``created_at``
+        by the step's own tolerance, ``_REPORTED_LATER`` seconds: a writer
+        stamps ``t`` just before the row lands, while the reclaim tool stamps
+        SLURM's end time, well before it, which the rule for lone stops reads as
+        a stop written after the time it reports. The exact difference is in the
+        record; the summary echoes the tolerance."""
         if self.t_minus_created_at is None:
             t = "none"
-        elif self.t_minus_created_at < -_T_TOLERANCE_S:
+        elif self.t_minus_created_at < -_REPORTED_LATER:
             t = "before"
-        elif self.t_minus_created_at > _T_TOLERANCE_S:
+        elif self.t_minus_created_at > _REPORTED_LATER:
             t = "after"
         else:
             t = "near"
@@ -883,7 +880,6 @@ class EndKind(StrEnum):
 
     EXIT = "the worker's exit"
     ERROR_EXIT = "the worker's error exit"
-    UNATTRIBUTABLE = "an unattributable stop"
     RELEASE = "a third party's release"
     ATTRIBUTED_DEATH = "an attributed death report"
     NOTHING = "nothing"
@@ -948,8 +944,6 @@ def facts_of(passes: Passes) -> Facts:
         match end:
             case _Exit(stop):
                 ends[claim] = EndKind.EXIT if stop.error is None else EndKind.ERROR_EXIT
-            case _Unattributed():
-                ends[claim] = EndKind.UNATTRIBUTABLE
             case _Release():
                 ends[claim] = EndKind.RELEASE
             case _:
@@ -1145,11 +1139,6 @@ def _unreached(end: EndKind) -> tuple[P2Exception, P3Class] | None:
     match end:
         case EndKind.ERROR_EXIT:
             return P2Exception.ERROR_EXIT, P3Class.ERROR_EXIT
-        case EndKind.UNATTRIBUTABLE:
-            return (
-                P2Exception.UNREACHED_UNATTRIBUTABLE,
-                P3Class.UNREACHED_UNATTRIBUTABLE,
-            )
         case EndKind.RELEASE | EndKind.ATTRIBUTED_DEATH | EndKind.NOTHING:
             return P2Exception.UNREACHED_UNENDED, P3Class.UNREACHED_UNENDED
         case EndKind.EXIT:
@@ -1797,15 +1786,13 @@ _INTEGER_FIELDS = {
 
 
 def _read_as(end: End) -> str:
-    """How the step read a claim's end: the worker's exit, a third party's
-    release, or a stop the rule for lone stops cannot attribute."""
+    """How the step read a claim's end: the worker's exit, or a third party's
+    release."""
     match end:
         case _Exit():
             return "exit"
         case _Release():
             return "release"
-        case _Unattributed():
-            return "unattributable"
         case _:
             assert_never(end)
 
@@ -2172,7 +2159,7 @@ class P4Totals:
 
 @dataclass
 class CensusTotals:
-    t_vs_created_at_tolerance_s: float = _T_TOLERANCE_S
+    t_vs_created_at_tolerance_s: float = _REPORTED_LATER
     lone_stops: Counter[str] = field(default_factory=Counter)  # by signature
     whole_number_floats: Counter[str] = field(default_factory=Counter)
     naks_without_request_id: int = 0

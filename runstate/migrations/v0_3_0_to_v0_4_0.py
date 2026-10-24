@@ -36,14 +36,14 @@ The rules:
   claim before it: the positional rule the 0.2.0 -> 0.3.0 step stated for
   episodes, an inference. A value before every claim belongs to none.
 - **Classification.** The first ``stopped`` naming a claim is the claim's
-  **end**, one of three:
+  **end**, one of two:
   - **a third party's release,** when it is the reclaim tool's malformed body
     (M10), or the runner's hard-crash backstop, identified by its error text,
     "subprocess exited N with no terminal record": the backstop is a third
     party's wherever it falls;
   - otherwise the rule for lone stops decides, from the log alone: **the
-    worker's exit**, as the old read implied; **a third party's release**; or
-    **unattributable**, a self-report that commits nothing.
+    worker's exit**, as the old read implied, unless the log contradicts
+    that, which makes it **a third party's release**.
 
   Every later ``stopped`` naming the same claim is **a third party's later
   stop**: the claim has already ended. A ``stopped`` naming no claim is
@@ -88,9 +88,24 @@ The rules:
   ``terminated`` a ``died`` is attributed from is its claim's end, as a
   ``stopped`` naming it would be, since a death report ends its claim (§2):
   a value after it is after its claim's end (M4).
-- **Lone stops** (``_lone_stop_rule``): the implementation round's census of
-  who wrote them yields the rule. Until it lands, the placeholder reads every
-  one as its claim's exit.
+- **Lone stops** (``_lone_stop_rule``; the implementation round's census of
+  who wrote them). The first ``stopped`` naming a claim, well-formed and not
+  the backstop, is the worker's exit, which is what 0.3.0 defined the topic to
+  mean, unless the log contradicts that. It is a third party's release when
+  either:
+  - **its claim beats after it:** a heartbeat naming the same claim has a
+    higher seq. The worker outlived the stop, so the stop is not its exit;
+  - **it was written after the time it reports:** its ``t`` precedes its
+    record's ``created_at`` by more than ``_REPORTED_LATER`` (60 s). A worker
+    reporting its own exit stamps both from one clock at one moment:
+    SqliteChannel stamps ``created_at`` with ``time.time()`` at insert, behind
+    a 5 s ``busy_timeout``. A later reporter dates the stop to an event it
+    learned of afterwards, as mycooc's reclaim tool does with SLURM's end
+    time.
+
+  So every lone stop is attributed. Where the log does not contradict a stop,
+  nothing in it tells a third party's from the worker's own, and reading it as
+  the worker's is what the topic means (a known limit below).
 - **Synthesis.** Each heartbeat with an integer step is a commit. A value with
   one goes to a commit of its own claim, never another's:
   - **M2:** the commit carrying its step, even when the value follows that
@@ -127,9 +142,8 @@ The rules:
   (loading); above its claim's exit's last step; or a trailing step no exit
   vouches for, which M5's third place does not reach.
 - **The exit node.** The worker's exit holds ``[]``, or null when it errored:
-  it discarded its open iteration. A stop the rule for lone stops cannot
-  attribute holds null, since it never vouches. A third party's release
-  becomes a death, not an exit node.
+  it discarded its open iteration. A third party's release becomes a death,
+  not an exit node.
 - **M8.** A synthetic commit takes ``t`` from the last value it commits that
   carries one, else from the real heartbeat before it in its claim; and
   ``consumed_seq`` from that heartbeat. M5 synthesizes only above a claim's
@@ -283,19 +297,21 @@ whole-number float such as 3.0, which 0.3.0's schemas accept. It refuses:
   0.3.0 worker's trailing values sit one step above its last beat.
 - A value before every claim is no claim's, so no lineage holds it, where
   0.3.0's ``value_series`` read it.
-- The rule for lone stops is a placeholder until the census replaces it: a
-  third party's lone stop that is not the backstop is read as its claim's exit,
-  and none is read as unattributable.
+- A third party's lone stop that the log does not contradict reads as its
+  claim's exit: a default body, a ``t`` within ``_REPORTED_LATER`` of its
+  ``created_at``, and no beat of its claim after it. It then vouches for its
+  claim's iteration, committing the claim's pending values up to its
+  ``final_step``. The writers that can produce one are the runner's
+  backstop's ``error: null`` variants, mycooc's ``resume_fanout`` on an
+  unstopped claim, and the reclaim tool before ``ffe05f6e``, which dated its
+  stop when it wrote it. The local corpus holds none of them.
 - A beat after its claim's end, whoever ended it, still commits. M4 leaves a
   value after the end uncommitted, but a heartbeat with an integer step is a
-  commit wherever it falls. After a third party's release, or the
+  commit wherever it falls: after a third party's release, or the
   ``terminated`` a death is attributed from, it is a commit placed after the
-  ``died``; after a stop the placeholder reads as its claim's exit, it is a
-  commit the exit's ``parent`` names, placed after the exit. The census's rule
-  for lone stops (the round's Task 13) and the owner decide it.
-- An unattributable stop's ``final_step`` caps its claim's trailing values,
-  as a worker's exit's does, though who wrote it is unknown. The census's rule
-  for lone stops must revisit this.
+  ``died``. A released stop's claim beating after it is one such case, the
+  beat being what makes the stop a release. Whether such a beat should commit
+  nothing, as such a value does, is the owner's decision.
 - A claim that beat no integer step reaches no step, even one that finished
   a whole step and checkpointed it before it crashed: nothing is synthesized
   in it, so the next claim's first commit may be a parentless resume, which
@@ -422,7 +438,8 @@ class _Value:
 
 @dataclass(frozen=True)
 class _Stopped:
-    """A ``stopped`` as lifecycle-v0.5 pins it."""
+    """A ``stopped`` as lifecycle-v0.5 pins it, and its record's ``created_at``,
+    which the rule for lone stops compares with the ``t`` it reports."""
 
     seq: int
     completed: bool
@@ -431,6 +448,7 @@ class _Stopped:
     claim_seq: int | None
     honored: tuple[str, ...]
     t: float
+    created_at: float
 
 
 @dataclass(frozen=True)
@@ -656,6 +674,7 @@ def _stop(r: _Record) -> _Stop:
             claim_seq=b["claim_seq"],
             honored=_spends(r, b["honored"]),
             t=b["t"],
+            created_at=r.created_at,
         )
     if _fits(b, _MALFORMED):
         return _Malformed(
@@ -1053,17 +1072,12 @@ class _Release:
     stop: _Stop
 
 
-@dataclass(frozen=True)
-class _Unattributed:
-    """A lone stop the rule for lone stops cannot attribute: it stays a
-    self-report that commits nothing (``values: null``)."""
-
-    stop: _Stopped
-
-
-End = _Exit | _Release | _Unattributed
+End = _Exit | _Release
 """How a claim ended: the first ``stopped`` naming it, by who wrote it. A later
-pass matches on the variant, ending in ``assert_never``."""
+pass matches on the variant, ending in ``assert_never``. A well-formed one that
+is not the backstop is the worker's exit unless the log contradicts that, in
+one of two ways (``_lone_stop_rule``): its claim beats after it, or it was
+written after the time it reports."""
 
 
 class _Later(NamedTuple):
@@ -1073,21 +1087,39 @@ class _Later(NamedTuple):
     stop: _Stop
 
 
-def _lone_stop_rule(stop: _Stopped) -> End:
-    """THE RULE FOR LONE STOPS, a placeholder (§7, "lone stops"): how the first
-    ``stopped`` naming a claim ended it, when it is well-formed and not the
-    backstop. The implementation round's census of who wrote such stops yields
-    a rule that reads the log alone, and replaces this body. Until then every
-    one is the worker's exit."""
+# A worker reporting its own exit stamps the stop's t and its record's created_at
+# from one clock at one moment: SqliteChannel stamps created_at with time.time()
+# at insert, behind a 5 s busy_timeout. A stop whose t precedes its created_at by
+# more than this many seconds was written after the time it reports, by a writer
+# that dated it to an event it learned of afterwards, as mycooc's reclaim tool
+# dates one with SLURM's end time. Part of the step's frozen semantics.
+_REPORTED_LATER = 60.0
+
+
+def _lone_stop_rule(stop: _Stopped, *, beaten_after: bool) -> End:
+    """THE RULE FOR LONE STOPS (§7, "lone stops"; the census of their writers):
+    how the first ``stopped`` naming a claim ended it, when it is well-formed
+    and not the backstop. It is the worker's exit, which is what 0.3.0 defined
+    the topic to mean, unless the log contradicts that. It is a third party's
+    release when either:
+
+    - **its claim beats after it** (``beaten_after``): a heartbeat naming the
+      same claim has a higher seq, so the worker outlived the stop;
+    - **it was written after the time it reports:** its ``t`` precedes its
+      record's ``created_at`` by more than ``_REPORTED_LATER`` seconds."""
+    if beaten_after or stop.created_at - stop.t > _REPORTED_LATER:
+        return _Release(stop)
     return _Exit(stop)
 
 
 @dataclass(frozen=True)
 class Classification:
     """Pass 2: every ``stopped``, by who wrote it and what it ends. Each is in
-    exactly one field. ``ends`` maps each ended claim's seq to its end, the
-    first ``stopped`` naming it. ``later`` and ``claimless`` are in seq
-    order."""
+    exactly one field. A claim's end is the first ``stopped`` naming it, or,
+    when none does, the ``terminated`` a ``died`` is attributed from, which
+    ``report`` decides (``Reports.deaths``). ``ends`` maps each claim a
+    ``stopped`` ended to that end, by who wrote it. ``later`` and
+    ``claimless`` are in seq order."""
 
     ends: Mapping[int, End]
     later: tuple[_Later, ...]
@@ -1097,11 +1129,15 @@ class Classification:
 def classify(log: _Log) -> Classification:
     """The first ``stopped`` naming a claim ends it. It is a third party's
     release when it is malformed (M10) or the backstop, which is a third
-    party's wherever it falls; otherwise the rule for lone stops decides.
-    Every later one naming that claim is a third party's."""
+    party's wherever it falls. Otherwise the rule for lone stops decides: the
+    worker's exit, unless the log contradicts that, which makes it a release:
+    a heartbeat naming its claim follows it, or its ``t`` precedes its
+    ``created_at`` by more than ``_REPORTED_LATER``. Every later one naming
+    that claim is a third party's."""
     ends: dict[int, End] = {}
     later: list[_Later] = []
     claimless: list[_Stop] = []
+    last_beat = {b.claim_seq: b.seq for b in log.beats}  # in seq order: the last
     for s in log.stops:
         claim = s.claim_seq
         if claim is None:
@@ -1111,7 +1147,9 @@ def classify(log: _Log) -> Classification:
         elif isinstance(s, _Malformed) or _is_backstop(s):
             ends[claim] = _Release(s)
         else:
-            ends[claim] = _lone_stop_rule(s)
+            beat = last_beat.get(claim)
+            beaten_after = beat is not None and beat > s.seq
+            ends[claim] = _lone_stop_rule(s, beaten_after=beaten_after)
     return Classification(ends, tuple(later), tuple(claimless))
 
 
@@ -1186,8 +1224,8 @@ class AttributedDeath:
 class Reports:
     """Pass 2's third parties: every third party's ``stopped``, by its seq, in
     seq order, and every attributed death report, by the seq of the
-    ``terminated`` it follows. A worker's exit and an unattributable stop are
-    not among them: each becomes its claim's exit node."""
+    ``terminated`` it follows. A worker's exit is not among them: it becomes
+    its claim's exit node."""
 
     stops: Mapping[int, Report]
     deaths: Mapping[int, AttributedDeath]
@@ -1362,7 +1400,7 @@ def report(log: _Log, classification: Classification) -> Reports:
     for s in log.stops:  # in seq order, so the minting is deterministic
         becomes: Becomes
         match ends.get(s.seq):
-            case _Exit() | _Unattributed():
+            case _Exit():
                 continue  # its claim's exit node
             case _Release():
                 becomes = _death(s)
@@ -1465,12 +1503,10 @@ class Commit:
 
 @dataclass(frozen=True)
 class ExitNode:
-    """A claim's end that becomes its exit node: the worker's exit, or a stop the
-    rule for lone stops cannot attribute, which stays a self-report. ``values``
+    """A claim's end that becomes its exit node: the worker's exit. ``values``
     are what it holds: ``()`` when it vouches for its iteration (a non-error
-    exit), None when it discards its open iteration (an error exit, or an
-    unattributed stop, which never vouches). Its ``parent`` is its claim's
-    newest commit, else its resume point (pass 4)."""
+    exit), None when it discards its open iteration (an error exit). Its
+    ``parent`` is its claim's newest commit, else its resume point (pass 4)."""
 
     stop: _Stopped
     values: tuple[()] | None
@@ -1507,8 +1543,6 @@ def _exit_node(end: End | None) -> ExitNode | None:
     match end:
         case _Exit(stop):
             return ExitNode(stop, () if stop.error is None else None)
-        case _Unattributed(stop):
-            return ExitNode(stop, None)
         case _Release() | None:
             return None
         case _:

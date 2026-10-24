@@ -60,7 +60,6 @@ from runstate.migrations.v0_3_0_to_v0_4_0 import (
     _newest_reaching,
     _Release,
     _Stopped,
-    _Unattributed,
     attribute,
     classify,
     parse,
@@ -118,7 +117,22 @@ def _terminated(reason, exit_code, signal, t):
 def _dated(rows):
     """Every record its own created_at, so a test can see each one kept."""
     assert [x.seq for x in rows] == list(range(1, len(rows) + 1))
-    return [x._replace(created_at=1000.0 + x.seq / 4) for x in rows]
+    return [x._replace(created_at=_written_at(x)) for x in rows]
+
+
+def _written_at(x):
+    # a stop is written when it reports, as a self-report is (the rule for lone stops)
+    if x.topic == "lifecycle.stopped" and "t" in json.loads(x.body):
+        return json.loads(x.body)["t"]
+    return 1000.0 + x.seq / 4
+
+
+def _written_later(rows, seq, by):
+    """``rows``, with the stop at ``seq`` written ``by`` seconds after the ``t``
+    it reports."""
+    x = rows[seq - 1]
+    later = x._replace(created_at=json.loads(x.body)["t"] + by)
+    return [later if y.seq == seq else y for y in rows]
 
 
 # ----- golden 0.3.0 logs -----------------------------------------------------------
@@ -433,6 +447,93 @@ AFTER_AN_ATTRIBUTED_DEATH = _dated(
         r(7, "lifecycle.started", _started("local://n1/12", 6.0)),
         r(8, "lifecycle.heartbeat", _beat(2, 0, 7, 7.0)),
     ]
+)
+
+# The rule for lone stops (§7): a well-formed lone stop that is not the backstop
+# is the worker's exit unless the log contradicts that. One log per
+# contradiction, the boundary of the second, and the cooperative stop the census
+# found to be the worker's own.
+#
+# The reclaim tool (mycooc's, ffe05f6e..15e43041): A beat steps 0 and 1 and
+# wrote step 2's value; its job ended, and the tool wrote a default body dated
+# with SLURM's end time, 1,500 s before its record. Written after the time it
+# reports, it is a third party's release: a death, preempted, with the
+# migration's label. No exit vouches for step 2, so its value stays an
+# unreached trailing step. Its 10-23 version writes the cause: errored.
+SACCT = (
+    "SLURM job 123 (0) ended TIMEOUT (exit 0:0) while its claim was held "
+    "(reported from sacct by scripts/reclaim_experiment.py)"
+)
+
+
+def _reclaimed(error):
+    rows = [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+        r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+        r(3, "lifecycle.heartbeat", _beat(1, 0, 1, 3.0)),
+        r(4, "value", _value(0.7, 2, 4.0), name="loss"),
+        r(5, "lifecycle.stopped", _stopped(False, error, None, 1, [], 5.0)),
+    ]
+    return _written_later(_dated(rows), 5, 1500.0)
+
+
+RECLAIM_REPORTED_LATER = _reclaimed(None)
+RECLAIM_OF_10_23 = _reclaimed(SACCT)
+
+# A stop its claim beats after: the worker outlived it, so it is a third party's
+# release, a death. The beat after it still commits (a known limit), placed
+# after the death.
+BEATEN_AFTER = _dated(
+    [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+        r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+        r(3, "lifecycle.stopped", _stopped(False, None, 0, 1, [], 3.0)),
+        r(4, "lifecycle.heartbeat", _beat(1, 0, 1, 4.0)),  # still running
+    ]
+)
+
+# The boundary: A's stop is written 59 s after the time it reports, the worker's
+# exit; B's, the same body, 61 s after, a third party's release.
+REPORTED_LATER_BOUNDARY = _written_later(
+    _written_later(
+        _dated(
+            [
+                r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+                r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+                r(3, "lifecycle.stopped", _stopped(False, None, 0, 1, [], 3.0)),
+                r(4, "lifecycle.started", _started("local://n1/12", 4.0)),
+                r(5, "lifecycle.heartbeat", _beat(1, 0, 4, 5.0)),
+                r(6, "lifecycle.stopped", _stopped(False, None, 1, 4, [], 6.0)),
+            ]
+        ),
+        3,
+        59.0,
+    ),
+    6,
+    61.0,
+)
+
+# The cooperative stop, the census's collision shape (51 genuine in mycooc): the
+# worker drained the runner's stop, beat with a watermark covering it, wrote its
+# completion reason, then exited with a default body and final_step set,
+# honoring the stop, written when it reports, and wrote its status. The
+# worker's exit.
+COOPERATIVE = _written_later(
+    _dated(
+        [
+            r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+            r(2, "value", _value(0.9, 0, 2.0), name="loss"),
+            r(3, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+            r(4, "control.stop", {}, rid="timeout"),
+            r(5, "value", _value(0.8, 1, 3.0), name="loss"),
+            r(6, "lifecycle.heartbeat", _beat(1, 4, 1, 3.0)),
+            r(7, "value", _value("preempted", None, 3.5), name="completion_reason"),
+            r(8, "lifecycle.stopped", _stopped(False, None, 1, 1, ["timeout"], 4.0)),
+            r(9, "value", _value("done", None, 4.5), name="status"),
+        ]
+    ),
+    8,
+    0.0,
 )
 
 LOADING_STATUS = {"phase": "LOADING", "status": "loading enwiki"}
@@ -1145,6 +1246,11 @@ GOLDEN = {
     "late_reap": LATE_REAP,
     "two_claims_one_launch": TWO_CLAIMS_ONE_LAUNCH,
     "after_an_attributed_death": AFTER_AN_ATTRIBUTED_DEATH,
+    "reclaim_reported_later": RECLAIM_REPORTED_LATER,
+    "reclaim_of_10_23": RECLAIM_OF_10_23,
+    "beaten_after": BEATEN_AFTER,
+    "reported_later_boundary": REPORTED_LATER_BOUNDARY,
+    "cooperative": COOPERATIVE,
 }
 
 
@@ -1436,23 +1542,9 @@ def test_a_trailing_step_no_exit_vouches_for_and_nothing_resumed_from_is_left(en
     )
 
 
-def test_an_unattributed_stop_is_an_exit_node_that_vouches_for_nothing(monkeypatch):
-    """The rule for lone stops (Task 13) may leave a stop unattributed: a
-    self-report that commits nothing (``values: null``), as an error exit does,
-    so its claim's trailing step is not synthesized."""
-    import runstate.migrations.v0_3_0_to_v0_4_0 as mod
-
-    monkeypatch.setattr(mod, "_lone_stop_rule", _Unattributed)
-    assert _synth(TRAILING) == Synth(
-        commits={1: [(0, 3, [2]), (1, 5, [4])]},
-        exits={1: None},
-        left={6: Uncommitted.UNREACHED},
-    )
-
-
 def test_an_exit_whose_last_step_is_null_vouches_for_no_trailing_step():
-    """A ``stopped`` with ``final_step: null`` that the placeholder reads as
-    the worker's exit (the "clear staged stop" default body, say): its exit
+    """A ``stopped`` with ``final_step: null`` that the rule for lone stops
+    reads as the worker's exit, since the log does not contradict it: its exit
     reached no step, so every trailing value of its claim is above it."""
     rows = [
         r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
@@ -1627,16 +1719,14 @@ def test_no_commit_holds_a_value_after_its_claims_end(rid):
 
 @pytest.mark.parametrize("rid", list(GOLDEN))
 def test_a_claims_exit_node_is_its_self_reported_end(rid):
-    """The worker's exit holds [] unless it errored, and null then; an
-    unattributable stop holds null; a third party's release is no exit node."""
+    """The worker's exit holds [] unless it errored, and null then; a third
+    party's release is no exit node."""
     ends = classify(parse(GOLDEN[rid])).ends
     for c in _synthesis(GOLDEN[rid]).claims:
         end = ends.get(c.claim.started.seq)
         if isinstance(end, _Exit):
             values = () if end.stop.error is None else None
             assert c.exit == ExitNode(end.stop, values)
-        elif isinstance(end, _Unattributed):
-            assert c.exit == ExitNode(end.stop, None)
         else:
             assert c.exit is None
 
@@ -2234,26 +2324,25 @@ def test_every_record_follows_what_it_names(rid):
                 assert o.record.claim_seq < o.seq
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="the placeholder rule for lone stops reads a third party's lone stop "
-    "as its claim's exit, so the worker's later beat is a commit the exit's "
-    "parent names; the census's rule (Task 13) owns it, and once it reads the "
-    "stop as a third party's this passes, which strict makes loud",
-)
-def test_an_exit_the_placeholder_reads_before_the_workers_beat_has_no_later_parent():
-    rows = _dated(
-        [
-            r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
-            r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
-            r(3, "lifecycle.stopped", _stopped(False, None, 0, 1, [], 3.0)),
-            r(4, "lifecycle.heartbeat", _beat(1, 0, 1, 4.0)),  # still running
-        ]
-    )
-    for o in run_passes(rows).outs:
-        if isinstance(o.record, ToExit):
-            assert o.record.parent is None or o.record.parent < o.seq
+def test_a_stop_its_claim_beats_after_is_a_release():
+    """The worker outlived the stop, so it is not the worker's exit, though it
+    was written when it reports: a death, so no exit node's parent names the
+    beat after it (the golden ``beaten_after`` pins the rows)."""
+    log = parse(BEATEN_AFTER)
+    (stop,) = log.stops
+    assert stop.created_at == stop.t  # only the beat contradicts it
+    assert classify(log).ends == {1: _Release(stop)}
+    assert not [
+        o for o in run_passes(BEATEN_AFTER).outs if isinstance(o.record, ToExit)
+    ]
+
+
+@pytest.mark.parametrize("later, end", [(59.0, _Exit), (60.0, _Exit), (61.0, _Release)])
+def test_a_stop_written_more_than_60_s_after_its_t_is_a_release(later, end):
+    """The comparison is strict: ``created_at - t > _REPORTED_LATER``."""
+    rows = _written_later(EXIT, 4, later)
+    log = parse(rows)
+    assert classify(log).ends == {1: end(log.stops[0])}
 
 
 def _expected(key, rows):
@@ -3632,6 +3721,56 @@ OUTPUT = {
         o(9, START, _claim4("local://n1/12", 6.0, 5)),
         o(10, COMMIT, _commit4(9, 0, 5, [], 7.0)),
     ],
+    # The rule for lone stops: written 1,500 s after its t, the reclaim tool's
+    # stop is a release, a death dated by its t, preempted with the label; no
+    # exit node, so the step-2 value stays uncommitted (an unreached trailing
+    # step).
+    "reclaim_reported_later": [
+        o(1, START, _claim4("local://n1/11", 1.0, None)),
+        o(2, COMMIT, _commit4(1, 0, None, [], 2.0)),
+        o(3, COMMIT, _commit4(1, 0, 2, [], 3.0)),
+        o(4, "value", _value4(0.7, 4.0), name="loss"),
+        o(5, DIED, _died4(1, "preempted", MIGRATED, 5.0)),
+    ],
+    # Its 10-23 version writes the cause: errored, the cause the evidence.
+    "reclaim_of_10_23": [
+        o(1, START, _claim4("local://n1/11", 1.0, None)),
+        o(2, COMMIT, _commit4(1, 0, None, [], 2.0)),
+        o(3, COMMIT, _commit4(1, 0, 2, [], 3.0)),
+        o(4, "value", _value4(0.7, 4.0), name="loss"),
+        o(5, DIED, _died4(1, "errored", SACCT, 5.0)),
+    ],
+    # The claim beats after its stop: a release, a death in the stop's place;
+    # the beat after it is a commit placed after the death, its parent step 0's.
+    "beaten_after": [
+        o(1, START, _claim4("local://n1/11", 1.0, None)),
+        o(2, COMMIT, _commit4(1, 0, None, [], 2.0)),
+        o(3, DIED, _died4(1, "preempted", MIGRATED, 3.0)),
+        o(4, COMMIT, _commit4(1, 0, 2, [], 4.0)),
+    ],
+    # 59 s: A's exit node, vouching for its step 0. 61 s: B's death. B resumed
+    # from A's step 0.
+    "reported_later_boundary": [
+        o(1, START, _claim4("local://n1/11", 1.0, None)),
+        o(2, COMMIT, _commit4(1, 0, None, [], 2.0)),
+        o(3, STOPPED, _exit4(False, None, 1, [], 2, [], 3.0)),
+        o(4, START, _claim4("local://n1/12", 4.0, 2)),
+        o(5, COMMIT, _commit4(4, 0, 2, [], 5.0)),
+        o(6, DIED, _died4(4, "preempted", MIGRATED, 6.0)),
+    ],
+    # The worker's exit, keeping the stop it honored; its step-1 commit keeps
+    # the watermark naming that stop. The registers stay uncommitted.
+    "cooperative": [
+        o(1, START, _claim4("local://n1/11", 1.0, None)),
+        o(2, "value", _value4(0.9, 2.0), name="loss"),
+        o(3, COMMIT, _commit4(1, 0, None, [2], 2.0)),
+        o(4, "control.stop", {}, rid="timeout"),
+        o(5, "value", _value4(0.8, 3.0), name="loss"),
+        o(6, COMMIT, _commit4(1, 4, 3, [5], 3.0)),
+        o(7, "value", _value4("preempted", 3.5), name="completion_reason"),
+        o(8, STOPPED, _exit4(False, None, 1, ["timeout"], 6, [], 4.0)),
+        o(9, "value", _value4("done", 4.5), name="status"),
+    ],
 }
 
 
@@ -3684,36 +3823,34 @@ def test_withdrawals_follow_their_stop_in_honored_order_each_dated_by_it():
     assert [(x.seq, x.topic, x.request_id, x.created_at) for x in out] == [
         (1, "control.stop", "b", 1000.25),
         (2, "control.stop", "a", 1000.5),
-        (3, WITHDRAW, "b", 1000.75),
-        (4, WITHDRAW, "a", 1000.75),
+        (3, WITHDRAW, "b", 3.0),
+        (4, WITHDRAW, "a", 3.0),
         (5, "value", None, 1001.0),
     ]
 
 
 def test_a_death_or_a_terminated_keeps_its_stops_created_at():
     out = step.transform(CLAIMLESS_BACKSTOP)
-    assert [x.created_at for x in out] == [1000.25, 1000.5, 1000.5, 1000.75]
+    assert [x.created_at for x in out] == [1000.25, 1.0, 1.0, 1000.75]
 
 
 @pytest.mark.parametrize(
     "stop, outcome, evidence",
     [
         (_stopped(True, None, 0, 1, ["halt"], 3.0), "preempted", MIGRATED),
-        (_stopped(False, None, 0, 1, ["halt"], 3.0), "preempted", MIGRATED),
-        (_stopped(False, "boom", 0, 1, ["halt"], 3.0), "errored", "boom"),
         (_stopped(False, "", 0, 1, ["halt"], 3.0), "errored", MIGRATED),
     ],
-    ids=["completed", "default", "error", "empty_error"],
+    ids=["completed", "empty_error"],
 )
-def test_a_third_partys_release_maps_to_a_death(monkeypatch, stop, outcome, evidence):
-    """The mapping, for a well-formed release the rule for lone stops (Task 13)
-    attributes to a third party: completed included, since a death is never a
-    completion; the error text as evidence, else the migration's label, since
-    evidence is never empty."""
-    import runstate.migrations.v0_3_0_to_v0_4_0 as mod
-
-    monkeypatch.setattr(mod, "_lone_stop_rule", _Release)
-    rows = EXIT[:3] + [EXIT[3]._replace(body=json.dumps(stop))]
+def test_a_third_partys_release_maps_to_a_death(stop, outcome, evidence):
+    """The mapping, for a well-formed lone stop the rule for lone stops reads
+    as a third party's release, here one written 1,500 s after its t: completed
+    included, since a death is never a completion; an empty error is errored,
+    with the migration's label, since evidence is never empty. A default body
+    and an error text are the reclaim goldens'."""
+    rows = _written_later(
+        EXIT[:3] + [EXIT[3]._replace(body=json.dumps(stop))], 4, 1500.0
+    )
     assert _rows(rows)[3:] == [
         o(4, DIED, _died4(1, outcome, evidence, 3.0)),
         o(5, WITHDRAW, {"t": 3.0}, rid="halt"),
@@ -3729,23 +3866,6 @@ def test_an_empty_reason_or_error_leaves_the_label_as_evidence():
         LATER_ERROR[3]._replace(body=json.dumps(_stopped(False, "", None, 1, [], 4.0)))
     ]
     assert _rows(later)[3] == o(4, DIED, _died4(1, "errored", MIGRATED, 4.0))
-
-
-def test_an_unattributable_stop_is_a_self_report_that_commits_nothing(monkeypatch):
-    """The lone-stop placeholder's third variant: an exit node with values null,
-    though it completed."""
-    import runstate.migrations.v0_3_0_to_v0_4_0 as mod
-
-    monkeypatch.setattr(mod, "_lone_stop_rule", _Unattributed)
-    assert _rows(TRAILING) == [
-        o(1, START, _claim4("local://n1/11", 1.0, None)),
-        o(2, "value", _value4(0.9, 2.0), name="loss"),
-        o(3, COMMIT, _commit4(1, 0, None, [2], 2.0)),
-        o(4, "value", _value4(0.8, 3.0), name="loss"),
-        o(5, COMMIT, _commit4(1, 4, 3, [4], 3.0)),
-        o(6, "value", _value4(0.7, 4.0), name="loss"),
-        o(7, STOPPED, _exit4(True, None, 1, [], 5, None, 5.0)),
-    ]
 
 
 def _schema_errors(row):
