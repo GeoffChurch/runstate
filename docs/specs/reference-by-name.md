@@ -211,7 +211,8 @@ answer is the reading of one of the step's declared ambiguities, which a user ch
 and were related by position (§1's table). Three of its answers are inferences that 0.2.0's records do not
 settle. They are its declared ambiguities, and the positional rule is one reading of each, which a user
 must choose. The built-in strategies are in `v0_2_0_to_v0_3_0_resolutions.py`. The step is shipped, and no
-consumer has run it yet, so each consumer's first migration is its first choice.
+consumer has run it yet, so each consumer's first migration is its first choice. Each site test reads only
+the 0.2.0 log; a strategy receives the readings given before it.
 
 | ambiguity | the question | built-ins | the step's reading today |
 |---|---|---|---|
@@ -266,8 +267,9 @@ The entries:
     the proven reading.
   - **H1:** the first claim drained and registered the lease, then died before that tick's heartbeat, which
     needs the lease bound to that claim, as 0.2.0's positional void treated it.
-  - **H2:** the first claim died before it drained the lease, which needs the lease unbound, so that the next
-    claim registers and serves it, as it would in a native 0.3.0 log.
+  - **H2:** the first claim died before it drained the lease, which needs the lease unbound: a `bound`
+    asserts that its claim registered the lease (lifecycle-v0.5's `Bound`), and here none did, which the
+    0.2.0 log cannot record. The next claim then registers and serves it.
   - **Built-ins:**
     - `first-claim`: the first claim after its latest send, which reproduces 0.2.0's positional void. It is
       the step's rule today, and Ruling 17's;
@@ -321,7 +323,8 @@ At the consumer's own time, in this order:
 1. Stop its old processes and drain its queued jobs (`log-formats.md` §8).
 2. Bump its pin to the commit that introduces format 0.3.0.
 3. Onboard: move its legacy logs into `v0.2.0/`, as the `LogFormatMissing` message instructs.
-4. Migrate a **copy** first and compare its reads, then run `runstate migrate <root>`.
+4. Migrate a **copy** first and compare its reads, then run `runstate migrate <root>`, with a `--resolve`
+   for each ambiguity its detection pass reports (§6, "Ambiguities"; `log-formats.md` §6).
 5. Change its code:
    - mint a `request_id` on every `control.stop` (none of the corpus's 184 stops has one). Grep its
      code for every send of `control.stop` (`Topic.CONTROL_STOP`) and check each carries a
