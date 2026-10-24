@@ -221,13 +221,15 @@ the 0.2.0 log; a strategy receives the readings given before it.
 | `lease-bound` | which claim registered an episode-local subscription | `first-claim`, `unbound`, `refuse` | `first-claim` |
 
 What the site tests rely on as settled by 0.2.0's conventions:
-- **`completed: true` is the worker's own claim** (`completed-opt-in.md`), so a claim a completed `stopped`
-  ended was ended by its worker's own dying breath, after which the worker wrote nothing;
+- **`completed: true` is the worker's own claim** (`completed-opt-in.md`), and **a worker's `stopped` is its
+  halt** (`design-v0.2.md` §7: "Existence = a clean, resumable halt"), so a claim a completed `stopped` ended
+  was ended by its worker's own halt, after which that worker beat no more and wrote no second `stopped`;
 - **a `launcher.terminated` follows its process's end**, since only a `wait()`ing parent writes it
   (`design-v0.2.md` §8), and the launch id a claim's `started` re-emits, with an equal handle, makes that
   process the claimant;
-- **a claim is taken only when the latest one is followed by a `stopped` or its handle resolves dead** (the
-  liveness above), so a claim that no `stopped` followed was dead when the next one began.
+- **a claim is taken only when the latest one is followed by a `stopped` or its worker resolves dead**: the
+  worker CAS-claims its `started` "iff no live episode", a guard "in the *protocol*" (`run-episodes.md` §3),
+  so a claim that no `stopped` followed was dead when the next one began.
 
 The entries:
 - **`record-claim`: which claim a heartbeat or `stopped` speaks for.**
@@ -276,6 +278,11 @@ The entries:
     - `unbound`: no `bound` record, so the lease is void for no episode;
     - `refuse`.
   - **Refuse-only:** no. The real corpus has no subscribes, so no consumer's log has a site.
+
+**Carried unread.** A `stopped` whose body 0.2.0 does not define is carried with its body unread, the step
+adding only the names its rules write: the step relates it by position and never reads its body, so it
+declares no ambiguity for it. The 0.3.0 → 0.4.0 step, which reads it, declares `malformed-stop`
+(`commits-and-lineage.md` §7; `log-formats.md` §6).
 
 **Determined, not declared,** because 0.2.0's own rules settle them, and the step reproduces those rules:
 - a `stopped` before any claim names none;

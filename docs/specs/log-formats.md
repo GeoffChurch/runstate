@@ -202,12 +202,16 @@ ergonomics.
   spells it.
 - A **site** is one record of one run, named by run id and seq, at which an ambiguity's question is open:
   two histories that a conforming writer of the input format could produce give the same log there, and
-  need different output. A record the input format does not define is a site of its step's malformed-record
-  ambiguity: no conforming writer produced it, so its meaning is open by definition, and it is refused unless
-  a strategy reads it. **A site test reads only the step's input log,** never a reading of any of the step's
-  ambiguities, its own included (review §12, item 16).
+  need different output. **A site test reads only the step's input log,** never a reading of any of the
+  step's ambiguities, its own included (review §12, item 16).
+- A **malformed record,** one whose body the input format does not define, has no conforming writer, so its
+  meaning is open by definition. It is a question only for a step that reads that body. A step carries a
+  record it does not read to the next step unchanged, as the 0.2.0 → 0.3.0 step carries a malformed
+  `stopped`, adding only the names its rules write. The step that reads it either declares a malformed-record
+  ambiguity for that kind of record, every such record being one of its sites, or refuses the record
+  outright. Only that step declares it (review §12, item 16).
 - A **proven site** is a record at which the question arises but the log settles it: what the log proves
-  there, under the input format's schemas and design, gives one reading, its **proven reading**. A proven
+  there, under the input format's conventions, gives one reading, its **proven reading**. A proven
   site is not a site. It never forces a choice, and no strategy changes its reading.
 - A **reading** is one answer at one record: a value of the ambiguity's closed reading type.
 - A **strategy** implements the ambiguity's Strategy Protocol. It is called once per run with the run's
@@ -221,15 +225,17 @@ ergonomics.
   every ambiguity of that step that occurs has one.
 
 **The principle: ambiguity is judged against any conforming writer of the input format, under that format's
-conventions.** A question is settled where the input format's schemas and design pin the meaning of the
-records it reads, and open where they do not. **Every meaning they do not pin is a declared ambiguity, with
-its narrowest site; no convention is pinned by ruling** (review §12, item 16). A step judges against the
-format it reads, never against a later one, and never against one consumer's writers:
+conventions.** A question is settled where the input format's conventions pin the meaning of the records it
+reads, and open where they do not. Its conventions are what its schemas, its design and the specs that state
+them write, not a reference implementation's behaviour. **Every meaning they do not pin is a declared
+ambiguity, with its narrowest site; no convention is pinned by ruling** (review §12, item 16). A step judges
+against the format it reads, never against a later one, and never against one consumer's writers:
 - runstate ships **generic** built-in strategies only. A built-in is any reading expressible over the input
   format's own vocabulary that is right for some conforming writer;
 - a reading of a consumer's texts or shapes is that consumer's strategy, and its "preset" is its own set of
   `--resolve` choices, kept in the consumer;
-- a record whose body the input format does not define is refused unless a strategy reads it.
+- a malformed record that a step reads is refused unless a strategy for its malformed-record ambiguity reads
+  it, and one of a kind the step declares no such ambiguity for is refused outright.
 
 Each step's spec names what the input format pins, with where each is written, and lists its ambiguities.
 
@@ -255,8 +261,9 @@ holds what every step shares:
 - the unresolved refusal;
 - the command-line parsing.
 
-**`resolutions` is also a required keyword-only argument of `migrate()`**, which takes the choices for every
-step of the chains it runs, builds each step's `Resolutions` from them, and refuses a chain step with an
+**`resolutions` is also a required keyword-only argument of `migrate()`.** There its type is `Choices`, not
+`Resolutions`, since a chain's later steps can be resolved only once the earlier ones are: `migrate()` builds
+each step's `Resolutions` from the choices as it reaches that step, and refuses a chain step with an
 occurring ambiguity that has none.
 
 **No defaults; `refuse` always.** Every ambiguity has the built-in `refuse`, which refuses a run at its first
@@ -265,8 +272,8 @@ can happen only where that ambiguity does not occur. No other built-in is a defa
 every ambiguity at once. A proven site takes its proven reading whatever the strategy.
 
 **A strategy sees every site of its kind** in one call per run, with the run's records and the earlier
-readings, so it can read a run's records together, as a claim's several stops must be read. The sites decide
-only whether a choice is forced. A reading the log excludes is refused, naming the strategy and the seq.
+readings, so it can read a run's records together, as a claim's several stops must be read. A reading the
+log excludes is refused, naming the strategy and the seq.
 
 **The detection pass.** `runstate migrate` first runs every selected run's chain of steps in memory, sealing
 and writing nothing: step 2 above, for the whole root before any run is sealed. It goes **step by step**. A
@@ -276,8 +283,8 @@ has a `--resolve`,** and then writes nothing at all. There is no default and no 
 
 **A later step's ambiguities are undecided until every occurring ambiguity of the earlier steps in the chain
 is resolved,** since its sites are found on their output. So a user resolves in one round per step: a root at
-format 0.2.0 that migrates to 0.4.0 takes two. On refusal the pass prints a summary **per ambiguity**, never a
-list of every site:
+format 0.2.0 that migrates to 0.4.0 takes at most two. On refusal the pass prints a summary **per ambiguity**,
+never a list of every site:
 - the step, the ambiguity's name and its one-sentence definition;
 - its readings, and its built-in strategies, each with a one-line description;
 - how many sites it has, in how many runs;

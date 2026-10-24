@@ -868,48 +868,53 @@ now one of its built-in strategies, in `v0_3_0_to_v0_4_0_resolutions.py`, marked
 *The ambiguities are specified 2026-10-24, and not yet encoded.*
 
 **What 0.3.0 pins** (review §12, item 16). The step judges against any writer conforming to format 0.3.0:
-lifecycle-v0.5, value-v0.2, subscription-v0.3, launcher-v0.4 and `design-v0.2.md`. It relies on these, each
-written where it is cited:
+lifecycle-v0.5, value-v0.2, subscription-v0.3, launcher-v0.4, `design-v0.2.md`, and the specs that state its
+conventions. It relies on these, each written where it is cited:
 - **Names are taken at their word.** A heartbeat's or a `stopped`'s `claim_seq` names the claim it speaks
   for, and a `stopped`'s `honored` names the stops it answered (lifecycle-v0.5; `reference-by-name.md` §2).
   A conforming worker names only its own claim. In every real 0.3.0 log these names are the 0.2.0 → 0.3.0
   step's positional inferences, and those are that step's ambiguities (`reference-by-name.md` §6), not
   this step's.
-- **A worker writes nothing after its own `stopped`.** `design-v0.2.md` §7 calls the record "the
-  cooperative dying breath", and the reference Worker latches every write path on it: `emit` and `tick`
-  touch nothing once it is written, and `stopped` writes once (worker.py:230-237, `emit`'s docstring).
+- **A worker's `stopped` is its halt:** "its existence on the log = a clean, resumable halt"
+  (lifecycle-v0.5's `Stopped`), "the cooperative dying breath" (`design-v0.2.md` §7). A halted worker beats
+  no more, and writes no second `stopped`. Whether it writes a value after its halt is not pinned (below).
 - **`completed: true` is the worker's own claim:** "the worker's opt-in claim of intrinsic completion"
   (lifecycle-v0.5's `Stopped`; `completed-opt-in.md`).
 - **A `launcher.terminated` follows its process's end,** since only a `wait()`ing parent writes it
   (`design-v0.2.md` §8). The launch id a claim's `started` re-emits, with the launch's handle equal to the
   claim's, makes that process the claimant.
-- **A claim is taken only when the latest one has ended or its handle resolves dead** (the claim gate,
-  `live_episode`; `reference-by-name.md` §5).
+- **A claim is taken only when the latest one has ended or its worker resolves dead:** the worker
+  CAS-claims its `started` "iff no live episode", and "the guard is in the *protocol*, not our launcher"
+  (`run-episodes.md` §3, "Worker self-claim" and "Live-episode test").
 - **A value's `step` is the worker's step clock when it wrote the value** (`design-v0.2.md` §6,
   "step=worker step-clock", and §11, "the worker's logical clock").
-- **Steps are run-absolute, and a resumed worker restores its own run's checkpoint:** "the relaunched worker
-  reads its `run_id`-keyed checkpoint, restores at step `k`, and continues `value.step` at `k, k+1, …`"
-  (`run-episodes.md` §4, "Resume + run-absolute step = a worker convention").
+- **Steps are run-absolute and advance one at a time, and a resumed worker restores its own run's
+  checkpoint:** "the relaunched worker reads its `run_id`-keyed checkpoint, restores at step `k`, and
+  continues `value.step` at `k, k+1, …`" (`run-episodes.md` §4, "Resume + run-absolute step = a worker
+  convention"). So a step with no value between two of a claim's records at integer steps was an iteration
+  the worker ran without a tick, never a stride: the ambiguity audit's `valueless-gap` is determined, not
+  declared.
 
 **What 0.3.0 leaves open,** and the step therefore declares:
 - **who wrote a `stopped`** (`stop-author`), and **what a third party's says** (`third-party-stop`): 0.3.0
   had no record for a third party to report a death, so real writers used `lifecycle.stopped`
   (`design-v0.2.md` §7: "a third party's release beside the worker's own"), and 0.3.0's verdict took the
   newest whatever its body;
-- **which claim a value belongs to** (`value-claim`), since a value names none;
+- **which claim a value belongs to** (`value-claim`), since a value names none, and since nothing in
+  0.3.0's schemas, design or specs forbids a worker a value after its halt: the reference Worker writes none
+  (worker.py:230-237), and mycooc writes a teardown `status`;
 - **what a heartbeat's step marks:** lifecycle-v0.5 calls the heartbeat a "tick-driven liveness beacon",
   and `design-v0.2.md` §7 says it serves "progress (step advancing)". Neither says the iteration finished,
   and §1 above says "No record marks a step complete. The heartbeat stood in for that by accident". The
   reference Worker's `tick(step)` fixes no order with the body, and `emit` raises before the first tick.
   Whether a claim's last beat ends or starts its iteration is `beat-ends-iteration`; where a value written
   after that beat at its step belongs is `post-beat-values`;
-- **whether the step clock moves one iteration at a time** (`valueless-gap`): `design-v0.2.md` §11 makes it
-  the worker's logical clock, and only `steps()` moves it by one;
 - **whether a claim ran the iteration its clock names,** or labelled a loading status with it
   (`leading-values`, `beatless-claim`);
 - **what a `final_step` says** (`final-step`): 0.3.0's reads took it as the step the trajectory reached
   (`memoizer.md` Decision 2; `api.md`, "the last step reached"), while the reference Worker fills it with
-  the last step yielded (worker.py:348), which a body that breaks out early never finished (§1);
+  the last step yielded (worker.py:348), which a body that breaks out early never finished (§1); and, for a
+  claim no exit of its worker ends, **whether its last step finished** (`exitless-step`);
 - **which checkpoint a claim loaded** (`resume-source`, `unlogged-save`, `commitless-resume`).
 
 **Records:**
@@ -941,8 +946,8 @@ written where it is cited:
    becomes (`malformed-stop`, `stop-author`, `third-party-stop`, and "Stops" below). Then which claim a
    launch's `terminated` reports dead.
 3. **Synthesis:** M2, M4 and M5 assign values to commits or leave them uncommitted, synthesizing the commits
-   M5 names, with M8's fields (`value-claim` to `final-step`, and `resume-source` and `unlogged-save` for
-   M5's third place).
+   M5 names, with M8's fields (`value-claim` to `exitless-step`, and `resume-source` and `unlogged-save`
+   for M5's third place).
 4. **M1:** parents and `resume_from` (`resume-source`, `unlogged-save` and `commitless-resume`).
 5. **M6:** the moves, the withdrawals and the death reports, then one renumbering.
 6. **M7:** the renames.
@@ -968,10 +973,10 @@ gave the ambiguities above it. The site tests use these terms, each read from th
 | `value-claim` | which claim a value belongs to | `positional`, `uncommitted`, `refuse` | `positional` |
 | `beat-ends-iteration` | whether a claim's last real beat ends or starts its iteration | `ends`, `starts`, `refuse` | `ends` |
 | `post-beat-values` | where a value at the last real beat's step, written after it, belongs | `label`, `exit-holds`, `refuse` | `label` |
-| `valueless-gap` | whether a step with no value between two of a claim's steps was an iteration | `iteration`, `stride`, `refuse` | `iteration` |
 | `leading-values` | what a value below its claim's first real beat is | `loading`, `unticked`, `refuse` | `loading` |
 | `beatless-claim` | whether a claim that beat no integer step reached the steps its values name | `loading`, `own-values`, `predecessor-beat`, `refuse` | `loading` |
-| `final-step` | what an exit's `final_step` says | `yielded`, `finished`, `refuse` | none: a mix (below) |
+| `final-step` | what an exit's `final_step` says | `yielded`, `finished`, `finished-if-clean`, `refuse` | `finished-if-clean`, nearly |
+| `exitless-step` | whether the last step of a claim no worker's exit ends finished | `unfinished`, `finished`, `refuse` | none: it left every trailing step |
 | `resume-source` | which earlier claim's step a resumed claim started from | `newest-claim`, `prefer-beat`, `latest-record`, `refuse` | `newest-claim` |
 | `unlogged-save` | where a resumed claim with no recorded source started from | `parentless`, `unlogged-save`, `refuse` | `parentless` |
 | `commitless-resume` | where a claim that committed nothing resumed from | `newest-candidate`, `successor`, `fresh`, `refuse` | `newest-candidate` |
@@ -986,7 +991,12 @@ gave the ambiguities above it. The site tests use these terms, each read from th
   process, which needs nothing to end.
 - **The reading type:** the well-formed lifecycle-v0.5 `Stopped` body the record stands for, its claim, the
   ids it honoured and its `t` among them. `stop-author` and `third-party-stop` then read it as they read any
-  `stopped`, and their strategies see the record's own body too.
+  `stopped`, and their strategies see the record's own body too. The mapped body stands for the record in
+  the checks on the readings, so a mapped `completed: true` makes it its worker's exit there. It never makes a
+  proven site, since a proof reads the log, never a reading.
+- **Where it comes from.** The 0.2.0 → 0.3.0 step carries such a record with its body unread, adding only the
+  names its rules write (`reference-by-name.md` §6), so this step is the first to read it. Every other
+  record whose body 0.3.0 does not define stays a refusal (M9).
 - **Built-ins:** `refuse` only.
 - **Refuse-only:** yes. 0.3.0 gives the body no meaning, so any generic reading would guess one.
 
@@ -994,9 +1004,9 @@ gave the ambiguities above it. The site tests use these terms, each read from th
 - **Site:** a well-formed `stopped` naming a claim that the log does not prove either way ("Stops" below):
   it is not `completed: true`, no `stopped` naming its claim is, no heartbeat naming its claim follows it, and
   no `launcher.terminated` of its claim's own launch, carrying the claim's handle, precedes it. A site is an
-  **open stop**. Decision 6 makes every stop a site; lifecycle-v0.5 pins `completed: true` as the worker's
-  opt-in claim, so a root whose stops are all completed, or proven a third party's, needs no `stop-author`
-  resolution.
+  **open stop**. The owner's decision that every stop is a site (review §12, item 16) meets one pin:
+  lifecycle-v0.5 makes `completed: true` the worker's opt-in claim, so a root whose stops are all completed,
+  or proven a third party's, needs no `stop-author` resolution.
 - **H1:** the reference Worker reached its chunk cap at step 9, drained stop x and wrote `{completed: false,
   error: null, final_step: 9, honored: [x]}`, which needs an exit node.
 - **H2:** the worker was killed with its node, and an operator's tool wrote the same body for the dead
@@ -1046,8 +1056,9 @@ gave the ambiguities above it. The site tests use these terms, each read from th
     any other is a report that ends nothing. It is review §12 item 14's rule, today's, with `lost` where
     today wrote `preempted`.
   - `ends-only`: only a stop that ends its claim is a death report.
-  - `every-report`: every stop naming a claim that the claim does not outlive is a death report, as 0.3.0's
-    verdict counted every terminal.
+  - `every-report`: every stop naming a claim that the claim does not outlive is a death report. 0.3.0's
+    verdict took only the newest terminal (`design-v0.2.md` §7); this keeps every one, as 0.4.0's outcome set
+    counts every report.
   - `nothing`: no stop is a death report, so a claim that only third parties stopped stays held unless a
     reap ends it.
   - `refuse`.
@@ -1055,30 +1066,35 @@ gave the ambiguities above it. The site tests use these terms, each read from th
 
 **`value-claim`: which claim a value belongs to.**
 - **Site:** an integer-step value that position gives to a claim C_j that is not the run's first, when an
-  earlier claim C_i was named by a `stopped` before C_j's `started`, and neither a `completed: true` stop of
-  C_i nor a `launcher.terminated` of C_i's own launch, carrying its handle, precedes the value. A claim that
-  no `stopped` named before C_j's `started` was gated dead, and a completed stop or a reap shows its worker
-  done, so neither can have written it.
+  earlier claim C_i was named by a `stopped` before C_j's `started`, and no `launcher.terminated` of C_i's own
+  launch, carrying its handle, precedes the value. A claim that no `stopped` named before C_j's `started` was
+  gated dead (`run-episodes.md` §3), and a reap shows its process gone, so neither can have written it. A
+  completed stop does not exclude C_i: its worker halted there, but may still have written a value.
 - **H1:** C_j resumed, computed step 5, emitted `loss@5` and beat 5, which needs the value in C_j's commit
   at 5.
 - **H2:** a third party released C_i while its worker lived; C_j claimed; C_i's worker, still in step 5,
   emitted `loss@5` and died, while C_j computed step 5 without that name, which needs the value left
-  uncommitted, after its claim's end (M4).
+  uncommitted, after its claim's end (M4). Or C_i's worker exited and then wrote a teardown value labelled 5,
+  after C_j had claimed.
 - **Built-ins:**
   - `positional`: the latest claim before it, as 0.3.0's value reads took it. Today's reading.
-  - `uncommitted`: a value at a site is left uncommitted, unless `stop-author` read a stop of each such
-    earlier claim, before the value, as its worker's exit, after which that worker wrote nothing. It never
-    commits a displaced worker's value, at the price of the successor's own.
+  - `latched`: a value at a site is left uncommitted, unless `stop-author` read a stop of each such earlier
+    claim, before the value, as its worker's exit. It is right for a worker that writes nothing after its
+    exit, as the reference Worker latches (worker.py:230-237).
+  - `uncommitted`: every value at a site is left uncommitted. It never commits a displaced or exited
+    worker's value, at the price of the successor's own.
   - `refuse`.
-- **Refuse-only:** no. `positional` is the user's statement that no released worker outlived its release.
+- **Refuse-only:** no. `positional` is the user's statement that no released worker outlived its release,
+  and no exited one wrote after its exit.
 
 **`beat-ends-iteration`: whether a claim's last real beat ends or starts its iteration.**
 - **Site:** a claim's last real beat, at step s, unless the claim holds a value at s written before that
-  beat, or a value above s, or a `completed: true` stop names the claim. A value at s before the beat shows
-  the clock at s before the tick; a value above s, or a completed stop, shows iteration s over. Every claim
-  in mycooc's and translation's logs is outside the site (a census of their logs, 2026-10-24), since each
-  writes a value at its last beat's step before the beat, and so is every `steps()` claim that emits at its
-  last step.
+  beat, or a value above s. A value at s before the beat shows the clock at s before the tick, and a value
+  above s shows iteration s over. A completed stop shows neither: a loop that ticks first and breaks at its
+  tick writes the same completed exit as a `steps()` loop that finished its last body. Every claim in
+  mycooc's and translation's logs is outside the site (a census of their logs, 2026-10-24), since each writes
+  a value at its last beat's step before the beat, and so is every `steps()` claim that emits at its last
+  step.
 - **H1:** a `steps()` worker, which ticks after its body, beat 0, 1 and 2 and was killed in step 3's body,
   which needs three commits.
 - **H2:** a manual loop that ticks first (`w.tick(s); body(s)`) beat 0, 1 and 2 and was killed in step 2's
@@ -1107,19 +1123,6 @@ gave the ambiguities above it. The site tests use these terms, each read from th
 
   Under `beat-ends-iteration`'s `starts`, the last beat commits nothing, and these values are trailing values
   whatever this reads.
-- **Refuse-only:** no.
-
-**`valueless-gap`: whether a step with no value between two of a claim's steps was an iteration.**
-- **Site:** a step at which a claim holds no value, between two of its real beats, or between its last real
-  beat and the `final_step` of a `stopped` naming it that the log does not prove a third party's. The
-  history audit found none in mycooc's logs.
-- **H1:** the worker ran an iteration whose tick it skipped, and which emitted nothing, which needs a commit.
-- **H2:** the worker's clock moves by more than one per iteration, which needs no commit there.
-- **Built-ins:**
-  - `iteration`: a synthesized commit, M5's first place, and the steps `final-step` vouches for. Today's
-    reading.
-  - `stride`: no commit: the clock skipped the step.
-  - `refuse`.
 - **Refuse-only:** no.
 
 **`leading-values`: what a value below its claim's first real beat is.**
@@ -1176,26 +1179,53 @@ gave the ambiguities above it. The site tests use these terms, each read from th
 - **The open iteration** of an exit is the step its worker had begun and not finished. Its values are held by
   the exit node of an exit that did not error, are uncommitted on an error exit, which is torn, and, either
   way, become a commit when a later claim's start says the step finished (`resume-source`).
-- **Built-ins,** one pair for clean and error exits alike (review §12, item 16). The two kinds of exit leave
-  the same pair of histories, the worker did or did not finish its `final_step`, and a torn exit discards
-  only an iteration that did not finish.
+- **Built-ins.** The two kinds of exit leave the same pair of histories, the worker did or did not finish
+  its `final_step`, and a torn exit discards only an iteration that did not finish (review §12, item 16).
+  Under every reading, each step above the claim's position and below its `final_step` is a synthesized
+  commit, since the worker's clock moved past it, one step at a time; a valueless one too, where the claim
+  beat an integer step.
   - `yielded`: `final_step` is the last step the worker yielded or ticked, which it need not have finished,
-    as the reference Worker fills it. Each step above the claim's position and below `final_step` is a
-    synthesized commit, since the worker moved past it; the step at `final_step` is the open iteration; and a
-    trailing value above it is no iteration of this worker's, uncommitted and never a source (the ceiling).
-    A null `final_step` is below every step.
-  - `finished`: `final_step` is the last step the worker finished. Each step above the claim's position, up
-    to and including `final_step`, is a synthesized commit, and the steps above it are the open iteration.
-    A null `final_step` finished no step. It reads mycooc's writers' `final_step` as they fill it (the
-    ambiguity audit's R4).
+    as the reference Worker fills it. The step at `final_step` is the open iteration, and a trailing value
+    above it is no iteration of this worker's, uncommitted and never a source (the ceiling). A null
+    `final_step` is below every step.
+  - `finished`: `final_step` is the last step the worker finished, and a synthesized commit, a valueless one
+    too, where it is the claim's own `final_step` above its own last real beat. The steps above it are the
+    open iteration. A null `final_step` finished no step. It reads mycooc's writers' `final_step` as they
+    fill it (the ambiguity audit's R4).
+  - `finished-if-clean`: a non-error exit's `final_step` as `finished` reads it, and an error exit's as
+    `yielded` does. It is right for the reference `steps()` driver, whose clean exits follow a finished body
+    (the loop's end, a stop at the tick, or a `break` after the save) and whose error exits are crashes inside
+    the body. It is today's reading, but for three shapes `steps()` never writes: today's step also holds a
+    clean exit to the ceiling, vouches no step below an error exit's `final_step`, and leaves a valueless step
+    below any `final_step` uncommitted.
   - `refuse`.
 
-  A claim's position here is its last real beat (the one before it, where `beat-ends-iteration` reads the last
-  as starting its iteration), or, for a claim that beat none, the position `beatless-claim` gives it; under `loading` such a claim has none, and nothing is synthesized in it. The
-  steps either reading synthesizes hold their trailing values, if any, and a step that holds none is
-  synthesized only under `valueless-gap`'s `iteration`. Today's step is neither reading: it vouches a
-  non-error exit's trailing steps up to `final_step`, as `finished` does, an error exit's for none, and
-  takes the ceiling of `yielded` for both.
+  A claim's position here is its last real beat, or the one before it where `beat-ends-iteration` reads the
+  last as starting its iteration. For a claim that beat none, it is the position `beatless-claim` gives it,
+  and only the steps that hold its values are vouched, never a valueless one, since that position is
+  inferred; under `loading` such a claim has none, and nothing is synthesized in it.
+- **Refuse-only:** no.
+
+**`exitless-step`: whether the last step of a claim no worker's exit ends finished.**
+- **Site:** the highest trailing step s of a claim that no `completed: true` stop names, unless a later claim
+  whose candidate first step is s+1 has this claim as its only possible source of s (`resume-source`).
+- **H1:** the worker was killed inside step s's body, or a third party released the claim there, which needs
+  step s uncommitted.
+- **H2:** the worker finished step s and saved it, then was killed before its tick, which needs a commit at
+  s.
+- **Its readings apply only to a claim that has no exit node,** as `stop-author` reads it: one a third party
+  released, one a reap ended, or one nothing ended. `final-step` reads a claim that has one, so the two never
+  read one claim. Under every reading, each trailing step below s is a synthesized commit, since the worker's
+  clock moved past it, a valueless one too where the claim beat an integer step; for a claim that beat none,
+  only the steps that hold its values. A later claim's start that commits step s (`resume-source`,
+  `unlogged-save`) takes precedence.
+- **Built-ins:**
+  - `unfinished`: step s is the claim's open iteration, and its values stay uncommitted.
+  - `finished`: step s is a synthesized commit.
+  - `refuse`.
+
+  Today's step is neither: it leaves every trailing step of such a claim uncommitted, the ones the worker
+  moved past included.
 - **Refuse-only:** no.
 
 **`resume-source`: which earlier claim's step a resumed claim started from.**
@@ -1225,17 +1255,20 @@ gave the ambiguities above it. The site tests use these terms, each read from th
 
 **`unlogged-save`: where a resumed claim with no recorded source started from.**
 - **Site:** a claim C with a candidate first step s above 0 and no possible source of s−1, when an earlier
-  claim's highest real beat or value below C's `started` is at s−2. With no such claim, C's first commit is a
-  parentless resume, the proven reading.
-- **H1:** that earlier claim finished step s−1 and saved it before logging it, then was killed (§1). The
-  guide's recipe saves in the body, before the tick (`guide.md`, the checkpoint recipe). It needs an empty
-  commit at s−1 in that claim, as C's parent.
+  claim holds, below C's `started`, a real beat or a value at a step below s−1. With no such claim, C's first
+  commit is a parentless resume, the proven reading: no claim of the run recorded a step it could have run on
+  from.
+- **H1:** an earlier claim ran on from its highest record to step s−1 without logging those steps, saved
+  s−1, and was killed (§1). The guide's recipe saves in the body, before the tick (`guide.md`, the
+  checkpoint recipe). It needs empty commits up to s−1 in that claim, the last C's parent.
 - **H2:** C loaded a checkpoint that no claim of the log saved, one copied in under the run's id, which
   needs a parentless resume.
 - **Built-ins:**
   - `parentless`: C's first commit has a null parent, which P1 and P3 name. Today's reading.
-  - `unlogged-save`: an empty commit at s−1 is synthesized in the newest such claim, placed after its last
-    record, and C resumes from it.
+  - `unlogged-save`: the newest such earlier claim with no exit node, as `stop-author` reads it, ran on to
+    s−1, since a worker that wrote its exit had halted. Its trailing steps, which it moved past, are commits;
+    each step from above its highest record up to s−1 is an empty synthesized commit, placed after its last
+    record; and C resumes from the last.
   - `refuse`.
 - **Refuse-only:** no.
 
@@ -1289,11 +1322,12 @@ gave the ambiguities above it. The site tests use these terms, each read from th
   claim nothing ended before it, the `terminated` a `died` is attributed from, since a death report ends its
   claim (§2).
 - **M5. A step commit is synthesized in exactly three places,** each above its claim's first real beat:
-  - for a tick skipped between two real beats of one claim, under `valueless-gap`'s `iteration` when the step
-    holds no value: `Commits()` must count it;
-  - for a step above the claim's last real beat that `final-step` vouches for: below an exit's `final_step`
-    under `yielded`, and up to it under `finished`. This takes precedence over the exit node, which holds
-    only what no commit claims;
+  - for a tick skipped between two real beats of one claim, even one with no values: steps advance one at a
+    time (`run-episodes.md` §4), so the worker ran it, and `Commits()` must count it;
+  - for a trailing step `final-step` or `exitless-step` vouches for: each one the worker's clock moved past,
+    below its exit's `final_step` or below its highest trailing step, and the `final_step` itself or the
+    highest trailing step under the reading `finished`. This takes precedence over the exit node, which
+    holds only what no commit claims;
   - for a trailing step s, whatever ended its claim, in the claim `resume-source` reads for a later claim
     whose first step is s+1 (review §12, item 14). Today's reading takes the newest claim before it, in claim
     order, to reach step s, by a commit or by trailing values not above its exit's ceiling, where it has one.
@@ -1305,16 +1339,18 @@ gave the ambiguities above it. The site tests use these terms, each read from th
 
   Four readings synthesize outside those places, and each commit they make is labelled by its reading:
   `leading-values`' `unticked`, at the steps below the first real beat, as at a skipped tick;
-  `beatless-claim`'s `own-values` and `predecessor-beat`, whose values are trailing values, which the second
-  and third places read; and `unlogged-save`'s `unlogged-save`, an empty commit.
+  `beatless-claim`'s `own-values` and `predecessor-beat`, whose valued steps are trailing values, which the
+  second and third places read; and `unlogged-save`'s `unlogged-save`, the empty commits up to the step its
+  claim saved unlogged.
 
-  Only a trailing value is held to `final-step`'s reading: one written before its claim's end at a real
-  beat's step (M2), at a skipped tick, or below the first real beat is committed whatever the exit reports.
-  Only an exit node has a `final_step` to read: a claim a third party released, or that nothing ended, has no
-  ceiling, and its trailing values are its open iteration. Leading values, below a claim's first real beat,
-  go to its first commit under `leading-values`' `loading`. **A claim that beat no integer step reaches no
-  step** under `beatless-claim`'s `loading`: its values stay uncommitted as loading, whether it wrote them
-  while it loaded or in a step it never beat, and nothing is synthesized in it.
+  Only a trailing value is held to `final-step`'s reading: one written before its claim's end at a real beat's
+  step (M2), at a skipped tick, or below the first real beat is committed whatever the exit reports. Only an
+  exit node has a `final_step` to read: a claim a third party released, or that nothing ended, has no ceiling,
+  and `exitless-step` reads its trailing steps. A value `value-claim`'s reading leaves uncommitted, or that M4
+  puts after its claim's end, makes no step trailing and reaches none. Leading values, below a claim's first
+  real beat, go to its first commit under `leading-values`' `loading`. **A claim that beat no integer step
+  reaches no step** under `beatless-claim`'s `loading`: its values stay uncommitted as loading, whether it
+  wrote them while it loaded or in a step it never beat, and nothing is synthesized in it.
 
   A value no commit holds stays uncommitted for the first of these that holds: it is stepless (M3); before
   every claim; left by `value-claim`'s `uncommitted`; after its claim's end (M4); a claim's that beat no
@@ -1334,11 +1370,12 @@ gave the ambiguities above it. The site tests use these terms, each read from th
   stays zero. `stop@N` request ids stay as they are, since they are strings. No `bound` is left to rename: M9
   refuses every subscription's record.
 - **M8. A synthetic commit** takes `t` from the newest value it commits that carries one, a value's `t` being
-  nullable, else from its claim's newest heartbeat before it; `consumed_seq` from that heartbeat; and
-  `fired: []` and `expired: []`. M5's three places synthesize only above a claim's first real beat, so that
-  heartbeat exists. A commit `unticked`, `own-values` or `predecessor-beat` synthesizes may have none: it
-  takes `t` from its newest value that carries one, else that value's `created_at`, and a `consumed_seq` of 0,
-  and its last value, not a beat, decides whether it is a candidate.
+  nullable, else from its claim's newest heartbeat before it, else from the `created_at` of the record it is
+  placed after; `consumed_seq` from that heartbeat, else 0; and `fired: []` and `expired: []`. That
+  heartbeat decides whether it is a candidate, else the record it is placed after. M5's three places
+  synthesize only above a claim's first real beat, so the heartbeat exists there. A commit `unticked`,
+  `own-values`, `predecessor-beat` or `unlogged-save` synthesizes may have none, and a valueless one has no
+  value to date it by.
 - **M9. Refusals,** each before sealing, naming the run and the seq. What 0.4.0 cannot hold:
   - any subscription's record: a `control.subscribe`, a `control.unsubscribe`, a `lifecycle.bound` and a
     sample, a value bearing a `request_id`. Refusing the `bound` keeps every lease out of the passes, whether
@@ -1395,9 +1432,9 @@ gave the ambiguities above it. The site tests use these terms, each read from th
   - **What the log proves about authorship.** A well-formed `stopped` naming a claim is:
     - **its worker's exit** when it is `completed: true`;
     - **a third party's** when a heartbeat naming its claim follows it, since the worker outlived it; when
-      another `stopped` naming its claim is `completed: true`, since a worker writes one dying breath; or when
-      a `launcher.terminated` of its claim's own launch, carrying the claim's handle, precedes it, since the
-      process had ended.
+      another `stopped` naming its claim is `completed: true`, since a worker's `stopped` is its halt
+      (lifecycle-v0.5) and it halts once; or when a `launcher.terminated` of its claim's own launch, carrying
+      the claim's handle, precedes it, since the process had ended.
 
     A `stopped` naming no claim is a third party's, since a worker's exit names its claim. One the log
     proves both ways, as a completed one its claim beats after, is refused (M9). Every other is an open stop,
@@ -1407,9 +1444,9 @@ gave the ambiguities above it. The site tests use these terms, each read from th
     is attributed from (below). **A claim outlives a stop** when a heartbeat naming the claim, or the claim's
     worker's exit, follows the stop.
   - **The checks on the readings,** per claim: at most one worker's exit; none for a stop proven a third
-    party's, and a completed stop is one; and no death report for a stop its claim outlives, or for one naming
-    no claim, since a death report would end a claim that was not dead. A reading that fails is refused,
-    naming the strategy and the seq.
+    party's, and a completed stop is one, a malformed stop whose mapped body is completed included; and no
+    death report for a stop its claim outlives, or for one naming no claim, since a death report would end a
+    claim that was not dead. A reading that fails is refused, naming the strategy and the seq.
   - **Three rules follow.** Each was found in the ambiguity audit (review §12, item 16), and today's step is
     wrong for every conforming writer there:
     - **A completed `stopped` after another `stopped` of its claim is the claim's exit,** and the earlier one
@@ -1452,13 +1489,13 @@ gave the ambiguities above it. The site tests use these terms, each read from th
   nothing, since a same-host caller of `report_if_dead` reports it (§3).
 - **A claim its successor's claim proves dead** (review §12, item 16). A claim that no `stopped` names and no
   attributed death ends, and that a later claim follows, gets `supervisor.died {claim, lost, evidence naming
-  its handle}`, carrying the later `started`'s `t`, placed just before that `started`. The later claim
-  passed 0.3.0's claim gate, which found this one's handle dead, and that is when 0.4.0's claim path writes
-  `died(lost)` (§4). Today the step left such a claim held for good, a shape no native writer produces, since
-  `report_if_dead` reads only the latest claim. Golden `SUCCESSOR_PROVED_DEAD`: claim 1, handle
-  `local://h/111`, beats 0 and 1; claim 2, handle `local://h/222`, beats 2 and exits completed at 2. Under
-  `beat-ends-iteration`'s `ends`, it gives that `died` for claim 1 just before claim 2's `started`. Found in
-  the ambiguity audit, and wrong today for every writer that claims through the gate.
+  its handle}`, carrying the later `started`'s `t`, placed just before that `started`. The later claim passed
+  0.3.0's claim gate (`run-episodes.md` §3), which found this one's worker dead, and that is when 0.4.0's
+  claim path writes `died(lost)` (§4). Today the step left such a claim held for good, a shape no native
+  writer produces, since `report_if_dead` reads only the latest claim. Golden `SUCCESSOR_PROVED_DEAD`: claim
+  1, handle `local://h/111`, beats 0 and 1; claim 2, handle `local://h/222`, beats 2 and exits completed at 2.
+  Under `beat-ends-iteration`'s `ends`, it gives that `died` for claim 1 just before claim 2's `started`.
+  Found in the ambiguity audit, and wrong today for every writer that claims through the gate.
 
 **What moved out of the generic step** (review §12, item 16). These rules read one consumer's texts or
 shapes, so the generic step no longer has them. Each is a reading a consumer's strategy may give, and
@@ -1484,7 +1521,8 @@ shapes is a consumer's strategy (review §12, item 16).
   release wherever it falls.
 
 Two readings the audit found right only for mycooc ship as built-ins, since they read no consumer's text:
-`final-step=finished` (the audit's R4, with W-c) and `commitless-resume=successor` (W-b).
+`final-step=finished` (the audit's R4, with W-c) and `commitless-resume=successor` (W-b). So does the
+step's own reading of `final_step` today, as `final-step=finished-if-clean`.
 
 A malformed record is refused unless a strategy reads it.
 
@@ -1497,23 +1535,22 @@ records and leave shapes no 0.4.0 writer produces.
 behind each, and a corpus run states its resolutions.
 - **P1:** for every 0.3.0 heartbeat with integer step s whose commit's chain M1 linked back to old step 0,
   `count(Commits(), its commit) = s + 1`. A parentless resume is counted, and named. A chain across a
-  trailing gap, which M5 leaves without commits, counts too few and fails under that name, and so does a
-  chain across a step `valueless-gap`'s `stride` leaves without a commit.
+  trailing gap, which M5 leaves without commits, counts too few and fails under that name.
 - **P2:** every value with a step is committed by its claim's commit carrying that step, except leading
   values, which go to the claim's first commit by design, and these, which stay uncommitted or sit on an exit
   node: values before every claim; values after their claim's end (M4); the values of a claim that beat no
   integer step (loading); trailing values above their exit's ceiling; an open iteration's values, which an
-  exit node holds or no exit does; an unreached trailing step of a claim a third party released or that
-  nothing ended; the values `value-claim`'s `uncommitted` leaves; and the post-beat values an exit node holds
-  under `post-beat-values`' `exit-holds`.
+  exit node holds or no exit does; the highest trailing step of a claim a third party released or that
+  nothing ended, under `exitless-step`'s `unfinished`; the values `value-claim`'s `latched` and
+  `uncommitted` leave; and the post-beat values an exit node holds under `post-beat-values`' `exit-holds`.
 - **P3:** reads equal the old reads **cell by cell, by attribution.** Every differing cell must trace to a
   named rule: cells beyond the head's lineage, steps the lineage revisited, nodes holding several values,
   leading values, a parentless resume, a parentless resume by M1's candidacy rule, a trailing gap (a gap of
   steps with no values below a trailing step M5 synthesized), loading cells, M4, trailing values above
-  their exit's ceiling (a displaced worker's or a crashed iteration's), an open iteration's values, an
-  unreached trailing step of a claim a third party released or that nothing ended, the values `value-claim`'s
-  `uncommitted` leaves, values an exit node holds, a last beat `beat-ends-iteration` reads as starting its
-  iteration, and a step `valueless-gap` reads as a stride. A value before every claim has no class, so a cell
+  their exit's ceiling (a displaced worker's or a crashed iteration's), an open iteration's values, the
+  unfinished highest trailing step of a claim a third party released or that nothing ended, the values
+  `value-claim` leaves, values an exit node holds, and a last beat `beat-ends-iteration` reads as starting
+  its iteration. A value before every claim has no class, so a cell
   it explains is unattributed. An unattributed cell fails the test.
 - **P4:** the verdict's outcomes, 0.3.0's one outcome taken as a one-element set, and the stop fold's ids
   (`peek_terminal`, `undischarged_stops`) are equal across the migration, except where a named rule changes
