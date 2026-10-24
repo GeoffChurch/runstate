@@ -232,8 +232,8 @@ conventions.** A question is settled where the input format's conventions pin th
 reads, and open where they do not. Its conventions are what its schemas and its design write: another spec
 may elaborate one, never make one, and a reference implementation's behaviour makes none. **Every meaning
 they do not pin is a declared ambiguity, with its narrowest site; no convention is pinned by ruling** (review
-§12, item 16). A step judges
-against the format it reads, never against a later one, and never against one consumer's writers:
+§12, item 16). A step judges against the format it reads, never against a later one, and never against one
+consumer's writers:
 - runstate ships **generic** built-in strategies only. A built-in is any reading expressible over the input
   format's own vocabulary that is right for some conforming writer;
 - a reading of a consumer's texts or shapes is that consumer's strategy, and its "preset" is its own set of

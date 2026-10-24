@@ -221,9 +221,10 @@ the 0.2.0 log; a strategy receives the readings given before it.
 | `lease-bound` | which claim registered an episode-local subscription | `first-claim`, `unbound`, `refuse` | `first-claim` |
 
 What the site tests rely on as settled by 0.2.0's conventions:
-- **`completed: true` is the worker's own claim** (`completed-opt-in.md`), and **a worker's `stopped` is its
-  halt** (`design-v0.2.md` §7: "Existence = a clean, resumable halt"), so a claim a completed `stopped` ended
-  was ended by its worker's own halt, after which that worker beat no more and wrote no second `stopped`;
+- **`completed: true` is the worker's own claim** (`design-v0.2.md` §7: "`completed=True` is the worker's
+  opt-in claim of intrinsic, permanent completion"; `completed-opt-in.md`), and **a worker's `stopped` is its
+  halt** (§7: "Existence = a clean, resumable halt"), so a claim a completed `stopped` ended was ended by its
+  worker's own halt, after which that worker beat no more and wrote no second `stopped`;
 - **a `launcher.terminated` follows its process's end**, since only a `wait()`ing parent writes it
   (`design-v0.2.md` §8), and the launch id a claim's `started` re-emits, with an equal handle, makes that
   process the claimant;
