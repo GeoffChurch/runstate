@@ -1783,27 +1783,6 @@ def test_a_commit_follows_its_parent_past_its_own_heartbeat():
     assert _keys(rows) == [1, 4, 2, 3, 5]
 
 
-def test_a_commit_follows_the_moved_commit_its_watermark_names():
-    """A consumed_seq may name any record before its heartbeat, here another
-    claim's commit that then moves past it: A's displaced step 1 names B's
-    step 0, which moves after its late eval, so A's step 1 follows it. Each
-    position is decided after those of the records it names."""
-    rows = _dated(
-        [
-            r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
-            r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
-            r(3, "lifecycle.started", _started("local://n2/22", 3.0)),
-            r(4, "lifecycle.heartbeat", _beat(0, 0, 3, 4.0)),
-            r(5, "lifecycle.heartbeat", _beat(1, 4, 1, 5.0)),  # A's
-            r(6, "value", _value(0.5, 0, 6.0), name="eval"),  # B's, by position
-        ]
-    )
-    lay = _layout(rows)
-    assert [_short(o.key) for o in lay.outs] == [1, 2, 3, 6, 4, 5]
-    (a1,) = [o.record for o in lay.outs if o.key == Input(5)]
-    assert a1.consumed_seq == 5  # B's step 0, renumbered
-
-
 def _m6_by_list(rows):
     """M6 written apart from ``place``: the output as a list, each commit
     moved in claim order to just after the latest record it must follow."""
@@ -1902,9 +1881,11 @@ def test_every_record_follows_what_it_names(rid):
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason="the placeholder rule for lone stops reads a third party's lone stop "
     "as its claim's exit, so the worker's later beat is a commit the exit's "
-    "parent names; the census's rule (Task 13) owns it",
+    "parent names; the census's rule (Task 13) owns it, and once it reads the "
+    "stop as a third party's this passes, which strict makes loud",
 )
 def test_an_exit_the_placeholder_reads_before_the_workers_beat_has_no_later_parent():
     rows = _dated(
@@ -1915,8 +1896,9 @@ def test_an_exit_the_placeholder_reads_before_the_workers_beat_has_no_later_pare
             r(4, "lifecycle.heartbeat", _beat(1, 0, 1, 4.0)),  # still running
         ]
     )
-    (exit,) = [o for o in _layout(rows).outs if isinstance(o.record, ToExit)]
-    assert exit.record.parent < exit.seq
+    for o in _layout(rows).outs:
+        if isinstance(o.record, ToExit):
+            assert o.record.parent is None or o.record.parent < o.seq
 
 
 def _expected(key, rows):
@@ -2082,18 +2064,13 @@ def test_records_placed_after_one_anchor_follow_it_in_tie_order_each_with_its_ow
     ]
 
 
-def test_the_order_m6_compares_by_is_the_order_renumbering_writes():
-    """M6 compares records while it places them, without linearizing; every
-    comparison agrees with the order the renumbering then writes."""
-    from runstate.migrations.v0_3_0_to_v0_4_0 import _Forest
-
-    forest = _Forest()
-    for key, at in PLACED.items():
-        forest.place(key, at)
-    order = list(renumber([1, 2, 3], PLACED))
-    for a, b in itertools.permutations(order, 2):
-        expected = b if order.index(a) < order.index(b) else a
-        assert forest.latest([a, b]) == expected
+@pytest.mark.parametrize("rid", list(GOLDEN))
+def test_m6_places_at_most_one_record_after_any_record(rid):
+    """A commit is placed after its last value, which is its own, or after its
+    parent, which only its claim's next commit follows: M6's ties never
+    decide, and only a later pass's can."""
+    anchors = [at.anchor for at in _layout(GOLDEN[rid]).placement.moves.values()]
+    assert len(set(anchors)) == len(anchors)
 
 
 def test_a_stop_at_n_request_id_stays_as_it_is():
@@ -2299,17 +2276,69 @@ def test_a_heartbeats_watermark_must_name_a_record_before_it(consumed):
         step.transform(rows)
 
 
-def test_a_watermark_may_name_any_record_before_it():
-    """A drain watermark: 0, a control record, or, as in the goldens, any
-    earlier record."""
-    rows = [
+# Watermarks naming a heartbeat with a step, each refused. A watermark is a read
+# position in the control order, and step 0's commit moves after its late eval,
+# so renaming it to the moved commit changes what it covers.
+#
+# Step 1's watermark names step 0's beat, below the stop it had not drained;
+# renamed, it would sit above the stop, and await_consumed would read the stop
+# as accepted.
+WATERMARK_COVERING_A_STOP_IT_NEVER_DRAINED = _dated(
+    [
         r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
-        r(2, "control.stop", {}, rid="halt"),
-        r(3, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
-        r(4, "lifecycle.heartbeat", _beat(1, 2, 1, 3.0)),
-        r(5, "lifecycle.heartbeat", _beat(None, 4, 1, 4.0)),
+        r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+        r(3, "control.stop", {}, rid="halt"),
+        r(4, "value", _value(0.5, 0, 4.0), name="eval"),
+        r(5, "lifecycle.heartbeat", _beat(1, 2, 1, 5.0)),
     ]
-    assert [b.consumed_seq for b in parse(rows).beats] == [0, 2, 4]
+)
+
+# A stepless beat's watermark names step 0's beat; the beat stays and the
+# commit moves, so the beat would precede the record its watermark names.
+STEPLESS_WATERMARK_ON_A_MOVED_COMMIT = _dated(
+    [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+        r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+        r(3, "lifecycle.heartbeat", _beat(None, 2, 1, 3.0)),
+        r(4, "value", _value(0.5, 0, 4.0), name="eval"),
+    ]
+)
+
+# A displaced worker's watermark names another claim's commit: A's step 1 names
+# B's step 0, which moves after its late eval, B's by position.
+WATERMARK_ON_ANOTHER_CLAIMS_COMMIT = _dated(
+    [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+        r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+        r(3, "lifecycle.started", _started("local://n2/22", 3.0)),
+        r(4, "lifecycle.heartbeat", _beat(0, 0, 3, 4.0)),
+        r(5, "lifecycle.heartbeat", _beat(1, 4, 1, 5.0)),  # A's
+        r(6, "value", _value(0.5, 0, 6.0), name="eval"),  # B's, by position
+    ]
+)
+
+
+@pytest.mark.parametrize(
+    "rows, beat, named",
+    [
+        (WATERMARK_COVERING_A_STOP_IT_NEVER_DRAINED, 5, 2),
+        (STEPLESS_WATERMARK_ON_A_MOVED_COMMIT, 3, 2),
+        (WATERMARK_ON_ANOTHER_CLAIMS_COMMIT, 5, 4),
+    ],
+    ids=["covering_a_stop", "stepless", "another_claims"],
+)
+def test_a_watermark_naming_a_heartbeat_with_a_step_is_refused(rows, beat, named):
+    """Refused by seq, naming the record: the reference Worker sets a watermark
+    only to a control record's seq. One naming a value or another record M6
+    never moves is read as it is, as the goldens' are."""
+    match = (
+        rf"heartbeat at seq {beat} has consumed_seq {named}, which names the "
+        rf"lifecycle\.heartbeat at seq {named}, step 0's commit"
+    )
+    with pytest.raises(MigrationError, match=match):
+        parse(rows)
+    with pytest.raises(MigrationError, match=match):
+        step.transform(rows)
 
 
 @pytest.mark.parametrize("steps", [[0, 0], [0, 2, 1]], ids=["repeat", "below"])

@@ -116,19 +116,18 @@ The rules:
   a synthetic commit's parent is a commit of its own claim. A commit is then
   placed below a later claim's ``started`` exactly when M1 counts it a
   candidate. A real commit is its heartbeat's record, moved; a synthetic one
-  is new. Records placed after one record keep claim order, then the claim's
-  own order. Positions are decided in the order of each commit's deciding
-  beat, which places every commit a commit names before it, the one a
-  ``consumed_seq`` names in another claim included. Then every record
-  is renumbered once (``renumber``): a pass that adds records places them
-  through the same ``After``, just after a record, and the one renumbering
-  resolves them all.
+  is new. The commits are placed in claim order, each claim's in its order,
+  so a parent is placed before its child, and M6 places at most one record
+  after any record. Then every record is renumbered once (``renumber``): a
+  pass that adds records places them through the same ``After``, just after
+  a record, and the one renumbering resolves them all.
 - **M7** (``rename``): every seq-valued field the 0.4.0 schemas define is
   renumbered to name the record it named: ``claim_seq`` (on a heartbeat, a
   commit, an exit, a third party's stop, which becomes a ``died``, and a
   ``bound``), ``consumed_seq``, ``parent``, ``values`` and ``resume_from``. A
-  ``consumed_seq`` is a drain watermark: 0 names nothing and stays 0, and
-  otherwise it may name any record before its heartbeat. Request ids are
+  ``consumed_seq`` is a drain watermark, a read position: 0 names nothing and
+  stays 0, and otherwise it names a record before its heartbeat that M6 never
+  moves, so renaming it keeps the records it covers. Request ids are
   strings, so a ``stop@N`` stays as it is. Each 0.3.0 record keeps its
   ``created_at``; a synthetic commit takes that of the record it is placed
   after.
@@ -146,6 +145,13 @@ The rules:
   whatever record took that seq;
 - a heartbeat whose nonzero ``consumed_seq`` names no record before it: no
   0.3.0 writer wrote one, and renumbering cannot carry it;
+- a heartbeat whose ``consumed_seq`` names a heartbeat with an integer step:
+  lifecycle-v0.5 defines the watermark as a read position in the control
+  order, and the reference Worker sets it only to a control record's seq.
+  Such a heartbeat is a commit M6 may move, and a watermark renamed to a moved
+  record would cover records it never covered, as a stop it had not drained,
+  or precede the record it names. A watermark naming a value or any other
+  record M6 never moves is read as it is;
 - a heartbeat at or below an integer step its claim already beat: an in-claim
   rewind (M9), two heartbeats of one step or a step below an earlier one. A
   0.4.0 writer records a rewind, and nothing in 0.3.0 says where one resumed.
@@ -515,6 +521,23 @@ def _a_record_before_it(b: _Beat, seen: set[int]) -> None:
         )
 
 
+def _names_no_commit(b: _Beat, commits: Mapping[int, int]) -> None:
+    """``commits`` maps each heartbeat with an integer step before ``b`` to its
+    step. lifecycle-v0.5 defines the watermark as a read position in the
+    control order, and the reference Worker sets it only to a control record's
+    seq. Such a heartbeat is a commit M6 may move, and a watermark renamed to a
+    moved record would cover records it never covered."""
+    step = commits.get(b.consumed_seq)
+    if step is not None:
+        raise MigrationError(
+            f"the {_Topic.HEARTBEAT} at seq {b.seq} has consumed_seq "
+            f"{b.consumed_seq}, which names the {_Topic.HEARTBEAT} at seq "
+            f"{b.consumed_seq}, step {step}'s commit: a watermark is a read "
+            "position in the control order, and renaming cannot carry one that "
+            "names a record renumbering moves"
+        )
+
+
 class _Stepped(NamedTuple):
     """A claim's latest heartbeat with an integer step so far."""
 
@@ -545,6 +568,7 @@ def parse(rows: list[Row]) -> _Log:
     bounds: list[_Bound] = []
     before: set[int] = set()  # the claims so far
     seen: set[int] = set()  # the seqs so far
+    commits: dict[int, int] = {}  # each integer-step heartbeat so far, its step
     stepped: dict[int, _Stepped] = {}  # each claim's latest integer step so far
     for x in rows:
         r = _Record(
@@ -559,9 +583,11 @@ def parse(rows: list[Row]) -> _Log:
                 b = _beat(r)
                 _names_a_claim_before_it(r.seq, _Topic.HEARTBEAT, b.claim_seq, before)
                 _a_record_before_it(b, seen)
+                _names_no_commit(b, commits)
                 if b.step is not None:
                     _not_a_rewind(b.seq, b.step, stepped.get(b.claim_seq))
                     stepped[b.claim_seq] = _Stepped(b.step, b.seq)
+                    commits[b.seq] = b.step
                 beats.append(b)
             case _Topic.VALUE:
                 values.append(_value(r))
@@ -1190,8 +1216,9 @@ class After:
     """A record placed just after ``anchor``, wherever the anchor itself is
     placed: an anchor is a record, never a seq. Records placed after one anchor
     follow it in ``tie`` order, each with the records placed after it. Two
-    records placed after one anchor never share a tie. A commit's tie is its
-    (claim seq, old step): claim order, then the claim's own order."""
+    records placed after one anchor never share a tie. M6 places at most one
+    record after any record, so the ties order the records a later pass
+    places; a commit's tie is its (claim seq, old step)."""
 
     anchor: Key
     tie: tuple[int, ...]
@@ -1207,106 +1234,69 @@ class Placement:
     moves: Mapping[Key, After]
 
 
-class _Forest:
-    """The output order while M6 places the commits, never linearized. Each
-    input record that has not moved is a root, at its seq; a placed record
-    hangs after its anchor, and the order is the forest's preorder, siblings
-    by tie. Roots compare by seq, and a placed record by the root it hangs
-    from, so comparing a record with a root costs nothing, and only two
-    placed records of one tree are compared below their common anchor. A
-    record must be placed before anything is compared with it or placed after
-    it, and it is never placed twice."""
-
-    def __init__(self) -> None:
-        self.moves: dict[Key, After] = {}
-        self._below: dict[Key, tuple[int, int]] = {}  # its root's seq, its depth
-
-    def place(self, key: Key, at: After) -> None:
-        assert key not in self.moves, f"{key} is placed twice"
-        root, depth = self._at(at.anchor)
-        self.moves[key] = at
-        self._below[key] = (root, depth + 1)
-
-    def _at(self, key: Key) -> tuple[int, int]:
-        if key in self.moves:
-            return self._below[key]
-        assert isinstance(key, Input), f"{key} is not placed yet"
-        return key.seq, 0
-
-    def _precedes(self, a: Key, b: Key) -> bool:
-        (root_a, depth_a), (root_b, depth_b) = self._at(a), self._at(b)
-        if root_a != root_b:
-            return root_a < root_b
-        while depth_a > depth_b:  # an anchor precedes what hangs after it
-            a, depth_a = self.moves[a].anchor, depth_a - 1
-            if a == b:
-                return False
-        while depth_b > depth_a:
-            b, depth_b = self.moves[b].anchor, depth_b - 1
-            if b == a:
-                return True
-        if a == b:
-            return False
-        while self.moves[a].anchor != self.moves[b].anchor:
-            a, b = self.moves[a].anchor, self.moves[b].anchor
-        return self.moves[a].tie < self.moves[b].tie
-
-    def latest(self, keys: Sequence[Key]) -> Key:
-        out = keys[0]
-        for k in keys[1:]:
-            if self._precedes(out, k):
-                out = k
-        return out
-
-
 def place(synthesis: Synthesis, linkage: Linkage) -> Placement:
     """M6, as the migration reads it: each commit goes just after the latest of
     the records it must follow: its last committed value, its parent, the record
     its ``consumed_seq`` names, and, for a real commit, its own heartbeat. A
     real commit that follows them all at its heartbeat stays there.
 
-    The positions are decided in the order of each commit's deciding beat
-    (``_beaten``), then claim order, then the claim's own order. That order puts
-    every commit a commit names before it: a parent in its claim, a resume point
-    whose beat precedes the claim's ``started``, and the commit a
-    ``consumed_seq`` names, whose heartbeat precedes the namer's beat."""
+    The record its ``consumed_seq`` names never decides, so it is asserted
+    rather than compared: ``parse`` holds it to a record before the heartbeat
+    whose watermark it is, and never one M6 moves, and the commit follows that
+    heartbeat, a synthetic commit through its parent. A synthetic commit's
+    watermark is the real heartbeat's before it (M8).
+
+    The commits are placed in claim order, each claim's in its order, so a
+    commit's parent, its claim's previous commit or a resume point in an
+    earlier claim, is placed before it. Of the records a commit follows, only
+    its parent can have moved: values never move and its heartbeat is its own.
+    So a record's position is the seq of the input record it follows from and
+    its depth below it: one that stays is at (its seq, 0), and a moved one one
+    deeper than its anchor. That orders one moved record against any unmoved
+    ones, which is every comparison M6 makes.
+
+    For the same reasons M6 places at most one record after any record: a
+    commit's last value is its own, and a parent is the latest record only for
+    its claim's next commit, since a resume point precedes the claim's
+    ``started``. The ties order the records a later pass places."""
     keys: dict[CommitRef, Key] = {}
-    queue: list[tuple[int, CommitRef, Commit]] = []
+    moves: dict[Key, After] = {}
+    below: dict[Key, tuple[int, int]] = {}  # a moved record's root seq and depth
+
+    def position(key: Key) -> tuple[int, int]:
+        if key in below:
+            return below[key]
+        assert isinstance(key, Input), f"{key} is not placed yet"
+        return key.seq, 0
+
     for c in synthesis.claims:
-        for k, decided in zip(c.commits, _beaten(c), strict=True):
-            ref = decided.commit
+        for k in c.commits:
+            ref = CommitRef(c.claim.started.seq, k.step)
+            parent = linkage.parents[ref]
+            assert parent is None or parent in keys, f"{ref} precedes its parent"
+            follows: list[Key] = [Input(v) for v in k.values[-1:]]
+            if parent is not None:
+                follows.append(keys[parent])
             match k.origin:
                 case Real(beat):
-                    keys[ref] = Input(beat.seq)
-                case Synthetic():
-                    keys[ref] = Synthesized(ref)
+                    own: Key = Input(beat.seq)
+                    consumed = beat.consumed_seq
+                    follows.append(own)
+                case Synthetic(consumed_seq=consumed):
+                    own = Synthesized(ref)
+                    # M5 synthesizes only above a claim's first real beat, so a
+                    # synthetic commit's parent is a commit of its own claim
+                    assert follows, f"the synthetic commit {ref} follows nothing"
                 case _:
                     assert_never(k.origin)
-            queue.append((decided.beat, ref, k))
-    forest = _Forest()
-    for _, ref, k in sorted(queue, key=lambda x: (x[0], x[1])):
-        own = keys[ref]
-        follows: list[Key] = [Input(v) for v in k.values[-1:]]
-        parent = linkage.parents[ref]
-        if parent is not None:
-            follows.append(keys[parent])
-        match k.origin:
-            case Real(beat):
-                if beat.consumed_seq != 0:
-                    follows.append(Input(beat.consumed_seq))
-                follows.append(own)
-            case Synthetic(consumed_seq=consumed):
-                if consumed != 0:
-                    follows.append(Input(consumed))
-                # M5 synthesizes only above a claim's first real beat, so a
-                # synthetic commit's parent is a commit of its own claim
-                assert follows, f"the synthetic commit {ref} follows nothing"
-            case _:
-                assert_never(k.origin)
-        latest = forest.latest(follows)
-        if latest != own:
-            forest.place(own, After(latest, ref))
-    return Placement(keys, forest.moves)
+            keys[ref] = own
+            latest = max(follows, key=position)
+            assert consumed == 0 or position(Input(consumed)) < position(latest)
+            if latest != own:
+                moves[own] = After(latest, ref)
+                root, depth = position(latest)
+                below[own] = (root, depth + 1)
+    return Placement(keys, moves)
 
 
 def renumber(seqs: Sequence[int], moves: Mapping[Key, After]) -> Mapping[Key, int]:
