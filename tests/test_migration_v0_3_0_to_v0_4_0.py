@@ -5,9 +5,10 @@ parties wrote them: heartbeats and stoppeds that name their claim, values that
 name none. The builders make 0.3.0 bodies (lifecycle-v0.5, value-v0.2); the
 0.2.0 step's test module makes 0.2.0 ones.
 
-Each pass is tested directly, on the parsed log. The golden logs' end-to-end
-output (seq, topic and body of every row) is asserted once ``transform`` writes
-records."""
+Each pass is tested directly, on the parsed log, and ``transform``'s 0.4.0 rows
+end to end: seq, topic, envelope and body, exactly, for the goldens the records
+and third parties' stops turn on, and against the 0.4.0 schemas for every
+golden."""
 
 import itertools
 import json
@@ -33,14 +34,18 @@ from runstate.migrations.v0_3_0_to_v0_4_0 import (
     Resumed,
     Synthesized,
     Synthetic,
-    ThirdParty,
     ToBound,
     ToCommit,
+    ToDied,
     ToExit,
     ToHeartbeat,
+    ToReap,
     ToStarted,
+    ToValue,
+    ToWithdraw,
     Uncommitted,
     V0_3_0_to_V0_4_0,
+    Withdrawal,
     _Exit,
     _Malformed,
     _newest_reaching,
@@ -54,6 +59,7 @@ from runstate.migrations.v0_3_0_to_v0_4_0 import (
     place,
     rename,
     renumber,
+    report,
     synthesize,
 )
 
@@ -177,6 +183,129 @@ CLAIMLESS = _dated(
     [
         r(1, "control.stop", {}, rid="pre"),
         r(2, "lifecycle.stopped", _stopped(False, None, None, None, ["pre"], 1.0)),
+    ]
+)
+
+# The other classes of third-party stop (review §12, item 14), one log each.
+#
+# A later stop with its error set: the worker exited, then a third party
+# reported a cause. It becomes a death.
+LATER_ERROR = _dated(
+    [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+        r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+        r(3, "lifecycle.stopped", _stopped(False, None, 0, 1, [], 3.0)),
+        r(
+            4,
+            "lifecycle.stopped",
+            _stopped(False, "slurm: NODE_FAIL", None, 1, [], 4.0),
+        ),
+    ]
+)
+
+# A later stop with no error, a "clear staged stop" default body, completed
+# even: it becomes only the withdrawal of the stop it honored, never a death and
+# never a completion.
+LATER_DEFAULT = _dated(
+    [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+        r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+        r(3, "control.stop", {}, rid="halt"),
+        r(4, "lifecycle.stopped", _stopped(False, None, 0, 1, [], 3.0)),
+        r(5, "lifecycle.stopped", _stopped(True, None, 0, 1, ["halt"], 4.0)),
+    ]
+)
+
+# M10's body naming a claim that had already ended: a later stop with no error,
+# so only its withdrawal, dated by its created_at, since it has no t.
+LATER_RELEASE = _dated(
+    [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+        r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+        r(3, "control.stop", {}, rid="stop@3"),
+        r(4, "lifecycle.stopped", _stopped(False, None, 0, 1, [], 3.0)),
+        r(5, "lifecycle.stopped", _release("reclaimed: slurm TIMEOUT", ["stop@3"], 1)),
+    ]
+)
+
+# M10's body naming no claim: withdrawals only.
+CLAIMLESS_RELEASE = _dated(
+    [
+        r(1, "control.stop", {}, rid="pre"),
+        r(2, "lifecycle.stopped", _release("reclaimed: never ran", ["pre"], None)),
+    ]
+)
+
+# The backstop naming no claim (owner ruling c'): a supervisor.terminated in its
+# place, under a minted launch id, killed by the signal its text names; the
+# stop it honored is withdrawn after it.
+CLAIMLESS_BACKSTOP = _dated(
+    [
+        r(1, "control.stop", {}, rid="pre"),
+        r(
+            2,
+            "lifecycle.stopped",
+            _stopped(
+                False,
+                "subprocess exited -9 with no terminal record",
+                None,
+                None,
+                ["pre"],
+                1.0,
+            ),
+        ),
+        r(3, "lifecycle.started", _started("local://n1/11", 2.0)),
+    ]
+)
+
+# A second backstop naming a claim the first already released (owner ruling
+# c'): the first is the claim's death, the second a terminated, so the claim
+# has one death.
+SECOND_BACKSTOP = _dated(
+    [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+        r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+        r(3, "lifecycle.stopped", _stopped(False, BACKSTOP, 0, 1, [], 3.0)),
+        r(
+            4,
+            "lifecycle.stopped",
+            _stopped(
+                False, "subprocess exited 137 with no terminal record", 0, 1, [], 4.0
+            ),
+        ),
+    ]
+)
+
+# The minted launch id is fresh against every request id in the run.
+BACKSTOP_ID_TAKEN = _dated(
+    [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+        r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+        r(3, "control.stop", {}, rid="backstop@5"),
+        r(4, "lifecycle.stopped", _stopped(False, None, 0, 1, ["backstop@5"], 3.0)),
+        r(5, "lifecycle.stopped", _stopped(False, BACKSTOP, 0, 1, [], 4.0)),
+    ]
+)
+
+# A launched run whose worker exited: launcher.* records move to supervisor.*,
+# their bodies unchanged.
+LAUNCHED = _dated(
+    [
+        r(
+            1,
+            "launcher.launched",
+            {"handle": "local://n1/11", "status": "running", "t": 0.5},
+            rid="L1",
+        ),
+        r(2, "lifecycle.started", _started("local://n1/11", 1.0), rid="L1"),
+        r(3, "lifecycle.heartbeat", _beat(0, 0, 2, 2.0)),
+        r(4, "lifecycle.stopped", _stopped(True, None, 0, 2, [], 3.0)),
+        r(
+            5,
+            "launcher.terminated",
+            {"reason": "exited", "exit_code": 0, "signal": None, "t": 4.0},
+            rid="L1",
+        ),
     ]
 )
 
@@ -795,8 +924,8 @@ def test_a_malformed_release_naming_no_claim_is_claimless():
 
 
 def test_a_backstop_naming_no_claim_is_claimless():
-    """It becomes withdrawals only: a died must name a claim (supervisor-v0.5's
-    required integer claim_seq), whoever wrote it."""
+    """It ends no claim: a died must name one (supervisor-v0.5's required
+    integer claim_seq). It becomes a terminated (owner ruling c')."""
     rows = [
         r(1, "control.stop", {}, rid="pre"),
         r(2, "lifecycle.stopped", _stopped(False, BACKSTOP, None, None, ["pre"], 1.0)),
@@ -853,6 +982,14 @@ GOLDEN = {
         RESUMED_FROM_A_TICK_SKIPPED_AFTER_THE_CLAIM
     ),
     "watermarked": WATERMARKED,
+    "later_error": LATER_ERROR,
+    "later_default": LATER_DEFAULT,
+    "later_release": LATER_RELEASE,
+    "claimless_release": CLAIMLESS_RELEASE,
+    "claimless_backstop": CLAIMLESS_BACKSTOP,
+    "second_backstop": SECOND_BACKSTOP,
+    "backstop_id_taken": BACKSTOP_ID_TAKEN,
+    "launched": LAUNCHED,
 }
 
 
@@ -1705,6 +1842,7 @@ class Layout(NamedTuple):
     """Every pass through M7, as a test reads them."""
 
     log: object
+    reports: object
     synthesis: object
     linkage: object
     placement: object
@@ -1714,18 +1852,29 @@ class Layout(NamedTuple):
 
 def _layout(rows):
     log = parse(rows)
-    synthesis = synthesize(attribute(log), classify(log))
+    classification = classify(log)
+    reports = report(log, classification)
+    synthesis = synthesize(attribute(log), classification)
     linkage = link(synthesis)
-    placement = place(synthesis, linkage)
-    numbering = renumber([x.seq for x in log.records], placement.moves)
-    outs = rename(log, synthesis, linkage, placement, numbering)
-    return Layout(log, synthesis, linkage, placement, dict(numbering), outs)
+    placement = place(synthesis, linkage, reports)
+    numbering = renumber(
+        [x.seq for x in log.records], placement.moves, placement.dropped
+    )
+    outs = rename(log, synthesis, linkage, reports, placement, numbering)
+    return Layout(log, reports, synthesis, linkage, placement, dict(numbering), outs)
 
 
 def _short(key):
     """An output record as a test spells it: an input record by its 0.3.0
-    seq, a synthetic commit by its (claim, old step)."""
-    return key.seq if isinstance(key, Input) else tuple(key.ref)
+    seq, a synthetic commit by its (claim, old step), a withdrawal by the id it
+    withdraws."""
+    match key:
+        case Input(seq):
+            return seq
+        case Synthesized(ref):
+            return tuple(ref)
+        case Withdrawal(request_id=request_id):
+            return f"withdraw {request_id}"
 
 
 def _keys(rows):
@@ -1812,13 +1961,20 @@ def _m6_by_list(rows):
 
 @pytest.mark.parametrize("rid", list(GOLDEN))
 def test_m6_places_every_commit_as_a_list_written_apart_does(rid):
-    assert _keys(GOLDEN[rid]) == _m6_by_list(GOLDEN[rid])
+    """The withdrawals and the stops they replace set apart: M6 places
+    commits only."""
+    rows = GOLDEN[rid]
+    dropped = {k.seq for k in _layout(rows).placement.dropped}
+    assert [k for k in _keys(rows) if not str(k).startswith("withdraw")] == [
+        x for x in _m6_by_list(rows) if x not in dropped
+    ]
 
 
 @pytest.mark.parametrize("rid", list(GOLDEN))
 def test_the_renumbering_is_a_bijection_on_the_inputs_records(rid):
-    """Every input record, a real commit's heartbeat included, has exactly one
-    0.4.0 seq, and the synthetic commits fill the rest, gapless from 1."""
+    """Every input record but a dropped stop, a real commit's heartbeat
+    included, has exactly one 0.4.0 seq, and the synthetic commits and the
+    withdrawals fill the rest, gapless from 1."""
     rows = GOLDEN[rid]
     lay = _layout(rows)
     synthetic = {
@@ -1826,13 +1982,18 @@ def test_the_renumbering_is_a_bijection_on_the_inputs_records(rid):
         for ref, k in _commits(lay.synthesis).items()
         if isinstance(k.origin, Synthetic)
     }
-    assert sorted(lay.numbering.values()) == list(
-        range(1, len(rows) + len(synthetic) + 1)
-    )
-    assert {k for k in lay.numbering if isinstance(k, Input)} == {
-        Input(x.seq) for x in rows
+    withdrawals = {
+        Withdrawal(seq, i)
+        for seq, x in lay.reports.stops.items()
+        for i in x.stop.honored
     }
+    kept = {Input(x.seq) for x in rows} - lay.placement.dropped
+    assert sorted(lay.numbering.values()) == list(
+        range(1, len(kept) + len(synthetic) + len(withdrawals) + 1)
+    )
+    assert {k for k in lay.numbering if isinstance(k, Input)} == kept
     assert {k.ref for k in lay.numbering if isinstance(k, Synthesized)} == synthetic
+    assert {k for k in lay.numbering if isinstance(k, Withdrawal)} == withdrawals
     assert [(o.seq, o.key) for o in lay.outs] == sorted(
         ((n, k) for k, n in lay.numbering.items()), key=lambda x: x[0]
     )
@@ -1840,17 +2001,21 @@ def test_the_renumbering_is_a_bijection_on_the_inputs_records(rid):
 
 @pytest.mark.parametrize("rid", list(GOLDEN))
 def test_a_commit_only_moves_forward(rid):
-    """Every input record but a moved commit keeps its order, and a real commit
-    follows every record that preceded its heartbeat."""
+    """Every input record but a moved commit or a dropped stop keeps its order,
+    and a real commit follows every record that preceded its heartbeat."""
     rows = GOLDEN[rid]
     lay = _layout(rows)
     new = {k.seq: n for k, n in lay.numbering.items() if isinstance(k, Input)}
-    kept = [new[x.seq] for x in rows if Input(x.seq) not in lay.placement.moves]
+    kept = [
+        new[x.seq]
+        for x in rows
+        if x.seq in new and Input(x.seq) not in lay.placement.moves
+    ]
     assert kept == sorted(kept)
     for k in _commits(lay.synthesis).values():
         if isinstance(k.origin, Real):
             beat = k.origin.beat.seq
-            assert all(new[s] < new[beat] for s in range(1, beat))
+            assert all(new[s] < new[beat] for s in range(1, beat) if s in new)
 
 
 @pytest.mark.parametrize("rid", list(GOLDEN))
@@ -1873,8 +2038,8 @@ def test_every_record_follows_what_it_names(rid):
             case ToExit():
                 assert o.record.claim_seq < o.seq
                 assert o.record.parent is None or o.record.parent < o.seq
-            case ThirdParty():
-                assert o.record.claim_seq is None or o.record.claim_seq < o.seq
+            case ToDied():
+                assert o.record.claim_seq < o.seq
             case ToBound():
                 assert o.record.claim_seq < o.seq
 
@@ -1906,13 +2071,16 @@ def _expected(key, rows):
     synthetic commit."""
     if isinstance(key, Synthesized):
         return ToCommit
+    if isinstance(key, Withdrawal):
+        return ToWithdraw
     x = rows[key.seq - 1]
     if x.topic == "lifecycle.heartbeat":
         return ToHeartbeat if json.loads(x.body)["step"] is None else ToCommit
     return {
         "lifecycle.started": ToStarted,
-        "lifecycle.stopped": (ToExit, ThirdParty),
+        "lifecycle.stopped": (ToExit, ToDied, ToReap),
         "lifecycle.bound": ToBound,
+        "value": ToValue,
     }.get(x.topic, NoSeqs)
 
 
@@ -1929,6 +2097,7 @@ def test_every_record_with_a_seq_valued_field_is_renamed(rid):
                 "lifecycle.heartbeat",
                 "lifecycle.stopped",
                 "lifecycle.bound",
+                "value",
             }
 
 
@@ -1970,20 +2139,15 @@ def test_review_focus_1_every_seq_valued_field_names_the_record_it_named(rid):
                 assert watermark(o.record.consumed_seq) == _consumed(k)
                 assert node(o.record.parent) == lay.linkage.parents[ref]
                 assert [was(v) for v in o.record.values] == list(k.values)
-                assert all(
-                    at[v].record.record.topic == "value" for v in o.record.values
-                )
+                assert all(isinstance(at[v].record, ToValue) for v in o.record.values)
             case ToHeartbeat(beat=beat):
                 assert claim(o.record.claim_seq) == beat.claim_seq
                 assert watermark(o.record.consumed_seq) == beat.consumed_seq
             case ToExit(node=exit):
                 assert claim(o.record.claim_seq) == exit.stop.claim_seq
                 assert node(o.record.parent) == lay.linkage.exits[exit.stop.claim_seq]
-            case ThirdParty(stop=stop):
-                if stop.claim_seq is None:
-                    assert o.record.claim_seq is None
-                else:
-                    assert claim(o.record.claim_seq) == stop.claim_seq
+            case ToDied(death=death):
+                assert claim(o.record.claim_seq) == death.claim
             case ToBound(bound=bound):
                 assert claim(o.record.claim_seq) == bound.claim_seq
 
@@ -2043,8 +2207,8 @@ def _ref_key(claim, step):
     return Synthesized(CommitRef(claim, step))
 
 
-# Records placed by any pass, as Task 7 will place its own: two after one
-# anchor, a third after one of those, and an input record moved after another.
+# Records placed by any pass, as the withdrawals are: two after one anchor, a
+# third after one of those, and an input record moved after another.
 PLACED = {
     _ref_key(9, 1): After(Input(1), (2,)),
     _ref_key(9, 2): After(Input(1), (1,)),
@@ -2054,7 +2218,7 @@ PLACED = {
 
 
 def test_records_placed_after_one_anchor_follow_it_in_tie_order_each_with_its_own():
-    assert list(renumber([1, 2, 3], PLACED).items()) == [
+    assert list(renumber([1, 2, 3], PLACED, frozenset()).items()) == [
         (Input(1), 1),
         (_ref_key(9, 2), 2),
         (_ref_key(9, 1), 3),
@@ -2064,12 +2228,24 @@ def test_records_placed_after_one_anchor_follow_it_in_tie_order_each_with_its_ow
     ]
 
 
+def test_records_placed_after_a_dropped_record_take_its_place():
+    """A third party's stop that becomes only its withdrawals."""
+    assert list(renumber([1, 2, 3], PLACED, frozenset({Input(1)})).items()) == [
+        (_ref_key(9, 2), 1),
+        (_ref_key(9, 1), 2),
+        (_ref_key(9, 3), 3),
+        (Input(3), 4),
+        (Input(2), 5),
+    ]
+
+
 @pytest.mark.parametrize("rid", list(GOLDEN))
 def test_m6_places_at_most_one_record_after_any_record(rid):
     """A commit is placed after its last value, which is its own, or after its
     parent, which only its claim's next commit follows: M6's ties never
     decide, and only a later pass's can."""
-    anchors = [at.anchor for at in _layout(GOLDEN[rid]).placement.moves.values()]
+    moves = _layout(GOLDEN[rid]).placement.moves
+    anchors = [at.anchor for k, at in moves.items() if not isinstance(k, Withdrawal)]
     assert len(set(anchors)) == len(anchors)
 
 
@@ -2384,16 +2560,533 @@ def test_records_the_step_does_not_interpret_pass_the_boundary_as_they_are():
     ]
 
 
+# ----- the 0.4.0 rows: the records, and third parties' stops -----------------------------
+#
+# Each golden's output rows, as (seq, topic, name, request_id, body): 0.4.0's
+# bodies (lifecycle-v0.6, subscription-v0.4, supervisor-v0.5, value-v0.3), every
+# field present, null or [] where it does not apply.
+
+MIGRATED = "migrated: third-party stopped"  # a death's evidence when nothing says more
+
+
+def o(seq, topic, body, rid=None, name=None):
+    return (seq, topic, name, rid, body)
+
+
+def _claim4(handle, t, resume_from):
+    return {"handle": handle, "t": t, "resume_from": resume_from, "sources": []}
+
+
+def _commit4(claim_seq, consumed_seq, parent, values, t):
+    return {
+        "claim_seq": claim_seq,
+        "consumed_seq": consumed_seq,
+        "parent": parent,
+        "values": values,
+        "fired": [],
+        "expired": [],
+        "t": t,
+    }
+
+
+def _beat4(claim_seq, consumed_seq, t):
+    return {"claim_seq": claim_seq, "consumed_seq": consumed_seq, "t": t}
+
+
+def _exit4(completed, error, claim_seq, honored, parent, values, t):
+    return {
+        "completed": completed,
+        "error": error,
+        "claim_seq": claim_seq,
+        "honored": honored,
+        "parent": parent,
+        "values": values,
+        "fired": [],
+        "expired": [],
+        "t": t,
+    }
+
+
+def _value4(value, t):
+    return {"value": value, "t": t}
+
+
+def _died4(claim_seq, outcome, evidence, t):
+    return {"claim_seq": claim_seq, "outcome": outcome, "evidence": evidence, "t": t}
+
+
+def _terminated4(reason, exit_code, signal, t):
+    return {"reason": reason, "exit_code": exit_code, "signal": signal, "t": t}
+
+
+def _rows(rows):
+    return [
+        (x.seq, x.topic, x.name, x.request_id, json.loads(x.body))
+        for x in step.transform(rows)
+    ]
+
+
+START, COMMIT, BEAT, STOPPED = (
+    "lifecycle.started",
+    "lifecycle.commit",
+    "lifecycle.heartbeat",
+    "lifecycle.stopped",
+)
+DIED, TERMINATED, WITHDRAW = (
+    "supervisor.died",
+    "supervisor.terminated",
+    "control.withdraw",
+)
+
+
+def test_a_workers_exit_is_the_exit_node_and_keeps_what_it_honored():
+    assert _rows(EXIT) == [
+        o(1, START, _claim4("local://n1/11", 1.0, None)),
+        o(2, COMMIT, _commit4(1, 0, None, [], 2.0)),
+        o(3, "control.stop", {}, rid="halt"),
+        o(4, STOPPED, _exit4(False, None, 1, ["halt"], 2, [], 3.0)),
+    ]
+
+
+def test_synthetic_commits_are_written_with_m8s_fields():
+    """Step 2's commit, with values, dated by its last dated value; step 4's,
+    with none, by the beat before it; each with that beat's watermark."""
+    assert _rows(SKIPPED) == [
+        o(1, START, _claim4("local://n1/11", 1.0, None)),
+        o(2, "value", _value4(1.0, 2.0), name="loss"),
+        o(3, COMMIT, _commit4(1, 0, None, [2], 2.0)),
+        o(4, "value", _value4(0.9, 3.0), name="loss"),
+        o(5, COMMIT, _commit4(1, 4, 3, [4], 3.0)),
+        o(6, "value", _value4(0.8, 4.0), name="loss"),
+        o(7, "value", _value4(0.5, None), name="acc"),
+        o(8, COMMIT, _commit4(1, 4, 5, [6, 7], 4.0)),
+        o(9, "value", _value4(0.7, 5.0), name="loss"),
+        o(10, COMMIT, _commit4(1, 9, 8, [9], 5.0)),
+        o(11, COMMIT, _commit4(1, 9, 10, [], 5.0)),
+        o(12, "value", _value4(0.5, 7.0), name="loss"),
+        o(13, COMMIT, _commit4(1, 12, 11, [12], 7.0)),
+        o(14, STOPPED, _exit4(True, None, 1, [], 13, [], 8.0)),
+    ]
+
+
+def test_a_stepless_heartbeat_is_a_heartbeat_without_step():
+    """B's beats are liveness only; B, commitless, resumes by inference from A's
+    step 1, as C does by M1."""
+    assert _rows(COMMITLESS) == [
+        o(1, START, _claim4("local://n1/11", 1.0, None)),
+        o(2, COMMIT, _commit4(1, 0, None, [], 2.0)),
+        o(3, COMMIT, _commit4(1, 0, 2, [], 3.0)),
+        o(4, STOPPED, _exit4(False, None, 1, [], 3, [], 4.0)),
+        o(5, START, _claim4("local://n1/12", 5.0, 3)),
+        o(6, "value", _value4({"status": "loading"}, 5.5), name="status"),
+        o(7, BEAT, _beat4(5, 0, 6.0)),
+        o(8, "value", _value4({"status": "waiting"}, 6.5), name="status"),
+        o(9, BEAT, _beat4(5, 0, 7.0)),
+        o(10, STOPPED, _exit4(False, None, 5, [], 3, [], 8.0)),
+        o(11, START, _claim4("local://n1/13", 9.0, 3)),
+        o(12, COMMIT, _commit4(11, 0, 3, [], 10.0)),
+        o(13, STOPPED, _exit4(True, None, 11, [], 12, [], 11.0)),
+    ]
+
+
+def test_a_stepless_heartbeats_watermark_is_renamed():
+    assert _rows(WATERMARKED) == [
+        o(1, START, _claim4("local://n1/11", 1.0, None)),
+        o(2, COMMIT, _commit4(1, 0, None, [], 2.0)),
+        o(3, COMMIT, _commit4(1, 0, 2, [], 2.0)),
+        o(4, COMMIT, _commit4(1, 0, 3, [], 3.0)),
+        o(5, "control.stop", {}, rid="halt"),
+        o(6, BEAT, _beat4(1, 5, 4.0)),
+        o(7, COMMIT, _commit4(1, 5, 4, [], 5.0)),
+        o(8, STOPPED, _exit4(False, None, 1, ["halt"], 7, [], 6.0)),
+    ]
+
+
+def test_a_displaced_workers_records_are_written_for_its_own_claim():
+    assert _rows(DISPLACED) == [
+        o(1, START, _claim4("local://n1/11", 1.0, None)),
+        o(2, "value", _value4(0.9, 2.0), name="loss"),
+        o(3, COMMIT, _commit4(1, 0, None, [2], 2.0)),
+        o(4, COMMIT, _commit4(1, 0, 3, [], 3.0)),
+        o(5, START, _claim4("local://n2/22", 5.0, 4)),
+        o(6, "value", _value4(0.8, 6.0), name="loss"),
+        o(7, COMMIT, _commit4(1, 0, 4, [], 6.0)),
+        o(8, COMMIT, _commit4(5, 0, 4, [6], 7.0)),
+        o(9, "value", _value4(0.7, 8.0), name="loss"),
+        o(10, COMMIT, _commit4(5, 0, 8, [9], 8.0)),
+        o(11, STOPPED, _exit4(False, None, 1, [], 7, [], 9.0)),
+        o(12, STOPPED, _exit4(True, None, 5, [], 10, [], 10.0)),
+    ]
+
+
+def test_an_error_exit_holds_null():
+    assert _rows(ERRORED) == [
+        o(1, START, _claim4("local://n1/11", 1.0, None)),
+        o(2, "value", _value4(0.9, 2.0), name="loss"),
+        o(3, COMMIT, _commit4(1, 0, None, [2], 2.0)),
+        o(4, "value", _value4(0.8, 3.0), name="loss"),
+        o(5, STOPPED, _exit4(False, "CUDA out of memory", 1, [], 3, None, 4.0)),
+    ]
+
+
+def test_launcher_records_move_to_supervisor_unchanged():
+    out = step.transform(LAUNCHED)
+    assert _rows(LAUNCHED) == [
+        o(
+            1,
+            "supervisor.launched",
+            {"handle": "local://n1/11", "status": "running", "t": 0.5},
+            rid="L1",
+        ),
+        o(2, START, _claim4("local://n1/11", 1.0, None), rid="L1"),
+        o(3, COMMIT, _commit4(2, 0, None, [], 2.0)),
+        o(4, STOPPED, _exit4(True, None, 2, [], 3, [], 3.0)),
+        o(
+            5,
+            TERMINATED,
+            {"reason": "exited", "exit_code": 0, "signal": None, "t": 4.0},
+            rid="L1",
+        ),
+    ]
+    assert [out[0].body, out[4].body] == [LAUNCHED[0].body, LAUNCHED[4].body]
+
+
+# The third parties' stops (review §12, item 14; owner ruling c').
+
+
+def test_review_focus_4_a_backstop_then_a_default_body_is_one_errored_death():
+    """The backstop's crash is the claim's death; the default body after it
+    has no error, so it becomes only the withdrawal of the stop it honored, in
+    its place. The verdict, the claim's death reports with no exit, reads
+    {errored}, not {errored, preempted}."""
+    rows = _rows(BACKSTOPPED)
+    assert rows == [
+        o(1, START, _claim4("local://n1/11", 1.0, None)),
+        o(2, COMMIT, _commit4(1, 0, None, [], 2.0)),
+        o(3, DIED, _died4(1, "errored", BACKSTOP, 3.0)),
+        o(4, "control.stop", {}, rid="staged"),
+        o(5, WITHDRAW, {"t": 4.0}, rid="staged"),
+    ]
+    assert not [x for x in rows if x[1] == STOPPED]
+    assert [
+        x[4]["outcome"] for x in rows if x[1] == DIED and x[4]["claim_seq"] == 1
+    ] == ["errored"]
+
+
+def test_a_malformed_release_is_a_preempted_death_and_its_repair_writes_none():
+    """M10: the reclaim tool's body becomes died preempted, its reason the
+    evidence, dated by its created_at; its honored stop is withdrawn after it.
+    The repair script's well-formed copy is a later stop with no error and
+    nothing honored: nothing."""
+    assert _rows(RECLAIMED) == [
+        o(1, START, _claim4("local://n1/11", 1.0, None)),
+        o(2, COMMIT, _commit4(1, 0, None, [], 2.0)),
+        o(3, "control.stop", {}, rid="stop@3"),
+        o(4, DIED, _died4(1, "preempted", "reclaimed: slurm TIMEOUT", 1001.0)),
+        o(5, WITHDRAW, {"t": 1001.0}, rid="stop@3"),
+    ]
+
+
+def test_a_later_stop_with_an_error_is_a_death():
+    assert _rows(LATER_ERROR) == [
+        o(1, START, _claim4("local://n1/11", 1.0, None)),
+        o(2, COMMIT, _commit4(1, 0, None, [], 2.0)),
+        o(3, STOPPED, _exit4(False, None, 1, [], 2, [], 3.0)),
+        o(4, DIED, _died4(1, "errored", "slurm: NODE_FAIL", 4.0)),
+    ]
+
+
+def test_a_later_stop_with_no_error_is_only_its_withdrawals():
+    """Completed or not: a death is never a completion, and once the claim has
+    ended only a report with a cause is written."""
+    assert _rows(LATER_DEFAULT) == [
+        o(1, START, _claim4("local://n1/11", 1.0, None)),
+        o(2, COMMIT, _commit4(1, 0, None, [], 2.0)),
+        o(3, "control.stop", {}, rid="halt"),
+        o(4, STOPPED, _exit4(False, None, 1, [], 2, [], 3.0)),
+        o(5, WITHDRAW, {"t": 4.0}, rid="halt"),
+    ]
+
+
+def test_a_later_malformed_release_is_only_its_withdrawals():
+    assert _rows(LATER_RELEASE) == [
+        o(1, START, _claim4("local://n1/11", 1.0, None)),
+        o(2, COMMIT, _commit4(1, 0, None, [], 2.0)),
+        o(3, "control.stop", {}, rid="stop@3"),
+        o(4, STOPPED, _exit4(False, None, 1, [], 2, [], 3.0)),
+        o(5, WITHDRAW, {"t": 1001.25}, rid="stop@3"),
+    ]
+
+
+def test_a_claimless_stop_is_only_its_withdrawals():
+    assert _rows(CLAIMLESS) == [
+        o(1, "control.stop", {}, rid="pre"),
+        o(2, WITHDRAW, {"t": 1.0}, rid="pre"),
+    ]
+    assert _rows(CLAIMLESS_RELEASE) == [
+        o(1, "control.stop", {}, rid="pre"),
+        o(2, WITHDRAW, {"t": 1000.5}, rid="pre"),
+    ]
+
+
+def test_c_prime_a_backstop_after_the_claims_end_is_a_terminated():
+    """Owner ruling c': it ends no claim, so it is the runner's report of its
+    subprocess's exit, under a minted, labelled launch id."""
+    assert _rows(LATE_BACKSTOP) == [
+        o(1, START, _claim4("local://n1/11", 1.0, None)),
+        o(2, COMMIT, _commit4(1, 0, None, [], 2.0)),
+        o(3, STOPPED, _exit4(False, None, 1, [], 2, [], 3.0)),
+        o(4, TERMINATED, _terminated4("exited", 1, None, 4.0), rid="backstop@4"),
+    ]
+    assert _rows(SECOND_BACKSTOP) == [
+        o(1, START, _claim4("local://n1/11", 1.0, None)),
+        o(2, COMMIT, _commit4(1, 0, None, [], 2.0)),
+        o(3, DIED, _died4(1, "errored", BACKSTOP, 3.0)),
+        o(4, TERMINATED, _terminated4("exited", 137, None, 4.0), rid="backstop@4"),
+    ]
+
+
+def test_c_prime_a_claimless_backstop_is_a_terminated_and_its_withdrawals():
+    """A negative exit is a signal: killed. The stop it honored is withdrawn
+    after it."""
+    assert _rows(CLAIMLESS_BACKSTOP) == [
+        o(1, "control.stop", {}, rid="pre"),
+        o(2, TERMINATED, _terminated4("killed", None, 9, 1.0), rid="backstop@2"),
+        o(3, WITHDRAW, {"t": 1.0}, rid="pre"),
+        o(4, START, _claim4("local://n1/11", 2.0, None)),
+    ]
+
+
+def test_c_prime_the_minted_launch_id_is_fresh():
+    assert _rows(BACKSTOP_ID_TAKEN)[-2:] == [
+        o(4, STOPPED, _exit4(False, None, 1, ["backstop@5"], 2, [], 3.0)),
+        o(5, TERMINATED, _terminated4("exited", 1, None, 4.0), rid="backstop@5~2"),
+    ]
+
+
+def test_withdrawals_follow_their_stop_in_honored_order_each_dated_by_it():
+    rows = _dated(
+        [
+            r(1, "control.stop", {}, rid="b"),
+            r(2, "control.stop", {}, rid="a"),
+            r(
+                3,
+                "lifecycle.stopped",
+                _stopped(False, None, None, None, ["b", "a"], 3.0),
+            ),
+            r(4, "value", _value({"x": 1}, None, 4.0), name="note"),
+        ]
+    )
+    out = step.transform(rows)
+    assert [(x.seq, x.topic, x.request_id, x.created_at) for x in out] == [
+        (1, "control.stop", "b", 1000.25),
+        (2, "control.stop", "a", 1000.5),
+        (3, WITHDRAW, "b", 1000.75),
+        (4, WITHDRAW, "a", 1000.75),
+        (5, "value", None, 1001.0),
+    ]
+
+
+def test_a_death_or_a_terminated_keeps_its_stops_created_at():
+    out = step.transform(CLAIMLESS_BACKSTOP)
+    assert [x.created_at for x in out] == [1000.25, 1000.5, 1000.5, 1000.75]
+
+
+@pytest.mark.parametrize(
+    "stop, outcome, evidence",
+    [
+        (_stopped(True, None, 0, 1, ["halt"], 3.0), "preempted", MIGRATED),
+        (_stopped(False, None, 0, 1, ["halt"], 3.0), "preempted", MIGRATED),
+        (_stopped(False, "boom", 0, 1, ["halt"], 3.0), "errored", "boom"),
+        (_stopped(False, "", 0, 1, ["halt"], 3.0), "errored", MIGRATED),
+    ],
+    ids=["completed", "default", "error", "empty_error"],
+)
+def test_a_third_partys_release_maps_to_a_death(monkeypatch, stop, outcome, evidence):
+    """The mapping, for a well-formed release the rule for lone stops (Task 13)
+    attributes to a third party: completed included, since a death is never a
+    completion; the error text as evidence, else the migration's label, since
+    evidence is never empty."""
+    import runstate.migrations.v0_3_0_to_v0_4_0 as mod
+
+    monkeypatch.setattr(mod, "_lone_stop_rule", _Release)
+    rows = EXIT[:3] + [EXIT[3]._replace(body=json.dumps(stop))]
+    assert _rows(rows)[3:] == [
+        o(4, DIED, _died4(1, outcome, evidence, 3.0)),
+        o(5, WITHDRAW, {"t": 3.0}, rid="halt"),
+    ]
+
+
+def test_an_empty_reason_or_error_leaves_the_label_as_evidence():
+    released = RECLAIMED[:3] + [
+        RECLAIMED[3]._replace(body=json.dumps(_release("", ["stop@3"], 1)))
+    ]
+    assert _rows(released)[3] == o(4, DIED, _died4(1, "preempted", MIGRATED, 1001.0))
+    later = LATER_ERROR[:3] + [
+        LATER_ERROR[3]._replace(body=json.dumps(_stopped(False, "", None, 1, [], 4.0)))
+    ]
+    assert _rows(later)[3] == o(4, DIED, _died4(1, "errored", MIGRATED, 4.0))
+
+
+def test_an_unattributable_stop_is_a_self_report_that_commits_nothing(monkeypatch):
+    """The lone-stop placeholder's third variant: an exit node with values null,
+    though it completed."""
+    import runstate.migrations.v0_3_0_to_v0_4_0 as mod
+
+    monkeypatch.setattr(mod, "_lone_stop_rule", _Unattributed)
+    assert _rows(TRAILING) == [
+        o(1, START, _claim4("local://n1/11", 1.0, None)),
+        o(2, "value", _value4(0.9, 2.0), name="loss"),
+        o(3, COMMIT, _commit4(1, 0, None, [2], 2.0)),
+        o(4, "value", _value4(0.8, 3.0), name="loss"),
+        o(5, COMMIT, _commit4(1, 4, 3, [4], 3.0)),
+        o(6, "value", _value4(0.7, 4.0), name="loss"),
+        o(7, STOPPED, _exit4(True, None, 1, [], 5, None, 5.0)),
+    ]
+
+
+def _schema_errors(row):
+    """The 0.4.0 stack's errors for a row: the envelope's, and its convention's
+    when 0.4.0 owns its topic; a user topic answers to the envelope alone."""
+    pytest.importorskip("jsonschema")
+    from test_schema_v0_4_0 import STACK_0_4_0, row_errors
+
+    if row.topic == "value" or row.topic.startswith(
+        ("lifecycle.", "control.", "supervisor.")
+    ):
+        return row_errors(row)
+    record = row._asdict() | {"body": json.loads(row.body)}
+    del record["created_at"]
+    return [e.message for e in STACK_0_4_0.envelope.iter_errors(record)]
+
+
 @pytest.mark.parametrize("rid", list(GOLDEN))
-def test_transform_runs_the_passes_it_has_and_writes_nothing_yet(rid):
-    """The passes run through M7, and their refusals stand; what remains is
-    named."""
+def test_every_output_row_validates_against_the_0_4_0_schemas(rid):
+    out = step.transform(GOLDEN[rid])
+    assert [x.seq for x in out] == list(range(1, len(out) + 1))
+    errors = {x.seq: _schema_errors(x) for x in out}
+    assert {seq: e for seq, e in errors.items() if e} == {}
+
+
+@pytest.mark.parametrize("rid", list(GOLDEN))
+def test_every_exit_and_death_names_a_claim_and_a_claim_exits_once(rid):
+    """The prose constraints the schemas cannot check: a died's claim_seq names
+    a started (supervisor-v0.5), and a claim has at most one exit node."""
+    out = _rows(GOLDEN[rid])
+    claims = {x[0] for x in out if x[1] == START}
+    exits = [x[4]["claim_seq"] for x in out if x[1] == STOPPED]
+    deaths = [x[4]["claim_seq"] for x in out if x[1] == DIED]
+    assert len(exits) == len(set(exits))
+    assert set(exits) | set(deaths) <= claims
+
+
+# Records M9 refuses or §7 attributes, which Task 8 decides: until then the
+# step names what it cannot write yet.
+_NOT_YET = r"does not write this run yet: "
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        r(2, "control.subscribe", {}, rid="s", name="loss"),
+        r(2, "control.unsubscribe", {}, rid="s"),
+        r(2, "control.stop", {"from": {"step": 3}}, rid="h"),
+        r(
+            2,
+            "control.stop",
+            {"from": {"any": [{"time_seconds": 5}, {"step": 3}]}},
+            rid="h",
+        ),
+        r(2, "value", _value(0.5, 0, 1.0)),  # a null name
+        r(2, "value", _value(0.5, 0, 1.0), rid="s", name="loss"),  # a sample
+    ],
+    ids=[
+        "subscribe",
+        "unsubscribe",
+        "step_atom",
+        "nested_step_atom",
+        "nameless",
+        "sample",
+    ],
+)
+def test_what_m9_refuses_is_not_written_yet(record):
+    rows = [r(1, "lifecycle.started", _started("local://n1/11", 1.0)), record]
+    with pytest.raises(
+        NotImplementedError, match=_NOT_YET + rf".*{record.topic} at seq 2"
+    ):
+        step.transform(rows)
+
+
+def test_a_stop_with_a_time_atom_is_written_as_it_is():
+    rows = [r(1, "control.stop", {"from": {"time_seconds": 5}}, rid="h")]
+    assert step.transform(rows) == rows
+
+
+def test_a_claim_ended_only_by_its_launchs_terminated_is_not_written_yet():
+    """§7's attributed death report, which Task 8 writes."""
+    rows = [
+        r(
+            1,
+            "launcher.launched",
+            {"handle": "local://n1/11", "status": "running", "t": 0.5},
+            rid="L1",
+        ),
+        r(2, "lifecycle.started", _started("local://n1/11", 1.0), rid="L1"),
+        r(3, "lifecycle.heartbeat", _beat(0, 0, 2, 2.0)),
+        r(
+            4,
+            "launcher.terminated",
+            {"reason": "killed", "exit_code": None, "signal": 9, "t": 4.0},
+            rid="L1",
+        ),
+    ]
     with pytest.raises(
         NotImplementedError,
-        match=r"writes nothing yet: the passes run through M7, and what remains is "
-        r"the 0\.4\.0 bodies",
+        match=_NOT_YET + r"the claim at seq 2 was ended only by .*seq 4",
     ):
-        step.transform(GOLDEN[rid])
+        step.transform(rows)
+
+
+def test_a_terminated_no_held_claim_answers_is_written_as_it_is():
+    """Another launch's death, or a hand-run claim's run: nothing to attribute."""
+    terminated = {"reason": "exited", "exit_code": 1, "signal": None, "t": 4.0}
+    rows = [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),  # hand-run
+        r(2, "launcher.terminated", terminated, rid="L0"),
+    ]
+    assert _rows(rows) == [
+        o(1, START, _claim4("local://n1/11", 1.0, None)),
+        o(2, TERMINATED, terminated, rid="L0"),
+    ]
+
+
+# The envelope fields 0.4.0 pins null that 0.3.0 left open: no reference writer
+# set them, and the step cannot carry one.
+
+
+@pytest.mark.parametrize(
+    "topic, body, name, rid",
+    [
+        ("lifecycle.started", _started("local://n1/12", 1.0), "x", None),
+        ("lifecycle.heartbeat", _beat(0, 0, 1, 1.0), "x", None),
+        ("lifecycle.heartbeat", _beat(0, 0, 1, 1.0), None, "x"),
+        ("lifecycle.stopped", _stopped(False, None, 0, 1, [], 1.0), "x", None),
+        ("lifecycle.stopped", _stopped(False, None, 0, 1, [], 1.0), None, "x"),
+        ("lifecycle.stopped", _release("x", [], 1), None, "x"),
+        ("lifecycle.bound", {"claim_seq": 1}, "x", "lease"),
+        ("lifecycle.nak", {"reason": "malformed", "message": ""}, "x", "s"),
+        ("control.stop", {}, "x", "h"),
+    ],
+)
+def test_an_envelope_field_0_4_0_pins_null_is_refused_by_seq(topic, body, name, rid):
+    rows = [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+        r(2, topic, body, rid=rid, name=name),
+    ]
+    with pytest.raises(MigrationError, match=rf"{topic} at seq 2 carries "):
+        parse(rows)
+    with pytest.raises(MigrationError, match=rf"{topic} at seq 2 carries "):
+        step.transform(rows)
 
 
 # ----- liveness, read as 0.3.0 read it ------------------------------------------------
@@ -2505,3 +3198,57 @@ def test_the_step_imports_no_record_semantics():
         a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names
     }
     assert not {m for m in plain if m.startswith("runstate")}
+
+
+def _watermark_on(stop_body):
+    """A's exit, a third party's later stop, and B's beat whose watermark names
+    that stop."""
+    return _dated(
+        [
+            r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+            r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+            r(3, "lifecycle.stopped", _stopped(False, None, 0, 1, [], 3.0)),
+            r(4, "lifecycle.stopped", stop_body),
+            r(5, "lifecycle.started", _started("local://n1/12", 5.0)),
+            r(6, "lifecycle.heartbeat", _beat(None, 4, 5, 6.0)),
+        ]
+    )
+
+
+def test_a_watermark_naming_a_stop_that_leaves_the_log_is_refused():
+    """The later default body becomes only its withdrawals, so nothing is left
+    for the watermark to name. No reference writer names a stopped in one."""
+    rows = _watermark_on(_stopped(False, None, 0, 1, [], 4.0))
+    with pytest.raises(
+        MigrationError,
+        match=r"heartbeat at seq 6 has consumed_seq 4, which names the "
+        r"lifecycle\.stopped at seq 4, a third party's that becomes only its "
+        r"withdrawals",
+    ):
+        step.transform(rows)
+
+
+def test_a_watermark_naming_a_stop_replaced_in_place_names_its_replacement():
+    rows = _watermark_on(_stopped(False, "slurm: NODE_FAIL", 0, 1, [], 4.0))
+    assert _rows(rows)[3:] == [
+        o(4, DIED, _died4(1, "errored", "slurm: NODE_FAIL", 4.0)),
+        o(5, START, _claim4("local://n1/12", 5.0, 2)),
+        o(6, BEAT, _beat4(5, 4, 6.0)),
+    ]
+
+
+def test_c_prime_the_minted_label_names_the_0_3_0_backstop():
+    """``backstop@<seq>`` is its 0.3.0 seq, as a ``stop@N`` keeps its own: a
+    synthetic commit before it moves the terminated to seq 6."""
+    rows = _dated(
+        [
+            r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+            r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+            r(3, "lifecycle.heartbeat", _beat(2, 0, 1, 3.0)),
+            r(4, "lifecycle.stopped", _stopped(False, None, 2, 1, [], 4.0)),
+            r(5, "lifecycle.stopped", _stopped(False, BACKSTOP, 2, 1, [], 5.0)),
+        ]
+    )
+    assert _rows(rows)[-1] == o(
+        6, TERMINATED, _terminated4("exited", 1, None, 5.0), rid="backstop@5"
+    )
