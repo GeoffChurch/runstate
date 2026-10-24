@@ -206,10 +206,10 @@ ergonomics.
   step's ambiguities, its own included (review §12, item 16).
 - A **malformed record,** one whose body the input format does not define, has no conforming writer, so its
   meaning is open by definition. It is a question only for a step that reads that body. A step carries a
-  record it does not read to the next step unchanged, as the 0.2.0 → 0.3.0 step carries a malformed
-  `stopped`, adding only the names its rules write. The step that reads it either declares a malformed-record
-  ambiguity for that kind of record, every such record being one of its sites, or refuses the record
-  outright. Only that step declares it (review §12, item 16).
+  record it does not read to the next step with its body unread, as the 0.2.0 → 0.3.0 step carries a
+  malformed `stopped`, adding only the names its rules write. The step that reads it either declares a
+  malformed-record ambiguity for that kind of record, every such record being one of its sites, or refuses
+  the record outright. Only that step declares it (review §12, item 16).
 - A **proven site** is a record at which the question arises but the log settles it: what the log proves
   there, under the input format's conventions, gives one reading, its **proven reading**. A proven
   site is not a site. It never forces a choice, and no strategy changes its reading.
@@ -226,9 +226,10 @@ ergonomics.
 
 **The principle: ambiguity is judged against any conforming writer of the input format, under that format's
 conventions.** A question is settled where the input format's conventions pin the meaning of the records it
-reads, and open where they do not. Its conventions are what its schemas, its design and the specs that state
-them write, not a reference implementation's behaviour. **Every meaning they do not pin is a declared
-ambiguity, with its narrowest site; no convention is pinned by ruling** (review §12, item 16). A step judges
+reads, and open where they do not. Its conventions are what its schemas and its design write: another spec
+may elaborate one, never make one, and a reference implementation's behaviour makes none. **Every meaning
+they do not pin is a declared ambiguity, with its narrowest site; no convention is pinned by ruling** (review
+§12, item 16). A step judges
 against the format it reads, never against a later one, and never against one consumer's writers:
 - runstate ships **generic** built-in strategies only. A built-in is any reading expressible over the input
   format's own vocabulary that is right for some conforming writer;

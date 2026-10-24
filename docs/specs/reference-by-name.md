@@ -227,9 +227,10 @@ What the site tests rely on as settled by 0.2.0's conventions:
 - **a `launcher.terminated` follows its process's end**, since only a `wait()`ing parent writes it
   (`design-v0.2.md` §8), and the launch id a claim's `started` re-emits, with an equal handle, makes that
   process the claimant;
-- **a claim is taken only when the latest one is followed by a `stopped` or its worker resolves dead**: the
-  worker CAS-claims its `started` "iff no live episode", a guard "in the *protocol*" (`run-episodes.md` §3),
-  so a claim that no `stopped` followed was dead when the next one began.
+- **a claim is taken only when the latest one is followed by a `stopped` or its worker resolves dead**: "the
+  single-claim guards (run-episodes self-claim, §12.1) rest on" the claim CAS (`design-v0.2.md` §4), and "the
+  lazy-launch race is arbitrated by the worker's birth-CAS" (§8); `run-episodes.md` §3 spells the guard out.
+  So a claim that no `stopped` followed was dead when the next one began.
 
 The entries:
 - **`record-claim`: which claim a heartbeat or `stopped` speaks for.**
@@ -282,7 +283,9 @@ The entries:
 **Carried unread.** A `stopped` whose body 0.2.0 does not define is carried with its body unread, the step
 adding only the names its rules write: the step relates it by position and never reads its body, so it
 declares no ambiguity for it. The 0.3.0 → 0.4.0 step, which reads it, declares `malformed-stop`
-(`commits-and-lineage.md` §7; `log-formats.md` §6).
+(`commits-and-lineage.md` §7; `log-formats.md` §6). Since the step does not read it, a malformed `stopped`
+proves nothing in a site test: in `record-claim`'s, it counts as a `stopped` that is not `completed: true`,
+the way that makes the site wider.
 
 **Determined, not declared,** because 0.2.0's own rules settle them, and the step reproduces those rules:
 - a `stopped` before any claim names none;
