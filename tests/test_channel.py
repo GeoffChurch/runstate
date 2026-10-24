@@ -171,6 +171,11 @@ def test_read_limit(ch):
     assert len(ch.read(limit=2)) == 2
 
 
+def test_read_limit_zero_returns_nothing(ch):
+    ch.send({"i": 0}, topic="value", name="loss")
+    assert ch.read(limit=0) == []
+
+
 def test_reads_are_non_destructive(ch):
     ch.send({"v": 1}, topic="value", name="loss")
     first = [e.body for e in ch.read()]
