@@ -202,8 +202,11 @@ ergonomics.
   spells it.
 - A **site** is one record of one run, named by run id and seq, at which an ambiguity's question is open:
   two histories that a conforming writer of the input format could produce give the same log there, and
-  need different output. **A site test reads only the step's input log,** never a reading of any of the
-  step's ambiguities, its own included (review §12, item 16).
+  need different output. **A site is where histories of conforming writers call for different outputs,
+  never where the shipped built-ins happen to disagree:** the choice of built-ins never removes a site, and
+  how often one history occurs may justify a built-in's description, never a site's absence. **A site test
+  reads only the step's input log,** never a reading of any of the step's ambiguities, its own included
+  (review §12, item 16).
 - A **malformed record,** one whose body the input format does not define, has no conforming writer, so its
   meaning is open by definition. It is a question only for a step that reads that body. A step carries a
   record it does not read to the next step with its body unread, as the 0.2.0 → 0.3.0 step carries a
