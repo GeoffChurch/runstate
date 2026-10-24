@@ -432,17 +432,26 @@ def test_a_step_that_does_not_renumber_may_not_change_a_seq_or_topic(
     assert not DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1").exists()
 
 
-def test_a_step_that_does_not_renumber_may_not_drop_or_insert_below(
-    toy, monkeypatch, tmp_path
+@pytest.mark.parametrize(
+    "step, refusal",
+    [
+        (Rewrite("8.0.0", "8.1.0", extra=[_row(1)]), "its output repeats seq 1"),
+        (
+            Rewrite("8.0.0", "8.1.0", extra=[_row(0)]),
+            "it appended a row at seq 0, at or below the input's last seq 3",
+        ),
+        (Dropper("8.0.0", "8.1.0"), "its output has no row at seq 1 "),
+    ],
+    ids=["repeat", "below", "drop"],
+)
+def test_a_step_that_does_not_renumber_may_not_drop_repeat_or_insert_below(
+    step, refusal, toy, monkeypatch, tmp_path
 ):
+    """Each refusal says which: the toy log's seqs are 1 to 3."""
     _seed(tmp_path, "8.0.0", "r1")
-    for step in (
-        Rewrite("8.0.0", "8.1.0", edit=lambda r: r, extra=[_row(1)]),
-        Dropper("8.0.0", "8.1.0"),
-    ):
-        monkeypatch.setattr(migrations, "STEPS", (step,))
-        with pytest.raises(MigrationError, match="does not renumber"):
-            migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0")
+    monkeypatch.setattr(migrations, "STEPS", (step,))
+    with pytest.raises(MigrationError, match=rf"does not renumber, but {refusal}"):
+        migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0")
 
 
 def test_a_step_that_does_not_renumber_may_append_above(toy, monkeypatch, tmp_path):

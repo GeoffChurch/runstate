@@ -88,9 +88,8 @@ class SqliteStore:
             rows = _read_sqlite(src)
             if step.is_live(rows):
                 raise MigrationError("it has a live episode; stop it first")
-            transform_checked(
-                step, rows
-            )  # the dry run: a refusal raises before the seal
+            # the dry run: a refusal raises before the seal
+            transform_checked(step, rows)
             seal_sqlite(src)
         out = transform_checked(step, _read_sqlite(src))
         dst.parent.mkdir(exist_ok=True)

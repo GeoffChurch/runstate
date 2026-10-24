@@ -62,6 +62,14 @@ def transform_checked(step: Step, rows: list[Row]) -> list[Row]:
     out = step.transform(rows)
     if step.RENUMBERS:
         return out
+    seen: set[int] = set()
+    for r in out:
+        if r.seq in seen:
+            raise MigrationError(
+                f"step {step.FROM} -> {step.TO} does not renumber, but its output"
+                f" repeats seq {r.seq}"
+            )
+        seen.add(r.seq)
     topics = {r.seq: r.topic for r in out}
     for r in rows:
         if topics.get(r.seq) != r.topic:
@@ -71,12 +79,12 @@ def transform_checked(step: Step, rows: list[Row]) -> list[Row]:
             )
     last = max((r.seq for r in rows), default=-1)
     kept = {r.seq for r in rows}
-    appended = [r.seq for r in out if r.seq not in kept]
-    if any(q <= last for q in appended) or len(topics) != len(out):
-        raise MigrationError(
-            f"step {step.FROM} -> {step.TO} does not renumber, but it appended a row"
-            f" at or below seq {last}, or repeated a seq"
-        )
+    for r in out:
+        if r.seq not in kept and r.seq <= last:
+            raise MigrationError(
+                f"step {step.FROM} -> {step.TO} does not renumber, but it appended"
+                f" a row at seq {r.seq}, at or below the input's last seq {last}"
+            )
     return out
 
 
