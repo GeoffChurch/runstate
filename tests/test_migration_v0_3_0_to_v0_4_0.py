@@ -19,16 +19,26 @@ import pytest
 from runstate.formats import FORMATS
 from runstate.migrations import RENUMBERING_FROM, STEPS, MigrationError, Row
 from runstate.migrations.v0_3_0_to_v0_4_0 import (
+    After,
     Classification,
     CommitRef,
     ExitNode,
     Fresh,
     Inferred,
+    Input,
+    NoSeqs,
     Place,
     Parentless,
     Real,
     Resumed,
+    Synthesized,
     Synthetic,
+    ThirdParty,
+    ToBound,
+    ToCommit,
+    ToExit,
+    ToHeartbeat,
+    ToStarted,
     Uncommitted,
     V0_3_0_to_V0_4_0,
     _Exit,
@@ -41,6 +51,9 @@ from runstate.migrations.v0_3_0_to_v0_4_0 import (
     classify,
     link,
     parse,
+    place,
+    rename,
+    renumber,
     synthesize,
 )
 
@@ -626,6 +639,22 @@ RESUMED_ON_AN_OLDER_CLAIMS_STEP = _dated(
     ]
 )
 
+# Watermarks that renumbering moves: step 1's tick is skipped, so a commit is
+# synthesized before the stop at seq 4, which moves to seq 5. The stepless beat
+# and step 3's commit drained it; each watermark is renamed to seq 5, and the
+# exit honors the stop by its id.
+WATERMARKED = _dated(
+    [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+        r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+        r(3, "lifecycle.heartbeat", _beat(2, 0, 1, 3.0)),
+        r(4, "control.stop", {}, rid="halt"),
+        r(5, "lifecycle.heartbeat", _beat(None, 4, 1, 4.0)),
+        r(6, "lifecycle.heartbeat", _beat(3, 4, 1, 5.0)),
+        r(7, "lifecycle.stopped", _stopped(False, None, 3, 1, ["halt"], 6.0)),
+    ]
+)
+
 
 # ----- pass 1: attribution -----------------------------------------------------------
 
@@ -823,6 +852,7 @@ GOLDEN = {
     "resumed_from_a_tick_skipped_after_the_claim": (
         RESUMED_FROM_A_TICK_SKIPPED_AFTER_THE_CLAIM
     ),
+    "watermarked": WATERMARKED,
 }
 
 
@@ -1668,6 +1698,443 @@ def test_p1_a_real_commit_linked_back_to_step_0_counts_its_step(rid):
                 assert out.resume_from[root.claim] == Parentless()
 
 
+# ----- pass 5: placement and renumbering (M6); pass 6: the renames (M7) -----------------
+
+
+class Layout(NamedTuple):
+    """Every pass through M7, as a test reads them."""
+
+    log: object
+    synthesis: object
+    linkage: object
+    placement: object
+    numbering: dict
+    outs: tuple
+
+
+def _layout(rows):
+    log = parse(rows)
+    synthesis = synthesize(attribute(log), classify(log))
+    linkage = link(synthesis)
+    placement = place(synthesis, linkage)
+    numbering = renumber([x.seq for x in log.records], placement.moves)
+    outs = rename(log, synthesis, linkage, placement, numbering)
+    return Layout(log, synthesis, linkage, placement, dict(numbering), outs)
+
+
+def _short(key):
+    """An output record as a test spells it: an input record by its 0.3.0
+    seq, a synthetic commit by its (claim, old step)."""
+    return key.seq if isinstance(key, Input) else tuple(key.ref)
+
+
+def _keys(rows):
+    """The output records, in output order."""
+    return [_short(o.key) for o in _layout(rows).outs]
+
+
+def _commits(s):
+    """Pass 3's commits, by their identity."""
+    return {_ref(c, k): k for c in s.claims for k in c.commits}
+
+
+def _consumed(k):
+    return (
+        k.origin.beat.consumed_seq
+        if isinstance(k.origin, Real)
+        else k.origin.consumed_seq
+    )
+
+
+def test_a_commit_moves_after_a_value_that_follows_its_heartbeat():
+    """M2's post-loop value: step 1's commit follows its final eval, and goes
+    just after it, before the register and the exit."""
+    assert _keys(POST_LOOP) == [1, 2, 3, 4, 6, 5, 7, 8]
+
+
+def test_a_synthetic_commit_goes_just_after_its_last_value_else_its_parent():
+    """Step 2's, with values, after its last value; step 4's, with none, after
+    its parent, step 3's commit. The real commits stay at their heartbeats."""
+    assert _keys(SKIPPED) == [1, 2, 3, 4, 5, 6, 7, (1, 2), 8, 9, (1, 4), 10, 11, 12]
+    assert _keys(TRAILING) == [1, 2, 3, 4, 5, 6, (1, 2), 7]
+
+
+def test_a_commit_stays_at_its_heartbeat_when_everything_it_names_precedes_it():
+    """M6 as the migration reads it: a commit only moves forward. A's step 2
+    names nothing after its parent, A's step 1, yet stays at its heartbeat,
+    after B's started: a displaced worker's iteration is never placed before
+    the claim that displaced it. A's step 0 moves after its value."""
+    assert _keys(DISPLACED) == [1, 3, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    assert _keys(RESUMED_FROM_A_STEP_COMMITTED_AFTER_THE_CLAIM) == [1, 2, 3, 4, 5, 6, 7]
+
+
+def test_a_commit_follows_its_parent_past_its_own_heartbeat():
+    """A late eval of step 0 moves step 0's commit past step 1's heartbeat, so
+    step 1's commit moves after its parent."""
+    rows = _dated(
+        [
+            r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+            r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+            r(3, "lifecycle.heartbeat", _beat(1, 0, 1, 3.0)),
+            r(4, "value", _value(0.95, 0, 4.0), name="eval"),
+            r(5, "lifecycle.stopped", _stopped(True, None, 1, 1, [], 5.0)),
+        ]
+    )
+    assert _keys(rows) == [1, 4, 2, 3, 5]
+
+
+def test_a_commit_follows_the_moved_commit_its_watermark_names():
+    """A consumed_seq may name any record before its heartbeat, here another
+    claim's commit that then moves past it: A's displaced step 1 names B's
+    step 0, which moves after its late eval, so A's step 1 follows it. Each
+    position is decided after those of the records it names."""
+    rows = _dated(
+        [
+            r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+            r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+            r(3, "lifecycle.started", _started("local://n2/22", 3.0)),
+            r(4, "lifecycle.heartbeat", _beat(0, 0, 3, 4.0)),
+            r(5, "lifecycle.heartbeat", _beat(1, 4, 1, 5.0)),  # A's
+            r(6, "value", _value(0.5, 0, 6.0), name="eval"),  # B's, by position
+        ]
+    )
+    lay = _layout(rows)
+    assert [_short(o.key) for o in lay.outs] == [1, 2, 3, 6, 4, 5]
+    (a1,) = [o.record for o in lay.outs if o.key == Input(5)]
+    assert a1.consumed_seq == 5  # B's step 0, renumbered
+
+
+def _m6_by_list(rows):
+    """M6 written apart from ``place``: the output as a list, each commit
+    moved in claim order to just after the latest record it must follow."""
+    s = _synthesis(rows)
+    links = link(s)
+    order = [x.seq for x in rows]
+    item = {}  # each commit's item in the list: its heartbeat's seq, or its ref
+    for c in s.claims:
+        for k in c.commits:
+            ref = _ref(c, k)
+            real = isinstance(k.origin, Real)
+            item[ref] = k.origin.beat.seq if real else tuple(ref)
+            follows = list(k.values[-1:])
+            if links.parents[ref] is not None:
+                follows.append(item[links.parents[ref]])
+            if _consumed(k):
+                follows.append(_consumed(k))
+            if real:
+                follows.append(item[ref])
+            latest = max(follows, key=order.index)
+            if latest != item[ref]:
+                if real:
+                    order.remove(item[ref])
+                order.insert(order.index(latest) + 1, item[ref])
+    return order
+
+
+@pytest.mark.parametrize("rid", list(GOLDEN))
+def test_m6_places_every_commit_as_a_list_written_apart_does(rid):
+    assert _keys(GOLDEN[rid]) == _m6_by_list(GOLDEN[rid])
+
+
+@pytest.mark.parametrize("rid", list(GOLDEN))
+def test_the_renumbering_is_a_bijection_on_the_inputs_records(rid):
+    """Every input record, a real commit's heartbeat included, has exactly one
+    0.4.0 seq, and the synthetic commits fill the rest, gapless from 1."""
+    rows = GOLDEN[rid]
+    lay = _layout(rows)
+    synthetic = {
+        ref
+        for ref, k in _commits(lay.synthesis).items()
+        if isinstance(k.origin, Synthetic)
+    }
+    assert sorted(lay.numbering.values()) == list(
+        range(1, len(rows) + len(synthetic) + 1)
+    )
+    assert {k for k in lay.numbering if isinstance(k, Input)} == {
+        Input(x.seq) for x in rows
+    }
+    assert {k.ref for k in lay.numbering if isinstance(k, Synthesized)} == synthetic
+    assert [(o.seq, o.key) for o in lay.outs] == sorted(
+        ((n, k) for k, n in lay.numbering.items()), key=lambda x: x[0]
+    )
+
+
+@pytest.mark.parametrize("rid", list(GOLDEN))
+def test_a_commit_only_moves_forward(rid):
+    """Every input record but a moved commit keeps its order, and a real commit
+    follows every record that preceded its heartbeat."""
+    rows = GOLDEN[rid]
+    lay = _layout(rows)
+    new = {k.seq: n for k, n in lay.numbering.items() if isinstance(k, Input)}
+    kept = [new[x.seq] for x in rows if Input(x.seq) not in lay.placement.moves]
+    assert kept == sorted(kept)
+    for k in _commits(lay.synthesis).values():
+        if isinstance(k.origin, Real):
+            beat = k.origin.beat.seq
+            assert all(new[s] < new[beat] for s in range(1, beat))
+
+
+@pytest.mark.parametrize("rid", list(GOLDEN))
+def test_every_record_follows_what_it_names(rid):
+    """§7's "Also": 0 commits name a later value, 0 parents follow their child,
+    and 0 commits precede the record their consumed_seq names. Every other
+    seq-valued field names an earlier record too: a claim_seq, a resume_from
+    and an exit's parent."""
+    for o in _layout(GOLDEN[rid]).outs:
+        match o.record:
+            case ToCommit():
+                assert all(v < o.seq for v in o.record.values)
+                assert o.record.parent is None or o.record.parent < o.seq
+                assert o.record.consumed_seq < o.seq
+                assert o.record.claim_seq < o.seq
+            case ToHeartbeat():
+                assert o.record.consumed_seq < o.seq and o.record.claim_seq < o.seq
+            case ToStarted():
+                assert o.record.resume_from is None or o.record.resume_from < o.seq
+            case ToExit():
+                assert o.record.claim_seq < o.seq
+                assert o.record.parent is None or o.record.parent < o.seq
+            case ThirdParty():
+                assert o.record.claim_seq is None or o.record.claim_seq < o.seq
+            case ToBound():
+                assert o.record.claim_seq < o.seq
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="the placeholder rule for lone stops reads a third party's lone stop "
+    "as its claim's exit, so the worker's later beat is a commit the exit's "
+    "parent names; the census's rule (Task 13) owns it",
+)
+def test_an_exit_the_placeholder_reads_before_the_workers_beat_has_no_later_parent():
+    rows = _dated(
+        [
+            r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+            r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+            r(3, "lifecycle.stopped", _stopped(False, None, 0, 1, [], 3.0)),
+            r(4, "lifecycle.heartbeat", _beat(1, 0, 1, 4.0)),  # still running
+        ]
+    )
+    (exit,) = [o for o in _layout(rows).outs if isinstance(o.record, ToExit)]
+    assert exit.record.parent < exit.seq
+
+
+def _expected(key, rows):
+    """The kind of output record an input record becomes, by its topic, or a
+    synthetic commit."""
+    if isinstance(key, Synthesized):
+        return ToCommit
+    x = rows[key.seq - 1]
+    if x.topic == "lifecycle.heartbeat":
+        return ToHeartbeat if json.loads(x.body)["step"] is None else ToCommit
+    return {
+        "lifecycle.started": ToStarted,
+        "lifecycle.stopped": (ToExit, ThirdParty),
+        "lifecycle.bound": ToBound,
+    }.get(x.topic, NoSeqs)
+
+
+@pytest.mark.parametrize("rid", list(GOLDEN))
+def test_every_record_with_a_seq_valued_field_is_renamed(rid):
+    """A record whose 0.3.0 body holds a seq becomes a kind that renames it;
+    only a record that holds none passes as it is."""
+    rows = GOLDEN[rid]
+    for o in _layout(rows).outs:
+        assert isinstance(o.record, _expected(o.key, rows))
+        if isinstance(o.record, NoSeqs):
+            assert o.record.record.topic not in {
+                "lifecycle.started",
+                "lifecycle.heartbeat",
+                "lifecycle.stopped",
+                "lifecycle.bound",
+            }
+
+
+@pytest.mark.parametrize("rid", list(GOLDEN))
+def test_review_focus_1_every_seq_valued_field_names_the_record_it_named(rid):
+    """Review Focus 1: after M6, each field names the very record it named in
+    0.3.0, or that pass 4 chose, and so a record of the expected kind: a
+    claim_seq names a started, a parent or resume_from a commit, a values entry
+    a value, and a consumed_seq the record it named, 0 staying 0."""
+    rows = GOLDEN[rid]
+    lay = _layout(rows)
+    at = {o.seq: o for o in lay.outs}
+    commits = _commits(lay.synthesis)
+
+    def claim(seq):
+        assert isinstance(at[seq].record, ToStarted)
+        return at[seq].record.started.seq
+
+    def node(seq):
+        if seq is None:
+            return None
+        assert isinstance(at[seq].record, ToCommit)
+        return at[seq].record.ref
+
+    def was(seq):
+        assert isinstance(at[seq].key, Input)
+        return at[seq].key.seq
+
+    def watermark(seq):
+        return 0 if seq == 0 else was(seq)
+
+    for o in lay.outs:
+        match o.record:
+            case ToStarted(started=started, resume_from=resume_from):
+                assert node(resume_from) == lay.linkage.resume_from[started.seq].node
+            case ToCommit(ref=ref):
+                k = commits[ref]
+                assert claim(o.record.claim_seq) == ref.claim
+                assert watermark(o.record.consumed_seq) == _consumed(k)
+                assert node(o.record.parent) == lay.linkage.parents[ref]
+                assert [was(v) for v in o.record.values] == list(k.values)
+                assert all(
+                    at[v].record.record.topic == "value" for v in o.record.values
+                )
+            case ToHeartbeat(beat=beat):
+                assert claim(o.record.claim_seq) == beat.claim_seq
+                assert watermark(o.record.consumed_seq) == beat.consumed_seq
+            case ToExit(node=exit):
+                assert claim(o.record.claim_seq) == exit.stop.claim_seq
+                assert node(o.record.parent) == lay.linkage.exits[exit.stop.claim_seq]
+            case ThirdParty(stop=stop):
+                if stop.claim_seq is None:
+                    assert o.record.claim_seq is None
+                else:
+                    assert claim(o.record.claim_seq) == stop.claim_seq
+            case ToBound(bound=bound):
+                assert claim(o.record.claim_seq) == bound.claim_seq
+
+
+@pytest.mark.parametrize("rid", list(GOLDEN))
+def test_the_candidates_are_exactly_the_commits_placed_below_each_started(rid):
+    """Task 5's ruling holds exactly under M6: a commit of an earlier claim is
+    placed below a claim's started when its deciding beat precedes it, and
+    only then."""
+    lay = _layout(GOLDEN[rid])
+    s = lay.synthesis
+    after = _deciding_beats(s)
+    for i, c in enumerate(s.claims):
+        started = lay.numbering[Input(c.claim.started.seq)]
+        for e in s.claims[:i]:
+            for k in e.commits:
+                ref = _ref(e, k)
+                placed = lay.numbering[lay.placement.commits[ref]]
+                assert (placed < started) == (after[ref] < c.claim.started.seq)
+
+
+def test_a_synthetic_commit_takes_the_created_at_of_the_record_it_is_placed_after():
+    """Every input record keeps its own; a synthetic commit takes its anchor's."""
+    lay = _layout(SKIPPED)
+    at = {o.seq: o for o in lay.outs}
+    assert [
+        (o.key.ref, o.created_at) for o in lay.outs if isinstance(o.key, Synthesized)
+    ] == [((1, 2), 1001.75), ((1, 4), 1002.25)]
+    for o in lay.outs:
+        if isinstance(o.key, Input):
+            assert o.created_at == SKIPPED[o.key.seq - 1].created_at
+        else:
+            assert o.created_at == at[o.seq - 1].created_at
+
+
+@pytest.mark.parametrize("rid", list(GOLDEN))
+def test_a_synthetic_commit_is_placed_after_a_record_it_names(rid):
+    lay = _layout(GOLDEN[rid])
+    for key, at in lay.placement.moves.items():
+        assert isinstance(at, After)
+        if isinstance(key, Synthesized):
+            k = _commits(lay.synthesis)[key.ref]
+            parent = lay.placement.commits[lay.linkage.parents[key.ref]]
+            assert at.anchor in {Input(v) for v in k.values} | {parent}
+
+
+def test_a_watermark_is_renamed_with_the_record_it_names():
+    lay = _layout(WATERMARKED)
+    assert [_short(o.key) for o in lay.outs] == [1, 2, (1, 1), 3, 4, 5, 6, 7]
+    beat, commit = lay.outs[5].record, lay.outs[6].record
+    assert isinstance(beat, ToHeartbeat) and isinstance(commit, ToCommit)
+    assert (beat.consumed_seq, commit.consumed_seq) == (5, 5)
+    assert lay.outs[4].record.record.request_id == "halt"
+
+
+def _ref_key(claim, step):
+    return Synthesized(CommitRef(claim, step))
+
+
+# Records placed by any pass, as Task 7 will place its own: two after one
+# anchor, a third after one of those, and an input record moved after another.
+PLACED = {
+    _ref_key(9, 1): After(Input(1), (2,)),
+    _ref_key(9, 2): After(Input(1), (1,)),
+    _ref_key(9, 3): After(_ref_key(9, 1), (0,)),
+    Input(2): After(Input(3), (0,)),
+}
+
+
+def test_records_placed_after_one_anchor_follow_it_in_tie_order_each_with_its_own():
+    assert list(renumber([1, 2, 3], PLACED).items()) == [
+        (Input(1), 1),
+        (_ref_key(9, 2), 2),
+        (_ref_key(9, 1), 3),
+        (_ref_key(9, 3), 4),
+        (Input(3), 5),
+        (Input(2), 6),
+    ]
+
+
+def test_the_order_m6_compares_by_is_the_order_renumbering_writes():
+    """M6 compares records while it places them, without linearizing; every
+    comparison agrees with the order the renumbering then writes."""
+    from runstate.migrations.v0_3_0_to_v0_4_0 import _Forest
+
+    forest = _Forest()
+    for key, at in PLACED.items():
+        forest.place(key, at)
+    order = list(renumber([1, 2, 3], PLACED))
+    for a, b in itertools.permutations(order, 2):
+        expected = b if order.index(a) < order.index(b) else a
+        assert forest.latest([a, b]) == expected
+
+
+def test_a_stop_at_n_request_id_stays_as_it_is():
+    """Request ids are strings: the stop at seq 3, renumbered 2, keeps its id,
+    and the exit still honors it by that id."""
+    rows = _dated(
+        [
+            r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+            r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+            r(3, "control.stop", {}, rid="stop@3"),
+            r(4, "value", _value(0.9, 0, 3.0), name="loss"),
+            r(5, "lifecycle.stopped", _stopped(False, None, 0, 1, ["stop@3"], 4.0)),
+        ]
+    )
+    lay = _layout(rows)
+    assert [_short(o.key) for o in lay.outs] == [1, 3, 4, 2, 5]
+    stop, exit = lay.outs[1], lay.outs[4]
+    assert (stop.seq, stop.record.record.request_id) == (2, "stop@3")
+    assert exit.record.node.stop.honored == ("stop@3",)
+
+
+def test_a_bounds_claim_seq_is_renamed():
+    """A's skipped tick is synthesized before B's started, which moves to seq
+    6; the lease B bound names it there."""
+    rows = _dated(
+        [
+            r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+            r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+            r(3, "lifecycle.heartbeat", _beat(2, 0, 1, 3.0)),
+            r(4, "lifecycle.stopped", _stopped(True, None, 2, 1, [], 4.0)),
+            r(5, "lifecycle.started", _started("local://n1/12", 5.0)),
+            r(6, "lifecycle.bound", {"claim_seq": 5}, rid="lease"),
+        ]
+    )
+    lay = _layout(rows)
+    assert [_short(o.key) for o in lay.outs] == [1, 2, (1, 1), 3, 4, 5, 6]
+    bound = lay.outs[-1]
+    assert (bound.seq, bound.record.claim_seq) == (7, 6)
+    assert bound.record.bound.request_id == "lease"
+
+
 # ----- the boundary: what the step reads, and what it refuses ----------------------------
 
 
@@ -1741,6 +2208,9 @@ def test_a_stopped_of_any_other_shape_is_refused_by_seq(body):
         ("value", {"value": 1.0, "t": 1.0}),
         ("value", {**_value(1.0, 0, 1.0), "unit": "s"}),
         ("value", _value(1.0, "3", 1.0)),
+        ("lifecycle.bound", {}),
+        ("lifecycle.bound", {"claim_seq": 1, "t": 1.0}),
+        ("lifecycle.bound", {"claim_seq": True}),
     ],
 )
 def test_a_record_the_step_reads_must_be_0_3_0s(topic, body):
@@ -1800,6 +2270,48 @@ def test_a_stopped_must_name_a_claim_before_it(body):
         parse(rows)
 
 
+@pytest.mark.parametrize("claim", [2, 3, 4])
+def test_a_bound_must_name_a_claim_before_it(claim):
+    rows = [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+        r(2, "value", _value(0.1, 0, 1.0), name="loss"),
+        r(3, "lifecycle.bound", {"claim_seq": claim}, rid="lease"),
+        r(4, "lifecycle.started", _started("local://n2/22", 3.0)),
+    ]
+    with pytest.raises(MigrationError, match=r"bound at seq 3 names claim"):
+        parse(rows)
+
+
+@pytest.mark.parametrize("consumed", [3, 4, 9])
+def test_a_heartbeats_watermark_must_name_a_record_before_it(consumed):
+    """A nonzero consumed_seq names itself (3), a later record (4) or none (9):
+    no 0.3.0 writer wrote one, and renumbering cannot carry it."""
+    rows = [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+        r(2, "control.stop", {}, rid="halt"),
+        r(3, "lifecycle.heartbeat", _beat(0, consumed, 1, 2.0)),
+        r(4, "value", _value(0.1, 0, 3.0), name="loss"),
+    ]
+    match = r"heartbeat at seq 3 has consumed_seq \d, which names no record before it"
+    with pytest.raises(MigrationError, match=match):
+        parse(rows)
+    with pytest.raises(MigrationError, match=match):
+        step.transform(rows)
+
+
+def test_a_watermark_may_name_any_record_before_it():
+    """A drain watermark: 0, a control record, or, as in the goldens, any
+    earlier record."""
+    rows = [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+        r(2, "control.stop", {}, rid="halt"),
+        r(3, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+        r(4, "lifecycle.heartbeat", _beat(1, 2, 1, 3.0)),
+        r(5, "lifecycle.heartbeat", _beat(None, 4, 1, 4.0)),
+    ]
+    assert [b.consumed_seq for b in parse(rows).beats] == [0, 2, 4]
+
+
 @pytest.mark.parametrize("steps", [[0, 0], [0, 2, 1]], ids=["repeat", "below"])
 def test_an_in_claim_rewind_is_refused_by_seq(steps):
     """M9: two heartbeats of one step in one claim, or a step below an earlier
@@ -1845,8 +2357,13 @@ def test_records_the_step_does_not_interpret_pass_the_boundary_as_they_are():
 
 @pytest.mark.parametrize("rid", list(GOLDEN))
 def test_transform_runs_the_passes_it_has_and_writes_nothing_yet(rid):
-    """Passes 1-4 run, and their refusals stand; pass 5 is the first missing."""
-    with pytest.raises(NotImplementedError, match=r"writes nothing yet: pass 5 "):
+    """The passes run through M7, and their refusals stand; what remains is
+    named."""
+    with pytest.raises(
+        NotImplementedError,
+        match=r"writes nothing yet: the passes run through M7, and what remains is "
+        r"the 0\.4\.0 bodies",
+    ):
         step.transform(GOLDEN[rid])
 
 
