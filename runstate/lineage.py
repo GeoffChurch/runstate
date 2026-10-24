@@ -57,8 +57,10 @@ class _Topic(StrEnum):
 
 
 # Each check mirrors one schema definition of lifecycle-v0.6 or value-v0.3, so a
-# body parses here if and only if it validates there. ``bool`` is never a number,
-# as in ``vocabulary.payloads``: JSON ``true`` is not a seq and not a clock.
+# body parses here if and only if it validates there, with one exception: a
+# whole-number float such as 3.0 is no integer here, though JSON Schema admits it,
+# as in ``vocabulary.payloads`` and the migration step. ``bool`` is never a number
+# either: JSON ``true`` is not a seq and not a clock.
 
 
 def _is_int(v: object) -> TypeGuard[int]:
