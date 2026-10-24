@@ -2800,6 +2800,58 @@ def test_a_users_topic_under_supervisor_is_refused():
         parse(rows)
 
 
+# A stopped honoring the empty id, of each class, the last row.
+HONORS_THE_EMPTY_ID = {
+    "later": [
+        AT_1,
+        r(2, "control.stop", {}, rid="halt"),
+        r(3, "lifecycle.stopped", _stopped(True, None, None, 1, [], 3.0)),
+        r(4, "lifecycle.stopped", _stopped(False, None, None, 1, ["", "halt"], 4.0)),
+    ],
+    "claimless": [
+        AT_1,
+        r(2, "lifecycle.stopped", _stopped(False, None, None, None, [""], 2.0)),
+    ],
+    "backstop": [
+        AT_1,
+        r(2, "lifecycle.stopped", _stopped(False, BACKSTOP, None, 1, [""], 2.0)),
+    ],
+    "exit": [
+        AT_1,
+        r(2, "lifecycle.stopped", _stopped(True, None, None, 1, [""], 2.0)),
+    ],
+}
+
+
+@pytest.mark.parametrize("case", list(HONORS_THE_EMPTY_ID))
+def test_a_stopped_honoring_the_empty_id_is_refused(case):
+    """Valid 0.3.0, whose honored items are bare strings, but the empty id names
+    no stop, since envelope-v0.2 forbids an empty request_id. A third party's
+    stop would become a withdrawal under it, which 0.4.0 rejects. A worker's
+    exit would carry it validly, lifecycle-v0.6's honored items being bare
+    strings too, but parse refuses it before it can tell an exit from a third
+    party's, and it honors nothing either way."""
+    rows = HONORS_THE_EMPTY_ID[case]
+    last = rows[-1]
+    assert _invalid_under_0_3_0(rows) == []
+    with pytest.raises(
+        MigrationError,
+        match=rf"lifecycle\.stopped at seq {last.seq} honors the empty id",
+    ):
+        parse(rows)
+
+
+def test_a_whole_number_float_is_refused_as_the_step_reads_integers_strictly():
+    """0.3.0's schemas accept 3.0 as an integer; the step does not, and says so
+    rather than calling the record not 0.3.0's."""
+    rows = [AT_1, r(2, "lifecycle.heartbeat", _beat(3.0, 0, 1, 2.0))]
+    assert _invalid_under_0_3_0(rows) == []
+    with pytest.raises(
+        MigrationError, match=r"heartbeat at seq 2 .*reads strictly.*3\.0"
+    ):
+        parse(rows)
+
+
 # A launch's second terminated: a process ends once, and a run nothing claimed
 # takes its launch's terminated as its verdict (§5), so two make it ambiguous.
 SECOND_REAPS = {
@@ -2856,7 +2908,9 @@ def _two_refusals(drained_at, unattributable_at):
 
 @pytest.mark.parametrize("drained_at, unattributable_at", [(5, 6), (6, 5)])
 def test_a_run_is_refused_by_its_lowest_refused_seq(drained_at, unattributable_at):
-    """Whichever pass finds a refusal, the run's names the lowest seq."""
+    """Of the refusals that need the whole log, the run's names the lowest seq.
+    The order holds within a pass, not across passes: parse refuses first, the
+    first record it cannot carry, before any pass that needs the whole log."""
     rows = _two_refusals(drained_at, unattributable_at)
     with pytest.raises(MigrationError, match=r"^the \S+ at seq 5 "):
         step.transform(rows)
@@ -3768,11 +3822,18 @@ REFUSED = {
         r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
         r(3, "lifecycle.heartbeat", _beat(0, 0, 1, 3.0)),
     ],
-    # M9: a name value-v0.3 cannot hold
+    # M9: a null name, which value-v0.3 cannot hold
     "nameless": [CLAIM, r(2, "value", _value(0.5, 0, 1.0))],
+    # The boundary: an empty name, which envelope-v0.2 forbids
     "empty_name": [CLAIM, r(2, "value", _value(0.5, 0, 1.0), name="")],
-    # The attributed death report: a second reap of the claim's launch, and a
-    # launch that not exactly one launched names
+    # The boundary: a user's topic under the prefix 0.4.0 reserves
+    "supervisor_topic": [CLAIM, r(2, "supervisor.note", {})],
+    # The boundary: an empty id in a stopped's honored, which names no stop
+    "honors_the_empty_id": [
+        CLAIM,
+        r(2, "lifecycle.stopped", _stopped(False, None, None, None, [""], 2.0)),
+    ],
+    # The boundary: a launch's second terminated, whatever the claims
     "two_reaps": [
         LAUNCH,
         LAUNCHED_CLAIM,
@@ -3784,8 +3845,7 @@ REFUSED = {
         r(2, "launcher.terminated", REAP, rid="L1"),
         r(3, "launcher.terminated", REAP, rid="L1"),
     ],
-    # The boundary: a user's topic under the prefix 0.4.0 reserves
-    "supervisor_topic": [CLAIM, r(2, "supervisor.note", {})],
+    # The attributed death report: a launch that not exactly one launched names
     "no_launched": [
         LAUNCHED_CLAIM._replace(seq=1),
         r(2, "launcher.terminated", REAP, rid="L1"),

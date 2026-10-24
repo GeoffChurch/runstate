@@ -179,10 +179,19 @@ and refuses the first it cannot carry; a refusal that needs the whole log
 (the attributed death report's, and a watermark naming a stop that leaves it)
 names the lowest seq its pass refuses. Since the step writes a record whose
 body 0.4.0 keeps with its stored text, it reads every record at the boundary
-as 0.3.0 pins it, so an input it accepts never yields a row 0.4.0 rejects:
+as 0.3.0 pins it, so an input it accepts never yields a row 0.4.0 rejects. It
+reads a body strictly: an integer only as a JSON integer, so it refuses a
+whole-number float such as 3.0, which 0.3.0's schemas accept. It refuses:
 
 - a record envelope-v0.2 rejects: an empty topic, name or request id, or a
   body that is not an object;
+- **a ``stopped`` whose ``honored`` holds the empty id,** valid 0.3.0, whose
+  honored items are bare strings. The empty id names no stop, since
+  envelope-v0.2 forbids an empty request id, and a third party's stop would
+  become a withdrawal under it, which 0.4.0 rejects. A worker's exit would
+  carry it validly, lifecycle-v0.6's honored items being bare strings too,
+  but ``parse`` refuses it before it can tell an exit from a third party's,
+  and it honors nothing either way;
 - a topic under a prefix 0.3.0 reserves (``lifecycle.``, ``control.``,
   ``launcher.``) that 0.3.0 does not define, as a ``control.withdraw``, a
   ``lifecycle.commit`` or a ``lifecycle.rewind`` would be;
@@ -554,8 +563,13 @@ def _fits(body: _Body, shape: dict[str, _Test]) -> bool:
 
 
 def _unreadable(r: _Record, shape: str) -> MigrationError:
+    """The step reads a body strictly: exactly the keys its schema pins, each
+    value of its JSON type. So an integer written as a whole-number float, such
+    as 3.0, which the schemas accept, is refused too."""
     return MigrationError(
-        f"the {r.topic} at seq {r.seq} is not {shape}, so this step cannot read it"
+        f"the {r.topic} at seq {r.seq} does not read as {shape}, which this step "
+        "reads strictly, an integer only as a JSON integer and never as a float "
+        "such as 3.0, so it cannot read it"
     )
 
 
@@ -596,6 +610,20 @@ def _value(r: _Record) -> _Value:
     return _Value(r.seq, r.name, value=b["value"], step=b["step"], t=b["t"])
 
 
+def _spends(r: _Record, honored: list[str]) -> tuple[str, ...]:
+    """A ``stopped``'s ``honored``: the ids of the stops it spends. The empty id
+    names no stop, since envelope-v0.2 forbids an empty ``request_id``, so it
+    honors nothing; a third party's stop would become a withdrawal under it,
+    which 0.4.0 rejects. A worker's exit would carry it validly, but which
+    wrote the stop is not known yet, and either way it honors nothing."""
+    if "" in honored:
+        raise MigrationError(
+            f"the {r.topic} at seq {r.seq} honors the empty id, which names no "
+            "stop: envelope-v0.2 forbids an empty request_id, so no stop bears it"
+        )
+    return tuple(honored)
+
+
 def _stop(r: _Record) -> _Stop:
     b = r.body
     if _fits(b, _STOPPED) and not (b["completed"] and b["error"] is not None):
@@ -605,21 +633,21 @@ def _stop(r: _Record) -> _Stop:
             error=b["error"],
             final_step=b["final_step"],
             claim_seq=b["claim_seq"],
-            honored=tuple(b["honored"]),
+            honored=_spends(r, b["honored"]),
             t=b["t"],
         )
     if _fits(b, _MALFORMED):
         return _Malformed(
             r.seq,
             reason=b["reason"],
-            honored=tuple(b["honored"]),
+            honored=_spends(r, b["honored"]),
             claim_seq=b["claim_seq"],
             created_at=r.created_at,
         )
     raise _unreadable(
         r,
-        "format 0.3.0's (lifecycle-v0.5), nor the reclaim tool's malformed "
-        "{reason, honored, claim_seq} (M10): what it ends cannot be told",
+        "format 0.3.0's (lifecycle-v0.5), or the reclaim tool's malformed "
+        "{reason, honored, claim_seq} (M10)",
     )
 
 
