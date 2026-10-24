@@ -27,6 +27,7 @@ from runstate.channel.sqlite import _SCHEMA  # noqa: E402
 from runstate.migrations import MigrationError, Row  # noqa: E402
 from test_migration_v0_3_0_to_v0_4_0 import (  # noqa: E402
     BACKSTOP,
+    DEAD,
     BACKSTOP_AT_5,
     GOLDEN,
     NO_END,
@@ -81,13 +82,22 @@ def _outputs(out: Path):
     )
 
 
+MAX_BYTES = 10**9
+
+
+def _main(root, out, *, max_rows, max_bytes=MAX_BYTES):
+    """The runner's CLI, as Task 12 will call it."""
+    argv = [str(root), "--out", str(out), "--max-rows", str(max_rows)]
+    return mr.main(argv + ["--max-bytes", str(max_bytes)])
+
+
 def _run(tmp_path, logs, *, max_rows=10_000):
     """Each log as a 0.3.0 file under one root; the runner's outputs, by run."""
     root = tmp_path / "root"
     for rid, rows in logs.items():
         _write(root / "v0.3.0" / f"{rid}.db", rows)
     out = tmp_path / "out"
-    assert mr.main([str(root), "--out", str(out), "--max-rows", str(max_rows)]) == 0
+    assert _main(root, out, max_rows=max_rows) == 0
     return _outputs(out)
 
 
@@ -320,6 +330,7 @@ def test_every_golden_is_measured_clean(goldens):
         assert x["schema_invalid"] == [], rid
         assert not any(x["also"].values()), (rid, x["also"])
         assert x["p1"]["failures"] == {}, rid
+        assert x["p1"]["checked"] == x["p1"]["passed"], rid
         assert x["p2"]["failures"] == {}, rid
         assert x["p3"]["not_compared"] is None, rid
 
@@ -352,6 +363,7 @@ def test_a_leading_value_moves_and_an_equal_value_from_another_record_is_equal(
 
 def test_the_summary_totals_the_runs(goldens):
     runs, summary = goldens
+    assert summary["complete"] is True
     assert summary["runs"]["total"] == len(GOLDEN)
     assert summary["runs"]["status"] == {"measured": len(GOLDEN)}
     by_class = {}
@@ -548,6 +560,40 @@ def test_a_value_moved_to_where_a_rule_would_put_it_still_reads_unattributed(
     x = runs["loading"]
     assert P3.UNATTRIBUTED in _cells(x)[("status", 2)]
     assert x["p2"]["failures"] == {mr.P2Failure.ANOTHER_CLAIMS: 1}
+
+
+def test_a_value_moved_off_the_lineage_reads_unattributed_not_revisited(
+    tmp_path, monkeypatch
+):
+    """The rows move B's step-2 loss, on the head's lineage, into A's step-3
+    commit, off it: the cell's shape fits a step the lineage revisited, but the
+    passes gave the value to B's commit, so no rule explains it."""
+    real = mr._rows_0_4_0
+
+    def moved(passes):
+        rows = real(passes)
+        bodies = {x.seq: json.loads(x.body) for x in rows}
+        (late,) = [
+            x.seq for x in rows if x.name == "loss" and bodies[x.seq]["value"] == 0.71
+        ]
+        a_last = max(
+            x.seq
+            for x in rows
+            if x.topic == "lifecycle.commit" and bodies[x.seq]["claim_seq"] == 1
+        )
+        out = []
+        for x in rows:
+            body = bodies[x.seq]
+            if x.topic == "lifecycle.commit" and late in body["values"]:
+                body["values"].remove(late)
+            if x.seq == a_last:
+                body["values"].append(late)
+            out.append(x._replace(body=json.dumps(body)))
+        return out
+
+    monkeypatch.setattr(mr, "_rows_0_4_0", moved)
+    runs, _ = _run(tmp_path, {"beyond": BEYOND})
+    assert _cells(runs["beyond"])[("loss", 2)] == {P3.UNATTRIBUTED}
 
 
 def test_a_new_read_that_raises_is_recorded_and_the_also_check_names_it(tmp_path):
@@ -792,22 +838,14 @@ def test_a_shipped_step_that_breaks_preservation_is_its_refusal(tmp_path, monkey
     root = tmp_path / "root"
     _write(root / "v0.2.0" / "old.db", _v0_2_0())
     out = tmp_path / "out"
-    assert mr.main([str(root), "--out", str(out), "--max-rows", "100"]) == 0
+    assert _main(root, out, max_rows=100) == 0
     runs, _ = _outputs(out)
     assert runs["old"]["refusal"]["kind"] == "a broken seq-and-topic preservation"
 
 
 def test_a_root_that_does_not_exist_is_refused(tmp_path):
     with pytest.raises(SystemExit):
-        mr.main(
-            [
-                str(tmp_path / "nowhere"),
-                "--out",
-                str(tmp_path / "out"),
-                "--max-rows",
-                "1",
-            ]
-        )
+        _main(tmp_path / "nowhere", tmp_path / "out", max_rows=1)
 
 
 def test_a_corrupt_log_is_counted_never_raised(tmp_path):
@@ -827,7 +865,7 @@ def test_a_corrupt_log_is_counted_never_raised(tmp_path):
     (root / "v0.3.0" / "b_schema.db").write_bytes(truncated)
     _write(root / "v0.3.0" / "c_fine.db", EXIT_WITH_A_VALUE)
     out = tmp_path / "out"
-    assert mr.main([str(root), "--out", str(out), "--max-rows", "10000"]) == 0
+    assert _main(root, out, max_rows=10000) == 0
     runs, summary = _outputs(out)
     assert runs["a_rows"]["status"] == "crashed"
     assert runs["a_rows"]["crash"]["stage"] == "read"
@@ -864,7 +902,9 @@ def test_a_step_that_crashes_is_recorded_not_raised(tmp_path, monkeypatch):
     assert runs["crash"]["status"] == "crashed"
     assert runs["crash"]["crash"]["stage"] == "0.3.0 -> 0.4.0"
     assert summary["crashes"] == {
-        "0.3.0 -> 0.4.0": {"AssertionError: records after Input(seq=N) share a tie": 1}
+        "0.3.0 -> 0.4.0": {
+            "AssertionError in crash: records after Input(seq=N) share a tie": 1
+        }
     }
 
 
@@ -939,7 +979,7 @@ def test_the_format_is_read_from_the_address(tmp_path):
     )
     _write(root / "v0.3.0" / "new.db", EXIT_WITH_A_VALUE)
     out = tmp_path / "out"
-    assert mr.main([str(root), "--out", str(out), "--max-rows", "100"]) == 0
+    assert _main(root, out, max_rows=100) == 0
     runs, summary = _outputs(out)
     assert {k: (x["address"], x["format"], x["status"]) for k, x in runs.items()} == {
         "legacy": ("legacy", "0.2.0", "measured"),
@@ -962,7 +1002,7 @@ def test_a_symlinked_duplicate_is_counted_once(tmp_path):
     (root / "cell").symlink_to(root / "v0.3.0", target_is_directory=True)
     (root / "loop").symlink_to(root, target_is_directory=True)  # a cycle
     out = tmp_path / "out"
-    assert mr.main([str(root), "--out", str(out), "--max-rows", "100"]) == 0
+    assert _main(root, out, max_rows=100) == 0
     runs, summary = _outputs(out)
     assert list(runs) == ["exit"]
     assert runs["exit"]["path"] == str(target.resolve())
@@ -974,7 +1014,8 @@ def test_a_symlinked_duplicate_is_counted_once(tmp_path):
 def test_files_that_are_not_logs_are_skipped_and_counted(tmp_path):
     root = tmp_path / "root"
     _write(root / "v0.3.0" / "run.db", EXIT_WITH_A_VALUE)
-    _write(root / "v0.2.0" / "run.db", _v0_2_0())  # sealed behind its 0.3.0 copy
+    _write(root / "v0.2.0" / "run.db", _v0_2_0())
+    (root / "v0.2.0" / "run.db").chmod(0o444)  # sealed by the migration that moved it
     (root / "cell").mkdir()
     (root / "cell" / "tomb.db").touch()  # a tombstone
     (root / "cell" / "text.db").write_text("not a database at all, " * 100)
@@ -985,7 +1026,7 @@ def test_files_that_are_not_logs_are_skipped_and_counted(tmp_path):
     _write(root / "v0.4.0" / "future.db", EXIT_WITH_A_VALUE)
     (root / "cell" / "gone.db").symlink_to(root / "nowhere.db")
     out = tmp_path / "out"
-    assert mr.main([str(root), "--out", str(out), "--max-rows", "100"]) == 0
+    assert _main(root, out, max_rows=100) == 0
     runs, summary = _outputs(out)
     assert list(runs) == ["run"] and runs["run"]["format"] == "0.3.0"
     W = mr.SkipWhy
@@ -999,13 +1040,35 @@ def test_files_that_are_not_logs_are_skipped_and_counted(tmp_path):
     }
     skipped = [json.loads(x) for x in (out / "skipped.jsonl").read_text().splitlines()]
     assert len(skipped) == 6
+    assert {x["why"]: x["detail"] for x in skipped}[W.NOT_SQLITE] == "SQLITE_NOTADB"
+
+
+def test_an_unsealed_log_beside_a_newer_one_is_a_conflict(tmp_path):
+    """Two logs of one run, either of which may have been written last: neither
+    is guessed at, and the newer is measured. A sealed older one is superseded
+    (``runstate migrate`` seals the log it moves)."""
+    root = tmp_path / "root"
+    _write(root / "cell" / "run.db", _v0_2_0())  # onboarding skipped it
+    _write(root / "cell" / "v0.2.0" / "run.db", _v0_2_0())
+    _write(root / "home" / "old.db", _v0_2_0())
+    (root / "home" / "old.db").chmod(0o444)
+    _write(root / "home" / "v0.2.0" / "old.db", _v0_2_0())
+    out = tmp_path / "out"
+    assert _main(root, out, max_rows=100) == 0
+    runs, summary = _outputs(out)
+    assert {x["path"] for x in runs.values()} == {
+        str((root / "cell" / "v0.2.0" / "run.db").resolve()),
+        str((root / "home" / "v0.2.0" / "old.db").resolve()),
+    }
+    W = mr.SkipWhy
+    assert summary["files"]["skipped"] == {W.CONFLICT: 1, W.SUPERSEDED: 1}
 
 
 def test_the_runner_writes_nothing_under_a_root(tmp_path):
     root = tmp_path / "root"
     _write(root / "v0.3.0" / "exit.db", EXIT_WITH_A_VALUE)
     with pytest.raises(SystemExit):
-        mr.main([str(root), "--out", str(root / "out"), "--max-rows", "100"])
+        _main(root, root / "out", max_rows=100)
     assert sorted(p.name for p in root.rglob("*")) == ["exit.db", "v0.3.0"]
 
 
@@ -1036,7 +1099,7 @@ def test_the_runner_streams_one_run_at_a_time(tmp_path, monkeypatch):
         return rows
 
     monkeypatch.setattr(mr, "_read_rows", tracked)
-    assert mr.main([str(root), "--out", str(out), "--max-rows", "100"]) == 0
+    assert _main(root, out, max_rows=100) == 0
     assert len(alive) == len(logs)
 
 
@@ -1048,7 +1111,7 @@ def test_max_rows_skips_a_run_without_loading_it(tmp_path, monkeypatch):
     real = mr._read_rows
     monkeypatch.setattr(mr, "_read_rows", lambda p: read.append(p.stem) or real(p))
     out = tmp_path / "out"
-    assert mr.main([str(root), "--out", str(out), "--max-rows", "5"]) == 0
+    assert _main(root, out, max_rows=5) == 0
     runs, summary = _outputs(out)
     assert read == ["small"]
     assert runs["big"]["status"] == "skipped_max_rows" and runs["big"]["rows"] == 12
@@ -1073,6 +1136,8 @@ def test_the_runner_runs_under_a_4gb_address_space_limit(tmp_path):
             shlex.quote(str(out)),
             "--max-rows",
             "1000",
+            "--max-bytes",
+            str(MAX_BYTES),
         ]
     )
     done = subprocess.run(
@@ -1081,3 +1146,195 @@ def test_the_runner_runs_under_a_4gb_address_space_limit(tmp_path):
     assert done.returncode == 0, done.stderr
     runs, summary = _outputs(out)
     assert summary["runs"]["status"] == {"measured": 3}
+
+
+# ----- fix round 1 ---------------------------------------------------------------------
+
+# Claims that end in an exit with no parent: no commit, and no resume point.
+NULL_PARENT_EXITS = {
+    "errored": _dated(
+        [
+            r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+            r(2, "lifecycle.stopped", _stopped(False, "ImportError", None, 1, [], 3.0)),
+        ]
+    ),
+    "preempted": _dated(
+        [
+            r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+            r(2, "lifecycle.stopped", _stopped(False, None, None, 1, [], 2.0)),
+        ]
+    ),
+    "stepless_then_clean": _dated(
+        [
+            r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+            r(2, "value", _value("LOADING", None, 1.5), name="status"),
+            r(3, "lifecycle.heartbeat", _beat(None, 0, 1, 2.0)),
+            r(4, "lifecycle.stopped", _stopped(True, None, None, 1, [], 3.0)),
+        ]
+    ),
+}
+
+
+def test_an_exit_with_no_parent_is_measured(tmp_path):
+    """Its lineage is the exit alone, with no commit: the empty chain."""
+    runs, summary = _run(tmp_path, NULL_PARENT_EXITS)
+    assert summary["runs"]["status"] == {"measured": 3}
+    for rid, x in runs.items():
+        assert x["p3"]["not_compared"] is None, rid
+        assert x["p3"]["differing"] == 0 and x["p4"]["verdict"]["equal"], rid
+        assert not any(x["also"].values()) and x["schema_invalid"] == [], rid
+
+
+def test_a_failure_of_the_runners_own_measurement_is_recorded_and_the_run_goes_on(
+    tmp_path, monkeypatch
+):
+    real = mr.p2
+    calls = []
+
+    def broken(*args):
+        calls.append(1)
+        if len(calls) == 1:
+            raise KeyError(99)
+        return real(*args)
+
+    monkeypatch.setattr(mr, "p2", broken)
+    runs, summary = _run(tmp_path, {"a": EXIT_WITH_A_VALUE, "b": EXIT_WITH_A_VALUE})
+    assert runs["a"]["status"] == "crashed"
+    assert runs["a"]["crash"]["stage"] == "the runner's own measurement"
+    assert runs["a"]["crash"]["kind"] == "KeyError in broken: N"
+    assert runs["b"]["status"] == "measured"
+    assert summary["crashes"] == {
+        "the runner's own measurement": {"KeyError in broken: N": 1}
+    }
+    assert summary["complete"] is True
+
+
+def test_a_parentless_resume_with_a_candidate_reads_unattributed(tmp_path, monkeypatch):
+    """The reviewer's probe: M1 made to drop a valid candidate. The root's class
+    is tested against the candidates, not taken from M1, so nothing that rests
+    on that root is attributed, and neither P1 nor the census counts it."""
+    import runstate.migrations.v0_3_0_to_v0_4_0 as step
+
+    real = step._resume_from
+
+    def dropped(claims, beaten, i):
+        x = real(claims, beaten, i)
+        return step.Parentless() if isinstance(x, step.Resumed) else x
+
+    monkeypatch.setattr(step, "_resume_from", dropped)
+    runs, _ = _run(tmp_path, {"beyond": BEYOND})
+    x = runs["beyond"]
+    cells = _cells(x)
+    assert len(cells) == 4 and all(c == {P3.UNATTRIBUTED} for c in cells.values())
+    assert x["p1"]["parentless"] == {}
+    assert x["p1"]["failures"] == {mr.P1Failure.UNSOUND_CHAIN: 1}
+    assert x["census"]["parentless_by_candidacy"] == 0
+
+
+def test_p1_checks_a_commit_with_no_chain(tmp_path, monkeypatch):
+    """A commit whose parent follows it has no chain: a failure P1 counts among
+    the checked."""
+    real = mr._rows_0_4_0
+
+    def late_parent(passes):
+        rows = real(passes)
+        commits = [x.seq for x in rows if x.topic == "lifecycle.commit"]
+        out = []
+        for x in rows:
+            body = json.loads(x.body)
+            if x.seq == commits[1]:  # step 1's, now naming the last commit
+                body["parent"] = commits[-1]
+            out.append(x._replace(body=json.dumps(body)))
+        return out
+
+    monkeypatch.setattr(mr, "_rows_0_4_0", late_parent)
+    runs, _ = _run(tmp_path, {"skipped": GOLDEN["skipped"]})
+    p1 = runs["skipped"]["p1"]
+    assert p1["failures"] == {mr.P1Failure.NO_CHAIN: 3}  # steps 1, 3 and 5
+    assert (p1["checked"], p1["passed"]) == (4, 1)
+
+
+def test_max_bytes_skips_a_file_without_opening_it(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    _write(root / "v0.3.0" / "small.db", EXIT_WITH_A_VALUE)
+    padded = [r(1, "value", _value("x" * 20_000, 0, 1.0), name="blob")]
+    _write(root / "v0.3.0" / "big.db", padded)
+    small = (root / "v0.3.0" / "small.db").stat().st_size
+    assert (root / "v0.3.0" / "big.db").stat().st_size > small
+    counted = []
+    real = mr._count_rows
+    monkeypatch.setattr(mr, "_count_rows", lambda p: counted.append(p.stem) or real(p))
+    out = tmp_path / "out"
+    assert _main(root, out, max_rows=100, max_bytes=small) == 0
+    runs, summary = _outputs(out)
+    assert counted == ["small"]
+    assert runs["big"]["status"] == "skipped_max_bytes" and runs["big"]["rows"] is None
+    assert summary["args"]["max_bytes"] == small
+
+
+def test_a_run_too_big_to_read_is_a_crash_at_the_read(tmp_path, monkeypatch):
+    real = mr._read_rows
+
+    def read(path):
+        if path.stem == "a":
+            raise MemoryError()
+        return real(path)
+
+    monkeypatch.setattr(mr, "_read_rows", read)
+    runs, _ = _run(tmp_path, {"a": EXIT_WITH_A_VALUE, "b": EXIT_WITH_A_VALUE})
+    assert runs["a"]["status"] == "crashed" and runs["a"]["crash"]["stage"] == "read"
+    assert runs["a"]["crash"]["kind"] == "MemoryError in read: "
+    assert runs["b"]["status"] == "measured"
+
+
+def test_the_summary_is_written_as_the_runner_goes_and_when_it_stops(
+    tmp_path, monkeypatch
+):
+    """Rewritten every ``_SUMMARY_EVERY`` runs, and once more however the runner
+    stops: an abort loses no totals, and says it is incomplete."""
+    root = tmp_path / "root"
+    for rid in ("a", "b", "c"):
+        _write(root / "v0.3.0" / f"{rid}.db", EXIT_WITH_A_VALUE)
+    out = tmp_path / "out"
+    monkeypatch.setattr(mr, "_SUMMARY_EVERY", 1)
+    real = mr.measure
+    measured = []
+
+    def stop_at_c(found, **kw):
+        if found.path.stem == "c":
+            summary = json.loads((out / "summary.json").read_text())
+            assert summary["runs"]["total"] == 2 and summary["complete"] is False
+            raise KeyboardInterrupt
+        measured.append(found.path.stem)
+        return real(found, **kw)
+
+    monkeypatch.setattr(mr, "measure", stop_at_c)
+    with pytest.raises(KeyboardInterrupt):
+        _main(root, out, max_rows=100)
+    summary = json.loads((out / "summary.json").read_text())
+    assert measured == ["a", "b"]
+    assert summary["runs"]["total"] == 2 and summary["complete"] is False
+
+
+def test_0_3_0s_liveness_is_recorded_never_refused(tmp_path):
+    """What ``runstate migrate`` would refuse as live: a claim no stop ended
+    whose handle does not resolve dead, a foreign host's included."""
+    dead = [r(1, "lifecycle.started", _started(DEAD, 1.0))]
+    runs, summary = _run(
+        tmp_path,
+        {
+            "ended": GOLDEN["exit"],
+            "foreign": GOLDEN["doubly_displaced"],
+            "dead": dead,
+        },
+    )
+    assert {k: x["live_by_0_3_0"] for k, x in runs.items()} == {
+        "ended": False,
+        "foreign": True,
+        "dead": False,
+    }
+    assert all(x["status"] == "measured" for x in runs.values())
+    assert (summary["runs"]["live_by_0_3_0"], summary["runs"]["not_live_by_0_3_0"]) == (
+        1,
+        2,
+    )

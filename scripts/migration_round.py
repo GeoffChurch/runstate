@@ -4,7 +4,7 @@ Task 11): real logs through the shipped 0.2.0 -> 0.3.0 step and the new
 0.3.0 -> 0.4.0 step, with P1-P4 and "Also" of docs/specs/commits-and-lineage.md
 §7 measured on each, every difference attributed to a named rule.
 
-    scripts/migration_round.py ROOT... --out DIR --max-rows N
+    scripts/migration_round.py ROOT... --out DIR --max-rows N --max-bytes B
 
 READ-ONLY. Every log is opened ``mode=ro&immutable=1``, and nothing is written
 under a ROOT: the runner refuses an ``--out`` at or under one. ``immutable=1``
@@ -14,21 +14,32 @@ a log is reported (``unread_sidecars``), never read.
 THE FILES. Every ``*.db`` under each ROOT, following symlinks (a symlink cycle is
 cut), resolved and counted once per inode: a consumer's cell->home symlinks reach
 each log twice. A file is skipped, and counted by why (``SkipWhy``), when it is
-a broken symlink, empty (a tombstone), at an address of a format this runstate
-does not register, superseded by the same run's log in a newer registered format
-(a migrated run's sealed copy), not a SQLite database, or one with no runstate
-``log`` table. Its format is read from its address: ``<root>/v<X>/<rid>.db`` is
-format X, and any other address is a legacy one, format 0.2.0 (log-formats.md
-§7).
+a broken symlink, unreadable, empty (a tombstone), at an address of a format this
+runstate does not register, beside the same run's log in a newer registered
+format (superseded when it is sealed, as ``runstate migrate`` leaves the log it
+moves, and a conflict when not), not a SQLite database, too corrupt to read its
+schema, another SQLite error (named), or one with no runstate ``log`` table. Its
+format is read from its address: ``<root>/v<X>/<rid>.db`` is format X, and any
+other address is a legacy one, format 0.2.0 (log-formats.md §7).
 
 STREAMING. One run at a time: a run's rows, reads and results are dropped before
 the next run is read, its line is written and flushed as soon as it is measured,
-and only counters cross runs. A run with more than ``--max-rows`` rows is counted
-and skipped, never loaded.
+and only counters cross runs. A log file larger than ``--max-bytes`` is counted
+and skipped unopened, and a run with more than ``--max-rows`` rows unread.
+
+NEVER AN ABORT. Whatever fails on one file or one run is recorded and the corpus
+run goes on: a file the OS or SQLite will not read is a skip, and an exception
+while measuring a run, a step's, a read's or the runner's own (``MemoryError``
+included), is a crash on that run's line, by its stage, its type and the
+function it was raised in. ``summary.json`` is rewritten every
+``_SUMMARY_EVERY`` runs and once more however the runner stops, with
+``complete`` false unless it finished.
 
 EACH RUN:
 1. Format 0.2.0 is brought to 0.3.0 by the shipped step, in memory, through
-   ``transform_checked``; a refusal is recorded.
+   ``transform_checked``; a refusal is recorded. 0.3.0's ``is_live``, which
+   ``runstate migrate`` asks before it moves a run, is recorded as
+   ``live_by_0_3_0``, and refuses nothing here.
 2. The 0.3.0 -> 0.4.0 step runs once (``run_passes``), and its records are
    written as ``transform`` writes them. A refusal is recorded by its kind
    (``refusal_kind``, the one boundary that reads a step's messages), with the
@@ -45,15 +56,15 @@ EACH RUN:
    crash: a 0.3.0 verdict that raises is compared as one (P4), and a 0.4.0 head,
    lineage or series that raises leaves P3 uncompared, with the error and the
    old read's cell count. Any other exception of a step or a read is recorded as
-   a crash of its stage; the runner's own checks raise.
+   a crash of its stage, and so is a failure of the runner's own checks.
 5. P1-P4 and "Also" are checked, and the census hooks counted.
 
 THE PROPERTIES (§7, widened by the ledger's rulings, progress.md):
 - **P1** (``P1Result``): every 0.3.0 heartbeat with an integer step whose
   commit's chain links back to old step 0 counts ``s + 1`` commits. A chain whose
-  root is a parentless resume is counted by its class, not checked. A failure is
-  a trailing gap (``P1Failure.TRAILING_GAP``, the step's known limit), or
-  unexplained.
+  root is a parentless resume is counted by its class, not checked; every other
+  real commit is checked, and fails as a trailing gap (``P1Failure``, the
+  step's known limit), an unsound chain, or no chain at all.
 - **P2** (``P2Result``): every value with a step is committed by its claim's
   commit carrying that step, by the 0.4.0 rows, except by the kinds of
   ``P2Exception``; anything else is a ``P2Failure``.
@@ -68,15 +79,17 @@ THE PROPERTIES (§7, widened by the ledger's rulings, progress.md):
   part has none.
 - **P4** (``P4Result``): the verdict's outcomes, 0.3.0's one outcome taken as a
   one-element set, and the stop fold's ids, each difference attributed to the
-  ``P4Class`` rules that change it, or ``unattributed``. No rule changes the stop
-  fold's ids, so a difference there is always unattributed.
+  ``P4Class`` rules that change it, or ``unattributed``. The stop fold's ids are
+  compared as sets (both folds keep an id's newest send); no rule changes them,
+  so a difference there is always unattributed.
 - **Also** (``Also``): no node names a value at or after it, no parent at or
   after its child, no commit before the record its ``consumed_seq`` names, no
   resume point at or after its claim, every seq-valued field names a record of
   the kind it names (Review Focus 1), one exit per claim, and every row valid.
 
 OUTPUT. ``DIR/runs.jsonl``: one ``RunRecord`` per run, as JSON, written as each
-is measured. ``DIR/skipped.jsonl``: one ``{path, why}`` per skipped file.
+is measured. ``DIR/skipped.jsonl``: one ``{path, why, detail}`` per skipped
+file, ``detail`` naming SQLite's error where there is one.
 ``DIR/summary.json``: the totals (``Totals``), every class counted once per
 cell, verdict or record it names, and each combination of classes a cell or a
 verdict carries counted under ``by_class_set``, the classes joined with ``+``.
@@ -90,6 +103,7 @@ import os
 import re
 import sqlite3
 import sys
+import traceback
 from bisect import bisect_right
 from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
@@ -118,6 +132,7 @@ from runstate.migrations.v0_3_0_to_v0_4_0 import (  # noqa: E402
     Parentless,
     Passes,
     Place,
+    Real,
     Reap,
     ResumeFrom,
     Synthetic,
@@ -155,10 +170,12 @@ class SkipWhy(StrEnum):
     BROKEN_LINK = "a broken symlink"
     EMPTY = "an empty file (a tombstone)"
     UNREGISTERED_FORMAT = "an address of a format this runstate does not register"
-    SUPERSEDED = "superseded by the run's log in a newer format"
+    SUPERSEDED = "superseded by the run's log in a newer format, and sealed"
+    CONFLICT = "beside the run's log in a newer format, and not sealed"
     UNREADABLE = "unreadable: no permission, or gone"
     NOT_SQLITE = "not a sqlite database"
     CORRUPT = "a sqlite database too corrupt to read its schema"
+    SQLITE_ERROR = "another sqlite error, named in skipped.jsonl"
     NO_LOG_TABLE = "no runstate log table"
 
 
@@ -171,19 +188,23 @@ class StepName(StrEnum):
 
 class Status(StrEnum):
     MEASURED = "measured"
+    SKIPPED_MAX_BYTES = "skipped_max_bytes"
     SKIPPED_MAX_ROWS = "skipped_max_rows"
     REFUSED = "refused"
     CRASHED = "crashed"
 
 
 class Stage(StrEnum):
-    """Where a crash happened: in a step, or in a read the round measures."""
+    """Where a crash happened: in a step, in a read the round measures, or in
+    the runner's own measurement of a run, which is recorded on the run's line
+    too and never aborts the corpus run."""
 
     READ = "read"
     FROM_0_2_0 = StepName.FROM_0_2_0.value
     FROM_0_3_0 = StepName.FROM_0_3_0.value
     OLD_READS = "the 0.3.0 reads"
     NEW_READS = "the 0.4.0 reads"
+    RUNNER = "the runner's own measurement"
 
 
 class P3Class(StrEnum):
@@ -250,8 +271,14 @@ class P4Class(StrEnum):
 
 class P1Failure(StrEnum):
     TRAILING_GAP = "a trailing gap (a known limit)"
-    UNSOUND_CHAIN = "a chain whose old steps do not rise by one"
+    UNSOUND_CHAIN = (
+        "a chain no rule explains: its old steps do not rise by one, "
+        "or its root is no parentless resume"
+    )
     NO_CHAIN = "a parent at or after its child"
+
+
+_PARENTLESS = frozenset({P3Class.PARENTLESS, P3Class.PARENTLESS_BY_CANDIDACY})
 
 
 class P2Exception(StrEnum):
@@ -478,6 +505,10 @@ class RunRecord:
     rows: int | None  # None when its rows cannot be counted
     unread_sidecars: list[str]
     status: str
+    # 0.3.0's is_live, which `runstate migrate` asks before it moves a run: an
+    # unresolvable foreign handle reads live. None when the run never reached
+    # 0.3.0, or is_live refused it (a claim with no handle).
+    live_by_0_3_0: bool | None = None
     refusal: Refusal | None = None
     crash: Crash | None = None
     census: Census | None = None
@@ -555,8 +586,15 @@ def refusal_kind(step: StepName, message: str) -> str:
 
 
 def _crash(stage: Stage, exc: BaseException) -> Crash:
+    """A crash's kind: the exception's type, the function it was raised in, and
+    its message with numbers abstracted; its message: the raw one, and where."""
     message = str(exc)
-    kind = f"{type(exc).__name__}: {_normalized(message)}"[:300]
+    frames = traceback.extract_tb(exc.__traceback__)
+    where = frames[-1] if frames else None
+    at = "?" if where is None else where.name
+    kind = f"{type(exc).__name__} in {at}: {_normalized(message)}"[:300]
+    if where is not None:
+        message = f"{message} (at {Path(where.filename).name}:{where.lineno})"
     return Crash(stage.value, kind, message[:2000])
 
 
@@ -578,6 +616,7 @@ class Found(NamedTuple):
 class Skipped(NamedTuple):
     path: Path
     why: SkipWhy
+    detail: str | None  # SQLite's error name, for SQLITE_ERROR
 
 
 @dataclass
@@ -636,10 +675,13 @@ def _address(path: Path) -> tuple[str, str] | SkipWhy:
     return "legacy", formats._BASE
 
 
-def _superseded(path: Path, version: str, address: str) -> bool:
+def _newer(path: Path, version: str, address: str) -> SkipWhy | None:
     """Whether the same run has a non-empty log at a newer registered format's
-    address: a migrated run leaves its old log sealed, and its newer one is the
-    run."""
+    address. ``runstate migrate`` seals the log it moves, clearing its write
+    bits, so a sealed older log is superseded by the newer, which is the run. An
+    unsealed one beside it is a conflict: two logs of one run, either of which
+    may have been written last (a legacy log onboarding skipped because its
+    destination existed, say). Neither is guessed at; the newer is measured."""
     if address == "legacy":
         root, newer = path.parent, list(formats.FORMATS)
     else:
@@ -650,12 +692,13 @@ def _superseded(path: Path, version: str, address: str) -> bool:
     for v in newer:
         p = formats.FORMATS[v].sqlite_path(root, path.stem)
         if p.is_file() and p.stat().st_size > 0:
-            return True
-    return False
+            sealed = not path.stat().st_mode & 0o222
+            return SkipWhy.SUPERSEDED if sealed else SkipWhy.CONFLICT
+    return None
 
 
 # Why a file whose schema SQLite cannot read is skipped, by SQLite's error name.
-# Any other error has no decided reading, and raises.
+# Any other error is SQLITE_ERROR, its name kept, so a new one is seen.
 _SQLITE_SKIPS = {
     "SQLITE_NOTADB": SkipWhy.NOT_SQLITE,
     "SQLITE_CORRUPT": SkipWhy.CORRUPT,
@@ -664,7 +707,7 @@ _SQLITE_SKIPS = {
 }
 
 
-def _not_a_log(path: Path) -> SkipWhy | None:
+def _not_a_log(path: Path) -> Skipped | None:
     """Why the file is no runstate log to measure, or None."""
     try:
         conn = _connect(path)
@@ -673,51 +716,51 @@ def _not_a_log(path: Path) -> SkipWhy | None:
         finally:
             conn.close()
     except sqlite3.Error as exc:
-        why = _SQLITE_SKIPS.get(exc.sqlite_errorname)
-        if why is None:
-            raise
-        return why
-    return None if cols == _COLUMNS else SkipWhy.NO_LOG_TABLE
+        name = exc.sqlite_errorname
+        return Skipped(path, _SQLITE_SKIPS.get(name, SkipWhy.SQLITE_ERROR), name)
+    return None if cols == _COLUMNS else Skipped(path, SkipWhy.NO_LOG_TABLE, None)
 
 
 def discover(roots: Sequence[Path], counts: FileCounts) -> Iterator[Found | Skipped]:
     """Each file under the roots once, by inode, as a log to measure or a skip.
-    Holds only the inodes seen, never a run."""
+    Holds only the inodes seen, never a run. A file the OS will not let it look
+    at is skipped as unreadable, never fatal."""
     seen: set[tuple[int, int]] = set()
     for root in roots:
         for p in _db_paths(root, counts):
             counts.paths += 1
-            if not p.exists():
-                yield Skipped(p, SkipWhy.BROKEN_LINK)
-                continue
-            real = p.resolve()
             try:
-                st = real.stat()
+                item = _classify(p, seen, counts)
             except OSError:
-                yield Skipped(real, SkipWhy.UNREADABLE)
-                continue
-            key = (st.st_dev, st.st_ino)
-            if key in seen:
-                counts.duplicate_paths += 1
-                continue
-            seen.add(key)
-            counts.unique += 1
-            if st.st_size == 0:
-                yield Skipped(real, SkipWhy.EMPTY)
-                continue
-            where = _address(real)
-            if isinstance(where, SkipWhy):
-                yield Skipped(real, where)
-                continue
-            address, version = where
-            if _superseded(real, version, address):
-                yield Skipped(real, SkipWhy.SUPERSEDED)
-                continue
-            why = _not_a_log(real)
-            if why is not None:
-                yield Skipped(real, why)
-                continue
-            yield Found(real, address, version)
+                item = Skipped(p, SkipWhy.UNREADABLE, None)
+            if item is not None:
+                yield item
+
+
+def _classify(
+    p: Path, seen: set[tuple[int, int]], counts: FileCounts
+) -> Found | Skipped | None:
+    """One path: a log, a skip, or None for a duplicate of a file seen."""
+    if not p.exists():
+        return Skipped(p, SkipWhy.BROKEN_LINK, None)
+    real = p.resolve()
+    st = real.stat()
+    key = (st.st_dev, st.st_ino)
+    if key in seen:
+        counts.duplicate_paths += 1
+        return None
+    seen.add(key)
+    counts.unique += 1
+    if st.st_size == 0:
+        return Skipped(real, SkipWhy.EMPTY, None)
+    where = _address(real)
+    if isinstance(where, SkipWhy):
+        return Skipped(real, where, None)
+    address, version = where
+    newer = _newer(real, version, address)
+    if newer is not None:
+        return Skipped(real, newer, None)
+    return _not_a_log(real) or Found(real, address, version)
 
 
 def _count_rows(path: Path) -> int:
@@ -829,15 +872,24 @@ class Facts:
     committed: Mapping[int, CommitRef]  # a value -> the commit holding it
     left: Mapping[int, Uncommitted]  # a value -> why no commit holds it
     first: Mapping[int, int]  # a claim -> its first commit's old step
-    steps: Mapping[int, frozenset[int]]  # a claim -> its commits' old steps
+    beats: Mapping[CommitRef, int]  # a commit -> the beat that decides candidacy
     order: Mapping[int, int]  # a claim -> its index in claim order
     resume: Mapping[int, ResumeFrom]
     ends: Mapping[int, EndKind]
 
-    def held_before(self, claim: int, step: int) -> bool:
-        """Whether a claim before ``claim`` holds a commit at ``step``."""
+    def earlier_at(self, claim: int, step: int) -> list[int]:
+        """The deciding beats of the commits at ``step`` of the claims before
+        ``claim``. A commit is a candidate for ``claim`` exactly when its
+        deciding beat precedes the claim's ``started`` (M1's candidacy rule): its
+        own heartbeat when real, else the real heartbeat before it in its claim
+        (``Synthetic.previous``), as the step's ``_beaten`` reads it. Asked only
+        of a claim M1 called parentless (``_parentless``)."""
         i = self.order[claim]
-        return any(step in s for c, s in self.steps.items() if self.order[c] < i)
+        return [
+            beat
+            for ref, beat in self.beats.items()
+            if ref.step == step and self.order[ref.claim] < i
+        ]
 
 
 def facts_of(passes: Passes) -> Facts:
@@ -846,15 +898,19 @@ def facts_of(passes: Passes) -> Facts:
     commits: dict[CommitRef, Commit] = {}
     committed: dict[int, CommitRef] = {}
     first: dict[int, int] = {}
-    steps: dict[int, frozenset[int]] = {}
+    beats: dict[CommitRef, int] = {}
     for c in passes.synthesis.claims:
         claim = c.claim.started.seq
-        steps[claim] = frozenset(k.step for k in c.commits)
         if c.commits:
             first[claim] = c.commits[0].step
         for k in c.commits:
             ref = CommitRef(claim, k.step)
             commits[ref] = k
+            match k.origin:
+                case Real(beat=beat) | Synthetic(previous=beat):
+                    beats[ref] = beat.seq
+                case _:
+                    assert_never(k.origin)
             commit_at[passes.numbering[passes.placement.commits[ref]]] = ref
             for v in k.values:
                 committed[v] = ref
@@ -879,7 +935,7 @@ def facts_of(passes: Passes) -> Facts:
         committed=committed,
         left={x.value.seq: x.why for x in passes.synthesis.uncommitted},
         first=first,
-        steps=steps,
+        beats=beats,
         order={c.started.seq: i for i, c in enumerate(passes.attribution.claims)},
         resume=passes.linkage.resume_from,
         ends=ends,
@@ -909,20 +965,42 @@ class Chain(NamedTuple):
 
 _TRAILING = (Place.BEFORE_A_CLEAN_EXIT, Place.RESUMED_FROM)
 
+# The empty lineage: no commit, so a count of 0, at step -1, the step before a
+# fresh chain's first. An exit with no parent (a claim that committed nothing
+# and resumed from nothing) is its only node.
+_EMPTY = Chain(commits=0, step=-1, root=0, classes=frozenset(), sound=True)
 
-def _root(ref: CommitRef, facts: Facts) -> frozenset[P3Class] | None:
-    """THE PARENTLESS RESUME (§7 M1; P3's "a parentless resume"): a chain rooted
-    at a first commit above old step 0 counts too few. By M1's candidacy rule
-    (PROVISIONAL ruling of Task 5) when an earlier claim holds the step below,
-    though not as a candidate: a displaced worker's checkpoint (the step's known
-    limit). None when such a root is not a parentless resume."""
-    if ref.step == 0:
-        return frozenset()
+
+def _parentless(ref: CommitRef, facts: Facts) -> P3Class | None:
+    """THE PARENTLESS RESUME (§7 M1; P3's "a parentless resume"): a claim's first
+    commit above old step 0 with no parent counts too few. Tested here, not
+    taken from M1's verdict:
+
+    - PARENTLESS when no earlier claim holds a commit at the step below;
+    - PARENTLESS_BY_CANDIDACY (M1's candidacy rule, PROVISIONAL ruling of Task
+      5) when earlier claims hold one, but every one is decided by a beat at or
+      after the claim's ``started``, so none is a candidate: a displaced
+      worker's checkpoint (the step's known limit);
+    - None when a candidate exists, or M1 did not call the claim parentless: no
+      rule explains the root, and what depends on it reads unattributed."""
     if not isinstance(facts.resume[ref.claim], Parentless):
         return None
-    if facts.held_before(ref.claim, ref.step - 1):
-        return frozenset({P3Class.PARENTLESS_BY_CANDIDACY})
-    return frozenset({P3Class.PARENTLESS})
+    beats = facts.earlier_at(ref.claim, ref.step - 1)
+    if not beats:
+        return P3Class.PARENTLESS
+    if all(beat >= ref.claim for beat in beats):  # the claim's seq is its started's
+        return P3Class.PARENTLESS_BY_CANDIDACY
+    return None
+
+
+def _root(ref: CommitRef, facts: Facts) -> frozenset[P3Class] | None:
+    """A chain's root commit: at old step 0, a fresh start, which shifts no
+    count; above it, a parentless resume (``_parentless``), or None when no rule
+    explains it."""
+    if ref.step == 0:
+        return frozenset()
+    cls = _parentless(ref, facts)
+    return None if cls is None else frozenset({cls})
 
 
 def _chain(up: Chain, ref: CommitRef, facts: Facts) -> Chain:
@@ -941,13 +1019,14 @@ def _chain(up: Chain, ref: CommitRef, facts: Facts) -> Chain:
 
 def chains_of(env04: Sequence[Envelope], facts: Facts) -> dict[int, Chain]:
     """Each node's chain, by its new seq, in one forward pass: a parent precedes
-    its child (§7 "Also"), and a node whose parent does not has none."""
+    its child (§7 "Also"), and a node whose parent does not has none. A node with
+    no parent starts one: a commit its own, an exit the empty chain."""
     out: dict[int, Chain] = {}
     for e in env04:
         if e.topic not in (_COMMIT, _STOPPED):
             continue
         parent = e.body.get("parent")
-        up = out.get(parent) if isinstance(parent, int) else None
+        up = _EMPTY if parent is None else out.get(parent)
         if e.topic == _STOPPED:
             if up is not None:
                 out[e.seq] = up  # an exit adds no commit
@@ -968,7 +1047,9 @@ def chains_of(env04: Sequence[Envelope], facts: Facts) -> dict[int, Chain]:
 def p1(
     env04: Sequence[Envelope], facts: Facts, chains: Mapping[int, Chain]
 ) -> P1Result:
-    """§7 P1: each real commit linked back to old step 0 counts its step + 1."""
+    """§7 P1: each real commit linked back to old step 0 counts its step + 1.
+    Every real commit is in one bucket: parentless (a sound chain rooted above
+    old step 0, counted by its class), or checked, which is passed and failed."""
     checked = passed = 0
     failures: Counter[str] = Counter()
     parentless: Counter[str] = Counter()
@@ -980,31 +1061,25 @@ def p1(
         origin = facts.commits[ref].origin
         if isinstance(origin, Synthetic):
             continue
-        heartbeat = origin.beat.seq
         chain = chains.get(e.seq)
-        if chain is None:
-            failures[P1Failure.NO_CHAIN] += 1
-            failing.append(P1Failing(heartbeat, ref.step, None, P1Failure.NO_CHAIN))
-            continue
-        if chain.root > 0:
-            for c in chain.classes & {
-                P3Class.PARENTLESS,
-                P3Class.PARENTLESS_BY_CANDIDACY,
-            }:
+        if chain is not None and chain.root > 0 and chain.sound:
+            for c in chain.classes & _PARENTLESS:
                 parentless[c] += 1
-            if chain.sound:
-                continue
+            continue
         checked += 1
-        if chain.commits == ref.step + 1:
+        if chain is not None and chain.sound and chain.commits == ref.step + 1:
             passed += 1
             continue
-        kind = (
-            P1Failure.TRAILING_GAP
-            if chain.sound and P3Class.TRAILING_GAP in chain.classes
-            else P1Failure.UNSOUND_CHAIN
-        )
+        if chain is None:
+            kind = P1Failure.NO_CHAIN
+        elif not chain.sound:
+            kind = P1Failure.UNSOUND_CHAIN
+        else:  # a sound chain from old step 0 miscounts only across a trailing gap
+            assert P3Class.TRAILING_GAP in chain.classes, f"{ref} miscounts"
+            kind = P1Failure.TRAILING_GAP
         failures[kind] += 1
-        failing.append(P1Failing(heartbeat, ref.step, chain.commits, kind))
+        count = None if chain is None else chain.commits
+        failing.append(P1Failing(origin.beat.seq, ref.step, count, kind))
     return P1Result(checked, passed, dict(failures), dict(parentless), failing)
 
 
@@ -1229,7 +1304,7 @@ def _lineage_of(
 
 def _shift(run: Run, old: int, step: int, node: int) -> Part:
     """Why a value on the lineage sits at a count other than its old step:
-    LEADING when its commit is its claim's first, above it (§7 M5's last
+    LEADING when its commit is its own claim's first, above it (§7 M5's last
     sentence), and the chain's classes when the count is below the commit's old
     step (``_root``, ``_chain``)."""
     ref = run.facts.commit_at[node]
@@ -1237,7 +1312,8 @@ def _shift(run: Run, old: int, step: int, node: int) -> Part:
     classes: set[P3Class] = set()
     explained = True
     if ref.step != step:
-        if step < ref.step == run.facts.first[ref.claim]:
+        own = run.claims.get(old) == ref.claim  # pass 1 gave the value this claim
+        if own and step < ref.step == run.facts.first[ref.claim]:
             classes.add(P3Class.LEADING)
         else:
             explained = False
@@ -1605,7 +1681,8 @@ def p4(
 ) -> P4Result:
     """§7 P4: the verdict's outcomes and the stop fold's ids. A differing verdict
     takes every rule of ``_P4_RULES`` that holds, or ``unattributed``; no rule
-    changes the stop fold's ids."""
+    changes the stop fold's ids. The ids are compared as sets; each is shown
+    with its 0.4.0 seq, since both folds keep the newest send of an id."""
     same = old.verdict.same(new.verdict)
     classes: list[str] = []
     if not same:
@@ -1624,7 +1701,7 @@ def p4(
         rid = by_seq[seq].request_id
         assert rid is not None, f"the pending stop at {seq} has no id"
         new_stops[rid] = seq
-    equal = old_stops == new_stops
+    equal = old_stops.keys() == new_stops.keys()
     stops = P4Stops(
         old_stops, new_stops, equal, [] if equal else [P4Class.UNATTRIBUTED]
     )
@@ -1803,10 +1880,10 @@ def census(
         if i not in borne
     )
     by_candidacy = 0
-    for claim, start in facts.resume.items():
-        first = facts.first.get(claim)
-        if isinstance(start, Parentless) and first is not None:
-            by_candidacy += facts.held_before(claim, first - 1)
+    for claim, first in facts.first.items():
+        if first > 0:
+            cls = _parentless(CommitRef(claim, first), facts)
+            by_candidacy += cls is P3Class.PARENTLESS_BY_CANDIDACY
     return Census(
         lone, dict(floats), naks, nameless, dict(after), unborne, by_candidacy
     )
@@ -1858,10 +1935,8 @@ def _crashed(base: RunRecord, stage: Stage, exc: Exception) -> RunRecord:
     return replace(base, status=Status.CRASHED, crash=_crash(stage, exc))
 
 
-def measure(found: Found, *, max_rows: int, stack: Stack) -> RunRecord:
-    """One run, read, migrated, read again and measured; it holds this run only.
-    A step's or a read's exception is recorded; the runner's own checks raise."""
-    base = RunRecord(
+def _base(found: Found) -> RunRecord:
+    return RunRecord(
         path=str(found.path),
         run_id=found.path.stem,
         address=found.address,
@@ -1870,12 +1945,21 @@ def measure(found: Found, *, max_rows: int, stack: Stack) -> RunRecord:
         unread_sidecars=_unread_sidecars(found.path),
         status=Status.MEASURED,
     )
+
+
+def measure(found: Found, *, max_rows: int, max_bytes: int, stack: Stack) -> RunRecord:
+    """One run, read, migrated, read again and measured; it holds this run only.
+    A step's or a read's exception is recorded as a crash of its stage; ``main``
+    records any other as the runner's."""
+    base = _base(found)
+    if found.path.stat().st_size > max_bytes:
+        return replace(base, status=Status.SKIPPED_MAX_BYTES)
     try:
         base = replace(base, rows=_count_rows(found.path))
         if base.rows is not None and base.rows > max_rows:
             return replace(base, status=Status.SKIPPED_MAX_ROWS)
         rows = _read_rows(found.path)
-    except sqlite3.Error as exc:  # a corrupt log
+    except (sqlite3.Error, MemoryError) as exc:  # a corrupt log, or too big a one
         return _crashed(base, Stage.READ, exc)
     rows03 = rows
     if found.format == V0_2_0_to_V0_3_0.FROM:
@@ -1886,6 +1970,12 @@ def measure(found: Found, *, max_rows: int, stack: Stack) -> RunRecord:
         except Exception as exc:
             return _crashed(base, Stage.FROM_0_2_0, exc)
     del rows
+    try:
+        base = replace(base, live_by_0_3_0=step04.V0_3_0_to_V0_4_0().is_live(rows03))
+    except MigrationError:
+        pass  # a claim with no handle: is_live cannot tell
+    except Exception as exc:
+        return _crashed(base, Stage.OLD_READS, exc)
     try:
         env03 = _envelopes(rows03)
     except ValueError as exc:  # a body that is not JSON
@@ -2077,6 +2167,9 @@ class RunTotals:
     format: Counter[str] = field(default_factory=Counter)
     address: Counter[str] = field(default_factory=Counter)
     unread_sidecars: int = 0
+    live_by_0_3_0: int = 0  # runs `runstate migrate` would refuse as live
+    not_live_by_0_3_0: int = 0
+    liveness_unknown: int = 0  # never reached 0.3.0, or is_live could not tell
 
 
 @dataclass
@@ -2090,13 +2183,16 @@ class Args:
     roots: list[str]
     out: str
     max_rows: int
+    max_bytes: int
 
 
 @dataclass
 class Totals:
-    """summary.json: counters only, what crosses runs."""
+    """summary.json: counters only, what crosses runs. ``complete`` is false in
+    the copies written while the runner runs, and in one an abort left."""
 
     args: Args
+    complete: bool = False
     files: FileCounts = field(default_factory=FileCounts)
     runs: RunTotals = field(default_factory=RunTotals)
     refusals: dict[str, Counter[str]] = field(default_factory=dict)  # by step
@@ -2115,6 +2211,9 @@ class Totals:
         self.runs.format[x.format] += 1
         self.runs.address[x.address] += 1
         self.runs.unread_sidecars += bool(x.unread_sidecars)
+        self.runs.live_by_0_3_0 += x.live_by_0_3_0 is True
+        self.runs.not_live_by_0_3_0 += x.live_by_0_3_0 is False
+        self.runs.liveness_unknown += x.live_by_0_3_0 is None
         if x.refusal is not None:
             self.refusals.setdefault(x.refusal.step, Counter())[x.refusal.kind] += 1
         if x.crash is not None:
@@ -2150,6 +2249,11 @@ def jsonable(x: object) -> Any:
     return x
 
 
+# How often summary.json is rewritten while the runner runs, in runs measured,
+# so an abort loses no totals. It changes no result.
+_SUMMARY_EVERY = 100
+
+
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Measure P1-P4 of the 0.3.0 -> 0.4.0 migration over real logs, "
@@ -2163,7 +2267,27 @@ def _parser() -> argparse.ArgumentParser:
         type=int,
         help="skip, and count, a run with more rows than this, without reading it",
     )
+    p.add_argument(
+        "--max-bytes",
+        required=True,
+        type=int,
+        help="skip, and count, a log file larger than this, without opening it",
+    )
     return p
+
+
+def _write_summary(out: Path, totals: Totals) -> None:
+    """Atomically: a reader never sees half a summary."""
+    tmp = out / ".summary.json.tmp"
+    tmp.write_text(json.dumps(jsonable(totals), indent=2) + "\n")
+    os.replace(tmp, out / "summary.json")
+
+
+def _runner_crashed(found: Found, exc: Exception) -> RunRecord:
+    """A run the runner's own measurement failed on: recorded on its line, and
+    the corpus run goes on."""
+    base = _base(found)
+    return replace(base, status=Status.CRASHED, crash=_crash(Stage.RUNNER, exc))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2179,27 +2303,39 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"--out {out} is under ROOT {root}, where nothing is written")
     out.mkdir(parents=True, exist_ok=True)
     stack = load_stack()
-    totals = Totals(Args([str(r) for r in roots], str(out), args.max_rows))
-    with (
-        open(out / "runs.jsonl", "w") as runs,
-        open(out / "skipped.jsonl", "w") as skipped,
-    ):
-        for item in discover(roots, totals.files):
-            if isinstance(item, Skipped):
-                totals.files.skipped[item.why] += 1
-                skipped.write(json.dumps({"path": str(item.path), "why": item.why}))
-                skipped.write("\n")
-                skipped.flush()
-                continue
-            try:
-                record = measure(item, max_rows=args.max_rows, stack=stack)
-            except Exception as exc:
-                raise RuntimeError(f"the runner failed on {item.path}") from exc
-            runs.write(json.dumps(jsonable(record)) + "\n")
-            runs.flush()
-            totals.add(record)
-            del record
-    (out / "summary.json").write_text(json.dumps(jsonable(totals), indent=2) + "\n")
+    totals = Totals(
+        Args([str(r) for r in roots], str(out), args.max_rows, args.max_bytes)
+    )
+    try:
+        with (
+            open(out / "runs.jsonl", "w") as runs,
+            open(out / "skipped.jsonl", "w") as skipped,
+        ):
+            for item in discover(roots, totals.files):
+                if isinstance(item, Skipped):
+                    totals.files.skipped[item.why] += 1
+                    line = {"path": str(item.path), "why": item.why}
+                    skipped.write(json.dumps(line | {"detail": item.detail}) + "\n")
+                    skipped.flush()
+                    continue
+                try:
+                    record = measure(
+                        item,
+                        max_rows=args.max_rows,
+                        max_bytes=args.max_bytes,
+                        stack=stack,
+                    )
+                except Exception as exc:
+                    record = _runner_crashed(item, exc)
+                runs.write(json.dumps(jsonable(record)) + "\n")
+                runs.flush()
+                totals.add(record)
+                del record
+                if totals.runs.total % _SUMMARY_EVERY == 0:
+                    _write_summary(out, totals)
+        totals.complete = True
+    finally:
+        _write_summary(out, totals)
     return 0
 
 
