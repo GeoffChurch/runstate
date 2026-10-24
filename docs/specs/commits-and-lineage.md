@@ -871,8 +871,8 @@ positional reading implied, the standard of the 0.2.0 → 0.3.0 step. An inferen
   - `parent` is the claim's position: its newest commit, else its resume point;
   - `values` are `[]`, or null on an error exit. M2 and M5 commit every integer-step value the claim wrote
     before its exit at or below the exit's last step, except an error exit's trailing step that M5's third
-    case does not reach, and every value of a claim that beat no integer step (M5). A value above that step,
-    from a displaced worker, which pass 1 gave the claim, or from an iteration that crashed, stays
+    case does not reach, and every value of a claim that beat no integer step (M5). A trailing value above
+    that step, from a displaced worker, which pass 1 gave the claim, or from an iteration that crashed, stays
     uncommitted, and stepless values stay outside every lineage (M3);
   - `fired` and `expired` are `[]`, and `final_step` is dropped.
 - **`started`** gains `resume_from` (M1) and `sources: []`.
@@ -932,22 +932,25 @@ positional reading implied, the standard of the 0.2.0 → 0.3.0 step. An inferen
     which holds only what no commit claims;
   - for a trailing step s, whatever ended its claim, in the claim M1 will choose for a later claim whose first
     real beat is s+1 (review §12, item 14): the newest claim before it, in claim order, to reach step s, by a
-    commit or by trailing values. M1 chooses it wherever its commit at s is a candidate, as it is unless a
-    displaced worker beat after the later claim began. A claim that starts at s+1 says step s finished in the
-    claim it resumed from, and M1 then finds the commit the old read showed. The later claim is any, not only
-    the next, since a retry that crashed while loading beats nothing. A trailing step that no such claim
-    needs stays uncommitted: nothing says its iteration finished.
+    commit or by trailing values at or below its exit's last step, where it has one. M1 chooses it wherever
+    its commit at s is a candidate, as it is unless a displaced worker beat after the later claim began. A
+    claim that starts at s+1 says step s finished in the claim it resumed from, and M1 then finds the commit
+    the old read showed. The later claim is any, not only the next, since a retry that crashed while loading
+    beats nothing. A trailing step that no such claim needs stays uncommitted: nothing says its iteration
+    finished.
 
-  A trailing value is one above its claim's last real beat. "The exit's last step" is the 0.3.0
-  `final_step`, and a null one reached no step. Only an exit node has one: a claim a third party released, or
-  that nothing ended, has no last step to be above. Leading values, below a claim's first real beat, go to its
-  first commit. **A claim that beat no integer step reaches no step:** its integer-step values stay
-  uncommitted as loading, whether it wrote them while it loaded or in a step it never beat, even at or below
-  a clean exit's last step, and nothing is synthesized in it.
+  A trailing value is one above its claim's last real beat. Only a trailing value is held to the exit's last
+  step: one written before its claim's end at a real beat's step (M2), at a skipped tick, or below the first
+  real beat is committed whatever the exit reports. "The exit's last step" is the 0.3.0 `final_step`, and a
+  null one reached no step. Only an exit node has one: a claim a third party released, or that nothing ended,
+  has no last step to be above. Leading values, below a claim's first real beat, go to its first commit. **A
+  claim that beat no integer step reaches no step:** its integer-step values stay uncommitted as loading,
+  whether it wrote them while it loaded or in a step it never beat, even at or below a clean exit's last
+  step, and nothing is synthesized in it.
 
   A value no commit holds stays uncommitted for the first of these that holds: it is stepless (M3); before
-  every claim; after its claim's end (M4); a claim's that beat no integer step; above its claim's exit's last
-  step; or a trailing step no exit vouches for, which the third place does not reach.
+  every claim; after its claim's end (M4); a claim's that beat no integer step; a trailing value above its
+  claim's exit's last step; or a trailing step no exit vouches for, which the third place does not reach.
 - **M6. Move each commit,** in claim order and each claim's in its order, to just after the latest of: its
   last committed value, its parent, the record its `consumed_seq` names and, for a real commit, its own
   heartbeat, so a commit only moves forward. Then renumber, once. A commit asserts that its values are
@@ -1011,8 +1014,9 @@ positional reading implied, the standard of the 0.2.0 → 0.3.0 step. An inferen
 - **M10. A malformed `stopped`** (the reclaim tool's 7 `{reason, honored, claim_seq}` bodies) that is the
   first naming its claim becomes `supervisor.died {claim_seq, outcome: preempted, evidence: <its reason>, t}`:
   a third party's release, with the outcome the tool argues for in its own comments (review §12, item 14). Its
-  `t` is its record's `created_at`, since the body has none. A later or claimless one is a third party's stop
-  with no `error`, as below. Its `honored` ids become withdrawals, as below.
+  `t` is its record's `created_at`, since the body has none, and an empty reason takes the mapping's label
+  as its evidence. A later or claimless one is a third party's stop with no `error`, as below. Its `honored`
+  ids become withdrawals, as below.
 - **Third-party stops are reclassified** (review §12, items 5, 10 and 14):
   - **the first `stopped` naming a claim** ends the claim. M10's body and the runner's backstop are a third
     party's release. Any other is the claim's exit, as the old read implied, unless the rule for lone stops
@@ -1093,8 +1097,8 @@ records and leave shapes no 0.4.0 writer produces.
   leading values, a parentless resume, a parentless resume by M1's candidacy rule, a trailing gap (a gap of
   steps with no values below a trailing step M5 synthesized), loading cells, M4, values above their exit's
   last step (a displaced worker's or a crashed iteration's), an error exit's unreached trailing step, and an
-  unreached trailing step of a claim a third party released or that nothing ended. An unattributed cell
-  fails the test.
+  unreached trailing step of a claim a third party released or that nothing ended. A value before every
+  claim has no class, so a cell it explains is unattributed. An unattributed cell fails the test.
 - **P4:** the verdict's outcomes, 0.3.0's one outcome taken as a one-element set, and the stop fold's ids
   (`peek_terminal`, `undischarged_stops`) are equal across the migration, except where a named rule changes
   the verdict: a third party's release; a third party's later stop; a backstop that ends no claim, now a
@@ -1103,10 +1107,10 @@ records and leave shapes no 0.4.0 writer produces.
   attributed death report (an exit 0 changes `completed` to `lost`); a wrapper's `terminated`. No rule
   changes the stop fold's ids. A verdict read that raises is a value: two raises are equal, and a raise
   differs from every verdict.
-- **Also:** 0 commits name a later value, 0 parents follow their child, 0 commits precede the record their
-  `consumed_seq` names, 0 resume points follow their claim, 0 records name a claim at or after themselves,
-  every seq-valued field names a record of the kind it names, no claim has a second exit, and every migrated
-  record conforms to the 0.4.0 schemas.
+- **Also:** 0 commits name a later value, 0 parents follow their child, 0 commits or heartbeats precede the
+  record their `consumed_seq` names, 0 resume points follow their claim, 0 records name a claim at or after
+  themselves, every seq-valued field names a record of the kind it names, no claim has a second exit, and
+  every migrated record conforms to the 0.4.0 schemas.
 
 **Golden logs:**
 - **lineage:** the displacement-parent history; a displaced worker's beats, which keep their claim; a
