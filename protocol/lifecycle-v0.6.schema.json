@@ -110,12 +110,12 @@
     },
     "Stopped": {
       "type": "object", "required": ["completed", "error", "claim_seq", "honored", "parent", "values", "fired", "expired", "t"], "additionalProperties": false,
-      "description": "The worker's exit, always a node; at most one per claim. completed=true is the worker's claim of intrinsic completion (a closed node); a completed stop carries no error. error non-null implies values null. values is null when the exit discarded its open iteration (a torn exit if it did not complete), and then fired and expired are []; otherwise the pending values then the samples, [] if none. claim_seq names the episode it ends (never null). honored names the control.stop request_ids it honored. parent is the position at the exit. Prose: parent names an extendable node and equals the position at the exit; every seq in values is lower than the record's own; each fired names a source subscription the claim registered.",
+      "description": "The worker's exit, always a node; at most one per claim. completed=true is the worker's claim of intrinsic completion (a closed node); a completed stop carries no error. error non-null implies values null. values is null when the exit discarded its open iteration (a torn exit if it did not complete), and then fired and expired are []; otherwise the pending values then the samples, [] if none. claim_seq names the episode it ends (never null). honored names the control.stop request_ids it honored, each non-empty, since no request id is empty. parent is the position at the exit. Prose: parent names an extendable node and equals the position at the exit; every seq in values is lower than the record's own; each fired names a source subscription the claim registered.",
       "properties": {
         "completed": {"type": "boolean"},
         "error": {"type": ["string", "null"]},
         "claim_seq": {"$ref": "#/$defs/Seq"},
-        "honored": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "honored": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
         "parent": {"$ref": "#/$defs/Parent"},
         "values": {"anyOf": [{"$ref": "#/$defs/Values"}, {"type": "null"}]},
         "fired": {"$ref": "#/$defs/Requests"},

@@ -5,7 +5,9 @@ parties wrote them: heartbeats and stoppeds that name their claim, values that
 name none. The builders make 0.3.0 bodies (lifecycle-v0.5, value-v0.2); the
 0.2.0 step's test module makes 0.2.0 ones.
 
-Each pass is tested directly, on the parsed log. Every golden log's end-to-end
+Each pass is tested on its result: a pass that reads only the parsed log on
+that, every later one as ``run_passes``, the step's one wiring of the passes,
+gives it, so no test wires the passes apart. Every golden log's end-to-end
 output (seq, topic, name, request_id and body of every row) is asserted exactly,
 in ``OUTPUT``, derived by hand from the golden's comment and §7; a golden with
 no entry there fails. Every row is also validated against the 0.4.0 schemas."""
@@ -29,7 +31,6 @@ from runstate.migrations.stores import SqliteStore
 from runstate.migrations.v0_3_0_to_v0_4_0 import (
     After,
     Attributed,
-    Classification,
     CommitRef,
     ExitNode,
     Fresh,
@@ -40,6 +41,7 @@ from runstate.migrations.v0_3_0_to_v0_4_0 import (
     Parentless,
     Real,
     Resumed,
+    ResumeFrom,
     Synthesized,
     Synthetic,
     ToCommit,
@@ -61,13 +63,9 @@ from runstate.migrations.v0_3_0_to_v0_4_0 import (
     _Unattributed,
     attribute,
     classify,
-    link,
     parse,
-    place,
-    rename,
     renumber,
-    report,
-    synthesize,
+    run_passes,
 )
 
 step = V0_3_0_to_V0_4_0()
@@ -415,6 +413,25 @@ TWO_CLAIMS_ONE_LAUNCH = _dated(
         r(4, "lifecycle.started", _started("local://n1/11", 3.0), rid="L1"),
         r(5, "lifecycle.heartbeat", _beat(1, 0, 4, 4.0)),
         r(6, "launcher.terminated", _terminated("exited", 0, None, 5.0), rid="L1"),
+    ]
+)
+
+# A value after an attributed death (M4): the terminated a died is attributed
+# from ends its claim, as a stopped would. A beat 0 and wrote step 1's value, and
+# its launch was killed; a step-1 value lands after the reap, which pass 1 gives
+# A by position. B resumed from step 1: its first real beat is 2. A's step 1 is
+# synthesized for B (M5's third place) with the value before the reap only; the
+# one after it stays uncommitted, after its claim's end.
+AFTER_AN_ATTRIBUTED_DEATH = _dated(
+    [
+        r(1, "launcher.launched", _launched("local://n1/11", 0.5), rid="L1"),
+        r(2, "lifecycle.started", _started("local://n1/11", 1.0), rid="L1"),
+        r(3, "lifecycle.heartbeat", _beat(0, 0, 2, 2.0)),
+        r(4, "value", _value(0.5, 1, 3.0), name="loss"),
+        r(5, "launcher.terminated", _terminated("killed", None, 9, 4.0), rid="L1"),
+        r(6, "value", _value(0.4, 1, 5.0), name="loss"),
+        r(7, "lifecycle.started", _started("local://n1/12", 6.0)),
+        r(8, "lifecycle.heartbeat", _beat(2, 0, 7, 7.0)),
     ]
 )
 
@@ -822,7 +839,7 @@ RESUMED_FROM_A_STEP_COMMITTED_AFTER_THE_CLAIM = _dated(
 # place synthesizes B's trailing step 3 for C, since B is the newest claim to
 # reach it; but B's step 3 is placed after its parent, B's step 2, beaten above
 # C's started, so pass 4 passes over it. No other claim holds step 3: C's first
-# commit is a parentless resume, and nothing continues B's step 3.
+# commit is a parentless resume, and nothing in this log continues B's step 3.
 DOUBLY_DISPLACED = _dated(
     [
         r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
@@ -853,6 +870,24 @@ RESUMED_FROM_A_TICK_SKIPPED_AFTER_THE_CLAIM = _dated(
         r(5, "lifecycle.heartbeat", _beat(3, 0, 1, 5.0)),  # A's
         r(6, "lifecycle.heartbeat", _beat(3, 0, 3, 6.0)),
         r(7, "lifecycle.stopped", _stopped(True, None, 3, 3, [], 7.0)),
+    ]
+)
+
+# A resume from a tick skipped across the claim: A beat 0 and 1; B claimed; A,
+# displaced, beat 3 after B's claim, skipping step 2's tick, and B, loading A's
+# step-2 checkpoint, first beat 3. A's step 2 is synthesized (a skipped tick),
+# and is placed after its parent, A's step 1, beaten below B's started: it is a
+# candidate, though the real beat after it follows B's started, and B resumes
+# from it.
+RESUMED_FROM_A_TICK_SKIPPED_ACROSS_THE_CLAIM = _dated(
+    [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+        r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+        r(3, "lifecycle.heartbeat", _beat(1, 0, 1, 3.0)),
+        r(4, "lifecycle.started", _started("local://n2/22", 4.0)),
+        r(5, "lifecycle.heartbeat", _beat(3, 0, 1, 5.0)),  # A's
+        r(6, "lifecycle.heartbeat", _beat(3, 0, 4, 6.0)),
+        r(7, "lifecycle.stopped", _stopped(True, None, 3, 4, [], 7.0)),
     ]
 )
 
@@ -1090,6 +1125,9 @@ GOLDEN = {
     "resumed_from_a_tick_skipped_after_the_claim": (
         RESUMED_FROM_A_TICK_SKIPPED_AFTER_THE_CLAIM
     ),
+    "resumed_from_a_tick_skipped_across_the_claim": (
+        RESUMED_FROM_A_TICK_SKIPPED_ACROSS_THE_CLAIM
+    ),
     "watermarked": WATERMARKED,
     "later_error": LATER_ERROR,
     "later_default": LATER_DEFAULT,
@@ -1106,6 +1144,7 @@ GOLDEN = {
     "another_host": ANOTHER_HOST,
     "late_reap": LATE_REAP,
     "two_claims_one_launch": TWO_CLAIMS_ONE_LAUNCH,
+    "after_an_attributed_death": AFTER_AN_ATTRIBUTED_DEATH,
 }
 
 
@@ -1145,11 +1184,8 @@ class Synth(NamedTuple):
     left: dict[int, Uncommitted]
 
 
-def _synthesis(rows, classification=None):
-    log = parse(rows)
-    return synthesize(
-        attribute(log), classify(log) if classification is None else classification
-    )
+def _synthesis(rows):
+    return run_passes(rows).synthesis
 
 
 def _origin(commit):
@@ -1158,8 +1194,8 @@ def _origin(commit):
     return commit.origin.place
 
 
-def _synth(rows, classification=None):
-    s = _synthesis(rows, classification)
+def _synth(rows):
+    s = _synthesis(rows)
     return Synth(
         commits={
             c.claim.started.seq: [
@@ -1293,8 +1329,9 @@ def test_a_beatless_claim_commits_nothing_even_before_a_clean_exit():
 
 
 def test_m5s_third_case_synthesizes_nothing_beside_a_newer_claims_real_beat():
-    """Review Focus 3: only in the claim M1 will choose, the newest before the
-    resuming claim to reach the step."""
+    """Review Focus 3: only in the newest claim before the resuming claim to
+    reach the step, the claim M1 will choose wherever its commit there is a
+    candidate, as B's step 2 is."""
     assert _synth(RESUMED_BESIDE_A_REAL_BEAT) == Synth(
         commits={
             1: [(0, 3, [2]), (1, 5, [4])],
@@ -1311,6 +1348,17 @@ def test_values_after_their_claims_stopped_stay_uncommitted():
         commits={1: [(0, 3, [2])]},
         exits={1: ()},
         left={5: Uncommitted.AFTER_ITS_END, 6: Uncommitted.STEPLESS},
+    )
+
+
+def test_values_after_an_attributed_death_stay_uncommitted():
+    """M4: the terminated a died is attributed from ends its claim, so only the
+    step-1 value before it reaches A's step 1, which M5's third place
+    synthesizes for B."""
+    assert _synth(AFTER_AN_ATTRIBUTED_DEATH) == Synth(
+        commits={2: [(0, 3, []), (1, RESUMED, [4])], 7: [(2, 8, [])]},
+        exits={},
+        left={6: Uncommitted.AFTER_ITS_END},
     )
 
 
@@ -1388,15 +1436,14 @@ def test_a_trailing_step_no_exit_vouches_for_and_nothing_resumed_from_is_left(en
     )
 
 
-def test_an_unattributed_stop_is_an_exit_node_that_vouches_for_nothing():
+def test_an_unattributed_stop_is_an_exit_node_that_vouches_for_nothing(monkeypatch):
     """The rule for lone stops (Task 13) may leave a stop unattributed: a
     self-report that commits nothing (``values: null``), as an error exit does,
     so its claim's trailing step is not synthesized."""
-    c = classify(parse(TRAILING))
-    (end,) = c.ends.values()
-    assert isinstance(end, _Exit)
-    unattributed = Classification({1: _Unattributed(end.stop)}, c.later, c.claimless)
-    assert _synth(TRAILING, unattributed) == Synth(
+    import runstate.migrations.v0_3_0_to_v0_4_0 as mod
+
+    monkeypatch.setattr(mod, "_lone_stop_rule", _Unattributed)
+    assert _synth(TRAILING) == Synth(
         commits={1: [(0, 3, [2]), (1, 5, [4])]},
         exits={1: None},
         left={6: Uncommitted.UNREACHED},
@@ -1443,13 +1490,14 @@ def test_a_retrys_loading_status_reaches_no_step():
 
 
 def _synthetics(rows):
-    """``{(claim, old step): (place, t, consumed_seq)}`` of every synthetic
-    commit."""
+    """``{(claim, old step): (place, previous, t, consumed_seq)}`` of every
+    synthetic commit, ``previous`` the seq of the real heartbeat before it."""
     return {
         (c.claim.started.seq, k.step): (
             k.origin.place,
+            k.origin.previous.seq,
             k.origin.t,
-            k.origin.consumed_seq,
+            k.origin.previous.consumed_seq,
         )
         for c in _synthesis(rows).claims
         for k in c.commits
@@ -1460,13 +1508,17 @@ def _synthetics(rows):
 def test_m8_dates_a_synthetic_commit_by_its_last_dated_value_else_the_beat_before():
     """``t`` from the last value it commits that carries one, else from the real
     heartbeat before it; ``consumed_seq`` from that heartbeat."""
-    assert _synthetics(SKIPPED) == {(1, 2): (SKIP, 4.0, 4), (1, 4): (SKIP, 5.0, 8)}
-    assert _synthetics(TRAILING) == {(1, 2): (CLEAN, 4.0, 4)}
-    assert _synthetics(RESUMED_PAST_A_LOADING_CRASH) == {(1, 2): (RESUMED, 4.0, 4)}
+    assert _synthetics(SKIPPED) == {
+        (1, 2): (SKIP, 5, 4.0, 4),
+        (1, 4): (SKIP, 9, 5.0, 8),
+    }
+    assert _synthetics(TRAILING) == {(1, 2): (CLEAN, 5, 4.0, 4)}
+    assert _synthetics(RESUMED_PAST_A_LOADING_CRASH) == {(1, 2): (RESUMED, 5, 4.0, 4)}
 
 
-def test_the_claim_m1_will_choose_is_the_newest_before_it_to_reach_the_step():
-    """In claim order, never by step nearness."""
+def test_the_newest_claim_to_reach_a_step_is_found_in_claim_order():
+    """In claim order, never by step nearness. M1 asks it of its candidates, M5's
+    third place of every step a claim reached."""
     reached = [frozenset({0, 1, 2}), frozenset(), frozenset({2}), frozenset({5})]
     assert _newest_reaching(reached, 4, 2) == 2
     assert _newest_reaching(reached, 2, 2) == 0
@@ -1509,8 +1561,19 @@ def test_a_claims_commits_are_its_real_beats_and_m5s_three_places(rid):
     """Real commits are exactly the claim's integer-step heartbeats, and a claim
     with none commits nothing. Commits run in step order, gapless from the first
     real beat to the last. A skipped tick sits between them; a trailing step
-    sits above the last and holds values."""
+    sits above the last and holds values, and is in one of M5's two other
+    places, each restated here from the parsed log: at or below the last step of
+    the worker's own non-error exit, or one step below the first real beat of a
+    later claim. A synthetic commit's ``previous`` is its claim's newest real
+    beat below it."""
+    log = parse(GOLDEN[rid])
+    ends = classify(log).ends
+    first: dict[int, int] = {}  # each claim's first integer step, by its seq
+    for b in log.beats:
+        if b.step is not None:
+            first.setdefault(b.claim_seq, b.step)
     for c in _synthesis(GOLDEN[rid]).claims:
+        claim = c.claim.started.seq
         steps = [k.step for k in c.commits]
         assert steps == sorted(set(steps))
         real = [k.origin.beat for k in c.commits if isinstance(k.origin, Real)]
@@ -1527,21 +1590,39 @@ def test_a_claims_commits_are_its_real_beats_and_m5s_three_places(rid):
         for k in c.commits:
             if not isinstance(k.origin, Synthetic):
                 continue
+            assert k.origin.previous == [b for b in real if b.step < k.step][-1]
             if k.origin.place is SKIP:
-                assert real and real[0].step < k.step < real[-1].step
+                assert real[0].step < k.step < real[-1].step
+                continue
+            assert k.values and k.step > real[-1].step
+            if k.origin.place is CLEAN:
+                end = ends.get(claim)
+                assert isinstance(end, _Exit) and end.stop.error is None
+                assert end.stop.final_step is not None
+                assert k.step <= end.stop.final_step
             else:
-                assert k.values and k.step > real[-1].step
+                assert k.origin.place is RESUMED
+                later = [x.seq for x in log.claims if x.seq > claim]
+                assert any(first.get(x) == k.step + 1 for x in later)
 
 
 @pytest.mark.parametrize("rid", list(GOLDEN))
 def test_no_commit_holds_a_value_after_its_claims_end(rid):
-    """M4, whatever ended the claim."""
-    log = parse(GOLDEN[rid])
-    ends = classify(log).ends
-    for c in _synthesis(GOLDEN[rid]).claims:
+    """M4, whatever ended the claim: the first stopped naming it, or the
+    terminated a died is attributed from. A stepped value after it is left as
+    after its end."""
+    p = run_passes(GOLDEN[rid])
+    ends = {claim: end.stop.seq for claim, end in p.classification.ends.items()}
+    ends |= {d.death.claim: seq for seq, d in p.reports.deaths.items()}
+    why = {x.value.seq: x.why for x in p.synthesis.uncommitted}
+    for c in p.synthesis.claims:
         end = ends.get(c.claim.started.seq)
         if end is not None:
-            assert all(seq < end.stop.seq for k in c.commits for seq in k.values)
+            assert all(seq < end for k in c.commits for seq in k.values)
+            after = [
+                v.seq for v in c.claim.values if v.seq > end and v.step is not None
+            ]
+            assert all(why[seq] is Uncommitted.AFTER_ITS_END for seq in after)
 
 
 @pytest.mark.parametrize("rid", list(GOLDEN))
@@ -1568,13 +1649,13 @@ class Links(NamedTuple):
     (claim seq, old step): each claim's resume point, each commit's parent, and
     each exit node's parent by its claim."""
 
-    resume_from: dict[int, Fresh | Resumed | Parentless | Inferred]
+    resume_from: dict[int, ResumeFrom]
     parents: dict[tuple[int, int], tuple[int, int] | None]
     exits: dict[int, tuple[int, int] | None]
 
 
 def _links(rows):
-    out = link(_synthesis(rows))
+    out = run_passes(rows).linkage
     return Links(
         resume_from=dict(out.resume_from),
         parents=dict(out.parents),
@@ -1732,10 +1813,27 @@ def test_a_synthetic_commit_waits_for_the_beat_before_it():
     }
 
 
+def test_a_skipped_tick_is_decided_by_the_beat_before_it_not_the_one_after():
+    """A's skipped tick at step 2 follows A's step-1 beat, which precedes B's
+    started, so it is a candidate, though A's step-3 beat, the real one after
+    it, follows B's started: B resumes from it."""
+    assert _links(RESUMED_FROM_A_TICK_SKIPPED_ACROSS_THE_CLAIM) == Links(
+        resume_from={1: Fresh(), 4: Resumed((1, 2))},
+        parents={
+            (1, 0): None,
+            (1, 1): (1, 0),
+            (1, 2): (1, 1),
+            (1, 3): (1, 2),
+            (4, 3): (1, 2),
+        },
+        exits={4: (4, 3)},
+    )
+
+
 def test_pass_3_and_pass_4_choose_apart_past_a_doubly_displaced_worker():
     """A known limit: B's step 3 is synthesized for C, but the beat before it,
     B's step 2, follows C's started, so it is no candidate. C's first commit is a
-    parentless resume, and nothing continues B's step 3."""
+    parentless resume, and nothing in this log continues B's step 3."""
     links = _links(DOUBLY_DISPLACED)
     assert _synth(DOUBLY_DISPLACED).commits[5] == [
         (1, 7, []),
@@ -1869,8 +1967,8 @@ def test_a_claims_commits_chain_from_its_resume_point_to_its_exit(rid):
     first commit parents on its resume point, each later one on its previous
     commit, and its exit node on its position: its newest commit, else its
     resume point."""
-    s = _synthesis(GOLDEN[rid])
-    out = link(s)
+    p = run_passes(GOLDEN[rid])
+    s, out = p.synthesis, p.linkage
     assert list(out.resume_from) == [c.claim.started.seq for c in s.claims]
     assert set(out.parents) == {_ref(c, k) for c in s.claims for k in c.commits}
     assert set(out.exits) == {
@@ -1906,8 +2004,8 @@ def test_a_resume_point_is_the_newest_earlier_claims_candidate_one_step_below(ri
     one, and is a parentless resume only when none does; a claim with no
     commit resumes, by inference, from the newest candidate of the newest
     earlier claim to hold one."""
-    s = _synthesis(GOLDEN[rid])
-    out = link(s)
+    p = run_passes(GOLDEN[rid])
+    s, out = p.synthesis, p.linkage
     after = _deciding_beats(s)
     for i, c in enumerate(s.claims):
         start = out.resume_from[c.claim.started.seq]
@@ -1934,8 +2032,8 @@ def test_p1_a_real_commit_linked_back_to_step_0_counts_its_step(rid):
     """P1: a real commit whose chain M1 linked back to old step 0 has s + 1
     commits on it, itself included. Every other chain ends at a parentless
     resume, named."""
-    s = _synthesis(GOLDEN[rid])
-    out = link(s)
+    p = run_passes(GOLDEN[rid])
+    s, out = p.synthesis, p.linkage
     for c in s.claims:
         for k in c.commits:
             if not isinstance(k.origin, Real):
@@ -1952,32 +2050,6 @@ def test_p1_a_real_commit_linked_back_to_step_0_counts_its_step(rid):
 
 
 # ----- pass 5: placement and renumbering (M6); pass 6: the renames (M7) -----------------
-
-
-class Layout(NamedTuple):
-    """Every pass through M7, as a test reads them."""
-
-    log: object
-    reports: object
-    synthesis: object
-    linkage: object
-    placement: object
-    numbering: dict
-    outs: tuple
-
-
-def _layout(rows):
-    log = parse(rows)
-    classification = classify(log)
-    reports = report(log, classification)
-    synthesis = synthesize(attribute(log), classification)
-    linkage = link(synthesis)
-    placement = place(synthesis, linkage, reports)
-    numbering = renumber(
-        [x.seq for x in log.records], placement.moves, placement.dropped
-    )
-    outs = rename(log, synthesis, linkage, reports, placement, numbering)
-    return Layout(log, reports, synthesis, linkage, placement, dict(numbering), outs)
 
 
 def _short(key):
@@ -1997,7 +2069,7 @@ def _short(key):
 
 def _keys(rows):
     """The output records, in output order."""
-    return [_short(o.key) for o in _layout(rows).outs]
+    return [_short(o.key) for o in run_passes(rows).outs]
 
 
 def _commits(s):
@@ -2009,7 +2081,7 @@ def _consumed(k):
     return (
         k.origin.beat.consumed_seq
         if isinstance(k.origin, Real)
-        else k.origin.consumed_seq
+        else k.origin.previous.consumed_seq
     )
 
 
@@ -2053,8 +2125,8 @@ def test_a_commit_follows_its_parent_past_its_own_heartbeat():
 def _m6_by_list(rows):
     """M6 written apart from ``place``: the output as a list, each commit
     moved in claim order to just after the latest record it must follow."""
-    s = _synthesis(rows)
-    links = link(s)
+    p = run_passes(rows)
+    s, links = p.synthesis, p.linkage
     order = [x.seq for x in rows]
     item = {}  # each commit's item in the list: its heartbeat's seq, or its ref
     for c in s.claims:
@@ -2082,7 +2154,7 @@ def test_m6_places_every_commit_as_a_list_written_apart_does(rid):
     """The withdrawals, the stops they replace and the attributed deaths set
     apart: M6 places commits only."""
     rows = GOLDEN[rid]
-    dropped = {k.seq for k in _layout(rows).placement.dropped}
+    dropped = {k.seq for k in run_passes(rows).placement.dropped}
     later = ("withdraw", "died after")
     assert [k for k in _keys(rows) if not str(k).startswith(later)] == [
         x for x in _m6_by_list(rows) if x not in dropped
@@ -2095,7 +2167,7 @@ def test_the_renumbering_is_a_bijection_on_the_inputs_records(rid):
     included, has exactly one 0.4.0 seq, and the synthetic commits, the
     withdrawals and the attributed deaths fill the rest, gapless from 1."""
     rows = GOLDEN[rid]
-    lay = _layout(rows)
+    lay = run_passes(rows)
     synthetic = {
         ref
         for ref, k in _commits(lay.synthesis).items()
@@ -2124,7 +2196,7 @@ def test_a_commit_only_moves_forward(rid):
     """Every input record but a moved commit or a dropped stop keeps its order,
     and a real commit follows every record that preceded its heartbeat."""
     rows = GOLDEN[rid]
-    lay = _layout(rows)
+    lay = run_passes(rows)
     new = {k.seq: n for k, n in lay.numbering.items() if isinstance(k, Input)}
     kept = [
         new[x.seq]
@@ -2144,7 +2216,7 @@ def test_every_record_follows_what_it_names(rid):
     and 0 commits precede the record their consumed_seq names. Every other
     seq-valued field names an earlier record too: a claim_seq, a resume_from
     and an exit's parent."""
-    for o in _layout(GOLDEN[rid]).outs:
+    for o in run_passes(GOLDEN[rid]).outs:
         match o.record:
             case ToCommit():
                 assert all(v < o.seq for v in o.record.values)
@@ -2179,7 +2251,7 @@ def test_an_exit_the_placeholder_reads_before_the_workers_beat_has_no_later_pare
             r(4, "lifecycle.heartbeat", _beat(1, 0, 1, 4.0)),  # still running
         ]
     )
-    for o in _layout(rows).outs:
+    for o in run_passes(rows).outs:
         if isinstance(o.record, ToExit):
             assert o.record.parent is None or o.record.parent < o.seq
 
@@ -2208,7 +2280,7 @@ def test_every_record_with_a_seq_valued_field_is_renamed(rid):
     """A record whose 0.3.0 body holds a seq becomes a kind that renames it;
     only a record that holds none passes as it is."""
     rows = GOLDEN[rid]
-    for o in _layout(rows).outs:
+    for o in run_passes(rows).outs:
         assert isinstance(o.record, _expected(o.key, rows))
         if isinstance(o.record, NoSeqs):
             assert o.record.record.topic not in {
@@ -2226,7 +2298,7 @@ def test_review_focus_1_every_seq_valued_field_names_the_record_it_named(rid):
     claim_seq names a started, a parent or resume_from a commit, a values entry
     a value, and a consumed_seq the record it named, 0 staying 0."""
     rows = GOLDEN[rid]
-    lay = _layout(rows)
+    lay = run_passes(rows)
     at = {o.seq: o for o in lay.outs}
     commits = _commits(lay.synthesis)
 
@@ -2273,7 +2345,7 @@ def test_the_candidates_are_exactly_the_commits_placed_below_each_started(rid):
     """Task 5's ruling holds exactly under M6: a commit of an earlier claim is
     placed below a claim's started when its deciding beat precedes it, and
     only then."""
-    lay = _layout(GOLDEN[rid])
+    lay = run_passes(GOLDEN[rid])
     s = lay.synthesis
     after = _deciding_beats(s)
     for i, c in enumerate(s.claims):
@@ -2287,7 +2359,7 @@ def test_the_candidates_are_exactly_the_commits_placed_below_each_started(rid):
 
 def test_a_synthetic_commit_takes_the_created_at_of_the_record_it_is_placed_after():
     """Every input record keeps its own; a synthetic commit takes its anchor's."""
-    lay = _layout(SKIPPED)
+    lay = run_passes(SKIPPED)
     at = {o.seq: o for o in lay.outs}
     assert [
         (o.key.ref, o.created_at) for o in lay.outs if isinstance(o.key, Synthesized)
@@ -2301,7 +2373,7 @@ def test_a_synthetic_commit_takes_the_created_at_of_the_record_it_is_placed_afte
 
 @pytest.mark.parametrize("rid", list(GOLDEN))
 def test_a_synthetic_commit_is_placed_after_a_record_it_names(rid):
-    lay = _layout(GOLDEN[rid])
+    lay = run_passes(GOLDEN[rid])
     for key, at in lay.placement.moves.items():
         assert isinstance(at, After)
         if isinstance(key, Synthesized):
@@ -2311,7 +2383,7 @@ def test_a_synthetic_commit_is_placed_after_a_record_it_names(rid):
 
 
 def test_a_watermark_is_renamed_with_the_record_it_names():
-    lay = _layout(WATERMARKED)
+    lay = run_passes(WATERMARKED)
     assert [_short(o.key) for o in lay.outs] == [1, 2, (1, 1), 3, 4, 5, 6, 7]
     beat, commit = lay.outs[5].record, lay.outs[6].record
     assert isinstance(beat, ToHeartbeat) and isinstance(commit, ToCommit)
@@ -2360,7 +2432,7 @@ def test_m6_places_at_most_one_record_after_any_record(rid):
     """A commit is placed after its last value, which is its own, or after its
     parent, which only its claim's next commit follows: M6's ties never
     decide, and only a later pass's can."""
-    moves = _layout(GOLDEN[rid]).placement.moves
+    moves = run_passes(GOLDEN[rid]).placement.moves
     commits = [
         at.anchor for k, at in moves.items() if isinstance(k, Input | Synthesized)
     ]
@@ -2379,7 +2451,7 @@ def test_a_stop_at_n_request_id_stays_as_it_is():
             r(5, "lifecycle.stopped", _stopped(False, None, 0, 1, ["stop@3"], 4.0)),
         ]
     )
-    lay = _layout(rows)
+    lay = run_passes(rows)
     assert [_short(o.key) for o in lay.outs] == [1, 3, 4, 2, 5]
     stop, exit = lay.outs[1], lay.outs[4]
     assert (stop.seq, stop.record.record.request_id) == (2, "stop@3")
@@ -2826,11 +2898,11 @@ HONORS_THE_EMPTY_ID = {
 @pytest.mark.parametrize("case", list(HONORS_THE_EMPTY_ID))
 def test_a_stopped_honoring_the_empty_id_is_refused(case):
     """Valid 0.3.0, whose honored items are bare strings, but the empty id names
-    no stop, since envelope-v0.2 forbids an empty request_id. A third party's
-    stop would become a withdrawal under it, which 0.4.0 rejects. A worker's
-    exit would carry it validly, lifecycle-v0.6's honored items being bare
-    strings too, but parse refuses it before it can tell an exit from a third
-    party's, and it honors nothing either way."""
+    no stop, since envelope-v0.2 forbids an empty request_id. 0.4.0 rejects it
+    whoever wrote the stop: a third party's would become a withdrawal under it,
+    and a worker's exit would keep it in honored, whose items lifecycle-v0.6
+    holds non-empty. parse refuses it before it can tell an exit from a third
+    party's."""
     rows = HONORS_THE_EMPTY_ID[case]
     last = rows[-1]
     assert _invalid_under_0_3_0(rows) == []
@@ -3385,6 +3457,19 @@ OUTPUT = {
         o(7, COMMIT, _commit4(3, 0, None, [], 6.0)),
         o(8, STOPPED, _exit4(True, None, 3, [], 7, [], 7.0)),
     ],
+    # A's skipped step 2 goes just after its parent, A's step 1, below B's
+    # started, dated by that beat: B resumes from it, and so does B's first
+    # commit. A's step 3, after B's started, parents on it too.
+    "resumed_from_a_tick_skipped_across_the_claim": [
+        o(1, START, _claim4("local://n1/11", 1.0, None)),
+        o(2, COMMIT, _commit4(1, 0, None, [], 2.0)),
+        o(3, COMMIT, _commit4(1, 0, 2, [], 3.0)),
+        o(4, COMMIT, _commit4(1, 0, 3, [], 3.0)),
+        o(5, START, _claim4("local://n2/22", 4.0, 4)),
+        o(6, COMMIT, _commit4(1, 0, 4, [], 5.0)),
+        o(7, COMMIT, _commit4(5, 0, 4, [], 6.0)),
+        o(8, STOPPED, _exit4(True, None, 5, [], 7, [], 7.0)),
+    ],
     # A stepless heartbeat's watermark is renamed with the stop it names.
     "watermarked": [
         o(1, START, _claim4("local://n1/11", 1.0, None)),
@@ -3531,6 +3616,21 @@ OUTPUT = {
         o(5, COMMIT, _commit4(4, 0, 3, [], 4.0)),
         o(6, TERMINATED, _terminated4("exited", 0, None, 5.0), rid="L1"),
         o(7, DIED, _died4(4, "lost", "exit 0", 5.0)),
+    ],
+    # M4: A's terminated ends A, so A's step 1, synthesized for B, commits only
+    # the value before it, and goes just after that value; the value after the
+    # reap stays uncommitted. B resumes from A's step 1.
+    "after_an_attributed_death": [
+        o(1, "supervisor.launched", _launched("local://n1/11", 0.5), rid="L1"),
+        o(2, START, _claim4("local://n1/11", 1.0, None), rid="L1"),
+        o(3, COMMIT, _commit4(2, 0, None, [], 2.0)),
+        o(4, "value", _value4(0.5, 3.0), name="loss"),
+        o(5, COMMIT, _commit4(2, 0, 3, [4], 3.0)),
+        o(6, TERMINATED, _terminated4("killed", None, 9, 4.0), rid="L1"),
+        o(7, DIED, _died4(2, "killed", "signal 9", 4.0)),
+        o(8, "value", _value4(0.4, 5.0), name="loss"),
+        o(9, START, _claim4("local://n1/12", 6.0, 5)),
+        o(10, COMMIT, _commit4(9, 0, 5, [], 7.0)),
     ],
 }
 
@@ -3856,6 +3956,9 @@ REFUSED = {
         LAUNCHED_CLAIM._replace(seq=3),
         r(4, "launcher.terminated", REAP, rid="L1"),
     ],
+    # is_live, which the runner asks before parse can refuse: a claim whose body
+    # is not an object holds no handle
+    "started_not_an_object": [r(1, "lifecycle.started", [DEAD, 1.0])],
 }
 
 
@@ -3941,9 +4044,18 @@ def test_the_launcher_tier_does_not_release_a_claim():
     assert step.is_live(rows)
 
 
-def test_a_claim_without_a_handle_cannot_be_judged():
-    with pytest.raises(MigrationError, match="seq 1"):
-        step.is_live([r(1, "lifecycle.started", {"t": 0.0})])
+@pytest.mark.parametrize(
+    "body",
+    [{"t": 0.0}, {"handle": 11, "t": 0.0}, [FOREIGN, 0.0]],
+    ids=["no_handle", "not_a_string", "not_an_object"],
+)
+def test_a_claim_without_a_handle_cannot_be_judged(body):
+    """``is_live`` reads the claim before ``parse`` can refuse it, so it refuses
+    a body that holds no handle itself, an array's included."""
+    with pytest.raises(
+        MigrationError, match=r"^the lifecycle\.started at seq 1 carries no handle"
+    ):
+        step.is_live([r(1, "lifecycle.started", body)])
 
 
 # ----- the step's place in the chain ----------------------------------------------------

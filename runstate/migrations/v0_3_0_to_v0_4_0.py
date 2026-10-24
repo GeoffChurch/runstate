@@ -12,19 +12,20 @@ seq-and-topic preservation every other step keeps. From 0.4.0 on, checkpoints
 hold seqs.
 
 It reads a run in six passes (§7), each a function from the parsed log and the
-earlier passes' results to a frozen result, then writes the rows:
+earlier passes' results to a frozen result, then writes the rows.
+``run_passes`` runs them, in this order, and nothing else does:
 
 1. **Claim attribution** (``attribute``): which claim each heartbeat and each
    value belongs to.
 2. **Classification** (``classify``): who wrote each ``lifecycle.stopped``, and
    what it ends; then what each third party's becomes, and which claim a
    launch's ``terminated`` reports dead (``report``).
-3. **Synthesis** (``synthesize``): M2 and M5 assign values to commits,
-   synthesizing the commits M5 names, with M8's fields.
+3. **Synthesis** (``synthesize``): M2, M4 and M5 assign values to commits or
+   leave them, synthesizing the commits M5 names, with M8's fields.
 4. **M1** (``link``): parents and ``resume_from``.
 5. **M6** (``place``, then ``renumber``): the moves and the withdrawals, then
    renumbering.
-6. **M7 and M8** (``rename``): the renames and the synthetic fields.
+6. **M7** (``rename``): the renames.
 
 ``write`` then writes each record's 0.4.0 row.
 
@@ -83,7 +84,10 @@ The rules:
   older claim of the same launch stays as 0.3.0 left it, with no report; only
   the latest claim enters the verdict. Only a ``terminated`` after the claim
   ends it, since 0.3.0 read only the records after a claim. A launch whose
-  handle differs, a wrapper's or another host's, gets none.
+  handle differs, a wrapper's or another host's, gets none. The
+  ``terminated`` a ``died`` is attributed from is its claim's end, as a
+  ``stopped`` naming it would be, since a death report ends its claim (§2):
+  a value after it is after its claim's end (M4).
 - **Lone stops** (``_lone_stop_rule``): the implementation round's census of
   who wrote them yields the rule. Until it lands, the placeholder reads every
   one as its claim's exit.
@@ -94,8 +98,9 @@ The rules:
   - **leading values,** below the claim's first real beat, go to its first
     commit;
   - **a claim that beat no integer step reaches no step,** the reading the
-    migration takes: its integer-step values are what it wrote while it
-    loaded, left as loading, and nothing is synthesized in it. A trailing
+    migration takes: its integer-step values are left as loading, whether it
+    wrote them while it loaded or in a step it never beat, even at or below a
+    clean exit's last step, and nothing is synthesized in it. A trailing
     value is one above a claim's last real beat. The reading replaces one
     that inferred a beatless claim's position from the claims before it,
     which had two self-consistent answers wherever the claim's values sat
@@ -105,19 +110,22 @@ The rules:
   - **M5** synthesizes a commit in exactly three places (``Place``): a tick
     skipped between two real beats, even one with no values; a trailing step,
     above the claim's last real beat, at or below a non-error exit's last
-    step; and a trailing step s, whatever ended its claim, of the claim M1
-    will choose for a later claim whose first real beat is s+1. That claim is
-    the newest one before it, in claim order, to reach step s, by a commit or
-    by trailing values (``_newest_reaching``, which M1 reuses).
+    step; and a trailing step s, whatever ended its claim, of the newest
+    claim before a later claim whose first real beat is s+1, in claim order,
+    to reach step s, by a commit or by trailing values (``_newest_reaching``,
+    which M1 reuses among its candidates). It is the claim M1 will choose
+    wherever its commit at s is a candidate, as it is unless a displaced
+    worker beat after the later claim began (a known limit).
 
   "The exit's last step" is the 0.3.0 ``final_step``; a null one reached no
   step. Only an exit node has one: a claim a third party released, or that
   nothing ended, has no last step to be above. Every other value is left
   uncommitted, with the first reason that holds (``Uncommitted``): stepless,
-  a register (M3); before every claim; after its claim's end, whatever
-  ended it (M4); a claim's that beat no step (loading); above its claim's
-  exit's last step; or a trailing step no exit vouches for, which
-  M5's third place does not reach.
+  a register (M3); before every claim; after its claim's end (M4), whatever
+  ended it, the end being the first ``stopped`` naming the claim or the
+  ``terminated`` a ``died`` is attributed from; a claim's that beat no step
+  (loading); above its claim's exit's last step; or a trailing step no exit
+  vouches for, which M5's third place does not reach.
 - **The exit node.** The worker's exit holds ``[]``, or null when it errored:
   it discarded its open iteration. A stop the rule for lone stops cannot
   attribute holds null, since it never vouches. A third party's release
@@ -126,7 +134,8 @@ The rules:
   carries one, else from the real heartbeat before it in its claim; and
   ``consumed_seq`` from that heartbeat. M5 synthesizes only above a claim's
   first real beat, so that heartbeat always exists, and M8's further
-  fallbacks never apply.
+  fallbacks never apply. It is worked out once and carried on the commit
+  (``Synthetic.previous``), the one fact M8, candidacy and placement read.
 - **M1** (``link``) reads the commits after synthesis, in claim order, never
   by step nearness, and chooses a claim's resume point among its
   **candidates**: the commits placed below its ``started``, which only a
@@ -187,11 +196,11 @@ whole-number float such as 3.0, which 0.3.0's schemas accept. It refuses:
   body that is not an object;
 - **a ``stopped`` whose ``honored`` holds the empty id,** valid 0.3.0, whose
   honored items are bare strings. The empty id names no stop, since
-  envelope-v0.2 forbids an empty request id, and a third party's stop would
-  become a withdrawal under it, which 0.4.0 rejects. A worker's exit would
-  carry it validly, lifecycle-v0.6's honored items being bare strings too,
-  but ``parse`` refuses it before it can tell an exit from a third party's,
-  and it honors nothing either way;
+  envelope-v0.2 forbids an empty request id, and 0.4.0 cannot carry it: a
+  third party's stop would become a withdrawal under it, which envelope-v0.2
+  rejects, and a worker's exit would keep it in ``honored``, whose items
+  lifecycle-v0.6 holds non-empty. ``parse`` refuses it before it can tell an
+  exit from a third party's, and it honors nothing either way;
 - a topic under a prefix 0.3.0 reserves (``lifecycle.``, ``control.``,
   ``launcher.``) that 0.3.0 does not define, as a ``control.withdraw``, a
   ``lifecycle.commit`` or a ``lifecycle.rewind`` would be;
@@ -260,6 +269,9 @@ whole-number float such as 3.0, which 0.3.0's schemas accept. It refuses:
   runner wrote no launch record, and its id is minted.
 - Each id a third party's stop honored is withdrawn, even one another record
   already spent: a second withdrawal of a spent request changes nothing.
+- A third party's stop that honors an id no stop bears becomes a withdrawal of
+  a request that never existed. It is harmless: a withdrawal spends a request,
+  and there is none to spend.
 - A displaced worker's values are attributed to its successor's claim, because
   the positional rule did so, and the log does not record which worker wrote
   them. Its heartbeats name its own claim and keep it. Above its successor's
@@ -273,15 +285,23 @@ whole-number float such as 3.0, which 0.3.0's schemas accept. It refuses:
   0.3.0's ``value_series`` read it.
 - The rule for lone stops is a placeholder until the census replaces it: a
   third party's lone stop that is not the backstop is read as its claim's exit,
-  and none is read as unattributable. A beat its worker wrote after such a
-  stop is a commit the exit's ``parent`` names, placed after the exit.
+  and none is read as unattributable.
+- A beat after its claim's end, whoever ended it, still commits. M4 leaves a
+  value after the end uncommitted, but a heartbeat with an integer step is a
+  commit wherever it falls. After a third party's release, or the
+  ``terminated`` a death is attributed from, it is a commit placed after the
+  ``died``; after a stop the placeholder reads as its claim's exit, it is a
+  commit the exit's ``parent`` names, placed after the exit. The census's rule
+  for lone stops (the round's Task 13) and the owner decide it.
 - An unattributable stop's ``final_step`` caps its claim's trailing values,
   as a worker's exit's does, though who wrote it is unknown. The census's rule
   for lone stops must revisit this.
 - A claim that beat no integer step reaches no step, even one that finished
   a whole step and checkpointed it before it crashed: nothing is synthesized
   in it, so the next claim's first commit may be a parentless resume, which
-  P3 names.
+  P3 names. One whose exit is clean gets no commit either: its step values at
+  or below its exit's last step, which the exit vouches for, are left as
+  loading, not synthesized.
 - A claim that beat no integer step resumes, by inference, from the newest
   candidate before it: the log does not say which checkpoint it loaded.
 - A claim that loaded a checkpoint a displaced worker saved after the claim
@@ -297,10 +317,11 @@ whole-number float such as 3.0, which 0.3.0's schemas accept. It refuses:
   only whether a trailing step finished, and moving the synthesis to an older
   claim would credit it with a checkpoint the displaced worker may have
   saved. It errs, as M4 does, towards committing too little. The third place
-  synthesizes a commit M1 then
-  passes over only when values pass 1 gives its claim precede the resuming
-  claim while that claim's own beat below them follows it, which takes a
-  second displaced worker's values; nothing continues such a commit. Either
+  synthesizes a commit M1 then passes over only when values pass 1 gives its
+  claim precede the resuming claim while that claim's own beat below them
+  follows it, which takes a second displaced worker's values. M1 passes it
+  over only for that resuming claim: a later claim begun after the beat
+  before it, whose first real beat is s+1, can still resume from it. Either
   way M1 errs towards a parentless resume, which P3 names, never towards a
   resume point placed after its claim.
 """
@@ -613,9 +634,9 @@ def _value(r: _Record) -> _Value:
 def _spends(r: _Record, honored: list[str]) -> tuple[str, ...]:
     """A ``stopped``'s ``honored``: the ids of the stops it spends. The empty id
     names no stop, since envelope-v0.2 forbids an empty ``request_id``, so it
-    honors nothing; a third party's stop would become a withdrawal under it,
-    which 0.4.0 rejects. A worker's exit would carry it validly, but which
-    wrote the stop is not known yet, and either way it honors nothing."""
+    honors nothing, and 0.4.0 rejects it on what either writer's stop becomes:
+    a third party's withdrawal under it, a worker's exit node keeping it in
+    ``honored``. Which wrote the stop is not known yet."""
     if "" in honored:
         raise MigrationError(
             f"the {r.topic} at seq {r.seq} honors the empty id, which names no "
@@ -847,8 +868,10 @@ def _names_a_claim_before_it(
 
 def _a_record_before_it(b: _Beat, seen: set[int]) -> None:
     """``seen`` holds the seqs before the heartbeat. Its ``consumed_seq`` is a
-    drain watermark: 0 for none, else the seq of a record before it, whatever
-    its topic."""
+    drain watermark: 0 for none, else the seq of a record before it. That
+    record is never an integer-step heartbeat, which ``_names_no_commit``
+    refuses, nor a stop that leaves the log, which ``report`` refuses
+    (``_drained_from_nothing``)."""
     if b.consumed_seq != 0 and b.consumed_seq not in seen:
         raise MigrationError(
             f"the {_Topic.HEARTBEAT} at seq {b.seq} has consumed_seq "
@@ -1369,8 +1392,9 @@ class Place(StrEnum):
     - a tick skipped between two real beats of one claim, even one with no
       values;
     - a trailing step at or below a non-error exit's last step;
-    - a trailing step s, whatever ended its claim, of the claim M1 will choose
-      for a later claim whose first real beat is s+1."""
+    - a trailing step s, whatever ended its claim, of the newest claim before
+      a later claim whose first real beat is s+1 to reach step s: the claim M1
+      will choose, wherever its commit at s is a candidate."""
 
     SKIPPED_TICK = "skipped tick"
     BEFORE_A_CLEAN_EXIT = "trailing step before a non-error exit"
@@ -1383,9 +1407,12 @@ class Uncommitted(StrEnum):
 
     - it is stepless, a register (M3), wherever it stands;
     - it is before every claim, so no claim's (pass 1);
-    - it is after its claim's end, whatever ended the claim (M4);
-    - it is a claim's that beat no integer step, which so reached no step:
-      what it wrote while it loaded (P3's loading cells);
+    - it is after its claim's end (M4), whatever ended the claim: the first
+      ``stopped`` naming it, or the ``terminated`` a ``died`` is attributed
+      from;
+    - it is a claim's that beat no integer step, which so reached no step
+      (P3's loading cells): whether it wrote it while it loaded or in a step
+      it never beat, even at or below a clean exit's last step;
     - it is a trailing step above its claim's exit's last step;
     - it is a trailing step no exit vouches for, which M5's third place does
       not reach: nothing says its iteration finished."""
@@ -1407,20 +1434,23 @@ class Real:
 
 @dataclass(frozen=True)
 class Synthetic:
-    """A commit M5 synthesizes, at ``place``, with M8's fields:
+    """A commit M5 synthesizes, at ``place``. ``previous`` is the real heartbeat
+    before it in its claim, worked out once (``_claim_commits``) and read by
+    every pass that needs it: M8 here, candidacy (``_beaten``) and placement.
+    M8's fields:
 
-    - ``t`` from the last value it commits that carries one, else from the real
-      heartbeat before it in its claim;
-    - ``consumed_seq`` from that heartbeat.
+    - ``t`` from the last value it commits that carries one, else from
+      ``previous``;
+    - its ``consumed_seq`` is ``previous``'s.
 
-    M5 synthesizes only above a claim's first real beat, so that heartbeat
-    always exists, and M8's further fallbacks (the ``created_at`` of the record
-    it is placed after; a ``consumed_seq`` of 0) never apply. Its ``fired`` and
+    M5 synthesizes only above a claim's first real beat, so ``previous`` always
+    exists, and M8's further fallbacks (the ``created_at`` of the record it is
+    placed after; a ``consumed_seq`` of 0) never apply. Its ``fired`` and
     ``expired`` are ``[]``, as on every migrated node."""
 
     place: Place
+    previous: _Beat
     t: float
-    consumed_seq: int
 
 
 @dataclass(frozen=True)
@@ -1503,8 +1533,9 @@ class _Reading:
 
     ``real`` holds its heartbeats with an integer step, by step, ascending.
     ``placed`` maps each commit's step (real, or synthesized at a
-    ``synthesized_at`` place) to the values it commits. ``trailing`` maps each trailing step that only M5's third place
-    can commit to its values. ``left`` holds the values no commit can hold."""
+    ``synthesized_at`` place) to the values it commits. ``trailing`` maps each
+    trailing step that only M5's third place can commit to its values.
+    ``left`` holds the values no commit can hold."""
 
     claim: Claim
     exit: ExitNode | None
@@ -1525,8 +1556,9 @@ class _Reading:
         return frozenset(self.placed) | frozenset(self.trailing)
 
 
-def _read(claim: Claim, end: End | None) -> _Reading:
-    node = _exit_node(end)
+def _read(claim: Claim, node: ExitNode | None, end: int | None) -> _Reading:
+    """``node`` is its exit node, and ``end`` the seq of the record that ends it
+    (``_ends``), each None when it has none."""
     real: dict[int, _Beat] = {}
     for b in claim.beats:
         if b.step is not None:
@@ -1545,7 +1577,7 @@ def _read(claim: Claim, end: End | None) -> _Reading:
     for v in claim.values:
         if v.step is None:
             left.append(Left(v, Uncommitted.STEPLESS))
-        elif end is not None and v.seq > end.stop.seq:
+        elif end is not None and v.seq > end:
             left.append(Left(v, Uncommitted.AFTER_ITS_END))
         elif not steps:  # a claim that beat no step reached none
             left.append(Left(v, Uncommitted.LOADING))
@@ -1574,16 +1606,19 @@ def _read(claim: Claim, end: End | None) -> _Reading:
 def _newest_reaching(
     reached: Sequence[frozenset[int]], before: int, step: int
 ) -> int | None:
-    """THE CLAIM M1 WILL CHOOSE: the index of the newest claim before the claim
-    at index ``before``, in claim order, whose ``reached`` steps hold ``step``;
-    None when no claim's do. Claim order, never step nearness (Review Focus 2).
+    """THE NEWEST CLAIM TO REACH A STEP: the index of the newest claim before
+    the claim at index ``before``, in claim order, whose ``reached`` steps hold
+    ``step``; None when no claim's do. Claim order, never step nearness (Review
+    Focus 2).
 
-    M5's third place asks it of the steps each claim reached by a commit or by
-    trailing values, before synthesis. Pass 4 (M1) asks it of the steps of
-    each claim's candidates, after synthesis, for a first commit's parent at
-    the step below it. Without a displaced worker the two choose the same
-    claim, since the third place turns the trailing step it chooses into a
-    candidate; where they differ is a known limit (the module docstring)."""
+    Pass 4 (M1) asks it of the steps of each claim's candidates, after
+    synthesis, for a first commit's parent at the step below it: there it is
+    the claim M1 chooses. M5's third place asks it of the steps each claim
+    reached by a commit or by trailing values, before synthesis: there it is
+    the claim M1 will choose wherever that claim's commit at the step is a
+    candidate. Without a displaced worker it always is, since the third place
+    turns the trailing step it chooses into a candidate; where the two differ
+    is a known limit (the module docstring)."""
     for i in range(before - 1, -1, -1):
         if step in reached[i]:
             return i
@@ -1593,7 +1628,7 @@ def _newest_reaching(
 def _synthetic(place: Place, values: Sequence[_Value], previous: _Beat) -> Synthetic:
     """M8. ``previous`` is the claim's real heartbeat before the commit."""
     dated = [v.t for v in values if v.t is not None]
-    return Synthetic(place, dated[-1] if dated else previous.t, previous.consumed_seq)
+    return Synthetic(place, previous, dated[-1] if dated else previous.t)
 
 
 def _claim_commits(r: _Reading, resumed: set[int]) -> tuple[ClaimCommits, list[Left]]:
@@ -1624,13 +1659,40 @@ def _claim_commits(r: _Reading, resumed: set[int]) -> tuple[ClaimCommits, list[L
     return ClaimCommits(r.claim, tuple(commits), r.exit), left
 
 
-def synthesize(attribution: Attribution, classification: Classification) -> Synthesis:
+def _ends(
+    classification: Classification, deaths: Mapping[int, AttributedDeath]
+) -> dict[int, int]:
+    """M4's end of each ended claim, by the claim's seq: the seq of the record
+    that ends it. That is the first ``stopped`` naming it, or, for a claim no
+    ``stopped`` names, the ``terminated`` a ``died`` is attributed from
+    (``report``), since a death report ends its claim (§2)."""
+    ends = {claim: end.stop.seq for claim, end in classification.ends.items()}
+    for terminated, d in deaths.items():
+        assert d.death.claim not in ends, f"the claim {d.death.claim} ends twice"
+        ends[d.death.claim] = terminated
+    return ends
+
+
+def synthesize(
+    attribution: Attribution,
+    classification: Classification,
+    deaths: Mapping[int, AttributedDeath],
+) -> Synthesis:
     """M2 and M5 assign each value to a commit of its claim, synthesizing the
-    commits M5 names; every other value is left, with its reason. Each claim
-    is read alone first, then M5's third place looks across claims; no claim's
-    reading depends on another's, so nothing is circular."""
+    commits M5 names; every other value is left, with its reason, M4's among
+    them. ``deaths`` are pass 2's attributed death reports (``Reports.deaths``):
+    with the first ``stopped`` naming each claim, they say where each claim
+    ends (M4). Each claim is read alone first, then M5's third place looks
+    across claims; no claim's reading depends on another's, so nothing is
+    circular."""
+    ends = _ends(classification, deaths)
     readings = [
-        _read(c, classification.ends.get(c.started.seq)) for c in attribution.claims
+        _read(
+            c,
+            _exit_node(classification.ends.get(c.started.seq)),
+            ends.get(c.started.seq),
+        )
+        for c in attribution.claims
     ]
     reached = [r.reached for r in readings]
     resumed: list[set[int]] = [set() for _ in readings]
@@ -1728,9 +1790,10 @@ class _Beaten(NamedTuple):
 def _beaten(c: ClaimCommits) -> list[_Beaten]:
     """A claim's commits, in its order, each with the beat that decides whether
     it is placed below a later claim's ``started``: its own heartbeat when it is
-    real, else the real heartbeat before it in its claim, the one M8 dates it
-    by. M6 places a real commit no earlier than its heartbeat, and a synthetic
-    commit after its parent, so that beat binds it too.
+    real, else ``Synthetic.previous``, the real heartbeat before it in its
+    claim, the one M8 dates it by. M6 places a real commit no earlier than its
+    heartbeat, and a synthetic commit after its parent, so that beat binds it
+    too.
 
     Only beats can follow that ``started``, of all M6 places a commit after.
     Pass 1 attributes values by position, so an earlier claim's committed values
@@ -1740,19 +1803,14 @@ def _beaten(c: ClaimCommits) -> list[_Beaten]:
     claim's commits below it, whose beats precede the one that decides it. If
     pass 1 ever attributes values by name rather than by position, revisit this
     rule."""
-    beats: list[int] = []
+    beaten: list[_Beaten] = []
     for k in c.commits:
         match k.origin:
-            case Real(beat):
-                beats.append(beat.seq)
-            case Synthetic():
-                beats.append(beats[-1])  # M5 synthesizes above the first real beat
+            case Real(beat=beat) | Synthetic(previous=beat):
+                beaten.append(_Beaten(CommitRef(c.claim.started.seq, k.step), beat.seq))
             case _:
                 assert_never(k.origin)
-    return [
-        _Beaten(CommitRef(c.claim.started.seq, k.step), beat)
-        for k, beat in zip(c.commits, beats, strict=True)
-    ]
+    return beaten
 
 
 def _resume_from(
@@ -1933,8 +1991,9 @@ def place(synthesis: Synthesis, linkage: Linkage, reports: Reports) -> Placement
                     own: Key = Input(beat.seq)
                     consumed = beat.consumed_seq
                     follows.append(own)
-                case Synthetic(consumed_seq=consumed):
+                case Synthetic(previous=previous):
                     own = Synthesized(ref)
+                    consumed = previous.consumed_seq
                     # M5 synthesizes only above a claim's first real beat, so a
                     # synthetic commit's parent is a commit of its own claim
                     assert follows, f"the synthetic commit {ref} follows nothing"
@@ -2132,10 +2191,8 @@ def rename(
 
     def commit(ref: CommitRef, k: Commit) -> ToCommit:
         match k.origin:
-            case Real(beat):
+            case Real(beat=beat) | Synthetic(previous=beat):  # M8's, for a synthetic
                 consumed = beat.consumed_seq
-            case Synthetic(consumed_seq=consumed):
-                pass
             case _:
                 assert_never(k.origin)
         return ToCommit(
@@ -2367,6 +2424,50 @@ def write(o: Out) -> Row:
 # ----- the step ---------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class Passes:
+    """Every pass's result for one run, in pass order, each from the parsed log
+    and the results before it; ``outs`` are the records ``write`` writes."""
+
+    log: _Log
+    attribution: Attribution
+    classification: Classification
+    reports: Reports
+    synthesis: Synthesis
+    linkage: Linkage
+    placement: Placement
+    numbering: Mapping[Key, int]
+    outs: tuple[Out, ...]
+
+
+def run_passes(rows: list[Row]) -> Passes:
+    """THE PASS ORDER (§7), the one wiring of the passes: ``transform`` writes
+    its ``outs``. ``report`` runs before ``synthesize``, which reads the
+    attributed death reports for M4."""
+    log = parse(rows)
+    attribution = attribute(log)
+    classification = classify(log)
+    reports = report(log, classification)
+    synthesis = synthesize(attribution, classification, reports.deaths)
+    linkage = link(synthesis)
+    placement = place(synthesis, linkage, reports)
+    numbering = renumber(
+        [x.seq for x in log.records], placement.moves, placement.dropped
+    )
+    outs = rename(log, synthesis, linkage, reports, placement, numbering)
+    return Passes(
+        log,
+        attribution,
+        classification,
+        reports,
+        synthesis,
+        linkage,
+        placement,
+        numbering,
+        outs,
+    )
+
+
 def _names(body: object, claim: int) -> bool:
     """Whether a body names ``claim`` by ``claim_seq``, as 0.3.0's tolerant read
     took it (``observables._claim_name`` at 63bc165): an integer, whatever else
@@ -2400,26 +2501,19 @@ class V0_3_0_to_V0_4_0:
             for x in rows
         ):
             return False
-        handle = json.loads(claim.body).get("handle")
+        body = json.loads(claim.body)  # asked before parse can refuse a bad one
+        handle = body.get("handle") if isinstance(body, dict) else None
         if not isinstance(handle, str):
             raise MigrationError(
-                f"the claim at seq {claim.seq} carries no handle, so whether it "
-                "is live cannot be told"
+                f"the {_Topic.STARTED} at seq {claim.seq} carries no handle, its "
+                "body not an object holding one, so whether its claim is live "
+                "cannot be told"
             )
         return resolve(handle) is not False
 
     def transform(self, rows: list[Row]) -> list[Row]:
-        """The passes, in order, then the 0.4.0 rows, renumbered gapless from 1.
-        Pure and deterministic: every refusal raises before a row is returned,
-        so the runner's dry run refuses a run before it seals it."""
-        log = parse(rows)
-        classification = classify(log)
-        reports = report(log, classification)
-        synthesis = synthesize(attribute(log), classification)
-        linkage = link(synthesis)
-        placement = place(synthesis, linkage, reports)
-        numbering = renumber(
-            [x.seq for x in log.records], placement.moves, placement.dropped
-        )
-        outs = rename(log, synthesis, linkage, reports, placement, numbering)
-        return [write(o) for o in outs]
+        """The passes, in order (``run_passes``), then the 0.4.0 rows, renumbered
+        gapless from 1. Pure and deterministic: every refusal raises before a
+        row is returned, so the runner's dry run refuses a run before it seals
+        it."""
+        return [write(o) for o in run_passes(rows).outs]
