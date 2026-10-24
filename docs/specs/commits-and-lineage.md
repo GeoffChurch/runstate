@@ -909,12 +909,12 @@ it is cited:
 - **what a heartbeat's step marks:** lifecycle-v0.5 calls the heartbeat a "tick-driven liveness beacon",
   and `design-v0.2.md` §7 says it serves "progress (step advancing)". Neither says the iteration finished,
   and §1 above says "No record marks a step complete. The heartbeat stood in for that by accident". The
-  reference Worker's `tick(step)` fixes no order with the body, and `emit` raises before the first tick.
-  Whether a claim's last beat ends or starts its iteration is `beat-ends-iteration`; where a value written
-  after that beat at its step belongs is `post-beat-values`;
-- **whether the step clock moves one iteration at a time** (`valueless-gap`, and `resume-offset`'s
-  `stride`): `design-v0.2.md` §11 makes it the worker's logical clock, and only the reference `steps()`
-  driver moves it by one;
+  reference Worker's `tick(step)` fixes no order with the body, and `emit` raises only while no step is set,
+  before `steps()`' first yield or a manual loop's first tick (worker.py:179, :240). Whether a claim's last
+  beat ends or starts its iteration is `beat-ends-iteration`; where a value written after that beat at its
+  step belongs is `post-beat-values`;
+- **whether the step clock moves one iteration at a time** (`valueless-gap`): `design-v0.2.md` §11 makes it
+  the worker's logical clock, and only the reference `steps()` driver moves it by one;
 - **whether a claim ran the iteration its clock names,** or labelled a loading status with it
   (`leading-values`, `beatless-claim`);
 - **what a `final_step` says** (`final-step`): 0.3.0's reads took it as the step the trajectory reached
@@ -969,12 +969,18 @@ gave the ambiguities above it. The site tests use these terms, each read from th
 - **a claim's values** are the integer-step values position gives it, and **a trailing value** is one above
   the claim's last real beat. A claim that beat no integer step has its last real beat below every step, so
   every value of it is trailing;
-- **a claim's floor** is the lowest step it can reach under some reading: its lowest real beat's or value's
-  step, or, for a claim that beat none, the lower of its lowest value's step and the step above the newest
-  real beat of the claims before it, step 0 where none beat one;
-- **a claim's candidate first steps** are its first real beat's step and the step of every value it holds
-  below that beat, or, when it beat none, every step from its floor up to the highest step a record of the
-  run names: the steps its first commit can have under some reading;
+- **a claim's floor** is the lowest step its own records let it hold a commit at under some reading, its
+  resume gap aside ("The resume family", below). For a claim that beat, it is the lowest step among its real
+  beats, its values and the `final_step` of each `stopped` naming it that the log does not prove a third
+  party's. For a claim that beat none, it is 0, since every step is a position some reading of
+  `beatless-claim` gives it; the built-ins' positions, where defined, are its lowest value's step less one
+  and the newest real beat of the claims before it;
+- **a claim's candidate first steps** are the steps its first commit can have under some reading. For a
+  claim that beat, they are its first real beat's step, the step of every value it holds below that beat,
+  and, where claims before it hold a real beat, a value or such a `final_step` before its `started`, every
+  step above the lowest floor of those claims and below its own, its possible resume gap. For a claim that
+  beat none, they are every step up to the highest step a record of the run names, and for one that also
+  holds no value and no such `final_step`, there are none;
 - **a claim's proven end** is a `completed: true` stop naming it, or, where it is the newest claim naming its
   launch, that launch's `terminated` carrying its handle and following it. The claim ended there or before
   under every reading, so M4 leaves every value after it uncommitted ("Stops" and "Attributed death reports"
@@ -989,13 +995,13 @@ gave the ambiguities above it. The site tests use these terms, each read from th
 | `value-claim` | which claim a value belongs to | `positional`, `latched`, `uncommitted`, `refuse` | `positional` |
 | `beat-ends-iteration` | whether a claim's last real beat ends or starts its iteration | `ends`, `starts`, `refuse` | `ends` |
 | `post-beat-values` | where a value at the last real beat's step, written after it, belongs | `label`, `exit-holds`, `refuse` | `label` |
-| `valueless-gap` | whether a valueless step a claim's clock moved past was an iteration | `iteration`, `stride`, `refuse` | `iteration`, between two beats; today's step synthesized nothing elsewhere |
 | `leading-values` | what a value below its claim's first real beat is | `loading`, `unticked`, `refuse` | `loading` |
 | `beatless-claim` | where a claim that beat no integer step was: the steps it reached | `loading`, `own-values`, `predecessor-beat`, `refuse` | `loading` |
+| `valueless-gap` | whether a valueless step a claim's clock moved past was an iteration | `iteration`, `stride`, `refuse` | `iteration`, between two beats; today's step synthesized nothing elsewhere |
 | `final-step` | what an exit's `final_step` says | `yielded`, `finished`, `finished-if-clean`, `refuse` | `finished-if-clean`, nearly |
 | `exitless-step` | whether the highest step of a claim with no exit node finished | `unfinished`, `finished`, `refuse` | `unfinished`, nearly: today's step also left the valued steps below it uncommitted |
 | `resume-origin` | whether a resumed claim's state came from a save the log's own claims made | `in-log`, `outside`, `refuse` | `in-log`, where a source reaches the step below the first; today's step read `outside` elsewhere |
-| `resume-offset` | which step a resumed claim's state stands at | `previous-step`, `stride`, `refuse` | `previous-step` |
+| `resume-offset` | which step a resumed claim's state stands at | `previous-step`, `earlier-step`, `refuse` | `previous-step` |
 | `resume-claim` | which claim's save of that step a resumed claim loaded | `newest-claim`, `prefer-beat`, `latest-record`, `refuse` | `newest-claim` |
 | `commitless-resume` | where a claim that committed nothing resumed from | `newest-candidate`, `successor`, `fresh`, `refuse` | `newest-candidate` |
 
@@ -1143,25 +1149,6 @@ gave the ambiguities above it. The site tests use these terms, each read from th
   whatever this reads.
 - **Refuse-only:** no.
 
-**`valueless-gap`: whether a valueless step a claim's clock moved past was an iteration.**
-- **Site:** a step at which a claim holds no value, where the claim's clock moved past it: strictly between
-  two of its records at integer steps (real beats or values), below the `final_step` of a `stopped` naming it
-  that the log does not prove a third party's, or below its highest trailing step; and at or above its floor,
-  which for a claim that beat none, every value of which is trailing, may lie below its lowest value. So is
-  each step a claim moved past in a run-on ("The resume family", below): for a claim C with a candidate first
-  step s, each step strictly between s−1 and the highest step below s−1 at which a claim before C holds a
-  real beat or a value before C's `started`.
-- **H1:** the worker ran an iteration whose tick it skipped, and which emitted nothing, which needs a commit.
-- **H2:** the worker's clock moves by more than one per iteration, which needs no commit there.
-- **Built-ins:**
-  - `iteration`: a synthesized commit, wherever M5's first place, `leading-values`' `unticked` or a run-on
-    reaches the step. Today's reading between two real beats; elsewhere today's step synthesizes nothing.
-  - `stride`: no commit: the clock skipped the step.
-  - `refuse`.
-- **For a claim that beat none, its readings apply only above the position `beatless-claim` gives it,** and
-  so never under `loading` ("How the position composes", below).
-- **Refuse-only:** no.
-
 **`leading-values`: what a value below its claim's first real beat is.**
 - **Site:** a value of a claim that beat an integer step, at a step below its first real beat.
 - **H1:** the claim resumed from step 4, labelled its loading status 4 and beat 5, which needs the value in
@@ -1179,10 +1166,15 @@ gave the ambiguities above it. The site tests use these terms, each read from th
 - **Refuse-only:** no.
 
 **`beatless-claim`: where a claim that beat no integer step was: the steps it reached.**
-- **Site:** a claim with no real beat that holds a value before its proven end, if it has one; M4 leaves a
-  value after it uncommitted under every reading. Its position can change the output wherever it holds one:
+- **Site:** a claim with no real beat that holds a value before its proven end, if it has one, or that a
+  `stopped` not proven a third party's names with an integer `final_step`. M4 leaves a value after the proven
+  end uncommitted under every reading. Its position can change the output wherever it holds either:
   - something may vouch for a step its values name: a `final_step` at or above it, or a later claim's start
     one above it (the vouched claims);
+  - `finished` commits a `final_step` above its position, valueless or not. The reference Worker's
+    `steps(start=k)` writes only a `stopped` with `final_step: k` when its first body raises before emitting
+    (worker.py:160, :179), and a worker that finds its target reached on load and calls
+    `stopped(completed=True, final_step=k)` writes the same record, completed;
   - an exit node, which a completed stop names, may hold its open iteration's values;
   - with no exit node, `exitless-step` reads its highest step, and its site reaches every claim that no
     completed stop names.
@@ -1198,7 +1190,8 @@ gave the ambiguities above it. The site tests use these terms, each read from th
   - `loading`: it reached no step; its values stay uncommitted as loading, and nothing is synthesized in it.
     Today's reading.
   - `own-values`: it reached the steps its values name. Its position before its lowest value step s₀ is
-    s₀−1, and its values are trailing values above that position.
+    s₀−1, and its values are trailing values above that position. A claim that holds no value reached no
+    step under it: it has no position, as under `loading`.
   - `predecessor-beat`: its position is the newest real beat of the claims before it, fixed before
     synthesis, or below every step where none beat one. Its values above that step are trailing values, and
     those at or below it stay uncommitted as loading.
@@ -1208,7 +1201,31 @@ gave the ambiguities above it. The site tests use these terms, each read from th
   position composes").
 - **Refuse-only:** no, but each reading declares how its writers label: `own-values` misreads a loading
   status written at a step as that step's work, and `predecessor-beat` misreads a claim that resumed below
-  the newest beat.
+  the newest beat, or above it, from a step an earlier claim finished without a beat.
+
+**`valueless-gap`: whether a valueless step a claim's clock moved past was an iteration.**
+- **Site:** a step at which a claim holds no value, where the claim's clock moved past it: strictly between
+  two of its records at integer steps (real beats or values), below the `final_step` of a `stopped` naming it
+  that the log does not prove a third party's, or below its highest trailing step; and at or above its floor,
+  which for a claim that beat none is 0. Two kinds of step outside a claim's records are sites too ("The
+  resume family", below):
+  - each step a claim moved past in a run-on: for a claim C with a candidate first step s, and each claim
+    before C that no completed `stopped` names and that holds a real beat or a value below s−1 before C's
+    `started`, each step strictly between its highest such record and s−1;
+  - each step of a possible resume gap: for a claim C that beat, and the claims before it that hold a real
+    beat, a value or such a `final_step` before C's `started`, each step above the lowest floor of those
+    claims and below C's own.
+- **H1:** the worker ran an iteration whose tick it skipped, and which emitted nothing, which needs a commit.
+- **H2:** the worker's clock moves by more than one per iteration, which needs no commit there.
+- **Built-ins:**
+  - `iteration`: a synthesized commit, wherever M5's first place, `leading-values`' `unticked`, a run-on or a
+    resume gap reaches the step. Today's reading between two real beats; elsewhere today's step synthesizes
+    nothing.
+  - `stride`: no commit: the clock skipped the step.
+  - `refuse`.
+- **For a claim that beat none, its readings apply only above the position `beatless-claim` gives it,** and
+  so never under `loading` ("How the position composes", below).
+- **Refuse-only:** no.
 
 **`final-step`: what an exit's `final_step` says.**
 - **Site:** a `stopped` naming a claim that the log does not prove a third party's, when its `final_step` is
@@ -1256,8 +1273,8 @@ gave the ambiguities above it. The site tests use these terms, each read from th
   is a `beat-ends-iteration` site and C holds no value above it, that beat's step s, which `starts` makes
   trailing. No claim is excluded for a later claim whose first step is s+1. Under `resume-origin`'s
   `outside`, whose site holds at every such later claim, that start does not commit s in C; nor under
-  `resume-offset`'s `stride`, whose site holds wherever an earlier record lies below s, as one always does
-  below a claim's trailing step above a beat; nor, for a claim that beat none, under `beatless-claim`'s
+  `resume-offset`'s `earlier-step`, whose site holds wherever an earlier record lies below s, as one always
+  does below a claim's trailing step above a beat; nor, for a claim that beat none, under `beatless-claim`'s
   `loading`. So the precedence below decides where a later claim's start commits s.
 - **H1:** the worker was killed inside step s's body, or a third party released the claim there, which needs
   step s uncommitted.
@@ -1286,44 +1303,59 @@ read the claim's steps above that position as any claim's:
 - `final-step` reads its exit's `final_step`, and a non-error exit node holds the open iteration's values;
 - `exitless-step` reads its highest valued step above the position.
 
-Under `loading` the claim has no position: nothing is left for any of them to read, `valueless-gap`'s
-readings never apply in it, and it is no claim that could have saved a resume step unrecorded ("The resume
-family", below). Where neither a value nor its exit's `final_step` lies above the position, nothing is left
-to read either. Site tests never read these readings; strategies compose them (D3).
+Under `loading`, and under `own-values` for a claim with no value, the claim has no position: nothing is
+left for any of them to read, `valueless-gap`'s readings never apply in it, and it is no claim that could
+have saved a resume step unrecorded ("The resume family", below). Where neither a value nor its exit's
+`final_step` lies above the position, nothing is left to read either. Site tests never read these readings;
+strategies compose them (D3).
 
-**The resume family.** Three ambiguities read where a claim C whose first commit is at old step s above 0
-resumed from, one concern each (review §12, item 16): whether its state came from a save of the log's own
-claims (`resume-origin`), at which step that save stands (`resume-offset`), and which claim made it
-(`resume-claim`). Their readings compose (D3): none is hard-wired to another's choice, and the last two apply
-only under `resume-origin`'s `in-log`. Their terms, for a step r below s:
+**The resume family.** Three ambiguities read where a claim C resumed from, one concern each (review §12,
+item 16): whether its state came from a save of the log's own claims (`resume-origin`), at which step that
+save stands (`resume-offset`), and which claim made it (`resume-claim`). C's **first step** s is its first
+commit's old step, its resume gap aside (below). The family reads a claim whose first step is above 0, and
+`resume-origin` also reads a claim that holds no commit. Their readings compose (D3): none is hard-wired to
+another's choice, and the last two apply only under `resume-origin`'s `in-log`. Their terms, for a step r
+below s:
 - **a source of r** is a claim before C whose span holds r: r lies at or above its floor, and at or below one
   of its real beats' or values' steps or the `final_step` of a `stopped` naming it that the log does not
   prove a third party's, each before C's `started`. A source **reaches** r where the other readings let it:
-  by a commit that is not a run-on's, a valueless one under `valueless-gap`'s `iteration` only, or by
-  trailing values that `final-step`'s reading does not put above the ceiling;
+  by a commit that is neither a run-on's nor a resume gap's, a valueless one under `valueless-gap`'s
+  `iteration` only, or by trailing values that `final-step`'s reading does not put above the ceiling;
 - **a claim that could have saved r unrecorded** is a claim before C with no exit node, as `stop-author`
-  reads it, and a position below r, that holds a real beat or a value below r before C's `started`. A claim
-  that beat none has a position only as `beatless-claim` reads it, and none under `loading`, so a loading
-  claim saved nothing. Excluding exited claims is right for a writer whose `final_step` counts every step it
-  began, as the reference Worker's does: an exited claim of such a writer that began r would have a
-  `final_step` at or above it, and be a source;
-- **the holders of r** are the sources that reach it, or, where none does, the claims that could have saved
-  it unrecorded;
+  reads it, and a position below r, that holds a real beat or a value below r before C's `started`, and no
+  trailing value at or above r: under the readings, its clock never passed r. A claim that beat none has a
+  position only as `beatless-claim` reads it, and none under `loading`, so a loading claim saved nothing.
+  Excluding exited claims is right for a writer whose `final_step` counts every step it began, as the
+  reference Worker's does: an exited claim of such a writer that began r would have a `final_step` at or
+  above it, and be a source;
+- **the holders of r** are both the sources that reach it and the claims that could have saved it
+  unrecorded. No claim is both: a source that reaches r has an exit node, a position at or above r, or a
+  trailing value at or above it. Each built-in of `resume-claim` picks among the sources first, and among
+  the others only where no source reaches r; a strategy may pick either kind;
 - **a run-on** is what a holder of the second kind did: it ran on from the higher of its position and its
   highest record below r to r without logging those steps, and saved r (§1); the guide's recipe saves in the
   body, before the tick (`guide.md`, the checkpoint recipe). Its trailing steps below r, which it moved past,
   are commits; each step between is `valueless-gap`'s; and r is an empty synthesized commit in it, placed
-  after its last record before C's `started`.
+  after its last record before C's `started`;
+- **C's resume gap,** where C beat an integer step and r has a holder, is the steps strictly between r and
+  C's floor. `valueless-gap` reads them: under `iteration`, C ran them without a tick or a value, and each is
+  a synthesized commit of C, its first commit then at r+1; under `stride`, C skipped them. A claim that beat
+  none has no resume gap, since its position says where it stood (`beatless-claim`).
 
-`resume-offset` names r, `resume-claim` picks one of its holders, and the holder's commit at r is C's first
-commit's parent (M1), which M5's third place synthesizes where the holder reaches r only by trailing values.
-Where r has no holder, C's first commit is a parentless resume under every reading. The family is read with
-M5's third place to a least fixpoint (M5, below).
+`resume-offset` names r, `resume-claim` picks one of its holders, and the holder's commit at r is the parent
+of C's first commit (M1), which M5's third place synthesizes where the holder reaches r only by trailing
+values. Where r has no holder, C's first commit is a parentless resume under every reading. The family is
+read with M5's third place, the starts from the last claim back (M5, below). A commit a run-on or a resume
+gap adds is one start's inference, which no record shows, so no other start's holders read it.
 
 **`resume-origin`: whether a resumed claim's state came from a save the log's own claims made.**
-- **Site:** a claim with a candidate first step above 0 and a claim before it. With no claim before it, a
-  resumed claim's state came from outside the log, the proven reading, a parentless resume: no claim of the
-  run can have saved it, under any reading.
+- **The reading type:** `in-log` or `outside`.
+- **Site:** a claim C with a candidate first step s above 0, when a claim before it holds, before C's
+  `started`, a real beat, a value or the integer `final_step` of a `stopped` not proven a third party's, and
+  has its floor at or below s−1; and every site of `commitless-resume`, a claim that may hold no commit.
+  Elsewhere the reading is proven: no claim before C can hold a step at or below s−1, as a source or as a
+  claim that saved it unrecorded, so `in-log` and `outside` both give a parentless resume, or a null resume
+  point.
 - **H1:** C1 writes `loss@0`, beats 0 and dies; C2 writes `loss@1`, beats 1, writes `loss@2`, beats 2, and
   exits completed with `final_step: 2`. C2 loaded the checkpoint C1 saved at step 0, which needs C2's first
   commit parented on C1's commit at 0.
@@ -1331,38 +1363,42 @@ M5's third place to a least fixpoint (M5, below).
   saved, which needs a parentless resume.
 - **Built-ins:**
   - `in-log`: C's state descends from a save of a claim before it: the holder `resume-claim` picks of the
-    step `resume-offset` reads, or a parentless resume where that step has no holder. Today's reading where
-    a source reaches the step below the first. Where none does, today's step read a parentless resume, as
-    `outside` does, where this reading takes a run-on when a claim could have saved the step unrecorded.
-  - `outside`: C's first commit is a parentless resume, which P1 and P3 name, whatever the log's claims
-    recorded.
+    step `resume-offset` reads, or a parentless resume where that step has no holder; for a claim that holds
+    no commit, the node `commitless-resume` reads. Today's reading where a source reaches the step below the
+    first, and for a claim that holds no commit. Where no source reaches it, today's step read a parentless
+    resume, as `outside` does, where this reading can take a run-on.
+  - `outside`: C's state came from outside the log, a checkpoint copied in under the run's id. Its first
+    commit is a parentless resume, which P1 and P3 name; a claim that holds no commit has a null resume
+    point, `Inferred(None)`.
   - `refuse`.
 - **Refuse-only:** no.
 
 **`resume-offset`: which step a resumed claim's state stands at.**
-- **Site:** a claim C with a candidate first step s above 0, when a claim before it that holds a real beat or
-  a value before C's `started` has its floor below s−1: its writer may have resumed past its save. Otherwise
-  the step below the first, s−1, is the proven reading: no claim of the log reached a step below s−1 under
-  any reading, so no save of the log lies there.
+- **The reading type:** a step r below s.
+- **Site:** a claim C with a candidate first step s above 0, when a claim before it that holds a real beat, a
+  value or such a `final_step` before C's `started` has its floor below s−1: its writer may have resumed past
+  its save. Otherwise the step below the first, s−1, is the proven reading: no claim of the log reached a
+  step below s−1 under any reading, so no save of the log lies there.
 - **H1:** C1 beat 0 to 9 and saved every step; C2, whose first beat is 10, loaded C1's save at 9, which needs
   C1's step 9.
-- **H2:** the same log, where C1 saved every second step and C2 loaded its save at 8, its writer resuming two
-  steps past its save, which needs C1's step 8 and no iteration 9 in C2's lineage.
+- **H2:** the same log, where C1 saved every second step and C2 loaded its save at 8, which needs C1's step 8.
+  Whether C2 then ran 9 without logging it or its clock skipped 9 is `valueless-gap`'s, at C2's resume gap.
 - **Built-ins:**
   - `previous-step`: s−1. Today's reading.
-  - `stride`: the start skipped s−1, so C's lineage has no iteration s−1. The state stands at the highest
-    step below s−1 that a source reaches, and nothing is synthesized at s−1; with none, C's first commit is a
-    parentless resume. It is right for a writer that saves every second step and resumes past its save.
+  - `earlier-step`: the highest step below s−1 that a source reaches; with none, C's first commit is a
+    parentless resume. It says only where the state stood, for a writer that saves every second step;
+    whether C ran the steps between is `valueless-gap`'s.
   - `refuse`.
 - **Its readings apply only under `resume-origin`'s `in-log`.**
 - **Refuse-only:** no.
 
 **`resume-claim`: which claim's save of that step a resumed claim loaded.**
+- **The reading type:** one holder of r, of either kind.
 - **Site:** a claim C with a candidate first step s above 0, when two or more claims before it that hold a
-  real beat or a value before C's `started` have their floor at or below s−1: under some reading of
-  `resume-offset`, each could hold the resume step, recorded or by a run-on. Otherwise the one such claim is
-  the proven choice where it is a holder of that step, and else there is none, a parentless resume: no other
-  claim reached a step at or below s−1 under any reading.
+  real beat, a value or such a `final_step` before C's `started` have their floor at or below s−1: under some
+  reading of `resume-offset`, each could hold the resume step, as a source or by a run-on. Otherwise the one
+  such claim is the proven choice where it is a holder of that step, and else there is none, a parentless
+  resume: no other claim reached a step at or below s−1 under any reading.
 - **H1:** C1 and C2 both beat step 3, and C3, whose first beat is 4, loaded the checkpoint C2 saved, its run
   keeping one directory per claim, which needs C3's parent at C2's step 3.
 - **H2:** the same log, where C3 loaded C1's save at step 3, its run keeping one file per step, or one
@@ -1370,13 +1406,17 @@ M5's third place to a least fixpoint (M5, below).
 - **H3:** C1 beats 0 to 3 and C2 beats 0 to 1, and neither has an exit node; C3, whose first beat is 6,
   loaded a save at 5 that one of them made after its last beat without logging (§1), which needs that
   claim's run-on to 5: C2's, the newer, or C1's, where C1's displaced worker saved last to one location.
-- **Built-ins.** Each picks one holder of the step r that `resume-offset` reads.
-  - `newest-claim`: the newest holder in claim order. Today's reading.
-  - `prefer-beat`: a holder that beat r over one that reaches it otherwise, the newest among equals; for
-    writers that save a checkpoint at or after their tick. Where no holder beat r, as `newest-claim`.
-  - `latest-record`: the holder whose last record at a step at or below r, before C's `started`, is the
-    latest; for a run that keeps one checkpoint location, which each save overwrites, so the claim at r
-    latest saved last. A claim that saved r unrecorded saved it after that record.
+- **H4:** G1 beats 0 to 5 and G2 beats 0 to 3, and neither has an exit node; G3, whose first beat is 6, loaded
+  G2's save at 5, which G2 made running on from 3 in a run that keeps one directory per claim. That needs
+  G2's run-on, which only a strategy that picks a saver over the source G1 gives.
+- **Built-ins.** Each picks one holder of the step r that `resume-offset` reads, among the sources that reach
+  r, or, where none does, among the claims that could have saved it unrecorded.
+  - `newest-claim`: the newest such holder in claim order. Today's reading.
+  - `prefer-beat`: one that beat r over one that reaches it otherwise, the newest among equals; for writers
+    that save a checkpoint at or after their tick. Where none beat r, as `newest-claim`.
+  - `latest-record`: the one whose last record at a step at or below r, before C's `started`, is the latest;
+    for a run that keeps one checkpoint location, which each save overwrites, so the claim at r latest saved
+    last. A claim that saved r unrecorded saved it after that record.
   - `refuse`.
 - **Its readings apply only under `resume-origin`'s `in-log`.**
 - **Refuse-only:** no.
@@ -1394,8 +1434,10 @@ M5's third place to a least fixpoint (M5, below).
   - `successor`: the node that the next claim after it to resume from a candidate resumed from, when that
     node is also one of this claim's candidates, and a refusal of the run where there is none; for a run that
     keeps one checkpoint location.
-  - `fresh`: null, a claim that loaded nothing, or a checkpoint from outside the log.
+  - `fresh`: null, a claim that loaded nothing.
   - `refuse`.
+- **Its readings apply only under `resume-origin`'s `in-log`,** and ask only for the node: whether the
+  claim's state came from outside the log is `resume-origin`'s.
 - **Refuse-only:** no.
 
 **The rules** (review §5, §11.3 and §12 items 0.13–0.21, 10, 13, 14 and 16):
@@ -1405,18 +1447,20 @@ M5's third place to a least fixpoint (M5, below).
     before it in its claim, since M6 places it after its parent. So a displaced worker's commit, made or
     completed after the claim began, is never its resume point, and a resume point always precedes its claim.
   - A claim's later commits take the claim's previous commit.
-  - A claim's first commit, with old step s, is a fresh start when s is 0, with a null parent. Otherwise it
-    takes the node the resume family reads (above): under `resume-origin`'s `outside`, a null parent, a
-    parentless resume; under `in-log`, the commit at the step `resume-offset` reads, of the holder
-    `resume-claim` picks, or a null parent where that step has no holder. Today's readings, `previous-step`
-    and `newest-claim`, take **in claim order** the newest earlier claim holding a candidate with old step
-    s−1, and that candidate; `stride` reads the start as having skipped s−1. Where no source reached s−1,
-    today's step wrote a parentless resume, as `outside` does. A commit is the parent even where an
-    extendable exit follows it (review §12, item 14): no 0.3.0 log saved a checkpoint after its exit, and a
-    native log has the same shape when a claim resumes from a commit's checkpoint.
+  - A claim's first commit, at its first step s (old step; "The resume family", above), is a fresh start
+    when s is 0, with a null parent. Otherwise it takes the node the resume family reads: under
+    `resume-origin`'s `outside`, a null parent, a parentless resume; under `in-log`, the commit at the step r
+    `resume-offset` reads, of the holder `resume-claim` picks, or a null parent where r has no holder. Where
+    `valueless-gap`'s `iteration` commits the claim's resume gap, the gap's first commit, at r+1, takes that
+    node instead. Today's readings, `previous-step` and `newest-claim`, take **in claim order** the newest
+    earlier claim holding a candidate with old step s−1, and that candidate; `earlier-step` reads an earlier
+    step. Where no source reached s−1, today's step wrote a parentless resume, as `outside` does. A commit is
+    the parent even where an extendable exit follows it (review §12, item 14): no 0.3.0 log saved a checkpoint
+    after its exit, and a native log has the same shape when a claim resumes from a commit's checkpoint.
   - The claim's `started.resume_from` is its first commit's parent.
-  - **A claim that holds no commit** takes as its `resume_from` what `commitless-resume` reads, labelled as an
-    inference, and null when no earlier claim holds a candidate. Today's reading takes the newest candidate of
+  - **A claim that holds no commit** takes as its `resume_from` what `commitless-resume` reads under
+    `resume-origin`'s `in-log`, labelled as an inference, and null under `outside`, or when no earlier claim
+    holds a candidate. Today's reading takes the newest candidate of
     the newest earlier claim holding one. With null instead, 7 runs read empty (8,449 cells): a retry that
     crashed while loading is recorded as a fresh start.
   - **The exit's `parent`** is the claim's position at the exit (§2): its newest commit, else its resume
@@ -1444,28 +1488,40 @@ M5's third place to a least fixpoint (M5, below).
     exit node, which holds only what no commit claims;
   - for a trailing step r, whatever ended its claim, in the holder `resume-claim` picks for a later claim
     that resumes from r under `resume-origin`'s `in-log` (review §12, item 14): the step below its first under
-    `resume-offset`'s `previous-step`, or a lower one under `stride`, which synthesizes nothing at the step
-    below the first. Today's reading takes the newest claim before it, in claim order, to reach step r, by a
-    commit or by trailing values not above its exit's ceiling, where it has one. M1 chooses it wherever its
-    commit at r is a candidate, as it is unless a displaced worker beat after the later claim began. A claim
-    that resumes from r says step r finished in the claim it resumed from, and M1 then finds the commit the
-    old read showed. The later claim is any, not only the next, since a retry that crashed while loading
-    beats nothing. A trailing step that neither the first two places, such a claim nor a run-on vouches for
-    stays uncommitted: nothing says its iteration finished.
+    `resume-offset`'s `previous-step`, or an earlier one under `earlier-step`. Today's reading takes the
+    newest claim before it, in claim order, to reach step r, by a commit or by trailing values not above its
+    exit's ceiling, where it has one. M1 chooses it wherever its commit at r is a candidate, as it is unless a
+    displaced worker beat after the later claim began. A claim that resumes from r says step r finished in the
+    claim it resumed from, and M1 then finds the commit the old read showed. The later claim is any, not only
+    the next, since a retry that crashed while loading beats nothing. **A third-place commit at r is a step
+    the holder's clock moved past,** so the first place commits the holder's valued trailing steps below r,
+    as it does below any other highest step, and a valueless one there is `valueless-gap`'s. A trailing step
+    that neither the first two places, such a claim nor a run-on vouches for stays uncommitted: nothing says
+    its iteration finished.
 
-  **The third place is a least fixpoint.** A commit it or a run-on synthesizes can give a claim that held none
-  its first commit, and that claim's start then reads the resume family in turn: in the run cited as 625dda74
-  (`beatless-claim`'s H2), claim 4215's start synthesizes 4188's step 182, and only then does 4188's start
-  vouch for claim 1's 181. So the step applies the third place, with the run-ons, until no claim's start
-  synthesizes a new commit. No holder and no choice depends on what a start synthesizes, and a claim's first
-  step, once it has one, never changes, so the fixpoint is order-free. A start synthesizes only in the claims
-  before it, so resolving from the last claim back reaches the same fixpoint in one pass.
+  **The starts are read from the last claim back, each once, and that order is the rule.** A commit the
+  third place, a run-on or a resume gap synthesizes can give a claim that held none its first commit, and
+  that claim's start then reads the resume family in turn: in the run cited as 625dda74 (`beatless-claim`'s
+  H2), claim 4215's start synthesizes 4188's step 182, and only then does 4188's start vouch for claim 1's
+  181. A start synthesizes only in the claims before it, and in its own claim's resume gap, below that
+  claim's first step, so a claim's commits are final when its own start is read. No holder and no choice
+  depends on what a start synthesizes, since a source reaches a step by its records and the per-claim
+  readings, never by a run-on's or a resume gap's commit. So the pass reaches a fixpoint: after it, no start
+  synthesizes a new commit.
+  - **The third place alone is monotone.** A claim's first step, once set, never falls: a holder's
+    uncommitted trailing steps all lie above its commits, since the first place commits the valued ones below
+    each highest step, a third-place commit's included. So the third place reaches the same fixpoint in any
+    order, its least (golden `THIRD_PLACE_MOVES_PAST`).
+  - **A run-on is not monotone.** Under `valueless-gap`'s `stride`, a run-on to r gives a claim that holds no
+    commit of its own only r. A run-on in that claim to a lower step, read after the claim's own start, lowers
+    its first step and leaves what its start synthesized at the higher one. So no other order is the rule.
 
-  Four readings synthesize outside those places, and each commit they make is labelled by its reading:
+  Five readings synthesize outside those places, and each commit they make is labelled by its reading:
   `leading-values`' `unticked`, at the steps below the first real beat, as at a skipped tick;
   `beatless-claim`'s `own-values` and `predecessor-beat`, which make a claim's valued steps trailing values
-  for the three places to read; and `resume-origin`'s `in-log`, where no source reaches the step a claim
-  resumes from: a run-on, the commits up to the step a claim saved unrecorded ("The resume family", above).
+  for the three places to read; `resume-origin`'s `in-log`, where the holder `resume-claim` picks could have
+  saved the resume step unrecorded: a run-on, the commits up to the step it saved ("The resume family",
+  above); and `valueless-gap`'s `iteration` in a claim's resume gap.
 
   Only a trailing value is held to `final-step`'s reading: one written before its claim's end at a real beat's
   step (M2), at a skipped tick, or below the first real beat is committed whatever the exit reports. Only an
@@ -1499,8 +1555,8 @@ M5's third place to a least fixpoint (M5, below).
   placed after; `consumed_seq` from that heartbeat, else 0; and `fired: []` and `expired: []`. That
   heartbeat decides whether it is a candidate, else the record it is placed after. M5's three places
   synthesize above a claim's first real beat, where that heartbeat exists, or above the position of a claim
-  that beat none, which may have none, as may a commit `unticked` or a run-on synthesizes; and a valueless one
-  has no value to date it by.
+  that beat none, which may have none, as may a commit `unticked`, a run-on or a resume gap synthesizes; and a
+  valueless one has no value to date it by.
 - **M9. Refusals,** each before sealing, naming the run and the seq. What 0.4.0 cannot hold:
   - any subscription's record: a `control.subscribe`, a `control.unsubscribe`, a `lifecycle.bound` and a
     sample, a value bearing a `request_id`. Refusing the `bound` keeps every lease out of the passes, whether
@@ -1662,8 +1718,7 @@ behind each, and a corpus run states its resolutions.
 - **P1:** for every 0.3.0 heartbeat with integer step s whose commit's chain M1 linked back to old step 0,
   `count(Commits(), its commit) = s + 1`. A parentless resume is counted, and named. A chain across a
   trailing gap, which M5 leaves without commits, counts too few and fails under that name, and so does a
-  chain across a step `valueless-gap`'s `stride` leaves without a commit, or through a start
-  `resume-offset`'s `stride` reads.
+  chain across a step `valueless-gap`'s `stride` leaves without a commit, a resume gap's included.
 - **P2:** every value with a step is committed by its claim's commit carrying that step, except leading
   values, which go to the claim's first commit by design, and these, which stay uncommitted or sit on an exit
   node: values before every claim; values after their claim's end (M4); the values of a claim that beat no
@@ -1725,6 +1780,17 @@ and `newest-claim` for `resume-claim` beside it. A golden whose output today's s
   shared across hosts; a late reap after a relaunch; and one launch claimed twice;
 - **the audit's rules:** `LATER_COMPLETED`, `BEATEN_PAST`, `STOPPED_AFTER_ITS_REAP` and
   `SUCCESSOR_PROVED_DEAD` (above);
+- **the third place:** `THIRD_PLACE_MOVES_PAST`. A beats 0 to 4 with a value at each and writes `loss@6`, and
+  nothing ends it. B writes `loss@5` and `loss@7`, and an error `stopped` with a null `final_step`. L0 writes
+  `loss@6` and beats 6, and nothing ends it. L1 writes `loss@8`, beats 8, and exits completed with
+  `final_step: 8`. Under `first-is-exit`, `predecessor-beat` (B at 4), `final-step=finished`,
+  `exitless-step=unfinished`, `valueless-gap=iteration`, `in-log`, `previous-step` and `newest-claim`:
+  - A commits 0 to 4 and a valueless 5, and its value at 6 stays uncommitted;
+  - B commits 5, a valueless 6, and 7, its first commit 5 with parent A's 4;
+  - L0's 6 has parent B's 5, and L1's 8 has parent B's 7.
+
+  L1's start synthesizes B's 7, and with it B's 5 and 6, so B's start reads 5. Every order of the starts
+  gives this output;
 - **the ambiguities:** for each, a site beside a proven site, under each built-in and under `refuse`, and a
   reading the checks refuse.
 
