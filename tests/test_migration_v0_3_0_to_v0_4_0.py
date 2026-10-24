@@ -10,10 +10,13 @@ output (seq, topic, name, request_id and body of every row) is asserted exactly,
 in ``OUTPUT``, derived by hand from the golden's comment and §7; a golden with
 no entry there fails. Every row is also validated against the 0.4.0 schemas."""
 
+import functools
 import itertools
 import json
 import os
+import re
 import socket
+from pathlib import Path
 from typing import NamedTuple
 
 import pytest
@@ -2474,9 +2477,10 @@ def test_a_record_the_step_reads_must_be_0_3_0s(topic, body):
         ("value", {"value": 1.0}),
         ("lifecycle.heartbeat", _beat(0, 0, 9, 1.0)),  # names no claim
         ("value", _value(0.5, 0, 1.0)),  # M9: a null name
-        ("control.subscribe", {}),  # M9: a subscription
-        ("lifecycle.bound", {"claim_seq": 1}),  # M9: a subscription's binding
-        ("control.stop", {"from": {"step": 3}}),  # M9: a step atom
+        ("control.subscribe", {}, "s"),  # M9: a subscription
+        ("lifecycle.bound", {"claim_seq": 1}, "s"),  # M9: a subscription's binding
+        ("control.stop", {"from": {"step": 3}}, "h"),  # M9: a step atom
+        ("launcher.terminated", {"reason": "exited"}, "L1"),  # not launcher-v0.4's
     ],
 )
 def test_a_refusal_names_the_first_record_the_step_cannot_read(first):
@@ -2630,9 +2634,10 @@ def test_stepless_beats_and_another_claims_steps_are_no_rewind():
 
 
 def test_records_the_step_does_not_interpret_pass_the_boundary_as_they_are():
+    """A user's topic, whatever its body, and a stop the step only checks."""
     rows = [
         r(1, "user.note", {"any": ["shape"]}, name="n"),
-        r(2, "control.stop", {"from": {"bogus": 1}}, rid="bad"),
+        r(2, "control.stop", {"from": {"all": [{"time_seconds": 5}]}}, rid="h"),
     ]
     log = parse(_dated(rows))
     assert [
@@ -2640,8 +2645,221 @@ def test_records_the_step_does_not_interpret_pass_the_boundary_as_they_are():
         for x in log.records
     ] == [
         (1, "user.note", "n", None, {"any": ["shape"]}, 1000.25),
-        (2, "control.stop", None, "bad", {"from": {"bogus": 1}}, 1000.5),
+        (
+            2,
+            "control.stop",
+            None,
+            "h",
+            {"from": {"all": [{"time_seconds": 5}]}},
+            1000.5,
+        ),
     ]
+
+
+# ----- every carried record is 0.3.0's ---------------------------------------------------
+#
+# The step writes a record whose body 0.4.0 keeps with its stored text, so it
+# reads every such record at the boundary as 0.3.0 pins it: an input it accepts
+# never yields a row 0.4.0 rejects.
+
+
+@functools.cache
+def _stack_0_3_0():
+    """Format 0.3.0's validators: the envelope, and each convention by the
+    prefix of the topics it owns; ``value`` is a topic, not a prefix."""
+    jsonschema = pytest.importorskip("jsonschema")
+    root = Path(__file__).resolve().parent.parent / "protocol"
+
+    def load(name):
+        schema = json.loads((root / f"{name}.schema.json").read_text())
+        return jsonschema.Draft202012Validator(schema)
+
+    conventions = {
+        "control.": load("subscription-v0.3"),
+        "lifecycle.": load("lifecycle-v0.5"),
+        "launcher.": load("launcher-v0.4"),
+    }
+    return load("envelope-v0.2"), conventions, load("value-v0.2")
+
+
+def _invalid_under_0_3_0(rows):
+    """The seqs of the rows format 0.3.0 rejects: the envelope, then the
+    convention owning the topic. A user's topic answers to the envelope
+    alone."""
+    envelope, conventions, value = _stack_0_3_0()
+    bad = []
+    for x in rows:
+        record = x._asdict() | {"body": json.loads(x.body)}
+        del record["created_at"]
+        owners = [v for k, v in conventions.items() if x.topic.startswith(k)]
+        owners += [value] if x.topic == "value" else []
+        if not all(v.is_valid(record) for v in [envelope, *owners]):
+            bad.append(x.seq)
+    return bad
+
+
+# M10's malformed bodies, which the step reads as a third party's release.
+INVALID_UNDER_0_3_0 = {"reclaimed": [4], "later_release": [5], "claimless_release": [2]}
+
+
+@pytest.mark.parametrize("rid", list(GOLDEN))
+def test_golden_inputs_are_0_3_0_as_declared(rid):
+    assert _invalid_under_0_3_0(GOLDEN[rid]) == INVALID_UNDER_0_3_0.get(rid, [])
+
+
+H = "local://n1/11"
+AT_1 = r(1, "lifecycle.started", _started(H, 1.0))
+
+# Records 0.3.0 rejects, each refused at the boundary by its seq: the last row.
+UNREADABLE = {
+    # envelope-v0.2: no empty string, and a body that is an object
+    "empty_topic": [AT_1, r(2, "", {})],
+    "empty_name": [AT_1, r(2, "user.note", {}, name="")],
+    "empty_request_id": [r(1, "lifecycle.started", _started(H, 1.0), rid="")],
+    "empty_launch_id": [r(1, "launcher.launched", _launched(H, 0.5), rid="")],
+    "body_not_an_object": [AT_1, r(2, "user.note", [1])],
+    # a topic 0.3.0 does not define under a prefix it reserves
+    "withdraw": [AT_1, r(2, "control.withdraw", {"t": 1.0}, rid="x")],
+    "commit": [AT_1, r(2, "lifecycle.commit", {"claim_seq": 1})],
+    "rewind": [AT_1, r(2, "lifecycle.rewind", {"claim_seq": 1})],
+    "launcher_verb": [r(1, "launcher.reaped", {}, rid="L1")],
+    # subscription-v0.3: a stop's request_id, and its StopTrigger
+    "stop_without_request_id": [AT_1, r(2, "control.stop", {})],
+    "stop_until": [AT_1, r(2, "control.stop", {"until": {"count": 1}}, rid="h")],
+    "stop_unknown_atom": [AT_1, r(2, "control.stop", {"from": {"steps": 3}}, rid="h")],
+    "stop_from_a_number": [AT_1, r(2, "control.stop", {"from": 3}, rid="h")],
+    "stop_empty_any": [AT_1, r(2, "control.stop", {"from": {"any": []}}, rid="h")],
+    "stop_two_atoms": [
+        AT_1,
+        r(2, "control.stop", {"from": {"step": 1, "time_seconds": 2}}, rid="h"),
+    ],
+    # lifecycle-v0.5's Nak
+    "nak_reason": [
+        AT_1,
+        r(2, "lifecycle.nak", {"reason": "no", "message": ""}, rid="h"),
+    ],
+    "nak_without_message": [
+        AT_1,
+        r(2, "lifecycle.nak", {"reason": "malformed"}, rid="h"),
+    ],
+    # launcher-v0.4: a launch id on every launcher record, its bodies, and the
+    # reason pairing, whether or not a claim names the launch
+    "launched_without_launch_id": [r(1, "launcher.launched", _launched(H, 0.5))],
+    "terminated_without_launch_id": [
+        r(1, "launcher.terminated", _terminated("exited", 1, None, 1.0))
+    ],
+    "launched_handle": [
+        r(
+            1,
+            "launcher.launched",
+            {"handle": 11, "status": "running", "t": 0.5},
+            rid="L1",
+        )
+    ],
+    "launched_status": [
+        r(1, "launcher.launched", {"handle": H, "status": "done", "t": 0.5}, rid="L1")
+    ],
+    "exited_without_code": [
+        r(1, "launcher.terminated", _terminated("exited", None, None, 1.0), rid="L1")
+    ],
+    "killed_with_a_code": [
+        r(1, "launcher.terminated", _terminated("killed", 0, 9, 1.0), rid="L1")
+    ],
+    "killed_by_a_bool": [
+        r(1, "launcher.terminated", _terminated("killed", None, True, 1.0), rid="L1")
+    ],
+    "terminated_without_t": [
+        r(1, "launcher.terminated", {"reason": "exited", "exit_code": 1}, rid="L1")
+    ],
+    "terminated_after_an_exit": [
+        r(1, "launcher.launched", _launched(H, 0.5), rid="L1"),
+        r(2, "lifecycle.started", _started(H, 1.0), rid="L1"),
+        r(3, "lifecycle.stopped", _stopped(True, None, None, 2, [], 2.0)),
+        r(4, "launcher.terminated", {"reason": "exited", "exit_code": 0}, rid="L1"),
+    ],
+}
+
+
+@pytest.mark.parametrize("case", list(UNREADABLE))
+def test_a_record_0_3_0_rejects_is_refused_by_its_seq(case):
+    rows = UNREADABLE[case]
+    last = rows[-1]
+    assert _invalid_under_0_3_0(rows) == [last.seq]
+    with pytest.raises(MigrationError, match=rf"\bat seq {last.seq}\b"):
+        parse(rows)
+
+
+def test_a_users_topic_under_supervisor_is_refused():
+    """Valid 0.3.0, which left supervisor.* to users; 0.4.0 reserves it, so
+    supervisor-v0.5 rejects the topic, and the step cannot carry it."""
+    rows = [AT_1, r(2, "supervisor.note", {})]
+    assert _invalid_under_0_3_0(rows) == []
+    with pytest.raises(
+        MigrationError, match=r"supervisor\.note at seq 2 .*0\.4\.0 reserves"
+    ):
+        parse(rows)
+
+
+# A launch's second terminated: a process ends once, and a run nothing claimed
+# takes its launch's terminated as its verdict (§5), so two make it ambiguous.
+SECOND_REAPS = {
+    "an_exited_claim": [
+        r(1, "launcher.launched", _launched(H, 0.5), rid="L1"),
+        r(2, "lifecycle.started", _started(H, 1.0), rid="L1"),
+        r(3, "lifecycle.stopped", _stopped(True, None, None, 2, [], 2.0)),
+        r(4, "launcher.terminated", _terminated("exited", 0, None, 3.0), rid="L1"),
+        r(5, "launcher.terminated", _terminated("exited", 0, None, 3.5), rid="L1"),
+    ],
+    "nothing_claimed": [
+        r(1, "launcher.launched", _launched(H, 0.5), rid="L1"),
+        r(2, "launcher.terminated", _terminated("exited", 0, None, 1.0), rid="L1"),
+        r(3, "launcher.terminated", _terminated("killed", None, 9, 1.1), rid="L1"),
+    ],
+    "one_before_the_claim": [
+        r(1, "launcher.launched", _launched(H, 0.5), rid="L1"),
+        r(2, "launcher.terminated", _terminated("exited", 0, None, 0.7), rid="L1"),
+        r(3, "lifecycle.started", _started(H, 1.0), rid="L1"),
+        r(4, "launcher.terminated", _terminated("exited", 1, None, 3.5), rid="L1"),
+    ],
+}
+
+
+@pytest.mark.parametrize("case", list(SECOND_REAPS))
+def test_a_launchs_second_terminated_is_refused_whatever_the_claims(case):
+    rows = SECOND_REAPS[case]
+    last = rows[-1]
+    assert _invalid_under_0_3_0(rows) == []
+    with pytest.raises(
+        MigrationError, match=rf"launcher\.terminated at seq {last.seq} is a second"
+    ):
+        parse(rows)
+
+
+def _two_refusals(drained_at, unattributable_at):
+    """A watermark naming a stop that leaves the log, and a launch no
+    launched names, at the seqs given (5 or 6 each, distinct)."""
+    rows = {
+        1: r(1, "lifecycle.started", _started(H, 1.0)),
+        2: r(2, "lifecycle.stopped", _stopped(True, None, None, 1, [], 2.0)),
+        3: r(3, "lifecycle.stopped", _stopped(True, None, None, 1, [], 3.0)),
+        4: r(4, "lifecycle.started", _started(H, 4.0), rid="L2"),
+        drained_at: r(drained_at, "lifecycle.heartbeat", _beat(None, 3, 4, 5.0)),
+        unattributable_at: r(
+            unattributable_at,
+            "launcher.terminated",
+            _terminated("exited", 1, None, 6.0),
+            rid="L2",
+        ),
+    }
+    return [rows[s] for s in sorted(rows)]
+
+
+@pytest.mark.parametrize("drained_at, unattributable_at", [(5, 6), (6, 5)])
+def test_a_run_is_refused_by_its_lowest_refused_seq(drained_at, unattributable_at):
+    """Whichever pass finds a refusal, the run's names the lowest seq."""
+    rows = _two_refusals(drained_at, unattributable_at)
+    with pytest.raises(MigrationError, match=r"^the \S+ at seq 5 "):
+        step.transform(rows)
 
 
 # ----- the 0.4.0 rows: the records, and third parties' stops -----------------------------
@@ -3453,32 +3671,6 @@ def test_a_terminated_before_the_claim_is_not_its_end():
     assert DIED not in [x[1] for x in _rows(rows)]
 
 
-@pytest.mark.parametrize(
-    "launched, terminated",
-    [
-        (
-            {"handle": 11, "status": "running", "t": 0.5},
-            _terminated("exited", 1, None, 4.0),
-        ),
-        (_launched("local://n1/11", 0.5), _terminated("exited", None, None, 4.0)),
-        (_launched("local://n1/11", 0.5), _terminated("killed", 0, 9, 4.0)),
-        (_launched("local://n1/11", 0.5), {"reason": "exited", "exit_code": 1}),
-    ],
-    ids=["handle", "no_exit_code", "killed_with_a_code", "no_t"],
-)
-def test_a_launch_record_the_attribution_reads_must_be_launcher_v0_4s(
-    launched, terminated
-):
-    rows = [
-        r(1, "launcher.launched", launched, rid="L1"),
-        r(2, "lifecycle.started", _started("local://n1/11", 1.0), rid="L1"),
-        r(3, "launcher.terminated", terminated, rid="L1"),
-    ]
-    seq = 1 if launched["handle"] == 11 else 3
-    with pytest.raises(MigrationError, match=rf"launcher\.\w+ at seq {seq} is not"):
-        step.transform(rows)
-
-
 def test_a_terminated_no_held_claim_answers_is_written_as_it_is():
     """Another launch's death, or a hand-run claim's run: nothing to attribute."""
     terminated = {"reason": "exited", "exit_code": 1, "signal": None, "t": 4.0}
@@ -3587,6 +3779,13 @@ REFUSED = {
         r(3, "launcher.terminated", REAP, rid="L1"),
         r(4, "launcher.terminated", REAP, rid="L1"),
     ],
+    "two_reaps_unclaimed": [
+        LAUNCH,
+        r(2, "launcher.terminated", REAP, rid="L1"),
+        r(3, "launcher.terminated", REAP, rid="L1"),
+    ],
+    # The boundary: a user's topic under the prefix 0.4.0 reserves
+    "supervisor_topic": [CLAIM, r(2, "supervisor.note", {})],
     "no_launched": [
         LAUNCHED_CLAIM._replace(seq=1),
         r(2, "launcher.terminated", REAP, rid="L1"),
@@ -3608,7 +3807,8 @@ def test_a_refusal_comes_before_the_seal_and_names_the_run_and_the_seq(
     old = _seed_0_3_0(tmp_path, "r1", rows)
     last = rows[-1]
     with pytest.raises(
-        MigrationError, match=rf"^run 'r1': the {last.topic} at seq {last.seq} "
+        MigrationError,
+        match=rf"^run 'r1': the {re.escape(last.topic)} at seq {last.seq} ",
     ):
         migrate(SqliteStore(tmp_path), ["r1"], to="0.4.0")
     assert os.stat(old).st_mode & 0o200  # not sealed
