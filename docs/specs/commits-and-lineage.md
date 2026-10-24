@@ -204,7 +204,7 @@ These are the convention bumps. The envelope is unchanged.
 | `lifecycle.commit` | `{claim_seq, consumed_seq, parent, values, fired, expired, t}` | new: one per `commit()`; a node |
 | `lifecycle.heartbeat` | `{claim_seq, consumed_seq, t}` | `step` removed; not a node |
 | `lifecycle.rewind` | `{claim_seq, resume_from, t}` | new: restates the position |
-| `lifecycle.stopped` | `{completed, error, claim_seq, honored, parent, values, fired, expired, t}` | `final_step` removed; `parent`, `values`, `fired`, `expired` added; `claim_seq` no longer nullable; the exit node |
+| `lifecycle.stopped` | `{completed, error, claim_seq, honored, parent, values, fired, expired, t}` | `final_step` removed; `parent`, `values`, `fired`, `expired` added; `claim_seq` no longer nullable; `honored` items non-empty; the exit node |
 | `lifecycle.bound`, `lifecycle.nak` | unchanged | — |
 
 **The envelope:** every lifecycle record carries `name: null`. `request_id` is the launch id on `started`, as
@@ -229,6 +229,8 @@ in v0.5; the request on `bound` and `nak`, as in v0.5; and null on `commit`, `he
   because their `until` held or a one-shot fired. One record holds firing and expiry, so no crash can fall
   between them; item 10b's separate `lifecycle.expired` record is retired by item 13. *Prose:* a request in
   `expired` fires at no later node of that lineage.
+- **`honored`** (on `stopped`): an array of unique, non-empty strings, the stops the exit honoured. v0.5's
+  items could be empty, though an empty one names no stop, since no request id is empty.
 - **An exit that discarded its iteration evaluates nothing:** `values: null` implies `fired: []` and `expired:
   []`, as an `if`/`then`, whether or not it completed.
 - **`consumed_seq`** is the control-drain watermark, as in v0.5. No 0.4.0 read uses it except
@@ -861,15 +863,17 @@ This is a recipe, not protocol. runstate supplies no directory.
 positional reading implied, the standard of the 0.2.0 → 0.3.0 step. An inference is labelled as one.
 
 **Records:**
-- **A 0.3.0 heartbeat with an integer step** becomes a `lifecycle.commit`.
+- **A 0.3.0 heartbeat with an integer step** becomes a `lifecycle.commit` wherever it falls, even after its
+  claim's end, where M4 leaves a value uncommitted.
 - **A stepless 0.3.0 heartbeat** becomes a `lifecycle.heartbeat`, without `step`. mycooc's 1,114 all sit in
   its 150 stepless-only claims, after only `status` values: they were beats.
 - **A worker's 0.3.0 `stopped`** becomes the exit node:
   - `parent` is the claim's position: its newest commit, else its resume point;
-  - `values` are `[]`, or null on an error exit. M2 and M5 commit every integer-step value of the claim at or
-    below the exit's last step, except an error exit's trailing step that M5's third case does not reach; a
-    value above it, which pass 1 gave the claim from a displaced worker, stays uncommitted, and stepless
-    values stay outside every lineage (M3);
+  - `values` are `[]`, or null on an error exit. M2 and M5 commit every integer-step value the claim wrote
+    before its exit at or below the exit's last step, except an error exit's trailing step that M5's third
+    case does not reach, and every value of a claim that beat no integer step (M5). A value above that step,
+    from a displaced worker, which pass 1 gave the claim, or from an iteration that crashed, stays
+    uncommitted, and stepless values stay outside every lineage (M3);
   - `fired` and `expired` are `[]`, and `final_step` is dropped.
 - **`started`** gains `resume_from` (M1) and `sources: []`.
 - **A value** drops `step`.
@@ -881,98 +885,194 @@ positional reading implied, the standard of the 0.2.0 → 0.3.0 step. An inferen
 1. **Claim attribution.** A heartbeat belongs to the claim its `claim_seq` names, as every 0.3.0 read of it
    did. A value, which names none, belongs to the latest `started` before it: the positional rule the
    0.2.0 → 0.3.0 step stated for episodes, an inference that attributes a displaced worker's values to its
-   successor, as the old read did.
-2. **Classification** of every `stopped`: a worker's exit or a third party's (below).
-3. **Synthesis:** M2 and M5 assign values to commits, synthesizing the commits M5 names.
+   successor, as the old read did. A value before every claim belongs to none.
+2. **Classification** of every `stopped`: a worker's exit or a third party's (below). Then what each third
+   party's becomes, and which claim a launch's `terminated` reports dead.
+3. **Synthesis:** M2, M4 and M5 assign values to commits or leave them uncommitted, synthesizing the commits
+   M5 names, with M8's fields.
 4. **M1:** parents and `resume_from`.
-5. **M6:** the moves, then renumbering.
-6. **M7 and M8:** the renames and the synthetic fields.
+5. **M6:** the moves, the withdrawals and the attributed death reports, then one renumbering.
+6. **M7:** the renames.
 
 **The rules** (review §5, §11.3 and §12 items 0.13–0.21, 10, 13 and 14):
-- **M1. Parent.**
+- **M1. Parent.** M1 reads the commits after synthesis, in claim order, never by step nearness.
+  - **A claim's candidates** are the commits of earlier claims placed below its `started` (M6). Only a beat
+    can place a commit above it: a real commit's own heartbeat, or, for a synthetic commit, the real heartbeat
+    before it in its claim, since M6 places it after its parent. So a displaced worker's commit, made or
+    completed after the claim began, is never its resume point, and a resume point always precedes its claim.
   - A claim's later commits take the claim's previous commit.
-  - A claim's first commit, with old step s, takes, **in claim order**, the newest earlier claim holding a
-    commit with old step s−1, and that claim's last such commit. With no such claim, the parent is null: a
-    parentless resume. A commit is the parent even where an extendable exit follows it (review §12, item 14):
-    no 0.3.0 log saved a checkpoint after its exit, and a native log has the same shape when a claim resumes
-    from a commit's checkpoint.
+  - A claim's first commit, with old step s, is a fresh start when s is 0, with a null parent. Otherwise it
+    takes, **in claim order**, the newest earlier claim holding a candidate with old step s−1, and that
+    candidate. With no such claim, the parent is null: a parentless resume. A commit is the parent even where
+    an extendable exit follows it (review §12, item 14): no 0.3.0 log saved a checkpoint after its exit, and a
+    native log has the same shape when a claim resumes from a commit's checkpoint.
   - The claim's `started.resume_from` is its first commit's parent.
-  - **A claim with no integer-step heartbeat** takes as its `resume_from` the newest commit of the newest
-    earlier claim holding one, labelled as an inference. With null instead, 7 runs read empty (8,449 cells):
-    a retry that crashed while loading is recorded as a fresh start, and the generic migration uses the log
-    alone.
+  - **A claim with no integer-step heartbeat** commits nothing (M5). It takes as its `resume_from` the newest
+    candidate of the newest earlier claim holding one, labelled as an inference, and null when none does.
+    With null instead, 7 runs read empty (8,449 cells): a retry that crashed while loading is recorded as a
+    fresh start, and the generic migration uses the log alone.
+  - **The exit's `parent`** is the claim's position at the exit (§2): its newest commit, else its resume
+    point. A claim with no integer-step heartbeat holds no commit, so its exit's parent is its inferred resume
+    point.
+  - **Each resume point is labelled** by the rule that chose it, so a report can count them: `Fresh()` for a
+    first commit at old step 0, `Resumed(node)`, `Parentless()`, and `Inferred(node)` for a claim with no
+    integer-step heartbeat, which is `Inferred(None)` when no earlier claim holds a candidate, as for a
+    commitless first claim.
 - **M2. The step label wins.** A value with an integer step is committed by its claim's commit carrying that
   old step, even when it also follows the claim's last heartbeat.
 - **M3. Dropped** (review §12, item 13). Stepless values are registers (`config`, `completion_reason`,
   `status` and `input_provenance`) and stay outside every lineage, as an upgraded consumer leaves them.
-- **M4. Values after their claim's `stopped` stay uncommitted.** There are 1,886 of them, all teardown
-  `status`.
-- **M5. A step commit is synthesized in exactly three places:**
+- **M4. Values after their claim's end stay uncommitted.** There are 1,886 of them, all teardown `status`. A
+  claim's end is the first `stopped` naming it, whoever wrote it, or, for a claim no `stopped` names, the
+  `terminated` a `died` is attributed from (below), since a death report ends its claim (§2).
+- **M5. A step commit is synthesized in exactly three places,** each above its claim's first real beat:
   - for a tick skipped between two real beats of one claim, even one with no values: `Commits()` must count
     it;
   - for a trailing step at or below a non-error exit's last step. This takes precedence over the exit node,
     which holds only what no commit claims;
-  - for a trailing step s, whatever the exit, in the claim M1 will choose for a later claim whose first real
-    beat is s+1 (review §12, item 14): the newest claim before it, in claim order, to reach step s, by a
-    commit or by trailing values. A claim that starts at s+1 says step s finished in the claim it resumed
-    from, and M1 then finds the commit the old read showed. The later claim is any, not only the next, since
-    a retry that crashed while loading beats nothing. A trailing step that no such claim needs stays
-    uncommitted: nothing says its iteration finished.
+  - for a trailing step s, whatever ended its claim, in the claim M1 will choose for a later claim whose first
+    real beat is s+1 (review §12, item 14): the newest claim before it, in claim order, to reach step s, by a
+    commit or by trailing values. M1 chooses it wherever its commit at s is a candidate, as it is unless a
+    displaced worker beat after the later claim began. A claim that starts at s+1 says step s finished in the
+    claim it resumed from, and M1 then finds the commit the old read showed. The later claim is any, not only
+    the next, since a retry that crashed while loading beats nothing. A trailing step that no such claim
+    needs stays uncommitted: nothing says its iteration finished.
 
-  Leading values, below a claim's first real beat, go to its first commit.
-- **M6. Move each commit,** in its claim's order, to just after the latest of: its last committed value, its
-  parent, and the record its `consumed_seq` names. Then renumber. A commit asserts that its values are
+  A trailing value is one above its claim's last real beat. "The exit's last step" is the 0.3.0
+  `final_step`, and a null one reached no step. Only an exit node has one: a claim a third party released, or
+  that nothing ended, has no last step to be above. Leading values, below a claim's first real beat, go to its
+  first commit. **A claim that beat no integer step reaches no step:** its integer-step values stay
+  uncommitted as loading, whether it wrote them while it loaded or in a step it never beat, even at or below
+  a clean exit's last step, and nothing is synthesized in it.
+
+  A value no commit holds stays uncommitted for the first of these that holds: it is stepless (M3); before
+  every claim; after its claim's end (M4); a claim's that beat no integer step; above its claim's exit's last
+  step; or a trailing step no exit vouches for, which the third place does not reach.
+- **M6. Move each commit,** in claim order and each claim's in its order, to just after the latest of: its
+  last committed value, its parent, the record its `consumed_seq` names and, for a real commit, its own
+  heartbeat, so a commit only moves forward. Then renumber, once. A commit asserts that its values are
   complete, which holds only once the last of them exists, so moving the commit keeps every record at an
-  honest position; moving the values would place them before a beat that preceded their computation.
-- **M7. The rename list is derived from the schemas:** `claim_seq` (a `died`'s included), `consumed_seq`,
-  `parent`, `values`, `resume_from`, and `bound`'s `claim_seq`. `stop@N` request ids stay as they are, since
-  they are strings.
-- **M8. A synthetic commit** takes `t` from the last value it commits, else from its claim's previous real
-  heartbeat; `consumed_seq` from that heartbeat, else 0, the watermark of a claim that witnessed no drain;
-  and `fired: []` and `expired: []`.
-- **M9. Refusals,** each before sealing, naming the run and the seq:
-  - any subscription, with its samples, and any `control.unsubscribe`;
-  - a `control.stop` whose `from` holds a step atom;
-  - two heartbeats of one step in one claim, an in-claim rewind;
-  - a value with a null `name`, which value-v0.3 cannot hold.
+  honest position; moving the values would place them before a beat that preceded their computation. The
+  record a `consumed_seq` names never decides, since it precedes the heartbeat and M6 never moves it (M9). A
+  commit is then placed below a later claim's `started` exactly when M1 counts it a candidate. The same pass
+  places each withdrawal just after its stop, in `honored` order, and an attributed death report just after
+  its `terminated`.
+- **M7. The rename list is derived from the schemas:** `claim_seq` (on a heartbeat, a commit, an exit and a
+  `died`), `consumed_seq`, `parent`, `values` and `resume_from`. A zero `consumed_seq` names nothing and
+  stays zero. `stop@N` request ids stay as they are, since they are strings. No `bound` is left to rename: M9
+  refuses every subscription's record.
+- **M8. A synthetic commit** takes `t` from the newest value it commits that carries one, a value's `t` being
+  nullable, else from its claim's real heartbeat before it; `consumed_seq` from that heartbeat; and
+  `fired: []` and `expired: []`. M5 synthesizes only above a claim's first real beat, so that heartbeat always
+  exists.
+- **M9. Refusals,** each before sealing, naming the run and the seq. What 0.4.0 cannot hold:
+  - any subscription's record: a `control.subscribe`, a `control.unsubscribe`, a `lifecycle.bound` and a
+    sample, a value bearing a `request_id`. Refusing the `bound` keeps every lease out of the passes, whether
+    or not its subscribe is in the log;
+  - a `control.stop` whose `from` holds a step atom, at any depth;
+  - an in-claim rewind: a heartbeat at or below an integer step its claim already beat, as two heartbeats of
+    one step in one claim or a step that goes down. A 0.4.0 writer records a rewind, and nothing in 0.3.0 says
+    where one resumed;
+  - a value with a null `name`, which value-v0.3 cannot hold, and an empty one, which the envelope refuses.
 
-  The corpus holds none of the first three; the implementation round counts the fourth. A consumer that
-  later holds such logs revives the question with that log in hand.
-- **M10. A malformed `stopped`** (the reclaim tool's 7 `{reason, honored, claim_seq}` bodies) becomes
-  `supervisor.died {claim_seq, outcome: preempted, evidence: <its reason>, t}`: a third party's release, with
-  the outcome the tool argues for in its own comments (review §12, item 14). Its `honored` ids become
-  withdrawals, as below.
+  The corpus holds none of the first three. A consumer that later holds such logs revives the question with
+  that log in hand.
+
+  The step reads every record as 0.3.0's schemas pin it, so an input it accepts never yields a row 0.4.0
+  rejects. It reads a body strictly, exactly the keys its schema pins with each value of its JSON type, so it
+  refuses an integer written as a whole-number float, such as 3.0, which 0.3.0's schemas accept. It also
+  refuses:
+  - a record envelope-v0.2 rejects: an empty topic, name or request id, or a body that is not an object, a
+    `started`'s included;
+  - a topic under a prefix 0.3.0 reserves (`lifecycle.`, `control.`, `launcher.`) that 0.3.0 does not define,
+    as a `control.withdraw` or a `lifecycle.commit` would be;
+  - a user's topic under `supervisor.`, valid 0.3.0, which left the prefix to users: 0.4.0 reserves it;
+  - a `started`, `heartbeat`, `nak` or `value` whose body is not 0.3.0's; a `control.stop` with no request id,
+    or whose body is not subscription-v0.3's `StopTrigger`; and a `stopped` whose body is neither 0.3.0's nor
+    M10's, since what it ends, and who wrote it, cannot be told;
+  - a `launcher.*` record with no launch id, as a `terminated` with a null `request_id`, or whose body is not
+    launcher-v0.4's: `exited` carries an exit code and no signal, and `killed` a signal and no exit code;
+  - an envelope field 0.4.0 pins null that holds a value: a lifecycle record's or a stop's `name`, or a
+    heartbeat's or a `stopped`'s `request_id`. No 0.3.0 reference writer set one;
+  - a `stopped` whose `honored` holds the empty id, valid 0.3.0. It names no stop, since envelope-v0.2 forbids
+    an empty request id, and 0.4.0 holds a withdrawn id and an exit's `honored` items non-empty;
+  - a heartbeat or `stopped` whose `claim_seq` names no claim before it;
+  - a heartbeat whose nonzero `consumed_seq` names no record before it, a heartbeat with an integer step, or a
+    third party's stop that becomes only its withdrawals. The watermark is a read position in the control
+    order, and renaming cannot carry one that names no record, a record M6 moves, or one that leaves the log;
+  - a second `terminated` of any launch. A process ends once, and a run nothing claimed takes its launch's
+    `terminated` as its verdict (§5), which two make ambiguous;
+  - a launch that not exactly one `launched` names, where an attributed death report reads it. Without one
+    there is no handle to attribute the death by, and writing no `died` would leave the claim held forever.
+
+  The liveness check that `runstate migrate` asks before it moves a run refuses one whose latest claim no
+  `stopped` names and whose `started` carries no handle, its body not an object holding one: whether the
+  claim is live cannot be told.
+- **M10. A malformed `stopped`** (the reclaim tool's 7 `{reason, honored, claim_seq}` bodies) that is the
+  first naming its claim becomes `supervisor.died {claim_seq, outcome: preempted, evidence: <its reason>, t}`:
+  a third party's release, with the outcome the tool argues for in its own comments (review §12, item 14). Its
+  `t` is its record's `created_at`, since the body has none. A later or claimless one is a third party's stop
+  with no `error`, as below. Its `honored` ids become withdrawals, as below.
 - **Third-party stops are reclassified** (review §12, items 5, 10 and 14):
-  - **the first `stopped` naming a claim,** when well-formed, is the claim's exit, as the old read implied,
-    unless the rule for lone stops below classifies it otherwise. A third party's becomes a
-    `supervisor.died`;
+  - **the first `stopped` naming a claim** ends the claim. M10's body and the runner's backstop are a third
+    party's release. Any other is the claim's exit, as the old read implied, unless the rule for lone stops
+    below makes it a third party's release. A release becomes a `supervisor.died`;
   - **a later `stopped`,** after the first naming the same claim (a malformed one counts), is a third
-    party's. It becomes a `supervisor.died` only when its `error` is set, and otherwise only its
-    withdrawals: the claim has ended, and after that only a report with a cause is written (§3). So the
-    repair script's well-formed copy of a malformed release writes no death, and neither does the "clear
-    staged stop" path's default body;
-  - **the runner's hard-crash backstop** is a third party's wherever it falls, by its error text,
-    "subprocess exited N with no terminal record", and always becomes a `supervisor.died`;
-  - **the mapping** of a `stopped` to a `died`: `outcome` is `errored` when `error` is set and `preempted`
-    otherwise, a `completed: true` one included, since a death is never a completion; `evidence` is the
-    `error` text, else `"migrated: third-party stopped"`; `t` is carried. Whatever a third party's `stopped`
-    becomes, each id in its `honored` becomes a `control.withdraw` placed after it, so the stops stay spent;
-  - **a `stopped` naming no claim** becomes one `control.withdraw` per stop it honoured, and nothing when it
-    honoured none. A run whose only terminal was one loses its verdict, which P4 attributes;
-  - **lone stops:** the implementation round's census of who wrote them (review §12, item 10(d)) yields a rule
-    that reads the log alone, as M1's does, and the migration encodes it. A stop it attributes to a third
-    party becomes a `died`, mapped as above. One it cannot attribute stays a self-report with `values: null`:
-    it never vouches for a possibly torn iteration, and errs towards committing too little, as M4 does.
+    party's. Unless it is the backstop, it becomes a `supervisor.died` only when its `error` is set, and
+    otherwise only its withdrawals: the claim has ended, and after that only a report with a cause is written
+    (§3). So the repair script's well-formed copy of a malformed release writes no death, and neither does
+    the "clear staged stop" path's default body;
+  - **the runner's hard-crash backstop** is a third party's wherever it falls, by its error text, "subprocess
+    exited N with no terminal record". As the first `stopped` naming a claim it is the claim's release, a
+    `died`. One that ends no claim, a later one or one naming no claim, becomes a `supervisor.terminated` in
+    its place: the runner's report of how its subprocess ended, `exited` with exit code N, or `killed` by
+    signal −N when N is negative, with its `t`, under a launch id minted `backstop@<seq>` from its 0.3.0 seq
+    and made fresh, as the 0.2.0 → 0.3.0 step mints, against every request id the run bears or honours. No
+    `launched` names that launch: the runner wrote none;
+  - **the mapping** of a `stopped` to a `died`: `outcome` is `errored` when `error` is set, an empty one
+    included, and `preempted` otherwise, a `completed: true` one included, since a death is never a
+    completion; `evidence` is the `error` text, or `"migrated: third-party stopped"` when it is null or
+    empty; `t` is carried. Whatever a third party's `stopped` becomes, each id in its `honored` becomes a
+    `control.withdraw` placed after it, so the stops stay spent. A stop that becomes nothing else leaves the
+    log, its withdrawals taking its place;
+  - **a `stopped` naming no claim,** other than the backstop, becomes one `control.withdraw` per stop it
+    honoured, and nothing when it honoured none, since a death names a claim. A run whose only terminal was
+    one loses its verdict, which P4 attributes;
+  - **lone stops** (review §12, item 10(d)): the first `stopped` naming a claim, well-formed and not the
+    backstop, is the worker's exit, which is what 0.3.0 defined the topic to mean, unless the log contradicts
+    that. Either of two contradictions makes it a third party's release, a `died` mapped as above:
+    - **(i) a heartbeat naming the claim follows it.** The worker outlived the stop, so the stop is not its
+      exit;
+    - **(ii) its `t` precedes its own `created_at` by more than 60 s,** strictly. A worker reporting its own
+      exit stamps both from one clock at one moment, so a stop dated earlier was written by a later reporter,
+      who dated it to an event learned of afterwards, as the reclaim tool dates one by SLURM's end time.
+
+    So every lone stop is attributed. Where the log does not contradict a stop, nothing in it tells a third
+    party's from the worker's own, and reading it as the worker's is what the topic means. Two known limits
+    follow:
+    - a third party's stop with a default body, a `t` within the tolerance and no beat after it reads as its
+      claim's exit, and vouches for the claim's pending values up to its `final_step`. The runner's
+      backstop's `error: null` variants, mycooc's `resume_fanout` on an unstopped claim, and the reclaim
+      tool before it dated its stops by SLURM's end time can each write one;
+    - clause (ii) assumes the writer's clock agrees with the store's. SqliteChannel stamps `created_at` with
+      the writer's own clock at insert, so on SQLite it holds exactly. PostgresChannel stamps it with the
+      server's `clock_timestamp()`, so a worker whose clock lags the server's by more than the tolerance has
+      its genuine exit read as a release.
 - **Attributed death reports** (review §12, items 13 and 14). A claim that 0.3.0 saw ended only by its
   launch's `launcher.terminated` gets a `supervisor.died` from it, placed just after it, when the launch's
-  handle is the claim's: the same `local://host/pid`, compared whole, since two hosts can share a pid. A
-  ThreadLauncher's launch carries its own process's handle, which is its worker's, so it matches, as the
-  live rule attributes it by launch id. The report mirrors the live reap: a signal maps to `killed`, a
-  nonzero exit code to `errored` and an exit 0 to `lost`, with `signal s` or `exit n` as the evidence and the
-  record's `t`. The `terminated` is a reap, which is evidence; the migration only attributes it to the
-  claim, as a live launcher does when it reaps. A launch whose handle differs (a wrapper) gets none; its
-  run's verdict changes from the wrapper's exit to none, a correction, which P4 attributes. A claim released
-  only by a `resolve()`-dead handle needs nothing: a same-host caller of `report_if_dead` reports it (§3).
+  handle is the claim's: the same `local://host/pid`, compared whole, since two hosts can share a pid. The
+  launch is the one the claim names, by the launch id its `started` re-emitted, and its handle is its
+  `launched`'s, found by that id anywhere in the log, since a child can claim before its parent writes
+  `launched`. Only the newest claim naming the launch gets one, when no `stopped` names it and the
+  `terminated` follows it, since §3's live launcher reports only for that claim; an older claim of the same
+  launch stays as 0.3.0 left it. A ThreadLauncher's launch carries its own process's handle, which is its
+  worker's, so it matches, as the live rule attributes it by launch id. The report mirrors the live reap: a
+  signal maps to `killed`, a nonzero exit code to `errored` and an exit 0 to `lost`, with `signal s` or
+  `exit n` as the evidence and the record's `t`. The `terminated` is a reap, which is evidence; the migration
+  only attributes it to the claim, as a live launcher does when it reaps. A launch whose handle differs (a
+  wrapper) gets none; its run's verdict changes from the wrapper's exit to none, a correction, which P4
+  attributes. A claim released only by a `resolve()`-dead handle needs nothing: a same-host caller of
+  `report_if_dead` reports it (§3).
 
 **The only renumbering step.** 0.2.0 → 0.3.0 only appended, so this is the only step that renumbers, and the
 last that may: from 0.4.0 on, checkpoints hold seqs. The runner **enforces** it: every later step must keep
@@ -981,28 +1081,57 @@ records and leave shapes no 0.4.0 writer produces.
 
 **The properties to test:**
 - **P1:** for every 0.3.0 heartbeat with integer step s whose commit's chain M1 linked back to old step 0,
-  `count(Commits(), its commit) = s + 1`. A parentless resume is counted, and named.
+  `count(Commits(), its commit) = s + 1`. A parentless resume is counted, and named. A chain across a
+  trailing gap, which M5 leaves without commits, counts too few and fails under that name.
 - **P2:** every value with a step is committed by its claim's commit carrying that step, except leading
-  values, by design, and two kinds that stay uncommitted: values above their exit's last step, and an error
-  exit's trailing step that M5's third case does not reach.
+  values, which go to the claim's first commit by design, and these, which stay uncommitted: values before
+  every claim; values after their claim's end (M4); a claim's that beat no integer step (loading); values
+  above their exit's last step; an error exit's trailing step that M5's third case does not reach; and an
+  unreached trailing step of a claim a third party released or that nothing ended.
 - **P3:** reads equal the old reads **cell by cell, by attribution.** Every differing cell must trace to a
   named rule: cells beyond the head's lineage, steps the lineage revisited, nodes holding several values,
-  loading cells, M4, error exits, a displaced worker's values above its successor's exit, a parentless resume.
-  An unattributed cell fails the test.
+  leading values, a parentless resume, a parentless resume by M1's candidacy rule, a trailing gap (a gap of
+  steps with no values below a trailing step M5 synthesized), loading cells, M4, values above their exit's
+  last step (a displaced worker's or a crashed iteration's), an error exit's unreached trailing step, and an
+  unreached trailing step of a claim a third party released or that nothing ended. An unattributed cell
+  fails the test.
 - **P4:** the verdict's outcomes, 0.3.0's one outcome taken as a one-element set, and the stop fold's ids
   (`peek_terminal`, `undischarged_stops`) are equal across the migration, except where a named rule changes
-  them: a reclassified third-party stop, an attributed death report (an exit 0 changes `completed` to
-  `lost`), a wrapper's `terminated`, a claimless `stopped` that was a run's only terminal.
+  the verdict: a third party's release; a third party's later stop; a backstop that ends no claim, now a
+  `terminated`, on which a claimed run's verdict no longer rests and a never-claimed run's does, a signal
+  reading `killed` where 0.3.0 read `errored`; a claimless `stopped` that was a run's only terminal; an
+  attributed death report (an exit 0 changes `completed` to `lost`); a wrapper's `terminated`. No rule
+  changes the stop fold's ids. A verdict read that raises is a value: two raises are equal, and a raise
+  differs from every verdict.
 - **Also:** 0 commits name a later value, 0 parents follow their child, 0 commits precede the record their
-  `consumed_seq` names, and every migrated record conforms to the 0.4.0 schemas.
+  `consumed_seq` names, 0 resume points follow their claim, 0 records name a claim at or after themselves,
+  every seq-valued field names a record of the kind it names, no claim has a second exit, and every migrated
+  record conforms to the 0.4.0 schemas.
 
-**Golden logs:** the displacement-parent history; a displaced worker's beats, which keep their claim; a
-step-0 loading `status`; a skipped tick, with and without values; post-loop values; a trailing step before a
-non-error exit (M5's second case); M5's third case past a retry that crashed while loading, and beside a
-newer claim that reached the step by a real beat; values after `stopped`; errored and preempted exits; a
-malformed `stopped`, and its repair; a stepless heartbeat; a commitless claim; a parentless resume; a claim
-ended only by `terminated`, with an equal handle, a differing one and a pid shared across hosts; and one log
-per class of third-party stop.
+**Golden logs:**
+- **lineage:** the displacement-parent history; a displaced worker's beats, which keep their claim; a
+  displaced worker's value above its successor's exit's last step; a commitless claim; a parentless resume;
+  a resume past a preempted exit, which parents on the commit; and M1's candidacy: a loading retry beside a
+  displaced worker, a resume from a step a displaced worker committed after the claim, a resume on an older
+  claim's step, a doubly displaced claim whose third-place commit M1 passes over, and a tick a displaced
+  worker skipped after the claim and across it, no candidate and a candidate;
+- **values:** a step-0 loading `status`; a skipped tick, with and without values; post-loop values; a
+  trailing step before a non-error exit (M5's second case); M5's third case past a retry that crashed while
+  loading, and beside a newer claim that reached the step by a real beat; a claim that beat no integer step,
+  as a loading retry the backstop released, one nothing ended, one whose status sits at its resume step, and
+  one that finished a whole step; values after `stopped`, and after an attributed death's `terminated`;
+- **records:** a worker's exit honouring a stop; errored and preempted exits; a stepless heartbeat;
+  watermarks that renumbering moves; `launcher.*` records moved to `supervisor.*`;
+- **third parties:** a malformed `stopped`, and its repair; one log per class of third-party stop: the
+  backstop releasing a claim, then a default body; later stops with an error, with a default body, M10's, and
+  with an error that honoured a stop; claimless stops with a default body, with an error and M10's; and the
+  backstops that end no claim: one naming none, one after a first backstop, one after the worker's exit, and
+  one whose minted id is taken;
+- **lone stops:** a stop its claim beats after; the reclaim tool's stop written after the time it reports,
+  with a default body and with its cause; the 60 s boundary on either side; and the cooperative stop, a
+  worker's own exit;
+- **attributed deaths:** a claim ended only by `terminated`, with an equal handle, a differing one and a pid
+  shared across hosts; a late reap after a relaunch; and one launch claimed twice.
 
 **Figures.** translation migrates exactly. The mycooc figures in review §11.3 predate the exit node and the
 stepless-heartbeat rule, so the implementation round re-measures P1–P4 from an implementation of these final
