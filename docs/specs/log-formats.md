@@ -135,14 +135,15 @@ would without it, before `runstate migrate` and after; tests pin both backends.
 ## 6. `runstate migrate`
 
 ```
-runstate migrate <root> [<rid> ...] [--to V]
+runstate migrate <root> [<rid> ...] [--to V] [--resolve <ambiguity>=<strategy> ...]
 ```
 
 `<root>` is a directory for SQLite and a DSN for Postgres. With no run ids, every run under the root is
 migrated.
 
 - **Steps** live in `runstate/migrations/`, one module per step, each declaring `FROM` and `TO` format
-  versions and a transform from a run's records in `FROM` to its records in `TO`.
+  versions, its ambiguities (below, "Ambiguity"), and a transform from a run's records in `FROM` to its
+  records in `TO`.
 - **The runner chains steps** from each log's format to `--to`, which defaults to `LOG_FORMAT`. It refuses
   if there is no path, or if two steps leave the same format.
 - **A step preserves seq and topic, except one.** A step returns every input row with its `seq` and `topic`
@@ -156,17 +157,18 @@ migrated.
   1. Refuse if the run has a live episode, read with the `FROM` format's semantics; a step carries what it
      needs of its old format. An unresolvable foreign claim reads as live, so a stranded claim must be
      released first.
-  2. Refuse if the step refuses the run's records. A step's refusal is deterministic, so it comes before
-     the seal: on SQLite the runner dry-runs the transform on the records it read for step 1.
+  2. Refuse if the step, or a strategy it was given, refuses the run's records. A step's refusal is
+     deterministic, and so is a strategy's, so it comes before the seal: on SQLite the runner dry-runs the
+     transform on the records it read for step 1.
   3. Seal the old log.
   4. Transform into the new format's address. On SQLite, write to a temporary file of its own in the target
      directory and rename it into place; on Postgres, use the sealing transaction.
 - **A refusal leaves the run untouched.** Every refusal is a `MigrationError` that names its run
-  (`run '<rid>': …`), and `migrate` stops at the first. The refused run stays writable and unmigrated, and
-  a re-run refuses it the same way. One residual on SQLite: records that land between the pre-seal read
-  and the seal can still make the post-seal transform refuse, which leaves the run sealed and unmigrated;
-  recovery is §8's rollback. On Postgres there is no such window, because the seal is taken before the
-  read.
+  (`run '<rid>': …`), and `migrate` carries on past it to the other runs (below, "Carrying on past
+  refusals"). The refused run stays writable and unmigrated, and a re-run refuses it the same way. One
+  residual on SQLite: records that land between the pre-seal read and the seal can still make the post-seal
+  transform refuse, which leaves the run sealed and unmigrated; recovery is §8's rollback. On Postgres
+  there is no such window, because the seal is taken before the read.
 - **A failure is recoverable by re-running `runstate migrate`, which completes it.** On SQLite a failure
   after the seal leaves the run sealed and unmigrated: new code raises "migrate", and old code cannot
   write. On Postgres the seal and the copy are one transaction, so a failure, a refusal included, rolls
@@ -184,6 +186,177 @@ both now: a SQLite root that is not a directory, and a `postgres://` or `postgre
 `--backend postgres`. Every message that says to migrate gives the whole command, `runstate migrate
 <root>` or `runstate migrate '<dsn>' --backend postgres` (a placeholder, since a DSN can carry a
 password).
+
+### Ambiguity
+
+*Specified 2026-10-24, not yet implemented* (review §12, item 16). **A step that cannot settle an answer
+from the log refuses the run, unless the user explicitly supplies a Strategy for that kind of question.**
+There is no default guess: a migration is an easy place to make a large mistake, and a replayable mistake
+is still made. Every step shares the mechanism below, so every ambiguous migration has the same
+ergonomics.
+
+**Vocabulary.**
+- An **ambiguity** is a question a step must answer about some records of a run, which the log can leave
+  open. A step declares its ambiguities as a closed set, and names each in kebab-case, as the command line
+  spells it.
+- A **site** is one record of one run, named by run id and seq, at which an ambiguity's question is open:
+  two histories that a conforming writer of the input format could produce give the same log there, and
+  need different output.
+- A **proven site** is a record at which the question arises but the log settles it: what the log proves
+  there, under the input format's conventions, gives one reading, its **proven reading**. A proven site is
+  not a site. It never forces a choice.
+- A **reading** is one answer at one record: a value of the ambiguity's closed reading type.
+- A **strategy** implements the ambiguity's Strategy Protocol. Given a run's sites and proven sites of its
+  kind, it returns a reading for each, or refuses the run with a reason. It is deterministic: a function of
+  the records it is given, so the dry run and the transform agree.
+- A step's **resolutions** are its whole configuration: exactly one strategy for each ambiguity it
+  declares.
+
+**The principle: ambiguity is judged against any conforming writer of the input format, under that format's
+conventions.** A question is settled where the input format's schemas and design pin the meaning of the
+records it reads, and open where they do not. A step judges against the format it reads, never against a
+later one, and never against one consumer's writers:
+- runstate ships **generic** built-in strategies only, which know no consumer's error texts, tools or
+  loop order;
+- a consumer's knowledge of its own writers belongs in its own strategies, and its "preset" is its own set
+  of `--resolve` choices, kept in the consumer;
+- a record whose body the input format does not define is refused unless a strategy reads it.
+
+Each step's spec names the conventions it relies on, with where each is written, and lists its
+ambiguities.
+
+**The Step protocol gains:**
+- **`AMBIGUITIES`:** the step's closed set, an enum whose members' values are the command-line names. Each
+  member has one declaration, of the type `runstate/migrations/ambiguity.py` defines: its name; a
+  one-sentence definition; its reading type; its Strategy Protocol; its built-in strategies; and the
+  earlier ambiguities of the same step whose readings its site test reads. The set may be empty.
+- **`detect(rows, *, resolutions)`:** the run's sites of each ambiguity, writing nothing. A site test reads
+  the log and the readings of the earlier ambiguities its declaration names, so `detect` calls their
+  strategies. An ambiguity it cannot test, because an earlier one it reads has no strategy, is undecided.
+- **`transform(rows, *, resolutions)`:** `resolutions` is required and keyword-only. It calls each strategy
+  once per run and checks every reading against what the log proves, refusing the run, naming the strategy
+  and the seq, when a reading contradicts it. It returns the readings it gave at the sites with the rows,
+  for the manifest.
+
+The built-in strategies live beside their step, in a module of their own:
+`v0_2_0_to_v0_3_0_resolutions.py` and `v0_3_0_to_v0_4_0_resolutions.py`. `runstate/migrations/ambiguity.py`
+holds what every step shares: the declaration type; `Resolutions`, which holds exactly one strategy for
+each declared ambiguity and is validated against its step's set when it is built; the unresolved refusal;
+and the command-line parsing. **`resolutions` is also a required keyword-only argument of `migrate()`**,
+which takes one `Resolutions` for each step of the chains it runs, keyed by the step's `FROM`, and refuses a
+chain step that has none.
+
+**No defaults; `refuse` always.** Every ambiguity has the built-in `refuse`, which refuses a run at its first
+site and gives each proven site its proven reading. It is the only strategy a step may hold for an
+ambiguity the user did not resolve. No other built-in is a default, and no option resolves every
+ambiguity at once.
+
+**A strategy sees every site of its kind,** and every proven site with them, in one call per run, so it can
+read a run's records together, as a claim's several stops must be read. The sites decide only whether a
+choice is forced.
+- At a site the reading is the strategy's choice, among those the log allows.
+- At a proven site it is the proven reading, unless the strategy gives another that what the log proves
+  still allows. A record the log settles one way under the format's conventions can carry a consumer's
+  knowledge the log does not hold: a third party's `stopped` after its claim's end is a death report by its
+  0.3.0 meaning, and a consumer may know it to be its runner's reap of another process
+  (`commits-and-lineage.md` §7).
+- A reading the proof excludes is refused, naming the strategy and the seq.
+
+**The detection pass.** `runstate migrate` first reads every selected run and runs its chain of steps in
+memory, sealing and writing nothing: step 2 above, for the whole root before any run is sealed. An
+ambiguity **occurs** in the root when any run has a site of it. **The pass refuses unless every ambiguity that
+occurs has a `--resolve`,** and then writes nothing at all. There is no default and no accept-all. An
+undecided ambiguity counts as occurring until the one it waits on is resolved. On refusal it prints a summary
+**per ambiguity**, never a list of every site:
+- the step, the ambiguity's name and its one-sentence definition;
+- its readings, and its built-in strategies, each with a one-line description;
+- how many sites it has, in how many runs, or "undecided until `<ambiguity>` is resolved";
+- a few example sites: the first three, by run id and seq;
+- the option to add, `--resolve <ambiguity>=<strategy>`.
+
+```
+stop-author (0.3.0 -> 0.4.0): who wrote a lifecycle.stopped, the claim's worker or a third party,
+  where the log does not prove it.
+  readings: exit | release(outcome, evidence) | report(reap)
+  built-ins: first-is-exit  a claim's first open stop is its worker's exit
+             last-is-exit   a claim's last open stop is its worker's exit
+             third-party    every open stop is a third party's
+             refuse         refuse every run with a site
+  sites: <n> in <m> runs, e.g. <rid> seq <seq>, <rid> seq <seq>, <rid> seq <seq>
+  add: --resolve stop-author=<built-in or module:attr>
+```
+
+**`--resolve <ambiguity>=<strategy>`,** repeatable, one per ambiguity.
+- **`<ambiguity>`** is a name some step of the chain declares. Names are unique across the registered
+  steps: the runner refuses to start when two steps declare one name, as it refuses two steps that leave one
+  format.
+- **`<strategy>`** is a built-in's name, spelled with no colon, or **`module:attr`**, naming an object that
+  implements the ambiguity's Strategy Protocol. The command line resolves each once, before the detection
+  pass: it imports `module:attr` and checks the object against the Protocol. It refuses an unknown
+  ambiguity, an unknown built-in, an import that fails, and an object that is not a strategy for that
+  ambiguity.
+- **A `--resolve` for an ambiguity that does not occur** is accepted: its strategy still sees the proven
+  sites.
+- **An explicit `--resolve <ambiguity>=refuse`** refuses only the runs with a site of it, and the rest
+  migrate. An occurring ambiguity left unresolved refuses the whole invocation.
+
+**Carrying on past refusals.** Once the detection pass is satisfied, `migrate` migrates every run it can.
+A run refused by a strategy, by `refuse`, or by a step's own refusal is left untouched, and the other runs
+go on. `migrate()` returns the runs it moved and every refusal, each naming its run, and the command prints
+them and exits nonzero when any run was refused. Until now it stopped at the first refusal.
+
+**The manifest** records, for each root, what every migrated run was migrated under. The log formats are
+untouched: the manifest belongs to the root, outside every format's address.
+- **SQLite:** `<root>/runstate-migrations.jsonl`, one JSON object per line, appended. It is neither a format
+  directory (§4, check 1) nor a legacy address (§4, check 4).
+- **Postgres:** the table `manifest` in the schema `runstate_migrations`. That schema is outside every
+  `runstate_v…` schema, so check 1 does not read it as a format, and the table is not named `log`, so
+  check 4 does not read it as a legacy log.
+- **One entry per run per step:** the run id; the step's `FROM` and `TO`; the runstate version that ran it;
+  when; the resolutions, each ambiguity's strategy as it was given, a built-in's name or `module:attr`; and
+  the run's sites, by ambiguity, each site's seq with the reading it was given. A proven site is recorded
+  only where a strategy gave it a reading other than its proven one.
+- **When it is written:** once the run's new log is published. On Postgres the entry is inserted in the
+  sealing transaction. On SQLite it is appended after the rename, so a crash between the two leaves a
+  migrated run with no entry, which a re-run cannot add, since the run is no longer at the old format (a
+  known limit).
+- **Copying a run** between roots (§8) copies its log at its format's address. Its manifest entries go with
+  it only if they are copied by hand.
+
+**The escape hatch: a whole step is a Strategy too** (documented, not built). A consumer whose history does
+not fit a step's declared seams may supply its own step for that edge, named `module:attr`: an object
+implementing the Step protocol, with the stock step's `FROM` and `TO`. It may import the stock step's
+passes and reuse them. The same runner runs it under the same invariants:
+- it keeps every input row's seq and topic, the one renumbering step's exemption aside;
+- every row it writes conforms to the `TO` format's schemas, which the runner checks row by row for a
+  custom step, since no runstate test covers it;
+- its refusals come before the seal;
+- the manifest records it by its `module:attr`, beside the resolutions it declares.
+
+No command-line option takes one yet. The trigger to build it is a consumer whose log a step's declared
+ambiguities cannot express.
+
+**Redo is a known gap, not built.** A migrated run's old log is sealed and its new one exists, so `runstate
+migrate` does not migrate it again under other resolutions. §8's rollback is the manual path: make the old
+log writable, delete the new one, and migrate again. The manifest says what was chosen the first time, and
+the new entry is appended beside the old.
+
+**The precedent.** Every later step declares its ambiguities, with an empty set when it has none, so every
+step takes `resolutions` and the detection pass treats every chain alike. The first two steps declare theirs
+in [`reference-by-name.md`](reference-by-name.md) §6 (format 0.2.0 → 0.3.0) and
+[`commits-and-lineage.md`](commits-and-lineage.md) §7 (format 0.3.0 → 0.4.0).
+
+**Tests,** on SQLite and Postgres:
+- `Resolutions` refuses a missing ambiguity, an undeclared one, and two strategies for one;
+- the command line refuses an unknown ambiguity or built-in, a failed import, an object of the wrong
+  Protocol, and two steps declaring one name;
+- the detection pass writes nothing when an occurring ambiguity has no `--resolve`, prints one summary per
+  ambiguity with at most three example sites, and reports a dependent ambiguity as undecided;
+- an explicit `refuse` refuses only the runs with a site, and the others migrate;
+- a run refused by a strategy leaves the other runs migrated, and the command exits nonzero;
+- a strategy sees every site and proven site of its kind, and a reading the proof excludes is refused;
+- the manifest holds one entry per migrated run per step, written in the sealing transaction on Postgres,
+  and none for a refused run.
 
 ## 7. Onboarding legacy logs
 

@@ -160,16 +160,19 @@ verdict plane an unnamed lifecycle record raises the existing `MalformedRecordEr
 `<root>/v0.2.0/<rid>.db` and writes `<root>/v0.3.0/<rid>.db`, **preserving every record's seq**, because
 `claim_seq` values point at seqs. It deletes nothing, and appends only `lifecycle.bound` records, after the
 last record. Every name it writes is exactly what the positional rule said; the step's docstring is the
-precise statement of the rules.
+precise statement of the rules. Where the positional rule answers a question the 0.2.0 log leaves open, the
+answer is the reading of one of the step's declared ambiguities, which a user chooses explicitly (below,
+"Ambiguities").
 
 - **Stops.** A nameless stop gets the deterministic id `stop@<seq>`. A stop keeps its id only if no other
   control request bears it, unsubscribes aside: it is the only stop with that id, and no subscription or
   unknown verb bears it. Otherwise every stop with that id gets a minted id, `<id>#<seq>`. Positionally
   each stop record was its own request, while in 0.3.0 the requests of one id are one request, which
   every nak bearing that id answers. Each `stopped.honored` lists the stops that `stopped` cleared under
-  the old rule: every stop since the previous `stopped`, blind to both author and body.
-- **Episodes.** The `claim_seq` of a heartbeat or a `stopped` is the latest claim before it. A `stopped`
-  before any claim names none (null).
+  the old rule: every stop since the previous `stopped`, blind to both author and body (`stop-honored`'s
+  `positional`, below).
+- **Episodes.** The `claim_seq` of a heartbeat or a `stopped` is the latest claim before it
+  (`record-claim`'s `positional`, below). A `stopped` before any claim names none (null).
 - **Subscriptions.** A reused id is split into segments at each answer, and the later segments become
   `<id>#k`, along with their answers and value sends. An answer that precedes every subscribe of its id
   answered nothing, so it is renamed to name nothing: an `unsubscribe` always, and a nak unless no
@@ -177,14 +180,14 @@ precise statement of the rules.
   nothing either, since a nak cannot refuse a stop that comes after it. A nak that keeps its id names
   its stop.
 - **Episode-local subscriptions.** One `lifecycle.bound` for each unanswered one that a claim follows,
-  naming the first claim after its latest send. Positionally a lease was void for a drainer when a claim
-  lay strictly between the lease and the drainer's own claim, so once any claim follows it, every later
-  claim finds that one in between: the first claim after it was its last drainer. That holds when the
-  first claim is the latest one too, and then the next worker, which claims after migration, is the
-  drainer the binding voids it for. *Found in the final review* (Ruling 17): binding only to a claim
-  strictly before the latest one left a lease served by an ended latest episode unbound, and the next
-  0.3.0 worker served it again with a fresh `time_seconds`, which neither master nor a native 0.3.0 log
-  does.
+  naming the first claim after its latest send (`lease-bound`'s `first-claim`, below). Positionally a
+  lease was void for a drainer when a claim lay strictly between the lease and the drainer's own claim, so
+  once any claim follows it, every later claim finds that one in between: the first claim after it was its
+  last drainer. That holds when the first claim is the latest one too, and then the next worker, which
+  claims after migration, is the drainer the binding voids it for. *Found in the final review* (Ruling
+  17): binding only to a claim strictly before the latest one left a lease served by an ended latest
+  episode unbound, and the next 0.3.0 worker served it again with a fresh `time_seconds`, which neither
+  master nor a native 0.3.0 log does.
 - **Every minted name is fresh:** it is checked against every request id in the run and every name minted
   before it.
 - **Refused: a heartbeat before any claim.** `Heartbeat.claim_seq` is a required integer, so format 0.3.0
@@ -203,10 +206,89 @@ precise statement of the rules.
   claim is live unless a `stopped` follows it or its handle resolves dead, and an unresolvable foreign
   handle reads as live.
 
+**Ambiguities** (*specified 2026-10-24, not yet encoded*; review §12, item 16; `log-formats.md` §6,
+"Ambiguity"). The step judges against any writer conforming to format 0.2.0, whose records named nothing
+and were related by position (§1's table). Three of its answers are inferences that 0.2.0's records do not
+settle. They are its declared ambiguities, and the positional rule is one reading of each, which a user
+must choose. The built-in strategies are in `v0_2_0_to_v0_3_0_resolutions.py`. The step is shipped, and no
+consumer has run it yet, so each consumer's first migration is its first choice.
+
+| ambiguity | the question | built-ins | the step's reading today |
+|---|---|---|---|
+| `record-claim` | which claim a heartbeat or `stopped` speaks for | `positional`, `refuse` | `positional` |
+| `stop-honored` | which stops a `stopped` answered | `positional`, `drained`, `none`, `refuse` | `positional` |
+| `lease-bound` | which claim registered an episode-local subscription | `first-claim`, `unbound`, `refuse` | `first-claim` |
+
+What the site tests rely on as settled by 0.2.0's conventions:
+- **`completed: true` is the worker's own claim** (`completed-opt-in.md`), so a claim a completed `stopped`
+  ended was ended by its worker's own dying breath, after which the worker wrote nothing;
+- **a `launcher.terminated` follows its process's end**, since only a `wait()`ing parent writes it
+  (`design-v0.2.md` §8), and the launch id a claim's `started` re-emits, with an equal handle, makes that
+  process the claimant;
+- **a claim is taken only when the latest one is followed by a `stopped` or its handle resolves dead** (the
+  liveness above), so a claim that no `stopped` followed was dead when the next one began.
+
+The entries:
+- **`record-claim`: which claim a heartbeat or `stopped` speaks for.**
+  - **Site:** a heartbeat or `stopped` after the `started` of a claim that is not the run's first, when an
+    earlier claim was followed, before that `started`, by a `stopped` that is not `completed: true`, and no
+    `launcher.terminated` of that earlier claim's launch, carrying its handle, precedes the record. Such a
+    `stopped` let a later claim begin, and a third party may have written it, so the earlier claim's
+    worker may have outlived it.
+  - **H1:** the latest claim's worker wrote the record, which needs the latest claim before it.
+  - **H2:** a third party's `stopped` released the earlier claim while its worker lived, and that displaced
+    worker wrote the record after the later claim began, which needs the earlier claim.
+  - **Built-ins:** `positional`, the latest claim before it, which is the step's rule today; `refuse`.
+  - **Refuse-only:** no, as a declaration. Nothing in the log says who wrote the record, so no reading
+    computed from it is right for most histories. `positional` is the user's statement about their own
+    orchestration: no worker outlived a release of its claim.
+- **`stop-honored`: which stops a `stopped` answered.**
+  - **Site:** a `stopped` with at least one `control.stop` since the previous `stopped`. 0.2.0's positional
+    rule cleared them all, whoever wrote the `stopped`, while 0.3.0's `honored` names the stops its writer
+    carried out.
+  - **H1:** the worker drained stop x at its last tick and stopped on it, which needs `honored: [x]`.
+  - **H2:** a third party released a dead worker's claim, or the worker stopped at a bound of its own while x
+    landed unseen, which needs `honored: []`, with x pending for the next claim, as §7 has mycooc's reclaim
+    tool leave it.
+  - **Built-ins:**
+    - `positional`: every stop since the previous `stopped`, which is the step's rule today;
+    - `drained`: those that the newest heartbeat of its claim before it had consumed, its `consumed_seq` at
+      or above the stop's seq: what a 0.2.0 reference worker held when it stopped. It reads `record-claim`'s
+      readings;
+    - `none`: no stop, so each stays pending;
+    - `refuse`.
+  - **Refuse-only:** no.
+- **`lease-bound`: which claim registered an episode-local subscription.**
+  - **Site:** an unanswered episode-local subscription that a claim follows, when the first claim after its
+    latest send wrote no heartbeat whose `consumed_seq` reaches that send. A claim whose heartbeat reaches
+    it drained it, and so registered it: the watermark passes a request only once it is registered or
+    refused (`design-v0.2.md` §6), and an unanswered one was not refused. There the binding to that claim is
+    the proven reading.
+  - **H1:** the first claim drained and registered the lease, then died before that tick's heartbeat, which
+    needs the lease bound to that claim, as 0.2.0's positional void treated it.
+  - **H2:** the first claim died before it drained the lease, which needs the lease unbound, so that the next
+    claim registers and serves it, as it would in a native 0.3.0 log.
+  - **Built-ins:**
+    - `first-claim`: the first claim after its latest send, which reproduces 0.2.0's positional void. It is
+      the step's rule today, and Ruling 17's;
+    - `unbound`: no `bound` record, so the lease is void for no episode;
+    - `refuse`.
+  - **Refuse-only:** no. The real corpus has no subscribes, so no consumer's log has a site.
+
+**Determined, not declared,** because 0.2.0's own rules settle them, and the step reproduces those rules:
+- a `stopped` before any claim names none;
+- a stop's id, kept or minted, since each 0.2.0 stop record was its own request;
+- a reused subscription id split at each answer, and an answer before every subscribe of its id renamed to
+  name nothing, since 0.2.0 paired an answer with the request before it;
+- a nak that keeps its id names its stop, since a nak is the refusal of the request its id names.
+
+A heartbeat before any claim stays a refusal.
+
 **Measured on the spike, on copies of 2,569 real consumer logs:** identical reads on 2,562. The 7
 differences are all one positional bug that names fix: `progress` reading a previous episode's heartbeat.
-The step's golden logs (`tests/test_migration_v0_2_0_to_v0_3_0.py`) read as 0.2.0's positional folds
-read them (computed at `72d9c3f`), except in three classes, each a positional defect that names fix:
+The step's golden logs (`tests/test_migration_v0_2_0_to_v0_3_0.py`), migrated under the readings marked
+"today" above, read as 0.2.0's positional folds read them (computed at `72d9c3f`), except in three classes,
+each a positional defect that names fix:
 
 1. that **stale-beat leak**;
 2. a **naked stop**, which `undischarged_stops` kept listing until the next `stopped` and which its nak
@@ -220,11 +302,12 @@ one on the golden logs. The final review's fuzz (7,000 synthetic logs, master's 
 `72d9c3f`) found no difference outside the three classes, and none in the demand a resumed worker faces.
 
 **Known limits:**
-- A historical misattribution is copied faithfully, not corrected: episode-aim's objection, stated in the
-  step's docstring. A displaced worker's late heartbeat or `stopped` is named for its successor's claim,
-  because the positional rule attributed it there, and the log does not record which worker wrote it.
-- The `bound` records are inferred from the positional rule. The 0.2.0 log never recorded which episode
-  registered a lease.
+- Under `record-claim`'s `positional`, a historical misattribution is copied faithfully, not corrected:
+  episode-aim's objection, stated in the step's docstring. A displaced worker's late heartbeat or `stopped`
+  is named for its successor's claim, because the positional rule attributed it there, and the log does not
+  record which worker wrote it.
+- Under `lease-bound`'s `first-claim`, the `bound` records are inferred from the positional rule. The 0.2.0
+  log never recorded which episode registered a lease.
 - A nak bearing a uniquely named stop's id, after that stop, is presumed to be that stop's refusal. The
   reference worker naks only the request it is handling, so only a nak it did not write (a third
   party's, or another worker's) could make that wrong: a forged nak.
