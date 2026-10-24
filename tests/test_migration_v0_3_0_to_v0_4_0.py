@@ -115,22 +115,25 @@ def _terminated(reason, exit_code, signal, t):
 
 
 def _dated(rows):
-    """Every record its own created_at, so a test can see each one kept."""
+    """Every record its own created_at, so a test can see each one kept; a
+    well-formed stop's is its own ``t``, as a self-report's is."""
     assert [x.seq for x in rows] == list(range(1, len(rows) + 1))
     return [x._replace(created_at=_written_at(x)) for x in rows]
 
 
 def _written_at(x):
     # a stop is written when it reports, as a self-report is (the rule for lone stops)
-    if x.topic == "lifecycle.stopped" and "t" in json.loads(x.body):
-        return json.loads(x.body)["t"]
+    if x.topic == "lifecycle.stopped":
+        body = json.loads(x.body)
+        if "t" in body:
+            return body["t"]
     return 1000.0 + x.seq / 4
 
 
 def _written_later(rows, seq, by):
     """``rows``, with the stop at ``seq`` written ``by`` seconds after the ``t``
     it reports."""
-    x = rows[seq - 1]
+    (x,) = [y for y in rows if y.seq == seq]
     later = x._replace(created_at=json.loads(x.body)["t"] + by)
     return [later if y.seq == seq else y for y in rows]
 
@@ -2340,9 +2343,9 @@ def test_a_stop_its_claim_beats_after_is_a_release():
 @pytest.mark.parametrize("later, end", [(59.0, _Exit), (60.0, _Exit), (61.0, _Release)])
 def test_a_stop_written_more_than_60_s_after_its_t_is_a_release(later, end):
     """The comparison is strict: ``created_at - t > _REPORTED_LATER``."""
-    rows = _written_later(EXIT, 4, later)
-    log = parse(rows)
-    assert classify(log).ends == {1: end(log.stops[0])}
+    log = parse(_written_later(EXIT, 4, later))
+    (stop,) = log.stops
+    assert classify(log).ends == {1: end(stop)}
 
 
 def _expected(key, rows):

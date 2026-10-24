@@ -97,11 +97,15 @@ The rules:
     higher seq. The worker outlived the stop, so the stop is not its exit;
   - **it was written after the time it reports:** its ``t`` precedes its
     record's ``created_at`` by more than ``_REPORTED_LATER`` (60 s). A worker
-    reporting its own exit stamps both from one clock at one moment:
-    SqliteChannel stamps ``created_at`` with ``time.time()`` at insert, behind
-    a 5 s ``busy_timeout``. A later reporter dates the stop to an event it
-    learned of afterwards, as mycooc's reclaim tool does with SLURM's end
-    time.
+    reporting its own exit stamps both from one clock at one moment. On SQLite
+    that holds exactly: SqliteChannel stamps ``created_at`` with the writer's
+    own ``time.time()`` at insert, behind a 5 s ``busy_timeout``. On Postgres
+    it holds under the observer clock's assumption (observer-clock.md §4)
+    that a writer's clock agrees with the store's to within the tolerance:
+    PostgresChannel stamps ``created_at`` with the server's
+    ``clock_timestamp()`` (a known limit below). A later reporter dates the
+    stop to an event it learned of afterwards, as mycooc's reclaim tool does
+    with SLURM's end time.
 
   So every lone stop is attributed. Where the log does not contradict a stop,
   nothing in it tells a third party's from the worker's own, and reading it as
@@ -305,6 +309,15 @@ whole-number float such as 3.0, which 0.3.0's schemas accept. It refuses:
   backstop's ``error: null`` variants, mycooc's ``resume_fanout`` on an
   unstopped claim, and the reclaim tool before ``ffe05f6e``, which dated its
   stop when it wrote it. The local corpus holds none of them.
+- The rule for lone stops reads the other way on a Postgres-backed log whose
+  worker's clock lags the server's by more than ``_REPORTED_LATER``:
+  PostgresChannel stamps ``created_at`` with the server's
+  ``clock_timestamp()``, while the worker stamps ``t`` with its own host's
+  clock, so its genuine exit reads as written after the time it reports. It
+  becomes a preempted death, or an errored one, and its claim's pending values
+  stay uncommitted. The rule shares the observer clock's assumption
+  (observer-clock.md §4) that a writer's clock agrees with the store's to
+  within the tolerance; on SQLite both are the writer's, and it holds exactly.
 - A beat after its claim's end, whoever ended it, still commits. M4 leaves a
   value after the end uncommitted, but a heartbeat with an integer step is a
   commit wherever it falls: after a third party's release, or the
@@ -1088,11 +1101,16 @@ class _Later(NamedTuple):
 
 
 # A worker reporting its own exit stamps the stop's t and its record's created_at
-# from one clock at one moment: SqliteChannel stamps created_at with time.time()
-# at insert, behind a 5 s busy_timeout. A stop whose t precedes its created_at by
-# more than this many seconds was written after the time it reports, by a writer
-# that dated it to an event it learned of afterwards, as mycooc's reclaim tool
-# dates one with SLURM's end time. Part of the step's frozen semantics.
+# from one clock at one moment. On SQLite that holds exactly: SqliteChannel stamps
+# created_at with the writer's own time.time() at insert, behind a 5 s
+# busy_timeout. On Postgres it holds under the observer clock's assumption
+# (observer-clock.md §4) that a writer's clock agrees with the store's to within
+# this tolerance: PostgresChannel stamps created_at with the server's
+# clock_timestamp(), so a worker whose clock lags the server's by more reads as a
+# later reporter (a known limit). A stop whose t precedes its created_at by more
+# than this many seconds was written after the time it reports, by a writer that
+# dated it to an event it learned of afterwards, as mycooc's reclaim tool dates
+# one with SLURM's end time. Part of the step's frozen semantics.
 _REPORTED_LATER = 60.0
 
 
