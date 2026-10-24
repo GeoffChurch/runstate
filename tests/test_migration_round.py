@@ -11,6 +11,7 @@ the next run is read."""
 import gc
 import importlib.util
 import json
+import os
 import re
 import shlex
 import sqlite3
@@ -1338,3 +1339,88 @@ def test_0_3_0s_liveness_is_recorded_never_refused(tmp_path):
         1,
         2,
     )
+
+
+# ----- fix round 2 ---------------------------------------------------------------------
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root searches any directory")
+def test_a_path_discovery_cannot_read_is_skipped_with_its_reason(tmp_path):
+    """A ``.db`` symlink and a directory symlink into a directory discovery may
+    not search, and a directory it may not list: each an unreadable path, with
+    its errno, and the logs beside them are measured."""
+    root = tmp_path / "root"
+    _write(root / "v0.3.0" / "aaa.db", EXIT_WITH_A_VALUE)
+    _write(root / "v0.3.0" / "zzz.db", EXIT_WITH_A_VALUE)
+    locked = tmp_path / "locked"
+    _write(locked / "x.db", EXIT_WITH_A_VALUE)
+    (locked / "sub").mkdir()
+    (root / "v0.3.0" / "mmm.db").symlink_to(locked / "x.db")
+    (root / "cell").mkdir()
+    (root / "cell" / "link").symlink_to(locked / "sub", target_is_directory=True)
+    _write(root / "shut" / "y.db", EXIT_WITH_A_VALUE)
+    out = tmp_path / "out"
+    locked.chmod(0o000)
+    (root / "shut").chmod(0o000)
+    try:
+        assert _main(root, out, max_rows=100) == 0
+    finally:
+        locked.chmod(0o755)
+        (root / "shut").chmod(0o755)
+    runs, summary = _outputs(out)
+    assert {k: x["status"] for k, x in runs.items()} == {
+        "aaa": "measured",
+        "zzz": "measured",
+    }
+    skipped = [json.loads(x) for x in (out / "skipped.jsonl").read_text().splitlines()]
+    assert {Path(x["path"]).name: (x["why"], x["detail"]) for x in skipped} == {
+        name: (mr.SkipWhy.UNREADABLE, "EACCES: Permission denied")
+        for name in ("link", "mmm.db", "shut")
+    }
+    assert summary["files"]["skipped"] == {mr.SkipWhy.UNREADABLE: 3}
+    assert summary["complete"] is True
+
+
+def test_a_run_whose_record_cannot_begin_never_aborts(tmp_path, monkeypatch):
+    """The reviewer's probe: the sidecar check refuses one run, every time. Its
+    record is begun without I/O, so the crash is written, at the read."""
+    real = mr._unread_sidecars
+
+    def refused(path):
+        if path.stem == "b":
+            raise PermissionError(13, "denied")
+        return real(path)
+
+    monkeypatch.setattr(mr, "_unread_sidecars", refused)
+    logs = {rid: EXIT_WITH_A_VALUE for rid in ("a", "b", "c")}
+    runs, summary = _run(tmp_path, logs)
+    assert {k: x["status"] for k, x in runs.items()} == {
+        "a": "measured",
+        "b": "crashed",
+        "c": "measured",
+    }
+    assert runs["b"]["crash"]["stage"] == "read"
+    assert summary["complete"] is True
+
+
+def test_a_body_that_is_not_json_is_a_crash_of_the_read(tmp_path):
+    """Whatever would read it first, a step or ``is_live``, and in either
+    format."""
+    claim = r(1, "lifecycle.started", _started("local://n1/11", 1.0))
+    root = tmp_path / "root"
+    _write(
+        root / "v0.3.0" / "after_claim.db",
+        [claim, Row(2, "lifecycle.stopped", None, None, "{not json", 2.0)],
+    )
+    _write(
+        root / "v0.2.0" / "in_0_2_0.db",
+        [Row(1, "lifecycle.started", None, None, "{not json", 1.0)],
+    )
+    out = tmp_path / "out"
+    assert _main(root, out, max_rows=100) == 0
+    runs, _ = _outputs(out)
+    assert {k: (x["status"], x["crash"]["stage"]) for k, x in runs.items()} == {
+        "after_claim": ("crashed", "read"),
+        "in_0_2_0": ("crashed", "read"),
+    }
+    assert runs["after_claim"]["crash"]["kind"].startswith("JSONDecodeError")

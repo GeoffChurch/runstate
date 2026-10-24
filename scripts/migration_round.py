@@ -24,14 +24,17 @@ other address is a legacy one, format 0.2.0 (log-formats.md §7).
 
 STREAMING. One run at a time: a run's rows, reads and results are dropped before
 the next run is read, its line is written and flushed as soon as it is measured,
-and only counters cross runs. A log file larger than ``--max-bytes`` is counted
-and skipped unopened, and a run with more than ``--max-rows`` rows unread.
+and only counters cross runs. A log file larger than ``--max-bytes``, and a run
+with more than ``--max-rows`` rows, is counted and skipped before its rows are
+read; discovery has opened it only to read its schema, which is the file's first
+pages.
 
 NEVER AN ABORT. Whatever fails on one file or one run is recorded and the corpus
-run goes on: a file the OS or SQLite will not read is a skip, and an exception
-while measuring a run, a step's, a read's or the runner's own (``MemoryError``
-included), is a crash on that run's line, by its stage, its type and the
-function it was raised in. ``summary.json`` is rewritten every
+run goes on: a directory, an entry or a file the OS or SQLite will not read is
+a skip, with what refused it, and an exception while measuring a run, a step's,
+a read's or the runner's own (``MemoryError`` included), is a crash on that
+run's line, by its stage, its type and the function it was raised in. A body
+that is not JSON is always a crash of the read, before any step reads it. ``summary.json`` is rewritten every
 ``_SUMMARY_EVERY`` runs and once more however the runner stops, with
 ``complete`` false unless it finished.
 
@@ -98,6 +101,7 @@ verdict carries counted under ``by_class_set``, the classes joined with ``+``.
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import re
@@ -172,10 +176,11 @@ class SkipWhy(StrEnum):
     UNREGISTERED_FORMAT = "an address of a format this runstate does not register"
     SUPERSEDED = "superseded by the run's log in a newer format, and sealed"
     CONFLICT = "beside the run's log in a newer format, and not sealed"
-    UNREADABLE = "unreadable: no permission, or gone"
+    UNREADABLE = "unreadable: the OS refused a stat or a listing, named in detail"
     NOT_SQLITE = "not a sqlite database"
     CORRUPT = "a sqlite database too corrupt to read its schema"
-    SQLITE_ERROR = "another sqlite error, named in skipped.jsonl"
+    SQLITE_ERROR = "another sqlite error, named in detail"
+    UNCLASSIFIED = "an error classifying it, named in detail"
     NO_LOG_TABLE = "no runstate log table"
 
 
@@ -616,7 +621,7 @@ class Found(NamedTuple):
 class Skipped(NamedTuple):
     path: Path
     why: SkipWhy
-    detail: str | None  # SQLite's error name, for SQLITE_ERROR
+    detail: str | None  # what refused it: an errno, SQLite's error name, an error
 
 
 @dataclass
@@ -624,7 +629,7 @@ class FileCounts:
     paths: int = 0  # every *.db path reached, symlinks included
     unique: int = 0  # files, by inode
     duplicate_paths: int = 0
-    unreadable_dirs: int = 0
+    # by why: each a *.db file, or a directory or entry discovery could not read
     skipped: Counter[str] = field(default_factory=Counter)
 
 
@@ -635,12 +640,24 @@ def _connect(path: Path) -> sqlite3.Connection:
     )
 
 
-def _db_paths(root: Path, counts: FileCounts) -> Iterator[Path]:
+def _unreadable(path: Path, exc: OSError) -> Skipped:
+    """A path the OS would not let discovery stat or list, with its errno."""
+    code = errno.errorcode.get(exc.errno, "?") if exc.errno is not None else "?"
+    return Skipped(path, SkipWhy.UNREADABLE, f"{code}: {exc.strerror or exc}")
+
+
+def _db_paths(root: Path) -> Iterator[Path | Skipped]:
     """Every ``*.db`` path under ``root``, depth first in name order, following
-    symlinked directories but never into one of their own ancestors (a cycle)."""
-    if not root.is_dir():
-        if root.name.endswith(".db"):
-            yield root
+    symlinked directories but never into one of their own ancestors (a cycle).
+    A directory it cannot list, or an entry it cannot stat (a symlink into a
+    directory it may not search), is an unreadable path, never fatal."""
+    try:
+        if not root.is_dir():
+            if root.name.endswith(".db"):
+                yield root
+            return
+    except OSError as exc:
+        yield _unreadable(root, exc)
         return
     stack: list[tuple[Path, frozenset[tuple[int, int]]]] = [(root, frozenset())]
     while stack:
@@ -648,8 +665,8 @@ def _db_paths(root: Path, counts: FileCounts) -> Iterator[Path]:
         try:
             st = d.stat()
             entries = sorted(os.scandir(d), key=lambda e: e.name)
-        except OSError:
-            counts.unreadable_dirs += 1
+        except OSError as exc:
+            yield _unreadable(d, exc)
             continue
         here = (st.st_dev, st.st_ino)
         if here in ancestors:
@@ -657,7 +674,12 @@ def _db_paths(root: Path, counts: FileCounts) -> Iterator[Path]:
         below = ancestors | {here}
         dirs: list[Path] = []
         for e in entries:
-            if e.is_dir(follow_symlinks=True):
+            try:
+                is_dir = e.is_dir(follow_symlinks=True)
+            except OSError as exc:
+                yield _unreadable(Path(e.path), exc)
+                continue
+            if is_dir:
                 dirs.append(Path(e.path))
             elif e.name.endswith(".db"):
                 yield Path(e.path)
@@ -723,16 +745,23 @@ def _not_a_log(path: Path) -> Skipped | None:
 
 def discover(roots: Sequence[Path], counts: FileCounts) -> Iterator[Found | Skipped]:
     """Each file under the roots once, by inode, as a log to measure or a skip.
-    Holds only the inodes seen, never a run. A file the OS will not let it look
-    at is skipped as unreadable, never fatal."""
+    Holds only the inodes seen, never a run. Nothing about one path is fatal: a
+    path the OS will not let it look at is skipped as unreadable, and any other
+    error classifying a file as unclassified, each with what refused it."""
     seen: set[tuple[int, int]] = set()
     for root in roots:
-        for p in _db_paths(root, counts):
+        for p in _db_paths(root):
+            if isinstance(p, Skipped):
+                yield p
+                continue
             counts.paths += 1
             try:
                 item = _classify(p, seen, counts)
-            except OSError:
-                item = Skipped(p, SkipWhy.UNREADABLE, None)
+            except OSError as exc:
+                item = _unreadable(p, exc)
+            except Exception as exc:
+                detail = f"{type(exc).__name__}: {exc}"
+                item = Skipped(p, SkipWhy.UNCLASSIFIED, detail)
             if item is not None:
                 yield item
 
@@ -1936,13 +1965,15 @@ def _crashed(base: RunRecord, stage: Stage, exc: Exception) -> RunRecord:
 
 
 def _base(found: Found) -> RunRecord:
+    """A run's record before anything about it is read: built without I/O, so
+    the record of a crash can always be written."""
     return RunRecord(
         path=str(found.path),
         run_id=found.path.stem,
         address=found.address,
         format=found.format,
         rows=None,
-        unread_sidecars=_unread_sidecars(found.path),
+        unread_sidecars=[],
         status=Status.MEASURED,
     )
 
@@ -1952,16 +1983,19 @@ def measure(found: Found, *, max_rows: int, max_bytes: int, stack: Stack) -> Run
     A step's or a read's exception is recorded as a crash of its stage; ``main``
     records any other as the runner's."""
     base = _base(found)
-    if found.path.stat().st_size > max_bytes:
-        return replace(base, status=Status.SKIPPED_MAX_BYTES)
-    try:
+    try:  # THE READ: its sidecars, its size, its rows, and every body parsed
+        base = replace(base, unread_sidecars=_unread_sidecars(found.path))
+        if found.path.stat().st_size > max_bytes:
+            return replace(base, status=Status.SKIPPED_MAX_BYTES)
         base = replace(base, rows=_count_rows(found.path))
         if base.rows is not None and base.rows > max_rows:
             return replace(base, status=Status.SKIPPED_MAX_ROWS)
         rows = _read_rows(found.path)
-    except (sqlite3.Error, MemoryError) as exc:  # a corrupt log, or too big a one
+        env = _envelopes(rows)
+    except (OSError, sqlite3.Error, MemoryError, ValueError) as exc:
+        # a file it may not read, a corrupt log, too big a one, a body not JSON
         return _crashed(base, Stage.READ, exc)
-    rows03 = rows
+    rows03, env03 = rows, env
     if found.format == V0_2_0_to_V0_3_0.FROM:
         try:
             rows03 = transform_checked(V0_2_0_to_V0_3_0(), rows)
@@ -1969,17 +2003,14 @@ def measure(found: Found, *, max_rows: int, max_bytes: int, stack: Stack) -> Run
             return _refused(base, StepName.FROM_0_2_0, exc)
         except Exception as exc:
             return _crashed(base, Stage.FROM_0_2_0, exc)
-    del rows
+        env03 = _envelopes(rows03)  # the step's own bodies, each JSON
+    del rows, env
     try:
         base = replace(base, live_by_0_3_0=step04.V0_3_0_to_V0_4_0().is_live(rows03))
     except MigrationError:
         pass  # a claim with no handle: is_live cannot tell
     except Exception as exc:
         return _crashed(base, Stage.OLD_READS, exc)
-    try:
-        env03 = _envelopes(rows03)
-    except ValueError as exc:  # a body that is not JSON
-        return _crashed(base, Stage.READ, exc)
     try:
         passes = step04.run_passes(rows03)
         rows04 = _rows_0_4_0(passes)
@@ -2271,7 +2302,7 @@ def _parser() -> argparse.ArgumentParser:
         "--max-bytes",
         required=True,
         type=int,
-        help="skip, and count, a log file larger than this, without opening it",
+        help="skip, and count, a log file larger than this, without reading its rows",
     )
     return p
 
