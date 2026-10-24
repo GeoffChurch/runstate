@@ -46,7 +46,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Protocol, TypeGuard, TypeVar
+from typing import Any, NamedTuple, Protocol, TypeGuard, TypeVar
 
 from .channel import Channel, Envelope
 from .observables import MalformedRecordError, verdict_parse
@@ -571,7 +571,9 @@ def verdict(ch: Channel) -> RunResult04 | None:
     claim still ends it, and counts as a ``lost``: it says only that the claim
     ended. No more of its body is read. Its seq is in ``malformed``, and so is
     an unreadable one in the claim's window naming no claim, which may have
-    been the claim's own; one naming another claim is that claim's.
+    been the claim's own; one naming another claim is that claim's. While the
+    claim is held, though, the verdict is ``None`` and that nameless junk is
+    reported nowhere; layer 2's held status may carry it.
 
     The fold reads only the claim's window (``_window``): an older claim's
     records, a displaced worker's included, say nothing of the newest claim's
@@ -579,6 +581,11 @@ def verdict(ch: Channel) -> RunResult04 | None:
     readable exit of the claim raises ``MalformedRecordError``, as the head fold
     does: §2 allows one per claim. A ``supervisor.terminated`` ends nothing for
     a claimed run.
+
+    The claim's ``started`` body, its commits and rewinds, and the exit's
+    ``parent`` are not read here: they are the head fold's checks (§5,
+    "Well-formedness"), so ``Tier.EXIT`` at a node does not mean the head fold
+    accepts the run.
 
     A run nothing claimed at or below W takes its launch's ``terminated``
     (``Tier.TERMINATED``), as 0.3.0's null-worker startup crash does: the newest
@@ -931,9 +938,16 @@ def _readable(cls: type[_T], e: Envelope) -> _T | None:
         return None
 
 
+class _Exit(NamedTuple):
+    """A claim's readable exit: its record, and its parsed body."""
+
+    env: Envelope
+    stop: _Stopped
+
+
 def _claim_end(ch: Channel, claim: Envelope, w: int) -> RunResult04 | None:
     """How ``claim`` ended, from the records in its window (``verdict``)."""
-    exit_: tuple[Envelope, _Stopped] | None = None
+    exit_: _Exit | None = None
     reports: list[DeathReport] = []
     ended_unread = False  # an unreadable record naming the claim ended it
     malformed: list[int] = []
@@ -953,21 +967,20 @@ def _claim_end(ch: Channel, claim: Envelope, w: int) -> RunResult04 | None:
             raise MalformedRecordError(
                 e.seq,
                 e.topic,
-                f"claim {claim.seq} exited at seq {exit_[0].seq}: "
+                f"claim {claim.seq} exited at seq {exit_.env.seq}: "
                 "a claim has at most one exit",
             )
         else:
-            exit_ = (e, body)
+            exit_ = _Exit(e, body)
     if exit_ is not None:
-        node, stop = exit_
         return RunResult04(
-            outcomes=frozenset({_self_report(stop)}),
+            outcomes=frozenset({_self_report(exit_.stop)}),
             reports=(),
-            node=node.seq,
+            node=exit_.env.seq,
             claim_seq=claim.seq,
             malformed=tuple(malformed),
             tier=Tier.EXIT,
-            error=stop.error,
+            error=exit_.stop.error,
         )
     outcomes = {r.outcome for r in reports}
     if ended_unread:
