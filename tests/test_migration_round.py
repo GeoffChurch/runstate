@@ -30,6 +30,7 @@ from test_migration_v0_3_0_to_v0_4_0 import (  # noqa: E402
     BACKSTOP,
     DEAD,
     BACKSTOP_AT_5,
+    BEATEN_AFTER,
     GOLDEN,
     NO_END,
     _beat,
@@ -585,6 +586,27 @@ def test_a_value_moved_off_the_lineage_reads_unattributed_not_revisited(
     monkeypatch.setattr(mr, "_rows_0_4_0", moved)
     runs, _ = _run(tmp_path, {"beyond": BEYOND})
     assert _cells(runs["beyond"])[("loss", 2)] == {P3.UNATTRIBUTED}
+
+
+def test_a_new_read_that_raises_is_recorded_and_the_also_check_names_it(
+    tmp_path, monkeypatch
+):
+    """The runner's detectors, tested on ground truth: this plants a step bug
+    that once shipped, the placeholder rule for lone stops, which read every
+    lone stop as its claim's exit. On a stop its claim beats after, the beat is
+    then a commit the exit's parent names: the head fold raises, P3 is not
+    compared, and the also check names the parent after its child."""
+    import runstate.migrations.v0_3_0_to_v0_4_0 as step
+
+    monkeypatch.setattr(
+        step, "_lone_stop_rule", lambda stop, *, beaten_after: step._Exit(stop)
+    )
+    runs, summary = _run(tmp_path, {"placeholder": BEATEN_AFTER})
+    x = runs["placeholder"]
+    assert x["status"] == "measured"
+    assert "MalformedRecordError" in x["p3"]["not_compared"]
+    assert x["also"][mr.Also.PARENT_AT_OR_AFTER] == 1
+    assert summary["p3"]["runs_not_compared"] == {"the new reads raise": 1}
 
 
 # ----- P1 and P2 ------------------------------------------------------------------------
