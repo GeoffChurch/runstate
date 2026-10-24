@@ -406,19 +406,34 @@ AFTER_THE_EXIT = _log(
     (3, stopped(1, 2, [])),
     (4, commit(1, 2, [])),
 )
+
+
+def nameless(r):
+    """``r`` with no ``claim_seq``: a record no fold can attribute."""
+    return r._replace(body={k: v for k, v in r.body.items() if k != "claim_seq"})
+
+
 NAMES_NO_CLAIM = _log(
     "a commit naming no claim",
     (1, started(None)),
     (2, commit(1, None, [])),
-    (
-        3,
-        Rec(
-            "lifecycle.commit",
-            {k: v for k, v in commit(1, 2, []).body.items() if k != "claim_seq"},
-            None,
-            None,
-        ),
-    ),
+    (3, nameless(commit(1, 2, []))),
+)
+DISPLACED_NAMELESS = _log(
+    "a displaced worker's nameless commit",
+    (1, started(None)),  # A
+    (2, commit(1, None, [])),
+    (3, commit(1, 2, [])),
+    (4, started(3)),  # B
+    (5, nameless(commit(1, 3, []))),  # A's, still running
+    (6, commit(4, 3, [])),  # B's own
+)
+OWN_NAMELESS = _log(
+    "the claim's own nameless commit, then its next",
+    (1, started(None)),
+    (2, commit(1, None, [])),
+    (3, nameless(commit(1, 2, []))),
+    (4, commit(1, 3, [])),  # its parent is not the claim's position, 2
 )
 ANOTHER_CLAIMS_JUNK = _log(
     "another claim's unreadable commit",
@@ -435,6 +450,8 @@ UNREADABLE = {
     "a malformed value body, last": {2},
     "an unreadable exit": {3},
     "a commit naming no claim": {3},
+    "a displaced worker's nameless commit": {5},
+    "the claim's own nameless commit, then its next": {3},
     "another claim's unreadable commit": {5},
     "an unreadable claim": {1},
 }
@@ -539,6 +556,8 @@ class _LateW(MemoryChannel):
     [
         (7, Head(7, False, 7)),  # B's claim landed above W: A's exit is the head
         (10, Head(10, False, 10)),  # B's rewind landed above W
+        (8, Head(7, False, 8)),  # B's claim is the last record at W
+        (1, Head(None, False, 1)),  # so is A's, a fresh start
         (0, Head(None, False, 0)),
     ],
 )
@@ -950,13 +969,11 @@ def test_an_unreadable_exit_is_absent_for_the_head():
     [
         (TWO_EXITS, 4),
         (AFTER_THE_EXIT, 4),
-        (NAMES_NO_CLAIM, 3),
         (UNREADABLE_CLAIM, 1),
     ],
 )
 def test_the_head_fold_refuses_to_guess(rows, bad):
-    """The exit is its claim's last node, and there is at most one per claim; a
-    position-bearing record that names no claim may be the newest claim's; an
+    """The exit is its claim's last node, and there is at most one per claim; an
     unreadable claim states no resume_from."""
     with pytest.raises(MalformedRecordError) as exc:
         head(rows)
@@ -965,6 +982,21 @@ def test_the_head_fold_refuses_to_guess(rows, bad):
 
 def test_another_claims_unreadable_record_does_not_poison_the_newest_claim():
     assert head(ANOTHER_CLAIMS_JUNK) == Head(3, False, 5)
+
+
+def test_a_record_naming_no_claim_is_skipped_as_no_claims():
+    """Raising on it would let a displaced worker's junk in the window make every
+    read of the newest claim raise, until a newer claim."""
+    assert head(NAMES_NO_CLAIM) == Head(2, False, 3)
+    assert head(DISPLACED_NAMELESS) == Head(6, False, 6)
+    assert lineage(channel(DISPLACED_NAMELESS), head=LatestClaimHead()) == [2, 3, 6]
+
+
+def test_the_claims_own_nameless_commit_is_caught_by_its_next_nodes_parent():
+    with pytest.raises(MalformedRecordError) as exc:
+        head(OWN_NAMELESS)
+    assert exc.value.seq == 4
+    assert "not its claim's position 2" in exc.value.detail
 
 
 # ----- the migration's goldens, read as the corpus runner will -----------------------
@@ -987,19 +1019,28 @@ def _golden_ids():
 
 @pytest.mark.parametrize("rid", _golden_ids())
 def test_every_goldens_head_lineage_and_series_read(rid):
+    """At the newest claim's head and at every node: the lineage, the
+    ``Commits()`` count and every name's series and count read, consistently."""
     ch = _golden(rid)
-    h = LatestClaimHead().resolve(ch)
-    nodes = lineage(ch, head=h)
     names = {e.name for e in ch.read(topics=["value"])}
-    for name in names:
-        elements = series(ch, name, head=h)
-        assert [e.node for e in elements] == sorted(
-            (e.node for e in elements), key=nodes.index
-        )
-        assert prefix_len(ch, name, head=h) == len(elements)
-    assert prefix_len(ch, Commits(), head=h) == sum(
-        1 for e in ch.read(topics=["lifecycle.commit"]) if e.seq in nodes
-    )
+    commits = {e.seq for e in ch.read(topics=["lifecycle.commit"])}
+    nodes = commits | {e.seq for e in ch.read(topics=["lifecycle.stopped"])}
+    heads = [LatestClaimHead().resolve(ch), *(AtNode(n) for n in sorted(nodes))]
+    for h in heads:
+        chain = lineage(ch, head=h)
+        n = h.resolve(ch).node
+        assert chain == ([] if n is None else [*lineage(ch, head=AtNode(n))])
+        assert prefix_len(ch, Commits(), head=h) == len(commits.intersection(chain))
+        if n is not None:
+            assert chain[-1] == n
+            assert count(ch, Commits(), node=n) == prefix_len(ch, Commits(), head=h)
+        for name in names:
+            elements = series(ch, name, head=h)
+            assert [e.node for e in elements] == sorted(
+                (e.node for e in elements), key=chain.index
+            )
+            assert prefix_len(ch, name, head=h) == len(elements)
+            assert count(ch, name, node=n) == len(elements)
 
 
 def test_the_displaced_golden_reads_the_newest_claims_lineage():

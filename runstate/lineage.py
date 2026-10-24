@@ -415,11 +415,15 @@ def _point(ch: Channel, w: int, seq: int) -> Envelope | None:
 
 def _newest_claim(ch: Channel, w: int) -> Envelope | None:
     """The newest ``lifecycle.started`` at or below ``w``: the newest on the log,
-    unless one landed above ``w`` since it was read."""
+    unless one landed above ``w`` since it was read. ``latest`` takes no bound;
+    the fallback scan reads at most ``w`` claims, which holds every one at or
+    below ``w``, and the filter is the guard."""
+    if w == 0:
+        return None
     e = ch.latest(_Topic.STARTED)
     if e is None or e.seq <= w:
         return e
-    below = [c for c in ch.read(topics=[_Topic.STARTED]) if c.seq <= w]
+    below = [c for c in ch.read(topics=[_Topic.STARTED], limit=w) if c.seq <= w]
     return below[-1] if below else None
 
 
@@ -445,12 +449,17 @@ def _latest_claim_head(ch: Channel) -> Head:
     (§5): a ``resume_from`` below its record and naming an extendable node, and
     a node whose ``parent`` is the position before it.
 
-    Records naming another claim, a displaced worker's, are skipped. The claim's
-    readable exit is its head; an unreadable one is absent for the head (§5,
-    "The verdict"). The fold refuses to guess where §2 says "at most one": a
-    record of the claim after its exit, the exit being its last node, raises, a
-    second exit included; so does a commit or a rewind whose ``claim_seq`` names
-    no claim, since it may be this claim's."""
+    Records naming another claim or none, a displaced worker's, are skipped:
+    anything in the window that the fold cannot attribute to this claim is not
+    its. The claim's readable exit is its head; an unreadable one is absent for
+    the head (§5, "The verdict"). A nameless record that was in fact one of this
+    claim's commits is still caught, unless it is the claim's last: its next
+    node's ``parent`` names it, not the position. The fold refuses to guess
+    where §2 says "at most one": a record of the claim after its exit, the exit
+    being its last node, raises, a second exit included.
+
+    It reads nothing above ``w``: the window read is capped at ``w``'s distance
+    from the claim, and the ``e.seq > w`` break is the guard."""
     w = ch.last_seq()
     claim = _newest_claim(ch, w)
     if claim is None:
@@ -462,9 +471,17 @@ def _latest_claim_head(ch: Channel) -> Head:
     started = verdict_parse(_Started, claim)
     position = _resume_point(lookup, claim, started.resume_from)
     exit_: _At | None = None
-    for e in ch.read(
-        after=claim.seq, topics=[_Topic.COMMIT, _Topic.REWIND, _Topic.STOPPED]
-    ):
+    # Never limit=0: the backends disagree on it (memory returns one record).
+    window = (
+        ch.read(
+            after=claim.seq,
+            topics=[_Topic.COMMIT, _Topic.REWIND, _Topic.STOPPED],
+            limit=w - claim.seq,
+        )
+        if w > claim.seq
+        else []
+    )
+    for e in window:
         if e.seq > w:
             break
         body = _claims(e, claim.seq)
@@ -497,22 +514,17 @@ def _latest_claim_head(ch: Channel) -> Head:
 
 def _claims(e: Envelope, claim: int) -> _Commit | _Rewind | _Stopped | None:
     """``e``'s body when it is one of ``claim``'s position-bearing records, else
-    ``None``: another claim's, or an unreadable exit, which is no self-report and
-    so absent for the head (§5, "The verdict"). A commit or a rewind that names
-    no claim raises, since it may be ``claim``'s; one that names ``claim`` must be
-    readable, or the position is unknown."""
+    ``None``: another claim's, one that names no claim, or an unreadable exit,
+    which is no self-report and so absent for the head (§5, "The verdict"). A
+    commit or a rewind that names ``claim`` must be readable, or the position is
+    unknown."""
     if e.topic == _Topic.STOPPED:
         try:
             stop = verdict_parse(_Stopped, e)
         except MalformedRecordError:
             return None
         return stop if stop.claim_seq == claim else None
-    named = _named_claim(e)
-    if named is None:
-        raise MalformedRecordError(
-            e.seq, e.topic, "names no claim, so it may be the newest claim's"
-        )
-    if named != claim:
+    if _named_claim(e) != claim:
         return None
     if e.topic == _Topic.REWIND:
         return verdict_parse(_Rewind, e)
