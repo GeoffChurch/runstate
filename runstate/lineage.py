@@ -1,16 +1,19 @@
-"""The pure 0.4.0 reads: the head, the lineage, counts and series
-(docs/specs/commits-and-lineage.md §2, §5).
+"""The pure 0.4.0 reads: the head, the lineage, counts and series, the verdict
+and the stop fold (docs/specs/commits-and-lineage.md §2, §5).
 
 PROVISIONAL. Log format 0.4.0 is not this release's format yet: ``LOG_FORMAT``
 stays 0.3.0 until the last commit of layer 2 (log-formats.md §2, rule 3). So its
 vocabulary is not in ``vocabulary/``, whose ``Topic`` 0.3.0's schema test pins.
-This module parses 0.4.0 bodies (lifecycle-v0.6, value-v0.3) with its own private
-frozen types, and defines §4's ``Commits`` and ``NodeRef`` itself. At the format
-flip, layer 2 moves the types into ``vocabulary/`` and these reads beside the
-observer plane's. Until then the migration round's corpus runner reads migrated
-logs with them, as its measurement oracle. They read a log through the Channel
-surface alone (``last_seq``, ``read``, ``latest``), and never import the
-migration step, which carries its own copy of 0.3.0's semantics.
+This module parses 0.4.0 bodies (lifecycle-v0.6, supervisor-v0.5, value-v0.3)
+with its own private frozen types, and defines §4's ``Commits`` and ``NodeRef``
+and §5's ``RunResult`` (as ``RunResult04``, with its ``Outcome04`` and ``Tier``)
+itself. At the format flip, layer 2 moves the types into ``vocabulary/`` and
+``observables``, and these reads beside the observer plane's, replacing 0.3.0's
+``peek_terminal`` and ``undischarged_stops``. Until then the migration round's
+corpus runner reads migrated logs with them, as its measurement oracle. They
+read a log through the Channel surface alone (``last_seq``, ``read``,
+``latest``), and never import the migration step, which carries its own copy of
+0.3.0's semantics.
 
 THE MODEL (§2). A node is a ``lifecycle.commit`` or a worker's exit
 (``lifecycle.stopped``), named by its seq. It names the node it extends
@@ -30,6 +33,12 @@ the records at or below its head node in one bulk read, walks the lineage back
 to the root, and checks every node it walks (§5, "Well-formedness"). These are
 one-shot reads, never polled: the held, incremental folds come with layer 2.
 Nothing is cached between calls.
+
+THE VERDICT (§5). How the newest claim ended, from two viewpoints: its own
+readable exit, else the death reports naming it, whose outcomes are kept as a
+set. It reads only the claim's window, the records after it, since a record
+cannot speak for a claim it never saw. A run nothing claimed takes its launch's
+``supervisor.terminated``. THE STOP FOLD (§2, §5) is by name, for the whole log.
 """
 
 from __future__ import annotations
@@ -37,10 +46,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Protocol, TypeGuard
+from typing import Any, Protocol, TypeGuard, TypeVar
 
 from .channel import Channel, Envelope
 from .observables import MalformedRecordError, verdict_parse
+
+_T = TypeVar("_T")
 
 # ----- the 0.4.0 bodies, provisional ------------------------------------------------
 
@@ -53,6 +64,11 @@ class _Topic(StrEnum):
     COMMIT = "lifecycle.commit"
     REWIND = "lifecycle.rewind"
     STOPPED = "lifecycle.stopped"
+    NAK = "lifecycle.nak"
+    DIED = "supervisor.died"
+    TERMINATED = "supervisor.terminated"
+    STOP = "control.stop"
+    WITHDRAW = "control.withdraw"
     VALUE = "value"
 
 
@@ -263,6 +279,83 @@ class _Value:
         _time("t", self.t, nullable=True)
 
 
+class Outcome04(StrEnum):
+    """How a run ended (§5): the closed codomain of ``RunResult04.outcomes``.
+    0.3.0's ``Outcome`` gains ``lost`` and, for these record-based reads, loses
+    the Watcher's inferred ``presumed_dead``, which no record carries.
+
+    PROVISIONAL, like ``RunResult04``: layer 2's flip makes this
+    ``observables.Outcome``."""
+
+    COMPLETED = "completed"
+    PREEMPTED = "preempted"
+    ERRORED = "errored"
+    KILLED = "killed"
+    LOST = "lost"
+
+
+# A death report's outcomes (supervisor-v0.5): a death is never a completion.
+_DEATHS = frozenset(
+    {Outcome04.PREEMPTED, Outcome04.ERRORED, Outcome04.KILLED, Outcome04.LOST}
+)
+
+
+@dataclass(frozen=True)
+class _Died:
+    """supervisor-v0.5's ``Died``: a third party's report of how a claim ended,
+    with its evidence, which no fold parses."""
+
+    claim_seq: int
+    outcome: Outcome04
+    evidence: str
+    t: float
+
+    def __post_init__(self) -> None:
+        _seq("claim_seq", self.claim_seq, nullable=False)
+        if not (isinstance(self.outcome, str) and self.outcome in _DEATHS):
+            raise ValueError(f"outcome must be a death's, got {self.outcome!r}")
+        object.__setattr__(self, "outcome", Outcome04(self.outcome))
+        if not (isinstance(self.evidence, str) and self.evidence):
+            raise ValueError(
+                f"evidence must be a non-empty string, got {self.evidence!r}"
+            )
+        _time("t", self.t, nullable=False)
+
+
+class _Reap(StrEnum):
+    """supervisor-v0.5's ``Terminated.reason``."""
+
+    EXITED = "exited"
+    KILLED = "killed"
+
+
+@dataclass(frozen=True)
+class _Terminated:
+    """supervisor-v0.5's ``Terminated``: how a launch's process ended. An exit
+    carries its code and no signal, a kill its signal and no code."""
+
+    reason: _Reap
+    exit_code: int | None
+    signal: int | None
+    t: float
+
+    def __post_init__(self) -> None:
+        if not (isinstance(self.reason, str) and self.reason in set(_Reap)):
+            raise ValueError(f"reason must be exited or killed, got {self.reason!r}")
+        object.__setattr__(self, "reason", _Reap(self.reason))
+        code, signal = self.exit_code, self.signal
+        if self.reason == _Reap.EXITED:
+            if not (_is_int(code) and code >= 0 and signal is None):
+                raise ValueError(
+                    f"an exit carries a code >= 0 and no signal, got {code!r}, {signal!r}"
+                )
+        elif not (_is_int(signal) and signal >= 1 and code is None):
+            raise ValueError(
+                f"a kill carries a signal >= 1 and no code, got {signal!r}, {code!r}"
+            )
+        _time("t", self.t, nullable=False)
+
+
 # ----- the public types -------------------------------------------------------------
 
 
@@ -357,6 +450,72 @@ class Element:
     t: float | None
 
 
+class Tier(StrEnum):
+    """The viewpoint a verdict rests on (§5), one per record kind: ``EXIT``, the
+    claim's own exit; ``DIED``, the death reports and unreadable records that
+    ended it; ``TERMINATED``, an unclaimed run's launch. The Watcher's inference
+    tiers (``probed_dead``, ``heartbeat_stale``, ``episode_lock_released``) are
+    not a pure read's, and join at layer 2's flip, which makes this
+    ``observables.Tier``. PROVISIONAL."""
+
+    EXIT = "exit"
+    DIED = "died"
+    TERMINATED = "terminated"
+
+
+@dataclass(frozen=True)
+class DeathReport:
+    """A readable ``supervisor.died`` naming the claim (§5): its seq, outcome,
+    evidence, which no fold parses, and its writer's ``t``."""
+
+    seq: int
+    outcome: Outcome04
+    evidence: str
+    t: float
+
+
+@dataclass(frozen=True)
+class RunResult04:
+    """The verdict (§5), as 0.4.0's ``RunResult`` will be:
+
+    - ``outcomes``: never empty. One under an exit or a launch's ``terminated``;
+      under death reports, the set of their outcomes, a ``lost`` for each
+      unreadable record that ended the claim, less ``lost`` beside another;
+    - ``reports``: the readable death reports naming the claim, in seq order,
+      under ``DIED`` only;
+    - ``node``: the exit node's seq under ``EXIT``, else ``None``;
+    - ``claim_seq``: the claim the verdict is about, ``None`` for a run nothing
+      claimed;
+    - ``malformed``: the seqs of the unreadable records the verdict skipped, so
+      they are reported, not raised;
+    - ``tier``: the viewpoint;
+    - ``error``: the exit's error under ``EXIT``, else ``None``: under ``DIED``
+      the evidence is in ``reports``.
+
+    PROVISIONAL: layer 2's flip makes it ``observables.RunResult``, where the
+    Watcher stamps ``run_id``, which a pure read of a channel cannot know."""
+
+    outcomes: frozenset[Outcome04]
+    reports: tuple[DeathReport, ...]
+    node: int | None
+    claim_seq: int | None
+    malformed: tuple[int, ...]
+    tier: Tier
+    error: str | None
+
+    def __post_init__(self) -> None:
+        if not self.outcomes:
+            raise ValueError("a verdict's outcomes are never empty")
+        if (self.node is not None) != (self.tier == Tier.EXIT):
+            raise ValueError("a verdict names its node under an exit, and only there")
+        if (self.claim_seq is None) != (self.tier == Tier.TERMINATED):
+            raise ValueError("a verdict names its claim unless nothing claimed")
+        if self.reports and self.tier != Tier.DIED:
+            raise ValueError("a verdict carries reports under death reports only")
+        if self.error is not None and self.tier != Tier.EXIT:
+            raise ValueError("a verdict carries an error under an exit only")
+
+
 # ----- the reads (§5) ---------------------------------------------------------------
 
 
@@ -400,6 +559,76 @@ def last_element(ch: Channel, stream: str, *, head: HeadStrategy) -> Element | N
     return _element(walked, at, s)
 
 
+def verdict(ch: Channel) -> RunResult04 | None:
+    """How the run ended (§5), at a W taken first, or ``None`` while the newest
+    claim is held or nothing has ended.
+
+    The newest claim's readable exit, its self-report, is the verdict
+    (``Tier.EXIT``). Else the death reports naming the claim are
+    (``Tier.DIED``): their outcomes as a set, less ``lost`` beside another, so
+    the verdict does not depend on their order and only grows as reports
+    arrive. An unreadable ``stopped`` or ``died`` whose ``claim_seq`` names the
+    claim still ends it, and counts as a ``lost``: it says only that the claim
+    ended. No more of its body is read. Its seq is in ``malformed``, and so is
+    an unreadable one in the claim's window naming no claim, which may have
+    been the claim's own; one naming another claim is that claim's.
+
+    The fold reads only the claim's window (``_window``): an older claim's
+    records, a displaced worker's included, say nothing of the newest claim's
+    end, and a malformed record from a dead past cannot poison it. A second
+    readable exit of the claim raises ``MalformedRecordError``, as the head fold
+    does: §2 allows one per claim. A ``supervisor.terminated`` ends nothing for
+    a claimed run.
+
+    A run nothing claimed at or below W takes its launch's ``terminated``
+    (``Tier.TERMINATED``), as 0.3.0's null-worker startup crash does: the newest
+    at or below W, whichever launch it names, a backstop's ``backstop@<seq>``
+    that no ``launched`` names included. A signal reads ``killed``, an exit 0
+    ``completed`` and any other exit ``errored``, as in 0.3.0. As in 0.3.0 too,
+    the verdict rests on that one record, so an unreadable one, or one naming no
+    launch, raises ``MalformedRecordError``."""
+    w = ch.last_seq()
+    claim = _newest(ch, _Topic.STARTED, w)
+    if claim is None:
+        return _launch_end(ch, w)
+    return _claim_end(ch, claim, w)
+
+
+def undischarged_stops(ch: Channel) -> list[int]:
+    """The seqs of the pending ``control.stop`` records, ascending, at a W taken
+    first (§2, §5, "The answer fold").
+
+    By name, for the whole log: a stop is spent once an exit's ``honored``, a
+    ``control.withdraw`` or a ``lifecycle.nak`` names its ``request_id``,
+    wherever that sits, a displaced worker's exit included, since a stop is a
+    request about the process. A spent id stays spent, and a re-sent live one is
+    one stop, at its newest send. A death report spends nothing. An unreadable
+    exit's ``honored`` is not read (§5: no fold reads more of an unreadable
+    record's body), and a stop or an answer with no ``request_id`` names
+    nothing. One-shot: the question is the whole log, so it is never polled."""
+    w = ch.last_seq()
+    if w == 0:
+        return []
+    stops: dict[str, int] = {}
+    spent: set[str] = set()
+    for e in ch.read(
+        topics=[_Topic.STOP, _Topic.STOPPED, _Topic.WITHDRAW, _Topic.NAK], limit=w
+    ):
+        if e.seq > w:
+            break
+        if e.topic == _Topic.STOPPED:
+            exit_ = _readable(_Stopped, e)
+            if exit_ is not None:
+                spent.update(exit_.honored)
+        elif e.request_id is None:
+            continue
+        elif e.topic == _Topic.STOP:
+            stops[e.request_id] = e.seq
+        else:
+            spent.add(e.request_id)
+    return sorted(seq for r, seq in stops.items() if r not in spent)
+
+
 # ----- the head fold ----------------------------------------------------------------
 
 _Lookup = Callable[[int], Envelope | None]
@@ -413,18 +642,30 @@ def _point(ch: Channel, w: int, seq: int) -> Envelope | None:
     return got[0] if got and got[0].seq == seq else None
 
 
-def _newest_claim(ch: Channel, w: int) -> Envelope | None:
-    """The newest ``lifecycle.started`` at or below ``w``: the newest on the log,
+def _newest(ch: Channel, topic: _Topic, w: int) -> Envelope | None:
+    """The newest record on ``topic`` at or below ``w``: the newest on the log,
     unless one landed above ``w`` since it was read. ``latest`` takes no bound;
-    the fallback scan reads at most ``w`` claims, which holds every one at or
+    the fallback scan reads at most ``w`` records, which holds every one at or
     below ``w``, and the filter is the guard."""
     if w == 0:
         return None
-    e = ch.latest(_Topic.STARTED)
+    e = ch.latest(topic)
     if e is None or e.seq <= w:
         return e
-    below = [c for c in ch.read(topics=[_Topic.STARTED], limit=w) if c.seq <= w]
+    below = [c for c in ch.read(topics=[topic], limit=w) if c.seq <= w]
     return below[-1] if below else None
+
+
+def _window(ch: Channel, claim: Envelope, w: int, topics: list[str]) -> list[Envelope]:
+    """The records on ``topics`` after ``claim`` and at or below ``w``: the
+    claim's window, since a record cannot speak for a claim it never saw. The
+    read is capped at ``w``'s distance from the claim, and the filter is the
+    guard; it is never ``limit=0``, on which the backends disagree (memory
+    returns one record)."""
+    if w <= claim.seq:
+        return []
+    got = ch.read(after=claim.seq, topics=topics, limit=w - claim.seq)
+    return [e for e in got if e.seq <= w]
 
 
 def _named_claim(e: Envelope) -> int | None:
@@ -458,10 +699,9 @@ def _latest_claim_head(ch: Channel) -> Head:
     where §2 says "at most one": a record of the claim after its exit, the exit
     being its last node, raises, a second exit included.
 
-    It reads nothing above ``w``: the window read is capped at ``w``'s distance
-    from the claim, and the ``e.seq > w`` break is the guard."""
+    It reads nothing above ``w`` (``_window``)."""
     w = ch.last_seq()
-    claim = _newest_claim(ch, w)
+    claim = _newest(ch, _Topic.STARTED, w)
     if claim is None:
         return Head(None, False, w)
 
@@ -471,19 +711,7 @@ def _latest_claim_head(ch: Channel) -> Head:
     started = verdict_parse(_Started, claim)
     position = _resume_point(lookup, claim, started.resume_from)
     exit_: _At | None = None
-    # Never limit=0: the backends disagree on it (memory returns one record).
-    window = (
-        ch.read(
-            after=claim.seq,
-            topics=[_Topic.COMMIT, _Topic.REWIND, _Topic.STOPPED],
-            limit=w - claim.seq,
-        )
-        if w > claim.seq
-        else []
-    )
-    for e in window:
-        if e.seq > w:
-            break
+    for e in _window(ch, claim, w, [_Topic.COMMIT, _Topic.REWIND, _Topic.STOPPED]):
         body = _claims(e, claim.seq)
         if body is None:
             continue
@@ -519,11 +747,8 @@ def _claims(e: Envelope, claim: int) -> _Commit | _Rewind | _Stopped | None:
     commit or a rewind that names ``claim`` must be readable, or the position is
     unknown."""
     if e.topic == _Topic.STOPPED:
-        try:
-            stop = verdict_parse(_Stopped, e)
-        except MalformedRecordError:
-            return None
-        return stop if stop.claim_seq == claim else None
+        stop = _readable(_Stopped, e)
+        return stop if stop is not None and stop.claim_seq == claim else None
     if _named_claim(e) != claim:
         return None
     if e.topic == _Topic.REWIND:
@@ -692,3 +917,107 @@ def _element(walked: _Walked, at: _At, seq: int) -> Element:
     """The element at value ``seq``, its body read: a malformed one raises."""
     v = verdict_parse(_Value, walked.records[seq])
     return Element(node=at.env.seq, seq=seq, value=v.value, t=v.t)
+
+
+# ----- the verdict's folds ----------------------------------------------------------
+
+
+def _readable(cls: type[_T], e: Envelope) -> _T | None:
+    """``e``'s body parsed as ``cls``, or ``None`` when it is unreadable: a fold
+    that skips an unreadable record reads no more of it (§5)."""
+    try:
+        return verdict_parse(cls, e)
+    except MalformedRecordError:
+        return None
+
+
+def _claim_end(ch: Channel, claim: Envelope, w: int) -> RunResult04 | None:
+    """How ``claim`` ended, from the records in its window (``verdict``)."""
+    exit_: tuple[Envelope, _Stopped] | None = None
+    reports: list[DeathReport] = []
+    ended_unread = False  # an unreadable record naming the claim ended it
+    malformed: list[int] = []
+    for e in _window(ch, claim, w, [_Topic.STOPPED, _Topic.DIED]):
+        named = _named_claim(e)
+        if named is not None and named != claim.seq:
+            continue  # another claim's
+        body: _Stopped | _Died | None = (
+            _readable(_Stopped, e) if e.topic == _Topic.STOPPED else _readable(_Died, e)
+        )
+        if body is None:
+            malformed.append(e.seq)
+            ended_unread = ended_unread or named is not None
+        elif isinstance(body, _Died):
+            reports.append(DeathReport(e.seq, body.outcome, body.evidence, body.t))
+        elif exit_ is not None:
+            raise MalformedRecordError(
+                e.seq,
+                e.topic,
+                f"claim {claim.seq} exited at seq {exit_[0].seq}: "
+                "a claim has at most one exit",
+            )
+        else:
+            exit_ = (e, body)
+    if exit_ is not None:
+        node, stop = exit_
+        return RunResult04(
+            outcomes=frozenset({_self_report(stop)}),
+            reports=(),
+            node=node.seq,
+            claim_seq=claim.seq,
+            malformed=tuple(malformed),
+            tier=Tier.EXIT,
+            error=stop.error,
+        )
+    outcomes = {r.outcome for r in reports}
+    if ended_unread:
+        outcomes.add(Outcome04.LOST)
+    if not outcomes:
+        return None  # held
+    if len(outcomes) > 1:
+        outcomes.discard(Outcome04.LOST)  # it says only what every report says
+    return RunResult04(
+        outcomes=frozenset(outcomes),
+        reports=tuple(reports),
+        node=None,
+        claim_seq=claim.seq,
+        malformed=tuple(malformed),
+        tier=Tier.DIED,
+        error=None,
+    )
+
+
+def _self_report(stop: _Stopped) -> Outcome04:
+    """An exit's outcome: ``errored`` when it carries an error, else
+    ``completed`` or ``preempted``. A completed exit carries none."""
+    if stop.error is not None:
+        return Outcome04.ERRORED
+    return Outcome04.COMPLETED if stop.completed else Outcome04.PREEMPTED
+
+
+def _launch_end(ch: Channel, w: int) -> RunResult04 | None:
+    """An unclaimed run's verdict: its newest ``terminated`` at or below ``w``
+    (``verdict``)."""
+    e = _newest(ch, _Topic.TERMINATED, w)
+    if e is None:
+        return None
+    end = verdict_parse(_Terminated, e)
+    if not e.request_id:
+        raise MalformedRecordError(
+            e.seq, e.topic, "names no launch: supervisor-v0.5 requires its request_id"
+        )
+    if end.reason == _Reap.KILLED:
+        outcome = Outcome04.KILLED
+    elif end.exit_code == 0:
+        outcome = Outcome04.COMPLETED
+    else:
+        outcome = Outcome04.ERRORED
+    return RunResult04(
+        outcomes=frozenset({outcome}),
+        reports=(),
+        node=None,
+        claim_seq=None,
+        malformed=(),
+        tier=Tier.TERMINATED,
+        error=None,
+    )

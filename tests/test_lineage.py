@@ -1,9 +1,10 @@
-"""The pure 0.4.0 reads: the head, the lineage, counts and series
-(commits-and-lineage.md §2, §5; §10's "Nodes and commits", "Position",
-"Settledness" and "Reads", the pure subset).
+"""The pure 0.4.0 reads: the head, the lineage, counts and series, the verdict
+and the stop fold (commits-and-lineage.md §2, §5; §10's "Nodes and commits",
+"Position", "Settledness", "Reads", "Death reports" and "The verdict", the pure
+subset).
 
 Every log here is hand-written 0.4.0 (lifecycle-v0.6, subscription-v0.4,
-value-v0.3) in a MemoryChannel, and goes through ``_log``, so
+supervisor-v0.5, value-v0.3) in a MemoryChannel, and goes through ``_log``, so
 ``test_every_log_is_valid_0_4_0`` checks each against the 0.4.0 schemas: every
 row is valid except the rows ``UNREADABLE`` names, which a test makes
 unreadable on purpose. The migration step's goldens are real 0.4.0 logs too,
@@ -17,19 +18,27 @@ from runstate.channel.memory import MemoryChannel
 from runstate.lineage import (
     AtNode,
     Commits,
+    DeathReport,
     Element,
     Head,
     LatestClaimHead,
+    Outcome04,
+    RunResult04,
+    Tier,
     _Commit,
+    _Died,
     _Rewind,
     _Started,
     _Stopped,
+    _Terminated,
     _Value,
     count,
     last_element,
     lineage,
     prefix_len,
     series,
+    undischarged_stops,
+    verdict,
 )
 from runstate.observables import MalformedRecordError
 
@@ -41,14 +50,14 @@ class Rec(NamedTuple):
     request_id: str | None
 
 
-def started(resume_from, *, sources=(), t=1.0):
+def started(resume_from, *, sources=(), t=1.0, launch=None):
     body = {
         "handle": "local://n1/11",
         "t": t,
         "resume_from": resume_from,
         "sources": list(sources),
     }
-    return Rec("lifecycle.started", body, None, None)
+    return Rec("lifecycle.started", body, None, launch)
 
 
 def commit(claim, parent, values, *, fired=(), t=2.0):
@@ -69,12 +78,12 @@ def rewind(claim, resume_from, *, t=3.0):
     return Rec("lifecycle.rewind", body, None, None)
 
 
-def stopped(claim, parent, values, *, completed=False, error=None, t=4.0):
+def stopped(claim, parent, values, *, completed=False, error=None, honored=(), t=4.0):
     body = {
         "completed": completed,
         "error": error,
         "claim_seq": claim,
-        "honored": [],
+        "honored": list(honored),
         "parent": parent,
         "values": None if values is None else list(values),
         "fired": [],
@@ -95,6 +104,45 @@ def value(name, v, *, t=1.5):
 
 def subscribe(source, request_id):
     return Rec("control.subscribe", {}, source, request_id)
+
+
+def died(claim, outcome, *, evidence="slurm:TIMEOUT", t=5.0):
+    body = {"claim_seq": claim, "outcome": outcome, "evidence": evidence, "t": t}
+    return Rec("supervisor.died", body, None, None)
+
+
+def launched(launch, *, t=0.5):
+    body = {"handle": "local://n1/11", "status": "running", "t": t}
+    return Rec("supervisor.launched", body, None, launch)
+
+
+def exited(launch, code, *, t=6.0):
+    body = {"reason": "exited", "exit_code": code, "signal": None, "t": t}
+    return Rec("supervisor.terminated", body, None, launch)
+
+
+def killed(launch, signal, *, t=6.0):
+    body = {"reason": "killed", "exit_code": None, "signal": signal, "t": t}
+    return Rec("supervisor.terminated", body, None, launch)
+
+
+def stop(request_id):
+    return Rec("control.stop", {}, None, request_id)
+
+
+def withdraw(request_id, *, t=4.5):
+    return Rec("control.withdraw", {"t": t}, None, request_id)
+
+
+def nak(request_id):
+    return Rec(
+        "lifecycle.nak", {"reason": "unsupported", "message": "no"}, None, request_id
+    )
+
+
+def junk(r, **body):
+    """``r`` with its body changed, to make it unreadable."""
+    return r._replace(body={**r.body, **body})
 
 
 def append(ch, rows):
@@ -445,6 +493,194 @@ UNREADABLE_CLAIM = _log(
     (1, Rec("lifecycle.started", {"handle": "local://n1/11", "t": 1.0}, None, None)),
 )
 
+# --- the verdict (§5, "The verdict") ---------------------------------------------
+
+CLAIMED = [(1, started(None)), (2, commit(1, None, []))]
+HELD = _log("a held claim", *CLAIMED)
+
+EXITED = _log("a completed exit", *CLAIMED, (3, stopped(1, 2, [], completed=True)))
+PREEMPTED_EXIT = _log("a preempted exit", *CLAIMED, (3, stopped(1, 2, [])))
+ERRORED_EXIT = _log(
+    "an errored exit", *CLAIMED, (3, stopped(1, 2, None, error="CUDA out of memory"))
+)
+
+KILLED = _log("a death report", *CLAIMED, (3, died(1, "killed", evidence="signal 9")))
+EXIT_THEN_DEATH = _log(
+    "an exit, then a death report",
+    *CLAIMED,
+    (3, stopped(1, 2, [])),
+    (4, died(1, "errored", evidence="slurm: NODE_FAIL")),
+)
+DEATH_THEN_EXIT = _log(
+    "a death report, then an exit",
+    *CLAIMED,
+    (3, died(1, "lost", evidence="probe: pid gone")),
+    (4, stopped(1, 2, [], completed=True)),
+)
+SEVERAL_DEATHS = _log(
+    "several death reports",
+    *CLAIMED,
+    (3, died(1, "killed", evidence="signal 9")),
+    (4, died(1, "errored", evidence="slurm: NODE_FAIL")),
+    (5, died(1, "lost", evidence="probe: pid gone")),
+)
+SEVERAL_DEATHS_REVERSED = _log(
+    "several death reports, the other way round",
+    *CLAIMED,
+    (3, died(1, "lost", evidence="probe: pid gone")),
+    (4, died(1, "errored", evidence="slurm: NODE_FAIL")),
+    (5, died(1, "killed", evidence="signal 9")),
+)
+ONLY_LOST = _log(
+    "only lost reports",
+    *CLAIMED,
+    (3, died(1, "lost", evidence="exit 0")),
+    (4, died(1, "lost", evidence="probe: pid gone")),
+)
+LOST_BESIDE_PREEMPTED = _log(
+    "a lost report beside a preempted one",
+    *CLAIMED,
+    (3, died(1, "lost", evidence="exit 0")),
+    (4, died(1, "preempted", evidence="slurm: PREEMPTED")),
+)
+
+UNREADABLE_DEATH = _log(
+    "an unreadable death report",
+    *CLAIMED,
+    (3, junk(died(1, "killed"), outcome="completed")),
+)
+ONLY_UNREADABLE = _log(
+    "only unreadable records end the claim",
+    *UNREADABLE_EXIT,
+    (4, junk(died(1, "errored"), evidence="")),
+)
+A_REPORT_BESIDE_AN_UNREADABLE_ONE = _log(
+    "a death report beside an unreadable one",
+    *CLAIMED,
+    (3, junk(died(1, "killed"), t=-1.0)),
+    (4, died(1, "errored", evidence="slurm: NODE_FAIL")),
+)
+UNREADABLE_THEN_EXIT = _log(
+    "an unreadable exit, then a readable one",
+    *UNREADABLE_EXIT,
+    (4, stopped(1, 2, [], completed=True)),
+)
+NAMELESS_IN_THE_WINDOW = _log(
+    "records naming no claim in the claim's window",
+    *CLAIMED,
+    (3, nameless(stopped(1, 2, []))),
+    (4, nameless(died(1, "killed"))),
+    (5, stopped(1, 2, [], completed=True)),
+)
+NAMELESS_ONLY = _log(
+    "a record naming no claim, alone in the window",
+    *CLAIMED,
+    (3, nameless(died(1, "killed"))),
+)
+A_DEAD_PASTS_JUNK = _log(
+    "an older claim's unreadable exit, before the newest claim",
+    *CLAIMED,
+    (3, junk(stopped(1, 2, []), completed="yes")),
+    (4, started(2)),
+    (5, stopped(4, 2, [], completed=True)),
+)
+ANOTHER_CLAIMS_JUNK_IN_THE_WINDOW = _log(
+    "an older claim's unreadable records, after the newest claim",
+    *CLAIMED,
+    (3, started(2)),
+    (4, junk(stopped(1, 2, []), completed="yes")),
+    (5, junk(died(1, "killed"), outcome="completed")),
+    (6, stopped(3, 2, [], completed=True)),
+)
+AN_OLDER_CLAIMS_DEATH = _log(
+    "an older claim's death report, after the newest claim",
+    *CLAIMED,
+    (3, started(2)),
+    (4, died(1, "killed", evidence="signal 9")),
+)
+
+A_CLAIMS_LAUNCH_ENDED = _log(
+    "a claim's launch ended",
+    (1, launched("L1")),
+    (2, started(None, launch="L1")),
+    (3, commit(2, None, [])),
+    (4, exited("L1", 0)),
+)
+UNCLAIMED = _log(
+    "a launch that never claimed", (1, launched("L1")), (2, exited("L1", 1))
+)
+UNCLAIMED_CLEAN = _log(
+    "a launch that exited 0 and never claimed",
+    (1, launched("L1")),
+    (2, exited("L1", 0)),
+)
+UNCLAIMED_KILLED = _log(
+    "a launch killed before it claimed", (1, launched("L1")), (2, killed("L1", 9))
+)
+UNCLAIMED_TWICE = _log(
+    "two launches that never claimed, reaped out of launch order",
+    (1, launched("L1")),
+    (2, launched("L2")),
+    (3, killed("L2", 9)),
+    (4, exited("L1", 1)),
+)
+BACKSTOP_UNCLAIMED = _log(
+    "a backstop's terminated, which no launched names",
+    (1, stop("pre")),
+    (2, exited("backstop@2", 137)),
+    (3, withdraw("pre")),
+)
+UNREADABLE_TERMINATED = _log(
+    "an unreadable terminated, the newest",
+    (1, launched("L1")),
+    (2, exited("L1", 0)),
+    (3, junk(exited("L2", 1), signal=9)),
+)
+TERMINATED_NAMING_NO_LAUNCH = _log(
+    "a terminated naming no launch", (1, exited(None, 1))
+)
+
+# --- the stop fold (§5, "The answer fold") ------------------------------------------
+
+STOPS = _log(
+    "stops answered by name",
+    (1, started(None)),
+    (2, stop("honored")),
+    (3, stop("withdrawn")),
+    (4, stop("refused")),
+    (5, stop("pending")),
+    (6, withdraw("withdrawn")),
+    (7, nak("refused")),
+    (8, commit(1, None, [])),
+    (9, stopped(1, 8, [], honored=["honored"])),
+    (10, died(1, "killed", evidence="signal 9")),  # a death report spends nothing
+)
+RESENT = _log(
+    "stops re-sent",
+    (1, stop("again")),
+    (2, stop("spent")),
+    (3, withdraw("spent")),
+    (4, stop("again")),
+    (5, stop("spent")),  # a spent id stays spent
+)
+HONORED_BY_AN_UNREADABLE_EXIT = _log(
+    "a stop an unreadable exit names",
+    (1, started(None)),
+    (2, stop("s")),
+    (3, commit(1, None, [])),
+    (4, junk(stopped(1, 3, [], honored=["s"]), completed="yes")),
+)
+HONORED_BY_A_DISPLACED_EXIT = _log(
+    "a stop a displaced worker's exit honors",
+    *CLAIMED,
+    (3, started(2)),
+    (4, stop("s")),
+    (5, stopped(1, 2, [], honored=["s"])),
+)
+A_STOP_NAMING_NOTHING = _log(
+    "a stop with no request_id", (1, stop(None)), (2, nak(None))
+)
+
 UNREADABLE = {
     "a malformed value body": {2},
     "a malformed value body, last": {2},
@@ -454,6 +690,18 @@ UNREADABLE = {
     "the claim's own nameless commit, then its next": {3},
     "another claim's unreadable commit": {5},
     "an unreadable claim": {1},
+    "an unreadable death report": {3},
+    "only unreadable records end the claim": {3, 4},
+    "a death report beside an unreadable one": {3},
+    "an unreadable exit, then a readable one": {3},
+    "records naming no claim in the claim's window": {3, 4},
+    "a record naming no claim, alone in the window": {3},
+    "an older claim's unreadable exit, before the newest claim": {3},
+    "an older claim's unreadable records, after the newest claim": {4, 5},
+    "an unreadable terminated, the newest": {3},
+    "a terminated naming no launch": {1},
+    "a stop an unreadable exit names": {4},
+    "a stop with no request_id": {1},
 }
 
 
@@ -844,6 +1092,8 @@ _DEFINITIONS = {
     "lifecycle.commit": ("lifecycle-v0.6", "Commit", _Commit),
     "lifecycle.rewind": ("lifecycle-v0.6", "Rewind", _Rewind),
     "lifecycle.stopped": ("lifecycle-v0.6", "Stopped", _Stopped),
+    "supervisor.died": ("supervisor-v0.5", "Died", _Died),
+    "supervisor.terminated": ("supervisor-v0.5", "Terminated", _Terminated),
     "value": ("value-v0.3", "Value", _Value),
 }
 
@@ -889,6 +1139,27 @@ def _edges():
             ("fired", [""]),
             ("t", -1.0),
         ],
+        "supervisor.died": [
+            ("claim_seq", 0),
+            ("claim_seq", True),
+            ("claim_seq", None),
+            ("outcome", "completed"),
+            ("outcome", "presumed_dead"),
+            ("outcome", 3),
+            ("evidence", ""),
+            ("evidence", 5),
+            ("t", -1.0),
+            ("t", None),
+        ],
+        "supervisor.terminated": [
+            ("reason", "crashed"),
+            ("reason", None),
+            ("exit_code", -1),
+            ("exit_code", None),
+            ("exit_code", True),
+            ("signal", 9),
+            ("t", -1.0),
+        ],
         "value": [("t", -1.0), ("t", "x"), ("t", True), ("t", None)],
     }
     bodies = {
@@ -896,6 +1167,8 @@ def _edges():
         "lifecycle.commit": commit(1, 2, [3], fired=["q"]).body,
         "lifecycle.rewind": rewind(1, 2).body,
         "lifecycle.stopped": stopped(1, 2, [3]).body,
+        "supervisor.died": died(1, "killed").body,
+        "supervisor.terminated": exited("L", 0).body,
         "value": value("loss", 0.9).body,
     }
     for topic, changes in off.items():
@@ -908,6 +1181,12 @@ def _edges():
     yield "lifecycle.stopped", {**torn, "error": "boom"}
     yield "lifecycle.stopped", {**torn, "completed": True, "error": "boom"}
     yield "lifecycle.stopped", {**torn, "expired": ["q"]}
+    by_signal = killed("L", 9).body
+    yield "supervisor.terminated", by_signal
+    yield "supervisor.terminated", {**by_signal, "signal": 0}
+    yield "supervisor.terminated", {**by_signal, "signal": None}
+    yield "supervisor.terminated", {**by_signal, "signal": True}
+    yield "supervisor.terminated", {**by_signal, "exit_code": 0}
 
 
 def _bodies():
@@ -999,6 +1278,295 @@ def test_the_claims_own_nameless_commit_is_caught_by_its_next_nodes_parent():
     assert "not its claim's position 2" in exc.value.detail
 
 
+# ----- the verdict (§5, "The verdict") ----------------------------------------------
+
+C, P, E, K, L = (
+    Outcome04.COMPLETED,
+    Outcome04.PREEMPTED,
+    Outcome04.ERRORED,
+    Outcome04.KILLED,
+    Outcome04.LOST,
+)
+
+
+def by_exit(node, claim, outcome, *, error=None, malformed=()):
+    return RunResult04(
+        outcomes=frozenset({outcome}),
+        reports=(),
+        node=node,
+        claim_seq=claim,
+        malformed=malformed,
+        tier=Tier.EXIT,
+        error=error,
+    )
+
+
+def by_deaths(claim, outcomes, reports, *, malformed=()):
+    return RunResult04(
+        outcomes=frozenset(outcomes),
+        reports=tuple(reports),
+        node=None,
+        claim_seq=claim,
+        malformed=malformed,
+        tier=Tier.DIED,
+        error=None,
+    )
+
+
+def by_launch(outcome):
+    return RunResult04(
+        outcomes=frozenset({outcome}),
+        reports=(),
+        node=None,
+        claim_seq=None,
+        malformed=(),
+        tier=Tier.TERMINATED,
+        error=None,
+    )
+
+
+def verdict_of(rows):
+    return verdict(channel(rows))
+
+
+def test_an_empty_log_and_a_held_claim_have_no_verdict():
+    assert verdict_of([]) is None
+    assert verdict_of(HELD) is None
+
+
+@pytest.mark.parametrize(
+    "rows, expected",
+    [
+        (EXITED, by_exit(3, 1, C)),
+        (PREEMPTED_EXIT, by_exit(3, 1, P)),
+        (ERRORED_EXIT, by_exit(3, 1, E, error="CUDA out of memory")),
+    ],
+)
+def test_the_claims_exit_is_its_self_report(rows, expected):
+    assert verdict_of(rows) == expected
+
+
+def test_a_died_naming_the_claim_ends_it():
+    assert verdict_of(KILLED) == by_deaths(1, {K}, [DeathReport(3, K, "signal 9", 5.0)])
+
+
+@pytest.mark.parametrize(
+    "rows, expected",
+    [(EXIT_THEN_DEATH, by_exit(3, 1, P)), (DEATH_THEN_EXIT, by_exit(4, 1, C))],
+)
+def test_the_self_report_outranks_the_death_reports_whatever_their_order(
+    rows, expected
+):
+    """Its ``reports`` are empty: they are the death reports' viewpoint's."""
+    assert verdict_of(rows) == expected
+
+
+def test_several_death_reports_are_kept_as_a_set_whatever_their_order():
+    reports = [
+        DeathReport(3, K, "signal 9", 5.0),
+        DeathReport(4, E, "slurm: NODE_FAIL", 5.0),
+        DeathReport(5, L, "probe: pid gone", 5.0),
+    ]
+    assert verdict_of(SEVERAL_DEATHS) == by_deaths(1, {K, E}, reports)
+    other = verdict_of(SEVERAL_DEATHS_REVERSED)
+    assert other.outcomes == {K, E}
+    assert [(r.seq, r.outcome) for r in other.reports] == [(3, L), (4, E), (5, K)]
+
+
+def test_lost_is_dropped_beside_another_outcome_and_kept_alone():
+    assert verdict_of(LOST_BESIDE_PREEMPTED) == by_deaths(
+        1,
+        {P},
+        [
+            DeathReport(3, L, "exit 0", 5.0),
+            DeathReport(4, P, "slurm: PREEMPTED", 5.0),
+        ],
+    )
+    assert verdict_of(ONLY_LOST) == by_deaths(
+        1,
+        {L},
+        [DeathReport(3, L, "exit 0", 5.0), DeathReport(4, L, "probe: pid gone", 5.0)],
+    )
+
+
+@pytest.mark.parametrize(
+    "rows, expected",
+    [
+        (UNREADABLE_EXIT, by_deaths(1, {L}, [], malformed=(3,))),
+        (UNREADABLE_DEATH, by_deaths(1, {L}, [], malformed=(3,))),
+        (ONLY_UNREADABLE, by_deaths(1, {L}, [], malformed=(3, 4))),
+    ],
+)
+def test_an_unreadable_record_ends_its_claim_as_a_lost_named_in_malformed(
+    rows, expected
+):
+    """It says only that its claim ended, which is all ``lost`` says, and no
+    more of its body is read."""
+    assert verdict_of(rows) == expected
+
+
+def test_an_unreadable_report_is_skipped_and_its_lost_dropped_beside_another():
+    assert verdict_of(A_REPORT_BESIDE_AN_UNREADABLE_ONE) == by_deaths(
+        1, {E}, [DeathReport(4, E, "slurm: NODE_FAIL", 5.0)], malformed=(3,)
+    )
+
+
+def test_an_unreadable_exit_is_no_self_report():
+    assert verdict_of(UNREADABLE_THEN_EXIT) == by_exit(4, 1, C, malformed=(3,))
+
+
+def test_a_record_naming_no_claim_ends_nothing_and_is_named_in_malformed():
+    """It may have been the claim's own: the verdict reports it, as 0.3.0's
+    raised on it, but cannot let it end the claim."""
+    assert verdict_of(NAMELESS_IN_THE_WINDOW) == by_exit(5, 1, C, malformed=(3, 4))
+    assert verdict_of(NAMELESS_ONLY) is None  # the claim is held
+
+
+def test_the_verdict_reads_only_the_newest_claims_window():
+    """The claim is a Markov boundary: an older claim's records, readable or
+    not, before it or after it, say nothing of the newest claim's end."""
+    assert verdict_of(A_DEAD_PASTS_JUNK) == by_exit(5, 4, C)
+    assert verdict_of(ANOTHER_CLAIMS_JUNK_IN_THE_WINDOW) == by_exit(6, 3, C)
+    assert verdict_of(AN_OLDER_CLAIMS_DEATH) is None
+    assert verdict_of(DISPLACED) is None  # A's completed exit, after B's claim
+
+
+def test_two_readable_exits_of_one_claim_refuse_to_guess():
+    """At most one per claim, by the dying-breath CAS (§2): as the head fold."""
+    with pytest.raises(MalformedRecordError) as exc:
+        verdict_of(TWO_EXITS)
+    assert exc.value.seq == 4
+
+
+def test_terminated_ends_nothing_for_a_claimed_run():
+    assert verdict_of(A_CLAIMS_LAUNCH_ENDED) is None
+
+
+@pytest.mark.parametrize(
+    "rows, outcome",
+    [(UNCLAIMED, E), (UNCLAIMED_CLEAN, C), (UNCLAIMED_KILLED, K)],
+)
+def test_terminated_stays_the_verdict_of_an_unclaimed_run(rows, outcome):
+    """As today's null-worker startup crash: a signal is killed, an exit 0
+    completed, and any other exit errored."""
+    assert verdict_of(rows) == by_launch(outcome)
+
+
+def test_an_unclaimed_run_takes_the_newest_terminated():
+    """§5's "as today's": the newest ``terminated``, here not the newest
+    launch's."""
+    assert verdict_of(UNCLAIMED_TWICE) == by_launch(E)
+
+
+def test_a_backstops_terminated_gives_the_verdict_though_no_launched_names_it():
+    assert verdict_of(BACKSTOP_UNCLAIMED) == by_launch(E)
+
+
+@pytest.mark.parametrize(
+    "rows, bad", [(UNREADABLE_TERMINATED, 3), (TERMINATED_NAMING_NO_LAUNCH, 1)]
+)
+def test_an_unclaimed_runs_unreadable_terminated_raises(rows, bad):
+    """As today's: the unclaimed verdict rests on that one record."""
+    with pytest.raises(MalformedRecordError) as exc:
+        verdict_of(rows)
+    assert exc.value.seq == bad
+
+
+@pytest.mark.parametrize(
+    "rows, w, expected",
+    [
+        (KILLED, 2, None),  # the death report landed above W
+        (EXIT_THEN_DEATH, 3, by_exit(3, 1, P)),
+        (
+            SEVERAL_DEATHS,
+            4,
+            by_deaths(
+                1,
+                {K, E},
+                [
+                    DeathReport(3, K, "signal 9", 5.0),
+                    DeathReport(4, E, "slurm: NODE_FAIL", 5.0),
+                ],
+            ),
+        ),
+        # the newest claim landed above W: the older one's unreadable exit ends it
+        (A_DEAD_PASTS_JUNK, 3, by_deaths(1, {L}, [], malformed=(3,))),
+        (UNCLAIMED_TWICE, 3, by_launch(K)),  # L1's reap landed above W
+        (UNCLAIMED_TWICE, 2, None),
+        (UNCLAIMED_TWICE, 0, None),
+    ],
+)
+def test_the_verdict_reads_nothing_above_its_w(rows, w, expected):
+    assert verdict(_LateW(rows, w)) == expected
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"outcomes": frozenset()},  # never empty
+        {"node": None},  # an exit's node
+        {"claim_seq": None},  # an exit's claim
+        {"reports": (DeathReport(4, K, "signal 9", 5.0),)},  # only under died
+    ],
+)
+def test_an_exits_run_result_holds_its_viewpoints_shape(fields):
+    with pytest.raises(ValueError):
+        RunResult04(**{**by_exit(3, 1, P).__dict__, **fields})
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"node": 3},  # only under exit
+        {"error": "boom"},  # only under exit
+    ],
+)
+def test_a_death_reports_run_result_holds_its_viewpoints_shape(fields):
+    with pytest.raises(ValueError):
+        RunResult04(**{**by_deaths(1, {K}, []).__dict__, **fields})
+
+
+def test_a_launchs_run_result_names_no_claim():
+    with pytest.raises(ValueError):
+        RunResult04(**{**by_launch(K).__dict__, "claim_seq": 1})
+
+
+# ----- the stop fold (§5, "The answer fold") ----------------------------------------
+
+
+def test_a_stop_is_spent_by_an_exits_honored_a_withdrawal_or_a_nak():
+    """Not by a death report."""
+    assert undischarged_stops(channel(STOPS)) == [5]
+
+
+def test_a_stop_is_spent_by_name_and_a_spent_id_stays_spent():
+    """A re-sent live id is one stop, at its newest send."""
+    assert undischarged_stops(channel(RESENT)) == [4]
+
+
+def test_an_unreadable_exits_honored_is_not_read():
+    """No fold reads more of an unreadable record's body (§5)."""
+    assert undischarged_stops(channel(HONORED_BY_AN_UNREADABLE_EXIT)) == [2]
+
+
+def test_a_stop_honored_on_one_branch_is_not_rearmed_on_another():
+    """A stop is a request about the process: a displaced worker's exit that
+    honors it spends it (§2)."""
+    assert undischarged_stops(channel(HONORED_BY_A_DISPLACED_EXIT)) == []
+
+
+def test_a_stop_naming_nothing_is_never_pending():
+    assert undischarged_stops(channel(A_STOP_NAMING_NOTHING)) == []
+
+
+@pytest.mark.parametrize(
+    "w, expected",
+    [(0, []), (5, [2, 3, 4, 5]), (6, [2, 4, 5]), (8, [2, 5]), (10, [5])],
+)
+def test_the_stop_fold_reads_nothing_above_its_w(w, expected):
+    assert undischarged_stops(_LateW(STOPS, w)) == expected
+
+
 # ----- the migration's goldens, read as the corpus runner will -----------------------
 
 
@@ -1070,3 +1638,122 @@ def test_the_loading_crash_golden_reads_past_the_torn_retry():
     assert series(ch, "status", head=LatestClaimHead()) == []  # the retry's loading
     assert lineage(ch, head=AtNode(11)) == [3, 5, 7, 11]  # the retry's torn exit
     assert count(ch, Commits(), node=11) == 3
+
+
+def _golden_rows(rid):
+    from test_migration_v0_3_0_to_v0_4_0 import OUTPUT
+
+    return [
+        (seq, Rec(topic, body, name, request_id))
+        for seq, topic, name, request_id, body in OUTPUT[rid]
+    ]
+
+
+def _golden_verdicts():
+    """Every golden's verdict, by hand from its rows: the newest claim's
+    readable exit, else the death reports naming it; none of them leaves an
+    unclaimed run with a ``terminated``."""
+    from test_migration_v0_3_0_to_v0_4_0 import BACKSTOP
+
+    def backstopped(seq, claim, t):
+        return by_deaths(claim, {E}, [DeathReport(seq, E, BACKSTOP, t)])
+
+    return {
+        "displaced": by_exit(12, 5, C),
+        "exit": by_exit(4, 1, P),
+        "backstopped": backstopped(3, 1, 3.0),
+        "late_backstop": by_exit(3, 1, P),
+        "reclaimed": by_deaths(
+            1, {P}, [DeathReport(4, P, "reclaimed: slurm TIMEOUT", 1001.0)]
+        ),
+        "claimless": None,
+        "loading": by_exit(12, 8, C),
+        "skipped": by_exit(14, 1, C),
+        "post_loop": by_exit(8, 1, C),
+        "trailing": by_exit(8, 1, C),
+        "preempted": by_exit(6, 1, P),
+        "errored": by_exit(5, 1, E, error="CUDA out of memory"),
+        "resumed_past_a_loading_crash": by_exit(15, 12, C),
+        "resumed_beside_a_real_beat": by_exit(15, 12, C),
+        "after_stopped": by_exit(4, 1, C),
+        "above": by_exit(8, 4, C),
+        "loading_retry_released": by_exit(11, 8, C),
+        "loading_retry_unended": by_exit(11, 8, C),
+        "loading_retry_at_its_resume_step": by_exit(15, 12, C),
+        "beatless_full_step": by_exit(12, 9, C),
+        "displacement_parent": by_exit(16, 13, C),
+        "commitless": by_exit(13, 11, C),
+        "resumed_past_an_unrecorded_step": by_exit(12, 7, C),
+        "resumed_past_a_preempted_exit": by_exit(11, 8, C),
+        "loading_retry_beside_a_displaced_worker": by_exit(5, 4, E, error="OSError"),
+        "resumed_from_a_step_committed_after_the_claim": by_exit(7, 4, C),
+        "resumed_on_an_older_claims_step": by_exit(11, 8, C),
+        "doubly_displaced": None,
+        "resumed_from_a_tick_skipped_after_the_claim": by_exit(8, 3, C),
+        "resumed_from_a_tick_skipped_across_the_claim": by_exit(8, 5, C),
+        "watermarked": by_exit(8, 1, P),
+        "later_error": by_exit(3, 1, P),
+        "later_default": by_exit(4, 1, P),
+        "later_release": by_exit(4, 1, P),
+        "later_error_honored": by_exit(4, 1, P),
+        "claimless_error": None,
+        "claimless_release": None,
+        "claimless_backstop": None,  # the claim at 4 is held
+        "second_backstop": backstopped(3, 1, 3.0),
+        "backstop_id_taken": by_exit(4, 1, P),
+        "launched": by_exit(4, 2, C),
+        "attributed": by_deaths(2, {K}, [DeathReport(5, K, "signal 9", 4.0)]),
+        "wrapper": None,  # a wrapper's terminated ends nothing
+        "another_host": None,
+        "late_reap": by_exit(7, 5, C),
+        "two_claims_one_launch": by_deaths(4, {L}, [DeathReport(7, L, "exit 0", 5.0)]),
+        "after_an_attributed_death": None,
+    }
+
+
+def test_every_golden_has_a_verdict_by_hand():
+    assert set(_golden_verdicts()) == set(_golden_ids())
+
+
+@pytest.mark.parametrize("rid", _golden_ids())
+def test_every_goldens_verdict(rid):
+    assert verdict(_golden(rid)) == _golden_verdicts()[rid]
+
+
+def test_review_focus_4_a_backstop_then_a_default_body_reads_errored():
+    """One death, ``{errored}``: the default body after the backstop wrote no
+    second report and no exit."""
+    assert verdict(_golden("backstopped")).outcomes == {E}
+
+
+def test_a_claimless_backstops_terminated_is_the_verdict_until_a_claim():
+    """Owner ruling c′: a never-claimed run keeps its verdict through the
+    backstop's ``terminated``, under a minted launch id no ``launched`` names."""
+    rows = _golden_rows("claimless_backstop")
+    assert verdict(_LateW(rows, 3)) == by_launch(K)
+    assert verdict(_LateW(rows, 4)) is None
+
+
+@pytest.mark.parametrize("rid", _golden_ids())
+def test_every_goldens_stops_are_spent(rid):
+    assert undischarged_stops(_golden(rid)) == []
+
+
+def test_a_goldens_stop_is_pending_until_its_answer():
+    assert undischarged_stops(_LateW(_golden_rows("exit"), 3)) == [3]
+    assert undischarged_stops(_LateW(_golden_rows("backstopped"), 4)) == [4]
+
+
+@pytest.mark.parametrize("rid", _golden_ids())
+def test_every_goldens_verdict_and_stops_read_at_every_w(rid):
+    """At every prefix: no raise, the verdict is about the newest claim at or
+    below W, and a pending stop is a stop at or below W."""
+    rows = _golden_rows(rid)
+    for w in range(len(rows) + 1):
+        ch = _LateW(rows, w)
+        claims = [seq for seq, r in rows[:w] if r.topic == "lifecycle.started"]
+        v = verdict(ch)
+        if v is not None:
+            assert v.claim_seq == (claims[-1] if claims else None)
+        stops = {seq for seq, r in rows[:w] if r.topic == "control.stop"}
+        assert set(undischarged_stops(ch)) <= stops
