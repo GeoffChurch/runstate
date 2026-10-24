@@ -17,7 +17,8 @@ earlier passes' results to a frozen result, then writes the rows:
 1. **Claim attribution** (``attribute``): which claim each heartbeat and each
    value belongs to.
 2. **Classification** (``classify``): who wrote each ``lifecycle.stopped``, and
-   what it ends; then what each third party's becomes (``report``).
+   what it ends; then what each third party's becomes, and which claim a
+   launch's ``terminated`` reports dead (``report``).
 3. **Synthesis** (``synthesize``): M2 and M5 assign values to commits,
    synthesizing the commits M5 names, with M8's fields.
 4. **M1** (``link``): parents and ``resume_from``.
@@ -25,11 +26,7 @@ earlier passes' results to a frozen result, then writes the rows:
    renumbering.
 6. **M7 and M8** (``rename``): the renames and the synthetic fields.
 
-``write`` then writes each record's 0.4.0 row. Two things are not written yet,
-each named by a ``NotImplementedError`` (Task 8 of the implementation round):
-§7's attributed death report, for a claim 0.3.0 saw ended only by its launch's
-``launcher.terminated``, and what M9 refuses, a subscription, an unsubscribe, a
-stop with a step atom, and a value with no name or that samples a request.
+``write`` then writes each record's 0.4.0 row.
 
 The rules:
 
@@ -69,6 +66,24 @@ The rules:
   becomes nothing else leaves the log, its withdrawals taking its place.
   Every record a stop becomes carries its ``t``, or, for M10's body, which
   has none, its ``created_at``.
+- **Attributed death reports** (``report``; review §12, items 13 and 14). A
+  claim that 0.3.0 saw ended only by its launch's ``launcher.terminated`` gets
+  a ``supervisor.died`` from it, placed just after it, when the launch's
+  handle is the claim's: the same ``local://host/pid``, compared whole, since
+  two hosts can share a pid. The launch is the one the claim names, by the
+  launch id its ``started`` re-emitted, and its handle is its
+  ``launcher.launched``'s, found by that id anywhere in the log, since a child
+  can claim before its parent writes ``launched``. The report mirrors the live
+  reap (§3): a signal is ``killed``, a nonzero exit code ``errored`` and an exit
+  0 ``lost``, with ``signal s`` or ``exit n`` as the evidence and the
+  ``terminated``'s ``t``.
+
+  Only a claim no ``stopped`` names can get one, and only the newest claim
+  naming its launch, since §3's live launcher reports only for that claim. An
+  older claim of the same launch stays as 0.3.0 left it, with no report; only
+  the latest claim enters the verdict. Only a ``terminated`` after the claim
+  ends it, since 0.3.0 read only the records after a claim. A launch whose
+  handle differs, a wrapper's or another host's, gets none.
 - **Lone stops** (``_lone_stop_rule``): the implementation round's census of
   who wrote them yields the rule. Until it lands, the placeholder reads every
   one as its claim's exit.
@@ -151,26 +166,39 @@ The rules:
   whose body 0.4.0 keeps is written with its body's stored text.
 - **M7** (``rename``): every seq-valued field the 0.4.0 schemas define is
   renumbered to name the record it named: ``claim_seq`` (on a heartbeat, a
-  commit, an exit, a third party's stop, which becomes a ``died``, and a
-  ``bound``), ``consumed_seq``, ``parent``, ``values`` and ``resume_from``. A
+  commit, an exit and a ``died``), ``consumed_seq``, ``parent``, ``values``
+  and ``resume_from``. A
   ``consumed_seq`` is a drain watermark, a read position: 0 names nothing and
   stays 0, and otherwise it names a record before its heartbeat that M6 never
   moves, so renaming it keeps the records it covers. Request ids are
   strings, so a ``stop@N`` stays as it is. Each 0.3.0 record keeps its
-  ``created_at``; a synthetic commit takes that of the record it is placed
-  after.
+  ``created_at``; a record the step adds takes that of the record it is
+  placed after.
 
 **Refused**, each naming the seq:
 
-- a ``lifecycle.started``, ``lifecycle.heartbeat``, ``lifecycle.bound`` or
-  ``value`` whose body is not format 0.3.0's (lifecycle-v0.5, value-v0.2): the
-  step writes 0.4.0 from the fields 0.3.0 pins, and such a body may lack them;
+- what M9 refuses:
+  - **a subscription's every record:** a ``control.subscribe``, a
+    ``control.unsubscribe``, a ``lifecycle.bound``, which binds a lease to a
+    claim, and a sample, a value bearing a ``request_id``. Refusing the
+    ``bound`` too keeps every lease out of the passes, whether or not its
+    subscribe is in the log;
+  - **a ``control.stop`` whose ``from`` holds a step atom,** at any depth,
+    which subscription-v0.4 removed;
+  - **an in-claim rewind:** a heartbeat at or below an integer step its claim
+    already beat, as two heartbeats of one step or a step below an earlier
+    one. A 0.4.0 writer records a rewind, and nothing in 0.3.0 says where one
+    resumed;
+  - **a value whose ``name`` is null or empty,** which value-v0.3 cannot hold;
+- a ``lifecycle.started``, ``lifecycle.heartbeat`` or ``value`` whose body is
+  not format 0.3.0's (lifecycle-v0.5, value-v0.2): the step writes 0.4.0 from
+  the fields 0.3.0 pins, and such a body may lack them;
 - a ``lifecycle.stopped`` whose body is neither 0.3.0's nor M10's
   ``{reason, honored, claim_seq}``: what it ends, and who wrote it, cannot be
   told;
-- a heartbeat, ``stopped`` or ``bound`` whose ``claim_seq`` names no claim
-  before it: no 0.3.0 writer wrote one, and renumbering would point it at
-  whatever record took that seq;
+- a heartbeat or ``stopped`` whose ``claim_seq`` names no claim before it: no
+  0.3.0 writer wrote one, and renumbering would point it at whatever record
+  took that seq;
 - a heartbeat whose nonzero ``consumed_seq`` names no record before it: no
   0.3.0 writer wrote one, and renumbering cannot carry it;
 - a heartbeat whose ``consumed_seq`` names a heartbeat with an integer step:
@@ -180,16 +208,22 @@ The rules:
   record would cover records it never covered, as a stop it had not drained,
   or precede the record it names. A watermark naming a value or any other
   record M6 never moves is read as it is;
-- a heartbeat at or below an integer step its claim already beat: an in-claim
-  rewind (M9), two heartbeats of one step or a step below an earlier one. A
-  0.4.0 writer records a rewind, and nothing in 0.3.0 says where one resumed;
 - an envelope field 0.4.0 pins null that 0.3.0 left open and that holds a
   value: a lifecycle record's or a stop's ``name``, a heartbeat's or a
   ``stopped``'s ``request_id``. No 0.3.0 reference writer set one, and the
   step cannot carry it;
 - a heartbeat whose ``consumed_seq`` names a third party's stop that becomes
   only its withdrawals: it leaves the log, so renaming cannot carry the
-  watermark.
+  watermark;
+- where an attributed death report reads a claim's launch:
+  - **a second ``terminated`` of its launch after the claim.** A process ends
+    once, and no reference launcher writes two: duplicates are a writer's bug,
+    and they may disagree;
+  - **a launch that not exactly one ``launched`` names.** Without one there is
+    no handle to attribute the death by, and writing no ``died`` would leave
+    the claim open forever in 0.4.0;
+  - **a ``launched`` or ``terminated`` it reads whose body is not
+    launcher-v0.4's.**
 
 **Known limits:**
 
@@ -326,9 +360,11 @@ class _Beat:
 
 @dataclass(frozen=True)
 class _Value:
-    """A value's body (value-v0.2). Its envelope ``name`` is the record's."""
+    """A value (value-v0.2): its envelope ``name``, which M9 holds to a name
+    value-v0.3 can hold, and its body."""
 
     seq: int
+    name: str
     value: Any
     step: int | None
     t: float | None
@@ -362,16 +398,6 @@ class _Malformed:
 
 
 _Stop = _Stopped | _Malformed
-
-
-@dataclass(frozen=True)
-class _Bound:
-    """A ``bound`` (lifecycle-v0.5): the lease its envelope ``request_id``
-    names, bound to the claim ``claim_seq`` names."""
-
-    seq: int
-    request_id: str | None
-    claim_seq: int
 
 
 # Each body the step reads, as its schema pins it: every key, and the test its
@@ -448,7 +474,17 @@ _MALFORMED: dict[str, _Test] = {
     "honored": _is_ids,
     "claim_seq": _nullable(_is_seq),
 }
-_BOUND: dict[str, _Test] = {"claim_seq": _is_seq}
+_LAUNCHED: dict[str, _Test] = {
+    "handle": _is_str,
+    "status": lambda v: v == "running",
+    "t": _is_time,
+}
+_TERMINATED: dict[str, _Test] = {  # with reason-coupled exit_code and signal
+    "reason": lambda v: v in ("exited", "killed"),
+    "exit_code": _nullable(_is_count),
+    "signal": _nullable(_is_seq),
+    "t": _is_time,
+}
 
 
 def _fits(body: _Body, shape: dict[str, _Test]) -> bool:
@@ -484,10 +520,20 @@ def _beat(r: _Record) -> _Beat:
     )
 
 
+def _refused(r: _Record, what: str) -> MigrationError:
+    """M9's refusal of a record: what 0.4.0 cannot hold, or holds otherwise."""
+    return MigrationError(f"the {r.topic} at seq {r.seq} {what}: M9 refuses it")
+
+
 def _value(r: _Record) -> _Value:
     if not _fits(r.body, _VALUE):
         raise _unreadable(r, "format 0.3.0's (value-v0.2)")
-    return _Value(r.seq, value=r.body["value"], step=r.body["step"], t=r.body["t"])
+    if r.request_id is not None:
+        raise _refused(r, f"samples the subscription {r.request_id!r}")
+    if r.name is None or r.name == "":
+        raise _refused(r, f"has the name {r.name!r}, which value-v0.3 cannot hold")
+    b = r.body
+    return _Value(r.seq, r.name, value=b["value"], step=b["step"], t=b["t"])
 
 
 def _stop(r: _Record) -> _Stop:
@@ -517,26 +563,34 @@ def _stop(r: _Record) -> _Stop:
     )
 
 
-def _bound(r: _Record) -> _Bound:
-    if not _fits(r.body, _BOUND):
-        raise _unreadable(r, "format 0.3.0's (lifecycle-v0.5)")
-    return _Bound(r.seq, request_id=r.request_id, claim_seq=r.body["claim_seq"])
+def _holds_a_step_atom(condition: object) -> bool:
+    """Whether a subscription-v0.3 condition holds the step atom ``{step: N}``,
+    which subscription-v0.4 removed, at any depth of its ``any`` and ``all``.
+    The step does not validate a stop's body, so it reads it as found."""
+    if not isinstance(condition, dict):
+        return False
+    return "step" in condition or any(
+        _holds_a_step_atom(c)
+        for k in ("any", "all")
+        if isinstance(condition.get(k), list)
+        for c in condition[k]
+    )
 
 
 @dataclass(frozen=True)
 class _Log:
     """One run's 0.3.0 records, read once at the boundary: every record, and
     the typed bodies of those the passes interpret, each in seq order. Every
-    ``claim_seq`` on ``beats``, ``stops`` and ``bounds`` names a claim before
-    its record, every nonzero ``consumed_seq`` names a record before its
-    heartbeat, and each claim's integer steps rise."""
+    ``claim_seq`` on ``beats`` and ``stops`` names a claim before its record,
+    every nonzero ``consumed_seq`` names a record before its heartbeat, and
+    each claim's integer steps rise. No record is a subscription's, and no
+    stop holds a step atom (M9)."""
 
     records: tuple[_Record, ...]
     claims: tuple[_Started, ...]
     beats: tuple[_Beat, ...]
     values: tuple[_Value, ...]
     stops: tuple[_Stop, ...]
-    bounds: tuple[_Bound, ...]
 
 
 # The envelope fields format 0.4.0 pins null on what these records become, which
@@ -550,7 +604,6 @@ _NAMELESS = frozenset(
         _Topic.HEARTBEAT,
         _Topic.STOPPED,
         _Topic.NAK,
-        _Topic.BOUND,
         _Topic.STOP,
     }
 )
@@ -633,13 +686,13 @@ def _not_a_rewind(seq: int, step: int, latest: _Stepped | None) -> None:
 
 def parse(rows: list[Row]) -> _Log:
     """One run's rows, in seq order, read as format 0.3.0 defines them. A
-    refusal names the first record, by seq, that the step cannot read."""
+    refusal names the first record, by seq, that the step cannot read or that
+    M9 refuses."""
     records: list[_Record] = []
     claims: list[_Started] = []
     beats: list[_Beat] = []
     values: list[_Value] = []
     stops: list[_Stop] = []
-    bounds: list[_Bound] = []
     before: set[int] = set()  # the claims so far
     seen: set[int] = set()  # the seqs so far
     commits: dict[int, int] = {}  # each integer-step heartbeat so far, its step
@@ -676,18 +729,13 @@ def parse(rows: list[Row]) -> _Log:
                 stop = _stop(r)
                 _names_a_claim_before_it(r.seq, _Topic.STOPPED, stop.claim_seq, before)
                 stops.append(stop)
-            case _Topic.BOUND:
-                bound = _bound(r)
-                _names_a_claim_before_it(r.seq, _Topic.BOUND, bound.claim_seq, before)
-                bounds.append(bound)
+            case _Topic.SUBSCRIBE | _Topic.UNSUBSCRIBE | _Topic.BOUND:
+                raise _refused(r, "is a subscription's record")
+            case _Topic.STOP if "from" in r.body and _holds_a_step_atom(r.body["from"]):
+                raise _refused(r, "holds a step atom, which subscription-v0.4 removed")
         seen.add(r.seq)
     return _Log(
-        tuple(records),
-        tuple(claims),
-        tuple(beats),
-        tuple(values),
-        tuple(stops),
-        tuple(bounds),
+        tuple(records), tuple(claims), tuple(beats), tuple(values), tuple(stops)
     )
 
 
@@ -839,8 +887,9 @@ class Outcome(StrEnum):
 
 @dataclass(frozen=True)
 class Death:
-    """A ``supervisor.died`` in its stop's place: the claim it names, by its
-    0.3.0 seq, how it ended, and the evidence."""
+    """A ``supervisor.died``: the claim it names, by its 0.3.0 seq, how it
+    ended, and the evidence. A third party's stop becomes one in its place,
+    and §7 attributes one from a launch's ``terminated``, just after it."""
 
     claim: int
     outcome: Outcome
@@ -894,12 +943,23 @@ class Report:
 
 
 @dataclass(frozen=True)
+class AttributedDeath:
+    """§7's attributed death report: the death a launch's ``terminated``
+    reports of its claim, and ``t``, the terminated's."""
+
+    death: Death
+    t: float
+
+
+@dataclass(frozen=True)
 class Reports:
     """Pass 2's third parties: every third party's ``stopped``, by its seq, in
-    seq order. A worker's exit and an unattributable stop are not among them:
-    each becomes its claim's exit node."""
+    seq order, and every attributed death report, by the seq of the
+    ``terminated`` it follows. A worker's exit and an unattributable stop are
+    not among them: each becomes its claim's exit node."""
 
     stops: Mapping[int, Report]
+    deaths: Mapping[int, AttributedDeath]
 
 
 def _fresh(base: str, taken: set[str]) -> str:
@@ -949,30 +1009,88 @@ def _how(stop: _Stopped) -> Exited | Killed:
     return Killed(-n) if n < 0 else Exited(n)
 
 
-def _not_yet(what: str) -> NotImplementedError:
-    """What the step cannot write yet, named. Task 8 of the implementation
-    round (docs/plans/2026-10-23-migration-round.md) writes it."""
-    return NotImplementedError(
-        f"the 0.3.0 -> 0.4.0 step does not write this run yet: {what}. What "
-        "remains is §7's attributed death reports and M9's refusals"
-    )
+def _handle(r: _Record) -> str:
+    """A launch's handle, from its ``launched`` (launcher-v0.4)."""
+    if not _fits(r.body, _LAUNCHED):
+        raise _unreadable(r, "launcher-v0.4's")
+    handle: str = r.body["handle"]
+    return handle
 
 
-def _none_ended_only_by_its_launch(log: _Log, classification: Classification) -> None:
-    """§7's attributed death report, not written yet: a claim that 0.3.0 saw
-    ended only by its launch's ``launcher.terminated``, one after it bearing the
-    launch id the claim re-emitted, while no ``stopped`` names it."""
-    deaths = [x for x in log.records if x.topic == _Topic.TERMINATED]
-    for c in log.claims:
-        if c.seq in classification.ends or c.launch_id is None:
-            continue
-        for d in deaths:
-            if d.seq > c.seq and d.request_id == c.launch_id:
-                raise _not_yet(
-                    f"the claim at seq {c.seq} was ended only by its launch's "
-                    f"{_Topic.TERMINATED} at seq {d.seq}, and its death report "
-                    "is attributed by the launch's handle"
-                )
+def _reaped(r: _Record) -> Exited | Killed:
+    """How a launch's process ended, from its ``terminated`` (launcher-v0.4):
+    ``exited`` carries an exit code and no signal, ``killed`` a signal and no
+    exit code."""
+    b = r.body
+    if _fits(b, _TERMINATED):
+        match b["reason"], b["exit_code"], b["signal"]:
+            case "exited", int() as code, None:
+                return Exited(code)
+            case "killed", None, int() as signal:
+                return Killed(signal)
+    raise _unreadable(r, "launcher-v0.4's")
+
+
+def _reported(how: Exited | Killed, claim: int) -> Death:
+    """The live reap's mapping (§3), with ``signal s`` or ``exit n`` as the
+    evidence: a signal is ``killed``, a nonzero exit code ``errored``, and an
+    exit 0 ``lost``. An exit 0 says only that the process is gone, which
+    reports only while the claim is held, as one nothing else ended is."""
+    match how:
+        case Killed(signal=signal):
+            return Death(claim, Outcome.KILLED, f"signal {signal}")
+        case Exited(code=0):
+            return Death(claim, Outcome.LOST, "exit 0")
+        case Exited(code=code):
+            return Death(claim, Outcome.ERRORED, f"exit {code}")
+        case _:
+            assert_never(how)
+
+
+def _attributed(
+    log: _Log, classification: Classification
+) -> dict[int, AttributedDeath]:
+    """§7's attributed death reports, by the seq of the ``terminated`` each
+    follows. The newest claim naming a launch, which no ``stopped`` names, gets
+    one from the launch's ``terminated`` after it when the launch's handle, its
+    ``launched``'s, found by its id anywhere in the log, is the claim's,
+    compared whole. Refused: a second ``terminated`` of the launch after the
+    claim, and a launch that not exactly one ``launched`` names."""
+    newest: dict[str, _Started] = {}
+    for c in log.claims:  # in claim order, so each launch keeps its newest
+        if c.launch_id is not None:
+            newest[c.launch_id] = c
+    launched: dict[str, list[_Record]] = {}
+    terminated: dict[str, list[_Record]] = {}
+    for x in log.records:
+        if x.request_id is not None and x.topic == _Topic.LAUNCHED:
+            launched.setdefault(x.request_id, []).append(x)
+        elif x.request_id is not None and x.topic == _Topic.TERMINATED:
+            terminated.setdefault(x.request_id, []).append(x)
+    deaths: dict[int, AttributedDeath] = {}
+    for launch, c in newest.items():
+        after = [x for x in terminated.get(launch, []) if x.seq > c.seq]
+        if c.seq in classification.ends or not after:
+            continue  # a stopped ended it, or its launch had not ended
+        if len(after) > 1:
+            raise MigrationError(
+                f"the {_Topic.TERMINATED} at seq {after[1].seq} is a second for "
+                f"launch {launch!r} after its claim at seq {c.seq}: a process "
+                "ends once, and no reference launcher writes two"
+            )
+        (reap,) = after
+        found = launched.get(launch, [])
+        if len(found) != 1:
+            raise MigrationError(
+                f"the {_Topic.TERMINATED} at seq {reap.seq} ends launch "
+                f"{launch!r}, which {len(found)} {_Topic.LAUNCHED} records name: "
+                "without exactly one there is no handle to attribute its death "
+                f"to the claim at seq {c.seq} by"
+            )
+        if _handle(found[0]) == c.handle:  # else a wrapper's, or another host's
+            death = _reported(_reaped(reap), c.seq)
+            deaths[reap.seq] = AttributedDeath(death, reap.body["t"])
+    return deaths
 
 
 def _drained_from_nothing(log: _Log, seqs: set[int]) -> None:
@@ -1009,8 +1127,8 @@ def report(log: _Log, classification: Classification) -> Reports:
       a claim.
 
     A claim that 0.3.0 saw ended only by its launch's ``launcher.terminated``
-    gets an attributed death report (§7), which this step does not write yet."""
-    _none_ended_only_by_its_launch(log, classification)
+    gets an attributed death report (§7; ``_attributed``)."""
+    deaths = _attributed(log, classification)
     ends = {end.stop.seq: end for end in classification.ends.values()}
     later = {x.stop.seq for x in classification.later}
     taken = {x.request_id for x in log.records if x.request_id is not None}
@@ -1038,7 +1156,7 @@ def report(log: _Log, classification: Classification) -> Reports:
     _drained_from_nothing(
         log, {seq for seq, x in stops.items() if isinstance(x.becomes, Dropped)}
     )
-    return Reports(stops)
+    return Reports(stops, deaths)
 
 
 # ----- pass 3: synthesis ----------------------------------------------------------
@@ -1515,7 +1633,16 @@ class Withdrawal:
     request_id: str
 
 
-Key = Input | Synthesized | Withdrawal
+@dataclass(frozen=True)
+class Attributed:
+    """A ``supervisor.died`` §7 attributes from a launch's ``terminated``, by
+    the terminated's 0.3.0 seq: one launch, one newest claim, so at most one
+    follows any terminated."""
+
+    terminated: int
+
+
+Key = Input | Synthesized | Withdrawal | Attributed
 """An output record before renumbering. A pass that adds records adds a
 variant for them, and places each through ``After``."""
 
@@ -1537,7 +1664,8 @@ class After:
 class Placement:
     """Pass 5: each commit's key, by pass 3's identity; where every record
     placed after another goes: every synthetic commit, every real commit that
-    moves (M6), and every withdrawal; and ``dropped``, the input records that
+    moves (M6), every withdrawal and every attributed death report; and
+    ``dropped``, the input records that
     leave the output: each third party's stop that becomes only its
     withdrawals, which take its place. Every other input record keeps its
     place."""
@@ -1548,13 +1676,15 @@ class Placement:
 
 
 def place(synthesis: Synthesis, linkage: Linkage, reports: Reports) -> Placement:
-    """M6, as the migration reads it, then the withdrawals. Each id a third
-    party's stop honored is withdrawn just after the stop, in ``honored``
-    order, whatever the stop becomes: in its place, a death or a terminated
-    replaces it, and a stop that becomes nothing else leaves the output, its
-    withdrawals taking its place. A stop never moves, and M6 never places a
-    commit after one, so each stop's withdrawals are the only records placed
-    after it.
+    """M6, as the migration reads it, then the withdrawals and the attributed
+    death reports. Each id a third party's stop honored is withdrawn just after
+    the stop, in ``honored`` order, whatever the stop becomes: in its place, a
+    death or a terminated replaces it, and a stop that becomes nothing else
+    leaves the output, its withdrawals taking its place. A stop never moves,
+    and M6 never places a commit after one, so each stop's withdrawals are the
+    only records placed after it. An attributed death report goes just after
+    its ``terminated``, the only record placed there, with its claim's seq as
+    its tie.
 
     M6: each commit goes just after the latest of
     the records it must follow: its last committed value, its parent, the record
@@ -1623,6 +1753,8 @@ def place(synthesis: Synthesis, linkage: Linkage, reports: Reports) -> Placement
             moves[Withdrawal(seq, request_id)] = After(Input(seq), (i,))
         if isinstance(x.becomes, Dropped):
             dropped.add(Input(seq))
+    for seq, d in reports.deaths.items():
+        moves[Attributed(seq)] = After(Input(seq), (d.death.claim,))
     return Placement(keys, moves, frozenset(dropped))
 
 
@@ -1700,8 +1832,9 @@ class ToExit:
 
 @dataclass(frozen=True)
 class ToDied:
-    """A third party's stop that becomes a death: the claim it names,
-    renumbered, and the stop's ``t``."""
+    """A death, a third party's stop's or one attributed from a launch's
+    ``terminated``: the claim it names, renumbered, and the ``t`` of the
+    record it comes from."""
 
     death: Death
     claim_seq: int
@@ -1727,28 +1860,17 @@ class ToWithdraw:
 
 
 @dataclass(frozen=True)
-class ToBound:
-    """A ``bound``: the claim its lease is bound to, renumbered."""
-
-    bound: _Bound
-    claim_seq: int
-
-
-@dataclass(frozen=True)
 class ToValue:
-    """A value, and its envelope's ``name`` and ``request_id``. It holds no
-    seq."""
+    """A value. It holds no seq."""
 
     value: _Value
-    name: str | None
-    request_id: str | None
 
 
 @dataclass(frozen=True)
 class NoSeqs:
     """A record whose body 0.4.0 keeps and which holds no seq: a
-    ``control.*``, ``launcher.*`` or ``nak`` record, or a topic 0.3.0 does not
-    define."""
+    ``control.stop``, a ``launcher.*`` record, a ``nak``, or a topic 0.3.0
+    does not define."""
 
     record: _Record
 
@@ -1761,7 +1883,6 @@ Remapped = (
     | ToDied
     | ToReap
     | ToWithdraw
-    | ToBound
     | ToValue
     | NoSeqs
 )
@@ -1790,14 +1911,15 @@ def rename(
 ) -> tuple[Out, ...]:
     """M7: every output record, in output order, with every seq-valued field
     the 0.4.0 schemas define renumbered to name the record it named:
-    ``claim_seq`` (on a heartbeat, a commit, an exit, a death and a
-    ``bound``), ``consumed_seq``, ``parent``, ``values`` and ``resume_from``.
-    A ``consumed_seq`` of 0 names nothing and stays 0. Request ids are strings,
+    ``claim_seq`` (on a heartbeat, a commit, an exit and a death),
+    ``consumed_seq``, ``parent``, ``values`` and ``resume_from``. A
+    ``consumed_seq`` of 0 names nothing and stays 0. Request ids are strings,
     so a ``stop@N`` stays as it is.
 
     An input record keeps its ``created_at``, a death or a terminated its
-    stop's; a record placed after another takes that of its anchor, a
-    withdrawal its stop's, whether the stop stays or leaves."""
+    stop's; a record placed after another takes that of its anchor: a
+    withdrawal its stop's, whether the stop stays or leaves, and an attributed
+    death its ``terminated``'s."""
 
     def new(seq: int) -> int:
         return numbering[Input(seq)]
@@ -1829,7 +1951,6 @@ def rename(
     claims = {c.seq: c for c in log.claims}
     beats = {b.seq: b for b in log.beats}
     values = {v.seq: v for v in log.values}
-    bounds = {b.seq: b for b in log.bounds}
     commits = {
         placement.commits[CommitRef(c.claim.started.seq, k.step)]: (
             CommitRef(c.claim.started.seq, k.step),
@@ -1865,11 +1986,8 @@ def rename(
                         raise AssertionError(f"the dropped stop {r.seq} is numbered")
                     case _:
                         assert_never(x.becomes)
-            case _Topic.BOUND:
-                bound = bounds[r.seq]
-                return ToBound(bound, new(bound.claim_seq))
             case _Topic.VALUE:
-                return ToValue(values[r.seq], r.name, r.request_id)
+                return ToValue(values[r.seq])
             case _:
                 return NoSeqs(r)
 
@@ -1883,6 +2001,9 @@ def rename(
                 record = commit(*commits[key])
             case Withdrawal(stop=stop, request_id=request_id):
                 record = ToWithdraw(request_id, reports.stops[stop].t)
+            case Attributed(terminated=terminated):
+                d = reports.deaths[terminated]
+                record = ToDied(d.death, new(d.death.claim), d.t)
             case _:
                 assert_never(key)
         if not isinstance(key, Input):  # its anchor is numbered before it, or dropped
@@ -1904,7 +2025,6 @@ class _Written(StrEnum):
     COMMIT = "lifecycle.commit"
     HEARTBEAT = "lifecycle.heartbeat"
     STOPPED = "lifecycle.stopped"
-    BOUND = "lifecycle.bound"
     WITHDRAW = "control.withdraw"
     LAUNCHED = "supervisor.launched"
     TERMINATED = "supervisor.terminated"
@@ -1914,20 +2034,6 @@ class _Written(StrEnum):
 
 def _dumps(body: _Body) -> str:
     return json.dumps(body, separators=(",", ":"))  # as the channels write a body
-
-
-def _holds_a_step_atom(condition: object) -> bool:
-    """Whether a subscription-v0.3 condition holds the step atom ``{step: N}``,
-    which subscription-v0.4 removed, at any depth of its ``any`` and ``all``.
-    The step does not validate a stop's body, so it reads it as found."""
-    if not isinstance(condition, dict):
-        return False
-    return "step" in condition or any(
-        _holds_a_step_atom(c)
-        for k in ("any", "all")
-        if isinstance(condition.get(k), list)
-        for c in condition[k]
-    )
 
 
 def _commit_t(origin: Real | Synthetic) -> float:
@@ -1946,10 +2052,6 @@ def _carried(o: Out, r: _Record) -> Row:
     and every other keeps its topic too."""
     topic = r.topic
     match r.topic:
-        case _Topic.SUBSCRIBE | _Topic.UNSUBSCRIBE:
-            raise _not_yet(f"the {r.topic} at seq {r.seq} is a subscription's")
-        case _Topic.STOP if "from" in r.body and _holds_a_step_atom(r.body["from"]):
-            raise _not_yet(f"the {r.topic} at seq {r.seq} holds a step atom")
         case _Topic.LAUNCHED:
             topic = _Written.LAUNCHED.value
         case _Topic.TERMINATED:
@@ -1962,9 +2064,9 @@ def write(o: Out) -> Row:
     present, null or ``[]`` where it does not apply. Every lifecycle record,
     death, terminated and withdrawal is written with ``name`` null; a value
     keeps its name. ``request_id`` is the launch id on a ``started``, the
-    lease's on a ``bound``, the minted launch id on a backstop's
-    ``terminated``, the stop's on a withdrawal, and null on every other record
-    the step writes in place of another or anew.
+    minted launch id on a backstop's ``terminated``, the stop's on a
+    withdrawal, and null on every other record the step writes in place of
+    another or anew.
 
     - ``started`` gains ``resume_from`` (M1) and ``sources: []``;
     - a commit, real or synthetic, carries its claim, watermark, parent and
@@ -2051,18 +2153,10 @@ def write(o: Out) -> Row:
             return row(_Written.TERMINATED, reap.launch_id, {**how, "t": t})
         case ToWithdraw(request_id=request_id, t=t):
             return row(_Written.WITHDRAW, request_id, {"t": t})
-        case ToBound(bound=b, claim_seq=claim):
-            return row(_Written.BOUND, b.request_id, {"claim_seq": claim})
-        case ToValue(value=v, name=name, request_id=request_id):
-            if name is None:
-                raise _not_yet(f"the {_Topic.VALUE} at seq {v.seq} has no name")
-            if request_id is not None:
-                raise _not_yet(
-                    f"the {_Topic.VALUE} at seq {v.seq} is a sample of {request_id!r}"
-                )
+        case ToValue(value=v):
             body = {"value": v.value, "t": v.t}
             return Row(
-                o.seq, _Written.VALUE.value, name, None, _dumps(body), o.created_at
+                o.seq, _Written.VALUE.value, v.name, None, _dumps(body), o.created_at
             )
         case NoSeqs(record=r):
             return _carried(o, r)
@@ -2116,9 +2210,8 @@ class V0_3_0_to_V0_4_0:
 
     def transform(self, rows: list[Row]) -> list[Row]:
         """The passes, in order, then the 0.4.0 rows, renumbered gapless from 1.
-        Pure and deterministic: every refusal raises before a row is returned.
-        A run holding what §7's attributed death reports or M9's refusals
-        decide raises ``NotImplementedError``, naming the record."""
+        Pure and deterministic: every refusal raises before a row is returned,
+        so the runner's dry run refuses a run before it seals it."""
         log = parse(rows)
         classification = classify(log)
         reports = report(log, classification)

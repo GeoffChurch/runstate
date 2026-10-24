@@ -12,15 +12,20 @@ no entry there fails. Every row is also validated against the 0.4.0 schemas."""
 
 import itertools
 import json
+import os
 import socket
 from typing import NamedTuple
 
 import pytest
 
-from runstate.formats import FORMATS
-from runstate.migrations import RENUMBERING_FROM, STEPS, MigrationError, Row
+from runstate import migrations
+from runstate.channel.sqlite import SqliteChannel
+from runstate.formats import FORMATS, DirectoryLayout
+from runstate.migrations import RENUMBERING_FROM, STEPS, MigrationError, Row, migrate
+from runstate.migrations.stores import SqliteStore
 from runstate.migrations.v0_3_0_to_v0_4_0 import (
     After,
+    Attributed,
     Classification,
     CommitRef,
     ExitNode,
@@ -34,7 +39,6 @@ from runstate.migrations.v0_3_0_to_v0_4_0 import (
     Resumed,
     Synthesized,
     Synthetic,
-    ToBound,
     ToCommit,
     ToDied,
     ToExit,
@@ -100,6 +104,14 @@ def _value(value, step, t):
 def _release(reason, honored, claim_seq):
     """The reclaim tool's malformed body (M10), as the 0.2.0 step named it."""
     return {"reason": reason, "honored": honored, "claim_seq": claim_seq}
+
+
+def _launched(handle, t):
+    return {"handle": handle, "status": "running", "t": t}
+
+
+def _terminated(reason, exit_code, signal, t):
+    return {"reason": reason, "exit_code": exit_code, "signal": signal, "t": t}
 
 
 def _dated(rows):
@@ -331,6 +343,75 @@ LAUNCHED = _dated(
             {"reason": "exited", "exit_code": 0, "signal": None, "t": 4.0},
             rid="L1",
         ),
+    ]
+)
+
+# Attributed death reports (§7): a claim that 0.3.0 saw ended only by its
+# launch's terminated.
+#
+# The launch's handle is the claim's, compared whole: a died from the
+# terminated, placed just after it, killed by the signal it names.
+ATTRIBUTED = _dated(
+    [
+        r(1, "launcher.launched", _launched("local://n1/11", 0.5), rid="L1"),
+        r(2, "lifecycle.started", _started("local://n1/11", 1.0), rid="L1"),
+        r(3, "lifecycle.heartbeat", _beat(0, 0, 2, 2.0)),
+        r(4, "launcher.terminated", _terminated("killed", None, 9, 4.0), rid="L1"),
+    ]
+)
+
+# A wrapper's launch (an sbatch, a shell): its handle is not the claim's, so its
+# exit says nothing of the worker, and no died is written.
+WRAPPER = _dated(
+    [
+        r(1, "launcher.launched", _launched("local://n1/100", 0.5), rid="L1"),
+        r(2, "lifecycle.started", _started("local://n1/101", 1.0), rid="L1"),
+        r(3, "lifecycle.heartbeat", _beat(0, 0, 2, 2.0)),
+        r(4, "launcher.terminated", _terminated("exited", 0, None, 4.0), rid="L1"),
+    ]
+)
+
+# The claim's pid on another host is another process: compared whole, no died.
+ANOTHER_HOST = _dated(
+    [
+        r(1, "launcher.launched", _launched("local://n2/11", 0.5), rid="L1"),
+        r(2, "lifecycle.started", _started("local://n1/11", 1.0), rid="L1"),
+        r(3, "lifecycle.heartbeat", _beat(0, 0, 2, 2.0)),
+        r(4, "launcher.terminated", _terminated("exited", 1, None, 4.0), rid="L1"),
+    ]
+)
+
+# A late reap after a relaunch. A's child claims before its parent writes
+# launched, which is found by its launch id wherever it is. A crashes; B is
+# launched, resumes from A's step 0 and exits; A's reap lands after B's exit. The
+# died names A, just after A's terminated, and errored, by its nonzero exit. B's
+# own exit ended B, so B's terminated attributes nothing.
+LATE_REAP = _dated(
+    [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0), rid="L1"),
+        r(2, "launcher.launched", _launched("local://n1/11", 1.5), rid="L1"),
+        r(3, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+        r(4, "launcher.launched", _launched("local://n1/12", 3.0), rid="L2"),
+        r(5, "lifecycle.started", _started("local://n1/12", 4.0), rid="L2"),
+        r(6, "lifecycle.heartbeat", _beat(1, 0, 5, 5.0)),
+        r(7, "lifecycle.stopped", _stopped(True, None, 1, 5, [], 6.0)),
+        r(8, "launcher.terminated", _terminated("exited", 1, None, 7.0), rid="L1"),
+        r(9, "launcher.terminated", _terminated("exited", 0, None, 8.0), rid="L2"),
+    ]
+)
+
+# One launch claimed twice (a target that ran two Workers), and nothing ended
+# either claim: only the newest claim naming the launch gets a died, as §3's
+# live launcher reports only for it, lost by the exit 0. The older claim stays
+# as 0.3.0 left it.
+TWO_CLAIMS_ONE_LAUNCH = _dated(
+    [
+        r(1, "launcher.launched", _launched("local://n1/11", 0.5), rid="L1"),
+        r(2, "lifecycle.started", _started("local://n1/11", 1.0), rid="L1"),
+        r(3, "lifecycle.heartbeat", _beat(0, 0, 2, 2.0)),
+        r(4, "lifecycle.started", _started("local://n1/11", 3.0), rid="L1"),
+        r(5, "lifecycle.heartbeat", _beat(1, 0, 4, 4.0)),
+        r(6, "launcher.terminated", _terminated("exited", 0, None, 5.0), rid="L1"),
     ]
 )
 
@@ -1017,6 +1098,11 @@ GOLDEN = {
     "second_backstop": SECOND_BACKSTOP,
     "backstop_id_taken": BACKSTOP_ID_TAKEN,
     "launched": LAUNCHED,
+    "attributed": ATTRIBUTED,
+    "wrapper": WRAPPER,
+    "another_host": ANOTHER_HOST,
+    "late_reap": LATE_REAP,
+    "two_claims_one_launch": TWO_CLAIMS_ONE_LAUNCH,
 }
 
 
@@ -1894,7 +1980,7 @@ def _layout(rows):
 def _short(key):
     """An output record as a test spells it: an input record by its 0.3.0
     seq, a synthetic commit by its (claim, old step), a withdrawal by the id it
-    withdraws."""
+    withdraws, an attributed death by the terminated it follows."""
     match key:
         case Input(seq):
             return seq
@@ -1902,6 +1988,8 @@ def _short(key):
             return tuple(ref)
         case Withdrawal(request_id=request_id):
             return f"withdraw {request_id}"
+        case Attributed(terminated=terminated):
+            return f"died after {terminated}"
 
 
 def _keys(rows):
@@ -1988,11 +2076,12 @@ def _m6_by_list(rows):
 
 @pytest.mark.parametrize("rid", list(GOLDEN))
 def test_m6_places_every_commit_as_a_list_written_apart_does(rid):
-    """The withdrawals and the stops they replace set apart: M6 places
-    commits only."""
+    """The withdrawals, the stops they replace and the attributed deaths set
+    apart: M6 places commits only."""
     rows = GOLDEN[rid]
     dropped = {k.seq for k in _layout(rows).placement.dropped}
-    assert [k for k in _keys(rows) if not str(k).startswith("withdraw")] == [
+    later = ("withdraw", "died after")
+    assert [k for k in _keys(rows) if not str(k).startswith(later)] == [
         x for x in _m6_by_list(rows) if x not in dropped
     ]
 
@@ -2000,8 +2089,8 @@ def test_m6_places_every_commit_as_a_list_written_apart_does(rid):
 @pytest.mark.parametrize("rid", list(GOLDEN))
 def test_the_renumbering_is_a_bijection_on_the_inputs_records(rid):
     """Every input record but a dropped stop, a real commit's heartbeat
-    included, has exactly one 0.4.0 seq, and the synthetic commits and the
-    withdrawals fill the rest, gapless from 1."""
+    included, has exactly one 0.4.0 seq, and the synthetic commits, the
+    withdrawals and the attributed deaths fill the rest, gapless from 1."""
     rows = GOLDEN[rid]
     lay = _layout(rows)
     synthetic = {
@@ -2014,13 +2103,14 @@ def test_the_renumbering_is_a_bijection_on_the_inputs_records(rid):
         for seq, x in lay.reports.stops.items()
         for i in x.stop.honored
     }
+    attributed = {Attributed(seq) for seq in lay.reports.deaths}
     kept = {Input(x.seq) for x in rows} - lay.placement.dropped
-    assert sorted(lay.numbering.values()) == list(
-        range(1, len(kept) + len(synthetic) + len(withdrawals) + 1)
-    )
+    added = len(synthetic) + len(withdrawals) + len(attributed)
+    assert sorted(lay.numbering.values()) == list(range(1, len(kept) + added + 1))
     assert {k for k in lay.numbering if isinstance(k, Input)} == kept
     assert {k.ref for k in lay.numbering if isinstance(k, Synthesized)} == synthetic
     assert {k for k in lay.numbering if isinstance(k, Withdrawal)} == withdrawals
+    assert {k for k in lay.numbering if isinstance(k, Attributed)} == attributed
     assert [(o.seq, o.key) for o in lay.outs] == sorted(
         ((n, k) for k, n in lay.numbering.items()), key=lambda x: x[0]
     )
@@ -2067,8 +2157,6 @@ def test_every_record_follows_what_it_names(rid):
                 assert o.record.parent is None or o.record.parent < o.seq
             case ToDied():
                 assert o.record.claim_seq < o.seq
-            case ToBound():
-                assert o.record.claim_seq < o.seq
 
 
 @pytest.mark.xfail(
@@ -2095,18 +2183,19 @@ def test_an_exit_the_placeholder_reads_before_the_workers_beat_has_no_later_pare
 
 def _expected(key, rows):
     """The kind of output record an input record becomes, by its topic, or a
-    synthetic commit."""
+    record a pass adds."""
     if isinstance(key, Synthesized):
         return ToCommit
     if isinstance(key, Withdrawal):
         return ToWithdraw
+    if isinstance(key, Attributed):
+        return ToDied
     x = rows[key.seq - 1]
     if x.topic == "lifecycle.heartbeat":
         return ToHeartbeat if json.loads(x.body)["step"] is None else ToCommit
     return {
         "lifecycle.started": ToStarted,
         "lifecycle.stopped": (ToExit, ToDied, ToReap),
-        "lifecycle.bound": ToBound,
         "value": ToValue,
     }.get(x.topic, NoSeqs)
 
@@ -2123,7 +2212,6 @@ def test_every_record_with_a_seq_valued_field_is_renamed(rid):
                 "lifecycle.started",
                 "lifecycle.heartbeat",
                 "lifecycle.stopped",
-                "lifecycle.bound",
                 "value",
             }
 
@@ -2175,8 +2263,6 @@ def test_review_focus_1_every_seq_valued_field_names_the_record_it_named(rid):
                 assert node(o.record.parent) == lay.linkage.exits[exit.stop.claim_seq]
             case ToDied(death=death):
                 assert claim(o.record.claim_seq) == death.claim
-            case ToBound(bound=bound):
-                assert claim(o.record.claim_seq) == bound.claim_seq
 
 
 @pytest.mark.parametrize("rid", list(GOLDEN))
@@ -2272,8 +2358,10 @@ def test_m6_places_at_most_one_record_after_any_record(rid):
     parent, which only its claim's next commit follows: M6's ties never
     decide, and only a later pass's can."""
     moves = _layout(GOLDEN[rid]).placement.moves
-    anchors = [at.anchor for k, at in moves.items() if not isinstance(k, Withdrawal)]
-    assert len(set(anchors)) == len(anchors)
+    commits = [
+        at.anchor for k, at in moves.items() if isinstance(k, Input | Synthesized)
+    ]
+    assert len(set(commits)) == len(commits)
 
 
 def test_a_stop_at_n_request_id_stays_as_it_is():
@@ -2293,26 +2381,6 @@ def test_a_stop_at_n_request_id_stays_as_it_is():
     stop, exit = lay.outs[1], lay.outs[4]
     assert (stop.seq, stop.record.record.request_id) == (2, "stop@3")
     assert exit.record.node.stop.honored == ("stop@3",)
-
-
-def test_a_bounds_claim_seq_is_renamed():
-    """A's skipped tick is synthesized before B's started, which moves to seq
-    6; the lease B bound names it there."""
-    rows = _dated(
-        [
-            r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
-            r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
-            r(3, "lifecycle.heartbeat", _beat(2, 0, 1, 3.0)),
-            r(4, "lifecycle.stopped", _stopped(True, None, 2, 1, [], 4.0)),
-            r(5, "lifecycle.started", _started("local://n1/12", 5.0)),
-            r(6, "lifecycle.bound", {"claim_seq": 5}, rid="lease"),
-        ]
-    )
-    lay = _layout(rows)
-    assert [_short(o.key) for o in lay.outs] == [1, 2, (1, 1), 3, 4, 5, 6]
-    bound = lay.outs[-1]
-    assert (bound.seq, bound.record.claim_seq) == (7, 6)
-    assert bound.record.bound.request_id == "lease"
 
 
 # ----- the boundary: what the step reads, and what it refuses ----------------------------
@@ -2388,15 +2456,12 @@ def test_a_stopped_of_any_other_shape_is_refused_by_seq(body):
         ("value", {"value": 1.0, "t": 1.0}),
         ("value", {**_value(1.0, 0, 1.0), "unit": "s"}),
         ("value", _value(1.0, "3", 1.0)),
-        ("lifecycle.bound", {}),
-        ("lifecycle.bound", {"claim_seq": 1, "t": 1.0}),
-        ("lifecycle.bound", {"claim_seq": True}),
     ],
 )
 def test_a_record_the_step_reads_must_be_0_3_0s(topic, body):
     rows = [
         r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
-        r(2, topic, body),
+        r(2, topic, body, name="loss" if topic == "value" else None),
     ]
     with pytest.raises(MigrationError, match=rf"{topic} at seq 2 "):
         parse(rows)
@@ -2408,11 +2473,15 @@ def test_a_record_the_step_reads_must_be_0_3_0s(topic, body):
         ("lifecycle.stopped", {"reason": "x"}),
         ("value", {"value": 1.0}),
         ("lifecycle.heartbeat", _beat(0, 0, 9, 1.0)),  # names no claim
+        ("value", _value(0.5, 0, 1.0)),  # M9: a null name
+        ("control.subscribe", {}),  # M9: a subscription
+        ("lifecycle.bound", {"claim_seq": 1}),  # M9: a subscription's binding
+        ("control.stop", {"from": {"step": 3}}),  # M9: a step atom
     ],
 )
 def test_a_refusal_names_the_first_record_the_step_cannot_read(first):
     """In seq order, whatever the topics: a malformed claim after it does not
-    pre-empt it."""
+    pre-empt it, and M9 refuses at the boundary too."""
     rows = [
         r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
         r(2, *first),
@@ -2447,18 +2516,6 @@ def test_a_stopped_must_name_a_claim_before_it(body):
         r(4, "lifecycle.started", _started("local://n2/22", 3.0)),
     ]
     with pytest.raises(MigrationError, match=r"stopped at seq 3 names claim"):
-        parse(rows)
-
-
-@pytest.mark.parametrize("claim", [2, 3, 4])
-def test_a_bound_must_name_a_claim_before_it(claim):
-    rows = [
-        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
-        r(2, "value", _value(0.1, 0, 1.0), name="loss"),
-        r(3, "lifecycle.bound", {"claim_seq": claim}, rid="lease"),
-        r(4, "lifecycle.started", _started("local://n2/22", 3.0)),
-    ]
-    with pytest.raises(MigrationError, match=r"bound at seq 3 names claim"):
         parse(rows)
 
 
@@ -3155,7 +3212,66 @@ OUTPUT = {
             rid="L1",
         ),
     ],
+    # §7: the launch's handle is the claim's, so a died just after its
+    # terminated, killed by its signal, at the terminated's t.
+    "attributed": [
+        o(1, "supervisor.launched", _launched("local://n1/11", 0.5), rid="L1"),
+        o(2, START, _claim4("local://n1/11", 1.0, None), rid="L1"),
+        o(3, COMMIT, _commit4(2, 0, None, [], 2.0)),
+        o(4, TERMINATED, _terminated4("killed", None, 9, 4.0), rid="L1"),
+        o(5, DIED, _died4(2, "killed", "signal 9", 4.0)),
+    ],
+    # A wrapper's exit says nothing of its worker: no died.
+    "wrapper": [
+        o(1, "supervisor.launched", _launched("local://n1/100", 0.5), rid="L1"),
+        o(2, START, _claim4("local://n1/101", 1.0, None), rid="L1"),
+        o(3, COMMIT, _commit4(2, 0, None, [], 2.0)),
+        o(4, TERMINATED, _terminated4("exited", 0, None, 4.0), rid="L1"),
+    ],
+    # The claim's pid on another host: no died.
+    "another_host": [
+        o(1, "supervisor.launched", _launched("local://n2/11", 0.5), rid="L1"),
+        o(2, START, _claim4("local://n1/11", 1.0, None), rid="L1"),
+        o(3, COMMIT, _commit4(2, 0, None, [], 2.0)),
+        o(4, TERMINATED, _terminated4("exited", 1, None, 4.0), rid="L1"),
+    ],
+    # A's late reap: errored by exit 1, after A's terminated, though B claimed
+    # since. B resumes from A's step 0 and its exit is its own end.
+    "late_reap": [
+        o(1, START, _claim4("local://n1/11", 1.0, None), rid="L1"),
+        o(2, "supervisor.launched", _launched("local://n1/11", 1.5), rid="L1"),
+        o(3, COMMIT, _commit4(1, 0, None, [], 2.0)),
+        o(4, "supervisor.launched", _launched("local://n1/12", 3.0), rid="L2"),
+        o(5, START, _claim4("local://n1/12", 4.0, 3), rid="L2"),
+        o(6, COMMIT, _commit4(5, 0, 3, [], 5.0)),
+        o(7, STOPPED, _exit4(True, None, 5, [], 6, [], 6.0)),
+        o(8, TERMINATED, _terminated4("exited", 1, None, 7.0), rid="L1"),
+        o(9, DIED, _died4(1, "errored", "exit 1", 7.0)),
+        o(10, TERMINATED, _terminated4("exited", 0, None, 8.0), rid="L2"),
+    ],
+    # Only the newest claim naming the launch dies, lost by the exit 0; no
+    # death names the older one, as 0.3.0 left it.
+    "two_claims_one_launch": [
+        o(1, "supervisor.launched", _launched("local://n1/11", 0.5), rid="L1"),
+        o(2, START, _claim4("local://n1/11", 1.0, None), rid="L1"),
+        o(3, COMMIT, _commit4(2, 0, None, [], 2.0)),
+        o(4, START, _claim4("local://n1/11", 3.0, 3), rid="L1"),
+        o(5, COMMIT, _commit4(4, 0, 3, [], 4.0)),
+        o(6, TERMINATED, _terminated4("exited", 0, None, 5.0), rid="L1"),
+        o(7, DIED, _died4(4, "lost", "exit 0", 5.0)),
+    ],
 }
+
+
+def test_every_output_entry_is_a_goldens():
+    """A stale entry, whose golden was renamed or removed, fails here."""
+    assert set(OUTPUT) == set(GOLDEN)
+
+
+@pytest.mark.parametrize("rid", list(GOLDEN))
+def test_transform_is_deterministic(rid):
+    """SQLite calls it twice, the dry run before the seal and the run after."""
+    assert step.transform(list(GOLDEN[rid])) == step.transform(list(GOLDEN[rid]))
 
 
 @pytest.mark.parametrize("rid", list(GOLDEN))
@@ -3295,70 +3411,71 @@ def test_every_exit_and_death_names_a_claim_and_a_claim_exits_once(rid):
     assert set(exits) | set(deaths) <= claims
 
 
-# Records M9 refuses or §7 attributes, which Task 8 decides: until then the
-# step names what it cannot write yet.
-_NOT_YET = r"does not write this run yet: "
-
-
-@pytest.mark.parametrize(
-    "record",
-    [
-        r(2, "control.subscribe", {}, rid="s", name="loss"),
-        r(2, "control.unsubscribe", {}, rid="s"),
-        r(2, "control.stop", {"from": {"step": 3}}, rid="h"),
-        r(
-            2,
-            "control.stop",
-            {"from": {"any": [{"time_seconds": 5}, {"step": 3}]}},
-            rid="h",
-        ),
-        r(2, "value", _value(0.5, 0, 1.0)),  # a null name
-        r(2, "value", _value(0.5, 0, 1.0), rid="s", name="loss"),  # a sample
-    ],
-    ids=[
-        "subscribe",
-        "unsubscribe",
-        "step_atom",
-        "nested_step_atom",
-        "nameless",
-        "sample",
-    ],
-)
-def test_what_m9_refuses_is_not_written_yet(record):
-    rows = [r(1, "lifecycle.started", _started("local://n1/11", 1.0)), record]
-    with pytest.raises(
-        NotImplementedError, match=_NOT_YET + rf".*{record.topic} at seq 2"
-    ):
-        step.transform(rows)
-
-
 def test_a_stop_with_a_time_atom_is_written_as_it_is():
     rows = [r(1, "control.stop", {"from": {"time_seconds": 5}}, rid="h")]
     assert step.transform(rows) == rows
 
 
-def test_a_claim_ended_only_by_its_launchs_terminated_is_not_written_yet():
-    """§7's attributed death report, which Task 8 writes."""
-    rows = [
-        r(
-            1,
-            "launcher.launched",
-            {"handle": "local://n1/11", "status": "running", "t": 0.5},
-            rid="L1",
+def test_an_attributed_death_keeps_its_terminateds_created_at():
+    """It is placed after the terminated, and takes its anchor's."""
+    out = step.transform(ATTRIBUTED)
+    assert [x.created_at for x in out] == [1000.25, 1000.5, 1000.75, 1001.0, 1001.0]
+
+
+@pytest.mark.parametrize(
+    "end, deaths",
+    [
+        (_stopped(False, None, 0, 2, [], 3.0), []),  # its own exit
+        (  # a third party's release, whose own death is the only one
+            _stopped(False, BACKSTOP, 0, 2, [], 3.0),
+            [_died4(2, "errored", BACKSTOP, 3.0)],
         ),
-        r(2, "lifecycle.started", _started("local://n1/11", 1.0), rid="L1"),
-        r(3, "lifecycle.heartbeat", _beat(0, 0, 2, 2.0)),
-        r(
-            4,
-            "launcher.terminated",
-            {"reason": "killed", "exit_code": None, "signal": 9, "t": 4.0},
-            rid="L1",
-        ),
+    ],
+    ids=["exit", "release"],
+)
+def test_a_claim_a_stopped_ended_gets_no_attributed_death(end, deaths):
+    """§7: only a claim 0.3.0 saw ended only by its launch's terminated."""
+    rows = ATTRIBUTED[:3] + [
+        r(4, "lifecycle.stopped", end),
+        ATTRIBUTED[3]._replace(seq=5),
     ]
-    with pytest.raises(
-        NotImplementedError,
-        match=_NOT_YET + r"the claim at seq 2 was ended only by .*seq 4",
-    ):
+    assert [x[4] for x in _rows(rows) if x[1] == DIED] == deaths
+
+
+def test_a_terminated_before_the_claim_is_not_its_end():
+    """0.3.0 read only the records after a claim: a terminated of its launch
+    before it ends nothing."""
+    rows = [
+        r(1, "launcher.launched", _launched("local://n1/11", 0.5), rid="L1"),
+        r(2, "launcher.terminated", _terminated("exited", 1, None, 1.0), rid="L1"),
+        r(3, "lifecycle.started", _started("local://n1/11", 2.0), rid="L1"),
+    ]
+    assert DIED not in [x[1] for x in _rows(rows)]
+
+
+@pytest.mark.parametrize(
+    "launched, terminated",
+    [
+        (
+            {"handle": 11, "status": "running", "t": 0.5},
+            _terminated("exited", 1, None, 4.0),
+        ),
+        (_launched("local://n1/11", 0.5), _terminated("exited", None, None, 4.0)),
+        (_launched("local://n1/11", 0.5), _terminated("killed", 0, 9, 4.0)),
+        (_launched("local://n1/11", 0.5), {"reason": "exited", "exit_code": 1}),
+    ],
+    ids=["handle", "no_exit_code", "killed_with_a_code", "no_t"],
+)
+def test_a_launch_record_the_attribution_reads_must_be_launcher_v0_4s(
+    launched, terminated
+):
+    rows = [
+        r(1, "launcher.launched", launched, rid="L1"),
+        r(2, "lifecycle.started", _started("local://n1/11", 1.0), rid="L1"),
+        r(3, "launcher.terminated", terminated, rid="L1"),
+    ]
+    seq = 1 if launched["handle"] == 11 else 3
+    with pytest.raises(MigrationError, match=rf"launcher\.\w+ at seq {seq} is not"):
         step.transform(rows)
 
 
@@ -3388,7 +3505,6 @@ def test_a_terminated_no_held_claim_answers_is_written_as_it_is():
         ("lifecycle.stopped", _stopped(False, None, 0, 1, [], 1.0), "x", None),
         ("lifecycle.stopped", _stopped(False, None, 0, 1, [], 1.0), None, "x"),
         ("lifecycle.stopped", _release("x", [], 1), None, "x"),
-        ("lifecycle.bound", {"claim_seq": 1}, "x", "lease"),
         ("lifecycle.nak", {"reason": "malformed", "message": ""}, "x", "s"),
         ("control.stop", {}, "x", "h"),
     ],
@@ -3402,6 +3518,104 @@ def test_an_envelope_field_0_4_0_pins_null_is_refused_by_seq(topic, body, name, 
         parse(rows)
     with pytest.raises(MigrationError, match=rf"{topic} at seq 2 carries "):
         step.transform(rows)
+
+
+# ----- refusals through the runner (Review Focus 5) -----------------------------------
+#
+# Each run is refused before the seal, by a message naming the run and the seq:
+# the old log stays unsealed and writable, and no 0.4.0 log is written. Every
+# claim's handle is dead, so is_live lets the step decide.
+
+
+@pytest.fixture
+def registered(monkeypatch):
+    """The step registered for the test only, as tests/test_migrate.py's toy
+    fixture registers its steps: the format does not change in this round."""
+    monkeypatch.setitem(FORMATS, "0.4.0", DirectoryLayout("0.4.0"))
+    monkeypatch.setattr(migrations, "STEPS", (V0_3_0_to_V0_4_0(),))
+
+
+def _seed_0_3_0(root, rid, rows):
+    """A 0.3.0 sqlite log at its address holding ``rows``, sent through a
+    channel, which numbers them from 1."""
+    assert [x.seq for x in rows] == list(range(1, len(rows) + 1))
+    path = FORMATS["0.3.0"].sqlite_path(root, rid)
+    path.parent.mkdir(exist_ok=True)
+    ch = SqliteChannel(path)
+    for x in rows:
+        ch.send(json.loads(x.body), topic=x.topic, name=x.name, request_id=x.request_id)
+    ch.close()
+    return path
+
+
+CLAIM = r(1, "lifecycle.started", _started(DEAD, 1.0))
+LAUNCH = r(1, "launcher.launched", _launched(DEAD, 0.5), rid="L1")
+LAUNCHED_CLAIM = r(2, "lifecycle.started", _started(DEAD, 1.0), rid="L1")
+REAP = _terminated("exited", 1, None, 4.0)
+
+REFUSED = {
+    # M9: any subscription, with its samples, its binding and its unsubscribe
+    "subscribe": [CLAIM, r(2, "control.subscribe", {}, rid="s", name="loss")],
+    "sample": [CLAIM, r(2, "value", _value(0.5, 0, 1.0), rid="s", name="loss")],
+    "bound": [CLAIM, r(2, "lifecycle.bound", {"claim_seq": 1}, rid="s")],
+    "unsubscribe": [CLAIM, r(2, "control.unsubscribe", {}, rid="s")],
+    # M9: a stop whose from holds a step atom, at any depth
+    "step_atom": [CLAIM, r(2, "control.stop", {"from": {"step": 3}}, rid="h")],
+    "nested_step_atom": [
+        CLAIM,
+        r(
+            2,
+            "control.stop",
+            {"from": {"any": [{"time_seconds": 5}, {"all": [{"step": 3}]}]}},
+            rid="h",
+        ),
+    ],
+    # M9: two heartbeats of one step in one claim
+    "rewind": [
+        CLAIM,
+        r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+        r(3, "lifecycle.heartbeat", _beat(0, 0, 1, 3.0)),
+    ],
+    # M9: a name value-v0.3 cannot hold
+    "nameless": [CLAIM, r(2, "value", _value(0.5, 0, 1.0))],
+    "empty_name": [CLAIM, r(2, "value", _value(0.5, 0, 1.0), name="")],
+    # The attributed death report: a second reap of the claim's launch, and a
+    # launch that not exactly one launched names
+    "two_reaps": [
+        LAUNCH,
+        LAUNCHED_CLAIM,
+        r(3, "launcher.terminated", REAP, rid="L1"),
+        r(4, "launcher.terminated", REAP, rid="L1"),
+    ],
+    "no_launched": [
+        LAUNCHED_CLAIM._replace(seq=1),
+        r(2, "launcher.terminated", REAP, rid="L1"),
+    ],
+    "two_launched": [
+        LAUNCH,
+        LAUNCH._replace(seq=2),
+        LAUNCHED_CLAIM._replace(seq=3),
+        r(4, "launcher.terminated", REAP, rid="L1"),
+    ],
+}
+
+
+@pytest.mark.parametrize("case", list(REFUSED))
+def test_a_refusal_comes_before_the_seal_and_names_the_run_and_the_seq(
+    registered, tmp_path, case
+):
+    rows = REFUSED[case]
+    old = _seed_0_3_0(tmp_path, "r1", rows)
+    last = rows[-1]
+    with pytest.raises(
+        MigrationError, match=rf"^run 'r1': the {last.topic} at seq {last.seq} "
+    ):
+        migrate(SqliteStore(tmp_path), ["r1"], to="0.4.0")
+    assert os.stat(old).st_mode & 0o200  # not sealed
+    assert not FORMATS["0.4.0"].sqlite_path(tmp_path, "r1").exists()
+    ch = SqliteChannel(old)  # still writable
+    assert ch.send({}, topic="user.note") == len(rows) + 1
+    ch.close()
 
 
 # ----- liveness, read as 0.3.0 read it ------------------------------------------------
