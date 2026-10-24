@@ -520,6 +520,37 @@ def test_the_head_reads_nothing_above_its_w():
     assert lineage(ch, head=h) == [3, 5, 7]
 
 
+class _LateW(MemoryChannel):
+    """A channel whose ``last_seq()`` was taken before the records above ``w``
+    landed: what a resolve sees when a writer appends between its W and its
+    reads."""
+
+    def __init__(self, rows, w):
+        super().__init__()
+        append(self, rows)
+        self.w = w
+
+    def last_seq(self):
+        return self.w
+
+
+@pytest.mark.parametrize(
+    "w, expected",
+    [
+        (7, Head(7, False, 7)),  # B's claim landed above W: A's exit is the head
+        (10, Head(10, False, 10)),  # B's rewind landed above W
+        (0, Head(None, False, 0)),
+    ],
+)
+def test_a_record_landing_above_w_is_not_read(w, expected):
+    ch = _LateW(RESUMED, w)
+    assert LatestClaimHead().resolve(ch) == expected
+    if expected.node is not None:
+        assert AtNode(expected.node).resolve(ch) == Head(expected.node, True, w)
+    with pytest.raises(ValueError):
+        AtNode(14).resolve(ch)
+
+
 def test_a_head_resolves_to_itself_so_a_poll_reads_one_head():
     ch = channel(RESUMED[:10])
     h = LatestClaimHead().resolve(ch)
