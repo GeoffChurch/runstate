@@ -1089,16 +1089,18 @@ records and leave shapes no 0.4.0 writer produces.
   trailing gap, which M5 leaves without commits, counts too few and fails under that name.
 - **P2:** every value with a step is committed by its claim's commit carrying that step, except leading
   values, which go to the claim's first commit by design, and these, which stay uncommitted: values before
-  every claim; values after their claim's end (M4); a claim's that beat no integer step (loading); values
-  above their exit's last step; an error exit's trailing step that M5's third case does not reach; and an
-  unreached trailing step of a claim a third party released or that nothing ended.
+  every claim; values after their claim's end (M4); the values of a claim that beat no integer step
+  (loading); trailing values above their exit's last step; an error exit's trailing step that M5's third
+  case does not reach; and an unreached trailing step of a claim a third party released or that nothing
+  ended.
 - **P3:** reads equal the old reads **cell by cell, by attribution.** Every differing cell must trace to a
   named rule: cells beyond the head's lineage, steps the lineage revisited, nodes holding several values,
   leading values, a parentless resume, a parentless resume by M1's candidacy rule, a trailing gap (a gap of
-  steps with no values below a trailing step M5 synthesized), loading cells, M4, values above their exit's
-  last step (a displaced worker's or a crashed iteration's), an error exit's unreached trailing step, and an
-  unreached trailing step of a claim a third party released or that nothing ended. A value before every
-  claim has no class, so a cell it explains is unattributed. An unattributed cell fails the test.
+  steps with no values below a trailing step M5 synthesized), loading cells, M4, trailing values above
+  their exit's last step (a displaced worker's or a crashed iteration's), an error exit's unreached
+  trailing step, and an unreached trailing step of a claim a third party released or that nothing ended.
+  A value before every claim has no class, so a cell it explains is unattributed. An unattributed cell
+  fails the test.
 - **P4:** the verdict's outcomes, 0.3.0's one outcome taken as a one-element set, and the stop fold's ids
   (`peek_terminal`, `undischarged_stops`) are equal across the migration, except where a named rule changes
   the verdict: a third party's release; a third party's later stop; a backstop that ends no claim, now a
