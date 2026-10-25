@@ -22,6 +22,7 @@ Every enumeration stays under 2,000 cases and streams.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from collections import defaultdict
@@ -62,6 +63,7 @@ from tests.migration_sim.enumerate import (
     RESUMES,
     STOPS_AND_REAPS,
     THIRD_PARTIES,
+    UNANSWERED_STOPS,
     WITHDRAWALS,
     WORKER_SHAPES,
     LaunchShape,
@@ -82,7 +84,8 @@ from tests.migration_sim.history import (
     Drain,
     Emit,
     CutSave,
-    Ended,
+    TICKED,
+    Undated,
     Event,
     Exit,
     Exited,
@@ -99,7 +102,6 @@ from tests.migration_sim.history import (
     Honors,
     Killed,
     Launched,
-    NoCounterpart,
     NotConforming,
     Origin,
     Outcome,
@@ -129,6 +131,7 @@ from tests.migration_sim.truth import (
     CommitId,
     Died,
     ExitNode,
+    MovedStop,
     NodeId,
     RewindTo,
     Start,
@@ -158,7 +161,7 @@ def _histories(f: Family) -> Iterator[History]:
 FAMILIES = {
     "worker-shapes": Family(1, 2, 0, WORKER_SHAPES),
     "end-times": Family(1, 2, 0, END_TIMES),
-    "mid-saves": Family(2, 2, 0, MID_SAVES),
+    "mid-saves": Family(2, 1, 0, MID_SAVES),
     "resumes": Family(2, 2, 0, RESUMES),
     "loading": Family(2, 1, 0, LOADING),
     "third-parties": Family(2, 1, 0, THIRD_PARTIES),
@@ -166,6 +169,7 @@ FAMILIES = {
     "displacement": Family(2, 2, 0, DISPLACEMENT),
     "displaced-saves": Family(3, 1, 0, DISPLACED_SAVES),
     "stops-and-reaps": Family(2, 1, 1, STOPS_AND_REAPS),
+    "unanswered-stops": Family(2, 1, 1, UNANSWERED_STOPS),
     "withdrawals": Family(1, 2, 1, WITHDRAWALS),
 }
 BOUND = 2000
@@ -173,7 +177,10 @@ BOUND = 2000
 
 @pytest.mark.parametrize("family", FAMILIES.values(), ids=list(FAMILIES))
 def test_enumeration_is_bounded(family: Family) -> None:
-    assert sum(1 for _ in _histories(family)) < BOUND
+    """Under the bound, and each history once, so a count is of distinct
+    histories."""
+    hs = list(_histories(family))
+    assert len(hs) < BOUND and len(set(hs)) == len(hs)
 
 
 def test_enumeration_streams(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -191,7 +198,8 @@ def test_enumeration_streams(monkeypatch: pytest.MonkeyPatch) -> None:
     stream = _histories(FAMILIES["worker-shapes"])
     next(stream)
     assert checks == 1
-    assert 1 + sum(1 for _ in stream) > 1000 and checks > 1000
+    yielded = 1 + sum(1 for _ in stream)
+    assert yielded > 900 and checks >= yielded
 
 
 @pytest.mark.parametrize("family", FAMILIES.values(), ids=list(FAMILIES))
@@ -303,7 +311,12 @@ YIELDED = FinalStep.YIELDED
 NULL, PROGRESS = ThirdPartyFinal.NULL, ThirdPartyFinal.PROGRESS
 CONTROL, TAIL = Watermark.CONTROL, Watermark.TAIL
 SAVES = Shape(
-    True, Tick.AFTER_BODY, CONTROL, Saving.IN_BODY, trailing=False, ended=Ended.OWN_LAST
+    True,
+    Tick.AFTER_BODY,
+    CONTROL,
+    Saving.IN_BODY,
+    trailing=False,
+    ended=Undated.OWN_LAST,
 )
 """The ``steps()`` worker that emits each iteration and saves in its body."""
 BEATS = Shape(
@@ -312,7 +325,7 @@ BEATS = Shape(
     CONTROL,
     Saving.IN_BODY,
     trailing=False,
-    ended=Ended.OWN_LAST,
+    ended=Undated.OWN_LAST,
 )
 FIRST = Shape(
     False,
@@ -320,16 +333,16 @@ FIRST = Shape(
     CONTROL,
     Saving.IN_BODY,
     trailing=False,
-    ended=Ended.OWN_LAST,
+    ended=Undated.OWN_LAST,
 )
 UNLOGGED = Shape(
-    False, Tick.NONE, CONTROL, Saving.IN_BODY, trailing=False, ended=Ended.OWN_LAST
+    False, Tick.NONE, CONTROL, Saving.IN_BODY, trailing=False, ended=Undated.OWN_LAST
 )
 QUIET = Shape(
-    False, Tick.NONE, CONTROL, Saving.NONE, trailing=False, ended=Ended.OWN_LAST
+    False, Tick.NONE, CONTROL, Saving.NONE, trailing=False, ended=Undated.OWN_LAST
 )
 UNSAVED = Shape(
-    True, Tick.AFTER_BODY, CONTROL, Saving.NONE, trailing=False, ended=Ended.OWN_LAST
+    True, Tick.AFTER_BODY, CONTROL, Saving.NONE, trailing=False, ended=Undated.OWN_LAST
 )
 BACKSTOP = goldens.BACKSTOP
 
@@ -405,7 +418,7 @@ def _open(claim: int, step: int, *names: str) -> list[Event]:
 def _finished(claim: int, step: int, *names: str) -> list[Event]:
     """An iteration whose pass closed with its save as its last act, its tick
     skipped: it ended with its own newest record."""
-    return _open(claim, step, *names) + [Finish(claim, True, Ended.OWN_LAST)]
+    return _open(claim, step, *names) + [Finish(claim, True, Undated.OWN_LAST)]
 
 
 def _ticked(
@@ -414,7 +427,7 @@ def _ticked(
     """An iteration whose pass closed with its save, then its tick, which dates
     its end."""
     return _open(claim, step, *names) + [
-        Finish(claim, True, Ended.TICKED),
+        Finish(claim, True, TICKED),
         Beat(claim, mark),
     ]
 
@@ -440,7 +453,7 @@ def _first(claim: int, step: int, *names: str) -> list[Event]:
         Begin(claim, step),
         Beat(claim, CONTROL),
         *_emits(claim, names),
-        Finish(claim, True, Ended.OWN_LAST),
+        Finish(claim, True, Undated.OWN_LAST),
     ]
 
 
@@ -781,7 +794,7 @@ D78_181_OPEN = _d78(
     [
         _claim(1, FromSave(SaveOf(0, 180))),
         Begin(1, 181),
-        Finish(1, False, Ended.OWN_LAST),
+        Finish(1, False, Undated.OWN_LAST),
     ],
 )
 
@@ -804,7 +817,7 @@ def _final(finished: bool, error: str | None, discards: bool) -> History:
         _claim(0, Fresh()),
         run(0, range(3), SAVES),
         _open(0, 3, VALUE),
-        [Finish(0, True, Ended.OWN_LAST)] if finished else [],
+        [Finish(0, True, Undated.OWN_LAST)] if finished else [],
         Exit(0, False, error, YIELDED, Drain.EXIT, discards),
         Halt(0, Exited(0 if error is None else 1)),
     )
@@ -815,7 +828,7 @@ def _final_ticked(finished: bool) -> History:
         _claim(0, Fresh()),
         run(0, range(3), SAVES),
         _open(0, 3, VALUE),
-        [Finish(0, True, Ended.OWN_LAST)] if finished else [],
+        [Finish(0, True, Undated.OWN_LAST)] if finished else [],
         _exit(0, completed=False, error="crashed", final=FinalStep.TICKED),
         Halt(0, Exited(1)),
         _claim(1, FromSave(SaveOf(0, 3 if finished else 2))),
@@ -958,7 +971,7 @@ def _later_completed(intent: Release | Report, finished: bool) -> History:
         StopRequest("x0"),
         ThirdPartyStop(0, intent, None, NULL, Honors.UNDISCHARGED),
         _open(0, 4, VALUE),
-        [Finish(0, True, Ended.OWN_LAST)] if finished else [],
+        [Finish(0, True, Undated.OWN_LAST)] if finished else [],
         _completes(0),
     )
 
@@ -1081,7 +1094,7 @@ DISPLACED_SAVED_AFTER = _h(
     _open(0, 2, VALUE),
     _released(0, Outcome.LOST),
     _claim(1, FromSave(SaveOf(0, 1))),
-    Finish(0, True, Ended.OWN_LAST),
+    Finish(0, True, Undated.OWN_LAST),
     Beat(0, CONTROL),
     _killed(0),
     run(1, [2], UNLOGGED),
@@ -1818,7 +1831,7 @@ named above with their contents, as §7 states them."""
 DRAINED_AT_THE_TICK = _h(
     _claim(0, Fresh()),
     Begin(0, 0),
-    Finish(0, True, Ended.OWN_LAST),
+    Finish(0, True, Undated.OWN_LAST),
     StopRequest("x0"),
     Beat(0, CONTROL),
     ThirdPartyStop(0, Report(None), None, NULL, Honors.UNDISCHARGED),
@@ -1849,7 +1862,7 @@ def _cleared(fold: Fold) -> History:
         Beat(0, CONTROL),
         StopRequest("x0"),
         Emit(0, VALUE, stepless=False),
-        Finish(0, True, Ended.OWN_LAST),
+        Finish(0, True, Undated.OWN_LAST),
         ThirdPartyStop(0, Report(None), None, NULL, Honors.UNDISCHARGED),
         _first(0, 1, VALUE),
         _preempted(0),
@@ -1924,6 +1937,31 @@ def _midsave(cut_save: CutSave, landed: bool) -> History:
     )
 
 
+# MIDSAVE_EXIT: as MIDSAVE, but at 2 the worker's own preempted stopped cuts the
+# pass after its save, the exit keeping the open iteration or discarding it.
+def _midsave_exit(cut_save: CutSave, discards: bool) -> History:
+    first = Claim(
+        0,
+        own_process(0),
+        Gate.FREE,
+        Fresh(),
+        None,
+        Clock.LOADED,
+        Fold.AT_CLAIM,
+        cut_save,
+    )
+    return _h(
+        first,
+        run(0, [0, 1], MYCOOC),
+        iteration(0, Step(2, MYCOOC), cut=Cut.AFTER_SAVE),
+        Exit(0, False, None, YIELDED, Drain.EXIT, discards),
+        Halt(0, Exited(0)),
+        _claim(1, FromSave(SaveOf(0, 2))),
+        run(1, [3], MYCOOC),
+        _completes(1),
+    )
+
+
 MIDSAVE_LANDED = _midsave(CutSave.LANDED, landed=True)
 MIDSAVE_CLOSED = _midsave(CutSave.CLOSED, landed=True)
 MIDSAVE_SAVE_START = _midsave(CutSave.SAVE_START, landed=True)
@@ -1935,7 +1973,7 @@ UNLANDED_LANDED = _midsave(CutSave.LANDED, landed=False)
 GAP_ITERATION_LATE = _h(
     _claim(0, Fresh()),
     run(0, [0], BEATS),
-    run(0, [1], replace(UNLOGGED, ended=Ended.NEXT)),
+    run(0, [1], replace(UNLOGGED, ended=Undated.NEXT)),
     run(0, [2], BEATS),
     _completes(0),
 )
@@ -1965,13 +2003,12 @@ _METRICS = (
     "mean_mi",
     "mean_coverage_entropy",
 )
-_FIRST_CLAIMS = (
-    *_METRICS,
-    "mean_argmax_churn",
-    "mean_relational_fidelity",
-    "percentile",
-)
 _LATER_CLAIMS = (*_METRICS, "mean_relational_fidelity")
+"""The metrics of claim 0's step 0, and of every step of the later claims."""
+_CHURNED = (*_METRICS, "mean_argmax_churn", "mean_relational_fidelity")
+"""The metrics of claim 0's steps 1 and 131: no ``percentile``."""
+_FIRST_CLAIMS = (*_CHURNED, "percentile")
+"""The metrics of claim 0's other steps, 2 to 181."""
 
 
 def _mycooc_pass(
@@ -1980,13 +2017,11 @@ def _mycooc_pass(
     events: list[Event] = [Begin(claim, step)]
     if step:
         events.append(Emit(claim, STATUS, stepless=False))
-    events.append(
-        PassSave(claim, landed=True, ended=Ended.TICKED if ticks else Ended.OWN_LAST)
-    )
+    events.append(PassSave(claim, landed=True, cut_end=Undated.OWN_LAST))
     if ticks:
         events.append(Beat(claim, CONTROL))
     events += _emits(claim, (*metrics, STAGE))
-    return events + [Finish(claim, False, Ended.OWN_LAST)]
+    return events + [Finish(claim, False, Undated.OWN_LAST)]
 
 
 def _d78_real(cut_save: CutSave) -> History:
@@ -2007,11 +2042,11 @@ def _d78_real(cut_save: CutSave) -> History:
         claim(0, 3944963, Fresh(), "53375:0", Clock.LOADED),
         Emit(0, "config", stepless=True),
         *loading,
-        *_mycooc_pass(0, 0, (*_METRICS, "mean_relational_fidelity"), ticks=True),
+        *_mycooc_pass(0, 0, _LATER_CLAIMS, ticks=True),
     ]
-    for s in range(1, 181):
-        first += _mycooc_pass(0, s, _FIRST_CLAIMS, ticks=s != 130)
-    first += _mycooc_pass(0, 181, _FIRST_CLAIMS, ticks=False)
+    for s in range(1, 182):
+        metrics = _CHURNED if s in (1, 131) else _FIRST_CLAIMS
+        first += _mycooc_pass(0, s, metrics, ticks=s not in (130, 181))
 
     def later(c: int, pid: int, launch: str, step: int) -> list[Event]:
         return [
@@ -2046,37 +2081,57 @@ def _d78_real(cut_save: CutSave) -> History:
 
 D78_REAL = _d78_real(CutSave.LANDED)
 
-# The store copy's records, (topic, name, step), at step 100 and from 181 on.
-D78_STEP_100 = [
-    ("value", "status", 100),
-    ("lifecycle.heartbeat", None, 100),
-    *[("value", m, 100) for m in _FIRST_CLAIMS],
-    ("value", "stage", 100),
-    ("value", "status", 101),
-]
-D78_END = [
-    ("value", "status", 181),
-    *[("value", m, 181) for m in _FIRST_CLAIMS],
-    ("value", "stage", 181),
-    ("value", "status", 181),
-    ("lifecycle.stopped", None, None),
-    ("lifecycle.started", None, None),
-    *[("value", "status", 0)] * 4,
-    ("value", "status", 182),
-    *[("value", m, 182) for m in _LATER_CLAIMS],
-    ("value", "stage", 182),
-    ("value", "status", 182),
-    ("lifecycle.stopped", None, None),
-    ("lifecycle.started", None, None),
-    *[("value", "status", 0)] * 4,
-    ("value", "status", 183),
-    *[("value", m, 183) for m in _LATER_CLAIMS],
-    ("value", "stage", 183),
-    ("value", "status", 183),
-    ("value", "completion_reason", None),
-    ("lifecycle.stopped", None, None),
-    ("value", "status", 183),
-]
+_Record = tuple[str, str | None, int | None]
+
+
+def _d78_store_copy() -> list[_Record]:
+    """d78b72f1's log as the store copy holds it, all 4,243 records, as
+    (topic, name, step), transcribed from it record by record:
+    - claim 0's ``started``, its ``config`` register and four loading
+      ``status`` values at 0;
+    - its passes 0 to 181: a ``status`` (none at 0), a heartbeat (none at 130
+      or 181), the metrics and ``stage``;
+    - its ``status`` "saving results" at 181, and the reclaim tool's ``stopped``;
+    - claims 1 and 2, at 182 and 183: ``started``, four loading ``status``
+      values at 0, one beatless pass, and a ``status``; claim 1's error exit;
+      claim 2's ``completion_reason``, completed exit and final ``status``.
+
+    ``D78_DIGEST`` pins the transcription to the store copy."""
+
+    def metrics(step: int, names: tuple[str, ...]) -> list[_Record]:
+        return [("value", m, step) for m in (*names, "stage")]
+
+    loading: list[_Record] = [("value", "status", 0)] * 4
+    log: list[_Record] = [
+        ("lifecycle.started", None, None),
+        ("value", "config", None),
+        *loading,
+        ("lifecycle.heartbeat", None, 0),
+        *metrics(0, _LATER_CLAIMS),
+    ]
+    for s in range(1, 182):
+        log.append(("value", "status", s))
+        if s not in (130, 181):
+            log.append(("lifecycle.heartbeat", None, s))
+        log += metrics(s, _CHURNED if s in (1, 131) else _FIRST_CLAIMS)
+    log += [("value", "status", 181), ("lifecycle.stopped", None, None)]
+    for s in (182, 183):
+        log += [("lifecycle.started", None, None), *loading, ("value", "status", s)]
+        log += [*metrics(s, _LATER_CLAIMS), ("value", "status", s)]
+        if s == 182:
+            log.append(("lifecycle.stopped", None, None))
+    log += [
+        ("value", "completion_reason", None),
+        ("lifecycle.stopped", None, None),
+        ("value", "status", 183),
+    ]
+    return log
+
+
+D78_DIGEST = "821ec37b0f6667ec6347f0a1ecd143c043abb53ca3f78696120a1ca288b13cb6"
+"""The sha256 of the store copy's (topic, name, step) sequence, as JSON: its
+``log`` table read ``mode=ro&immutable=1``, in seq order, a step read from a
+``value`` or a heartbeat. 4,243 records."""
 
 # A writer whose version changes mid-root (Review Focus 9; task-13 forensics,
 # W1): before b5262327 mycooc's main wrote its stopped, then its save phase
@@ -2399,10 +2454,10 @@ def describe(h: History) -> list[str]:
         elif isinstance(r, Withdrawal):
             if r.before is None:
                 lines.append(f"withdraw {r.request_id}")
-            elif isinstance(r.before, CommitId):
-                lines.append(f"withdraw {r.request_id} before {node(r.before)}")
             else:
-                lines.append(f"withdraw {r.request_id} before seq {r.before}")
+                lines.append(f"withdraw {r.request_id} before {node(r.before)}")
+        elif isinstance(r, MovedStop):
+            lines.append(f"{r.request_id} moves past {node(r.past)}")
         elif isinstance(r, RewindTo):
             lines.append(f"c{claims[r.claim_seq]} rewinds to {node(r.target)}")
     return lines
@@ -2418,6 +2473,7 @@ def test_the_structural_check_catches_each_rule() -> None:
         (first._replace(parent=second.node), "does not precede it"),
         (second._replace(values=(2, 4)), "named twice"),
         (first._replace(values=(4,)), "follows it"),
+        (first._replace(t=1.0), "precedes seq 2"),
     ]:
         assert any(rule in v for v in violations(_with(t, bad))), rule
     exited = truth(STOP_AUTHOR_EXIT)
@@ -2657,9 +2713,9 @@ def test_later_completed() -> None:
     readable exit honours it. A withdrawal at the answer would precede every
     drain of the worker that reads x0, so the exit spends it, and none is
     written (§7, E2). Under the release, the worker's own completed stopped is
-    fenced, and its ``honored`` is a second answer, which E2 encodes as a
-    second withdrawal: E2 writes one for each id honoured by a stopped that is
-    not its claim's exit node."""
+    fenced, and its ``honored`` is a second answer, of an id the release's
+    withdrawal already withdrew: E2 writes none for it ("not already
+    withdrawn")."""
     assert describe(LATER_COMPLETED_FINISHED)[-2:] == [
         "c0@4 <- c0@3 [v@4]",
         "c0:exit closed <- c0@4 [] honors x0",
@@ -2667,10 +2723,9 @@ def test_later_completed() -> None:
     assert describe(LATER_COMPLETED_YIELDED)[-1:] == [
         "c0:exit closed <- c0@3 [v@4] honors x0",
     ]
-    assert describe(LATER_COMPLETED_RELEASED)[-4:] == [
+    assert describe(LATER_COMPLETED_RELEASED)[-3:] == [
         "c0@3 <- c0@2 [v@3]",
         "c0 died lost",
-        "withdraw x0",
         "withdraw x0",
     ]
 
@@ -2865,8 +2920,9 @@ GOLDEN_TRUTHS: dict[str, list[str]] = {
     "LATER_ERROR": ["c0:exit extendable <- c0@0 []"],
     "LATER_DEFAULT": ["c0:exit closed <- c0@0 [] honors halt"],
     "LATER_ERROR_HONORED": [
-        "withdraw halt before seq 4",
         "c0:exit extendable <- c0@0 []",
+        "halt moves past c0:exit",
+        "withdraw halt",
     ],
     "CLAIMLESS": ["withdraw pre"],
     "CLAIMLESS_ERROR": ["withdraw pre"],
@@ -2984,13 +3040,12 @@ def test_a_fenced_workers_honored_is_withdrawn_by_e2() -> None:
     ]
 
 
-def test_an_exit_cannot_omit_a_stop_no_one_answered() -> None:
-    """A residue of the prose: E2 keeps a readable exit's ``honored`` true by
-    placing withdrawals, so it reaches only answered stops. A writer whose exit
-    honours only what its ticks drained (``Drain.TICKS``) omits a stop that
-    arrived after its last tick; nothing answers it, the native exit drains it
-    (§4, the exit's step 1), and so honours it. The model gives §4's truth; the
-    task report records it."""
+def test_e3_moves_an_unanswered_stop_past_the_exit_that_omits_it() -> None:
+    """E3 (§7): a writer whose exit honours only what its ticks drained
+    (``Drain.TICKS``) omits a stop that arrived after its last tick, and nothing
+    answers it before the exit. Natively the exit would drain and honour it, so
+    the stop moves, unchanged, to just after the exit, which honours nothing,
+    as its 0.3.0 record does."""
     h = _h(
         _claim(0, Fresh()),
         run(0, [0], SAVES),
@@ -2999,22 +3054,56 @@ def test_an_exit_cannot_omit_a_stop_no_one_answered() -> None:
         Halt(0, Exited(0)),
     )
     assert render(h).honored[-2] == ()
-    assert describe(h)[-1] == "c0:exit extendable <- c0@0 [] honors x0"
+    assert describe(h)[-2:] == [
+        "c0:exit extendable <- c0@0 []",
+        "x0 moves past c0:exit",
+    ]
+    (move,) = truth(h).lineage.moves
+    assert move.past == truth(h).lineage.exits[0].node
 
 
-def test_e2s_fork_is_refused() -> None:
-    """E2's fork (§7): A's exit, honouring only what its ticks drained, omits x0,
-    which A's native commit read before its answer; B, claiming between A's exit
-    and the answer, takes x0 in at its tick, and its exit honours it. No place
-    keeps both exits true: which worker's read the lineage records is the
-    consumer's choice, and the model raises ``NoCounterpart``."""
+def test_e3_keeps_the_stop_pending_for_the_next_reader() -> None:
+    """The review's successor case: C1's tick names the stop in its watermark
+    (``consumed_seq: 4``), and its exit honours it. Moved past C0's exit, the
+    stop stays pending, as 0.3.0 left it, so both exits stay true."""
+    h = _h(
+        _claim(0, Fresh()),
+        run(0, [0], SAVES),
+        StopRequest("x0"),
+        Exit(0, False, None, YIELDED, Drain.TICKS, discards=False),
+        Halt(0, Exited(0)),
+        _claim(1, FromSave(SaveOf(0, 0))),
+        run(1, [1], SAVES),
+        _preempted(1),
+    )
+    assert json.loads(render(h).rows[7].body)["consumed_seq"] == 4
+    assert describe(h)[2:] == [
+        "c0:exit extendable <- c0@0 []",
+        "x0 moves past c0:exit",
+        "c1 starts from c0@0",
+        "c1@1 <- c0@0 [v@1]",
+        "c1:exit extendable <- c1@1 [] honors x0",
+    ]
+
+
+def test_e3_applies_where_e2_would_move_a_later_answer_before_the_exit() -> None:
+    """E2's fork, as Task 18 built it: A's exit omits x0, which A's native
+    commit read before x0's answer; B, claiming between A's exit and the
+    answer, takes x0 in at its tick, and its exit honours it. The answer comes
+    after A's exit, so E3 moves x0 past it, and B's exit spends x0, so E2
+    writes no withdrawal: both exits are true, and no fork is left.
+
+    E3 leaves E2's fork no history in the model. A's exit must omit a stop
+    answered before it, or E3 moves the stop; B claims after A's exit, so both
+    folds read the stop as spent (named by that answer), and B's exit cannot
+    honour it."""
     h = _h(
         _claim(0, Fresh()),
         Begin(0, 0),
         Beat(0, CONTROL),
         StopRequest("x0"),
         Emit(0, VALUE, stepless=False),
-        Finish(0, True, Ended.OWN_LAST),
+        Finish(0, True, Undated.OWN_LAST),
         Exit(0, False, None, YIELDED, Drain.TICKS, discards=False),
         Halt(0, Exited(0)),
         _claim(1, FromSave(SaveOf(0, 0))),
@@ -3023,8 +3112,10 @@ def test_e2s_fork_is_refused() -> None:
         _preempted(1),
     )
     assert render(h).honored[6] == () and render(h).honored[-2] == ("x0",)
-    with pytest.raises(NoCounterpart, match="fork"):
-        truth(h)
+    lines = describe(h)
+    assert lines[2:4] == ["c0:exit extendable <- c0@0 []", "x0 moves past c0:exit"]
+    assert lines[-1] == "c1:exit extendable <- c1@1 [] honors x0"
+    assert not truth(h).lineage.withdrawals
 
 
 def test_the_writer_fact_cut_save() -> None:
@@ -3044,6 +3135,85 @@ def test_the_writer_fact_cut_save() -> None:
     # a branch no claim resumes from
     assert "c0@2 <- c0@1 [v@2]" in describe(UNLANDED_SAVE_START)
     assert not any(line.startswith("c0@2") for line in describe(UNLANDED_LANDED))
+
+
+def test_an_exit_that_cuts_the_pass_after_its_save() -> None:
+    """The exit's kind governs (the controller's ruling on concern (c)). Under
+    ``closed`` the save did not finish the pass, and an exit that keeps the open
+    iteration holds its state, so the save names that exit, as a save just
+    after it would (§6, "Save"; A17); one that discards it names nothing. Under
+    ``landed`` and ``save-start`` the cut commits the iteration first."""
+    assert describe(_midsave_exit(CutSave.CLOSED, discards=False))[3:6] == [
+        "c0:exit extendable <- c0@1 [v@2, v@2]",
+        "c1 starts from c0:exit",
+        "c1@3 <- c0:exit [v@3, v@3]",
+    ]
+    assert describe(_midsave_exit(CutSave.CLOSED, discards=True))[3:5] == [
+        "c0:exit torn <- c0@1 null",
+        "c1 starts from root",
+    ]
+    for cut_save in (CutSave.LANDED, CutSave.SAVE_START):
+        assert describe(_midsave_exit(cut_save, discards=False))[3:6] == [
+            "c0@2 <- c0@1 [v@2, v@2]",
+            "c0:exit extendable <- c0@2 []",
+            "c1 starts from c0@2",
+        ]
+        with pytest.raises(NotConforming, match="discards"):
+            walk(_midsave_exit(cut_save, discards=True))
+
+
+def test_a_cut_commit_is_dated_at_the_cut() -> None:
+    """A commit's ``t`` is at or after every value it holds (§3), so a commit a
+    cut makes is dated at the cut, never at its save: the end-time fork's
+    bounds there, the claim's newest record before it (the metric written after
+    the save's tick), or the log's next record (the next claim's started)."""
+    rows = render(MIDSAVE_LANDED).rows
+    (cut,) = [c for c in truth(MIDSAVE_LANDED).lineage.commits if c.node.nth == 2]
+    tick = max(r.seq for r in rows if r.topic == "lifecycle.heartbeat" and r.seq < 12)
+    assert cut.t == max(cut.values) > tick
+    later = _midsave_ended(Undated.NEXT)
+    (cut,) = [c for c in truth(later).lineage.commits if c.node.nth == 2]
+    started = [r.seq for r in render(later).rows if r.topic == "lifecycle.started"]
+    assert cut.t == started[1]
+
+
+def _midsave_ended(end: Undated) -> History:
+    """MIDSAVE_LANDED, with its passes' undated ends ``end``."""
+    shape = replace(MYCOOC, ended=end)
+    return _h(
+        _claim(0, Fresh()),
+        run(0, [0, 1], shape),
+        iteration(0, Step(2, shape), cut=Cut.AFTER_SAVE),
+        _killed(0),
+        _claim(1, FromSave(SaveOf(0, 2))),
+        run(1, [3], shape),
+        _completes(1),
+    )
+
+
+def test_every_cut_runs_in_mid_saves() -> None:
+    """``mid-saves`` cuts a pass after its save by each event that can: a kill,
+    the worker's own exit, a takeover's fence and a release's fence."""
+    cutters: set[str] = set()
+    for h in _histories(FAMILIES["mid-saves"]):
+        for ev, d in zip(h.events, walk(h).derived):
+            if d.cut is not None:
+                cutters.add(type(ev).__name__)
+    assert cutters == {"Halt", "Exit", "Claim", "ThirdPartyStop"}
+
+
+def test_e3_moves_stops_in_enumeration() -> None:
+    """``unanswered-stops`` moves a stop past an exit that omits it, and a later
+    claim's exit honours the moved stop."""
+    found = False
+    for h in _histories(FAMILIES["unanswered-stops"]):
+        t = truth(h)
+        for move in t.lineage.moves:
+            found |= any(
+                move.request_id in e.honored and e.node != move.past
+                for e in t.lineage.exits
+            )
+    assert found
 
 
 def test_a_commits_t_is_when_its_iteration_ended() -> None:
@@ -3075,9 +3245,12 @@ def test_e1_kinds_and_texts() -> None:
 
 
 def test_d78b72f1_in_mycoocs_record_order() -> None:
-    """The named history renders the store copy's records, at a step that beat
-    and from 181 on, and its truth holds under every cut_save value: every pass
-    closed (task-17-convention-table.md, "d78b72f1 does not depend on it")."""
+    """The named history renders the store copy's log, every record of it, and
+    its truth holds under every cut_save value: every pass closed
+    (task-17-convention-table.md, "d78b72f1 does not depend on it")."""
+    store = _d78_store_copy()
+    assert len(store) == 4243
+    assert hashlib.sha256(json.dumps(store).encode()).hexdigest() == D78_DIGEST
     rendered = [
         (
             r.topic,
@@ -3086,9 +3259,7 @@ def test_d78b72f1_in_mycoocs_record_order() -> None:
         )
         for r in render(D78_REAL).rows
     ]
-    start = rendered.index(("value", "status", 100))
-    assert rendered[start : start + len(D78_STEP_100)] == D78_STEP_100
-    assert rendered[-len(D78_END) :] == D78_END
+    assert rendered == store
     truths = {cut_save: truth(_d78_real(cut_save)).lineage for cut_save in CutSave}
     assert len(set(truths.values())) == 1
     lines = describe(D78_REAL)
@@ -3287,7 +3458,7 @@ def test_a_fenced_workers_save_of_an_earlier_node_lands() -> None:
     h = _h(
         _claim(0, Fresh()),
         Begin(0, 0),
-        Finish(0, False, Ended.OWN_LAST),
+        Finish(0, False, Undated.OWN_LAST),
         _released(0, Outcome.LOST),
         Beat(0, CONTROL),
         Save(0),

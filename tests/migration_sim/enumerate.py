@@ -31,7 +31,8 @@ no claim). Then 0 to ``stops`` stop requests go into the slots
 ``space.stop_slots`` names, in every combination.
 
 Histories the walk refuses (``history.NotConforming``) are pruned, a prefix as
-soon as it is refused, so the generator yields only conforming ones. ``Space``
+soon as it is refused, so the generator yields only conforming ones, each
+once. ``Space``
 holds no defaults: a caller names every choice it ranges over, as the presets
 at the end do. ``slot`` is a family of its own: three claims whose loads a
 constraint across claims can rule on (the critique's SLOT).
@@ -68,7 +69,7 @@ from .history import (
     CutSave,
     Drain,
     Emit,
-    Ended,
+    Undated,
     Event,
     Exited,
     FinalStep,
@@ -241,7 +242,11 @@ def histories(
     *, claims: int, steps: int, stops: int, space: Space
 ) -> Iterator[History]:
     """Every conforming history of exactly ``claims`` claims, each running at
-    most ``steps`` iterations, with at most ``stops`` stop requests."""
+    most ``steps`` iterations, with at most ``stops`` stop requests, once each:
+    two choices can build one history (shapes that agree up to a cut, a cut
+    before a tick the shape never takes and the cut after it, the newest save
+    and that save named), and it is yielded the first time."""
+    seen: set[History] = set()
     for before in space.before_run:
         start: list[_Item] = []
         if before is not None:
@@ -250,7 +255,8 @@ def histories(
         for items in _claims(0, claims, steps, space, start, entry):
             for events in _with_stops(items, stops, space.stop_slots):
                 history = History(tuple(events))
-                if conforms(history):
+                if history not in seen and conforms(history):
+                    seen.add(history)
                     yield history
 
 
@@ -594,28 +600,30 @@ def _with_stops(
 
 
 def _shape(
-    valued: bool, tick: Tick, save: Saving, *, trailing: bool, ended: Ended
+    valued: bool, tick: Tick, save: Saving, *, trailing: bool, ended: Undated
 ) -> Shape:
     return Shape(valued, tick, Watermark.CONTROL, save, trailing, ended)
 
 
-STEPS = _shape(True, Tick.AFTER_BODY, Saving.NONE, trailing=False, ended=Ended.OWN_LAST)
+STEPS = _shape(
+    True, Tick.AFTER_BODY, Saving.NONE, trailing=False, ended=Undated.OWN_LAST
+)
 """The reference ``steps()`` worker that emits each iteration and saves nothing."""
 
 SAVES = _shape(
-    True, Tick.AFTER_BODY, Saving.IN_BODY, trailing=False, ended=Ended.OWN_LAST
+    True, Tick.AFTER_BODY, Saving.IN_BODY, trailing=False, ended=Undated.OWN_LAST
 )
 """The ``steps()`` worker that emits each iteration and saves in its body."""
 
 UNSAVED = STEPS
 
 UNLOGGED = _shape(
-    False, Tick.NONE, Saving.IN_BODY, trailing=False, ended=Ended.OWN_LAST
+    False, Tick.NONE, Saving.IN_BODY, trailing=False, ended=Undated.OWN_LAST
 )
 """An iteration that writes nothing: no value, no tick, and a save."""
 
 MYCOOC = _shape(
-    True, Tick.AFTER_SAVE, Saving.IN_PASS, trailing=False, ended=Ended.OWN_LAST
+    True, Tick.AFTER_SAVE, Saving.IN_PASS, trailing=False, ended=Undated.OWN_LAST
 )
 """mycooc's pass: its ``status``, a save of its completed state, its tick, its
 metrics and ``stage``, then its close (d78b72f1's records)."""
@@ -678,14 +686,18 @@ WORKER_SHAPES = _space(
     shapes=(
         STEPS,
         _shape(
-            True, Tick.BEFORE_BODY, Saving.NONE, trailing=False, ended=Ended.OWN_LAST
+            True, Tick.BEFORE_BODY, Saving.NONE, trailing=False, ended=Undated.OWN_LAST
         ),
         UNLOGGED,
         _shape(
-            False, Tick.AFTER_BODY, Saving.NONE, trailing=True, ended=Ended.OWN_LAST
+            False, Tick.AFTER_BODY, Saving.NONE, trailing=True, ended=Undated.OWN_LAST
         ),
         _shape(
-            True, Tick.AFTER_BODY, Saving.RECORDED, trailing=False, ended=Ended.OWN_LAST
+            True,
+            Tick.AFTER_BODY,
+            Saving.RECORDED,
+            trailing=False,
+            ended=Undated.OWN_LAST,
         ),
     ),
     cuts=(Cut.MID_BODY, Cut.MID_SAVE, Cut.BEFORE_TICK, Cut.DONE),
@@ -727,12 +739,16 @@ END_TIMES = _space(
     loading=(False,),
     shapes=(
         UNLOGGED,
-        _shape(False, Tick.NONE, Saving.IN_BODY, trailing=False, ended=Ended.NEXT),
+        _shape(False, Tick.NONE, Saving.IN_BODY, trailing=False, ended=Undated.NEXT),
         _shape(
-            True, Tick.BEFORE_BODY, Saving.IN_BODY, trailing=False, ended=Ended.OWN_LAST
+            True,
+            Tick.BEFORE_BODY,
+            Saving.IN_BODY,
+            trailing=False,
+            ended=Undated.OWN_LAST,
         ),
         _shape(
-            True, Tick.BEFORE_BODY, Saving.IN_BODY, trailing=False, ended=Ended.NEXT
+            True, Tick.BEFORE_BODY, Saving.IN_BODY, trailing=False, ended=Undated.NEXT
         ),
     ),
     cuts=(Cut.BEFORE_TICK, Cut.DONE),
@@ -754,18 +770,23 @@ MID_SAVES = Space(
     mid_claim=(None,),
     mid_positions=(MidPosition.BEFORE_BODY,),
     cuts=(Cut.MID_BODY, Cut.MID_SAVE, Cut.AFTER_SAVE, Cut.DONE),
-    endings=(KILL,),
+    endings=(KILL, PREEMPTED, DISCARDS),
     third_parties=(None,),
     successors=(Successor.OWN_PROCESS,),
-    displaced=(),
+    displaced=tuple(
+        Displaced(by, Tail(value=False, completes=True, steps=(), end=KILL))
+        for by in (Takeover(), Release(Outcome.LOST, Via.HELPER))
+    ),
     before_run=(None,),
     launches=(LaunchShape.NONE,),
     stop_slots=(),
 )
-"""Two claims in mycooc's pass order, each loading the newest save: a claim
-killed before its pass's save, during it, after it landed (the fact
-``cut_save`` decides whether that iteration finished), or after its close.
-Run with ``claims=2, steps=2, stops=0``."""
+"""Two claims in mycooc's pass order, each loading the newest save, whose pass
+is cut before its save, during it, after it landed (the fact ``cut_save``
+decides whether that iteration finished), or after its close: by a kill, by
+the worker's own exit (one that keeps the open iteration, or discards it), or
+by a fence, a takeover's or a release's, after which the worker finishes the
+pass and is killed. Run with ``claims=2, steps=1, stops=0``."""
 
 RESUMES = Space(
     origins=(Origins.FRESH, Origins.SAVED, Origins.OUTSIDE),
@@ -856,7 +877,11 @@ RELEASED_LIVE = Space(
     shapes=(
         SAVES,
         _shape(
-            False, Tick.AFTER_BODY, Saving.IN_BODY, trailing=False, ended=Ended.OWN_LAST
+            False,
+            Tick.AFTER_BODY,
+            Saving.IN_BODY,
+            trailing=False,
+            ended=Undated.OWN_LAST,
         ),
     ),
     mid_claim=(None, _RELEASE, _NOTE),
@@ -965,6 +990,24 @@ STOPS_AND_REAPS = Space(
 """Stop requests, the stops that clear them, and launches reaped or not, around
 two claims. Run with ``claims=2, steps=1, stops=1``."""
 
+TICKS_ONLY = Stops(
+    False, None, FinalStep.YIELDED, Drain.TICKS, False, saves=False, teardown=False
+)
+"""A preempted exit whose ``honored`` lists only the stops its ticks drained."""
+
+UNANSWERED_STOPS = replace(
+    STOPS_AND_REAPS,
+    folds=(Fold.AT_CLAIM, Fold.AT_DRAIN),
+    endings=(KILL, PREEMPTED, TICKS_ONLY),
+    launches=(LaunchShape.NONE,),
+    stop_slots=(StopSlot.BEFORE_CLAIM,),
+)
+"""A stop before either of two claims, neither of which ticks in its last pass,
+by writers that fold at their claim or at each drain, the stops a third party
+clears, and an exit that lists only what its ticks drained: it omits a stop no
+record has answered, which E3 moves past it, pending for the next claim, whose
+exit may honour it. Run with ``claims=2, steps=1, stops=1``."""
+
 WITHDRAWALS = Space(
     origins=(Origins.FRESH,),
     loading=(False,),
@@ -976,7 +1019,11 @@ WITHDRAWALS = Space(
     shapes=(
         SAVES,
         _shape(
-            True, Tick.BEFORE_BODY, Saving.IN_BODY, trailing=False, ended=Ended.OWN_LAST
+            True,
+            Tick.BEFORE_BODY,
+            Saving.IN_BODY,
+            trailing=False,
+            ended=Undated.OWN_LAST,
         ),
     ),
     mid_claim=(
@@ -1047,7 +1094,7 @@ def slot(*, beats: int, run_on: int) -> Iterator[History]:
                         yield history
 
 
-_QUIET = _shape(False, Tick.NONE, Saving.NONE, trailing=False, ended=Ended.OWN_LAST)
+_QUIET = _shape(False, Tick.NONE, Saving.NONE, trailing=False, ended=Undated.OWN_LAST)
 """An iteration that writes nothing and saves nothing: a run-on's inner step."""
 
 

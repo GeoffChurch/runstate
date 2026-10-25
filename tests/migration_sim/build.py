@@ -17,7 +17,6 @@ from .history import (
     Begin,
     Drain,
     Emit,
-    Ended,
     Event,
     Exit,
     Exited,
@@ -28,6 +27,8 @@ from .history import (
     Process,
     ProcessEnd,
     Save,
+    TICKED,
+    Undated,
     Watermark,
 )
 
@@ -75,7 +76,8 @@ class Shape:
     watermark: Watermark  # what its beat writes as consumed_seq
     save: Saving
     trailing: bool  # it emits a value after its tick, still at its step
-    ended: Ended  # when it ended, where no tick of its own dates it at once
+    ended: Undated  # when it ended, where no tick of its own dates it at once;
+    # for a pass a cut finishes (Saving.IN_PASS), when its commit at the cut came
 
 
 class Step(NamedTuple):
@@ -144,7 +146,7 @@ def iteration(claim: int, it: Step, *, cut: Cut) -> list[Event]:
         return events
     ticked = shape.tick is Tick.AFTER_BODY and cut is Cut.DONE
     saved = shape.save in (Saving.IN_BODY, Saving.RECORDED)
-    events.append(Finish(claim, saved, Ended.TICKED if ticked else shape.ended))
+    events.append(Finish(claim, saved, TICKED if ticked else shape.ended))
     if cut is Cut.BEFORE_TICK:
         return events
     return events + _after_close(claim, shape)
@@ -158,19 +160,16 @@ def _in_pass(claim: int, it: Step, cut: Cut) -> list[Event]:
     if cut is Cut.MID_BODY:
         return events
     if cut is Cut.MID_SAVE:
-        return events + [PassSave(claim, landed=False, ended=shape.ended)]
-    ticked = shape.tick is Tick.AFTER_SAVE
-    events.append(
-        PassSave(claim, landed=True, ended=Ended.TICKED if ticked else shape.ended)
-    )
-    if ticked:
+        return events + [PassSave(claim, landed=False, cut_end=shape.ended)]
+    events.append(PassSave(claim, landed=True, cut_end=shape.ended))
+    if shape.tick is Tick.AFTER_SAVE:
         events.append(Beat(claim, shape.watermark))
     if shape.valued:
         events.append(Emit(claim, VALUE, stepless=False))
     if cut is Cut.AFTER_SAVE:
         return events
     closing = shape.tick is Tick.AFTER_BODY and cut is Cut.DONE
-    events.append(Finish(claim, False, Ended.TICKED if closing else shape.ended))
+    events.append(Finish(claim, False, TICKED if closing else shape.ended))
     if cut is Cut.BEFORE_TICK:
         return events
     return events + _after_close(claim, shape)
