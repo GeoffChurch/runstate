@@ -86,3 +86,20 @@ may decline to promise), so this passes the from-scratch test. It is not a compa
 **Revival trigger:** the cockpit watching runs of more than one workload, or any consumer whose phases
 differ in silence by more than its hang-detection budget allows. mycooc already qualifies: its loading
 phases were silent for up to 10,031 s against a 1,800 s timeout.
+
+## Confirmed by the 0.4.0 audit (2026-10-25)
+
+The audit of the writer habits log format 0.4.0 leaves unrecorded (the migration round, finding F1) ranks
+this the most severe of them, and still not needed before 0.4.0 ships.
+- **The pair:** one log, a `started`, commits, then silence. In H1 a worker that writes only at commits is
+  40 minutes into one iteration, and alive. In H2 it crashed a minute after its last commit, on another
+  host, under a launcher that reports nothing.
+- **The readers whose answers differ:** the Watcher's `heartbeat_stale` tier returns `presumed_dead` in
+  both once its threshold passes, where H1 needs `Running`; `ensure` waits in both, where H2 needs it to
+  stop. A supervisor rightly writes nothing in either, since silence is not evidence.
+- **The form passes the rubric:** a promise about the next gap is no composition of past records; it adds
+  the one missing distinction, busy against overdue; a duration on the observer's clock is canonical and
+  skew-proof; it is orthogonal to `claim_seq` and `consumed_seq`; and a number is opinion-free.
+- **It sharpens inference only.** A broken promise is still no evidence for a death report, but it lets
+  `ensure` raise instead of waiting forever.
+- **Not before ship,** because `null` means "no promise", which a native writer can mean (above).

@@ -167,6 +167,37 @@ Nothing in runstate implements it; layer 2 has no forbid.
 - **Also open:** the authority rule for forbidding someone else's demand (if-built-today [README](if-built-today/README.md)
   §"What it does NOT solve"), and R6's ceiling/floor question (point 2 above).
 
+### The other half: a stop that should lapse with its claim (2026-10-25)
+
+The 0.4.0 audit (the migration round, 2026-10-25, finding F2) found the mirror image of this entry's need.
+A stop names no claim ([`../specs/commits-and-lineage.md`](../specs/commits-and-lineage.md) §12), so 0.4.0
+gives it one meaning: the first claim that drains it honours it, and it is spent. Two pairs of histories
+write one log each and need different answers:
+- **A stop that should lapse.** C1 runs, a stop arrives, C1 crashes before draining it, and a waker
+  relaunches C2, whose first drain honours the stop at once.
+  - H1: the stop was a runner's per-dispatch timeout, meant for C1. mycooc's runner sends one 29 to 31
+    minutes into each dispatch (task-13 forensics, W1). H1 needs the stop to have lapsed with C1.
+  - H2: the stop was an operator's, meant for the run. H2 needs C2 to honour it.
+- **A stop that should outlive its claim.** C1 honours a stop, and `relaunch_if_needed` and `ensure`
+  relaunch. If the stop was an operator's halt for the run, no relaunch is wanted: this entry's §1, and the
+  durable ceiling above.
+
+**The candidate for the first pair:** a present-nullable `claim_seq` on `control.stop`, naming the claim
+the stop is for. The stop lapses when that claim ends.
+- **Independent:** no composition of records says whom a stop was for. `control.withdraw` serves when the
+  asker relaunches C2 itself, and cannot when another decider relaunches.
+- **Canonical:** it names the claim by its name, as `lifecycle.bound` and `supervisor.died` do.
+- **Orthogonal** to `from`: one says against whom the stop is, the other when it holds.
+- **Opinion-free,** and null keeps 0.4.0's meaning, a stop for whichever claim drains it, which a native
+  writer can mean. So a later subscription bump migrates 0.4.0 stops as null, with no inference.
+
+**Together** the field and the durable ceiling span a stop's scope: one claim (lapses with it), whichever
+claim drains it (0.4.0), and the run (a hold until lifted). The second pair still has no mechanism, and
+the field does not touch it.
+
+**Not before 0.4.0 ships.** Revival trigger: a consumer whose stops are per dispatch and whose relaunches
+come from a decider other than the asker, as mycooc's runner and its waker are.
+
 ## 6. What this rules out
 
 - **Patching the consumer's reclaim tool** to re-issue swallowed stops — wrong layer; it

@@ -98,7 +98,8 @@ Today's value reads keep the latest value per (name, step).
 item 4).
 - **The claim** (`lifecycle.started`) states *who* computes: the witness, given exclusive ownership by the
   claim CAS, which holds liveness, leases and the process's state. It also states *where* it starts:
-  `resume_from`, an extendable node of this run, or null for a fresh start. It must, or a resumed episode
+  `resume_from`, an extendable node of this run, or null: no node of this run, which is either a fresh
+  start or state from outside the run. A claim that resumes from a node must name it, or a resumed episode
   silently becomes a fresh root.
 - **Commits advance the position.**
 - **`lifecycle.rewind`** restates the position only. A rewind changes where, never who: the witness, its
@@ -212,8 +213,9 @@ in v0.5; the request on `bound` and `nak`, as in v0.5; and null on `commit`, `he
 `stopped`.
 
 **The fields.** Constraints a schema cannot check are marked *prose*.
-- **`resume_from`** (on `started` and `rewind`): the seq of an extendable node of this run, or null: a fresh
-  start on `started`, the root on `rewind`. *Prose:* it names an extendable node below its record's own seq.
+- **`resume_from`** (on `started` and `rewind`): the seq of an extendable node of this run, or null. On
+  `started`, null is no node of this run, which is either a fresh start or state from outside the run; on
+  `rewind`, it is the root. *Prose:* it names an extendable node below its record's own seq.
 - **`sources`:** an array of unique, non-empty strings; `[]` declares none.
 - **`parent`:** an integer ≥ 1, or null. On a commit it is the claim's position before it; on `stopped`, the
   position at the exit. *Prose:* it names an extendable node, and equals that position.
@@ -357,7 +359,10 @@ and reports on it from outside: "a supervisor writing about a child"
 - **`outcome`** is `preempted`, `errored`, `killed` or `lost`. `lost` says that its writer saw the claim end
   without an exit, and nothing of how (review §12, items 14 and 15): its process gone, or the session that
   wrote it ended (below). A death is never a completion.
-- **`evidence`** is a non-empty string that no fold parses: for example `slurm:TIMEOUT`.
+- **`evidence`** is a non-empty string that no fold parses: for example `slurm:TIMEOUT`. It is where a report
+  says who wrote it, since `died` has no author field. The reference writers prefix it by its kind (below):
+  `reap:` for a launcher's reap of a process or a thread, `probe:` for `report_if_dead`'s same-host probe,
+  and `session:` for its session probe. Other writers name their own kinds, as `slurm:` does.
 - **`t`** is the reporter's clock when it saw the death, as on `terminated`.
 - **Unchanged:** the Python `Launcher` classes keep their names, since they launch, and so does the launch id
   (`RUNSTATE_LAUNCH_ID`).
@@ -396,9 +401,9 @@ party, whatever else it does, an observer included, may write one for a death it
   reads again on a lost CAS, and returns the report's seq.
 - **`report_if_dead(ch) -> int | None`** is the probe's report (working name): when the latest claim is held,
   and its handle is on this host and probes dead, or the channel's session probe finds the claim's session
-  ended, it reports `lost` through `report_death`, with the handle or the session as the evidence, and
-  returns the report's seq; otherwise it returns `None`. On session evidence it passes `force=True`, which
-  the evidence earns over a live pid (above).
+  ended, it reports `lost` through `report_death`, with `probe:` and the handle, or `session:` and the
+  session, as the evidence, and returns the report's seq; otherwise it returns `None`. On session evidence
+  it passes `force=True`, which the evidence earns over a live pid (above).
 
 **The writers:**
 - **The launchers** write `died` beside `terminated` when the launch has ended and the newest claim naming the
@@ -419,7 +424,8 @@ party, whatever else it does, an observer included, may write one for a death it
   the claimant, as a SLURM job or a container does. A launch handle that has ended is no evidence by itself,
   since it may be a wrapper's: `ensure` never reports on its strength (§5).
 - **mycooc's reclaim tool** reports from SLURM accounting, through the helper.
-- **The outcomes** (review §12, item 14), with `signal s`, `exit n` or the exception as the evidence:
+- **The outcomes** (review §12, item 14), with `reap: signal s`, `reap: exit n`, `reap:` and the exception,
+  or `probe:` or `session:` and the handle, as the evidence:
   - a reap maps a signal to `killed` and a nonzero exit code to `errored`, and a thread that raised is
     `errored`;
   - an exit 0, a thread that returned and a dead probe are `lost`, by the rule above. A worker released by a
@@ -441,11 +447,11 @@ party, whatever else it does, an observer included, may write one for a death it
     complete. It continues the previous claim, so a woken service does not re-serve requests an older
     branch expired. A resolved `Head` is not accepted: its node may be `None`, so it is not a `NodeRef`, and
     resuming at one is spelled `AtNode(head.node)`, where it can be seen;
-  - **an explicit `None`,** for a fresh start.
+  - **an explicit `None`,** for no node of this run: a fresh start, or state from outside the run.
 
   The Worker validates the node with one point read before the claim CAS: an extendable node of this run, at
   or below W. That covers `steps()`, `serve()` and a worker that calls `commit()` itself. It exposes the node
-  as `w.resume_node`, `None` for a fresh start, which a rewind moves to its target (§6's load assertion).
+  as `w.resume_node`, `None` when it names no node, which a rewind moves to its target (§6's load assertion).
 - **`sources`** takes the names the worker exposes; an explicit `[]` is fine. It is written on `started`.
 - **`save`** takes the checkpoint save policy (§6), a `SavePolicy` such as `NoSave()` or `Every(k, fn)`.
 
@@ -487,10 +493,16 @@ lineage expired.
 6. returns the stop decision.
 
 **A drain** reads the death reports up to its W before it handles any control there, so a released worker
-handles nothing (below). A drain that registers a lease writes each `lifecycle.bound` by CAS at the tail it
-last read, its own writes included, and drains again on a lost CAS (review §12, item 14), so a death report
-that lands first fences the worker before it binds anything. Without the CAS, a binding could land after a
-report the worker has not read and void the request for good, where a racing commit costs one iteration.
+handles nothing (below). Each record a drain writes, a `lifecycle.bound` for a lease it registers or a
+`lifecycle.nak` for a request it refuses, is CAS-appended at the tail the drain last read, its own writes
+included, and the drain runs again on a lost CAS (review §12, item 14, for `bound`; the 0.4.0 audit,
+2026-10-25, for `nak`). So a death report that lands first fences the worker before it binds or refuses
+anything. Without the CAS, either record could land after a report the worker has not read, and settle the
+request for good, where a racing commit costs one iteration:
+- **a binding** would void the lease with the released claim;
+- **a refusal** would spend the id. A refusal that is judged against the claim's declaration (§3,
+  subscription-v0.4, "Refusals") is the released claim's, which its successor may not share, and a `nak`
+  names no claim, so the asker cannot tell it from the successor's.
 
 **The stop decision** (review §12, item 14). A stop's `from` is evaluated wherever the decision is returned:
 at each node the claim writes, with the counts at the node being written, and at each `heartbeat()`, with the
@@ -582,10 +594,10 @@ Once one names its own claim, the Worker latches, and every method that writes w
 `heartbeat()` and `retire()` return True; `stop_pending` is True; `stopped()`, `emit`, `set`, `include`,
 `rewind` and `discard()` do nothing; and `released` is True.
 - **What it closes:** a worker released by mistake no longer takes a stop meant for its successor, no longer
-  binds a lease, and no longer writes checkpoints beside it. A mistaken release costs at most the iteration
-  in flight.
-- **The race:** a death report that lands before the exit's CAS or a binding's CAS moves W, and the retry's
-  drain sees it; a commit racing it may land, which is that one iteration.
+  binds a lease or refuses a request, and no longer writes checkpoints beside it. A mistaken release costs
+  at most the iteration in flight.
+- **The race:** a death report that lands before the CAS of the exit, a binding or a refusal moves W, and
+  the retry's drain sees it; a commit racing it may land, which is that one iteration.
 
 **Leases.** A lease is bound to its claim at drain by `lifecycle.bound`, written by CAS before the
 registration takes effect (above). It survives a rewind, which changes no owner, and is void once its claim
@@ -859,14 +871,31 @@ This is a recipe, not protocol. runstate supplies no directory.
 
 ## 7. Migration: format 0.3.0 → 0.4.0
 
-`runstate/migrations/v0_3_0_to_v0_4_0.py`, under `log-formats.md` §6. Every inference copies what the old
-positional reading implied, the standard of the 0.2.0 → 0.3.0 step. An inference is labelled as one. Where
-0.3.0's schemas and design pin a meaning, the step applies its rule. Where they do not, the question is one
-of the step's declared ambiguities, which only an explicit strategy answers (`log-formats.md` §6,
-"Ambiguity"; review §12, item 16). No convention is pinned by ruling. For each ambiguity, the built-in
-nearest the rule the step encoded before, in `v0_3_0_to_v0_4_0_resolutions.py`, is marked "today's reading"
-below, with where that rule differs from it.
-*The ambiguities are specified 2026-10-24, and not yet encoded.*
+`runstate/migrations/v0_3_0_to_v0_4_0.py`, under `log-formats.md` §6.
+
+**The target** (the owner, 2026-10-25). The step writes the conforming 0.4.0 lineage that records the 0.3.0
+history's own events:
+- which iterations finished, and where;
+- what each claim loaded;
+- which stops each worker read, so that its drains follow the 0.3.0 watermarks;
+- who reported each death.
+
+A 0.3.0 log often leaves these events open, so more than one lineage can be consistent with it. The step
+then reports them, and a consumer's stated facts about its writers, or an explicit choice, decides. An
+inference is labelled as one.
+- **0.3.0 meanings.** Where 0.3.0's schemas and design pin a meaning, the step applies its rule. Where they
+  do not, the question is declared, and only an explicit strategy answers it (`log-formats.md` §6,
+  "Ambiguity"; review §12, item 16). No 0.3.0 meaning is pinned by ruling.
+- **0.4.0 encodings.** A native 0.4.0 writer makes choices that no event of a 0.3.0 history decides. An
+  owner-ruled convention table, which this section will hold, fixes each of them. It fixes 0.4.0 encodings
+  only, never what a 0.3.0 record meant.
+- **The referee** is the prose: §2–§4 and that table. The simulator in `tests/migration_sim/` encodes the
+  same target independently. Where it and the step disagree, the prose decides which one is wrong.
+
+For each ambiguity below, the built-in nearest the rule the step encoded before, in
+`v0_3_0_to_v0_4_0_resolutions.py`, is marked "today's reading", with where that rule differs from it.
+*The ambiguities are specified 2026-10-24, and not yet encoded. They stay as written until the step is
+rebuilt on the target, and the convention table awaits the owner's rulings.*
 
 **What 0.3.0 pins** (review §12, item 16). The step judges against any writer conforming to format 0.3.0:
 lifecycle-v0.5, value-v0.2, subscription-v0.3, launcher-v0.4 and `design-v0.2.md`: what its schemas and its
@@ -1813,8 +1842,10 @@ These extend [`reference-by-name.md`](reference-by-name.md) §7. File and line r
 **Every consumer:**
 - **`tick(step)` becomes `commit()`,** with no argument, and `steps(total, start=)` becomes `steps(until)`:
   the log holds the position. The renames force every call site to be read for the next item.
-- **Emit before you commit.** A value emitted after the commit lands in the next iteration's node. With the
-  checkpoint recipe it is worse: node s is saved before step s's metrics exist, and a crash loses them.
+- **Emit before you commit:** a value emitted before the commit lands in the iteration that computed it. One
+  emitted after lands in the next iteration's node, and with the checkpoint recipe node s is then saved
+  before step s's metrics exist, so a crash loses them. Which state a value describes, the state before its
+  iteration's update or after it, stays the writer's: no record says it, and no runstate read selects by it.
 - **Pass `resume_from=`, `sources=` and `save=` to `Worker`,** and `head=` to lineage reads, explicitly.
 - **Raw value sends drop `step=`:** value-v0.3's `additionalProperties: false` refuses it.
 - **Progress is a count, not a 0-based label.** A target reached at `p >= req` on the old label is reached at
@@ -1828,6 +1859,27 @@ These extend [`reference-by-name.md`](reference-by-name.md) §7. File and line r
 - **Registers stay raw sends,** outside every lineage, read by
   [`completed-opt-in.md`](completed-opt-in.md)'s register recipe: the newest value of the name after the
   claim's `started`. That recipe compares positions across writers, and stays outside the convention.
+- **A code version on the log: one recipe; you can build your own.** Emit it before the claim's first
+  `commit()`, as `w.emit("code_version", v)`, with `v` whatever the consumer means by a version: a git hash,
+  a package version or an image digest. The claim's first node commits it, its exit included unless the
+  exit is torn, and that node names the claim. So the version is attributed by name, where a 0.3.0
+  positional register was not. A claim torn before its first commit leaves it uncommitted, as it leaves
+  every value. runstate reads no such value.
+  - **Why `started` names no writer** (the 0.4.0 audit, 2026-10-25). 0.4.0 records every fact its own folds
+    use. Each writer habit that another reader needs can be recorded by a later format, under a null a
+    native writer can mean, or needs no record. So a tag would give no reader anything to look up. It fails
+    two of the basis rubric's tests: independence, since this recipe composes it; and canonical form, since
+    a version could be any of the coordinates above, and an opaque slot only moves that choice to the
+    consumer, where a value already leaves it. Nothing would read it, which `design-v0.2.md` §12, item 8's
+    lift rule counts against it. It would also have settled none of §7's fifteen ambiguities: three concern
+    third parties' stops, which a tag on `started` does not name; `value-claim` asks who wrote a value, to
+    which no tag on `started` attaches; `exitless-step` is an event fork that no habit settles; and the
+    other ten are one consumer's loop and checkpoint habits across its own versions, which only that
+    consumer's own table could map.
+  - **Revival triggers,** both logical: a format step whose input leaves open a fact that no recorded fact
+    settles and that has no null a native writer could mean; and authenticated records, where authorship
+    becomes load-bearing (`design-v0.2.md` §12, item 8). Then authorship belongs on every record's writer,
+    third parties' included, not on `started` alone.
 
 **mycooc:**
 - **Name the resume point on `Worker`** (main.py:277; training.py:1369; main.py:933 `start_step=`), choosing
