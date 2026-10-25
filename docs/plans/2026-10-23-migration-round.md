@@ -69,8 +69,8 @@ pytest, mypy `--strict`, black. No new runtime dependencies.
 - **Two encodings, kept independent** (Stage 6).
   - The step, its engine included, never imports `tests/migration_sim`, and the simulator never imports the
     step. Only the oracle harness in `tests/` imports both.
-  - When they disagree, the prose decides which one is wrong: `commits-and-lineage.md` §2–§4 and the
-    owner-ruled convention table (Task 17).
+  - When they disagree, the prose decides which one is wrong: `commits-and-lineage.md` §2–§4 and §7's
+    encoding rules (Task 17).
 - **§7's fifteen ambiguities stay frozen** until Task 22 replaces them. Nothing encodes them meanwhile.
 - **Commits** end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 
@@ -524,9 +524,15 @@ Stage 6 was added 2026-10-25, when the owner approved it (the SDD ledger, the "O
   - which stops each worker read, so drains follow the 0.3.0 watermarks;
   - who reported each death.
 
-  An owner-ruled table fixes each native-writer choice that no event decides.
-- **The prose is the referee:** §2–§4 and that table. The simulator is a second, independent encoding that
-  checks the step. Where the two disagree, the prose decides which is wrong, and that one is amended.
+- **Where no event decides a choice, consumers decide what happened, and runstate decides how 0.4.0 writes
+  it down** (owner, 2026-10-25).
+  - **What happened is the consumer's to decide:** a writer fact, or a fork it resolves explicitly. For
+    example, whether a landed save finishes an iteration, or when an undated iteration ended.
+  - **How the format says it is §7's, the same for every consumer.** Otherwise a migrated log's records would
+    mean different things depending on who migrated it, and every generic reader would need to know the
+    consumer: 0.3.0's disease, reintroduced by the migration.
+- **The prose is the referee:** §2–§4 and §7's encoding rules. The simulator is a second, independent encoding
+  that checks the step. Where the two disagree, the prose decides which is wrong, and that one is amended.
 
 ### Task 16: The writer model (done)
 
@@ -536,10 +542,10 @@ Its report is `task-16-sim-report.md`. It records:
 - the model's assumptions A1–A19;
 - the declared native choices: `Exit.discards`, the drain cadence and `Release.via`.
 
-### Task 17: The target, the convention table, and the 0.4.0 wording fixes
+### Task 17: The target, the classification, and the 0.4.0 wording fixes
 
 **Files:** Modify:
-- `docs/specs/commits-and-lineage.md` §2, §3, §4, §7 (the target and the table) and §8;
+- `docs/specs/commits-and-lineage.md` §2, §3, §4, §7 (the target and the encoding rules) and §8;
 - `protocol/lifecycle-v0.6.schema.json`, `Started`'s description only;
 - `docs/design-v0.2.md` §7;
 - `docs/backlog/run-scoped-halt.md`.
@@ -561,7 +567,16 @@ Its report is `task-16-sim-report.md`. It records:
   mistaken release migrates as `died errored`.
 - [ ] **Step 3: Put the table to the owner,** one row at a time, and record each ruling in the ledger. **This
   step waits for the owner.**
-- [ ] **Step 4: Write the ruled table into §7.**
+  - *Done 2026-10-25.* The owner ruled the principle, not the rows: consumers decide what happened, and
+    runstate decides how 0.4.0 writes it down.
+  - So the table dissolves into four kinds: an event, a writer fact, a fork the consumer resolves, and an
+    encoding rule.
+  - Of the draft's rows, R1 (whether a landed save of the completed state finishes its iteration) is a writer
+    fact for Task 19. R4 (a commit's `t` that no 0.3.0 record dates) is a fork, with generic choosers.
+  - R2 (migrated death reports say so: `migrated:`, then the source record's kind and evidence) and R3 (a
+    withdrawal goes at the nearest place that keeps every readable exit's `honored` true) are encoding rules.
+- [ ] **Step 4: Write the encoding rules (R2, R3) into §7, each with its least-distortion argument.** Hand R1
+  to Task 19 and R4 to Tasks 19–22.
 - [ ] **Step 5: Make the 0.4.0 wording fixes** from `audit-0.4.0.md`. None changes the wire.
   - **F5:** `resume_from: null` means no node of this run, which is either a fresh start or state from outside
     the run. Fix it in §2, §3 and the `Started` description.
@@ -584,9 +599,13 @@ Its report is `task-16-sim-report.md`. It records:
 
 **Files:** Modify `tests/migration_sim/` and `tests/test_migration_sim.py`.
 
-- [ ] **Step 1: Amend `truth.py` to the ruled table.**
+- [ ] **Step 1: Amend `truth.py` to the referee.**
   - Drains follow the 0.3.0 watermarks, so the cadence stops being an input of the truth.
-  - Every truth rule cites its §2–§4 line or its table row.
+  - R1's fact and R4's end time become history fields, so the truth stays a function of the history.
+  - Encode the fenced worker's `honored` under the target's precedence.
+  - Add the `fold` fact (`at-claim` or `at-drain`) to the history, and render by it.
+  - Every truth rule cites its §2–§4 line or a §7 encoding rule.
+  - The open fixes are listed under "What the rulings feed" in `task-17-convention-table.md`.
 - [ ] **Step 2: Add the new families,** each under 2,000 histories:
   - **SLOT's shape:** three or more claims, with a load constraint derived from the history (Review Focus 6);
   - **displaced workers that keep saving, and strays:** a released worker's writes after its fence;
@@ -610,7 +629,15 @@ Its report is `task-16-sim-report.md`. It records:
   - strays;
   - stops at any time;
   - values after the tick;
-  - `discards`.
+  - `discards`;
+  - Task 17's R1: whether a landed save of the completed state finishes its iteration when the pass is cut
+    before its closing record;
+  - Task 17's `fold`: when a worker applies an answer written after its claim. It decides no output of the
+    step, since readable exits carry it, so it is a checkable statement and the simulator's rendering input.
+
+  Also specify Task 17's R4 fork, a commit's end time that no 0.3.0 record dates. It lives in Span. Its generic
+  choosers are the claim's newest own record at or before the commit, a lower bound, and the next record, an
+  upper bound. A consumer may write its own from evidence off the log, such as checkpoint file times.
 - [ ] **Step 2: Specify the classifier.** It is a Protocol that names a claim's writer version from the
   claim's records. It is consumer code, because `lifecycle.started` names no writer.
 - [ ] **Step 3: Write the consumers' facts as the round's measurement configuration:**
@@ -695,7 +722,7 @@ named this as the one fact that would change the ranking.
   - The three malformed-body goldens follow the malformed-record rule.
   - Fix the stale comments on `LATER_DEFAULT`, `BEATEN_AFTER` and `TWO_CLAIMS_ONE_LAUNCH`.
 - [ ] **Step 3: Rewrite §7 from the engine:** the target, the facts, the projections, the choosers, the
-  convention table and the refusals. The fifteen ambiguities' clause text goes. The figures wait for Task 23.
+  encoding rules and the refusals. The fifteen ambiguities' clause text goes. The figures wait for Task 23.
 - [ ] **Step 4: Commit and push.**
 
 ### Task 23: The corpus, re-run on a frozen snapshot
