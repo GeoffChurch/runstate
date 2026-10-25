@@ -191,9 +191,9 @@ the stop is for. The stop lapses when that claim ends.
 - **Opinion-free,** and null keeps 0.4.0's meaning, a stop for whichever claim drains it, which a native
   writer can mean. So a later subscription bump migrates 0.4.0 stops as null, with no inference.
 
-**Together** the field and the durable ceiling span a stop's scope: one claim (lapses with it), whichever
-claim drains it (0.4.0), and the run (a hold until lifted). The second pair still has no mechanism, and
-the field does not touch it.
+**Together** the field and the durable ceiling would span a stop's scope: one claim (lapses with it),
+whichever claim drains it (0.4.0), and the run (a hold until lifted). The ceiling, which the second pair
+needs, still has no mechanism, and the field does not touch it.
 
 **Not before 0.4.0 ships.** Revival trigger: a consumer whose stops are per dispatch and whose relaunches
 come from a decider other than the asker, as mycooc's runner and its waker are.

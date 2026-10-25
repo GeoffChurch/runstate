@@ -98,9 +98,9 @@ Today's value reads keep the latest value per (name, step).
 item 4).
 - **The claim** (`lifecycle.started`) states *who* computes: the witness, given exclusive ownership by the
   claim CAS, which holds liveness, leases and the process's state. It also states *where* it starts:
-  `resume_from`, an extendable node of this run, or null: no node of this run, which is either a fresh
-  start or state from outside the run. A claim that resumes from a node must name it, or a resumed episode
-  silently becomes a fresh root.
+  `resume_from`, an extendable node of this run, or null: no node of this run: a fresh start, or state no
+  node of the run holds, such as a checkpoint from outside it. A claim that resumes from a node must name
+  it, or a resumed episode silently becomes a fresh root.
 - **Commits advance the position.**
 - **`lifecycle.rewind`** restates the position only. A rewind changes where, never who: the witness, its
   leases and its liveness survive it, and its position-dependent state is rebuilt (§4).
@@ -214,8 +214,9 @@ in v0.5; the request on `bound` and `nak`, as in v0.5; and null on `commit`, `he
 
 **The fields.** Constraints a schema cannot check are marked *prose*.
 - **`resume_from`** (on `started` and `rewind`): the seq of an extendable node of this run, or null. On
-  `started`, null is no node of this run, which is either a fresh start or state from outside the run; on
-  `rewind`, it is the root. *Prose:* it names an extendable node below its record's own seq.
+  `started`, null is no node of this run: a fresh start, or state no node of the run holds, such as a
+  checkpoint from outside it. On `rewind`, it is the root. *Prose:* it names an extendable node below its
+  record's own seq.
 - **`sources`:** an array of unique, non-empty strings; `[]` declares none.
 - **`parent`:** an integer ≥ 1, or null. On a commit it is the claim's position before it; on `stopped`, the
   position at the exit. *Prose:* it names an extendable node, and equals that position.
@@ -425,7 +426,7 @@ party, whatever else it does, an observer included, may write one for a death it
   since it may be a wrapper's: `ensure` never reports on its strength (§5).
 - **mycooc's reclaim tool** reports from SLURM accounting, through the helper.
 - **The outcomes** (review §12, item 14), with `reap: signal s`, `reap: exit n`, `reap:` and the exception,
-  or `probe:` or `session:` and the handle, as the evidence:
+  `probe:` and the handle, or `session:` and the session, as the evidence:
   - a reap maps a signal to `killed` and a nonzero exit code to `errored`, and a thread that raised is
     `errored`;
   - an exit 0, a thread that returned and a dead probe are `lost`, by the rule above. A worker released by a
@@ -447,7 +448,8 @@ party, whatever else it does, an observer included, may write one for a death it
     complete. It continues the previous claim, so a woken service does not re-serve requests an older
     branch expired. A resolved `Head` is not accepted: its node may be `None`, so it is not a `NodeRef`, and
     resuming at one is spelled `AtNode(head.node)`, where it can be seen;
-  - **an explicit `None`,** for no node of this run: a fresh start, or state from outside the run.
+  - **an explicit `None`,** for no node of this run: a fresh start, or state no node of the run holds, such
+    as a checkpoint from outside it.
 
   The Worker validates the node with one point read before the claim CAS: an extendable node of this run, at
   or below W. That covers `steps()`, `serve()` and a worker that calls `commit()` itself. It exposes the node
@@ -894,8 +896,10 @@ inference is labelled as one.
 
 For each ambiguity below, the built-in nearest the rule the step encoded before, in
 `v0_3_0_to_v0_4_0_resolutions.py`, is marked "today's reading", with where that rule differs from it.
-*The ambiguities are specified 2026-10-24, and not yet encoded. They stay as written until the step is
-rebuilt on the target, and the convention table awaits the owner's rulings.*
+*The ambiguities are specified 2026-10-24, and not yet encoded. They were written to the old standard,
+that every inference copies what the old positional reading implied, and some of their rules contradict the
+target. They stay as written until the step is rebuilt on it, and the convention table awaits the owner's
+rulings.*
 
 **What 0.3.0 pins** (review §12, item 16). The step judges against any writer conforming to format 0.3.0:
 lifecycle-v0.5, value-v0.2, subscription-v0.3, launcher-v0.4 and `design-v0.2.md`: what its schemas and its

@@ -69,7 +69,7 @@
 
     "Started": {
       "type": "object", "required": ["handle", "t", "resume_from", "sources"], "additionalProperties": false,
-      "description": "The claim: who computes (handle, the worker's self-reported liveness handle), when (t, the run epoch), where it starts (resume_from: an extendable node of this run, or null: no node of this run, which is either a fresh start or state from outside the run), and which names it exposes as sources, sampled on demand (sources: [] declares none). Prose: resume_from names an extendable node below this record's seq.",
+      "description": "The claim: who computes (handle, the worker's self-reported liveness handle), when (t, the run epoch), where it starts (resume_from: an extendable node of this run, or null: no node of this run: a fresh start, or state no node of the run holds, such as a checkpoint from outside it), and which names it exposes as sources, sampled on demand (sources: [] declares none). Prose: resume_from names an extendable node below this record's seq.",
       "properties": {
         "handle": {"type": "string"},
         "t": {"$ref": "#/$defs/Time"},
