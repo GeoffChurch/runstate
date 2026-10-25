@@ -363,7 +363,8 @@ and reports on it from outside: "a supervisor writing about a child"
 - **`evidence`** is a non-empty string that no fold parses: for example `slurm:TIMEOUT`. It is where a report
   says who wrote it, since `died` has no author field. The reference writers prefix it by its kind (below):
   `reap:` for a launcher's reap of a process or a thread, `probe:` for `report_if_dead`'s same-host probe,
-  and `session:` for its session probe. Other writers name their own kinds, as `slurm:` does.
+  and `session:` for its session probe. Other writers name their own kinds, as `slurm:` does, and the
+  migration's reports begin `migrated:` (§7, E1).
 - **`t`** is the reporter's clock when it saw the death, as on `terminated`.
 - **Unchanged:** the Python `Launcher` classes keep their names, since they launch, and so does the launch id
   (`RUNSTATE_LAUNCH_ID`).
@@ -882,24 +883,71 @@ history's own events:
 - which stops each worker read, so that its drains follow the 0.3.0 watermarks;
 - who reported each death.
 
-A 0.3.0 log often leaves these events open, so more than one lineage can be consistent with it. The step
-then reports them, and a consumer's stated facts about its writers, or an explicit choice, decides. An
-inference is labelled as one.
-- **0.3.0 meanings.** Where 0.3.0's schemas and design pin a meaning, the step applies its rule. Where they
-  do not, the question is declared, and only an explicit strategy answers it (`log-formats.md` §6,
-  "Ambiguity"; review §12, item 16). No 0.3.0 meaning is pinned by ruling.
-- **0.4.0 encodings.** A native 0.4.0 writer makes choices that no event of a 0.3.0 history decides. An
-  owner-ruled convention table, which this section will hold, fixes each of them. It fixes 0.4.0 encodings
-  only, never what a 0.3.0 record meant.
-- **The referee** is the prose: §2–§4 and that table. The simulator in `tests/migration_sim/` encodes the
-  same target independently. Where it and the step disagree, the prose decides which one is wrong.
+A 0.3.0 log often leaves these events open, so more than one lineage can be consistent with it. An inference
+is labelled as one.
+- **Where 0.3.0's schemas and design pin a meaning,** the step applies its rule.
+- **Where no event or pin decides what happened, the consumer decides it** (the owner, 2026-10-25): by a
+  stated fact about its writers, or by an explicit choice that resolves the fork (`log-formats.md` §6,
+  "Ambiguity"; review §12, item 16). Examples are whether a save that landed finishes an iteration whose
+  pass was cut, or when an iteration that no record dates ended. No 0.3.0 meaning is pinned by ruling, and
+  the step makes no default guess.
+- **How 0.4.0 writes it down is runstate's,** the same for every consumer: the encoding rules below.
+  Otherwise a migrated log's records would mean different things depending on who migrated it, and every
+  generic reader would need to know the consumer. That is 0.3.0's ambiguity, reintroduced by the migration.
+- **The referee** is the prose: §2–§4 and the encoding rules. The simulator in `tests/migration_sim/`
+  encodes the same target independently. Where it and the step disagree, the prose decides which one is
+  wrong.
+
+**The encoding rules** (the owner, 2026-10-25). Each fixes how 0.4.0 writes down a 0.3.0 act that it has no
+record for, and each is the least-distorting way to do so.
+- **E1. A death report the step writes says it was migrated.** Its `evidence` is `migrated:`, then the kind
+  of the 0.3.0 record it stands for, then that record's own evidence:
+  - `migrated: reap: signal s` or `migrated: reap: exit n`, for one attributed from a `launcher.terminated`
+    ("Attributed death reports", below);
+  - `migrated: gate: <handle>`, for a claim that a later claim passed 0.3.0's claim gate over ("A claim its
+    successor's claim proves dead", below);
+  - `migrated: stopped: <its error>`, or `migrated: stopped` when it has none, for a third party's `stopped`
+    read as a release.
+
+  *Why it distorts least:*
+  - A migrated report is the step's inference from a 0.3.0 record, not a reporter's observation, so it says
+    so and names that record, which is all the step knows.
+  - Any other text would read as a native report, or drop the kind. `probe:` would assert a same-host probe
+    that 0.3.0's gate may not have made, since it may have judged by staleness.
+  - No fold parses `evidence` (§3), so nothing a fold reads changes. A person reading `RunResult.reports` can
+    tell migrated reports from native ones on any log, whoever migrated it.
+- **E2. A withdrawal the step writes stands at the nearest place to its answer that keeps every readable
+  exit's `honored` true.** The step writes a `control.withdraw` for each id honoured by a `stopped` that is
+  not its claim's exit node: a third party's, or a fenced worker's own. It stands just after that `stopped`,
+  its answer, unless that place would make a readable exit's `honored` false:
+  - **where a readable exit honours the stop,** though a withdrawal at the answer would precede every native
+    drain of that worker that reads it, the exit spends the stop, and no withdrawal is written;
+  - **where a readable exit omits the stop,** though a native drain of the same worker reads it before its
+    answer, the withdrawal stands just before the first such drain, which then reads the stop and its
+    withdrawal together. That drain is in practice a commit's, since a 0.3.0 read or exit after the stop
+    takes it in.
+
+  Wherever it stands, it carries the answering `stopped`'s `t`. Two readable exits can admit no place: one
+  omits the stop though its worker's drain reads it first, and the other honours it though its worker's
+  drains come later. Which worker's read the lineage records is then a fork, refused unless a chooser
+  decides it.
+
+  *Why it distorts least:*
+  - An exit's `honored` is the only native record a withdrawal's place can change. The stop fold spends the
+    stop either way, and watermarks, commits and death reports stay where they are.
+  - So the rule keeps the target's third item true for every worker whose exit records it. It otherwise
+    keeps the answer where 0.3.0 put it.
+  - The move it makes is the smallest that keeps an exit true. It is bounded by that worker's own gap
+    between its drain and its next read or its exit, since an exit that omits the stop proves no read of
+    that worker lies between the stop and its answer.
+  - It never moves a commit: where an iteration ended is a fork of its own.
 
 For each ambiguity below, the built-in nearest the rule the step encoded before, in
 `v0_3_0_to_v0_4_0_resolutions.py`, is marked "today's reading", with where that rule differs from it.
 *The ambiguities are specified 2026-10-24, and not yet encoded. They were written to the old standard,
 that every inference copies what the old positional reading implied, and some of their rules contradict the
-target. They stay as written until the step is rebuilt on it, and the convention table awaits the owner's
-rulings.*
+target and the encoding rules: their death reports' evidence texts, and the withdrawal placed just after
+every third party's stop. They stay as written until the step is rebuilt on the target.*
 
 **What 0.3.0 pins** (review §12, item 16). The step judges against any writer conforming to format 0.3.0:
 lifecycle-v0.5, value-v0.2, subscription-v0.3, launcher-v0.4 and `design-v0.2.md`: what its schemas and its
