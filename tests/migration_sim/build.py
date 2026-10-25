@@ -15,7 +15,7 @@ from typing import NamedTuple, TypeAlias, assert_never
 from .history import (
     Beat,
     Begin,
-    Claim,
+    Drain,
     Emit,
     Event,
     Exit,
@@ -23,9 +23,10 @@ from .history import (
     FinalStep,
     Finish,
     Halt,
-    Origin,
+    Process,
     ProcessEnd,
     Save,
+    Watermark,
 )
 
 VALUE = "v"
@@ -34,6 +35,13 @@ value's name, so a model that let names differ would only hide shared logs."""
 
 RECORD = "status"
 """The stepless register a save's record writes (mycooc's ``status: saving``)."""
+
+HOST = "sim"
+
+
+def own_process(claim: int) -> Process:
+    """The process a builder gives a claim that runs in a process of its own."""
+    return Process(HOST, 1000 + claim)
 
 
 class Tick(Enum):
@@ -59,6 +67,7 @@ class Shape:
 
     valued: bool  # its body emits a value
     tick: Tick
+    watermark: Watermark  # what its beat writes as consumed_seq
     save: Saving
     trailing: bool  # it emits a value after its tick, still at its step
 
@@ -79,7 +88,7 @@ class Cut(Enum):
 
 @dataclass(frozen=True)
 class Dies:
-    """The worker's process ends with no ``stopped`` of its own."""
+    """The worker ends with no ``stopped`` of its own, and its process ends so."""
 
     how: ProcessEnd
 
@@ -92,6 +101,8 @@ class Stops:
     completed: bool
     error: str | None
     final_step: FinalStep
+    honors: Drain
+    discards: bool  # its native counterpart discards the open iteration first
     saves: bool
     teardown: bool
 
@@ -104,7 +115,7 @@ def iteration(claim: int, it: Step, *, cut: Cut) -> list[Event]:
     shape = it.shape
     events: list[Event] = [Begin(claim, it.step)]
     if shape.tick is Tick.BEFORE_BODY:
-        events.append(Beat(claim))
+        events.append(Beat(claim, shape.watermark))
     if shape.valued:
         events.append(Emit(claim, VALUE, stepless=False))
     if cut is Cut.MID_BODY:
@@ -117,12 +128,17 @@ def iteration(claim: int, it: Step, *, cut: Cut) -> list[Event]:
     if cut is Cut.BEFORE_TICK:
         return events
     if shape.tick is Tick.AFTER_BODY:
-        events.append(Beat(claim))
+        events.append(Beat(claim, shape.watermark))
     if shape.save is Saving.AFTER_TICK:
         events.append(Save(claim))
     if shape.trailing:
         events.append(Emit(claim, VALUE, stepless=False))
     return events
+
+
+def rest(claim: int, it: Step, *, cut: Cut) -> list[Event]:
+    """The events of an iteration after ``cut``: what finishing it writes."""
+    return iteration(claim, it, cut=Cut.DONE)[len(iteration(claim, it, cut=cut)) :]
 
 
 def halt_of(end: Ending) -> ProcessEnd:
@@ -137,35 +153,24 @@ def halt_of(end: Ending) -> ProcessEnd:
 
 def ending(claim: int, end: Ending) -> list[Event]:
     """How the worker's program ends: its own ``stopped`` or none, then its
-    process's end."""
+    end, its process's with it."""
     events: list[Event] = []
     if isinstance(end, Stops):
-        events.append(Exit(claim, end.completed, end.error, end.final_step))
+        events.append(
+            Exit(
+                claim,
+                end.completed,
+                end.error,
+                end.final_step,
+                end.honors,
+                end.discards,
+            )
+        )
         if end.saves:
             events.append(Save(claim))
         if end.teardown:
             events.append(Emit(claim, VALUE, stepless=False))
     return events + [Halt(claim, halt_of(end))]
-
-
-def program(
-    claim: int,
-    *,
-    origin: Origin,
-    launch: str | None,
-    loading: bool,
-    steps: list[Step],
-    cut: Cut,
-    end: Ending,
-) -> list[Event]:
-    """A claim's whole program: its claim, a value at its loaded step if
-    ``loading``, its iterations (the last stopped at ``cut``), and its end."""
-    events: list[Event] = [Claim(claim, origin, launch)]
-    if loading:
-        events.append(Emit(claim, VALUE, stepless=False))
-    for k, it in enumerate(steps):
-        events += iteration(claim, it, cut=cut if k == len(steps) - 1 else Cut.DONE)
-    return events + ending(claim, end)
 
 
 def run(claim: int, steps: range | list[int], shape: Shape) -> list[Event]:

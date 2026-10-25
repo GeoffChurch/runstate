@@ -19,31 +19,37 @@ from the history so:
   drops the pending values, which stay outside every lineage.
 - **``exits``**: a worker's own ``stopped`` is its exit node, with ``parent`` the
   position at the exit:
-  - **closed** if completed, holding the pending values;
-  - **torn** (``values`` null) if it carries an error: every error exit discards
-    its open iteration (§2);
-  - **extendable** otherwise, holding the pending values. The native Worker
-    discards only on ``w.discard()``, which no 0.3.0 history calls;
-  - **``honored``** is what the worker's ``stopped`` honoured, less a stop a third
-    party withdrew before the worker first drained it. The native worker drains
-    at each commit, heartbeat and exit, and once drained, a stop with no
-    ``from`` holds and stays honoured (§4).
-- **Fencing.** A third party's release of a claim with no exit node, while its
-  worker lives, fences that worker: a native worker reads the death report at
-  its next drain and writes nothing more (§4). So it makes no commit, rewind or
-  exit node after the release, and its pending values stay outside every
+  - **closed** if completed, holding the pending values, or null where its
+    native counterpart discarded the open iteration (``Exit.discards``);
+  - **torn** (``values`` null) if it carries an error, since every error exit
+    discards its open iteration (§2), or if it discarded one (``Exit.discards``,
+    the native counterpart's choice, §4);
+  - **extendable** otherwise, holding the pending values;
+  - **``honored``** is what the native fold gives: every stop before the exit
+    that its claim's fold did not hold spent (named by an earlier native exit,
+    or withdrawn), less any a withdrawal spent before the worker first drained
+    it. Once drained, a stop with no ``from`` holds and stays honoured (§4). It
+    does not read the 0.3.0 ``honored``, which is the 0.3.0 writer's own
+    convention (``Drain``). The native drains are fixed: each commit, each
+    heartbeat (one per 0.3.0 tick), and the exit.
+- **Fencing.** A release of a claim with no exit node, while its worker lives,
+  fences that worker, and so does a takeover: the native worker reads the death
+  report at its next drain and writes nothing more (§4). So it makes no commit,
+  rewind or exit node after it, and its pending values stay outside every
   lineage.
 - **``deaths``**: the death reports a native run writes, each with its outcome:
-  - a third party's release, unless the claim has an exit node (a native
-    ``report_death`` returns None there), or a ``lost`` one on a claim that has
-    already ended (§3);
-  - a reap of a launch whose process is its claimant, when the claim has no exit
-    node: ``killed`` for a signal, ``errored`` for a nonzero exit code, and
-    ``lost`` for 0, which adds nothing once the claim has ended (§3, "The
-    writers");
+  - a third party's release, unless the claim has an exit node (the helper
+    ``report_death`` "returns ``None`` when the claim has a readable exit", §3,
+    and the reclaim tool reports through it), or a ``lost`` one on a claim that
+    has already ended (§3);
+  - a reap, for the newest claim naming its launch when that claim runs in the
+    launch's process (the same handle, compared whole) and has no exit node:
+    ``killed`` for a signal, ``errored`` for a nonzero exit code, and ``lost``
+    for 0, which adds nothing once the claim has ended (§3, "The writers");
   - the successor's claim path: a claim that a later claim follows, when nothing
     ended it, is reported ``lost`` just before the later claim (§4, "The claim":
-    ``report_if_dead``).
+    ``report_if_dead``). After a takeover this is the report that fences the
+    live worker.
 - **``terminations``**: every reap, as ``supervisor.terminated``; and a third
   party's report of a process's end (``Report(reap)``) as one under a launch the
   migration mints (``launch`` None).
@@ -64,7 +70,6 @@ for the structural checks and for diagnosis, and is not part of the lineage.
 
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 from typing import NamedTuple, TypeAlias, assert_never
 
@@ -87,6 +92,7 @@ from .history import (
     Launched,
     NodeRef,
     Outcome,
+    Process,
     ProcessEnd,
     Reaped,
     Release,
@@ -204,6 +210,7 @@ def truth(history: History) -> Truth:
     rendered = render(history)
     w = rendered.walk
     claim_seqs: dict[int, int] = {}
+    processes: dict[int, Process] = {}
     position: dict[int, NodeId | None] = {}
     pending: dict[int, list[int]] = defaultdict(list)
     exited: set[int] = set()  # its own stopped is written (whether or not a node)
@@ -213,8 +220,10 @@ def truth(history: History) -> Truth:
     drains: dict[int, list[int]] = defaultdict(list)  # the newest seq each drain saw
     stop_seqs: dict[str, int] = {}
     withdrawn: dict[str, list[int]] = defaultdict(list)
-    claimants: dict[str, int] = {}
-    wrappers: dict[str, bool] = {}
+    spent: set[str] = set()  # the stop ids a native fold holds spent so far
+    spent_at_claim: dict[int, frozenset[str]] = {}
+    newest_claim: dict[str, int] = {}  # launch -> the newest claim naming it
+    launches: dict[str, Process] = {}
     placed: list[Placed] = []
     last = 0
     rank = 0
@@ -245,10 +254,15 @@ def truth(history: History) -> Truth:
             assert seq is not None
             prev = ev.claim - 1
             if prev >= 0 and prev not in ended:
-                # the claim path's report_if_dead (§4): the gate found it dead
+                # the claim path's report_if_dead (§4): the gate found it dead, or,
+                # in a takeover, judged it so
                 placed.append(Placed(Died(claim_seqs[prev], Outcome.LOST), after()))
                 ended.add(prev)
             claim_seqs[ev.claim] = seq
+            processes[ev.claim] = ev.process
+            spent_at_claim[ev.claim] = frozenset(spent)
+            if ev.launch is not None:
+                newest_claim[ev.launch] = ev.claim
             origin = ev.origin
             if isinstance(origin, FromSave):
                 position[ev.claim] = node_id(origin.node)
@@ -266,7 +280,7 @@ def truth(history: History) -> Truth:
             drains[ev.claim].append(seq - 1)
         elif isinstance(ev, Finish):
             drains[ev.claim].append(last)
-            node = w.nodes[i]
+            node = w.derived[i].node
             if isinstance(node, CommitOf):
                 cid = CommitId(claim_seqs[ev.claim], node.nth)
                 commit = Commit(cid, position[ev.claim], tuple(pending[ev.claim]))
@@ -284,13 +298,18 @@ def truth(history: History) -> Truth:
         elif isinstance(ev, Exit):
             assert seq is not None
             exited.add(ev.claim)
-            if isinstance(w.nodes[i], ExitOf):
-                body = json.loads(rendered.rows[seq - 1].body)
+            if isinstance(w.derived[i].node, ExitOf):
                 honored = _native_honored(
-                    body["honored"], seq - 1, drains[ev.claim], stop_seqs, withdrawn
+                    seq,
+                    drains[ev.claim],
+                    spent_at_claim[ev.claim],
+                    stop_seqs,
+                    withdrawn,
                 )
+                spent.update(honored)
                 kind = w.exit_kinds[ev.claim]
-                values = None if kind is Kind.TORN else tuple(pending[ev.claim])
+                discarded = ev.error is not None or ev.discards
+                values = None if discarded else tuple(pending[ev.claim])
                 exit_node = ExitNode(
                     ExitId(claim_seqs[ev.claim]),
                     position[ev.claim],
@@ -306,7 +325,6 @@ def truth(history: History) -> Truth:
             stop_seqs[ev.request_id] = seq
         elif isinstance(ev, ThirdPartyStop):
             assert seq is not None
-            body = json.loads(rendered.rows[seq - 1].body)
             if isinstance(ev.intent, Release):
                 assert ev.names is not None
                 report(ev.names, ev.intent.outcome, At(seq))
@@ -316,20 +334,21 @@ def truth(history: History) -> Truth:
             else:
                 assert_never(ev.intent)
             last = seq
-            for request_id in body["honored"]:
+            for request_id in rendered.honored[i]:
                 placed.append(Placed(Withdrawal(request_id, seq), after()))
                 withdrawn[request_id].append(seq)
+                spent.add(request_id)
         elif isinstance(ev, Launched):
-            wrappers[ev.launch] = ev.wrapper
+            launches[ev.launch] = ev.process
         elif isinstance(ev, Reaped):
             assert seq is not None
             placed.append(Placed(Terminated(ev.launch, ev.how), At(seq)))
             last = seq
-            c = claimants.get(ev.launch)
-            if c is not None and not wrappers[ev.launch]:
+            # A launcher reports for the newest claim naming its launch, when that
+            # claim's process is the launch's: the same handle, compared whole (§3).
+            c = newest_claim.get(ev.launch)
+            if c is not None and processes[c] == launches[ev.launch]:
                 report(c, _reap_outcome(ev.how), after())
-        if isinstance(ev, Claim) and ev.launch is not None:
-            claimants[ev.launch] = ev.claim
         if seq is not None:
             last = seq
     return Truth(_lineage(placed), tuple(placed))
@@ -357,21 +376,24 @@ def steps(history: History) -> dict[NodeId, int]:
 
 
 def _native_honored(
-    honored: list[str],
-    exit_watermark: int,
+    exit_seq: int,
     drains: list[int],
+    spent: frozenset[str],
     stop_seqs: dict[str, int],
     withdrawn: dict[str, list[int]],
 ) -> tuple[str, ...]:
-    """The stops the native exit honours: those its 0.3.0 ``stopped`` honoured,
-    less any a withdrawal spent before the worker first drained it."""
+    """The stops a native exit honours: every stop before it that its claim's
+    fold did not hold spent, less any a withdrawal spent before the worker first
+    drained it. The native drains are fixed here: at each commit (``Finish``),
+    at each heartbeat (a 0.3.0 tick's), and at the exit itself."""
     kept = []
-    for request_id in honored:
-        posted = stop_seqs[request_id]
-        drained = min(d for d in [*drains, exit_watermark] if d >= posted)
+    for request_id, posted in sorted(stop_seqs.items()):
+        if posted >= exit_seq or request_id in spent:
+            continue
+        drained = min(d for d in [*drains, exit_seq - 1] if d >= posted)
         if not any(posted < s <= drained for s in withdrawn[request_id]):
             kept.append(request_id)
-    return tuple(kept)
+    return tuple(sorted(kept))
 
 
 def _lineage(placed: list[Placed]) -> Lineage:
