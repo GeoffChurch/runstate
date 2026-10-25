@@ -110,12 +110,19 @@ class Stops:
 Ending: TypeAlias = Dies | Stops
 
 
+def opening(claim: int, it: Step) -> list[Event]:
+    """An iteration's events before its body: its begin, and a tick-first
+    loop's tick."""
+    events: list[Event] = [Begin(claim, it.step)]
+    if it.shape.tick is Tick.BEFORE_BODY:
+        events.append(Beat(claim, it.shape.watermark))
+    return events
+
+
 def iteration(claim: int, it: Step, *, cut: Cut) -> list[Event]:
     """One iteration's events, up to ``cut``."""
     shape = it.shape
-    events: list[Event] = [Begin(claim, it.step)]
-    if shape.tick is Tick.BEFORE_BODY:
-        events.append(Beat(claim, shape.watermark))
+    events = opening(claim, it)
     if shape.valued:
         events.append(Emit(claim, VALUE, stepless=False))
     if cut is Cut.MID_BODY:

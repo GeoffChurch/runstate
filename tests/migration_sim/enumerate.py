@@ -10,7 +10,8 @@ allow, one at a time. A history is built claim by claim, in claim order:
 2. **its iterations**: 0 to ``steps`` of them, each one of ``space.shapes``,
    labelled from the origin's floor upward by one of ``space.strides`` each,
    with one of ``space.mid_claim`` (a third party's ``stopped`` naming the live
-   claim) before its last;
+   claim) just before its last one's body, after a tick-first loop's tick; and
+   its native counterpart's drain cadence, one of ``space.cadences``;
 3. **its end**: its last iteration stopped at one of ``space.cuts``, then one of
    ``space.endings``, then one of ``space.third_parties`` (a third party's
    ``stopped`` naming it); and, for every claim but the last, one of
@@ -53,10 +54,12 @@ from .build import (
     ending,
     halt_of,
     iteration,
+    opening,
     own_process,
     rest,
 )
 from .history import (
+    Cadence,
     Claim,
     Clock,
     Drain,
@@ -85,6 +88,7 @@ from .history import (
     StopRequest,
     ThirdPartyFinal,
     ThirdPartyStop,
+    Via,
     Watermark,
     conforms,
     loadable,
@@ -168,6 +172,7 @@ class Space:
     origins: tuple[Origins, ...]
     loading: tuple[bool, ...]
     clocks: tuple[Clock, ...]  # read only by a loading value of a resumed claim
+    cadences: tuple[Cadence, ...]
     strides: tuple[int, ...]
     shapes: tuple[Shape, ...]
     mid_claim: tuple[ThirdParty | None, ...]
@@ -241,8 +246,12 @@ def _claims(
         space.launches, _origins(saved, space.origins), space.loading
     ):
         launch_id = None if launch is LaunchShape.NONE else f"L{c}"
-        for clock in _clocks(origin, loading, space.clocks):
-            claimed = _claim_items(c, entry, launch, launch_id, origin, clock, loading)
+        for clock, cadence in itertools.product(
+            _clocks(origin, loading, space.clocks), space.cadences
+        ):
+            claimed = _claim_items(
+                c, entry, launch, launch_id, origin, clock, cadence, loading
+            )
             for its in _iterations(origin, saved, steps, space):
                 body = claimed + _body(c, its)
                 for end in space.endings:
@@ -298,6 +307,7 @@ def _claim_items(
     launch_id: str | None,
     origin: Origin,
     clock: Clock,
+    cadence: Cadence,
     loading: bool,
 ) -> list[_Item]:
     """Claim ``c``'s start: its launch, its claim, the previous claim's
@@ -306,7 +316,7 @@ def _claim_items(
     if launch_id is not None:
         launched = own_process(c) if launch is not LaunchShape.WRAPPED else _wrapper(c)
         items.append(Launched(launch_id, launched))
-    items.append(Claim(c, entry.process, entry.gate, origin, clock, launch_id))
+    items.append(Claim(c, entry.process, entry.gate, origin, clock, launch_id, cadence))
     items += entry.tail
     if loading:
         items.append(Emit(c, VALUE, stepless=False))
@@ -315,15 +325,18 @@ def _claim_items(
 
 def _body(c: int, its: _Run) -> list[_Item]:
     """Claim ``c``'s iterations, the last stopped at its cut, with the stop slot
-    and the third party before the last."""
+    before the last and the third party just before the last one's body."""
     items: list[_Item] = []
     for k, it in enumerate(its.steps):
-        last = k == len(its.steps) - 1
-        if last:
-            items.append(_Slot(StopSlot.MID_CLAIM))
-            if its.mid is not None:
-                items.append(_third_party(c, its.mid))
-        items += iteration(c, it, cut=its.cut if last else Cut.DONE)
+        if k < len(its.steps) - 1:
+            items += iteration(c, it, cut=Cut.DONE)
+            continue
+        items.append(_Slot(StopSlot.MID_CLAIM))
+        head = opening(c, it)
+        items += head
+        if its.mid is not None:
+            items.append(_third_party(c, its.mid))
+        items += iteration(c, it, cut=its.cut)[len(head) :]
     return items
 
 
@@ -511,6 +524,7 @@ def _plain(
         origins=origins,
         loading=loading,
         clocks=(Clock.LOADED,),
+        cadences=(Cadence.COMMITS,),
         strides=(1,),
         shapes=shapes,
         mid_claim=(None,),
@@ -575,6 +589,7 @@ RESUMES = Space(
     origins=(Origins.FRESH, Origins.SAVED, Origins.OUTSIDE),
     loading=(False, True),
     clocks=(Clock.LOADED,),
+    cadences=(Cadence.COMMITS,),
     strides=(1,),
     shapes=(SAVES, UNLOGGED),
     mid_claim=(None,),
@@ -596,6 +611,7 @@ LOADING = Space(
     origins=(Origins.FRESH, Origins.SAVED, Origins.OUTSIDE),
     loading=(True,),
     clocks=(Clock.LOADED, Clock.ZERO),
+    cadences=(Cadence.COMMITS,),
     strides=(1,),
     shapes=(SAVES, UNLOGGED),
     mid_claim=(None,),
@@ -612,13 +628,16 @@ LOADING = Space(
 reading the loaded step or 0 (mycooc's counter), then stop mid-body or before
 a tick. Run with ``claims=2, steps=1, stops=0``."""
 
-_RELEASE = ThirdParty(Release(Outcome.LOST), None, ThirdPartyFinal.NULL, Honors.NONE)
+_RELEASE = ThirdParty(
+    Release(Outcome.LOST, Via.HELPER), None, ThirdPartyFinal.NULL, Honors.NONE
+)
 _NOTE = ThirdParty(Report(None), "note", ThirdPartyFinal.PROGRESS, Honors.NONE)
 
 THIRD_PARTIES = Space(
     origins=(Origins.FRESH, Origins.SAVED),
     loading=(False,),
     clocks=(Clock.LOADED,),
+    cadences=(Cadence.COMMITS,),
     strides=(1,),
     shapes=(SAVES,),
     mid_claim=(None,),
@@ -633,24 +652,31 @@ THIRD_PARTIES = Space(
     third_parties=(
         None,
         _RELEASE,
+        ThirdParty(
+            Release(Outcome.ERRORED, Via.DIRECT),
+            "NODE_FAIL",
+            ThirdPartyFinal.NULL,
+            Honors.NONE,
+        ),
         _NOTE,
         ThirdParty(Report(Killed(15)), None, ThirdPartyFinal.PROGRESS, Honors.NONE),
     ),
-    successors=(Successor.OWN_PROCESS, Successor.SAME_PROCESS),
+    successors=(Successor.OWN_PROCESS,),
     displaced=(),
     before_run=(None,),
     launches=(LaunchShape.NONE,),
     stop_slots=(),
 )
-"""Third parties' stops after a claim's end (a release, a note, a non-claimant's
-reap); a worker that saves after its own exit and writes a teardown value; and
-the next claim run by the same process. Run with ``claims=2, steps=1,
+"""Third parties' stops after a claim's end (a release through the helper or
+written directly, a note, a non-claimant's reap); a worker that saves after its
+own exit and writes a teardown value. Run with ``claims=2, steps=1,
 stops=0``."""
 
 RELEASED_LIVE = Space(
     origins=(Origins.FRESH,),
     loading=(False,),
     clocks=(Clock.LOADED,),
+    cadences=(Cadence.COMMITS,),
     strides=(1,),
     shapes=(
         SAVES,
@@ -668,15 +694,16 @@ RELEASED_LIVE = Space(
     launches=(LaunchShape.NONE,),
     stop_slots=(),
 )
-"""One claim that a third party's stop names while its worker lives, before its
+"""One claim that a third party's stop names while its worker lives, inside its
 last iteration: a release (mistaken, which fences it) or a note; the worker
-then runs that iteration and ends. ``BEATEN_PAST``'s and ``LATER_COMPLETED``'s
-shapes. Run with ``claims=1, steps=2, stops=0``."""
+then finishes that iteration and ends. ``BEATEN_PAST``'s and
+``LATER_COMPLETED``'s shapes. Run with ``claims=1, steps=2, stops=0``."""
 
 DISPLACEMENT = Space(
     origins=(Origins.FRESH, Origins.SAVED, Origins.OUTSIDE),
     loading=(False,),
     clocks=(Clock.LOADED,),
+    cadences=(Cadence.COMMITS,),
     strides=(1,),
     shapes=(SAVES,),
     mid_claim=(None,),
@@ -686,7 +713,7 @@ DISPLACEMENT = Space(
     successors=(Successor.OWN_PROCESS,),
     displaced=tuple(
         Displaced(by, tail)
-        for by in (Takeover(), Release(Outcome.LOST), Report(None))
+        for by in (Takeover(), Release(Outcome.LOST, Via.HELPER), Report(None))
         for tail in (
             Tail(value=True, completes=False, steps=(), end=KILL),
             Tail(value=False, completes=True, steps=(), end=KILL),
@@ -700,14 +727,16 @@ DISPLACEMENT = Space(
 """A worker displaced while it lives, by a takeover, a release, or a note and a
 takeover, that then writes a value, or finishes its iteration and beats, or
 runs on and exits, after its successor claimed; the successor resumes fresh,
-from a save, or from outside (at the step of a save the displaced worker made
-after the takeover, which no node names). Run with ``claims=2, steps=2,
-stops=0``."""
+from a save made before its claim, or from outside at step 0 or at a saved
+node's step. (A resume from a save the displaced worker made after the
+takeover, which no node names, is in the named goldens, not here.) Run with
+``claims=2, steps=2, stops=0``."""
 
 STOPS_AND_REAPS = Space(
     origins=(Origins.FRESH, Origins.SAVED),
     loading=(False,),
     clocks=(Clock.LOADED,),
+    cadences=(Cadence.COMMITS,),
     strides=(1,),
     shapes=(SAVES,),
     mid_claim=(None,),
@@ -725,3 +754,33 @@ STOPS_AND_REAPS = Space(
 )
 """Stop requests, the stops that clear them, and launches reaped or not, around
 two claims. Run with ``claims=2, steps=1, stops=1``."""
+
+WITHDRAWALS = Space(
+    origins=(Origins.FRESH,),
+    loading=(False,),
+    clocks=(Clock.LOADED,),
+    cadences=(Cadence.COMMITS, Cadence.TICKS),
+    strides=(1,),
+    shapes=(
+        SAVES,
+        Shape(
+            True, Tick.BEFORE_BODY, Watermark.CONTROL, Saving.IN_BODY, trailing=False
+        ),
+    ),
+    mid_claim=(
+        None,
+        ThirdParty(Report(None), None, ThirdPartyFinal.NULL, Honors.UNDISCHARGED),
+    ),
+    cuts=(Cut.DONE,),
+    endings=(COMPLETES, PREEMPTED),
+    third_parties=(None,),
+    successors=(Successor.OWN_PROCESS,),
+    displaced=(),
+    before_run=(None,),
+    launches=(LaunchShape.NONE,),
+    stop_slots=(StopSlot.MID_CLAIM,),
+)
+"""One claim, a stop before its last iteration, and a third party that clears
+it inside that iteration, after a tick-first loop's tick: whether the stop is
+honoured turns on the native counterpart's drain cadence, a heartbeat at the
+tick or the commit alone. Run with ``claims=1, steps=2, stops=1``."""

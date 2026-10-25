@@ -26,8 +26,11 @@ Every writer choice is an event or a declared field of one:
   convention); a third party's ``stopped`` names it (``ThirdPartyStop``, a
   release or a report); a later claim takes it over; its launch is reaped
   (``Reaped``);
-- **the native counterpart's own choice** where §4 leaves the 0.4.0 writer one:
-  whether a clean exit inside an open iteration discards it (``Exit.discards``).
+- **the native counterpart's own choices** where §3 and §4 leave the 0.4.0
+  writer one: whether a clean exit inside an open iteration discards it
+  (``Exit.discards``); whether its driver drains at a ``heartbeat()`` at each
+  0.3.0 tick (``Claim.cadence``); and whether a third party writes its death
+  report through ``report_death`` or directly (``Release.via``).
 
 What 0.3.0 pins (commits-and-lineage.md §7, "What 0.3.0 pins"), ``walk``
 enforces, raising ``NotConforming``: names are the writers' own (a worker's
@@ -94,6 +97,15 @@ class Gate(Enum):
     TAKEOVER = "takeover"  # it was held and its process lived, and the gate judged
     # its worker dead: a false-dead probe, a stale heartbeat, a stopped that
     # released nothing (a note), or a worker abandoned in its live process
+
+
+class Cadence(Enum):
+    """Where the native counterpart drains control, besides each ``commit()``
+    and its exit: its own driver's choice, which §4 leaves to it. The drains
+    decide which stops its exit honours (``truth.py``)."""
+
+    COMMITS = "commits"  # at each commit only: 0.4.0's ``steps()``, ``commit()`` alone
+    TICKS = "ticks"  # also at a ``heartbeat()`` at each logged 0.3.0 tick
 
 
 class Clock(Enum):
@@ -205,13 +217,25 @@ class Exited:
 ProcessEnd: TypeAlias = Killed | Exited
 
 
+class Via(Enum):
+    """How a third party writes its death report natively (§3)."""
+
+    HELPER = "helper"  # through ``report_death``, which writes nothing on a claim
+    # with a readable exit, nor a ``lost`` on one that has ended (the reclaim
+    # tool's, the launchers')
+    DIRECT = "direct"  # a ``supervisor.died`` it writes itself: "any party ...
+    # may write one", and a cause reports "whether or not the claim has ended"
+
+
 @dataclass(frozen=True)
 class Release:
     """A third party's ``stopped`` that reports its claim dead: 0.4.0's
-    ``supervisor.died`` with ``outcome``. Its writer may be wrong, and a live
-    worker it names is then released."""
+    ``supervisor.died`` with ``outcome``, written ``via`` the helper or
+    directly. Its writer may be wrong, and a live worker it names is then
+    released."""
 
     outcome: Outcome
+    via: Via
 
 
 @dataclass(frozen=True)
@@ -232,7 +256,7 @@ Intent: TypeAlias = Release | Report
 class Claim:
     """The claim's worker writes ``lifecycle.started`` from ``process``,
     re-emitting ``launch``, past the gate's ``gate`` verdict, with the state of
-    ``origin``."""
+    ``origin``. ``cadence`` is its native counterpart's drain cadence."""
 
     claim: int
     process: Process
@@ -240,6 +264,7 @@ class Claim:
     origin: Origin
     clock: Clock
     launch: str | None
+    cadence: Cadence
 
 
 @dataclass(frozen=True)

@@ -26,6 +26,7 @@ import json
 import uuid
 from collections import defaultdict
 from collections.abc import Callable, Iterator, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -57,6 +58,7 @@ from tests.migration_sim.enumerate import (
     RESUMES,
     STOPS_AND_REAPS,
     THIRD_PARTIES,
+    WITHDRAWALS,
     WORKER_SHAPES,
     LaunchShape,
     Origins,
@@ -69,6 +71,7 @@ from tests.migration_sim.history import (
     Beacon,
     Beat,
     Begin,
+    Cadence,
     Claim,
     Clock,
     CommitOf,
@@ -104,6 +107,7 @@ from tests.migration_sim.history import (
     ThirdPartyFinal,
     ThirdPartyStop,
     UserRecord,
+    Via,
     Watermark,
     conforms,
     walk,
@@ -148,6 +152,7 @@ FAMILIES = {
     "released-live": Family(1, 2, 0, RELEASED_LIVE),
     "displacement": Family(2, 2, 0, DISPLACEMENT),
     "stops-and-reaps": Family(2, 1, 1, STOPS_AND_REAPS),
+    "withdrawals": Family(1, 2, 1, WITHDRAWALS),
 }
 BOUND = 2000
 
@@ -282,11 +287,27 @@ def _h(*parts: Event | list[Event]) -> History:
 
 
 def _claim(claim: int, origin: Origin) -> Claim:
-    return Claim(claim, own_process(claim), Gate.FREE, origin, Clock.LOADED, None)
+    return Claim(
+        claim,
+        own_process(claim),
+        Gate.FREE,
+        origin,
+        Clock.LOADED,
+        None,
+        Cadence.COMMITS,
+    )
 
 
 def _takeover(claim: int, origin: Origin) -> Claim:
-    return Claim(claim, own_process(claim), Gate.TAKEOVER, origin, Clock.LOADED, None)
+    return Claim(
+        claim,
+        own_process(claim),
+        Gate.TAKEOVER,
+        origin,
+        Clock.LOADED,
+        None,
+        Cadence.COMMITS,
+    )
 
 
 def _exit(claim: int, *, completed: bool, error: str | None, final: FinalStep) -> Exit:
@@ -312,7 +333,7 @@ def _preempted(claim: int) -> list[Event]:
 
 
 def _released(claim: int, outcome: Outcome) -> ThirdPartyStop:
-    return ThirdPartyStop(claim, Release(outcome), None, NULL, Honors.NONE)
+    return ThirdPartyStop(claim, Release(outcome, Via.HELPER), None, NULL, Honors.NONE)
 
 
 def _emits(claim: int, names: tuple[str, ...]) -> list[Event]:
@@ -360,6 +381,7 @@ WORKER = Space(
     origins=(Origins.FRESH, Origins.SAVED),
     loading=(False,),
     clocks=(Clock.LOADED,),
+    cadences=(Cadence.COMMITS,),
     strides=(1,),
     shapes=(SAVES,),
     mid_claim=(None,),
@@ -492,7 +514,9 @@ STOP_AUTHOR_THIRD_PARTY = _h(
     run(0, range(3), SAVES),
     _killed(0),
     StopRequest("x0"),
-    ThirdPartyStop(0, Release(Outcome.LOST), None, PROGRESS, Honors.UNDISCHARGED),
+    ThirdPartyStop(
+        0, Release(Outcome.LOST, Via.HELPER), None, PROGRESS, Honors.UNDISCHARGED
+    ),
 )
 
 
@@ -525,10 +549,12 @@ TPS_CLEARS_STAGED = _h(
 )
 TPS_NOTE_AFTER_EXIT = _after_exit(Report(None), None)
 TPS_LOSER_REAPED_AFTER_EXIT = _after_exit(Report(Exited(1)), None)
-TPS_RELEASE_AFTER_EXIT = _after_exit(Release(Outcome.LOST), None)
-TPS_CAUSE_AFTER_EXIT = _after_exit(Release(Outcome.ERRORED), "slurm: NODE_FAIL")
+TPS_RELEASE_AFTER_EXIT = _after_exit(Release(Outcome.LOST, Via.HELPER), None)
+TPS_CAUSE_AFTER_EXIT = _after_exit(
+    Release(Outcome.ERRORED, Via.HELPER), "slurm: NODE_FAIL"
+)
 TPS_NOTE_WITH_ERROR_AFTER_EXIT = _after_exit(Report(None), "slurm: NODE_FAIL")
-TPS_RELEASE_OF_DEAD = _after_death(Release(Outcome.LOST))
+TPS_RELEASE_OF_DEAD = _after_death(Release(Outcome.LOST, Via.HELPER))
 TPS_NOTE_ON_DEAD = _after_death(Report(None))
 
 # value-claim: H1 the successor's own value; H2 a released worker's late value,
@@ -864,7 +890,9 @@ def _later_completed(intent: Release | Report, finished: bool) -> History:
 
 LATER_COMPLETED_FINISHED = _later_completed(Report(None), finished=True)
 LATER_COMPLETED_YIELDED = _later_completed(Report(None), finished=False)
-LATER_COMPLETED_RELEASED = _later_completed(Release(Outcome.LOST), finished=True)
+LATER_COMPLETED_RELEASED = _later_completed(
+    Release(Outcome.LOST, Via.HELPER), finished=True
+)
 
 
 # BEATEN_PAST: beats 0-2; a stopped with an error; a value at 3; a beat at 3; a
@@ -880,7 +908,7 @@ def _beaten_past(intent: Release | Report) -> History:
 
 
 BEATEN_PAST_NOTE = _beaten_past(Report(None))
-BEATEN_PAST_RELEASED = _beaten_past(Release(Outcome.ERRORED))
+BEATEN_PAST_RELEASED = _beaten_past(Release(Outcome.ERRORED, Via.HELPER))
 
 
 # STOPPED_AFTER_ITS_REAP: launched L; the claim with L's handle; values and beats
@@ -888,7 +916,9 @@ BEATEN_PAST_RELEASED = _beaten_past(Release(Outcome.ERRORED))
 def _after_reap(finished: bool) -> History:
     return _h(
         Launched("L0", own_process(0)),
-        Claim(0, own_process(0), Gate.FREE, Fresh(), Clock.LOADED, "L0"),
+        Claim(
+            0, own_process(0), Gate.FREE, Fresh(), Clock.LOADED, "L0", Cadence.COMMITS
+        ),
         run(0, range(3), SAVES),
         (_finished if finished else _open)(0, 3, VALUE),
         _killed(0),
@@ -1013,7 +1043,7 @@ _ERR = Outcome.ERRORED
 def _launched(
     claim: int, process: Process, gate: Gate, origin: Origin, launch: str
 ) -> Claim:
-    return Claim(claim, process, gate, origin, Clock.LOADED, launch)
+    return Claim(claim, process, gate, origin, Clock.LOADED, launch, Cadence.COMMITS)
 
 
 GOLDENS: dict[str, tuple[list[Row], History]] = {
@@ -1089,7 +1119,9 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _after(0, 1, LOSS),
             _finished(0, 2),
             Halt(0, Exited(1)),
-            ThirdPartyStop(0, Release(_ERR), BACKSTOP, PROGRESS, Honors.NONE),
+            ThirdPartyStop(
+                0, Release(_ERR, Via.HELPER), BACKSTOP, PROGRESS, Honors.NONE
+            ),
             _claim(1, FromSave(CommitOf(0, 2))),
             _after(1, 3, LOSS),
             _after(1, 4, LOSS),
@@ -1203,7 +1235,15 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _after(0, 0, LOSS),
             _after(0, 1, LOSS),
             _preempted(0),
-            Claim(1, _N(1), Gate.FREE, FromSave(CommitOf(0, 1)), Clock.ZERO, None),
+            Claim(
+                1,
+                _N(1),
+                Gate.FREE,
+                FromSave(CommitOf(0, 1)),
+                Clock.ZERO,
+                None,
+                Cadence.COMMITS,
+            ),
             Emit(1, STATUS, stepless=False),
             _after(1, 2, LOSS),
             _completes(1),
@@ -1268,7 +1308,15 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _finished(0, 2, LOSS),
             _exit(0, completed=False, error="CUDA out of memory", final=YIELDED),
             Halt(0, Exited(1)),
-            Claim(1, _N(1), Gate.FREE, FromSave(CommitOf(0, 2)), Clock.ZERO, None),
+            Claim(
+                1,
+                _N(1),
+                Gate.FREE,
+                FromSave(CommitOf(0, 2)),
+                Clock.ZERO,
+                None,
+                Cadence.COMMITS,
+            ),
             Emit(1, STATUS, stepless=False),
             _exit(1, completed=False, error="OSError", final=YIELDED),
             Halt(1, Exited(1)),
@@ -1304,7 +1352,7 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _claim(1, FromSave(CommitOf(0, 0))),
             Emit(1, STATUS, stepless=False),
             Halt(1, Exited(1)),
-            ThirdPartyStop(1, Release(_ERR), BACKSTOP, NULL, Honors.NONE),
+            ThirdPartyStop(1, Release(_ERR, Via.HELPER), BACKSTOP, NULL, Honors.NONE),
             _claim(2, FromSave(CommitOf(0, 0))),
             _after(2, 1, LOSS),
             _completes(2),
@@ -1338,7 +1386,7 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _claim(1, FromSave(CommitOf(0, 2))),
             Emit(1, STATUS, stepless=False),
             Halt(1, Exited(1)),
-            ThirdPartyStop(1, Release(_ERR), BACKSTOP, NULL, Honors.NONE),
+            ThirdPartyStop(1, Release(_ERR, Via.HELPER), BACKSTOP, NULL, Honors.NONE),
             _claim(2, FromSave(CommitOf(0, 2))),
             _after(2, 3, LOSS),
             _completes(2),
@@ -1354,7 +1402,9 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _claim(1, FromSave(CommitOf(0, 1))),
             _finished(1, 2, LOSS, STATUS),
             Halt(1, Exited(1)),
-            ThirdPartyStop(1, Release(_ERR), BACKSTOP, PROGRESS, Honors.NONE),
+            ThirdPartyStop(
+                1, Release(_ERR, Via.HELPER), BACKSTOP, PROGRESS, Honors.NONE
+            ),
             _claim(2, FromSave(CommitOf(1, 0))),
             _after(2, 3, LOSS),
             _completes(2),
@@ -1434,7 +1484,9 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _claim(0, Fresh()),
             _after(0, 0),
             Halt(0, Exited(1)),
-            ThirdPartyStop(0, Release(_ERR), BACKSTOP, PROGRESS, Honors.NONE),
+            ThirdPartyStop(
+                0, Release(_ERR, Via.HELPER), BACKSTOP, PROGRESS, Honors.NONE
+            ),
             StopRequest("staged"),
             ThirdPartyStop(0, Report(None), None, PROGRESS, Honors.UNDISCHARGED),
         ),
@@ -1455,7 +1507,9 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _claim(0, Fresh()),
             _after(0, 0),
             _preempted(0),
-            ThirdPartyStop(0, Release(_ERR), "slurm: NODE_FAIL", NULL, Honors.NONE),
+            ThirdPartyStop(
+                0, Release(_ERR, Via.HELPER), "slurm: NODE_FAIL", NULL, Honors.NONE
+            ),
         ),
     ),
     "LATER_DEFAULT": (
@@ -1477,7 +1531,11 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             Exit(0, False, None, YIELDED, Drain.TICKS, discards=False),
             Halt(0, Exited(0)),
             ThirdPartyStop(
-                0, Release(_ERR), "slurm: NODE_FAIL", NULL, Honors.UNDISCHARGED
+                0,
+                Release(_ERR, Via.HELPER),
+                "slurm: NODE_FAIL",
+                NULL,
+                Honors.UNDISCHARGED,
             ),
         ),
     ),
@@ -1516,7 +1574,9 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _claim(0, Fresh()),
             _after(0, 0),
             Halt(0, Exited(1)),
-            ThirdPartyStop(0, Release(_ERR), BACKSTOP, PROGRESS, Honors.NONE),
+            ThirdPartyStop(
+                0, Release(_ERR, Via.HELPER), BACKSTOP, PROGRESS, Honors.NONE
+            ),
             ThirdPartyStop(
                 0,
                 Report(Exited(137)),
@@ -1556,7 +1616,9 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _after(0, 1),
             _open(0, 2, LOSS),
             _killed(0),
-            ThirdPartyStop(0, Release(Outcome.PREEMPTED), None, NULL, Honors.NONE),
+            ThirdPartyStop(
+                0, Release(Outcome.PREEMPTED, Via.HELPER), None, NULL, Honors.NONE
+            ),
         ),
     ),
     "RECLAIM_OF_10_23": (
@@ -1567,7 +1629,9 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _after(0, 1),
             _open(0, 2, LOSS),
             _killed(0),
-            ThirdPartyStop(0, Release(_ERR), goldens.SACCT, NULL, Honors.NONE),
+            ThirdPartyStop(
+                0, Release(_ERR, Via.HELPER), goldens.SACCT, NULL, Honors.NONE
+            ),
         ),
     ),
     "REPORTED_LATER_BOUNDARY": (
@@ -1579,7 +1643,9 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _claim(1, FromSave(CommitOf(0, 0))),
             _after(1, 1),
             _killed(1),
-            ThirdPartyStop(1, Release(Outcome.LOST), None, PROGRESS, Honors.NONE),
+            ThirdPartyStop(
+                1, Release(Outcome.LOST, Via.HELPER), None, PROGRESS, Honors.NONE
+            ),
         ),
     ),
     # --- attributed deaths
@@ -1647,6 +1713,36 @@ write: RECLAIMED, LATER_RELEASE and CLAIMLESS_RELEASE each hold the reclaim
 tool's malformed ``stopped`` body. The audit's goldens and the third place are
 named above with their contents, as §7 states them."""
 
+
+# The native drain cadence: iteration 0 finishes; stop x0 arrives; the worker
+# beats; a third party withdraws x0; iteration 1 finishes; the worker writes a
+# preempted exit. A counterpart that drains at a heartbeat at each tick took x0
+# before its withdrawal and honours it; one that drains at its commits only
+# first reads x0 with its withdrawal, and honours nothing.
+def _drained(cadence: Cadence) -> History:
+    return _h(
+        Claim(0, own_process(0), Gate.FREE, Fresh(), Clock.LOADED, None, cadence),
+        Begin(0, 0),
+        Finish(0, True),
+        StopRequest("x0"),
+        Beat(0, CONTROL),
+        ThirdPartyStop(0, Report(None), None, NULL, Honors.UNDISCHARGED),
+        _after(0, 1),
+        _preempted(0),
+    )
+
+
+DRAINED_AT_THE_TICK = _drained(Cadence.TICKS)
+DRAINED_AT_THE_COMMIT = _drained(Cadence.COMMITS)
+
+# A third party's release written directly, not through report_death: a death
+# report even on a claim whose exit is readable (§3: "any party ... may write
+# one"; a cause reports "whether or not the claim has ended").
+TPS_RELEASE_AFTER_EXIT_DIRECT = _after_exit(Release(Outcome.LOST, Via.DIRECT), None)
+TPS_CAUSE_AFTER_EXIT_DIRECT = _after_exit(
+    Release(Outcome.ERRORED, Via.DIRECT), "slurm: NODE_FAIL"
+)
+
 NAMED = {
     "stop-author H1": STOP_AUTHOR_EXIT,
     "stop-author H2": STOP_AUTHOR_THIRD_PARTY,
@@ -1713,6 +1809,10 @@ NAMED = {
     "displaced, finished after the release": DISPLACED_SAVED_AFTER,
     "post-exit save": POST_EXIT_SAVE,
     "post-exit save, the commit's": POST_EXIT_COMMIT,
+    "drained at the tick": DRAINED_AT_THE_TICK,
+    "drained at the commit": DRAINED_AT_THE_COMMIT,
+    "third-party-stop, a direct release after the exit": TPS_RELEASE_AFTER_EXIT_DIRECT,
+    "third-party-stop, a direct cause after the exit": TPS_CAUSE_AFTER_EXIT_DIRECT,
     **{f"golden {name}": history for name, (_, history) in GOLDENS.items()},
 }
 
@@ -1765,6 +1865,15 @@ AMBIGUOUS = [
         "displaced, saved before the release", "displaced, finished after the release"
     ),
     Shared("post-exit save", "post-exit save, the commit's"),
+    Shared("drained at the tick", "drained at the commit"),
+    Shared(
+        "third-party-stop H1, a note after the exit",
+        "third-party-stop, a direct release after the exit",
+    ),
+    Shared(
+        "third-party-stop, a note with an error after the exit",
+        "third-party-stop, a direct cause after the exit",
+    ),
 ]
 """Same log, different truths: each pair needs a site."""
 
@@ -1781,9 +1890,9 @@ SETTLED = [
 ]
 """Same log, same truth: a takeover writes the claim path's death report, as a
 dead claim's successor does, and a worker that writes nothing after it leaves
-nothing to fence; and no death report is written on a claim whose exit is
-readable (§3's ``report_death``), so its third party's meaning does not matter
-there."""
+nothing to fence; and a third party that reports through ``report_death``
+writes nothing on a claim whose exit is readable, so there a release says what
+a note says. Written directly, it is a death report (``AMBIGUOUS``)."""
 
 
 @pytest.mark.parametrize("name", list(NAMED))
@@ -1934,6 +2043,32 @@ def test_a_cause_after_the_exit_reports_no_death() -> None:
     exit" (§3). Golden LATER_ERROR states a death."""
     assert describe(TPS_CAUSE_AFTER_EXIT)[-1] == "c0:exit extendable <- c0@1 []"
     assert not any("died" in line for line in describe(NAMED["golden LATER_ERROR"]))
+
+
+def test_a_direct_report_is_a_death_even_after_the_exit() -> None:
+    """``Via.DIRECT``: a party that writes ``supervisor.died`` itself reports a
+    death whatever the claim's state, the history §7's ``cause-only`` and
+    ``every-report`` were declared for."""
+    assert describe(TPS_RELEASE_AFTER_EXIT_DIRECT)[-2:] == [
+        "c0:exit extendable <- c0@1 []",
+        "c0 died lost",
+    ]
+    assert describe(TPS_CAUSE_AFTER_EXIT_DIRECT)[-1] == "c0 died errored"
+
+
+def test_the_drain_cadence_decides_what_the_exit_honours() -> None:
+    """The 0.3.0 exit honours x0 either way (the reference Worker's ``_die``);
+    the native exit honours it only where a heartbeat at the tick drained it
+    before its withdrawal."""
+    assert render(DRAINED_AT_THE_TICK).honored == render(DRAINED_AT_THE_COMMIT).honored
+    assert describe(DRAINED_AT_THE_TICK)[-2:] == [
+        "c0@1 <- c0@0 []",
+        "c0:exit extendable <- c0@1 [] honors x0",
+    ]
+    assert describe(DRAINED_AT_THE_COMMIT)[-2:] == [
+        "c0@1 <- c0@0 []",
+        "c0:exit extendable <- c0@1 []",
+    ]
 
 
 def test_value_claim() -> None:
@@ -2344,13 +2479,48 @@ def test_each_goldens_truth(name: str) -> None:
         assert not any(" died " in line for line in lines)
 
 
-def test_a_displaced_workers_later_records_are_no_nodes() -> None:
-    """DISPLACED: A's beat at 2 after B's claim is no commit, and A's own
-    stopped no exit node; A's value at 2 is in no commit (§7 commits the beat,
-    takes the stopped for A's exit, and gives the value to B)."""
-    lines = describe(GOLDENS["DISPLACED"][1])
-    assert not any(line.startswith(("c0@2", "c0:exit")) for line in lines)
-    assert not any("loss@2" in line for line in lines)
+DISPLACED_NODES: dict[str, list[str]] = {
+    "DISPLACED": ["c0@0 <- root [loss@0]", "c0@1 <- c0@0 []"],
+    "ABOVE": ["c0@0 <- root []", "c0@1 <- c0@0 []"],
+    "DISPLACEMENT_PARENT": ["c0@0 <- root [loss@0]", "c0@1 <- c0@0 [loss@1]"],
+    "LOADING_RETRY_BESIDE_A_DISPLACED_WORKER": ["c0@0 <- root []", "c0@1 <- c0@0 []"],
+    "RESUMED_FROM_A_STEP_COMMITTED_AFTER_THE_CLAIM": [
+        "c0@0 <- root []",
+        "c0@1 <- c0@0 []",
+    ],
+    "DOUBLY_DISPLACED": [
+        "c0@0 <- root []",
+        "c0@1 <- c0@0 []",
+        "c0@2 <- c0@1 []",
+        "c1@1 <- c0@0 []",
+    ],
+    "RESUMED_FROM_A_TICK_SKIPPED_AFTER_THE_CLAIM": ["c0@0 <- root []"],
+    "RESUMED_FROM_A_TICK_SKIPPED_ACROSS_THE_CLAIM": [
+        "c0@0 <- root []",
+        "c0@1 <- c0@0 []",
+        "c0@2 <- c0@1 []",
+    ],
+    "RESUMED_ON_AN_OLDER_CLAIMS_STEP": ["c1@1 <- c0@0 []"],
+    "TWO_CLAIMS_ONE_LAUNCH": ["c0@0 <- root []"],
+}
+"""Every node of each displacement golden's taken-over claims: the iterations
+each finished before its takeover, and no exit node."""
+
+
+@pytest.mark.parametrize("name", list(DISPLACED_NODES))
+def test_no_node_after_the_fence(name: str) -> None:
+    """D6: a displaced worker's beats, values and stopped after its successor's
+    claim are no nodes (§4's fence); §7 commits such a beat and reads such a
+    stopped as the worker's exit."""
+    history = GOLDENS[name][1]
+    taken = [
+        ev.claim - 1
+        for ev in history.events
+        if isinstance(ev, Claim) and ev.gate is Gate.TAKEOVER
+    ]
+    prefixes = tuple(f"c{c}{mark}" for c in taken for mark in ("@", ":exit"))
+    nodes = [line for line in describe(history) if line.startswith(prefixes)]
+    assert nodes == DISPLACED_NODES[name]
 
 
 # ----- the rest of the type ----------------------------------------------------------
@@ -2439,14 +2609,30 @@ def test_stepless_records_are_liveness_and_registers() -> None:
             [
                 _claim(0, Fresh()),
                 _killed(0),
-                Claim(1, own_process(0), Gate.FREE, Fresh(), Clock.LOADED, None),
+                Claim(
+                    1,
+                    own_process(0),
+                    Gate.FREE,
+                    Fresh(),
+                    Clock.LOADED,
+                    None,
+                    Cadence.COMMITS,
+                ),
             ],
             "has ended",
         ),
         (  # a reap follows its process's end
             [
                 Launched("L", own_process(0)),
-                Claim(0, own_process(0), Gate.FREE, Fresh(), Clock.LOADED, "L"),
+                Claim(
+                    0,
+                    own_process(0),
+                    Gate.FREE,
+                    Fresh(),
+                    Clock.LOADED,
+                    "L",
+                    Cadence.COMMITS,
+                ),
                 Reaped("L", Exited(0)),
             ],
             "reaped while it lives",
@@ -2462,6 +2648,47 @@ def test_the_model_refuses_what_no_conforming_writer_does(
 ) -> None:
     with pytest.raises(NotConforming, match=rule):
         walk(History(tuple(events)))
+
+
+def test_a_fenced_workers_save_of_an_earlier_node_lands() -> None:
+    """m3: a released worker's save after its tick, of the node it committed
+    before the release, lands, since natively the save runs inside that
+    commit; a later claim may load it."""
+    h = _h(
+        _claim(0, Fresh()),
+        Begin(0, 0),
+        Finish(0, False),
+        _released(0, Outcome.LOST),
+        Beat(0, CONTROL),
+        Save(0),
+        _killed(0),
+        _claim(1, FromSave(CommitOf(0, 0))),
+        _killed(1),
+    )
+    assert describe(h)[-1] == "c1 starts from c0@0"
+
+
+def test_a_save_of_no_node_is_accepted_and_names_none() -> None:
+    """m7: a save after a torn exit is conforming 0.3.0 and names no node, so
+    nothing can load it as one."""
+    torn: list[Event] = [
+        _claim(0, Fresh()),
+        *_open(0, 0, VALUE),
+        _exit(0, completed=False, error="boom", final=YIELDED),
+        Save(0),
+        Halt(0, Exited(1)),
+    ]
+    walk(_h(torn))
+    with pytest.raises(NoCounterpart, match="no save of"):
+        walk(_h(torn, _claim(1, FromSave(ExitOf(0))), _killed(1)))
+
+
+def test_a_refused_prefix_is_pruned() -> None:
+    """m5: a space whose stride 0 labels an iteration below its floor yields
+    only conforming histories, and never raises."""
+    widened = replace(RESUMES, strides=(0, 1))
+    found = list(histories(claims=2, steps=1, stops=0, space=widened))
+    assert found and all(conforms(h) for h in found)
 
 
 def test_a_fenced_workers_later_node_has_no_counterpart() -> None:
