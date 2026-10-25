@@ -10,8 +10,9 @@ allow, one at a time. A history is built claim by claim, in claim order:
 2. **its iterations**: 0 to ``steps`` of them, each one of ``space.shapes``,
    labelled from the origin's floor upward by one of ``space.strides`` each,
    with one of ``space.mid_claim`` (a third party's ``stopped`` naming the live
-   claim) just before its last one's body, after a tick-first loop's tick; and
-   its native counterpart's drain cadence, one of ``space.cadences``;
+   claim) in its last one, at one of ``space.mid_positions`` (before it begins,
+   or just before its body, after a tick-first loop's tick); and its native
+   counterpart's drain cadence, one of ``space.cadences``;
 3. **its end**: its last iteration stopped at one of ``space.cuts``, then one of
    ``space.endings``, then one of ``space.third_parties`` (a third party's
    ``stopped`` naming it); and, for every claim but the last, one of
@@ -157,6 +158,14 @@ class Displaced:
     tail: Tail
 
 
+class MidPosition(Enum):
+    """Where a third party's ``stopped`` inside a live claim goes, in its last
+    iteration. The two differ only where a tick-first loop ticks between them."""
+
+    BEFORE_ITERATION = "before-iteration"  # before the iteration begins
+    BEFORE_BODY = "before-body"  # just before its body, after a tick-first tick
+
+
 class StopSlot(Enum):
     """Where a stop request may go."""
 
@@ -176,6 +185,7 @@ class Space:
     strides: tuple[int, ...]
     shapes: tuple[Shape, ...]
     mid_claim: tuple[ThirdParty | None, ...]
+    mid_positions: tuple[MidPosition, ...]
     cuts: tuple[Cut, ...]
     endings: tuple[Ending, ...]
     third_parties: tuple[ThirdParty | None, ...]
@@ -205,11 +215,12 @@ class _Entry(NamedTuple):
 
 
 class _Run(NamedTuple):
-    """A claim's iterations, the third party before its last, and where its
-    last one stops."""
+    """A claim's iterations, the third party in its last and where it goes,
+    and where its last one stops."""
 
     steps: list[Step]
     mid: ThirdParty | None
+    position: MidPosition
     cut: Cut
 
 
@@ -325,17 +336,21 @@ def _claim_items(
 
 def _body(c: int, its: _Run) -> list[_Item]:
     """Claim ``c``'s iterations, the last stopped at its cut, with the stop slot
-    before the last and the third party just before the last one's body."""
+    before the last and the third party at its position in the last."""
     items: list[_Item] = []
     for k, it in enumerate(its.steps):
         if k < len(its.steps) - 1:
             items += iteration(c, it, cut=Cut.DONE)
             continue
         items.append(_Slot(StopSlot.MID_CLAIM))
+        mid: list[Event] = [] if its.mid is None else [_third_party(c, its.mid)]
         head = opening(c, it)
-        items += head
-        if its.mid is not None:
-            items.append(_third_party(c, its.mid))
+        if its.position is MidPosition.BEFORE_ITERATION:
+            items += mid + head
+        elif its.position is MidPosition.BEFORE_BODY:
+            items += head + mid
+        else:
+            assert_never(its.position)
         items += iteration(c, it, cut=its.cut)[len(head) :]
     return items
 
@@ -415,8 +430,19 @@ def _iterations(
                 labels = list(itertools.accumulate(strides, initial=floor - 1))[1:]
                 its = [Step(s, shape) for s, shape in zip(labels, shapes)]
                 for mid in space.mid_claim if its else (None,):
-                    for cut in _cuts(its, space.cuts):
-                        yield _Run(its, mid, cut)
+                    for position in _positions(its, mid, space.mid_positions):
+                        for cut in _cuts(its, space.cuts):
+                            yield _Run(its, mid, position, cut)
+
+
+def _positions(
+    its: list[Step], mid: ThirdParty | None, positions: tuple[MidPosition, ...]
+) -> tuple[MidPosition, ...]:
+    """The positions that differ: only a tick-first last iteration ticks
+    between them."""
+    if mid is not None and its[-1].shape.tick is Tick.BEFORE_BODY:
+        return positions
+    return positions[:1]
 
 
 def _floor(origin: Origin, saved: dict[NodeRef, int]) -> int:
@@ -528,6 +554,7 @@ def _plain(
         strides=(1,),
         shapes=shapes,
         mid_claim=(None,),
+        mid_positions=(MidPosition.BEFORE_BODY,),
         cuts=cuts,
         endings=endings,
         third_parties=(None,),
@@ -593,6 +620,7 @@ RESUMES = Space(
     strides=(1,),
     shapes=(SAVES, UNLOGGED),
     mid_claim=(None,),
+    mid_positions=(MidPosition.BEFORE_BODY,),
     cuts=(Cut.BEFORE_TICK,),
     endings=(KILL,),
     third_parties=(None,),
@@ -615,6 +643,7 @@ LOADING = Space(
     strides=(1,),
     shapes=(SAVES, UNLOGGED),
     mid_claim=(None,),
+    mid_positions=(MidPosition.BEFORE_BODY,),
     cuts=(Cut.MID_BODY, Cut.BEFORE_TICK),
     endings=(KILL, PREEMPTED),
     third_parties=(None,),
@@ -641,6 +670,7 @@ THIRD_PARTIES = Space(
     strides=(1,),
     shapes=(SAVES,),
     mid_claim=(None,),
+    mid_positions=(MidPosition.BEFORE_BODY,),
     cuts=(Cut.MID_BODY,),
     endings=(
         KILL,
@@ -685,6 +715,7 @@ RELEASED_LIVE = Space(
         ),
     ),
     mid_claim=(None, _RELEASE, _NOTE),
+    mid_positions=(MidPosition.BEFORE_BODY, MidPosition.BEFORE_ITERATION),
     cuts=(Cut.MID_BODY, Cut.BEFORE_TICK, Cut.DONE),
     endings=(KILL, COMPLETES, PREEMPTED),
     third_parties=(None,),
@@ -694,9 +725,9 @@ RELEASED_LIVE = Space(
     launches=(LaunchShape.NONE,),
     stop_slots=(),
 )
-"""One claim that a third party's stop names while its worker lives, inside its
-last iteration: a release (mistaken, which fences it) or a note; the worker
-then finishes that iteration and ends. ``BEATEN_PAST``'s and
+"""One claim that a third party's stop names while its worker lives, in its last
+iteration, before it begins or before its body: a release (mistaken, which
+fences it) or a note; the worker then finishes that iteration and ends. ``BEATEN_PAST``'s and
 ``LATER_COMPLETED``'s shapes. Run with ``claims=1, steps=2, stops=0``."""
 
 DISPLACEMENT = Space(
@@ -707,6 +738,7 @@ DISPLACEMENT = Space(
     strides=(1,),
     shapes=(SAVES,),
     mid_claim=(None,),
+    mid_positions=(MidPosition.BEFORE_BODY,),
     cuts=(Cut.MID_BODY, Cut.BEFORE_TICK),
     endings=(COMPLETES,),
     third_parties=(None,),
@@ -740,6 +772,7 @@ STOPS_AND_REAPS = Space(
     strides=(1,),
     shapes=(SAVES,),
     mid_claim=(None,),
+    mid_positions=(MidPosition.BEFORE_BODY,),
     cuts=(Cut.MID_BODY,),
     endings=(KILL, PREEMPTED),
     third_parties=(
@@ -771,6 +804,7 @@ WITHDRAWALS = Space(
         None,
         ThirdParty(Report(None), None, ThirdPartyFinal.NULL, Honors.UNDISCHARGED),
     ),
+    mid_positions=(MidPosition.BEFORE_BODY, MidPosition.BEFORE_ITERATION),
     cuts=(Cut.DONE,),
     endings=(COMPLETES, PREEMPTED),
     third_parties=(None,),
@@ -781,6 +815,7 @@ WITHDRAWALS = Space(
     stop_slots=(StopSlot.MID_CLAIM,),
 )
 """One claim, a stop before its last iteration, and a third party that clears
-it inside that iteration, after a tick-first loop's tick: whether the stop is
-honoured turns on the native counterpart's drain cadence, a heartbeat at the
-tick or the commit alone. Run with ``claims=1, steps=2, stops=1``."""
+it in that iteration, before it begins or after a tick-first loop's tick.
+Cleared after the tick, whether the stop is honoured turns on the native
+counterpart's drain cadence, a heartbeat at the tick or the commit alone;
+cleared before it, the stop is honoured under neither. Run with ``claims=1, steps=2, stops=1``."""

@@ -224,7 +224,9 @@ class Via(Enum):
     # with a readable exit, nor a ``lost`` on one that has ended (the reclaim
     # tool's, the launchers')
     DIRECT = "direct"  # a ``supervisor.died`` it writes itself: "any party ...
-    # may write one", and a cause reports "whether or not the claim has ended"
+    # may write one". A cause reports "whether or not the claim has ended", but
+    # evidence without one (``lost``) "reports only while the claim is held",
+    # which binds every party (§3, "Who writes a death report")
 
 
 @dataclass(frozen=True)

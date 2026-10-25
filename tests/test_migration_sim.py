@@ -61,6 +61,7 @@ from tests.migration_sim.enumerate import (
     WITHDRAWALS,
     WORKER_SHAPES,
     LaunchShape,
+    MidPosition,
     Origins,
     Space,
     StopSlot,
@@ -385,6 +386,7 @@ WORKER = Space(
     strides=(1,),
     shapes=(SAVES,),
     mid_claim=(None,),
+    mid_positions=(MidPosition.BEFORE_BODY,),
     cuts=(Cut.MID_BODY, Cut.DONE),
     endings=(KILL, COMPLETES, PREEMPTED),
     third_parties=(None,),
@@ -1735,9 +1737,10 @@ def _drained(cadence: Cadence) -> History:
 DRAINED_AT_THE_TICK = _drained(Cadence.TICKS)
 DRAINED_AT_THE_COMMIT = _drained(Cadence.COMMITS)
 
-# A third party's release written directly, not through report_death: a death
-# report even on a claim whose exit is readable (§3: "any party ... may write
-# one"; a cause reports "whether or not the claim has ended").
+# A third party's release written directly, not through report_death: with a
+# cause, a death report even on a claim whose exit is readable (§3: "any party
+# ... may write one"; a cause reports "whether or not the claim has ended");
+# without one, none, since it "reports only while the claim is held".
 TPS_RELEASE_AFTER_EXIT_DIRECT = _after_exit(Release(Outcome.LOST, Via.DIRECT), None)
 TPS_CAUSE_AFTER_EXIT_DIRECT = _after_exit(
     Release(Outcome.ERRORED, Via.DIRECT), "slurm: NODE_FAIL"
@@ -1867,10 +1870,6 @@ AMBIGUOUS = [
     Shared("post-exit save", "post-exit save, the commit's"),
     Shared("drained at the tick", "drained at the commit"),
     Shared(
-        "third-party-stop H1, a note after the exit",
-        "third-party-stop, a direct release after the exit",
-    ),
-    Shared(
         "third-party-stop, a note with an error after the exit",
         "third-party-stop, a direct cause after the exit",
     ),
@@ -1884,15 +1883,20 @@ SETTLED = [
         "third-party-stop, a release after the exit",
     ),
     Shared(
+        "third-party-stop H1, a note after the exit",
+        "third-party-stop, a direct release after the exit",
+    ),
+    Shared(
         "third-party-stop, a note with an error after the exit",
         "third-party-stop, a cause after the exit",
     ),
 ]
 """Same log, same truth: a takeover writes the claim path's death report, as a
 dead claim's successor does, and a worker that writes nothing after it leaves
-nothing to fence; and a third party that reports through ``report_death``
-writes nothing on a claim whose exit is readable, so there a release says what
-a note says. Written directly, it is a death report (``AMBIGUOUS``)."""
+nothing to fence; and on a claim whose exit is readable a release says what a
+note says, unless it has a cause and is written directly (``AMBIGUOUS``): the
+helper ``report_death`` writes nothing there, and evidence without a cause
+(``lost``) reports only while the claim is held, whoever writes it (§3)."""
 
 
 @pytest.mark.parametrize("name", list(NAMED))
@@ -2045,15 +2049,16 @@ def test_a_cause_after_the_exit_reports_no_death() -> None:
     assert not any("died" in line for line in describe(NAMED["golden LATER_ERROR"]))
 
 
-def test_a_direct_report_is_a_death_even_after_the_exit() -> None:
+def test_a_direct_report_after_the_exit_is_a_death_only_with_a_cause() -> None:
     """``Via.DIRECT``: a party that writes ``supervisor.died`` itself reports a
-    death whatever the claim's state, the history §7's ``cause-only`` and
-    ``every-report`` were declared for."""
-    assert describe(TPS_RELEASE_AFTER_EXIT_DIRECT)[-2:] == [
+    cause "whether or not the claim has ended", but evidence without a cause
+    "reports only while the claim is held" (§3), so a direct ``lost`` after the
+    exit is no death report."""
+    assert not any(" died " in line for line in describe(TPS_RELEASE_AFTER_EXIT_DIRECT))
+    assert describe(TPS_CAUSE_AFTER_EXIT_DIRECT)[-2:] == [
         "c0:exit extendable <- c0@1 []",
-        "c0 died lost",
+        "c0 died errored",
     ]
-    assert describe(TPS_CAUSE_AFTER_EXIT_DIRECT)[-1] == "c0 died errored"
 
 
 def test_the_drain_cadence_decides_what_the_exit_honours() -> None:

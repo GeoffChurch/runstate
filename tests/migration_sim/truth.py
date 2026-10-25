@@ -39,12 +39,15 @@ from the history so:
   rewind or exit node after it, and its pending values stay outside every
   lineage.
 - **``deaths``**: the death reports a native run writes, each with its outcome:
-  - a third party's release. Through the helper (``Via.HELPER``) it is written
-    unless the claim has an exit node (``report_death`` "returns ``None`` when
-    the claim has a readable exit", §3, and the reclaim tool reports through
-    it), or it is ``lost`` and the claim has already ended (§3). Written
-    directly (``Via.DIRECT``: "any party ... may write one", and a cause
-    reports "whether or not the claim has ended"), it always is;
+  - a third party's release. A ``lost`` one is never written on a claim that
+    has already ended: "Evidence without a cause reports only while the claim
+    is held" binds every party that writes a death report (§3, "Who writes a
+    death report"). Through the helper (``Via.HELPER``), no report at all
+    is written on a claim with an exit node: ``report_death`` "returns
+    ``None`` when the claim has a readable exit" (§3), and the reclaim tool
+    reports through it.
+    Written directly (``Via.DIRECT``: "any party ... may write one"), a report
+    with a cause is written "whether or not the claim has ended";
   - a reap, for the newest claim naming its launch when that claim runs in the
     launch's process (the same handle, compared whole) and has no exit node:
     ``killed`` for a signal, ``errored`` for a nonzero exit code, and ``lost``
@@ -252,9 +255,10 @@ def truth(history: History) -> Truth:
     def report(claim: int, outcome: Outcome, place: Place, via: Via) -> None:
         """A death report a native writer makes, by §3's rules: through the
         helper, as the launchers and the claim path do, or directly."""
-        held_back = claim in exit_nodes or (outcome is Outcome.LOST and claim in ended)
-        if via is Via.HELPER and held_back:
-            return
+        if via is Via.HELPER and claim in exit_nodes:
+            return  # report_death "returns None when the claim has a readable exit"
+        if outcome is Outcome.LOST and claim in ended:
+            return  # "Evidence without a cause reports only while the claim is held"
         placed.append(Placed(Died(claim_seqs[claim], outcome), place))
         ended.add(claim)
 
