@@ -17,12 +17,14 @@ from .history import (
     Begin,
     Drain,
     Emit,
+    Ended,
     Event,
     Exit,
     Exited,
     FinalStep,
     Finish,
     Halt,
+    PassSave,
     Process,
     ProcessEnd,
     Save,
@@ -47,8 +49,9 @@ def own_process(claim: int) -> Process:
 class Tick(Enum):
     """Where an iteration beats."""
 
-    AFTER_BODY = "after-body"  # the steps() driver: the body, then the tick
+    AFTER_BODY = "after-body"  # the steps() driver: the pass, then the tick
     BEFORE_BODY = "before-body"  # a tick-first loop: ``w.tick(s); body(s)``
+    AFTER_SAVE = "after-save"  # mycooc's: just after its pass's save (with IN_PASS)
     NONE = "none"  # the iteration skips its tick
 
 
@@ -56,8 +59,10 @@ class Saving(Enum):
     """Whether and where an iteration saves its state."""
 
     NONE = "none"
-    IN_BODY = "in-body"  # the body's last act, durable as the iteration finishes
-    RECORDED = "recorded"  # in the body, after a stepless record of the save
+    IN_BODY = "in-body"  # its pass's last act, durable as the pass closes
+    RECORDED = "recorded"  # its pass's last act, after a stepless record of it
+    IN_PASS = "in-pass"  # mycooc's order: a value, the save of its completed
+    # state, its tick (with Tick.AFTER_SAVE), its values, then its close
     AFTER_TICK = "after-tick"  # after the iteration's tick
 
 
@@ -65,11 +70,12 @@ class Saving(Enum):
 class Shape:
     """One iteration's writer choices."""
 
-    valued: bool  # its body emits a value
+    valued: bool  # its pass emits a value
     tick: Tick
     watermark: Watermark  # what its beat writes as consumed_seq
     save: Saving
     trailing: bool  # it emits a value after its tick, still at its step
+    ended: Ended  # when it ended, where no tick of its own dates it at once
 
 
 class Step(NamedTuple):
@@ -80,9 +86,12 @@ class Step(NamedTuple):
 class Cut(Enum):
     """Where the worker's program stops inside its last iteration."""
 
-    MID_BODY = "mid-body"  # its body's values written; its save not begun
-    MID_SAVE = "mid-save"  # its save's record written; the save not durable
-    BEFORE_TICK = "before-tick"  # finished, and saved in its body; not yet ticked
+    MID_BODY = "mid-body"  # its pass's first values written; its save not begun
+    MID_SAVE = "mid-save"  # its save begun (its record, or a PassSave that never
+    # lands); the save not durable
+    AFTER_SAVE = "after-save"  # its in-pass save landed, its values written; its
+    # pass not closed
+    BEFORE_TICK = "before-tick"  # its pass closed; not yet ticked
     DONE = "done"  # the whole iteration
 
 
@@ -102,7 +111,7 @@ class Stops:
     error: str | None
     final_step: FinalStep
     honors: Drain
-    discards: bool  # its native counterpart discards the open iteration first
+    discards: bool  # its loop leaves no resumable state of the open iteration
     saves: bool
     teardown: bool
 
@@ -111,8 +120,8 @@ Ending: TypeAlias = Dies | Stops
 
 
 def opening(claim: int, it: Step) -> list[Event]:
-    """An iteration's events before its body: its begin, and a tick-first
-    loop's tick."""
+    """An iteration's events before its pass's body: its begin, and a
+    tick-first loop's tick."""
     events: list[Event] = [Begin(claim, it.step)]
     if it.shape.tick is Tick.BEFORE_BODY:
         events.append(Beat(claim, it.shape.watermark))
@@ -121,6 +130,8 @@ def opening(claim: int, it: Step) -> list[Event]:
 
 def iteration(claim: int, it: Step, *, cut: Cut) -> list[Event]:
     """One iteration's events, up to ``cut``."""
+    if it.shape.save is Saving.IN_PASS:
+        return _in_pass(claim, it, cut)
     shape = it.shape
     events = opening(claim, it)
     if shape.valued:
@@ -131,9 +142,42 @@ def iteration(claim: int, it: Step, *, cut: Cut) -> list[Event]:
         events.append(Emit(claim, RECORD, stepless=True))
     if cut is Cut.MID_SAVE:
         return events
-    events.append(Finish(claim, saved=shape.save in (Saving.IN_BODY, Saving.RECORDED)))
+    ticked = shape.tick is Tick.AFTER_BODY and cut is Cut.DONE
+    saved = shape.save in (Saving.IN_BODY, Saving.RECORDED)
+    events.append(Finish(claim, saved, Ended.TICKED if ticked else shape.ended))
     if cut is Cut.BEFORE_TICK:
         return events
+    return events + _after_close(claim, shape)
+
+
+def _in_pass(claim: int, it: Step, cut: Cut) -> list[Event]:
+    """mycooc's pass: a value (its ``status``), the save of its completed state,
+    its tick, its values (metrics and ``stage``), then its close."""
+    shape = it.shape
+    events = opening(claim, it) + [Emit(claim, VALUE, stepless=False)]
+    if cut is Cut.MID_BODY:
+        return events
+    if cut is Cut.MID_SAVE:
+        return events + [PassSave(claim, landed=False, ended=shape.ended)]
+    ticked = shape.tick is Tick.AFTER_SAVE
+    events.append(
+        PassSave(claim, landed=True, ended=Ended.TICKED if ticked else shape.ended)
+    )
+    if ticked:
+        events.append(Beat(claim, shape.watermark))
+    if shape.valued:
+        events.append(Emit(claim, VALUE, stepless=False))
+    if cut is Cut.AFTER_SAVE:
+        return events
+    closing = shape.tick is Tick.AFTER_BODY and cut is Cut.DONE
+    events.append(Finish(claim, False, Ended.TICKED if closing else shape.ended))
+    if cut is Cut.BEFORE_TICK:
+        return events
+    return events + _after_close(claim, shape)
+
+
+def _after_close(claim: int, shape: Shape) -> list[Event]:
+    events: list[Event] = []
     if shape.tick is Tick.AFTER_BODY:
         events.append(Beat(claim, shape.watermark))
     if shape.save is Saving.AFTER_TICK:

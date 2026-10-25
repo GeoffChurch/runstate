@@ -50,9 +50,13 @@ from tests.migration_sim.build import (
 )
 from tests.migration_sim.enumerate import (
     COMPLETES,
+    MYCOOC,
+    DISPLACED_SAVES,
     DISPLACEMENT,
+    END_TIMES,
     KILL,
     LOADING,
+    MID_SAVES,
     PREEMPTED,
     RELEASED_LIVE,
     RESUMES,
@@ -67,23 +71,25 @@ from tests.migration_sim.enumerate import (
     StopSlot,
     Successor,
     histories,
+    slot,
 )
 from tests.migration_sim.history import (
     Beacon,
     Beat,
     Begin,
-    Cadence,
     Claim,
     Clock,
-    CommitOf,
     Drain,
     Emit,
+    CutSave,
+    Ended,
     Event,
     Exit,
     Exited,
-    ExitOf,
+    ExitSave,
     FinalStep,
     Finish,
+    Fold,
     FromOutside,
     FromSave,
     Fresh,
@@ -97,12 +103,14 @@ from tests.migration_sim.history import (
     NotConforming,
     Origin,
     Outcome,
+    PassSave,
     Process,
     Reaped,
     Release,
     Report,
     Rewind,
     Save,
+    SaveOf,
     StopRequest,
     Stray,
     ThirdPartyFinal,
@@ -111,11 +119,13 @@ from tests.migration_sim.history import (
     Via,
     Watermark,
     conforms,
+    loads_newest,
     walk,
 )
 from tests.migration_sim.render import Rendered, records, render
 from tests.migration_sim.truth import (
     Commit,
+    Source,
     CommitId,
     Died,
     ExitNode,
@@ -147,11 +157,14 @@ def _histories(f: Family) -> Iterator[History]:
 
 FAMILIES = {
     "worker-shapes": Family(1, 2, 0, WORKER_SHAPES),
+    "end-times": Family(1, 2, 0, END_TIMES),
+    "mid-saves": Family(2, 2, 0, MID_SAVES),
     "resumes": Family(2, 2, 0, RESUMES),
     "loading": Family(2, 1, 0, LOADING),
     "third-parties": Family(2, 1, 0, THIRD_PARTIES),
     "released-live": Family(1, 2, 0, RELEASED_LIVE),
     "displacement": Family(2, 2, 0, DISPLACEMENT),
+    "displaced-saves": Family(3, 1, 0, DISPLACED_SAVES),
     "stops-and-reaps": Family(2, 1, 1, STOPS_AND_REAPS),
     "withdrawals": Family(1, 2, 1, WITHDRAWALS),
 }
@@ -182,13 +195,32 @@ def test_enumeration_streams(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.parametrize("family", FAMILIES.values(), ids=list(FAMILIES))
-def test_every_family_shares_logs_between_truths(family: Family) -> None:
+def test_families_share_logs_between_truths(family: Family) -> None:
     """Each family generates an ambiguous log: two histories that write it and
-    need different outputs."""
+    need different outputs. ``withdrawals``' are each a pair that differ only in
+    where an iteration no record dates ended against the stop: E2 never moves a
+    commit, so it adds no fork of its own there."""
     lineages = defaultdict(set)
     for h in _histories(family):
         lineages[render(h).rows].add(truth(h).lineage)
     assert any(len(ls) > 1 for ls in lineages.values())
+
+
+def test_e2_moves_and_drops_withdrawals_in_enumeration() -> None:
+    """``withdrawals`` holds each of E2's three placements: at the answer, just
+    before a native drain, and none, where a readable exit spends the stop."""
+    placements: set[bool | str] = set()
+    for h in _histories(FAMILIES["withdrawals"]):
+        t = truth(h)
+        cleared = any(
+            isinstance(ev, ThirdPartyStop) and ids
+            for ev, ids in zip(h.events, render(h).honored)
+        )
+        if cleared:
+            placements |= {w.before is None for w in t.lineage.withdrawals}
+            if not t.lineage.withdrawals:
+                placements.add("none")
+    assert placements == {True, False, "none"}
 
 
 def test_released_workers_work_after_their_release() -> None:
@@ -270,13 +302,35 @@ def _with(t: Truth, bad: Commit) -> Truth:
 YIELDED = FinalStep.YIELDED
 NULL, PROGRESS = ThirdPartyFinal.NULL, ThirdPartyFinal.PROGRESS
 CONTROL, TAIL = Watermark.CONTROL, Watermark.TAIL
-SAVES = Shape(True, Tick.AFTER_BODY, CONTROL, Saving.IN_BODY, trailing=False)
+SAVES = Shape(
+    True, Tick.AFTER_BODY, CONTROL, Saving.IN_BODY, trailing=False, ended=Ended.OWN_LAST
+)
 """The ``steps()`` worker that emits each iteration and saves in its body."""
-BEATS = Shape(False, Tick.AFTER_BODY, CONTROL, Saving.IN_BODY, trailing=False)
-FIRST = Shape(False, Tick.BEFORE_BODY, CONTROL, Saving.IN_BODY, trailing=False)
-UNLOGGED = Shape(False, Tick.NONE, CONTROL, Saving.IN_BODY, trailing=False)
-QUIET = Shape(False, Tick.NONE, CONTROL, Saving.NONE, trailing=False)
-UNSAVED = Shape(True, Tick.AFTER_BODY, CONTROL, Saving.NONE, trailing=False)
+BEATS = Shape(
+    False,
+    Tick.AFTER_BODY,
+    CONTROL,
+    Saving.IN_BODY,
+    trailing=False,
+    ended=Ended.OWN_LAST,
+)
+FIRST = Shape(
+    False,
+    Tick.BEFORE_BODY,
+    CONTROL,
+    Saving.IN_BODY,
+    trailing=False,
+    ended=Ended.OWN_LAST,
+)
+UNLOGGED = Shape(
+    False, Tick.NONE, CONTROL, Saving.IN_BODY, trailing=False, ended=Ended.OWN_LAST
+)
+QUIET = Shape(
+    False, Tick.NONE, CONTROL, Saving.NONE, trailing=False, ended=Ended.OWN_LAST
+)
+UNSAVED = Shape(
+    True, Tick.AFTER_BODY, CONTROL, Saving.NONE, trailing=False, ended=Ended.OWN_LAST
+)
 BACKSTOP = goldens.BACKSTOP
 
 
@@ -293,9 +347,10 @@ def _claim(claim: int, origin: Origin) -> Claim:
         own_process(claim),
         Gate.FREE,
         origin,
-        Clock.LOADED,
         None,
-        Cadence.COMMITS,
+        Clock.LOADED,
+        Fold.AT_CLAIM,
+        CutSave.LANDED,
     )
 
 
@@ -305,9 +360,10 @@ def _takeover(claim: int, origin: Origin) -> Claim:
         own_process(claim),
         Gate.TAKEOVER,
         origin,
-        Clock.LOADED,
         None,
-        Cadence.COMMITS,
+        Clock.LOADED,
+        Fold.AT_CLAIM,
+        CutSave.LANDED,
     )
 
 
@@ -347,32 +403,44 @@ def _open(claim: int, step: int, *names: str) -> list[Event]:
 
 
 def _finished(claim: int, step: int, *names: str) -> list[Event]:
-    """An iteration finished and saved, its tick skipped."""
-    return _open(claim, step, *names) + [Finish(claim, True)]
+    """An iteration whose pass closed with its save as its last act, its tick
+    skipped: it ended with its own newest record."""
+    return _open(claim, step, *names) + [Finish(claim, True, Ended.OWN_LAST)]
+
+
+def _ticked(
+    claim: int, step: int, names: tuple[str, ...], mark: Watermark
+) -> list[Event]:
+    """An iteration whose pass closed with its save, then its tick, which dates
+    its end."""
+    return _open(claim, step, *names) + [
+        Finish(claim, True, Ended.TICKED),
+        Beat(claim, mark),
+    ]
 
 
 def _after(claim: int, step: int, *names: str) -> list[Event]:
-    """A steps() iteration that saves in its body: values, then its tick."""
-    return _finished(claim, step, *names) + [Beat(claim, CONTROL)]
+    """A steps() iteration that saves in its pass: values, then its tick."""
+    return _ticked(claim, step, names, CONTROL)
 
 
 def _after_claimed(claim: int, step: int, *names: str) -> list[Event]:
     """As ``_after``, its beat's cursor starting at its claim."""
-    return _finished(claim, step, *names) + [Beat(claim, Watermark.CLAIMED)]
+    return _ticked(claim, step, names, Watermark.CLAIMED)
 
 
 def _after_tail(claim: int, step: int, *names: str) -> list[Event]:
     """As ``_after``, its beat's watermark the log's tail."""
-    return _finished(claim, step, *names) + [Beat(claim, TAIL)]
+    return _ticked(claim, step, names, TAIL)
 
 
 def _first(claim: int, step: int, *names: str) -> list[Event]:
-    """A tick-first iteration that saves in its body."""
+    """A tick-first iteration that saves in its pass."""
     return [
         Begin(claim, step),
         Beat(claim, CONTROL),
         *_emits(claim, names),
-        Finish(claim, True),
+        Finish(claim, True, Ended.OWN_LAST),
     ]
 
 
@@ -382,7 +450,9 @@ WORKER = Space(
     origins=(Origins.FRESH, Origins.SAVED),
     loading=(False,),
     clocks=(Clock.LOADED,),
-    cadences=(Cadence.COMMITS,),
+    folds=(Fold.AT_CLAIM,),
+    cut_saves=(CutSave.LANDED,),
+    strays=(False,),
     strides=(1,),
     shapes=(SAVES,),
     mid_claim=(None,),
@@ -564,7 +634,7 @@ TPS_NOTE_ON_DEAD = _after_death(Report(None))
 # the takeover the site excludes, a successor over a live worker no stopped
 # named.
 _VC_FIRST = [_claim(0, Fresh()), *run(0, range(2), SAVES), Begin(0, 2)]
-_VC_RESUMES = FromSave(CommitOf(0, 1))
+_VC_RESUMES = FromSave(SaveOf(0, 1))
 VALUE_CLAIM_SUCCESSORS = _h(
     _VC_FIRST,
     _killed(0),
@@ -645,14 +715,14 @@ POST_BEAT_EXIT_HOLDS = _h(
 _LV_BASE = [_claim(0, Fresh()), *run(0, range(5), SAVES), _killed(0)]
 LEADING_LOADING = _h(
     _LV_BASE,
-    _claim(1, FromSave(CommitOf(0, 4))),
+    _claim(1, FromSave(SaveOf(0, 4))),
     Emit(1, VALUE, stepless=False),
     run(1, [5], BEATS),
     _completes(1),
 )
 LEADING_UNTICKED = _h(
     _LV_BASE,
-    _claim(1, FromSave(CommitOf(0, 3))),
+    _claim(1, FromSave(SaveOf(0, 3))),
     _finished(1, 4, VALUE),
     run(1, [5], BEATS),
     _completes(1),
@@ -663,23 +733,23 @@ LEADING_UNTICKED = _h(
 _BC_BASE = [_claim(0, Fresh()), *run(0, range(4), SAVES), _killed(0)]
 
 
-def _bc_last(origin: CommitOf) -> list[Event]:
+def _bc_last(origin: SaveOf) -> list[Event]:
     return [_claim(2, FromSave(origin)), *run(2, [4], SAVES), *_completes(2)]
 
 
 BEATLESS_LOADING = _h(
     _BC_BASE,
-    _claim(1, FromSave(CommitOf(0, 3))),
+    _claim(1, FromSave(SaveOf(0, 3))),
     Emit(1, VALUE, stepless=False),
     _killed(1),
-    _bc_last(CommitOf(0, 3)),
+    _bc_last(SaveOf(0, 3)),
 )
 BEATLESS_FINISHED = _h(
     _BC_BASE,
-    _claim(1, FromSave(CommitOf(0, 2))),
+    _claim(1, FromSave(SaveOf(0, 2))),
     _finished(1, 3, VALUE),
     _killed(1),
-    _bc_last(CommitOf(1, 0)),
+    _bc_last(SaveOf(1, 3)),
 )
 
 
@@ -688,7 +758,7 @@ BEATLESS_FINISHED = _h(
 # exits completed with final_step 183. The run's later resumes say that 181 and
 # 182 finished (§7, beatless-claim H2); D78_181_OPEN is the same log where 181
 # did not, and the second claim ran 181 unlogged.
-def _d78(first: list[Event], second: list[Event], nth: int) -> History:
+def _d78(first: list[Event], second: list[Event]) -> History:
     return _h(
         _claim(0, Fresh()),
         run(0, range(181), SAVES),
@@ -698,18 +768,21 @@ def _d78(first: list[Event], second: list[Event], nth: int) -> History:
         _finished(1, 182, VALUE),
         _exit(1, completed=False, error="crashed while saving", final=FinalStep.TICKED),
         Halt(1, Exited(1)),
-        _claim(2, FromSave(CommitOf(1, nth))),  # claim 1's save of 182
+        _claim(2, FromSave(SaveOf(1, 182))),  # claim 1's save of 182
         _finished(2, 183, VALUE),
         _exit(2, completed=True, error=None, final=FinalStep.FINISHED),
         Halt(2, Exited(0)),
     )
 
 
-D78 = _d78(_finished(0, 181, VALUE), [_claim(1, FromSave(CommitOf(0, 181)))], nth=0)
+D78 = _d78(_finished(0, 181, VALUE), [_claim(1, FromSave(SaveOf(0, 181)))])
 D78_181_OPEN = _d78(
     _open(0, 181, VALUE),
-    [_claim(1, FromSave(CommitOf(0, 180))), Begin(1, 181), Finish(1, False)],
-    nth=1,
+    [
+        _claim(1, FromSave(SaveOf(0, 180))),
+        Begin(1, 181),
+        Finish(1, False, Ended.OWN_LAST),
+    ],
 )
 
 # valueless-gap: H1 an unticked, valueless iteration; H2 a stride.
@@ -731,7 +804,7 @@ def _final(finished: bool, error: str | None, discards: bool) -> History:
         _claim(0, Fresh()),
         run(0, range(3), SAVES),
         _open(0, 3, VALUE),
-        [Finish(0, True)] if finished else [],
+        [Finish(0, True, Ended.OWN_LAST)] if finished else [],
         Exit(0, False, error, YIELDED, Drain.EXIT, discards),
         Halt(0, Exited(0 if error is None else 1)),
     )
@@ -742,10 +815,10 @@ def _final_ticked(finished: bool) -> History:
         _claim(0, Fresh()),
         run(0, range(3), SAVES),
         _open(0, 3, VALUE),
-        [Finish(0, True)] if finished else [],
+        [Finish(0, True, Ended.OWN_LAST)] if finished else [],
         _exit(0, completed=False, error="crashed", final=FinalStep.TICKED),
         Halt(0, Exited(1)),
-        _claim(1, FromSave(CommitOf(0, 3 if finished else 2))),
+        _claim(1, FromSave(SaveOf(0, 3 if finished else 2))),
         run(1, [4], SAVES),
         _completes(1),
     )
@@ -781,7 +854,7 @@ def _origin(origin: Origin) -> History:
     )
 
 
-ORIGIN_IN_LOG = _origin(FromSave(CommitOf(0, 0)))
+ORIGIN_IN_LOG = _origin(FromSave(SaveOf(0, 0)))
 ORIGIN_OUTSIDE = _origin(FromOutside(0))
 
 # resume-offset: C1 saved every step and C2 loaded 3 (H1); C1 saved every second
@@ -796,17 +869,17 @@ _ALTERNATE = [
     _killed(0),
 ]
 OFFSET_PREVIOUS = _h(
-    _EVERY, _claim(1, FromSave(CommitOf(0, 3))), run(1, [4], SAVES), _completes(1)
+    _EVERY, _claim(1, FromSave(SaveOf(0, 3))), run(1, [4], SAVES), _completes(1)
 )
 OFFSET_EARLIER_RAN = _h(
     _ALTERNATE,
-    _claim(1, FromSave(CommitOf(0, 2))),
+    _claim(1, FromSave(SaveOf(0, 2))),
     run(1, [3], UNLOGGED),
     run(1, [4], SAVES),
     _completes(1),
 )
 OFFSET_EARLIER_SKIPPED = _h(
-    _ALTERNATE, _claim(1, FromSave(CommitOf(0, 2))), run(1, [4], SAVES), _completes(1)
+    _ALTERNATE, _claim(1, FromSave(SaveOf(0, 2))), run(1, [4], SAVES), _completes(1)
 )
 
 # resume-claim: H1/H2 both earlier claims beat 3; H3 two run-ons to 5; H4 a
@@ -815,7 +888,7 @@ _RC_BASE = [
     _claim(0, Fresh()),
     *run(0, range(4), SAVES),
     _killed(0),
-    _claim(1, FromSave(CommitOf(0, 2))),
+    _claim(1, FromSave(SaveOf(0, 2))),
     *run(1, [3], SAVES),
     _killed(1),
 ]
@@ -843,16 +916,16 @@ _RC_H4 = [
 ]
 
 
-def _third_from(base: list[Event], origin: CommitOf, step: int) -> History:
+def _third_from(base: list[Event], origin: SaveOf, step: int) -> History:
     return _h(base, _claim(2, FromSave(origin)), run(2, [step], SAVES), _completes(2))
 
 
-CLAIM_NEWER = _third_from(_RC_BASE, CommitOf(1, 0), 4)
-CLAIM_OLDER = _third_from(_RC_BASE, CommitOf(0, 3), 4)
-CLAIM_RUN_ON_NEWER = _third_from(_RC_H3, CommitOf(1, 5), 6)
-CLAIM_RUN_ON_OLDER = _third_from(_RC_H3, CommitOf(0, 5), 6)
-CLAIM_RUN_ON_SAVER = _third_from(_RC_H4, CommitOf(1, 5), 6)
-CLAIM_RUN_ON_SOURCE = _third_from(_RC_H4, CommitOf(0, 5), 6)
+CLAIM_NEWER = _third_from(_RC_BASE, SaveOf(1, 3), 4)
+CLAIM_OLDER = _third_from(_RC_BASE, SaveOf(0, 3), 4)
+CLAIM_RUN_ON_NEWER = _third_from(_RC_H3, SaveOf(1, 5), 6)
+CLAIM_RUN_ON_OLDER = _third_from(_RC_H3, SaveOf(0, 5), 6)
+CLAIM_RUN_ON_SAVER = _third_from(_RC_H4, SaveOf(1, 5), 6)
+CLAIM_RUN_ON_SOURCE = _third_from(_RC_H4, SaveOf(0, 5), 6)
 
 
 # commitless-resume: J loaded A's newest save (H1), or the one file that held A's
@@ -864,14 +937,14 @@ def _commitless(origin: Origin) -> History:
         _killed(0),
         _claim(1, origin),
         _killed(1),
-        _claim(2, FromSave(CommitOf(0, 1))),
+        _claim(2, FromSave(SaveOf(0, 1))),
         run(2, [2], SAVES),
         _completes(2),
     )
 
 
-COMMITLESS_NEWEST = _commitless(FromSave(CommitOf(0, 3)))
-COMMITLESS_ONE_FILE = _commitless(FromSave(CommitOf(0, 1)))
+COMMITLESS_NEWEST = _commitless(FromSave(SaveOf(0, 3)))
+COMMITLESS_ONE_FILE = _commitless(FromSave(SaveOf(0, 1)))
 COMMITLESS_NOTHING = _commitless(Fresh())
 
 
@@ -885,7 +958,7 @@ def _later_completed(intent: Release | Report, finished: bool) -> History:
         StopRequest("x0"),
         ThirdPartyStop(0, intent, None, NULL, Honors.UNDISCHARGED),
         _open(0, 4, VALUE),
-        [Finish(0, True)] if finished else [],
+        [Finish(0, True, Ended.OWN_LAST)] if finished else [],
         _completes(0),
     )
 
@@ -919,7 +992,14 @@ def _after_reap(finished: bool) -> History:
     return _h(
         Launched("L0", own_process(0)),
         Claim(
-            0, own_process(0), Gate.FREE, Fresh(), Clock.LOADED, "L0", Cadence.COMMITS
+            0,
+            own_process(0),
+            Gate.FREE,
+            Fresh(),
+            "L0",
+            Clock.LOADED,
+            Fold.AT_CLAIM,
+            CutSave.LANDED,
         ),
         run(0, range(3), SAVES),
         (_finished if finished else _open)(0, 3, VALUE),
@@ -939,14 +1019,14 @@ SUCCESSOR_PROVED_DEAD = _h(
     _claim(0, Fresh()),
     run(0, range(2), BEATS),
     _killed(0),
-    _claim(1, FromSave(CommitOf(0, 1))),
+    _claim(1, FromSave(SaveOf(0, 1))),
     run(1, [2], BEATS),
     _completes(1),
 )
 SUCCESSOR_TOOK_OVER = _h(
     _claim(0, Fresh()),
     run(0, range(2), BEATS),
-    _takeover(1, FromSave(CommitOf(0, 1))),
+    _takeover(1, FromSave(SaveOf(0, 1))),
     run(1, [2], BEATS),
     _completes(1),
     _killed(0),
@@ -964,16 +1044,16 @@ THIRD_PLACE_MOVES_PAST = _h(
     run(0, [5], UNLOGGED),
     _open(0, 6, VALUE),
     _killed(0),
-    _claim(1, FromSave(CommitOf(0, 4))),
+    _claim(1, FromSave(SaveOf(0, 4))),
     _finished(1, 5, VALUE),
     run(1, [6], UNLOGGED),
     _finished(1, 7, VALUE),
     _exit(1, completed=False, error="boom", final=FinalStep.TICKED),
     Halt(1, Exited(1)),
-    _claim(2, FromSave(CommitOf(1, 0))),
+    _claim(2, FromSave(SaveOf(1, 5))),
     run(2, [6], SAVES),
     _killed(2),
-    _claim(3, FromSave(CommitOf(1, 2))),
+    _claim(3, FromSave(SaveOf(1, 7))),
     run(3, [8], SAVES),
     _completes(3),
 )
@@ -987,7 +1067,7 @@ DISPLACED_SAVED_FIRST = _h(
     run(0, range(2), SAVES),
     _finished(0, 2, VALUE),
     _released(0, Outcome.LOST),
-    _claim(1, FromSave(CommitOf(0, 2))),
+    _claim(1, FromSave(SaveOf(0, 2))),
     Beat(0, CONTROL),
     _killed(0),
     run(1, [3], SAVES),
@@ -1000,8 +1080,8 @@ DISPLACED_SAVED_AFTER = _h(
     run(0, range(2), SAVES),
     _open(0, 2, VALUE),
     _released(0, Outcome.LOST),
-    _claim(1, FromSave(CommitOf(0, 1))),
-    Finish(0, True),
+    _claim(1, FromSave(SaveOf(0, 1))),
+    Finish(0, True, Ended.OWN_LAST),
     Beat(0, CONTROL),
     _killed(0),
     run(1, [2], UNLOGGED),
@@ -1012,7 +1092,7 @@ DISPLACED_SAVED_AFTER = _h(
 
 # A worker saved after its own preempted exit (mycooc's order before b5262327);
 # the next claim loaded that save, the exit node, or the last commit's.
-def _post_exit_save(origin: CommitOf | ExitOf) -> History:
+def _post_exit_save(origin: SaveOf | ExitSave) -> History:
     return _h(
         _claim(0, Fresh()),
         run(0, range(3), SAVES),
@@ -1026,8 +1106,8 @@ def _post_exit_save(origin: CommitOf | ExitOf) -> History:
     )
 
 
-POST_EXIT_SAVE = _post_exit_save(ExitOf(0))
-POST_EXIT_COMMIT = _post_exit_save(CommitOf(0, 2))
+POST_EXIT_SAVE = _post_exit_save(ExitSave(0))
+POST_EXIT_COMMIT = _post_exit_save(SaveOf(0, 2))
 
 # ----- 4. the named histories: §7's goldens ------------------------------------------
 #
@@ -1038,14 +1118,23 @@ POST_EXIT_COMMIT = _post_exit_save(CommitOf(0, 2))
 
 _N = own_process  # the claims' processes, by claim
 _N1_11, _N1_12 = Process("n1", 11), Process("n1", 12)
-LOSS, STATUS = "loss", "status"
+LOSS, STATUS, STAGE = "loss", "status", "stage"
 _ERR = Outcome.ERRORED
 
 
 def _launched(
     claim: int, process: Process, gate: Gate, origin: Origin, launch: str
 ) -> Claim:
-    return Claim(claim, process, gate, origin, Clock.LOADED, launch, Cadence.COMMITS)
+    return Claim(
+        claim,
+        process,
+        gate,
+        origin,
+        launch,
+        Clock.LOADED,
+        Fold.AT_CLAIM,
+        CutSave.LANDED,
+    )
 
 
 GOLDENS: dict[str, tuple[list[Row], History]] = {
@@ -1056,7 +1145,7 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _claim(0, Fresh()),
             _first(0, 0, LOSS),
             _first(0, 1),
-            _takeover(1, FromSave(CommitOf(0, 1))),
+            _takeover(1, FromSave(SaveOf(0, 1))),
             _finished(0, 2, LOSS),
             Beat(0, CONTROL),
             _after(1, 2),
@@ -1071,7 +1160,7 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _claim(0, Fresh()),
             _after(0, 0),
             _after(0, 1),
-            _takeover(1, FromSave(CommitOf(0, 1))),
+            _takeover(1, FromSave(SaveOf(0, 1))),
             _after(1, 2),
             _after(0, 2),
             _open(0, 3, LOSS),
@@ -1085,12 +1174,12 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _claim(0, Fresh()),
             _after(0, 0, LOSS),
             _after(0, 1, LOSS),
-            _takeover(1, FromSave(CommitOf(0, 1))),
+            _takeover(1, FromSave(SaveOf(0, 1))),
             _after(1, 2, LOSS),
             _after(0, 2, LOSS),
             _preempted(1),
             _preempted(0),
-            _claim(2, FromSave(CommitOf(1, 0))),
+            _claim(2, FromSave(SaveOf(1, 2))),
             _after(2, 3, LOSS),
             _completes(2),
         ),
@@ -1102,13 +1191,13 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _after(0, 0),
             _after(0, 1),
             _preempted(0),
-            _claim(1, FromSave(CommitOf(0, 1))),
+            _claim(1, FromSave(SaveOf(0, 1))),
             Emit(1, STATUS, stepless=True),
             Beacon(1, CONTROL),
             Emit(1, STATUS, stepless=True),
             Beacon(1, CONTROL),
             _preempted(1),
-            _claim(2, FromSave(CommitOf(0, 1))),
+            _claim(2, FromSave(SaveOf(0, 1))),
             _after(2, 2),
             _completes(2),
         ),
@@ -1124,7 +1213,7 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             ThirdPartyStop(
                 0, Release(_ERR, Via.HELPER), BACKSTOP, PROGRESS, Honors.NONE
             ),
-            _claim(1, FromSave(CommitOf(0, 2))),
+            _claim(1, FromSave(SaveOf(0, 2))),
             _after(1, 3, LOSS),
             _after(1, 4, LOSS),
             _completes(1),
@@ -1138,7 +1227,7 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _after(0, 1, LOSS),
             StopRequest("preempt"),
             _preempted(0),
-            _claim(1, FromSave(CommitOf(0, 1))),
+            _claim(1, FromSave(SaveOf(0, 1))),
             _after_claimed(1, 2, LOSS),
             _completes(1),
         ),
@@ -1149,7 +1238,7 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _claim(0, Fresh()),
             _after(0, 0),
             _after(0, 1),
-            _takeover(1, FromSave(CommitOf(0, 1))),
+            _takeover(1, FromSave(SaveOf(0, 1))),
             _exit(1, completed=False, error="OSError", final=FinalStep.TICKED),
             Halt(1, Exited(1)),
             _after(0, 2),
@@ -1174,7 +1263,7 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
         _h(
             _claim(0, Fresh()),
             run(0, range(3), BEATS),
-            _takeover(1, FromSave(CommitOf(0, 0))),
+            _takeover(1, FromSave(SaveOf(0, 0))),
             _open(0, 3, LOSS),
             _killed(0),
             _after(1, 1),
@@ -1206,7 +1295,7 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _after(0, 0),
             _after(0, 1),
             _finished(0, 2),
-            _takeover(1, FromSave(CommitOf(0, 2))),
+            _takeover(1, FromSave(SaveOf(0, 2))),
             _after(0, 3),
             _killed(0),
             _after(1, 3),
@@ -1219,9 +1308,9 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _claim(0, Fresh()),
             run(0, range(3), BEATS),
             _preempted(0),
-            _claim(1, FromSave(CommitOf(0, 0))),
+            _claim(1, FromSave(SaveOf(0, 0))),
             _after(1, 1),
-            _takeover(2, FromSave(CommitOf(0, 2))),
+            _takeover(2, FromSave(SaveOf(0, 2))),
             _after(1, 2),
             _killed(1),
             _after(2, 3),
@@ -1241,10 +1330,11 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
                 1,
                 _N(1),
                 Gate.FREE,
-                FromSave(CommitOf(0, 1)),
-                Clock.ZERO,
+                FromSave(SaveOf(0, 1)),
                 None,
-                Cadence.COMMITS,
+                Clock.ZERO,
+                Fold.AT_CLAIM,
+                CutSave.LANDED,
             ),
             Emit(1, STATUS, stepless=False),
             _after(1, 2, LOSS),
@@ -1314,15 +1404,16 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
                 1,
                 _N(1),
                 Gate.FREE,
-                FromSave(CommitOf(0, 2)),
-                Clock.ZERO,
+                FromSave(SaveOf(0, 2)),
                 None,
-                Cadence.COMMITS,
+                Clock.ZERO,
+                Fold.AT_CLAIM,
+                CutSave.LANDED,
             ),
             Emit(1, STATUS, stepless=False),
             _exit(1, completed=False, error="OSError", final=YIELDED),
             Halt(1, Exited(1)),
-            _claim(2, FromSave(CommitOf(0, 2))),
+            _claim(2, FromSave(SaveOf(0, 2))),
             _after(2, 3, LOSS),
             _completes(2),
         ),
@@ -1336,10 +1427,10 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _open(0, 2, LOSS),
             _exit(0, completed=False, error="CUDA out of memory", final=YIELDED),
             Halt(0, Exited(1)),
-            _claim(1, FromSave(CommitOf(0, 1))),
+            _claim(1, FromSave(SaveOf(0, 1))),
             _after(1, 2, LOSS),
             _preempted(1),
-            _claim(2, FromSave(CommitOf(1, 0))),
+            _claim(2, FromSave(SaveOf(1, 2))),
             _after(2, 3, LOSS),
             _completes(2),
         ),
@@ -1351,11 +1442,11 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _after(0, 0, LOSS),
             _exit(0, completed=False, error="boom", final=YIELDED),
             Halt(0, Exited(1)),
-            _claim(1, FromSave(CommitOf(0, 0))),
+            _claim(1, FromSave(SaveOf(0, 0))),
             Emit(1, STATUS, stepless=False),
             Halt(1, Exited(1)),
             ThirdPartyStop(1, Release(_ERR, Via.HELPER), BACKSTOP, NULL, Honors.NONE),
-            _claim(2, FromSave(CommitOf(0, 0))),
+            _claim(2, FromSave(SaveOf(0, 0))),
             _after(2, 1, LOSS),
             _completes(2),
         ),
@@ -1367,11 +1458,11 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _after(0, 0, LOSS),
             _exit(0, completed=False, error="boom", final=YIELDED),
             Halt(0, Exited(1)),
-            _claim(1, FromSave(CommitOf(0, 0))),
+            _claim(1, FromSave(SaveOf(0, 0))),
             Emit(1, STATUS, stepless=False),
             _killed(1),
             UserRecord("user.note"),
-            _claim(2, FromSave(CommitOf(0, 0))),
+            _claim(2, FromSave(SaveOf(0, 0))),
             _after(2, 1, LOSS),
             _completes(2),
         ),
@@ -1385,11 +1476,11 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _finished(0, 2, LOSS),
             _exit(0, completed=False, error="CUDA out of memory", final=YIELDED),
             Halt(0, Exited(1)),
-            _claim(1, FromSave(CommitOf(0, 2))),
+            _claim(1, FromSave(SaveOf(0, 2))),
             Emit(1, STATUS, stepless=False),
             Halt(1, Exited(1)),
             ThirdPartyStop(1, Release(_ERR, Via.HELPER), BACKSTOP, NULL, Honors.NONE),
-            _claim(2, FromSave(CommitOf(0, 2))),
+            _claim(2, FromSave(SaveOf(0, 2))),
             _after(2, 3, LOSS),
             _completes(2),
         ),
@@ -1401,13 +1492,13 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _after(0, 0),
             _after(0, 1),
             _preempted(0),
-            _claim(1, FromSave(CommitOf(0, 1))),
+            _claim(1, FromSave(SaveOf(0, 1))),
             _finished(1, 2, LOSS, STATUS),
             Halt(1, Exited(1)),
             ThirdPartyStop(
                 1, Release(_ERR, Via.HELPER), BACKSTOP, PROGRESS, Honors.NONE
             ),
-            _claim(2, FromSave(CommitOf(1, 0))),
+            _claim(2, FromSave(SaveOf(1, 2))),
             _after(2, 3, LOSS),
             _completes(2),
         ),
@@ -1433,7 +1524,7 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _killed(0),
             Reaped("L1", Killed(9)),
             Stray(LOSS, 1),  # a process that holds no claim yet
-            _claim(1, FromSave(CommitOf(0, 1))),
+            _claim(1, FromSave(SaveOf(0, 1))),
             _after(1, 2),
             _killed(1),
         ),
@@ -1642,7 +1733,7 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _claim(0, Fresh()),
             _after(0, 0),
             _preempted(0),
-            _claim(1, FromSave(CommitOf(0, 0))),
+            _claim(1, FromSave(SaveOf(0, 0))),
             _after(1, 1),
             _killed(1),
             ThirdPartyStop(
@@ -1689,7 +1780,7 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _after(0, 0),
             Halt(0, Exited(1)),
             Launched("L2", _N1_12),
-            _launched(1, _N1_12, Gate.FREE, FromSave(CommitOf(0, 0)), "L2"),
+            _launched(1, _N1_12, Gate.FREE, FromSave(SaveOf(0, 0)), "L2"),
             _after(1, 1),
             _completes(1),
             Reaped("L1", Exited(1)),
@@ -1703,7 +1794,7 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _launched(0, _N1_11, Gate.FREE, Fresh(), "L1"),
             _after(0, 0),
             Halt(0, None),  # its Worker abandoned; the process runs a second one
-            _launched(1, _N1_11, Gate.TAKEOVER, FromSave(CommitOf(0, 0)), "L1"),
+            _launched(1, _N1_11, Gate.TAKEOVER, FromSave(SaveOf(0, 0)), "L1"),
             _after(1, 1),
             Halt(1, Exited(0)),
             Reaped("L1", Exited(0)),
@@ -1716,26 +1807,57 @@ tool's malformed ``stopped`` body. The audit's goldens and the third place are
 named above with their contents, as §7 states them."""
 
 
-# The native drain cadence: iteration 0 finishes; stop x0 arrives; the worker
-# beats; a third party withdraws x0; iteration 1 finishes; the worker writes a
-# preempted exit. A counterpart that drains at a heartbeat at each tick took x0
-# before its withdrawal and honours it; one that drains at its commits only
-# first reads x0 with its withdrawal, and honours nothing.
-def _drained(cadence: Cadence) -> History:
+# A stop drained at a tick and withdrawn before the next commit (the fix round 2
+# re-review's probe): iteration 0 closes; stop x0 arrives; the worker ticks,
+# draining x0, as its watermark records; a third party clears x0; iteration 1
+# closes; the worker exits, honouring x0. Its native drains follow the 0.3.0
+# watermarks (§7's target), so its tick takes x0 in before the withdrawal, and
+# its native exit honours x0 as its 0.3.0 one does (E2: the withdrawal stays at
+# its answer). Round 2's "drained at the commit", which differed only in a native
+# cadence, went with the cadence.
+DRAINED_AT_THE_TICK = _h(
+    _claim(0, Fresh()),
+    Begin(0, 0),
+    Finish(0, True, Ended.OWN_LAST),
+    StopRequest("x0"),
+    Beat(0, CONTROL),
+    ThirdPartyStop(0, Report(None), None, NULL, Honors.UNDISCHARGED),
+    _after(0, 1),
+    _preempted(0),
+)
+
+
+# CLEARED_AFTER_THE_END (§7, E2; task-17-convention-table.md): in a tick-first
+# loop the worker ticks 0; stop x0 arrives, and the pass of 0 closes; a third
+# party's note clears x0; the worker ticks 1 without taking x0 in, an at-drain
+# writer, and exits honouring nothing. The native commit of 0 drains x0 before
+# its answer, so E2 places the withdrawal just before that commit. Taken in at
+# the claim instead, the 0.3.0 exit honours x0, and so does the native one.
+def _cleared(fold: Fold) -> History:
     return _h(
-        Claim(0, own_process(0), Gate.FREE, Fresh(), Clock.LOADED, None, cadence),
+        Claim(
+            0,
+            own_process(0),
+            Gate.FREE,
+            Fresh(),
+            None,
+            Clock.LOADED,
+            fold,
+            CutSave.LANDED,
+        ),
         Begin(0, 0),
-        Finish(0, True),
-        StopRequest("x0"),
         Beat(0, CONTROL),
+        StopRequest("x0"),
+        Emit(0, VALUE, stepless=False),
+        Finish(0, True, Ended.OWN_LAST),
         ThirdPartyStop(0, Report(None), None, NULL, Honors.UNDISCHARGED),
-        _after(0, 1),
+        _first(0, 1, VALUE),
         _preempted(0),
     )
 
 
-DRAINED_AT_THE_TICK = _drained(Cadence.TICKS)
-DRAINED_AT_THE_COMMIT = _drained(Cadence.COMMITS)
+CLEARED_AFTER_THE_END = _cleared(Fold.AT_DRAIN)
+CLEARED_TAKEN_IN = _cleared(Fold.AT_CLAIM)
 
 # A third party's release written directly, not through report_death: with a
 # cause, a death report even on a claim whose exit is readable (§3: "any party
@@ -1745,6 +1867,274 @@ TPS_RELEASE_AFTER_EXIT_DIRECT = _after_exit(Release(Outcome.LOST, Via.DIRECT), N
 TPS_CAUSE_AFTER_EXIT_DIRECT = _after_exit(
     Release(Outcome.ERRORED, Via.DIRECT), "slurm: NODE_FAIL"
 )
+
+
+# The release and takeover orders of a fenced worker's own stopped (the review's
+# fenced_two_orders, histories A and B; task-17-convention-table.md, Residues).
+# A: the released worker's stopped honours x0 before its successor's started;
+# the successor's claim-time fold holds x0 spent, and its exit honours nothing,
+# so the withdrawal stays at its answer. B: the displaced worker's stopped
+# honours x0 after its successor's claim; the successor beat past x0 and its
+# exit honours it, so none is written (§7, E2).
+RELEASE_ORDER = _h(
+    _claim(0, Fresh()),
+    run(0, [0], SAVES),
+    StopRequest("x0"),
+    _released(0, Outcome.LOST),
+    _preempted(0),
+    _claim(1, FromSave(SaveOf(0, 0))),
+    run(1, [1], SAVES),
+    _preempted(1),
+)
+TAKEOVER_ORDER = _h(
+    _claim(0, Fresh()),
+    run(0, [0], SAVES),
+    StopRequest("x0"),
+    _takeover(1, FromSave(SaveOf(0, 0))),
+    _preempted(0),
+    run(1, [1], SAVES),
+    _preempted(1),
+)
+
+
+# MIDSAVE (task-17-convention-table.md, cut-save): mycooc's pass at 0 and 1; at
+# 2 it saves, ticks, writes its metric, and is killed before its stage; the
+# next claim loads the save of 2 and completes 3. Whether 2 finished is the
+# writer fact cut_save.
+def _midsave(cut_save: CutSave, landed: bool) -> History:
+    first = Claim(
+        0,
+        own_process(0),
+        Gate.FREE,
+        Fresh(),
+        None,
+        Clock.LOADED,
+        Fold.AT_CLAIM,
+        cut_save,
+    )
+    loaded = SaveOf(0, 2) if landed else SaveOf(0, 1)
+    return _h(
+        first,
+        run(0, [0, 1], MYCOOC),
+        iteration(0, Step(2, MYCOOC), cut=Cut.AFTER_SAVE if landed else Cut.MID_SAVE),
+        _killed(0),
+        _claim(1, FromSave(loaded)),
+        run(1, [3], MYCOOC),
+        _completes(1),
+    )
+
+
+MIDSAVE_LANDED = _midsave(CutSave.LANDED, landed=True)
+MIDSAVE_CLOSED = _midsave(CutSave.CLOSED, landed=True)
+MIDSAVE_SAVE_START = _midsave(CutSave.SAVE_START, landed=True)
+UNLANDED_SAVE_START = _midsave(CutSave.SAVE_START, landed=False)
+UNLANDED_LANDED = _midsave(CutSave.LANDED, landed=False)
+
+# The end-time fork (§7): GAP_ITERATION's unlogged iteration 1 ended with its
+# claim's newest record, or just before the log's next record. The log is one.
+GAP_ITERATION_LATE = _h(
+    _claim(0, Fresh()),
+    run(0, [0], BEATS),
+    run(0, [1], replace(UNLOGGED, ended=Ended.NEXT)),
+    run(0, [2], BEATS),
+    _completes(0),
+)
+
+# d78b72f1 in mycooc's real record order, as the store copy holds it: each pass
+# writes its status, saves (unlogged), ticks (except at 130 and at each claim's
+# last pass), writes its metrics, percentile and stage, then closes. At 181 and
+# 182 each claim then wrote status ``saving results`` and died: claim 1 killed
+# with its job and released by the reclaim tool, claim 2 by torch.save's
+# failure. The truth is the same under every cut_save value: every pass closed.
+_METRICS = (
+    "mean_p1",
+    "mean_mrr",
+    "mean_cos_p1",
+    "mean_mnn_rate",
+    "mean_geom_rank",
+    "mean_norm_info",
+    "mean_nhmr",
+    "mean_gep_p1",
+    "mean_gep_norm_info",
+    "mean_cycle_acc",
+    "mean_soft_cycle_mrr",
+    "mean_soft_cycle_trace",
+    "mean_unique_coverage",
+    "mean_equality",
+    "mean_entropy",
+    "mean_mi",
+    "mean_coverage_entropy",
+)
+_FIRST_CLAIMS = (
+    *_METRICS,
+    "mean_argmax_churn",
+    "mean_relational_fidelity",
+    "percentile",
+)
+_LATER_CLAIMS = (*_METRICS, "mean_relational_fidelity")
+
+
+def _mycooc_pass(
+    claim: int, step: int, metrics: tuple[str, ...], *, ticks: bool
+) -> list[Event]:
+    events: list[Event] = [Begin(claim, step)]
+    if step:
+        events.append(Emit(claim, STATUS, stepless=False))
+    events.append(
+        PassSave(claim, landed=True, ended=Ended.TICKED if ticks else Ended.OWN_LAST)
+    )
+    if ticks:
+        events.append(Beat(claim, CONTROL))
+    events += _emits(claim, (*metrics, STAGE))
+    return events + [Finish(claim, False, Ended.OWN_LAST)]
+
+
+def _d78_real(cut_save: CutSave) -> History:
+    def claim(c: int, pid: int, origin: Origin, launch: str, clock: Clock) -> Claim:
+        return Claim(
+            c,
+            Process("ai04", pid),
+            Gate.FREE,
+            origin,
+            launch,
+            clock,
+            Fold.AT_CLAIM,
+            cut_save,
+        )
+
+    loading = [Emit(0, STATUS, stepless=False)] * 4
+    first: list[Event] = [
+        claim(0, 3944963, Fresh(), "53375:0", Clock.LOADED),
+        Emit(0, "config", stepless=True),
+        *loading,
+        *_mycooc_pass(0, 0, (*_METRICS, "mean_relational_fidelity"), ticks=True),
+    ]
+    for s in range(1, 181):
+        first += _mycooc_pass(0, s, _FIRST_CLAIMS, ticks=s != 130)
+    first += _mycooc_pass(0, 181, _FIRST_CLAIMS, ticks=False)
+
+    def later(c: int, pid: int, launch: str, step: int) -> list[Event]:
+        return [
+            claim(c, pid, FromSave(SaveOf(c - 1, step - 1)), launch, Clock.ZERO),
+            *[Emit(c, STATUS, stepless=False)] * 4,
+            *_mycooc_pass(c, step, _LATER_CLAIMS, ticks=False),
+            Emit(c, STATUS, stepless=False),  # saving results
+        ]
+
+    return _h(
+        first,
+        Emit(0, STATUS, stepless=False),  # saving results
+        _killed(0),
+        ThirdPartyStop(
+            0, Release(Outcome.PREEMPTED, Via.HELPER), None, NULL, Honors.NONE
+        ),
+        later(1, 3954611, "53421:0", 182),
+        _exit(
+            1,
+            completed=False,
+            error="[enforce fail at inline_container.cc:603] . unexpected pos 576 vs 470",
+            final=FinalStep.TICKED,
+        ),
+        Halt(1, Exited(1)),
+        later(2, 3956995, "53451:0", 183),
+        Emit(2, "completion_reason", stepless=True),
+        _exit(2, completed=True, error=None, final=FinalStep.FINISHED),
+        Emit(2, STATUS, stepless=False),  # done
+        Halt(2, Exited(0)),
+    )
+
+
+D78_REAL = _d78_real(CutSave.LANDED)
+
+# The store copy's records, (topic, name, step), at step 100 and from 181 on.
+D78_STEP_100 = [
+    ("value", "status", 100),
+    ("lifecycle.heartbeat", None, 100),
+    *[("value", m, 100) for m in _FIRST_CLAIMS],
+    ("value", "stage", 100),
+    ("value", "status", 101),
+]
+D78_END = [
+    ("value", "status", 181),
+    *[("value", m, 181) for m in _FIRST_CLAIMS],
+    ("value", "stage", 181),
+    ("value", "status", 181),
+    ("lifecycle.stopped", None, None),
+    ("lifecycle.started", None, None),
+    *[("value", "status", 0)] * 4,
+    ("value", "status", 182),
+    *[("value", m, 182) for m in _LATER_CLAIMS],
+    ("value", "stage", 182),
+    ("value", "status", 182),
+    ("lifecycle.stopped", None, None),
+    ("lifecycle.started", None, None),
+    *[("value", "status", 0)] * 4,
+    ("value", "status", 183),
+    *[("value", m, 183) for m in _LATER_CLAIMS],
+    ("value", "stage", 183),
+    ("value", "status", 183),
+    ("value", "completion_reason", None),
+    ("lifecycle.stopped", None, None),
+    ("value", "status", 183),
+]
+
+# A writer whose version changes mid-root (Review Focus 9; task-13 forensics,
+# W1): before b5262327 mycooc's main wrote its stopped, then its save phase
+# (``status: saving``, the save); after it, the save phase, then its stopped.
+# Claim 0 ran the old version, and its save names its extendable exit; claim 1
+# the new, and its save names its last commit (§6, "Save").
+VERSION_CHANGE = _h(
+    _claim(0, Fresh()),
+    run(0, [0, 1, 2], MYCOOC),
+    _exit(0, completed=False, error=None, final=FinalStep.FINISHED),
+    Emit(0, STATUS, stepless=False),  # saving
+    Save(0),
+    Emit(0, STATUS, stepless=False),  # done
+    Halt(0, Exited(0)),
+    _claim(1, FromSave(ExitSave(0))),
+    run(1, [3, 4, 5], MYCOOC),
+    Emit(1, STATUS, stepless=False),  # saving
+    Save(1),
+    _exit(1, completed=False, error=None, final=FinalStep.FINISHED),
+    Emit(1, STATUS, stepless=False),  # done
+    Halt(1, Exited(0)),
+    _claim(2, FromSave(SaveOf(1, 5))),
+    run(2, [6], MYCOOC),
+    _completes(2),
+)
+
+# SLOT (the critique's P1): C1 beats 0-3, having saved only 0 and 1, and is
+# killed; C2 resumes from 1, beats 2 and runs on unlogged to 3, saving it, and
+# is killed; C3 resumes from C2's 3, beats 4 and 5, and completes. Under
+# load=newest it is the one history with SLOT's log: C3 <- C2@3.
+SLOT = _h(
+    _claim(0, Fresh()),
+    run(0, [0, 1], SAVES),
+    run(0, [2, 3], UNSAVED),
+    _killed(0),
+    _claim(1, FromSave(SaveOf(0, 1))),
+    run(1, [2], UNSAVED),
+    run(1, [3], UNLOGGED),
+    _killed(1),
+    _claim(2, FromSave(SaveOf(1, 3))),
+    run(2, [4, 5], UNSAVED),
+    _completes(2),
+)
+SLOT_OLDER = _h(
+    _claim(0, Fresh()),
+    run(0, [0, 1], SAVES),
+    run(0, [2], UNSAVED),
+    run(0, [3], SAVES),
+    _killed(0),
+    _claim(1, FromSave(SaveOf(0, 1))),
+    run(1, [2], UNSAVED),
+    run(1, [3], UNLOGGED),
+    _killed(1),
+    _claim(2, FromSave(SaveOf(0, 3))),
+    run(2, [4, 5], UNSAVED),
+    _completes(2),
+)
+
 
 NAMED = {
     "stop-author H1": STOP_AUTHOR_EXIT,
@@ -1813,7 +2203,20 @@ NAMED = {
     "post-exit save": POST_EXIT_SAVE,
     "post-exit save, the commit's": POST_EXIT_COMMIT,
     "drained at the tick": DRAINED_AT_THE_TICK,
-    "drained at the commit": DRAINED_AT_THE_COMMIT,
+    "cleared after the end": CLEARED_AFTER_THE_END,
+    "release order": RELEASE_ORDER,
+    "takeover order": TAKEOVER_ORDER,
+    "MIDSAVE, landed": MIDSAVE_LANDED,
+    "MIDSAVE, closed": MIDSAVE_CLOSED,
+    "MIDSAVE, save-start": MIDSAVE_SAVE_START,
+    "a save that never landed, save-start": UNLANDED_SAVE_START,
+    "a save that never landed, landed": UNLANDED_LANDED,
+    "valueless-gap H1, ended late": GAP_ITERATION_LATE,
+    "d78b72f1 in mycooc's order": D78_REAL,
+    "a writer version that changes mid-root": VERSION_CHANGE,
+    "SLOT": SLOT,
+    "SLOT, the older save": SLOT_OLDER,
+    "cleared after the end, taken in at the claim": CLEARED_TAKEN_IN,
     "third-party-stop, a direct release after the exit": TPS_RELEASE_AFTER_EXIT_DIRECT,
     "third-party-stop, a direct cause after the exit": TPS_CAUSE_AFTER_EXIT_DIRECT,
     **{f"golden {name}": history for name, (_, history) in GOLDENS.items()},
@@ -1868,7 +2271,10 @@ AMBIGUOUS = [
         "displaced, saved before the release", "displaced, finished after the release"
     ),
     Shared("post-exit save", "post-exit save, the commit's"),
-    Shared("drained at the tick", "drained at the commit"),
+    Shared("MIDSAVE, landed", "MIDSAVE, closed"),
+    Shared("a save that never landed, save-start", "a save that never landed, landed"),
+    Shared("valueless-gap H1", "valueless-gap H1, ended late"),
+    Shared("SLOT", "SLOT, the older save"),
     Shared(
         "third-party-stop, a note with an error after the exit",
         "third-party-stop, a direct cause after the exit",
@@ -1878,6 +2284,7 @@ AMBIGUOUS = [
 
 SETTLED = [
     Shared("SUCCESSOR_PROVED_DEAD", "SUCCESSOR_PROVED_DEAD, taken over"),
+    Shared("MIDSAVE, landed", "MIDSAVE, save-start"),
     Shared(
         "third-party-stop H1, a note after the exit",
         "third-party-stop, a release after the exit",
@@ -1990,7 +2397,12 @@ def describe(h: History) -> list[str]:
         elif isinstance(r, Terminated):
             lines.append(f"terminated {r.launch or 'minted'} {r.how}")
         elif isinstance(r, Withdrawal):
-            lines.append(f"withdraw {r.request_id}")
+            if r.before is None:
+                lines.append(f"withdraw {r.request_id}")
+            elif isinstance(r.before, CommitId):
+                lines.append(f"withdraw {r.request_id} before {node(r.before)}")
+            else:
+                lines.append(f"withdraw {r.request_id} before seq {r.before}")
         elif isinstance(r, RewindTo):
             lines.append(f"c{claims[r.claim_seq]} rewinds to {node(r.target)}")
     return lines
@@ -2061,19 +2473,33 @@ def test_a_direct_report_after_the_exit_is_a_death_only_with_a_cause() -> None:
     ]
 
 
-def test_the_drain_cadence_decides_what_the_exit_honours() -> None:
-    """The 0.3.0 exit honours x0 either way (the reference Worker's ``_die``);
-    the native exit honours it only where a heartbeat at the tick drained it
-    before its withdrawal."""
-    assert render(DRAINED_AT_THE_TICK).honored == render(DRAINED_AT_THE_COMMIT).honored
-    assert describe(DRAINED_AT_THE_TICK)[-2:] == [
+def test_drains_follow_the_watermarks() -> None:
+    """The native counterpart drains at each commit, each 0.3.0 tick and beacon,
+    and its exit (§7's target, third item): a stop the worker's tick took in
+    before a third party cleared it is honoured, and E2 leaves the withdrawal at
+    its answer."""
+    assert describe(DRAINED_AT_THE_TICK)[-3:] == [
+        "withdraw x0",
         "c0@1 <- c0@0 []",
         "c0:exit extendable <- c0@1 [] honors x0",
     ]
-    assert describe(DRAINED_AT_THE_COMMIT)[-2:] == [
-        "c0@1 <- c0@0 []",
+
+
+def test_e2_places_a_withdrawal_before_the_drain_that_reads_it() -> None:
+    """CLEARED_AFTER_THE_END: the 0.3.0 exit omits x0, which the native commit
+    of 0 reads before its answer, so the withdrawal stands just before that
+    commit; the commit stays where its iteration ended (§7, E2)."""
+    t = truth(CLEARED_AFTER_THE_END)
+    (withdrawal,) = t.lineage.withdrawals
+    assert withdrawal.before == t.lineage.commits[0].node
+    assert describe(CLEARED_AFTER_THE_END)[1:] == [
+        "withdraw x0 before c0@0",
+        "c0@0 <- root [v@0]",
+        "c0@1 <- c0@0 [v@1]",
         "c0:exit extendable <- c0@1 []",
     ]
+    # taken in at the claim, the 0.3.0 exit honours x0, read before its answer
+    assert describe(CLEARED_TAKEN_IN)[-1] == "c0:exit extendable <- c0@1 [] honors x0"
 
 
 def test_value_claim() -> None:
@@ -2225,19 +2651,26 @@ def test_resume_family() -> None:
 
 
 def test_later_completed() -> None:
-    """The golden's two readings, and §2's third: a release of the live claim."""
-    assert describe(LATER_COMPLETED_FINISHED)[-3:] == [
-        "withdraw x0",
+    """The golden's two readings, and a third: a release of the live claim.
+
+    The worker took x0 in after the clearing (it folds at its claim), and its
+    readable exit honours it. A withdrawal at the answer would precede every
+    drain of the worker that reads x0, so the exit spends it, and none is
+    written (§7, E2). Under the release, the worker's own completed stopped is
+    fenced, and its ``honored`` is a second answer, which E2 encodes as a
+    second withdrawal: E2 writes one for each id honoured by a stopped that is
+    not its claim's exit node."""
+    assert describe(LATER_COMPLETED_FINISHED)[-2:] == [
         "c0@4 <- c0@3 [v@4]",
-        "c0:exit closed <- c0@4 []",  # x0 was withdrawn before the worker drained it
+        "c0:exit closed <- c0@4 [] honors x0",
     ]
-    assert describe(LATER_COMPLETED_YIELDED)[-2:] == [
-        "withdraw x0",
-        "c0:exit closed <- c0@3 [v@4]",
+    assert describe(LATER_COMPLETED_YIELDED)[-1:] == [
+        "c0:exit closed <- c0@3 [v@4] honors x0",
     ]
-    assert describe(LATER_COMPLETED_RELEASED)[-3:] == [
+    assert describe(LATER_COMPLETED_RELEASED)[-4:] == [
         "c0@3 <- c0@2 [v@3]",
         "c0 died lost",
+        "withdraw x0",
         "withdraw x0",
     ]
 
@@ -2432,8 +2865,8 @@ GOLDEN_TRUTHS: dict[str, list[str]] = {
     "LATER_ERROR": ["c0:exit extendable <- c0@0 []"],
     "LATER_DEFAULT": ["c0:exit closed <- c0@0 [] honors halt"],
     "LATER_ERROR_HONORED": [
-        "c0:exit extendable <- c0@0 [] honors halt",
-        "withdraw halt",
+        "withdraw halt before seq 4",
+        "c0:exit extendable <- c0@0 []",
     ],
     "CLAIMLESS": ["withdraw pre"],
     "CLAIMLESS_ERROR": ["withdraw pre"],
@@ -2528,6 +2961,196 @@ def test_no_node_after_the_fence(name: str) -> None:
     assert nodes == DISPLACED_NODES[name]
 
 
+# ----- Task 18: the target's own events ----------------------------------------------
+
+
+def test_a_fenced_workers_honored_is_withdrawn_by_e2() -> None:
+    """A fenced worker's own stopped is no exit node, and the stops it honours
+    are withdrawn, placed by E2 (§7): at the answer in the release order, where
+    the successor's exit honours nothing; nowhere in the takeover order, where
+    the successor's exit honours x0."""
+    assert describe(RELEASE_ORDER)[2:] == [
+        "c0 died lost",
+        "withdraw x0",
+        "c1 starts from c0@0",
+        "c1@1 <- c0@0 [v@1]",
+        "c1:exit extendable <- c1@1 []",
+    ]
+    assert describe(TAKEOVER_ORDER)[2:] == [
+        "c0 died lost",
+        "c1 starts from c0@0",
+        "c1@1 <- c0@0 [v@1]",
+        "c1:exit extendable <- c1@1 [] honors x0",
+    ]
+
+
+def test_an_exit_cannot_omit_a_stop_no_one_answered() -> None:
+    """A residue of the prose: E2 keeps a readable exit's ``honored`` true by
+    placing withdrawals, so it reaches only answered stops. A writer whose exit
+    honours only what its ticks drained (``Drain.TICKS``) omits a stop that
+    arrived after its last tick; nothing answers it, the native exit drains it
+    (§4, the exit's step 1), and so honours it. The model gives §4's truth; the
+    task report records it."""
+    h = _h(
+        _claim(0, Fresh()),
+        run(0, [0], SAVES),
+        StopRequest("x0"),
+        Exit(0, False, None, YIELDED, Drain.TICKS, discards=False),
+        Halt(0, Exited(0)),
+    )
+    assert render(h).honored[-2] == ()
+    assert describe(h)[-1] == "c0:exit extendable <- c0@0 [] honors x0"
+
+
+def test_e2s_fork_is_refused() -> None:
+    """E2's fork (§7): A's exit, honouring only what its ticks drained, omits x0,
+    which A's native commit read before its answer; B, claiming between A's exit
+    and the answer, takes x0 in at its tick, and its exit honours it. No place
+    keeps both exits true: which worker's read the lineage records is the
+    consumer's choice, and the model raises ``NoCounterpart``."""
+    h = _h(
+        _claim(0, Fresh()),
+        Begin(0, 0),
+        Beat(0, CONTROL),
+        StopRequest("x0"),
+        Emit(0, VALUE, stepless=False),
+        Finish(0, True, Ended.OWN_LAST),
+        Exit(0, False, None, YIELDED, Drain.TICKS, discards=False),
+        Halt(0, Exited(0)),
+        _claim(1, FromSave(SaveOf(0, 0))),
+        ThirdPartyStop(1, Report(None), None, NULL, Honors.UNDISCHARGED),
+        run(1, [1], SAVES),
+        _preempted(1),
+    )
+    assert render(h).honored[6] == () and render(h).honored[-2] == ("x0",)
+    with pytest.raises(NoCounterpart, match="fork"):
+        truth(h)
+
+
+def test_the_writer_fact_cut_save() -> None:
+    """MIDSAVE: a pass cut after its save landed finished under ``landed`` and
+    ``save-start``, its commit holding the values its pass wrote before the cut,
+    and the save naming it; under ``closed`` the save names no node, and the
+    next claim starts from none (task-17-convention-table.md, cut-save)."""
+    assert describe(MIDSAVE_LANDED)[3:6] == [
+        "c0@2 <- c0@1 [v@2, v@2]",
+        "c0 died lost",
+        "c1 starts from c0@2",
+    ]
+    closed = describe(MIDSAVE_CLOSED)
+    assert "c1 starts from root" in closed
+    assert not any(line.startswith("c0@2") for line in closed)
+    # a save that never landed finishes its iteration only under save-start, on
+    # a branch no claim resumes from
+    assert "c0@2 <- c0@1 [v@2]" in describe(UNLANDED_SAVE_START)
+    assert not any(line.startswith("c0@2") for line in describe(UNLANDED_LANDED))
+
+
+def test_a_commits_t_is_when_its_iteration_ended() -> None:
+    """A commit's ``t`` (§3, lifecycle-v0.6) is its own tick's where one dates it;
+    else the history's ``Ended`` says: its claim's newest record before it, or
+    the log's next record (§7, the end-time fork)."""
+    rows = render(GAP_ITERATION).rows
+    beats = [r.seq for r in rows if r.topic == "lifecycle.heartbeat"]
+    early = [c.t for c in truth(GAP_ITERATION).lineage.commits]
+    late = [c.t for c in truth(GAP_ITERATION_LATE).lineage.commits]
+    assert early == [beats[0], beats[0], beats[1]]
+    assert late == [beats[0], beats[1], beats[1]]
+
+
+def test_e1_kinds_and_texts() -> None:
+    """E1 (§7): each death report the step writes says ``migrated:``, its source's
+    kind and that record's own evidence; the kind is in the lineage."""
+    cases = [
+        (STOPPED_AFTER_ITS_REAP, Source.REAP, "migrated: reap: signal 9"),
+        (SUCCESSOR_PROVED_DEAD, Source.GATE, "migrated: gate: local://sim/1000"),
+        (BEATEN_PAST_RELEASED, Source.STOPPED, "migrated: stopped: job 7 FAILED"),
+        (TPS_RELEASE_OF_DEAD, Source.STOPPED, "migrated: stopped"),
+        (NAMED["golden LATE_REAP"], Source.REAP, "migrated: reap: exit 1"),
+    ]
+    for history, source, text in cases:
+        t = truth(history)
+        assert any(e.died.source is source and e.text == text for e in t.evidence), text
+        assert {d.source for d in t.lineage.deaths} >= {source}
+
+
+def test_d78b72f1_in_mycoocs_record_order() -> None:
+    """The named history renders the store copy's records, at a step that beat
+    and from 181 on, and its truth holds under every cut_save value: every pass
+    closed (task-17-convention-table.md, "d78b72f1 does not depend on it")."""
+    rendered = [
+        (
+            r.topic,
+            r.name,
+            json.loads(r.body).get("step") if r.topic in _STEPPED else None,
+        )
+        for r in render(D78_REAL).rows
+    ]
+    start = rendered.index(("value", "status", 100))
+    assert rendered[start : start + len(D78_STEP_100)] == D78_STEP_100
+    assert rendered[-len(D78_END) :] == D78_END
+    truths = {cut_save: truth(_d78_real(cut_save)).lineage for cut_save in CutSave}
+    assert len(set(truths.values())) == 1
+    lines = describe(D78_REAL)
+    for line in ("c1 starts from c0@181", "c2 starts from c1@182"):
+        assert line in lines
+    assert any(line.startswith("c0@181 <- c0@180 [") for line in lines)
+
+
+_STEPPED = ("value", "lifecycle.heartbeat")
+
+
+def test_a_writer_version_that_changes_mid_root() -> None:
+    """Claim 0's old version saved after its exit, so claim 1 resumes from that
+    extendable exit; claim 1's new version saved before its exit, so claim 2
+    resumes from its last commit (§6, "Save"; Review Focus 9)."""
+    lines = describe(VERSION_CHANGE)
+    assert "c1 starts from c0:exit" in lines
+    assert "c2 starts from c1@5" in lines
+
+
+def test_slot_holds_three_claims_and_the_load_constraint() -> None:
+    """SLOT's family (the critique's P1, P2): three claims; ``loads_newest`` says
+    which histories satisfy ``load=newest``. The critique's SLOT history is in
+    it, and every history with its log that satisfies the constraint resumes
+    C3 from C2's 3; without it, C3 may resume from C1's."""
+    family = list(slot(beats=4, run_on=1))
+    assert len(family) < BOUND
+    assert SLOT in family and SLOT_OLDER in family
+    assert loads_newest(SLOT) and not loads_newest(SLOT_OLDER)
+    rows = render(SLOT).rows
+    starts = {
+        describe(h)[-4] for h in family if render(h).rows == rows and loads_newest(h)
+    }
+    assert starts == {"c2 starts from c1@3"}
+    assert "c2 starts from c0@3" in describe(SLOT_OLDER)
+
+
+def test_displaced_workers_keep_saving_and_strays_stay_out() -> None:
+    """DISPLACED_SAVES: a displaced worker's save after its takeover names no
+    node (§4's fence), so a claim that loads it starts from none; a stray value,
+    written by a process before it claims, is in no commit."""
+    resumed_from_nothing = stray_committed = False
+    for h in _histories(FAMILIES["displaced-saves"]):
+        t = truth(h)
+        rendered = render(h)
+        strays = {
+            seq for ev, seq in zip(h.events, rendered.seqs) if isinstance(ev, Stray)
+        }
+        committed = {v for c in t.lineage.commits for v in c.values}
+        stray_committed |= bool(strays & committed)
+        for ev in h.events:
+            if (
+                isinstance(ev, Claim)
+                and isinstance(ev.origin, FromSave)
+                and ev.origin.save.claim == 0
+                and ev.claim == 2
+            ):
+                origin = rendered.walk.origins[2]
+                resumed_from_nothing |= origin is None
+    assert resumed_from_nothing and not stray_committed
+
+
 # ----- the rest of the type ----------------------------------------------------------
 
 
@@ -2539,7 +3162,7 @@ def test_a_rewind_restates_the_position() -> None:
         _claim(0, Fresh()),
         run(0, range(3), SAVES),
         Emit(0, VALUE, stepless=False),
-        Rewind(0, CommitOf(0, 0)),
+        Rewind(0, SaveOf(0, 0)),
         run(0, [1], SAVES),
         _completes(0),
     )
@@ -2605,7 +3228,7 @@ def test_stepless_records_are_liveness_and_registers() -> None:
                 _claim(0, Fresh()),
                 *run(0, [0, 1], SAVES),
                 _killed(0),
-                _claim(1, FromSave(CommitOf(0, 1))),
+                _claim(1, FromSave(SaveOf(0, 1))),
                 Begin(1, 1),
             ],
             "below the clock's floor",
@@ -2619,9 +3242,10 @@ def test_stepless_records_are_liveness_and_registers() -> None:
                     own_process(0),
                     Gate.FREE,
                     Fresh(),
-                    Clock.LOADED,
                     None,
-                    Cadence.COMMITS,
+                    Clock.LOADED,
+                    Fold.AT_CLAIM,
+                    CutSave.LANDED,
                 ),
             ],
             "has ended",
@@ -2634,9 +3258,10 @@ def test_stepless_records_are_liveness_and_registers() -> None:
                     own_process(0),
                     Gate.FREE,
                     Fresh(),
-                    Clock.LOADED,
                     "L",
-                    Cadence.COMMITS,
+                    Clock.LOADED,
+                    Fold.AT_CLAIM,
+                    CutSave.LANDED,
                 ),
                 Reaped("L", Exited(0)),
             ],
@@ -2662,20 +3287,21 @@ def test_a_fenced_workers_save_of_an_earlier_node_lands() -> None:
     h = _h(
         _claim(0, Fresh()),
         Begin(0, 0),
-        Finish(0, False),
+        Finish(0, False, Ended.OWN_LAST),
         _released(0, Outcome.LOST),
         Beat(0, CONTROL),
         Save(0),
         _killed(0),
-        _claim(1, FromSave(CommitOf(0, 0))),
+        _claim(1, FromSave(SaveOf(0, 0))),
         _killed(1),
     )
     assert describe(h)[-1] == "c1 starts from c0@0"
 
 
 def test_a_save_of_no_node_is_accepted_and_names_none() -> None:
-    """m7: a save after a torn exit is conforming 0.3.0 and names no node, so
-    nothing can load it as one."""
+    """m7: a save after a torn exit is conforming 0.3.0 and names no node, so a
+    claim that loads it starts from no node: state no node of the run holds
+    (§2, "The claim"; §3, ``resume_from``)."""
     torn: list[Event] = [
         _claim(0, Fresh()),
         *_open(0, 0, VALUE),
@@ -2684,8 +3310,8 @@ def test_a_save_of_no_node_is_accepted_and_names_none() -> None:
         Halt(0, Exited(1)),
     ]
     walk(_h(torn))
-    with pytest.raises(NoCounterpart, match="no save of"):
-        walk(_h(torn, _claim(1, FromSave(ExitOf(0))), _killed(1)))
+    loaded = _h(torn, _claim(1, FromSave(ExitSave(0))), _killed(1))
+    assert "c1 starts from root" in describe(loaded)
 
 
 def test_a_refused_prefix_is_pruned() -> None:
@@ -2696,19 +3322,19 @@ def test_a_refused_prefix_is_pruned() -> None:
     assert found and all(conforms(h) for h in found)
 
 
-def test_a_fenced_workers_later_node_has_no_counterpart() -> None:
+def test_a_fenced_workers_later_save_names_no_node() -> None:
     """A worker fenced by a release or a takeover makes no node after it (§4),
-    so a successor that loaded its later save loaded what no node names: a
-    checkpoint from outside the log."""
+    so a claim that loaded its later save loaded state no node of the run holds,
+    and starts from no node, as one loading a checkpoint from outside does."""
     taken = [
         _claim(0, Fresh()),
         *run(0, [0], SAVES),
-        _takeover(1, FromSave(CommitOf(0, 0))),
+        _takeover(1, FromSave(SaveOf(0, 0))),
         *run(0, [1], SAVES),
         _killed(0),
         _killed(1),
     ]
-    walk(_h(taken))
-    with pytest.raises(NoCounterpart, match="no save of"):
-        walk(_h(taken, _claim(2, FromSave(CommitOf(0, 1))), _killed(2)))
-    walk(_h(taken, _claim(2, FromOutside(1)), _killed(2)))
+    loaded = describe(_h(taken, _claim(2, FromSave(SaveOf(0, 1))), _killed(2)))
+    outside = describe(_h(taken, _claim(2, FromOutside(1)), _killed(2)))
+    assert "c2 starts from root" in loaded
+    assert loaded == outside

@@ -3,51 +3,47 @@
 A history is the run as it happened: one sequence of events, in the order the
 world and the log share. A worker's events carry the index of its claim (0 for
 the run's first ``lifecycle.started``). Events that write a record become the
-0.3.0 log (``render.py``); the others (an iteration finishing, a save landing,
-a worker or its process ending) write nothing, and are exactly what a 0.3.0 log
-cannot show. What a native 0.4.0 writer would have recorded follows from all of
-them (``truth.py``).
+0.3.0 log (``render.py``); the others (a save landing, a pass closing, a worker
+or its process ending) write nothing, and are what a 0.3.0 log cannot show.
+The lineage that records the history's own events follows from all of them
+(``truth.py``): the target of commits-and-lineage.md §7.
 
-Every writer choice is an event or a declared field of one:
+Every choice is an event or a declared field of one. A **writer fact** is how a
+writer behaves where no event of the log decides it (§7, "the consumer decides
+it"); the consumer states it, per writer version, so it is a field of the
+claim or of the record its writer wrote:
 
-- **the claim**: its process (``Claim.process``, which several claims may share),
+- **the claim**: its process (``Claim.process``, which several claims may share);
   the gate's verdict (``Claim.gate``: the latest claim had ended or its process
-  had, or the gate judged a live worker dead: a takeover), the resume origin (a
-  fresh start, a save this log's claims made, or a checkpoint copied in from
-  outside), and what its clock reads before its first iteration;
+  had, or the gate judged a live worker dead: a takeover); what it loaded
+  (``Claim.origin``: a save of this log's claims, by ``SaveRef``, a checkpoint
+  from outside, or nothing); and three writer facts: what its clock reads
+  before its first iteration (``Claim.clock``), when it applies an answer
+  another party wrote after its claim (``Claim.fold``), and whether a pass cut
+  after its save landed finished (``Claim.cut_save``);
 - **per iteration**: its label (``Begin.step``: a stride skips labels), which
-  values it emits and where (``Emit``), whether and where it beats (``Beat``
-  before or after the body, or none, with its watermark), whether it saves
-  (``Finish.saved`` in the body, ``Save`` after it) with or without a record (a
-  stepless ``Emit``), and whether it rewinds (``Rewind``);
+  values it emits and where (``Emit``), whether and where it beats (``Beat``,
+  with its watermark), its saves (``PassSave`` of its completed state inside
+  its pass, ``Finish.saved`` as its pass's last act, ``Save`` outside it), its
+  close (``Finish``) and when that came (``Ended``), and whether it rewinds;
 - **how a claim ends**: the worker ends (``Halt``) anywhere in its program, its
-  process with it or not, with or without its own ``stopped`` before (``Exit``,
-  completed or not, error or not, with a ``final_step`` and an ``honored``
-  convention); a third party's ``stopped`` names it (``ThirdPartyStop``, a
-  release or a report); a later claim takes it over; its launch is reaped
-  (``Reaped``);
-- **the native counterpart's own choices** where §3 and §4 leave the 0.4.0
-  writer one: whether a clean exit inside an open iteration discards it
-  (``Exit.discards``); whether its driver drains at a ``heartbeat()`` at each
-  0.3.0 tick (``Claim.cadence``); and whether a third party writes its death
-  report through ``report_death`` or directly (``Release.via``).
+  process with it or not, with or without its own ``stopped`` before (``Exit``);
+  a third party's ``stopped`` names it (``ThirdPartyStop``); a later claim takes
+  it over; its launch is reaped (``Reaped``).
 
-What 0.3.0 pins (commits-and-lineage.md §7, "What 0.3.0 pins"), ``walk``
-enforces, raising ``NotConforming``: names are the writers' own (a worker's
-records name its claim); a worker's ``stopped`` is its halt (no beat, iteration
-or second ``stopped`` after it); ``completed`` is the worker's alone and carries
-no error; the claim gate (a claim starts once the latest has ended or its worker
-is judged dead, which a takeover's verdict may judge wrongly); the step clock (a
-value's and a beat's step is the worker's clock); and run-absolute steps (a
-resumed claim's labels continue above the state it loaded).
+What 0.3.0 pins (§7, "What 0.3.0 pins"), ``walk`` enforces, raising
+``NotConforming``: names are the writers' own; a worker's ``stopped`` is its
+halt (no beat, iteration or second ``stopped`` after it); ``completed`` is the
+worker's alone and carries no error; the claim gate (a claim starts once the
+latest has ended or its worker is judged dead, which a takeover's verdict may
+judge wrongly); the step clock; and run-absolute steps (a resumed claim's labels
+continue above the state it loaded). Where a part of a conforming history has
+no 0.4.0 encoding the model can state (E2's fork), the truth raises
+``NoCounterpart``.
 
-Where a history is conforming 0.3.0 but a part of it has no native 0.4.0
-counterpart, the walk says so instead, raising ``NoCounterpart``. A claim loads
-a node that exists when it claims (0.3.0's order is claim, then load:
-run-episodes.md §3; the native order of §6 chooses first, and the two read
-alike wherever the node already exists). A node a fenced worker would have made
-does not exist natively, so a successor that loaded such a save loaded what no
-node names: a checkpoint from outside the log (``FromOutside``).
+A claim loads a save that exists when it claims. 0.3.0's own order is claim,
+then load (run-episodes.md §3); §6's order chooses first; the two read alike
+wherever the save already exists, and a history places the load at the claim.
 """
 
 from __future__ import annotations
@@ -56,14 +52,13 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import NamedTuple, TypeAlias, assert_never
 
-# ----- references to nodes ---------------------------------------------------------
+# ----- references to nodes and saves ------------------------------------------------
 
 
 @dataclass(frozen=True)
 class CommitOf:
-    """The ``nth`` commit (from 0) a claim's worker made: its ``nth`` finished
-    iteration, counting only those a native writer could record (a fenced
-    worker's are not, ``walk``)."""
+    """The ``nth`` commit (from 0) a claim's worker made, counting only those
+    its native counterpart records (a fenced worker's later ones are not)."""
 
     claim: int
     nth: int
@@ -77,6 +72,27 @@ class ExitOf:
 
 
 NodeRef: TypeAlias = CommitOf | ExitOf
+
+
+@dataclass(frozen=True)
+class SaveOf:
+    """The newest save that claim ``claim``'s worker made, before the event
+    naming it, of its state at ``step``: an iteration's completed state, a
+    pass's partial state, or the state it loaded."""
+
+    claim: int
+    step: int
+
+
+@dataclass(frozen=True)
+class ExitSave:
+    """The newest save that claim ``claim``'s worker made after its own
+    ``stopped``."""
+
+    claim: int
+
+
+SaveRef: TypeAlias = SaveOf | ExitSave
 
 # ----- the claim -----------------------------------------------------------------------
 
@@ -99,20 +115,30 @@ class Gate(Enum):
     # released nothing (a note), or a worker abandoned in its live process
 
 
-class Cadence(Enum):
-    """Where the native counterpart drains control, besides each ``commit()``
-    and its exit: its own driver's choice, which §4 leaves to it. The drains
-    decide which stops its exit honours (``truth.py``)."""
-
-    COMMITS = "commits"  # at each commit only: 0.4.0's ``steps()``, ``commit()`` alone
-    TICKS = "ticks"  # also at a ``heartbeat()`` at each logged 0.3.0 tick
-
-
 class Clock(Enum):
-    """What the worker's clock reads before its first iteration."""
+    """A writer fact: what the worker's clock reads before its first iteration."""
 
-    LOADED = "loaded"  # the loaded node's step (0 for a fresh start)
+    LOADED = "loaded"  # the loaded save's step (0 for a fresh start)
     ZERO = "zero"  # 0 whatever it loaded: a counter that starts at 0 (mycooc's)
+
+
+class Fold(Enum):
+    """A writer fact: when a worker applies an answer (a ``stopped``'s
+    ``honored``) that another party wrote after its claim."""
+
+    AT_CLAIM = "at-claim"  # once, at its claim: the reference Worker (worker.py:85-118)
+    AT_DRAIN = "at-drain"  # at each drain: design-v0.2.md §6's drain skips a stop
+    # an answer already names
+
+
+class CutSave(Enum):
+    """A writer fact: whether an iteration finished whose pass was cut (its worker
+    killed or fenced, or its own ``stopped`` written) after a save of its
+    completed state, and before the pass closed."""
+
+    LANDED = "landed"  # it finished once its save landed
+    CLOSED = "closed"  # only its pass's close finishes it
+    SAVE_START = "save-start"  # it finished once its save started, landed or not
 
 
 @dataclass(frozen=True)
@@ -122,17 +148,16 @@ class Fresh:
 
 @dataclass(frozen=True)
 class FromSave:
-    """The claim loaded a save this log's claims made, of ``node``, which exists
-    when it claims. Its first iteration is labelled above that node's step."""
+    """The claim loaded ``save``, which exists when it claims. Its first
+    iteration is labelled above the saved state's step."""
 
-    node: NodeRef
+    save: SaveRef
 
 
 @dataclass(frozen=True)
 class FromOutside:
-    """The claim loaded a checkpoint standing at ``step`` that no node of the
-    log names: copied in from outside, or saved by a worker its claim had
-    already been taken from (a node its native counterpart never made)."""
+    """The claim loaded a checkpoint standing at ``step`` that no claim of the
+    log saved: one copied in from outside."""
 
     step: int
 
@@ -142,8 +167,17 @@ Origin: TypeAlias = Fresh | FromSave | FromOutside
 # ----- closed choices ----------------------------------------------------------------
 
 
+class Ended(Enum):
+    """When an iteration ended: the time its native commit carries (§3,
+    lifecycle-v0.6: a commit's ``t`` is its writer's clock at ``commit()``)."""
+
+    TICKED = "ticked"  # dated: its own tick follows at once, and stands at its end
+    OWN_LAST = "own-last"  # with its claim's newest record before it
+    NEXT = "next"  # just before the log's next record
+
+
 class FinalStep(Enum):
-    """What a worker's own ``stopped`` writes as its ``final_step``."""
+    """A writer fact: what a worker's own ``stopped`` writes as ``final_step``."""
 
     YIELDED = "yielded"  # the last iteration it began (the reference Worker's)
     FINISHED = "finished"  # the last iteration it finished (mycooc's writers)
@@ -151,21 +185,19 @@ class FinalStep(Enum):
 
 
 class Drain(Enum):
-    """Which stops a worker's own ``stopped`` lists in ``honored``: those it
-    drained and no ``stopped`` had named before its claim."""
+    """A writer fact: which of the stops it took in a worker's own ``stopped``
+    lists in ``honored``."""
 
-    EXIT = "exit"  # every stop up to its exit (the reference Worker's ``_die``)
-    TICKS = "ticks"  # only those its beats drained, before its newest beat
+    EXIT = "exit"  # every one, its exit draining too (the reference Worker's ``_die``)
+    TICKS = "ticks"  # only those its beats drained
 
 
 class Watermark(Enum):
-    """What a heartbeat writes as its ``consumed_seq``: how far its writer read
-    the control order."""
+    """A writer fact: what a heartbeat writes as its ``consumed_seq``."""
 
     CONTROL = "control"  # the newest control record before it (the reference
     # Worker's cursor, which reads from the log's start)
-    CLAIMED = "claimed"  # the newest control record since its claim, else 0 (a
-    # cursor that starts at the claim)
+    CLAIMED = "claimed"  # the newest control record since its claim, else 0
     TAIL = "tail"  # the newest record of any topic before it
 
 
@@ -218,11 +250,10 @@ ProcessEnd: TypeAlias = Killed | Exited
 
 
 class Via(Enum):
-    """How a third party writes its death report natively (§3)."""
+    """A writer fact: how a third party writes a death report (§3)."""
 
     HELPER = "helper"  # through ``report_death``, which writes nothing on a claim
-    # with a readable exit, nor a ``lost`` on one that has ended (the reclaim
-    # tool's, the launchers')
+    # with a readable exit (the reclaim tool's, the launchers')
     DIRECT = "direct"  # a ``supervisor.died`` it writes itself: "any party ...
     # may write one". A cause reports "whether or not the claim has ended", but
     # evidence without one (``lost``) "reports only while the claim is held",
@@ -231,10 +262,9 @@ class Via(Enum):
 
 @dataclass(frozen=True)
 class Release:
-    """A third party's ``stopped`` that reports its claim dead: 0.4.0's
-    ``supervisor.died`` with ``outcome``, written ``via`` the helper or
-    directly. Its writer may be wrong, and a live worker it names is then
-    released."""
+    """A third party's ``stopped`` that reports its claim dead: a death report
+    with ``outcome``, written ``via`` the helper or directly. Its writer may be
+    wrong, and a live worker it names is then released."""
 
     outcome: Outcome
     via: Via
@@ -257,21 +287,22 @@ Intent: TypeAlias = Release | Report
 @dataclass(frozen=True)
 class Claim:
     """The claim's worker writes ``lifecycle.started`` from ``process``,
-    re-emitting ``launch``, past the gate's ``gate`` verdict, with the state of
-    ``origin``. ``cadence`` is its native counterpart's drain cadence."""
+    re-emitting ``launch``, past the gate's ``gate`` verdict, having loaded
+    ``origin``; ``clock``, ``fold`` and ``cut_save`` are its writer's facts."""
 
     claim: int
     process: Process
     gate: Gate
     origin: Origin
-    clock: Clock
     launch: str | None
-    cadence: Cadence
+    clock: Clock
+    fold: Fold
+    cut_save: CutSave
 
 
 @dataclass(frozen=True)
 class Begin:
-    """The worker begins an iteration and sets its clock to ``step``."""
+    """The worker begins an iteration's pass and sets its clock to ``step``."""
 
     claim: int
     step: int
@@ -305,40 +336,53 @@ class Beacon:
 
 
 @dataclass(frozen=True)
+class PassSave:
+    """Inside its pass, the worker saves the iteration's completed state: its
+    update is done, and the pass writes on (mycooc's order: status, save, tick,
+    metrics, stage). ``landed`` False: the save started and never landed, the
+    worker cut or the save failed. ``ended`` dates the iteration's end, where
+    ``cut_save`` says the save finished it."""
+
+    claim: int
+    landed: bool
+    ended: Ended
+
+
+@dataclass(frozen=True)
 class Finish:
-    """The iteration's body is done: the worker's state now includes it. With
-    ``saved``, the body's last act was a save of that state, which is durable.
-    It is where the native counterpart calls ``commit()``, whose drain reads any
-    death report naming the claim (§4)."""
+    """The iteration's pass closes: the point the writer's loop treats as done.
+    With ``saved``, the pass's last act was a save of the completed state. It is
+    where the native counterpart calls ``commit()``, whose drain reads any death
+    report naming the claim (§4); ``ended`` dates it."""
 
     claim: int
     saved: bool
+    ended: Ended
 
 
 @dataclass(frozen=True)
 class Save:
-    """A save of the worker's state outside the body: after its tick, after its
-    exit, or anywhere else. It names a node only where its state is one."""
+    """A save of the worker's state outside a pass (between iterations, after
+    its exit, or of the state it loaded), or of a pass's partial state."""
 
     claim: int
 
 
 @dataclass(frozen=True)
 class Rewind:
-    """The worker reloads a save of ``target`` (the root when None) between
-    iterations; its pending values are dropped and its clock reads the target's
-    step."""
+    """Between iterations, the worker reloads ``target`` (the root when None):
+    its pending values are dropped and its clock reads the saved state's step."""
 
     claim: int
-    target: NodeRef | None
+    target: SaveRef | None
 
 
 @dataclass(frozen=True)
 class Exit:
-    """The worker writes its own ``stopped``, its halt. ``discards`` is the
-    native counterpart's choice: whether it calls ``w.discard()`` first (§4), as
-    a worker that abandons an unfinished iteration and leaves cleanly does; it
-    applies only to a clean exit inside an open iteration."""
+    """The worker writes its own ``stopped``, its halt. ``honors`` and
+    ``final_step`` are its writer's encodings; ``discards`` is whether its loop
+    leaves no resumable state after a clean exit inside an open iteration (§4,
+    ``w.discard()``)."""
 
     claim: int
     completed: bool
@@ -351,8 +395,7 @@ class Exit:
 @dataclass(frozen=True)
 class Halt:
     """The worker ends: nothing of it follows. ``how`` is how its process ended,
-    or None when the process runs on (it runs another claim's worker, or the
-    worker was abandoned in it)."""
+    or None when the process runs on."""
 
     claim: int
     how: ProcessEnd | None
@@ -378,8 +421,7 @@ class ThirdPartyStop:
 
 @dataclass(frozen=True)
 class Launched:
-    """A launcher writes ``launcher.launched`` for ``process``: the claimant's
-    when a claim naming the launch runs in it, else a wrapper's."""
+    """A launcher writes ``launcher.launched`` for ``process``."""
 
     launch: str
     process: Process
@@ -415,6 +457,7 @@ Event: TypeAlias = (
     | Emit
     | Beat
     | Beacon
+    | PassSave
     | Finish
     | Save
     | Rewind
@@ -429,8 +472,25 @@ Event: TypeAlias = (
 )
 
 WorkerEvent: TypeAlias = (
-    Begin | Emit | Beat | Beacon | Finish | Save | Rewind | Exit | Halt
+    Begin | Emit | Beat | Beacon | PassSave | Finish | Save | Rewind | Exit | Halt
 )
+
+_WORKER_EVENTS = (Begin, Emit, Beat, Beacon, PassSave, Finish, Save, Rewind, Exit, Halt)
+
+RECORDS = (
+    Claim,
+    Emit,
+    Beat,
+    Beacon,
+    Exit,
+    StopRequest,
+    ThirdPartyStop,
+    Launched,
+    Reaped,
+    Stray,
+    UserRecord,
+)
+"""The events that write a record."""
 
 
 @dataclass(frozen=True)
@@ -444,8 +504,8 @@ class NotConforming(Exception):
 
 
 class NoCounterpart(NotConforming):
-    """The history is conforming 0.3.0, but a part of it has no native 0.4.0
-    counterpart the model can state a truth for."""
+    """The history is conforming 0.3.0, but the model states no single 0.4.0
+    encoding for a part of it: a fork the consumer resolves."""
 
 
 _RESERVED = ("lifecycle.", "control.", "launcher.")
@@ -455,8 +515,8 @@ _RESERVED = ("lifecycle.", "control.", "launcher.")
 
 class Phase(Enum):
     LOADING = "loading"  # claimed, no iteration begun yet
-    ITERATING = "iterating"  # an iteration begun and not finished
-    BETWEEN = "between"  # between iterations (its last one finished)
+    ITERATING = "iterating"  # a pass begun and not closed
+    BETWEEN = "between"  # between passes (its last one closed)
     EXITED = "exited"  # its own ``stopped`` written; the worker lives on
     HALTED = "halted"  # the worker ended
 
@@ -469,25 +529,12 @@ def _exit_kind(completed: bool, error: str | None, discards: bool) -> Kind:
     return Kind.EXTENDABLE
 
 
-@dataclass
-class _Worker:
-    """One claim's worker, as the walk folds it."""
+class Cut(NamedTuple):
+    """A commit a pass's cut makes: ``commit`` of a pass cut after its save,
+    dated by the ``PassSave`` at event ``save``."""
 
-    claim: int
-    process: Process
-    clock: int  # the step a labelled value or a beat stamps
-    floor: int  # the lowest label its next iteration may take
-    position: NodeRef | None  # where its native counterpart stands
-    state: NodeRef | None  # the node a save of its state now names, if any
-    phase: Phase = Phase.LOADING
-    tick_due: bool = False  # the open iteration has not beaten yet
-    commits: int = 0
-    exited: bool = False  # it wrote its own stopped
-    exit_kind: Kind | None = None  # its exit node's kind, once a native one exists
-    released: bool = False  # fenced: a release or a takeover reached it alive
-    begun: int | None = None
-    finished: int | None = None
-    ticked: int | None = None
+    commit: CommitOf
+    save: int
 
 
 class Derived(NamedTuple):
@@ -496,9 +543,20 @@ class Derived(NamedTuple):
     label: int | None  # the step an Emit, a Beat or a Stray stamps (None: stepless)
     node: NodeRef | None  # the node a Finish or an Exit makes, if any
     final_step: int | None  # the final_step an Exit writes
+    cut: Cut | None  # a commit a cut makes just before this event
 
 
-_NOTHING = Derived(None, None, None)
+_NOTHING = Derived(None, None, None, None)
+
+
+class Load(NamedTuple):
+    """What a claim loaded, and the newest save that existed at its claim: the
+    events a load fact such as "a resume loads the newest save" is checked
+    against."""
+
+    claim: int
+    loaded: int | None  # the event index of the save it loaded, if any
+    newest: int | None  # the event index of the newest save at its claim, if any
 
 
 class Walk(NamedTuple):
@@ -508,37 +566,106 @@ class Walk(NamedTuple):
     fenced: tuple[bool, ...]  # the event's worker was fenced before it
     exit_kinds: dict[int, Kind]  # claim -> its native exit node's kind
     steps: dict[NodeRef, int]  # each node's step: its iteration's, or the exit's clock
+    origins: dict[int, NodeRef | None]  # claim -> the node its load names, if any
+    rewinds: dict[int, NodeRef | None]  # Rewind event -> the node its target names
+    loads: tuple[Load, ...]
+
+
+_UNRESOLVED = CommitOf(-1, -1)
+
+
+@dataclass
+class _Save:
+    ref: SaveRef
+    index: int  # the event that made it
+    step: int  # the saved state's step
+    node: NodeRef | None  # the node it names, once resolved
+
+
+@dataclass
+class _Worker:
+    """One claim's worker, as the walk folds it."""
+
+    claim: int
+    process: Process
+    cut_save: CutSave
+    clock: int  # the step a labelled value or a beat stamps
+    floor: int  # the lowest label its next iteration may take
+    position: NodeRef | None  # where its native counterpart stands
+    state: NodeRef | None  # the node a save of its state between passes names
+    phase: Phase = Phase.LOADING
+    tick_due: bool = False  # the open iteration has not beaten yet
+    commits: int = 0
+    exited: bool = False
+    exit_kind: Kind | None = None  # its exit node's kind, once a native one exists
+    released: bool = False  # fenced: a release or a takeover reached it alive
+    pass_save: int | None = None  # the open pass's PassSave event, if any
+    pass_save_landed: bool = False
+    pass_cut: bool = False  # its native counterpart committed the open pass at a cut
+    awaiting_tick: bool = False  # an end dated TICKED waits for its tick
+    begun: int | None = None
+    finished: int | None = None
+    ticked: int | None = None
 
 
 @dataclass
 class _State:
     workers: list[_Worker] = field(default_factory=list)
-    saves: dict[NodeRef, int] = field(default_factory=dict)  # node -> event index
+    saves: list[_Save] = field(default_factory=list)
     node_steps: dict[NodeRef, int] = field(default_factory=dict)
+    origins: dict[int, NodeRef | None] = field(default_factory=dict)
+    rewinds: dict[int, NodeRef | None] = field(default_factory=dict)
+    loads: list[Load] = field(default_factory=list)
     stop_ids: set[str] = field(default_factory=set)
     launched: dict[str, Process] = field(default_factory=dict)
     reaped: set[str] = field(default_factory=set)
     released: set[int] = field(default_factory=set)  # claims a release named
     ended: dict[Process, ProcessEnd] = field(default_factory=dict)
+    next_record: list[int] = field(
+        default_factory=list
+    )  # events needing a later record
 
 
 def walk(history: History) -> Walk:
-    """Fold the history, checking that conforming writers produce it and that
-    it has a native counterpart; raise ``NotConforming`` otherwise."""
+    """Fold the history, checking that conforming writers produce it; raise
+    ``NotConforming`` otherwise."""
     st, derived = _fold(history.events)
     for c, w in enumerate(st.workers):
         if w.phase is not Phase.HALTED:
             raise NotConforming(
                 f"claim {c}'s worker never halts: the run is not at rest"
             )
+    last_record = max(
+        (i for i, ev in enumerate(history.events) if isinstance(ev, RECORDS)),
+        default=-1,
+    )
+    for i in st.next_record:
+        if i > last_record:
+            raise NotConforming(
+                f"event {i} ends just before the next record: none follows"
+            )
     return derived
 
 
-def loadable(events: tuple[Event, ...]) -> dict[NodeRef, int]:
-    """The nodes a claim appended after ``events`` (a conforming prefix of a
-    history) could load, each with its step: every node saved so far."""
+def loadable(events: tuple[Event, ...]) -> dict[SaveRef, int]:
+    """The saves a claim appended after ``events`` (a conforming prefix of a
+    history) could load, each with its saved state's step."""
     st, _ = _fold(events)
-    return {node: st.node_steps[node] for node in st.saves}
+    return {s.ref: s.step for s in st.saves}
+
+
+def newest_save(events: tuple[Event, ...]) -> SaveRef | None:
+    """The newest save made in ``events`` (a conforming prefix of a history),
+    which a claim appended after them under ``load=newest`` loads."""
+    st, _ = _fold(events)
+    return st.saves[-1].ref if st.saves else None
+
+
+def loads_newest(history: History) -> bool:
+    """Whether every claim loaded the newest save that existed at its claim, or
+    nothing where none did: mycooc's ``load=newest``, one checkpoint slot that
+    every save overwrites and every claim loads."""
+    return all(load.loaded == load.newest for load in walk(history).loads)
 
 
 def _fold(events: tuple[Event, ...]) -> tuple[_State, Walk]:
@@ -548,14 +675,16 @@ def _fold(events: tuple[Event, ...]) -> tuple[_State, Walk]:
     for i, ev in enumerate(events):
         d, fence = _NOTHING, False
         try:
+            if isinstance(ev, _WORKER_EVENTS):
+                _ticks(st, ev)
             if isinstance(ev, Claim):
-                _claim(st, ev)
+                d = _claim(st, i, ev)
             elif isinstance(ev, StopRequest):
                 if ev.request_id in st.stop_ids:
                     raise NotConforming(f"stop id {ev.request_id!r} reused")
                 st.stop_ids.add(ev.request_id)
             elif isinstance(ev, ThirdPartyStop):
-                _third_party(st, ev)
+                d = _third_party(st, ev)
             elif isinstance(ev, Launched):
                 if ev.launch in st.launched:
                     raise NotConforming(f"launch {ev.launch!r} launched twice")
@@ -563,7 +692,7 @@ def _fold(events: tuple[Event, ...]) -> tuple[_State, Walk]:
             elif isinstance(ev, Reaped):
                 _reaped(st, ev)
             elif isinstance(ev, Stray):
-                d = Derived(ev.step, None, None)
+                d = Derived(ev.step, None, None, None)
             elif isinstance(ev, UserRecord):
                 if ev.topic == "value" or ev.topic.startswith(_RESERVED):
                     raise NotConforming(f"topic {ev.topic!r} is a convention's")
@@ -575,12 +704,42 @@ def _fold(events: tuple[Event, ...]) -> tuple[_State, Walk]:
             raise type(exc)(f"event {i} ({ev}): {exc}") from None
         derived.append(d)
         fenced.append(fence)
+    for w in st.workers:
+        if w.awaiting_tick:
+            raise NotConforming(
+                f"claim {w.claim}'s end is dated by a tick that never comes"
+            )
     return st, Walk(
         tuple(derived),
         tuple(fenced),
         {c: w.exit_kind for c, w in enumerate(st.workers) if w.exit_kind is not None},
         dict(st.node_steps),
+        dict(st.origins),
+        dict(st.rewinds),
+        tuple(st.loads),
     )
+
+
+def _ticks(st: _State, ev: WorkerEvent) -> None:
+    """An end dated ``TICKED`` stands at its claim's tick, its very next event."""
+    if not 0 <= ev.claim < len(st.workers):
+        return
+    w = st.workers[ev.claim]
+    if w.awaiting_tick:
+        if not isinstance(ev, Beat):
+            raise NotConforming(
+                "an end dated by its tick is followed at once by the tick"
+            )
+        w.awaiting_tick = False
+
+
+def _dated(st: _State, w: _Worker, i: int, ended: Ended) -> None:
+    if ended is Ended.TICKED:
+        w.awaiting_tick = True
+    elif ended is Ended.NEXT:
+        st.next_record.append(i)
+    elif ended is not Ended.OWN_LAST:
+        assert_never(ended)
 
 
 def _worker(st: _State, claim: int) -> _Worker:
@@ -592,46 +751,61 @@ def _worker(st: _State, claim: int) -> _Worker:
     return w
 
 
-def _claim(st: _State, ev: Claim) -> None:
+def _resolve(st: _State, ref: SaveRef, before: int) -> _Save:
+    """The newest save ``ref`` names made before event ``before``."""
+    found = [s for s in st.saves if s.ref == ref and s.index < before]
+    if not found:
+        raise NotConforming(f"no save {ref} exists at event {before}")
+    save = found[-1]
+    assert save.node is not _UNRESOLVED, "a loaded save's pass has closed or been cut"
+    return save
+
+
+def _claim(st: _State, i: int, ev: Claim) -> Derived:
     if ev.claim != len(st.workers):
         raise NotConforming(
             f"claims are numbered in claim order; expected {len(st.workers)}"
         )
     if ev.process in st.ended:
         raise NotConforming(f"process {ev.process} has ended")
-    _gate(st, ev.gate)
+    cut = _gate(st, i, ev.gate)
     origin = ev.origin
+    newest = st.saves[-1].index if st.saves else None
+    loaded: int | None = None
     if isinstance(origin, Fresh):
-        loaded, position = 0, None
-        floor = 0
+        step, node, floor = 0, None, 0
     elif isinstance(origin, FromOutside):
         if origin.step < 0:
             raise NotConforming("a step is never negative")
-        loaded, position = origin.step, None
-        floor = loaded + 1
+        step, node, floor = origin.step, None, origin.step + 1
     elif isinstance(origin, FromSave):
-        if origin.node not in st.saves:
-            raise NoCounterpart(f"no save of {origin.node} exists at the claim")
-        loaded, position = st.node_steps[origin.node], origin.node
-        floor = loaded + 1
+        save = _resolve(st, origin.save, i)
+        step, node, floor, loaded = save.step, save.node, save.step + 1, save.index
     else:
         assert_never(origin)
-    clock = loaded if ev.clock is Clock.LOADED else 0
+    st.loads.append(Load(ev.claim, loaded, newest))
+    st.origins[ev.claim] = node
+    clock = step if ev.clock is Clock.LOADED else 0
     st.workers.append(
-        _Worker(ev.claim, ev.process, clock, floor, position=position, state=position)
+        _Worker(
+            ev.claim, ev.process, ev.cut_save, clock, floor, position=node, state=node
+        )
     )
+    return Derived(None, None, None, cut)
 
 
-def _gate(st: _State, gate: Gate) -> None:
+def _gate(st: _State, i: int, gate: Gate) -> Cut | None:
     """The claim gate (design-v0.2.md §4, §8; run-episodes.md §3): a claim is
     taken once the latest has ended or its worker is judged dead. FREE says it
     had ended, or its process had; TAKEOVER says neither, and the gate judged
-    it dead anyway. Its native counterpart is the claim path's death report
-    (§4, ``report_if_dead``), which fences a live worker."""
+    it dead anyway. A conforming 0.4.0 lineage admits the claim only once the
+    latest has ended (§4, "The claim"), so the claim path's death report stands
+    before it, and fences a live worker (§4, "A released worker fences
+    itself")."""
     if not st.workers:
         if gate is not Gate.FREE:
             raise NotConforming("the run's first claim takes nothing over")
-        return
+        return None
     c = len(st.workers) - 1
     prev = st.workers[c]
     free = prev.exited or c in st.released or prev.process in st.ended
@@ -641,21 +815,61 @@ def _gate(st: _State, gate: Gate) -> None:
         if free:
             raise NotConforming(f"claim {c} had ended or its process had: no takeover")
         if prev.phase is not Phase.HALTED:
-            prev.released = True
+            return _fence(st, prev)
+    return None
 
 
-def _third_party(st: _State, ev: ThirdPartyStop) -> None:
+def _fence(st: _State, w: _Worker) -> Cut | None:
+    """A death report reaches a live worker with no exit node: its open pass is
+    cut there (``cut_save``), and it writes nothing more natively (§4)."""
+    cut = _cut(st, w)
+    w.released = True
+    return cut
+
+
+def _cut(st: _State, w: _Worker) -> Cut | None:
+    """The open pass ends other than by its close: does the iteration finish?
+    It does where the writer fact ``cut_save`` says the pass's save of its
+    completed state finished it (§7, "the consumer decides it")."""
+    if (
+        w.phase is not Phase.ITERATING
+        or w.released
+        or w.pass_cut
+        or w.pass_save is None
+    ):
+        return None
+    finishes = w.cut_save is CutSave.SAVE_START or (
+        w.cut_save is CutSave.LANDED and w.pass_save_landed
+    )
+    save = next((s for s in st.saves if s.index == w.pass_save), None)
+    if not finishes:
+        if save is not None:
+            save.node = None
+        return None
+    node = CommitOf(w.claim, w.commits)
+    w.commits += 1
+    w.position = node
+    w.pass_cut = True
+    st.node_steps[node] = w.clock
+    if save is not None:
+        save.node = node
+    return Cut(node, w.pass_save)
+
+
+def _third_party(st: _State, ev: ThirdPartyStop) -> Derived:
     if ev.names is not None and not 0 <= ev.names < len(st.workers):
         raise NotConforming(f"a stopped names claim {ev.names}, which has not claimed")
-    if isinstance(ev.intent, Release):
-        if ev.names is None:
-            raise NotConforming("a release names the claim it reports dead")
-        w = st.workers[ev.names]
-        # A release fences a live worker that has no exit node (§4): a native
-        # report_death returns None once the claim has a readable exit.
-        if w.phase is not Phase.HALTED and w.exit_kind is None:
-            w.released = True
-        st.released.add(ev.names)
+    if not isinstance(ev.intent, Release):
+        return _NOTHING
+    if ev.names is None:
+        raise NotConforming("a release names the claim it reports dead")
+    st.released.add(ev.names)
+    w = st.workers[ev.names]
+    # A release fences a live worker that has no exit node (§4): a death report
+    # it writes is no report there once the claim has a readable exit (§3).
+    if w.phase is not Phase.HALTED and w.exit_kind is None:
+        return Derived(None, None, None, _fence(st, w))
+    return _NOTHING
 
 
 def _reaped(st: _State, ev: Reaped) -> None:
@@ -666,7 +880,6 @@ def _reaped(st: _State, ev: Reaped) -> None:
     st.reaped.add(ev.launch)
     process = st.launched[ev.launch]
     if any(w.process == process for w in st.workers):
-        # the process ran a claim: the reap follows its end, and says how
         if process not in st.ended:
             raise NotConforming(f"process {process} is reaped while it lives")
         if st.ended[process] != ev.how:
@@ -675,84 +888,117 @@ def _reaped(st: _State, ev: Reaped) -> None:
             )
 
 
+def _save(st: _State, i: int, ref: SaveRef, step: int, node: NodeRef | None) -> None:
+    st.saves.append(_Save(ref, i, step, node))
+
+
 def _step(st: _State, i: int, ev: WorkerEvent, w: _Worker) -> Derived:
     if isinstance(ev, Begin):
         if w.phase not in (Phase.LOADING, Phase.BETWEEN):
-            raise NotConforming("an iteration begins only after the last one finished")
+            raise NotConforming("a pass begins only after the last one closed")
         if ev.step < w.floor:
             # run-absolute steps: labels rise within a claim, and a resumed claim's
             # continue above the step it loaded
             raise NotConforming(f"label {ev.step} below the clock's floor {w.floor}")
         w.phase, w.clock, w.tick_due, w.begun = Phase.ITERATING, ev.step, True, ev.step
-        w.state = None  # a save inside the body is of partial state
+        w.pass_save, w.pass_save_landed, w.pass_cut = None, False, False
         return _NOTHING
     if isinstance(ev, Emit):
-        return Derived(None if ev.stepless else w.clock, None, None)
+        return Derived(None if ev.stepless else w.clock, None, None, None)
     if isinstance(ev, Beat):
         if w.phase not in (Phase.ITERATING, Phase.BETWEEN) or not w.tick_due:
             raise NotConforming("a beat ticks an iteration, at most once")
         w.tick_due, w.ticked = False, w.clock
-        return Derived(w.clock, None, None)
+        return Derived(w.clock, None, None, None)
     if isinstance(ev, Beacon):
         if w.phase is Phase.EXITED:
             raise NotConforming("a halted worker beats no more")
         return _NOTHING
+    if isinstance(ev, PassSave):
+        if w.phase is not Phase.ITERATING or w.pass_save is not None:
+            raise NotConforming("a pass saves its completed state once, inside it")
+        w.pass_save, w.pass_save_landed = i, ev.landed
+        if ev.landed:
+            # It names the iteration's commit once the pass closes or a cut
+            # finishes it, and nothing once its worker is fenced (§4).
+            _save(
+                st,
+                i,
+                SaveOf(w.claim, w.clock),
+                w.clock,
+                None if w.released else _UNRESOLVED,
+            )
+        _dated(st, w, i, ev.ended)
+        return _NOTHING
     if isinstance(ev, Finish):
         if w.phase is not Phase.ITERATING:
-            raise NotConforming("no iteration is open")
+            raise NotConforming("no pass is open")
         w.phase, w.floor, w.finished = Phase.BETWEEN, w.clock + 1, w.clock
-        if w.released:
-            return _NOTHING  # fenced: its native counterpart commits nothing more
+        _dated(st, w, i, ev.ended)
+        save = next((s for s in st.saves if s.index == w.pass_save), None)
+        if w.released or w.pass_cut:
+            if save is not None and save.node is _UNRESOLVED:
+                save.node = None
+            w.state = None if w.released else w.position
+            if ev.saved:
+                _save(st, i, SaveOf(w.claim, w.clock), w.clock, w.state)
+            return _NOTHING  # fenced, or already committed at its cut
         node = CommitOf(w.claim, w.commits)
         w.commits += 1
         w.position = w.state = node
         st.node_steps[node] = w.clock
+        if save is not None:
+            save.node = node  # an in-pass save of completed state names it (§6)
         if ev.saved:
-            st.saves.setdefault(node, i)
-        return Derived(None, node, None)
+            _save(st, i, SaveOf(w.claim, w.clock), w.clock, node)
+        return Derived(None, node, None, None)
     if isinstance(ev, Save):
-        if w.phase is Phase.EXITED and (
-            w.released or w.exit_kind is not Kind.EXTENDABLE
-        ):
-            return _NOTHING  # state no native node names
-        if w.state is not None:
-            # A fenced worker's save of a node it made before its fence lands:
-            # natively the save runs inside the commit that made the node (§6).
-            st.saves.setdefault(w.state, i)
+        if w.phase is Phase.EXITED:
+            exit_node = (
+                ExitOf(w.claim)
+                if w.exit_kind is Kind.EXTENDABLE and not w.released
+                else None
+            )
+            _save(st, i, ExitSave(w.claim), w.clock, exit_node)
+        elif w.phase is Phase.ITERATING:
+            _save(st, i, SaveOf(w.claim, w.clock), w.clock, None)  # partial state
+        else:
+            _save(st, i, SaveOf(w.claim, w.clock), w.clock, w.state)
         return _NOTHING
     if isinstance(ev, Rewind):
         if w.phase is not Phase.BETWEEN:
             raise NotConforming("a rewind falls between iterations")
         if ev.target is None:
-            w.clock, w.floor = 0, 0
+            w.clock, w.floor, target = 0, 0, None
         else:
-            if ev.target not in st.saves:
-                raise NoCounterpart(f"no save of {ev.target} exists to rewind to")
-            w.clock = st.node_steps[ev.target]
-            w.floor = w.clock + 1
-        w.state, w.tick_due = ev.target, False
+            save = _resolve(st, ev.target, i)
+            w.clock, w.floor, target = save.step, save.step + 1, save.node
+        w.state, w.tick_due = target, False
+        st.rewinds[i] = target
         if not w.released:
-            w.position = ev.target
+            w.position = target
         return _NOTHING
     if isinstance(ev, Exit):
         if w.phase not in (Phase.LOADING, Phase.ITERATING, Phase.BETWEEN):
             raise NotConforming("a worker's stopped is its halt: it writes one")
         if ev.completed and ev.error is not None:
             raise NotConforming("a completed stop carries no error (lifecycle-v0.5)")
-        if ev.discards and (ev.error is not None or w.phase is not Phase.ITERATING):
+        cut = _cut(st, w)
+        if ev.discards and (
+            ev.error is not None or w.phase is not Phase.ITERATING or cut is not None
+        ):
             raise NotConforming(
                 "only a clean exit inside an open iteration discards it"
             )
         final = _final_step(w, ev.final_step)
         w.phase, w.exited = Phase.EXITED, True
         if w.released:
-            return Derived(None, None, final)
+            return Derived(None, None, final, cut)
         w.exit_kind = _exit_kind(ev.completed, ev.error, ev.discards)
         st.node_steps[ExitOf(w.claim)] = w.clock
-        if w.exit_kind is Kind.EXTENDABLE:
-            w.state = ExitOf(w.claim)
-        return Derived(None, ExitOf(w.claim), final)
+        return Derived(None, ExitOf(w.claim), final, cut)
     if isinstance(ev, Halt):
+        cut = _cut(st, w)
         if ev.how is not None:
             if any(
                 x is not w and x.process == w.process and x.phase is not Phase.HALTED
@@ -763,7 +1009,7 @@ def _step(st: _State, i: int, ev: WorkerEvent, w: _Worker) -> Derived:
                 )
             st.ended[w.process] = ev.how
         w.phase = Phase.HALTED
-        return _NOTHING
+        return Derived(None, None, None, cut)
     assert_never(ev)
 
 

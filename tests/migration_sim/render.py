@@ -11,10 +11,13 @@ history's writers fill them:
 - **a heartbeat's ``consumed_seq``** is its ``Watermark``: the newest control
   record before it (the reference Worker's drain cursor), the newest since its
   claim, or the newest record of any topic before it;
-- **a worker's ``honored``** is its ``Drain``: the stops before its exit, or
-  before its newest beat, that no ``stopped`` named before its claim (the
-  reference Worker folds the answers once, at its claim, and drains every stop
-  up to its exit in ``_die``);
+- **a worker's ``honored``** is the stops it took in at its drains: each beat
+  or beacon, and its exit under ``Drain.EXIT`` (the reference Worker's
+  ``_die``), not under ``Drain.TICKS``. A drain considers each stop once, at the
+  first drain after it, and takes it unless an answer already spent it: under
+  ``Fold.AT_CLAIM`` an answer before its claim (the reference Worker folds the
+  answers once, at its claim: worker.py:85-118), under ``Fold.AT_DRAIN`` one
+  before that drain (design-v0.2.md §6's drain);
 - **a third party's ``honored``**, under ``Honors.UNDISCHARGED``, is every stop
   no ``stopped`` has named yet (``undischarged_stops``, as mycooc's
   clear-staged-stop path reads it);
@@ -38,6 +41,7 @@ from .history import (
     Emit,
     Exit,
     Exited,
+    Fold,
     History,
     Honors,
     Killed,
@@ -77,8 +81,10 @@ def render(history: History) -> Rendered:
     seqs: list[int | None] = []
     honoured: list[tuple[str, ...]] = []
     claim_seqs: dict[int, int] = {}
+    folds: dict[int, Fold] = {}
     spent_at_claim: dict[int, frozenset[str]] = {}
-    newest_beat: dict[int, int] = {}  # claim -> its newest heartbeat's seq
+    considered: dict[int, set[str]] = {}  # claim -> the stops a drain of it has seen
+    taken: dict[int, set[str]] = {}  # claim -> the stops it took in
     stops: dict[str, int] = {}  # stop id -> its seq
     named: set[str] = set()  # every id a stopped has named so far
     control = 0  # the newest control record's seq
@@ -93,6 +99,15 @@ def render(history: History) -> Rendered:
         text = json.dumps(body, separators=(",", ":"))
         rows.append(Row(seq, topic, name, request_id, text, float(seq)))
         return seq
+
+    def drain(claim: int) -> None:
+        """A drain of claim ``claim``'s worker, before its record is written."""
+        spent = spent_at_claim[claim] if folds[claim] is Fold.AT_CLAIM else named
+        for x in stops:
+            if x not in considered[claim]:
+                considered[claim].add(x)
+                if x not in spent:
+                    taken[claim].add(x)
 
     def value(name: str, step: int | None) -> int:
         payload = name if step is None else f"{name}@{step}"
@@ -111,12 +126,15 @@ def render(history: History) -> Rendered:
                 request_id=ev.launch,
             )
             claim_seqs[ev.claim] = seq
+            folds[ev.claim] = ev.fold
             spent_at_claim[ev.claim] = frozenset(named)
+            considered[ev.claim], taken[ev.claim] = set(), set()
         elif isinstance(ev, Emit):
             seq = value(ev.name, label)
         elif isinstance(ev, Stray):
             seq = value(ev.name, ev.step)
         elif isinstance(ev, (Beat, Beacon)):
+            drain(ev.claim)
             watermark = _watermark(
                 ev.watermark, control, claim_seqs[ev.claim], len(rows)
             )
@@ -131,22 +149,12 @@ def render(history: History) -> Rendered:
                 name=None,
                 request_id=None,
             )
-            newest_beat[ev.claim] = seq
             if label is not None:
                 progress = label
         elif isinstance(ev, Exit):
-            drained = (
-                len(rows) + 1
-                if ev.honors is Drain.EXIT
-                else newest_beat.get(ev.claim, 0)
-            )
-            ids = tuple(
-                sorted(
-                    x
-                    for x, at in stops.items()
-                    if at < drained and x not in spent_at_claim[ev.claim]
-                )
-            )
+            if ev.honors is Drain.EXIT:
+                drain(ev.claim)
+            ids = tuple(sorted(taken[ev.claim]))
             seq = append(
                 "lifecycle.stopped",
                 _stopped(
