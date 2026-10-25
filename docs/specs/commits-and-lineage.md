@@ -238,6 +238,9 @@ in v0.5; the request on `bound` and `nak`, as in v0.5; and null on `commit`, `he
   []`, as an `if`/`then`, whether or not it completed.
 - **`consumed_seq`** is the control-drain watermark, as in v0.5. No 0.4.0 read uses it except
   `await_consumed` (§5), which takes it from the claim's commits and heartbeats.
+- **`t`** is the writer's wall clock when it wrote the record, as in v0.5. A commit is written when its
+  iteration ends, after the values it holds (§4, `commit()`). *Prose:* a commit's `t` is at or after the `t`
+  of every value it holds that its writer stamped.
 - **One shared type.** `parent`, `values`, `fired` and `expired` each reference one shared definition,
   property by property, because `allOf` does not compose with `additionalProperties: false`. `values`'
   definition is the array, which `stopped` wraps as nullable. In the vocabulary, a `Node` Protocol is
@@ -916,16 +919,21 @@ record for, and each is the least-distorting way to do so.
     that 0.3.0's gate may not have made, since it may have judged by staleness.
   - No fold parses `evidence` (§3), so nothing a fold reads changes. A person reading `RunResult.reports` can
     tell migrated reports from native ones on any log, whoever migrated it.
+- **E2 and E3 keep every readable exit's `honored` true,** each by the smallest move of one control record:
+  E2 moves a withdrawal the step writes, and E3 a stop that nothing has answered by the exit that omits it.
+  A readable exit here is a claim's exit node whose body parses (§5).
 - **E2. A withdrawal the step writes stands at the nearest place to its answer that keeps every readable
-  exit's `honored` true.** The step writes a `control.withdraw` for each id honoured by a `stopped` that is
-  not its claim's exit node: a third party's, or a fenced worker's own. It stands just after that `stopped`,
-  its answer, unless that place would make a readable exit's `honored` false:
+  exit's `honored` true.** The step writes a `control.withdraw` for each id that is honoured by a `stopped`
+  that is not its claim's exit node, a third party's or a fenced worker's own, and that is not already
+  withdrawn. It stands just after that `stopped`, its answer, unless that place would make a readable exit's
+  `honored` false:
   - **where a readable exit honours the stop,** though a withdrawal at the answer would precede every native
     drain of that worker that reads it, the exit spends the stop, and no withdrawal is written;
   - **where a readable exit omits the stop,** though a native drain of the same worker reads it before its
     answer, the withdrawal stands just before the first such drain, which then reads the stop and its
-    withdrawal together. That drain is in practice a commit's, since a 0.3.0 read or exit after the stop
-    takes it in.
+    withdrawal together. That drain is a commit's. A 0.3.0 tick after the stop takes it in, and where the
+    exit itself is that drain, no record before the exit answers the stop, so E3 moves the stop past the
+    exit instead (golden `LATER_ERROR_HONORED`).
 
   Wherever it stands, it carries the answering `stopped`'s `t`. Two readable exits can admit no place: one
   omits the stop though its worker's drain reads it first, and the other honours it though its worker's
@@ -941,13 +949,32 @@ record for, and each is the least-distorting way to do so.
     between its drain and its next read or its exit, since an exit that omits the stop proves no read of
     that worker lies between the stop and its answer.
   - It never moves a commit: where an iteration ended is a fork of its own.
+- **E3. A stop that a readable exit omits, and that no record before that exit answers, moves to just after
+  that exit.** It is a `control.stop` logged before the exit, which no `honored`, `withdraw` or `nak` before
+  the exit names. A writer whose exit lists only the stops it read at its ticks leaves one. Natively that
+  exit would drain the stop and honour it, spending it. So the step moves the `control.stop`, its body and
+  `request_id` unchanged, to just after the exit. Several stops moved past one exit keep their order, and
+  where E2 would also move a later answer's withdrawal before that exit, E3 applies instead.
+
+  *Why it distorts least:*
+  - The exit's `honored` stays true, and the stop stays pending for the next reader, as 0.3.0 left it. A later
+    claim's watermark and exit that read the stop stay true too.
+  - A withdrawal at the exit would record an answer no 0.3.0 party made. It would spend the stop, which makes
+    false a later exit that honours it.
+  - Moving the stop only delays its arrival, by the gap to that exit. The exit omits the stop, so no tick of
+    that worker lies after it, and the move crosses no read of a live worker.
+  - It keeps a later third party's answer after the exit, where 0.3.0 put it. E2 would place it before the
+    exit.
+  - The move is cheap, by reference by name: every answer names the stop's `request_id`, never its seq. The
+    one record that names it by seq, a watermark, is renamed with it (M6, M9).
 
 For each ambiguity below, the built-in nearest the rule the step encoded before, in
 `v0_3_0_to_v0_4_0_resolutions.py`, is marked "today's reading", with where that rule differs from it.
 *The ambiguities are specified 2026-10-24, and not yet encoded. They were written to the old standard,
 that every inference copies what the old positional reading implied, and some of their rules contradict the
-target and the encoding rules: their death reports' evidence texts, and the withdrawal placed just after
-every third party's stop. They stay as written until the step is rebuilt on the target.*
+target and the encoding rules: their death reports' evidence texts, the withdrawal placed just after every
+third party's stop (M6), and stops left where 0.3.0 put them. They stay as written until the step is rebuilt
+on the target.*
 
 **What 0.3.0 pins** (review §12, item 16). The step judges against any writer conforming to format 0.3.0:
 lifecycle-v0.5, value-v0.2, subscription-v0.3, launcher-v0.4 and `design-v0.2.md`: what its schemas and its
@@ -1674,7 +1701,10 @@ gap adds is one start's inference, which no record shows, so no other start's ho
   - a heartbeat or `stopped` whose `claim_seq` names no claim before it;
   - a heartbeat whose nonzero `consumed_seq` names no record before it, a heartbeat with an integer step, or a
     third party's stop that becomes only its withdrawals. The watermark is a read position in the control
-    order, and renaming cannot carry one that names no record, a record M6 moves, or one that leaves the log;
+    order, and renaming cannot carry one that names no record, a record M6 moves, or one that leaves the log.
+    A stop that E3 moves is carried: a watermark that names it is renamed to its new seq, and no live
+    worker reads between the stop's old place and the exit it moves past, so every watermark keeps its prefix
+    of the control order;
   - a second `terminated` of any launch. A process ends once, and a run nothing claimed takes its launch's
     `terminated` as its verdict (§5), which two make ambiguous;
   - a launch that not exactly one `launched` names, where an attributed death report reads it. Without one
