@@ -88,10 +88,10 @@ process, `report_if_dead` writes nothing and `report_death` raises
 `ClaimAliveError`, and the claim stays held while that process lives.
 `?start=T` narrows it with no schema change (it only sharpens the probe, as
 above), and a handle without it truthfully records no start time, so it can
-still wait: not before 0.4.0 ships. The
-audit's second pair, one process running two Workers, needs no wire fact: an
-in-process registry keyed by (run, `claim_seq`) can say whether the claimant
-Worker is live. On Postgres the session probe settles both.
+still wait: not before 0.4.0 ships. The audit's second pair, one process
+running two Workers, needs no wire fact: an in-process registry keyed by (run,
+`claim_seq`) can say whether the claimant Worker is live. On Postgres the
+session probe settles both.
 
 ---
 

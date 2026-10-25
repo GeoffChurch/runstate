@@ -1986,7 +1986,8 @@ These are protocol, and another implementation must match them:
   reports' outcomes, an unreadable record that ends the claim counting as `lost`, less a `lost` beside
   another;
 - the answer fold, by name: `honored`, `expired`, `withdraw` and `nak`;
-- a worker that reads a death report naming its claim writes nothing more, and binds a lease only by CAS;
+- a worker that reads a death report naming its claim writes nothing more, and its drain writes each record
+  it makes, a `bound` or a `nak`, only by CAS at the tail it last read;
 - a death report from evidence, never inference, and a `lost` one only while its claim is held.
 
 The conformance suite gains a test for each.
@@ -2092,6 +2093,8 @@ On every backend:
     lineage, and is void once its claim has ended; a count lease whose service dies at its first firing stops
     the waker after one launch;
   - a lease binding is written by CAS, and a death report landing first leaves the lease unbound;
+  - a refusal is written by CAS, and a death report landing first leaves the request unrefused, so a
+    successor whose sources serve it registers it;
   - `live_demand` is by name, and empty on a closed head; a claim that dies before its first commit revives
     nothing.
 - **The atoms:** `every`'s delta rule under batching, with lineage baselines rebuilt after a rewind for both
