@@ -919,92 +919,44 @@ record for, and each is the least-distorting way to do so.
     that 0.3.0's gate may not have made, since it may have judged by staleness.
   - No fold parses `evidence` (§3), so nothing a fold reads changes. A person reading `RunResult.reports` can
     tell migrated reports from native ones on any log, whoever migrated it.
-- **E2 and E3 keep every readable exit's `honored` and every watermark true,** each by the smallest move of
-  one control record: E2 moves a withdrawal the step writes, and E3 a stop that nothing has answered by the
-  exit that omits it. A readable exit here is a claim's exit node whose body parses (§5). Where no
-  placement keeps them all true, E4 makes the choice a fork.
-- **E2. A withdrawal the step writes stands at the nearest place to its answer that keeps every readable
-  exit's `honored` true.** The step writes a `control.withdraw` for each id that is honoured by a `stopped`
-  that is not its claim's exit node, a third party's or a fenced worker's own, and that is not already
-  withdrawn. It stands just after that `stopped`, its answer, unless that place would make a readable exit's
-  `honored` false:
-  - **where a readable exit honours the stop,** though a withdrawal at the answer would precede every native
-    drain of that worker that reads it, the exit spends the stop, and no withdrawal is written;
-  - **where a readable exit omits the stop,** though a native drain of the same worker reads it before its
-    answer, the withdrawal stands just before the first such drain, which then reads the stop and its
-    withdrawal together. A 0.3.0 tick after the stop takes it in, so that drain is a commit's, or the exit's
-    own. Where it is the exit's, no record before the exit answers the stop, and E3 moves the stop past the
-    exit instead (golden `LATER_ERROR_HONORED`), unless E3's guard keeps it in place.
-
-  Wherever it stands, it carries the answering `stopped`'s `t`. Where two readable exits admit no place for
-  it, E4 applies.
+- **E2. Every record stays where 0.3.0 put it, and each exit's `honored` follows from the native reads.**
+  - The step writes a `control.withdraw` for each id that a `stopped` honours, when that `stopped` is not
+    its claim's exit node (it is a third party's, or a fenced worker's own) and the id is not already
+    withdrawn. The withdrawal stands just after that `stopped`, its answer, and carries that `stopped`'s `t`.
+  - No stop moves.
+  - The native drains read whatever lies before them: at each commit, at each logged tick, and at the exit.
+  - Each exit's `honored` follows from those reads by 0.4.0's own rules (§4): every stop pending at the
+    exit, and every stop held at a node or heartbeat of the claim.
 
   *Why it distorts least:*
-  - An exit's `honored` is the only native record a withdrawal's place can change. The stop fold spends the
-    stop either way, and watermarks, commits and death reports stay where they are.
-  - So the rule keeps the target's third item true for every worker whose exit records it. It otherwise
-    keeps the answer where 0.3.0 put it.
-  - The move it makes is the smallest that keeps an exit true. It is bounded by that worker's own gap
-    between its drain and its next read or its exit, since an exit that omits the stop proves no read of
-    that worker lies between the stop and its answer.
-  - It never moves a commit: where an iteration ended is a fork of its own.
-- **E3. A stop that a readable exit omits, and that no record before that exit answers, moves to just after
-  that exit.** It is a `control.stop` logged before the exit, which no `honored`, `withdraw` or `nak` before
-  the exit names. A writer whose exit lists only the stops it read at its ticks leaves one. Natively that
-  exit would drain the stop and honour it, spending it. So the step moves the `control.stop`, its body and
-  `request_id` unchanged, to just after the exit. **Its guard:** it moves a stop only where no 0.3.0
-  heartbeat between the stop and the exit has a `consumed_seq` at or past the stop, so it never moves a stop
-  across a read of it; where the guard holds the stop in place, E4 applies. Several stops moved past one
-  exit keep their order, and where E2 would also move a later answer's withdrawal before that exit, E3
-  applies instead, if its guard allows.
+  - It alters no recorded fact, no place and no watermark, so every 0.3.0 watermark stays true.
+  - The target's third item is which stops each worker read, and the watermarks record those reads. An
+    exit's `honored` is 0.4.0's consequence of them, not a separate fact to preserve.
+  - It needs no fork and no choice per consumer, so every consumer's migrated log reads alike.
 
-  *Why it distorts least:*
-  - The exit's `honored` stays true, and the stop stays pending for the next reader, as 0.3.0 left it. A later
-    claim's watermark and exit that read the stop stay true too.
-  - A withdrawal at the exit would record an answer no 0.3.0 party made. It would spend the stop, which makes
-    false a later exit that honours it.
-  - Moving the stop only delays its arrival, by the gap to that exit, and crosses no read of it: the exit
-    omits the stop, so no tick of that worker lies after it, and the guard excludes every other worker's
-    read. A move across a read would carry that heartbeat's watermark past the heartbeat itself, which
-    breaks "a record follows what it names" (§2).
-  - It keeps a later third party's answer after the exit, where 0.3.0 put it. E2 would place it before the
-    exit.
-  - The move is cheap, by reference by name: every answer names the stop's `request_id`, never its seq. The
-    one record that names it by seq, a later reader's watermark, is renamed with it (M6, M9).
-- **E4. Where no placement keeps every reader true, which one the lineage keeps true is a fork.** Where no
-  placement of the step's control records, its withdrawals and the stops E3 moves, keeps every readable
-  exit's `honored` and every watermark true, which of them the lineage keeps true is a fork, refused unless
-  a chooser decides it. It arises:
-  - where two readable exits admit no place for a withdrawal (E2): one omits the stop though its worker's
-    drain reads it before its answer, and the other honours it though its worker's drains of it come later;
-  - where E3's guard holds a stop in place: a readable exit omits a stop that no record before it answers,
-    and a 0.3.0 heartbeat between the stop and the exit read it, a killed predecessor's or a displaced
-    worker's. Moving the stop would break that heartbeat, and leaving it lets the exit's native drain read
-    it;
-  - in both at once, where that stop is answered later and a later exit honours it.
+  *Its cost,* which the owner accepted (2026-10-25). In two cases a migrated exit honours a stop that the
+  0.3.0 exit did not list, so the stop counts as discharged there rather than pending:
+  - a writer whose exits list only the stops it read at its ticks. Its native exit drains every stop
+    before it;
+  - a tick-first loop where a stop is cleared between an iteration's end and the next tick. §4's commit
+    drain reads the stop at the iteration's end, before the clearing.
 
-  Its generic choosers name the two kinds of 0.3.0 record that can give way:
-  - **`keep-places`:** every stop and answer stays where 0.3.0 put it wherever E2 or E3 cannot move it
-    without breaking another record, and native drains read what lies before them. Every watermark and
-    every answer's place stays true. An omitting exit's `honored` names the stop, and a stop 0.3.0 left
-    pending may become spent.
-  - **`keep-exits`:** as many readable exits stay true as any placement allows. E3's stop moves past the
-    exit, and each 0.3.0 watermark it crosses is lowered to the newest control record before the stop. E2's
-    withdrawal moves however far that takes. The exits stay true; a crossed read's watermark, or an
-    answer's place, gives way.
+  The stop fold then lists the stop as spent. It changes behaviour only if the migrated run is resumed: the
+  next claim no longer honours the stop.
 
-  *Why it is a fork:* it is the one encoding question with no faithful encoding. Every placement makes some
-  0.3.0 record of a read false: an exit's `honored`, a watermark, or the place of an answer. Which one gives
-  way turns on which record the consumer trusts, and no event decides that. So it takes the no-default-guess
-  form every fork takes: it refuses unless a chooser decides it.
+  In a third case a migrated exit omits a stop the 0.3.0 exit listed. An `at-claim` writer, whose fold
+  applies only the answers made before its claim, took in a stop that another party answered after its
+  claim. The withdrawal at the answer then precedes the worker's native drain (golden `LATER_COMPLETED`).
+  The stop is spent either way, so only that exit's `honored` differs.
 
 For each ambiguity below, the built-in nearest the rule the step encoded before, in
 `v0_3_0_to_v0_4_0_resolutions.py`, is marked "today's reading", with where that rule differs from it.
 *The ambiguities are specified 2026-10-24, and not yet encoded. They were written to the old standard,
 that every inference copies what the old positional reading implied, and some of their rules contradict the
-target and the encoding rules: their death reports' evidence texts, the withdrawal placed just after every
-third party's stop (M6), and stops left where 0.3.0 put them. They stay as written until the step is rebuilt
-on the target.*
+target and the encoding rules: their death reports' evidence texts (E1); a withdrawal for every honoured id,
+an id already withdrawn included; an exit node that keeps its 0.3.0 `honored` list, where E2 derives it from
+the native reads; and P4's "No rule changes the stop fold's ids". They stay as written until the step is
+rebuilt on the target.*
 
 **What 0.3.0 pins** (review §12, item 16). The step judges against any writer conforming to format 0.3.0:
 lifecycle-v0.5, value-v0.2, subscription-v0.3, launcher-v0.4 and `design-v0.2.md`: what its schemas and its
@@ -1731,10 +1683,7 @@ gap adds is one start's inference, which no record shows, so no other start's ho
   - a heartbeat or `stopped` whose `claim_seq` names no claim before it;
   - a heartbeat whose nonzero `consumed_seq` names no record before it, a heartbeat with an integer step, or a
     third party's stop that becomes only its withdrawals. The watermark is a read position in the control
-    order, and renaming cannot carry one that names no record, a record M6 moves, or one that leaves the log.
-    A stop that E3 moves is carried: a watermark that names it is renamed to its new seq. E3's guard leaves
-    no 0.3.0 watermark between the stop's old place and the exit that passes it, so every watermark keeps
-    its prefix of the control order, except one that E4's `keep-exits` lowers by choice;
+    order, and renaming cannot carry one that names no record, a record M6 moves, or one that leaves the log;
   - a second `terminated` of any launch. A process ends once, and a run nothing claimed takes its launch's
     `terminated` as its verdict (§5), which two make ambiguous;
   - a launch that not exactly one `launched` names, where an attributed death report reads it. Without one
