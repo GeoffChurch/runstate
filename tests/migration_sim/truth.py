@@ -105,6 +105,7 @@ from typing import NamedTuple, TypeAlias, assert_never
 from .history import (
     Beacon,
     Beat,
+    Born,
     Claim,
     CommitOf,
     Drain,
@@ -275,6 +276,11 @@ class Case(Enum):
     DISCHARGED_EARLIER = "discharged-earlier"  # 4. a later exit omits a stop an
     # earlier native exit discharged under case 1 only: a stop case 2 cleared is
     # named before any later claim, so no later 0.3.0 exit lists it
+    INFERRED_INPUT_LIST = "inferred-input-list"  # 5. in a log born in 0.2.0, the
+    # exit's list is the 0.2.0 -> 0.3.0 step's positional inference, not its
+    # writer's, so the native exit may differ from it in either direction (the
+    # controller's ruling, 2026-10-25; §7's text follows in Task 19's fix round).
+    # Cases 1-4 describe writers' lists, so in such a log every difference is 5
 
 
 class Cost(NamedTuple):
@@ -528,7 +534,7 @@ def truth(history: History) -> Truth:
     stops = {x: place_key(At(seq)) for x, seq in stop_seqs.items()}
     native = _native_fold(withdrawals, stops, drains)
     withdrawn = {wd.request_id: place_key(place) for wd, place in withdrawals}
-    costs = _costs(readable, native, withdrawn, drains)
+    costs = _costs(readable, native, withdrawn, drains, history.born)
     honored = native.taken
     by_seq = {s: c for c, s in claim_seqs.items()}
     finished: list[Placed] = []
@@ -666,6 +672,7 @@ def _costs(
     native: _Native,
     withdrawn: dict[str, Key],
     drains: dict[int, list[_Drain]],
+    born: Born,
 ) -> list[Cost]:
     """Each stop where a readable exit's native ``honored`` differs from its
     0.3.0 list, with the case of E2's stated cost it falls in (§7); a
@@ -675,6 +682,10 @@ def _costs(
     for r in readable:
         node = ExitId(r.claim_seq)
         taken = native.taken[r.claim]
+        if born is Born.V0_2_0:
+            inferred = sorted(taken ^ r.honored)
+            costs += [Cost(node, x, Case.INFERRED_INPUT_LIST) for x in inferred]
+            continue
         for x in sorted(taken - r.honored):
             first = native.first[r.claim][x]
             case = _honoured_case(r, x, first, withdrawn, drains)

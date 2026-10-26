@@ -58,6 +58,7 @@ from .history import (
     Reaped,
     StopRequest,
     Stray,
+    ThirdPartyValue,
     ThirdPartyFinal,
     ThirdPartyStop,
     UserRecord,
@@ -142,7 +143,7 @@ def render(history: History) -> Rendered:
             considered[ev.claim], taken[ev.claim] = set(), set()
         elif isinstance(ev, Emit):
             seq = value(ev.name, label)
-        elif isinstance(ev, Stray):
+        elif isinstance(ev, (Stray, ThirdPartyValue)):
             seq = value(ev.name, ev.step)
         elif isinstance(ev, (Beat, Beacon)):
             drain(ev.claim)

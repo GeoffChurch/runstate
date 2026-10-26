@@ -102,6 +102,7 @@ from .history import (
     Stray,
     ThirdPartyFinal,
     ThirdPartyStop,
+    ThirdPartyValue,
     Via,
     Watermark,
     conforms,
@@ -165,6 +166,18 @@ class ThirdParty:
 
 
 @dataclass(frozen=True)
+class Interjects:
+    """A third party writes a register on the live claim's log (``ThirdPartyValue``):
+    at the label of the claim's last iteration (``stepped``), where it reads as
+    the worker's own value, or with a null step."""
+
+    stepped: bool
+
+
+MidClaim: TypeAlias = ThirdParty | Interjects
+
+
+@dataclass(frozen=True)
 class Takeover:
     """The next claim's gate judges the live worker dead with nothing on the
     log: a false-dead probe, or a stale heartbeat."""
@@ -223,7 +236,7 @@ class Space:
     # iteration (save-at=before-loop)
     strides: tuple[int, ...]
     shapes: tuple[Shape, ...]
-    mid_claim: tuple[ThirdParty | None, ...]
+    mid_claim: tuple[MidClaim | None, ...]
     mid_positions: tuple[MidPosition, ...]
     cuts: tuple[Cut, ...]
     endings: tuple[Ending, ...]
@@ -259,7 +272,7 @@ class _Run(NamedTuple):
     and where its last one stops."""
 
     steps: list[Step]
-    mid: ThirdParty | None
+    mid: MidClaim | None
     position: MidPosition
     cut: Cut
 
@@ -472,7 +485,7 @@ def _body(c: int, its: _Run) -> list[_Item]:
                 items += events
             continue
         items.append(_Slot(StopSlot.MID_CLAIM))
-        mid: list[Event] = [] if its.mid is None else [_third_party(c, its.mid)]
+        mid = _mid_claim(c, it.step, its.mid)
         head = opening(c, it)
         if its.position is MidPosition.BEFORE_ITERATION:
             items += mid + head
@@ -570,7 +583,7 @@ def _iterations(
 
 
 def _positions(
-    its: list[Step], mid: ThirdParty | None, positions: tuple[MidPosition, ...]
+    its: list[Step], mid: MidClaim | None, positions: tuple[MidPosition, ...]
 ) -> tuple[MidPosition, ...]:
     """The positions that differ: only a tick-first last iteration ticks
     between them."""
@@ -608,6 +621,18 @@ def _cuts(its: list[Step], cuts: tuple[Cut, ...]) -> list[Cut]:
         if (cut is not Cut.MID_SAVE or save in (Saving.RECORDED, Saving.IN_PASS))
         and (cut is not Cut.AFTER_SAVE or save is Saving.IN_PASS)
     ]
+
+
+def _mid_claim(c: int, label: int, mid: MidClaim | None) -> list[Event]:
+    """What a third party writes inside claim ``c``'s last iteration, labelled
+    ``label``."""
+    if mid is None:
+        return []
+    if isinstance(mid, ThirdParty):
+        return [_third_party(c, mid)]
+    if isinstance(mid, Interjects):
+        return [ThirdPartyValue(VALUE, label if mid.stepped else None)]
+    assert_never(mid)
 
 
 def _third_party(at: int | None, third: ThirdParty) -> ThirdPartyStop:
@@ -950,7 +975,13 @@ RELEASED_LIVE = Space(
             ended=Undated.OWN_LAST,
         ),
     ),
-    mid_claim=(None, _RELEASE, _NOTE),
+    mid_claim=(
+        None,
+        _RELEASE,
+        _NOTE,
+        Interjects(stepped=True),
+        Interjects(stepped=False),
+    ),
     mid_positions=(MidPosition.BEFORE_BODY, MidPosition.BEFORE_ITERATION),
     cuts=(Cut.MID_BODY, Cut.BEFORE_TICK, Cut.DONE),
     endings=(KILL, COMPLETES, PREEMPTED),
@@ -962,11 +993,13 @@ RELEASED_LIVE = Space(
     stop_slots=(),
     born=(Born.V0_3_0,),
 )
-"""One claim that a third party's stop names while its worker lives, in its last
-iteration, before it begins or before its pass: a release (mistaken, which
-fences it) or a note; the worker then finishes that iteration and ends.
-``BEATEN_PAST``'s and ``LATER_COMPLETED``'s shapes. Run with ``claims=1,
-steps=2, stops=0``."""
+"""One claim that a third party acts on while its worker lives, in its last
+iteration, before it begins or before its pass: a stop naming it, a release
+(mistaken, which fences it) or a note; or a register it writes on the claim's
+log, at the iteration's label or stepless, which no node holds and which a
+worker's own value at that label writes alike. The worker then finishes that
+iteration and ends. ``BEATEN_PAST``'s and ``LATER_COMPLETED``'s shapes. Run with
+``claims=1, steps=2, stops=0``."""
 
 DISPLACEMENT = Space(
     origins=(Origins.FRESH, Origins.SAVED, Origins.OUTSIDE),
@@ -1251,10 +1284,18 @@ POSITIONAL = Space(
     strays=(Strays.NONE,),
     pre_saves=(False,),
     strides=(1,),
-    shapes=(SAVES,),
-    mid_claim=(None,),
+    shapes=(
+        _shape(
+            True,
+            Tick.BEFORE_BODY,
+            Saving.IN_BODY,
+            trailing=False,
+            ended=Undated.OWN_LAST,
+        ),
+    ),
+    mid_claim=(None, _NOTE),
     mid_positions=(MidPosition.BEFORE_BODY,),
-    cuts=(Cut.MID_BODY, Cut.BEFORE_TICK),
+    cuts=(Cut.BEFORE_TICK,),
     endings=(KILL, PREEMPTED),
     third_parties=(None, _RELEASE),
     successors=(Successor.OWN_PROCESS,),
@@ -1269,10 +1310,13 @@ POSITIONAL = Space(
 )
 """Logs born in format 0.2.0, whose ``honored`` lists and heartbeat and
 ``stopped`` ``claim_seq`` the 0.2.0 -> 0.3.0 step filled positionally: two
-claims, a stop, a release after a claim's end, and a worker displaced by a
-takeover or a release that finishes its iteration and exits after its
-successor's claim, so its records name that claim. Run with ``claims=2,
-steps=1, stops=1``."""
+claims of a tick-first loop, a stop, a note after a claim's tick, a release
+after a claim's end, and a worker displaced by a takeover or a release that
+finishes its iteration and exits after its successor's claim, so its records
+name that claim. A note after a tick that took a stop in lists it
+positionally, so the exit's list omits what its native exit honours: E2's
+fifth case (``INFERRED_INPUT_LIST``). Run with ``claims=2, steps=1,
+stops=1``."""
 
 
 # ----- SLOT: what each claim loaded, under a constraint across claims ----------------------

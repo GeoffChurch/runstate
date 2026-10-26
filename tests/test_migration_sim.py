@@ -124,6 +124,7 @@ from tests.migration_sim.history import (
     Stray,
     ThirdPartyFinal,
     ThirdPartyStop,
+    ThirdPartyValue,
     UserRecord,
     Via,
     Watermark,
@@ -135,7 +136,6 @@ from tests.migration_sim.history import (
 from tests.migration_sim.render import Rendered, records, render
 from tests.migration_sim.truth import (
     Case,
-    Residue,
     Commit,
     Source,
     CommitId,
@@ -235,17 +235,23 @@ def _cost_counts() -> dict[str, Counter[Case]]:
 
 def test_every_difference_is_a_stated_cost() -> None:
     """E2 (§7): where a native exit's ``honored`` differs from its 0.3.0 list,
-    the difference is one of the four cases of the cost the owner accepted, and
+    the difference is one of the five cases of the cost the owner accepted, and
     the truth raises ``Residue`` for any other, so every family's truth is one
     of them. The families reach each case: ``unanswered-stops`` the ticks-only
     exit (1) and a later exit omitting what it discharged (4), ``withdrawals``
     a stop cleared after a commit's drain read it (2) and the at-claim writer's
-    stop answered after its claim (3)."""
+    stop answered after its claim (3), and ``positional`` an exit whose input
+    list the earlier step inferred (5), which only a log born in 0.2.0 has."""
     counts = _cost_counts()
     assert counts["unanswered-stops"][Case.TICKS_EXIT] > 0
     assert counts["unanswered-stops"][Case.DISCHARGED_EARLIER] > 0
     assert counts["withdrawals"][Case.CLEARED_AFTER_DRAIN] > 0
     assert counts["withdrawals"][Case.ANSWERED_AFTER_CLAIM] > 0
+    assert counts["positional"][Case.INFERRED_INPUT_LIST] > 0
+    born_0_3_0 = [
+        name for name, f in FAMILIES.items() if f.space.born == (Born.V0_3_0,)
+    ]
+    assert not any(counts[name][Case.INFERRED_INPUT_LIST] for name in born_0_3_0)
 
 
 def test_released_workers_work_after_their_release() -> None:
@@ -3731,12 +3737,13 @@ def test_a_log_born_in_0_2_0_carries_positional_names() -> None:
     assert describe(born)[:3] == describe(taken)[:3]
 
 
-def test_a_positional_list_can_differ_outside_e2s_stated_cost() -> None:
-    """A gap in the referee, reported: in a log born in 0.2.0, a note's
-    positional ``honored`` lists a stop the worker's tick had already taken in,
-    so the exit's positional list omits it; the native exit honours it, held at
-    a heartbeat (§4). §7's four stated cases are of writers' lists, and this
-    difference is the earlier step's choice, so the truth raises ``Residue``."""
+def test_an_inferred_input_list_is_e2s_fifth_cost() -> None:
+    """E2's fifth case (``INFERRED_INPUT_LIST``, the controller's ruling): in a
+    log born in 0.2.0 an exit's list is the earlier step's positional inference.
+    Here a note lists a stop the worker's tick had already taken in, so the
+    exit's positional list omits it, and the native exit honours it, held at a
+    heartbeat (§4). In a log born in 0.3.0 the writer's own list names it, and
+    there is no cost."""
     h = _h(
         _claim(0, Fresh()),
         StopRequest("x0"),
@@ -3744,9 +3751,9 @@ def test_a_positional_list_can_differ_outside_e2s_stated_cost() -> None:
         ThirdPartyStop(0, Report(None), "note", PROGRESS, Honors.NONE),
         _preempted(0),
     )
-    assert truth(h).costs == ()  # the writer's own list names x0
-    with pytest.raises(Residue, match="honours 'x0'"):
-        truth(replace(h, born=Born.V0_2_0))
+    assert truth(h).costs == ()
+    (cost,) = truth(replace(h, born=Born.V0_2_0)).costs
+    assert (cost.request_id, cost.case) == ("x0", Case.INFERRED_INPUT_LIST)
 
 
 def _phases(h: History) -> Iterator[tuple[Event, str]]:
@@ -3833,3 +3840,35 @@ def test_rewinds_are_reached_and_no_record_shows_one() -> None:
         assert violations(t) == ()
         lineages[render(h).rows].add(t.lineage)
     assert any(len(ls) > 1 for ls in lineages.values())
+
+
+def test_a_third_partys_value_is_a_register_and_no_evidence() -> None:
+    """(s): a third party writes a value on a held claim's log mid-claim
+    (mycooc's orchestrator: ``completion_reason``, be8679020f32 seqs 552, 554
+    and 556). It is a register: no node holds it. At the worker's label it
+    writes the log a worker's own value writes, which a node holds, so only the
+    classifier separates them; at any other label it moves no node. Reached in
+    ``released-live``."""
+
+    def pass_with(value: Event) -> History:
+        return _h(
+            _claim(0, Fresh()),
+            Begin(0, 0),
+            value,
+            Finish(0, True, TICKED),
+            Beat(0, CONTROL),
+            _completes(0),
+        )
+
+    own = pass_with(Emit(0, VALUE, Stamp.METRIC))
+    theirs = pass_with(ThirdPartyValue(VALUE, 0))
+    assert render(own).rows == render(theirs).rows
+    assert describe(own)[1] == "c0@0 <- root [v@0]"
+    assert describe(theirs)[1] == "c0@0 <- root []"
+    far = describe(pass_with(ThirdPartyValue(VALUE, 7)))
+    assert far == describe(pass_with(ThirdPartyValue(VALUE, None))) == describe(theirs)
+    assert any(
+        isinstance(ev, ThirdPartyValue)
+        for h in _histories(FAMILIES["released-live"])
+        for ev in h.events
+    )

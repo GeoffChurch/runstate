@@ -477,6 +477,18 @@ class Stray:
 
 
 @dataclass(frozen=True)
+class ThirdPartyValue:
+    """A third party writes a ``value`` on the log while a claim is held, in the
+    middle of it: a register, which no node holds, and whose ``step``, if it has
+    one, is the third party's, never evidence of where the worker was (mycooc's
+    orchestrator writes ``completion_reason`` when a stop goes undrained,
+    run_experiment.py:3918, :3929@bb6f9e8c)."""
+
+    name: str
+    step: int | None
+
+
+@dataclass(frozen=True)
 class UserRecord:
     """A record on a topic no 0.3.0 convention reserves."""
 
@@ -500,6 +512,7 @@ Event: TypeAlias = (
     | Launched
     | Reaped
     | Stray
+    | ThirdPartyValue
     | UserRecord
 )
 
@@ -520,6 +533,7 @@ RECORDS = (
     Launched,
     Reaped,
     Stray,
+    ThirdPartyValue,
     UserRecord,
 )
 """The events that write a record."""
@@ -733,7 +747,7 @@ def _fold(events: tuple[Event, ...]) -> tuple[_State, Walk]:
                 st.launched[ev.launch] = ev.process
             elif isinstance(ev, Reaped):
                 _reaped(st, ev)
-            elif isinstance(ev, Stray):
+            elif isinstance(ev, (Stray, ThirdPartyValue)):
                 d = Derived(ev.step, None, None, None)
             elif isinstance(ev, UserRecord):
                 if ev.topic == "value" or ev.topic.startswith(_RESERVED):
