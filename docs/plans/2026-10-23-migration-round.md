@@ -688,6 +688,47 @@ Its report is `task-16-sim-report.md`. It records:
 a search across claims and the scale run fails. Then stop, and put the measurement to the owner. Both judges
 named this as the one fact that would change the ranking.
 
+*Outcome, 2026-10-26.* The gate passed: the pass is linear in records × layer width. d78b72f1 forks under the
+facts first stated for mycooc, where a reclaim release might be of a live worker. Under mycooc's sacct-backed
+answer that every release was of a dead worker, it reads the required chain. See "The round's configuration",
+below.
+
+### Task 20b: Test economy (owner, 2026-10-26)
+
+The oracle added about 6 minutes to the pre-commit hook. The step is retained and frozen once it ships, so after
+this round its tests rarely need to run.
+
+- [ ] **Step 1: Split the suite.**
+  - Mark the oracle's tests, so that the hook deselects them.
+  - CI always runs a fast set: the named histories, in seconds.
+  - CI runs the full oracle only in a path-filtered job, when the step, its engine, its facts module or
+    `tests/migration_sim/` changes, and on demand.
+  - Document this in CLAUDE.md's test section, beside the Postgres skip.
+- [ ] **Step 2: Trim by argument.**
+  - "No silent answer" follows from "every truth reachable" plus monotonicity, since stated facts only remove
+    candidates.
+  - Replace the expensive property with one cheap monotonicity test, and write the argument where it lives.
+- [ ] **Step 3: Trim by measurement.**
+  - Keep only the families the mutation test needs to catch every mutant. List each dropped family with the
+    mutants other families catch for it.
+  - Run the false-fact test on a stated sample.
+- [ ] **Step 4: Write the engine's soundness argument** into its module docstring, and cite it in the commit.
+  - The argument: the declared state carried between claims screens off everything earlier that a later claim
+    can depend on, so the exhaustive small cases are evidence for every size.
+  - No formal-verification tool: the simulator plus exhaustive families is already a bounded model check.
+- [ ] **Step 5: Commit and push.**
+
+### The round's configuration, revised with mycooc's answers (2026-10-26)
+
+It lives in the scratchpad's `round-config/`, as this round's measurement configuration. mycooc owns its eventual
+preset.
+- **Reclaim releases:** each is classified by its job's sacct State, from `w5_releases.tsv`, as dead unless
+  `NODE_FAIL`. All 31 were of dead workers. The 4 stops that reclaim did not write get their own author.
+- **Loading:** the status written while loading, and the metrics recorder's restored row at step 0, are loading
+  registers, not training evidence. Misreading them caused the three refusals.
+- **Removed saves:** since 2026-10-21 the newest save can be removed, by the store holder's release, a hand prune,
+  or a home moved aside, so `load` admits an older save or none for those homes.
+
 ### Task 21: The shared mechanism, revised for facts, choosers and divergences
 
 **Files:**
