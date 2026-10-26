@@ -257,19 +257,22 @@ class Evidence(NamedTuple):
 
 
 class Case(Enum):
-    """E2's stated costs (§7): where a native exit's ``honored`` differs from
-    its 0.3.0 list, which the owner accepted (2026-10-25)."""
+    """E2's stated cost (§7, "Its cost"): the four cases in which a native
+    exit's ``honored`` differs from its 0.3.0 list, which the owner accepted
+    (2026-10-25), named as §7 names them."""
 
-    TICKS_EXIT = "ticks-exit"  # (1) an exit that lists only the stops its ticks
-    # read; its native exit drains every stop before it, and honours one more
-    CLEARED_BEFORE_TICK = "cleared-before-tick"  # (2) a tick-first loop, a stop
-    # cleared between an iteration's end and the next tick: the commit's drain
-    # read it first, and the native exit honours one more
-    ANSWERED_AFTER_CLAIM = "answered-after-claim"  # (3) an at-claim writer took
+    TICKS_EXIT = "ticks-exit"  # 1. a ticks-only exit honours a stop it did not
+    # list: its native exit drains every stop before it
+    CLEARED_AFTER_DRAIN = "cleared-after-drain"  # 2. an exit honours a stop
+    # cleared between a commit's native drain, which read it, and the worker's
+    # next 0.3.0 read (its next tick, in either loop order, or its exit), which
+    # skips it
+    ANSWERED_AFTER_CLAIM = "answered-after-claim"  # 3. an at-claim writer took
     # in a stop another party answered after its claim; the withdrawal at the
-    # answer precedes its native drain, and the native exit omits it
-    NEXT_CLAIM = "next-claim"  # (1) or (2)'s consequence: "the next claim no
-    # longer honours the stop", which an earlier native exit spent
+    # answer precedes its native drain, and its native exit omits the stop
+    DISCHARGED_EARLIER = "discharged-earlier"  # 4. a later exit omits a stop an
+    # earlier native exit discharged under case 1 only: a stop case 2 cleared is
+    # named before any later claim, so no later 0.3.0 exit lists it
 
 
 class Cost(NamedTuple):
@@ -666,17 +669,25 @@ def _costs(
     0.3.0 list, with the case of E2's stated cost it falls in (§7); a
     difference in none raises ``Residue``."""
     costs: list[Cost] = []
-    spent_by: dict[str, int] = {}  # a stop -> an exit that honoured it natively only
+    discharged: dict[str, _Discharge] = {}  # stops honoured natively only
     for r in readable:
         node = ExitId(r.claim_seq)
         taken = native.taken[r.claim]
         for x in sorted(taken - r.honored):
             first = native.first[r.claim][x]
-            costs.append(Cost(node, x, _honoured_case(r, x, first, withdrawn, drains)))
-            spent_by[x] = r.seq
+            case = _honoured_case(r, x, first, withdrawn, drains)
+            costs.append(Cost(node, x, case))
+            discharged[x] = _Discharge(r.seq, case)
         for x in sorted(r.honored - taken):
-            costs.append(Cost(node, x, _omitted_case(r, x, withdrawn, spent_by)))
+            costs.append(Cost(node, x, _omitted_case(r, x, withdrawn, discharged)))
     return costs
+
+
+class _Discharge(NamedTuple):
+    """A native exit that honoured a stop its 0.3.0 list omits."""
+
+    seq: int
+    case: Case
 
 
 def _honoured_case(
@@ -689,15 +700,16 @@ def _honoured_case(
     """Why a native exit honours a stop its 0.3.0 list omits."""
     read = place_key(first.place)
     if first.commit is not None and x in withdrawn:
-        # the commit's drain read it, and it was cleared before the worker's
-        # next 0.3.0 drain (a tick, or its exit)
-        later = [
+        # case 2: the commit's drain read it, and it was cleared before the
+        # worker's next 0.3.0 read: a tick or beacon, or an exit that drains
+        reads = [
             place_key(d.place)
             for d in drains[r.claim]
-            if d.commit is None and place_key(d.place) > read
+            if d.commit is None and (not d.ends or r.honors is Drain.EXIT)
         ]
+        later = [key for key in reads if key > read]
         if later and read < withdrawn[x] < min(later):
-            return Case.CLEARED_BEFORE_TICK
+            return Case.CLEARED_AFTER_DRAIN
     if r.honors is Drain.TICKS:
         return Case.TICKS_EXIT
     raise Residue(
@@ -707,14 +719,24 @@ def _honoured_case(
 
 
 def _omitted_case(
-    r: _ReadableExit, x: str, withdrawn: dict[str, Key], spent_by: dict[str, int]
+    r: _ReadableExit,
+    x: str,
+    withdrawn: dict[str, Key],
+    discharged: dict[str, _Discharge],
 ) -> Case:
-    """Why a native exit omits a stop its 0.3.0 list names."""
+    """Why a native exit omits a stop its 0.3.0 list names. An earlier native
+    exit that discharged it before this claim is the cause, whatever came after
+    the claim."""
+    if x in discharged and discharged[x].seq < r.claim_seq:
+        if discharged[x].case is not Case.TICKS_EXIT:
+            raise Residue(
+                f"{x!r}, which a later exit lists, was discharged earlier under "
+                f"{discharged[x].case.value}: E2 states case 1 alone"
+            )
+        return Case.DISCHARGED_EARLIER
     claimed, exited = place_key(At(r.claim_seq)), place_key(At(r.seq))
     if r.fold is Fold.AT_CLAIM and x in withdrawn and claimed < withdrawn[x] < exited:
         return Case.ANSWERED_AFTER_CLAIM
-    if x in spent_by and spent_by[x] < r.seq:
-        return Case.NEXT_CLAIM
     raise Residue(
         f"the native exit of claim {r.claim} omits {x!r}, which its 0.3.0 list "
         "names, outside E2's stated costs"

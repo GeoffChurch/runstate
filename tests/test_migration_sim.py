@@ -223,16 +223,16 @@ def _cost_counts() -> dict[str, Counter[Case]]:
 
 def test_every_difference_is_a_stated_cost() -> None:
     """E2 (§7): where a native exit's ``honored`` differs from its 0.3.0 list,
-    the difference is one of the costs the owner accepted, and the truth raises
-    ``Residue`` for any other, so every family's truth is one of them. The
-    families reach each case: ``unanswered-stops`` the exit that lists only its
-    ticks' reads (1) and its consequence for the next claim, ``withdrawals`` the
-    stop cleared before a tick-first loop's tick (2) and the at-claim writer's
+    the difference is one of the four cases of the cost the owner accepted, and
+    the truth raises ``Residue`` for any other, so every family's truth is one
+    of them. The families reach each case: ``unanswered-stops`` the ticks-only
+    exit (1) and a later exit omitting what it discharged (4), ``withdrawals``
+    a stop cleared after a commit's drain read it (2) and the at-claim writer's
     stop answered after its claim (3)."""
     counts = _cost_counts()
     assert counts["unanswered-stops"][Case.TICKS_EXIT] > 0
-    assert counts["unanswered-stops"][Case.NEXT_CLAIM] > 0
-    assert counts["withdrawals"][Case.CLEARED_BEFORE_TICK] > 0
+    assert counts["unanswered-stops"][Case.DISCHARGED_EARLIER] > 0
+    assert counts["withdrawals"][Case.CLEARED_AFTER_DRAIN] > 0
     assert counts["withdrawals"][Case.ANSWERED_AFTER_CLAIM] > 0
 
 
@@ -2593,7 +2593,8 @@ def test_cleared_after_the_end_is_e2s_second_cost() -> None:
     """CLEARED_AFTER_THE_END: a tick-first loop, whose stop x0 is cleared
     between the end of iteration 0 and the next tick. The withdrawal stands at
     its answer (§7, E2), the native commit of 0 read x0 before it, so the native
-    exit honours x0, which its 0.3.0 list omits: E2's second stated cost."""
+    exit honours x0, which its 0.3.0 list omits: E2's case 2
+    (``CLEARED_AFTER_DRAIN``)."""
     assert describe(CLEARED_AFTER_THE_END)[1:] == [
         "c0@0 <- root [v@0]",
         "withdraw x0",
@@ -2601,10 +2602,55 @@ def test_cleared_after_the_end_is_e2s_second_cost() -> None:
         "c0:exit extendable <- c0@1 [] honors x0",
     ]
     (cost,) = truth(CLEARED_AFTER_THE_END).costs
-    assert (cost.request_id, cost.case) == ("x0", Case.CLEARED_BEFORE_TICK)
+    assert (cost.request_id, cost.case) == ("x0", Case.CLEARED_AFTER_DRAIN)
     # taken in at the claim, the 0.3.0 exit honours x0 too: no cost
     assert describe(CLEARED_TAKEN_IN)[-1] == "c0:exit extendable <- c0@1 [] honors x0"
     assert truth(CLEARED_TAKEN_IN).costs == ()
+
+
+def _cleared_after_drain(tick_first: bool, ticks_after: bool, honors: Drain) -> History:
+    """One at-drain pass that reads x0 at its commit; a third party's note clears
+    x0 after the close; then the pass's own tick (``ticks_after``), and an exit
+    listing ``honors``."""
+    opening: list[Event] = [Begin(0, 0)]
+    if tick_first:
+        opening.append(Beat(0, CONTROL))
+    closing: list[Event] = [Beat(0, CONTROL)] if ticks_after else []
+    return _h(
+        Claim(
+            0,
+            own_process(0),
+            Gate.FREE,
+            Fresh(),
+            None,
+            Clock.LOADED,
+            Fold.AT_DRAIN,
+            CutSave.LANDED,
+        ),
+        opening,
+        StopRequest("x0"),
+        Emit(0, VALUE, stepless=False),
+        Finish(0, True, TICKED if ticks_after else Undated.OWN_LAST),
+        ThirdPartyStop(0, Report(None), None, NULL, Honors.UNDISCHARGED),
+        closing,
+        Exit(0, False, None, YIELDED, honors, discards=False),
+        Halt(0, Exited(0)),
+    )
+
+
+def test_case_2_is_any_next_read_after_the_drain() -> None:
+    """E2's case 2 (``CLEARED_AFTER_DRAIN``): the stop is cleared between the
+    commit's native drain and the worker's next 0.3.0 read, its next tick in
+    either loop order, or its exit. A ticks-only exit reads nothing, so with no
+    tick after the clearing the stop is one that exit did not list, case 1."""
+    for h in (
+        _cleared_after_drain(tick_first=False, ticks_after=True, honors=Drain.EXIT),
+        _cleared_after_drain(tick_first=True, ticks_after=False, honors=Drain.EXIT),
+    ):
+        assert describe(h)[-1] == "c0:exit extendable <- c0@0 [] honors x0"
+        assert [c.case for c in truth(h).costs] == [Case.CLEARED_AFTER_DRAIN]
+    h = _cleared_after_drain(tick_first=True, ticks_after=False, honors=Drain.TICKS)
+    assert [c.case for c in truth(h).costs] == [Case.TICKS_EXIT]
 
 
 def test_value_claim() -> None:
@@ -3116,10 +3162,11 @@ def test_an_exit_that_lists_only_its_ticks_reads_is_e2s_first_cost() -> None:
     assert cost.case is Case.TICKS_EXIT
 
 
-def test_the_next_claim_no_longer_honours_the_stop() -> None:
-    """The first cost's consequence, which E2 states: C0's native exit spends
-    x0, so C1, whose tick names x0 in its watermark (``consumed_seq: 4``) and
-    whose 0.3.0 exit honours it, no longer honours it natively."""
+def test_a_later_exit_omits_a_stop_an_earlier_one_discharged() -> None:
+    """E2's case 4 (``DISCHARGED_EARLIER``): C0's native exit discharges x0
+    under case 1, so C1, whose tick names x0 in its watermark
+    (``consumed_seq: 4``) and whose 0.3.0 exit honours it, no longer honours it
+    natively."""
     h = _h(
         _claim(0, Fresh()),
         run(0, [0], SAVES),
@@ -3137,15 +3184,19 @@ def test_the_next_claim_no_longer_honours_the_stop() -> None:
         "c1@1 <- c0@0 [v@1]",
         "c1:exit extendable <- c1@1 []",
     ]
-    assert [c.case for c in truth(h).costs] == [Case.TICKS_EXIT, Case.NEXT_CLAIM]
+    assert [c.case for c in truth(h).costs] == [
+        Case.TICKS_EXIT,
+        Case.DISCHARGED_EARLIER,
+    ]
 
 
 def test_the_reread_histories() -> None:
     """The re-review's histories, where the withdrawn E3 crossed another
-    worker's read. No stop moves, so every watermark stays true (§7, E2). A and B: the omitting
-    exit honours x0 natively (the first cost). J: so does A's, and B, an
-    at-claim writer whose 0.3.0 exit honours x0 though a third party answered
-    it after B's claim, omits it natively (the third cost)."""
+    worker's read. No stop moves, so every watermark stays true (§7, E2). A and
+    B: the omitting exit honours x0 natively (case 1). J: so does C1's, before
+    C2 claims, so C2, whose 0.3.0 exit honours x0, omits it natively because C1
+    discharged it (case 4), whatever the third party's answer after C2's claim
+    would also cause (case 3): the earlier cause names it."""
     assert describe(REREVIEW_A)[-1] == "c1:exit torn <- c0@0 null honors x0"
     assert describe(REREVIEW_B)[-1] == "c1:exit extendable <- c0@0 [] honors x0"
     for h in (REREVIEW_A, REREVIEW_B):
@@ -3159,7 +3210,7 @@ def test_the_reread_histories() -> None:
     ]
     assert [c.case for c in truth(REREVIEW_J).costs] == [
         Case.TICKS_EXIT,
-        Case.ANSWERED_AFTER_CLAIM,
+        Case.DISCHARGED_EARLIER,
     ]
 
 

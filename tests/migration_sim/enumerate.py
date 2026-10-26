@@ -1005,8 +1005,8 @@ UNANSWERED_STOPS = replace(
 """A stop before either of two claims, neither of which ticks in its last pass,
 by writers that fold at their claim or at each drain, the stops a third party
 clears, and an exit that lists only what its ticks drained: it omits a stop its
-native exit drains and honours (E2's first stated cost), which the next claim,
-whose 0.3.0 exit honours it, then no longer honours. Run with ``claims=2,
+native exit drains and honours (E2's case 1), which the next claim, whose
+0.3.0 exit honours it, then no longer honours (case 4). Run with ``claims=2,
 steps=1, stops=1``."""
 
 WITHDRAWALS = Space(
