@@ -37,6 +37,26 @@ its record and silent events decide (``Piece``); a lineage is one complete path'
 pieces. The coupling between claims flows only through the state: the pass is linear in
 records times states, never a search across claims.
 
+**Why the small cases speak for every size.** Everything a record can depend on from
+the records before it is in the world between them: the checkpoint's candidates and the
+older saves promised, which a load or a rewind reads; the workers alive, each with its
+program's state, which its next record and its silent events read; and the claims
+ended, released or exited and the stops spent, which the gate, the verdict and E2 read.
+The context's lookaheads (``ahead``, ``blind``, ``asked``, ``newest_ahead``,
+``older_loads``) read only the records from an index on. So the world screens off the
+past: two prefixes that reach one world have the same continuations, and the pass is
+right on a log if each record's rule is right from each world that reaches it. A longer
+log adds records under the same few rules, from worlds made of the same parts, more of
+them: more claims ended, more saves in the slot, more workers alive. The oracle's
+families enumerate every combination of the writer model's options up to small bounds,
+so they exercise each rule from each kind of world those bounds produce. That is a
+bounded model check, with the simulator as the model: evidence for every size, not a
+proof. Its limit is its bounds. A fault that needs more parts at once than a family
+holds (three workers alive, two silent rewinds, one version over several claims) is out
+of its reach, and the mutation test measures only the rules its mutants narrow. No
+formal-verification tool is used: the simulator and the families are already that
+check, and a third encoding would need its own referee.
+
 **Narrowing.** A stated fact, and a classifier answer, only remove candidates. Each rule
 reads a statement as the classes it allows and offers an edge for each, as it does each
 answer the classifier gives; an empty ``loading`` allows no clock read before the first
