@@ -95,3 +95,40 @@ class LatestClaim:
 BEATS_EARLIER = BeatsEarlier()
 ALL_STOPS = AllStops()
 LATEST_CLAIM = LatestClaim()
+
+
+class Raising:
+    """A chooser with a bug."""
+
+    def choose(self, question):
+        raise RuntimeError("a consumer's bug")
+
+
+class AskedElsewhere:
+    """A chooser written for ``stop-honored``'s question, which reads ``claims``."""
+
+    def choose(self, question):
+        return {s: question.claims[s] for s in question.sites}
+
+
+RAISING = Raising()
+ASKED_ELSEWHERE = AskedElsewhere()
+
+
+class FirstClaim:
+    """``record-claim``: the run's first claim, which the log may exclude."""
+
+    def choose(self, question):
+        starts = [r.seq for r in question.rows if r.topic == "lifecycle.started"]
+        return {s: starts[0] for s in question.sites}
+
+
+class Listed:
+    """A chooser that answers with a list."""
+
+    def choose(self, question):
+        return list(question.sites)
+
+
+FIRST_CLAIM = FirstClaim()
+LISTED = Listed()

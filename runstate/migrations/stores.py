@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 from .. import formats
 from ..channel.sqlite import _SCHEMA
 from . import MigrationError, Planned, Row
-from .ambiguity import Entry, History
+from .ambiguity import Entry, History, latest
 from .seal import seal_postgres, seal_sqlite
 
 
@@ -98,7 +98,7 @@ class SqliteStore:
         return _read_sqlite(formats.FORMATS[version].sqlite_path(self._root, run_id))
 
     def history(self, run_id: str) -> History:
-        return tuple(self._manifest().get(run_id, ()))
+        return latest(self._manifest().get(run_id, ()))
 
     def _manifest(self) -> dict[str, list[Entry]]:
         if self._entries is None:
@@ -118,14 +118,17 @@ class SqliteStore:
         ``is_live``, and dry-run ``transform``, so a deterministic refusal leaves
         the run writable and a re-run refuses it the same way. Then seal (unless an
         earlier failed attempt already did); re-read, since the seal checkpoints any
-        WAL frames; transform; write the new log to a hidden temporary file, renamed
-        into place; and append the run's entry to the root's manifest.
+        WAL frames; transform; write the new log to a hidden temporary file; append
+        the run's entry to the root's manifest; and rename the log into place.
+
+        The entry goes before the publish, so a migrated run always has one: a crash
+        between the two leaves an entry for an attempt that did not publish, and a
+        re-run appends its own, which ``latest`` reads (log-formats.md §6).
 
         One residual: on a run that is not live, records landing between the
         pre-seal read and the seal can still make the post-seal transform
         refuse. The run is then left sealed and unmigrated, and recovery is
-        log-formats.md §8's rollback. Another: a crash between the rename and the
-        append leaves a migrated run with no entry (log-formats.md §6)."""
+        log-formats.md §8's rollback."""
         step = planned.step
         src = formats.FORMATS[step.FROM].sqlite_path(self._root, run_id)
         dst = formats.FORMATS[step.TO].sqlite_path(self._root, run_id)
@@ -139,7 +142,7 @@ class SqliteStore:
             seal_sqlite(src)
         migrated = planned.run(_read_sqlite(src), history)
         out = migrated.rows
-        entry = planned.entry(run_id, migrated)  # before the publish: it can fail
+        entry = planned.entry(run_id, migrated)
         dst.parent.mkdir(exist_ok=True)
         # A temporary file of this call's own, beside the address: two migrators
         # of one run never unlink or publish each other's. Hidden, and not
@@ -159,13 +162,15 @@ class SqliteStore:
                 conn.execute("COMMIT")
             finally:
                 conn.close()
+            # One write of one line, appended. Concurrent migrators of one root on
+            # NFS, where O_APPEND is not atomic, can interleave lines: a known limit.
+            with (self._root / SQLITE_MANIFEST).open("a") as f:
+                f.write(entry.to_json() + "\n")
+            self._manifest().setdefault(run_id, []).append(entry)
             os.replace(tmp, dst)
         except BaseException:
             tmp.unlink(missing_ok=True)
             raise
-        with (self._root / SQLITE_MANIFEST).open("a") as f:
-            f.write(entry.to_json() + "\n")
-        self._manifest().setdefault(run_id, []).append(entry)
 
 
 class PostgresStore:
@@ -294,12 +299,12 @@ def _pg_manifest(conn: "psycopg.Connection[Any]") -> None:
 def _pg_history(conn: "psycopg.Connection[Any]", run_id: str) -> History:
     from psycopg import sql
 
-    reg = conn.execute(
+    (reg,) = conn.execute(
         "SELECT to_regclass(%s)", [f"{PG_MANIFEST_SCHEMA}.manifest"]
-    ).fetchone()
-    if reg is None or reg[0] is None:
+    ).fetchall()
+    if reg[0] is None:
         return ()
-    return tuple(
+    return latest(
         Entry.from_json(text)
         for (text,) in conn.execute(
             sql.SQL(

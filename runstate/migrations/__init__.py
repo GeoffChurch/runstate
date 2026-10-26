@@ -10,8 +10,12 @@ pass over the whole root, writing nothing, before it migrates any run."""
 
 from __future__ import annotations
 
+import hashlib
+import inspect
+import json
 import time
 from importlib import metadata
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, Protocol
 
 from .. import formats
@@ -167,53 +171,72 @@ class Planned(NamedTuple):
 
     step: Step
     resolutions: Resolutions
-    accepted: frozenset[str]
+    accepted: frozenset[Divergence]
 
     def diverged(self, migrated: Migrated) -> dict[Divergence, tuple[int, ...]]:
         """The divergences that fire on the run and that no ``--accept`` accepts."""
         return {
             d: migrated.divergences[d.name]
             for d in self.step.DIVERGENCES
-            if migrated.divergences[d.name] and d.name not in self.accepted
+            if migrated.divergences[d.name] and d not in self.accepted
         }
 
     def run(self, rows: list[Row], history: History) -> Migrated:
-        """The checked transform, refused where a divergence fires unaccepted."""
+        """The checked transform, refused where a divergence fires unaccepted: past
+        the detection pass, only where records landed after it read the run."""
         migrated = transform_checked(
             self.step, rows, resolutions=self.resolutions, history=history
         )
-        self.check(migrated)
-        return migrated
-
-    def check(self, migrated: Migrated) -> None:
-        """Refuse the run where a divergence fires that no ``--accept`` accepts."""
         diverged = self.diverged(migrated)
         if diverged:
             raise MigrationError(
-                "; ".join(
-                    f"the divergence {d.name} fires at seq "
-                    f"{', '.join(map(str, seqs))}: {d.reads} Add --accept {d.name} "
-                    "to migrate it"
+                "a divergence no --accept accepts fires: "
+                + ", ".join(
+                    f"{d.name} at seq {', '.join(map(str, seqs))}"
                     for d, seqs in diverged.items()
                 )
             )
+        return migrated
 
     def entry(self, run_id: str, migrated: Migrated) -> Entry:
         a = self.resolutions.assumptions
         facts = self.step.FACTS
         return Entry(
-            run_id,
-            self.step.FROM,
-            self.step.TO,
-            metadata.version("runstate"),
-            time.time(),
-            a.cap,
-            a.given,
-            facts.describe(facts.of(a)),
-            {name: c.spelling for name, c in self.resolutions.choosers.items()},
-            migrated.readings,
-            {d: seqs for d, seqs in migrated.divergences.items() if seqs},
+            run_id=run_id,
+            from_format=self.step.FROM,
+            to_format=self.step.TO,
+            runstate=_RUNSTATE,
+            step_source=_source(self.step),
+            at=time.time(),
+            cap=a.cap,
+            assumed=a.given,
+            facts=facts.describe(facts.of(a)),
+            resolved={n: c.spelling for n, c in self.resolutions.choosers.items()},
+            readings=migrated.readings,
+            accepted={d: seqs for d, seqs in migrated.divergences.items() if seqs},
         )
+
+
+def _runstate() -> str:
+    """The installed runstate's version, with the commit its install records: a git
+    pin's ``direct_url.json`` names one, which the version string (a ``.dev0``) does
+    not."""
+    dist = metadata.distribution("runstate")
+    direct = dist.read_text("direct_url.json")
+    commit = json.loads(direct).get("vcs_info", {}).get("commit_id") if direct else None
+    return dist.version if commit is None else f"{dist.version}+{commit}"
+
+
+_RUNSTATE = _runstate()
+
+
+def _source(step: Step) -> str:
+    """The digest of the step module's source: the code that migrated the run, whatever
+    the version string says."""
+    path = inspect.getsourcefile(type(step))
+    if path is None:
+        raise MigrationError(f"step {step.FROM} -> {step.TO} has no source file")
+    return "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 class RunRefused(NamedTuple):
@@ -222,12 +245,11 @@ class RunRefused(NamedTuple):
 
 
 class Outcome(NamedTuple):
-    """What ``migrate`` did: the runs it moved, and every refusal, each naming its run;
-    ``report`` holds the divergences that refused runs, one summary each."""
+    """What ``migrate`` did: the runs it moved, and every refusal, each naming its
+    run."""
 
     moved: tuple[str, ...]
     refused: tuple[RunRefused, ...]
-    report: Report
 
 
 def _detect(
@@ -239,11 +261,11 @@ def _detect(
     to: str,
     report: Report,
 ) -> None:
-    """One run's chain, in memory, writing nothing: each step's forks found on its
-    input, which for a later step is the earlier one's output, and its transform dry-run
-    once every fork of it has a chooser. A fork no ``--resolve`` decides goes in the
-    report, and holds the later steps undecided; so does a divergence no ``--accept``
-    accepts, which refuses the run."""
+    """One run's chain, in memory, changing no log's content: each step's forks found
+    on its input, which for a later step is the earlier one's output, and its transform
+    dry-run once every fork of it has a chooser. A fork no ``--resolve`` decides, or a
+    divergence no ``--accept`` accepts, goes in the report and holds the later steps
+    undecided."""
     steps = chain(start, to)
     rows = store.rows(start, run_id)
     history = store.history(run_id)
@@ -259,17 +281,20 @@ def _detect(
             for p in step.PROJECTIONS
             if detected.forks[p.name] and p.name not in choices.resolved
         ]
+        for p in open_:
+            report.fork(step, p, run_id, detected.forks[p.name])
         if open_:
-            for p in open_:
-                report.fork(step, p, run_id, detected.forks[p.name])
             report.defer(steps[k + 1 :], run_id)
             return
         migrated = transform_checked(
             step, rows, resolutions=plan.resolutions, history=history
         )
-        for d, seqs in plan.diverged(migrated).items():
+        diverged = plan.diverged(migrated)
+        for d, seqs in diverged.items():
             report.diverge(step, d, run_id, seqs)
-        plan.check(migrated)
+        if diverged:
+            report.defer(steps[k + 1 :], run_id)
+            return
         history = (*history, plan.entry(run_id, migrated))
         rows = migrated.rows
 
@@ -280,11 +305,12 @@ def migrate(
     """Move each run (every run under the store when None) to format ``to``, one step
     at a time, under ``choices``.
 
-    First the detection pass: every run's chain in memory, sealing and writing nothing.
-    It refuses the whole invocation (``Undecided``, with one summary per projection)
-    unless every projection that has a fork in some run has a ``--resolve``. Then each
-    run is migrated; a run refused by a step, a chooser, ``refuse`` or an unaccepted
-    divergence is left untouched, and the others go on."""
+    First the detection pass: every run's chain in memory, changing no log's content.
+    It refuses the whole invocation (``Undecided``, with one summary per projection
+    and per divergence, and the runs already refused) unless every projection that
+    forks in some run has a ``--resolve`` and every divergence that fires has an
+    ``--accept``. Then each run is migrated; a run refused by a step, a chooser or
+    ``refuse`` is left untouched, and the others go on."""
     check_names(STEPS)
     plans = {
         s.FROM: Planned(s, resolutions(s, choices), choices.accepted) for s in STEPS
@@ -298,8 +324,9 @@ def migrate(
         try:
             _detect(store, plans, choices, rid, fmt, to, report)
         except MigrationError as exc:
-            refused[rid] = str(exc)
-    if report.forks:
+            refused[rid] = f"run {rid!r}: {exc}"
+    if report.open():
+        report.refused.update(refused)
         raise Undecided(report)
     moved: list[str] = []
     for rid, fmt in todo.items():
@@ -309,13 +336,11 @@ def migrate(
             for step in chain(fmt, to):
                 store.migrate_one(plans[step.FROM], rid)
         except MigrationError as exc:
-            refused[rid] = str(exc)
+            refused[rid] = f"run {rid!r}: {exc}"
         else:
             moved.append(rid)
     return Outcome(
-        tuple(moved),
-        tuple(RunRefused(r, f"run {r!r}: {why}") for r, why in sorted(refused.items())),
-        report,
+        tuple(moved), tuple(RunRefused(r, why) for r, why in sorted(refused.items()))
     )
 
 

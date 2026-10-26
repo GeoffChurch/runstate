@@ -87,15 +87,23 @@ REFUSE = Builtin("refuse", Refuse(), "refuse every run with a fork of it")
 
 
 class Chosen(NamedTuple):
-    """A chooser, with its spelling: a built-in's name, or ``module:attr``."""
+    """A chooser, with its spelling: a built-in's name, or ``module:attr``; None for a
+    projection the user did not resolve."""
 
-    spelling: str
+    spelling: str | None
     chooser: Chooser[Any, Any]
 
+    def flag(self, projection: str) -> str:
+        """How a message names the choice."""
+        if self.spelling is None:
+            return f"{projection}, which no --resolve decides,"
+        return f"--resolve {projection}={self.spelling}"
 
-UNRESOLVED = Chosen(REFUSE.name, REFUSE.chooser)
+
+UNRESOLVED = Chosen(None, REFUSE.chooser)
 """What a step's resolutions hold for a projection the user did not resolve: by the
-detection pass, one that no run has a fork of."""
+detection pass, one that no run has a fork of. It refuses like ``refuse``, and the
+manifest records it as no choice (null)."""
 
 # ----- a step's declarations ---------------------------------------------------------
 
@@ -114,21 +122,32 @@ class Projection(Generic[QQ, AA]):
     definition: str
     readings: str
     generic: tuple[Builtin, ...]
+    # The answer's shape, checked once, here: the typed answer from the question and
+    # whatever the chooser returned, or a ValueError saying what is wrong with it.
+    check: Callable[[QQ, object], AA]
 
     @property
     def builtins(self) -> tuple[Builtin, ...]:
         return (*self.generic, REFUSE)
 
     def ask(self, resolutions: Resolutions, question: QQ) -> AA:
-        """The chooser's answer, the run refused if it refuses. The step checks the
-        answer against what the log proves."""
+        """The chooser's answer, in its declared shape. The run is refused, naming the
+        projection and the chooser, if the chooser refuses, raises, or answers in
+        another shape: a consumer's chooser is code runstate did not write, so no
+        failure of it is a traceback. The step then checks the answer against what
+        the log proves."""
         chosen = resolutions.choosers[self.name]
-        answer = chosen.chooser.choose(question)
+        flag = chosen.flag(self.name)
+        try:
+            answer = chosen.chooser.choose(question)
+        except Exception as exc:
+            raise MigrationError(f"{flag} raised {type(exc).__name__}: {exc}") from exc
         if isinstance(answer, Refusal):
-            raise MigrationError(
-                f"--resolve {self.name}={chosen.spelling} refused it: {answer.reason}"
-            )
-        return cast(AA, answer)
+            raise MigrationError(f"{flag} refused it: {answer.reason}")
+        try:
+            return self.check(question, answer)
+        except ValueError as exc:
+            raise MigrationError(f"{flag} answered in another shape: {exc}") from exc
 
 
 class Divergence(NamedTuple):
@@ -213,7 +232,7 @@ class Choices:
 
     assumed: tuple[Assumed, ...]
     resolved: Mapping[str, Chosen]
-    accepted: frozenset[str]
+    accepted: frozenset[Divergence]
     cap: int
 
 
@@ -310,10 +329,14 @@ def parse_choices(
     if cap < 1:
         raise MigrationError(f"--cap {cap}: a step must be let hold one state at least")
     projections = {p.name: p for s in steps for p in s.PROJECTIONS}
-    divergences = {d.name for s in steps for d in s.DIVERGENCES}
+    divergences = {d.name: d for s in steps for d in s.DIVERGENCES}
     assumed: list[Assumed] = []
     for spelling in assume:
         facts = _import(spelling, "--assume")
+        if isinstance(facts, NoFacts):
+            raise MigrationError(
+                f"--assume {spelling}: a step without facts takes none"
+            )
         if not any(isinstance(facts, s.FACTS.kind) for s in steps):
             raise MigrationError(
                 f"--assume {spelling}: a {type(facts).__name__} states no step's "
@@ -341,7 +364,9 @@ def parse_choices(
             )
     if len(set(accept)) < len(accept):
         raise MigrationError("an --accept is given twice")
-    choices = Choices(tuple(assumed), resolved, frozenset(accept), cap)
+    choices = Choices(
+        tuple(assumed), resolved, frozenset(divergences[n] for n in accept), cap
+    )
     for s in steps:
         assumptions(s, choices)  # two --assume for one step refuse here
     return choices
@@ -358,6 +383,8 @@ def _chooser(projection: Projection[Any, Any], spelling: str) -> Chosen:
             )
         return Chosen(spelling, found[0].chooser)
     obj = _import(spelling, flag)
+    if isinstance(obj, type):
+        raise MigrationError(f"{flag}: {obj.__name__} is a class; name an instance")
     if not isinstance(obj, Chooser):
         raise MigrationError(f"{flag}: a {type(obj).__name__} is no chooser")
     return Chosen(spelling, obj)
@@ -373,12 +400,15 @@ class Entry:
     run_id: str
     from_format: str
     to_format: str
-    runstate: str  # the version that ran it
+    runstate: (
+        str  # the version that ran it, with its commit where the install records one
+    )
+    step_source: str  # "sha256:<hex>" of the step module's source: the code that ran
     at: float
     cap: int
     assumed: str | None  # the --assume spelling; None when its facts were unstated
     facts: Json  # the step's rendering of them
-    resolved: Mapping[str, str]  # each projection's chooser, as spelled
+    resolved: Mapping[str, str | None]  # each projection's chooser as spelled, or None
     readings: Mapping[str, Mapping[int, Json]]  # each fork's reading
     accepted: Mapping[str, tuple[int, ...]]  # each divergence that fired, its seqs
 
@@ -389,6 +419,7 @@ class Entry:
                 "from": self.from_format,
                 "to": self.to_format,
                 "runstate": self.runstate,
+                "step_source": self.step_source,
                 "at": self.at,
                 "cap": self.cap,
                 "assumed": self.assumed,
@@ -407,26 +438,40 @@ class Entry:
     def from_json(cls, text: str) -> Entry:
         e = json.loads(text)
         return cls(
-            e["run_id"],
-            e["from"],
-            e["to"],
-            e["runstate"],
-            e["at"],
-            e["cap"],
-            e["assumed"],
-            e["facts"],
-            e["resolved"],
-            {
+            run_id=e["run_id"],
+            from_format=e["from"],
+            to_format=e["to"],
+            runstate=e["runstate"],
+            step_source=e["step_source"],
+            at=e["at"],
+            cap=e["cap"],
+            assumed=e["assumed"],
+            facts=e["facts"],
+            resolved=e["resolved"],
+            readings={
                 p: {int(seq): r for seq, r in rs.items()}
                 for p, rs in e["readings"].items()
             },
-            {d: tuple(seqs) for d, seqs in e["accepted"].items()},
+            accepted={d: tuple(seqs) for d, seqs in e["accepted"].items()},
         )
 
 
 History: TypeAlias = tuple[Entry, ...]
-"""A run's manifest entries, oldest first: how the earlier steps migrated it. A later
-step may read an earlier step's choices from it (the owner's D3)."""
+"""A run's manifest entries, one per step, oldest first: how the earlier steps migrated
+it. A later step may read an earlier step's choices from it (the owner's D3)."""
+
+
+def latest(entries: Iterable[Entry]) -> History:
+    """A run's history from its manifest lines, oldest first: per step, the last line.
+    A step's line is written before its log is published, so a crash in between leaves
+    a line for an attempt that did not publish; the attempt that published last wrote
+    the last line (log-formats.md §6)."""
+    last: dict[tuple[str, str], Entry] = {}
+    for e in entries:
+        last.pop((e.from_format, e.to_format), None)
+        last[(e.from_format, e.to_format)] = e
+    return tuple(last.values())
+
 
 # ----- the report --------------------------------------------------------------------------
 
@@ -442,12 +487,19 @@ EXAMPLES = 3  # example sites per summary
 @dataclass
 class Report:
     """What the detection pass found that needs the user's word: the forks of each
-    projection no ``--resolve`` decides, the later steps undecided until they are, and
-    the sites of each divergence no ``--accept`` accepts."""
+    projection no ``--resolve`` decides, the sites of each divergence no ``--accept``
+    accepts, and the later steps undecided until they are. ``refused`` keeps the runs
+    already refused whatever is chosen (a live run, a step's own refusal), so the user
+    meets them in the same round."""
 
     forks: dict[tuple[str, Projection[Any, Any]], list[tuple[str, Fork]]]
     undecided: dict[str, set[str]]  # a later step's label -> its runs
     diverged: dict[tuple[str, Divergence], list[Site]]
+    refused: dict[str, str]  # run id -> its refusal, naming the run
+
+    def open(self) -> bool:
+        """Whether a question is left for the user."""
+        return bool(self.forks or self.diverged)
 
     def fork(
         self,
@@ -473,7 +525,7 @@ class Report:
 
 
 def empty_report() -> Report:
-    return Report({}, {}, {})
+    return Report({}, {}, {}, {})
 
 
 def _sites(sites: Sequence[Site]) -> str:
@@ -505,19 +557,12 @@ def render(report: Report) -> str:
         out.append("\n".join(lines))
     if report.undecided:
         out.append(
-            "undecided until these are resolved, since their forks are found on the "
-            "output of the steps before them: "
+            "undecided until the questions above are answered, since their forks are "
+            "found on the output of the steps before them: "
             + "; ".join(
                 f"{label} ({len(runs)} run{'s' * (len(runs) != 1)})"
                 for label, runs in sorted(report.undecided.items())
             )
-        )
-    if report.diverged:
-        out.append(
-            "Divergences found so far, in the runs whose forks are all decided, each "
-            "refusing its runs until it is accepted:"
-            if report.forks
-            else "Divergences, each refusing its runs until it is accepted:"
         )
     for (label, d), sites in report.diverged.items():
         out.append(
@@ -525,16 +570,23 @@ def render(report: Report) -> str:
                 [
                     f"{d.name} ({label}): {d.reads}",
                     f"  sites: {_sites(sites)}",
-                    f"  refused until: --accept {d.name}",
+                    f"  add: --accept {d.name}",
                 ]
+            )
+        )
+    if report.refused:
+        out.append(
+            "\n".join(
+                ["refused whatever is chosen:"]
+                + [f"  {why}" for _, why in sorted(report.refused.items())]
             )
         )
     return "\n\n".join(out)
 
 
 class Undecided(MigrationError):
-    """The detection pass's refusal: a projection that occurs has no ``--resolve``. It
-    writes nothing."""
+    """The detection pass's refusal: a projection forks with no ``--resolve``, or a
+    divergence fires with no ``--accept``. Nothing is migrated."""
 
     def __init__(self, report: Report) -> None:
         super().__init__(render(report))

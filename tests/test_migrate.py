@@ -620,12 +620,22 @@ class Say:
         return {s: self.word for s in question.forks}
 
 
+def _words(question, answer):
+    """A toy answer's shape: a word for each fork."""
+    if not isinstance(answer, dict) or set(answer) != set(question.forks):
+        raise ValueError(f"{answer!r} is no word per fork")
+    if not all(isinstance(w, str) for w in answer.values()):
+        raise ValueError(f"{answer!r} holds a reading that is no word")
+    return answer
+
+
 def _projection(name):
     return Projection(
         name,
         f"which word a toy record of {name} carries.",
         "a word",
         (Builtin("yes", Say("yes"), "say yes"), Builtin("no", Say("no"), "say no")),
+        _words,
     )
 
 
@@ -791,7 +801,10 @@ def test_the_detection_pass_writes_nothing_while_a_fork_has_no_chooser(
     assert "refuse  refuse every run with a fork of it" in text
     assert "settled by stating: settled (2)" in text
     assert "add: --resolve a=<built-in or module:attr>" in text
-    assert "undecided until these are resolved" in text and "8.1.0 -> 8.2.0" in text
+    assert (
+        "undecided until the questions above are answered" in text
+        and "8.1.0 -> 8.2.0" in text
+    )
 
 
 def test_a_later_steps_forks_are_asked_once_the_earlier_ones_are_decided(
@@ -835,10 +848,8 @@ def test_a_projection_no_run_forks_needs_no_chooser(forking, tmp_path):
     _seed(tmp_path, "8.0.0", "r3", n=1)
     outcome = migrate(SqliteStore(tmp_path), None, to="8.2.0", choices=_choose())
     assert outcome.moved == ("r3",)
-    assert [e["resolved"] for e in _manifest(tmp_path)] == [
-        {"a": "refuse"},
-        {"b": "refuse"},
-    ]
+    # recorded as no choice, apart from an explicit refuse
+    assert [e["resolved"] for e in _manifest(tmp_path)] == [{"a": None}, {"b": None}]
 
 
 def test_an_explicit_refuse_refuses_only_the_runs_with_a_fork(forking, tmp_path):
@@ -879,31 +890,45 @@ def test_a_chooser_sees_its_forks_and_the_run_s_history(forking, tmp_path):
     assert {h[0].readings["a"][2] for h in forking[1].histories} == {"asked-2"}
 
 
-def test_a_divergence_refuses_its_runs_until_it_is_accepted(
+def test_a_divergence_halts_the_pass_until_it_is_accepted(
     forking, monkeypatch, tmp_path
 ):
+    """The owner's ruling: an unaccepted divergence is a question the user has not
+    answered, so the pass writes nothing, as for an unresolved fork."""
     step = Forking("8.0.0", "8.1.0", "a", diverge=[2])
     monkeypatch.setattr(migrations, "STEPS", (step,))
     _three(tmp_path)
-    outcome = migrate(SqliteStore(tmp_path), None, to="8.1.0", choices=_choose())
-    assert outcome.moved == ("r3",)
-    assert [r.run_id for r in outcome.refused] == ["r1", "r2"]
-    assert "the divergence a-drift fires at seq 3" in outcome.refused[0].message
-    assert "Add --accept a-drift" in outcome.refused[0].message
-    text = render(outcome.report)
+    with pytest.raises(Undecided) as exc:
+        migrate(SqliteStore(tmp_path), None, to="8.1.0", choices=_choose())
+    _untouched(tmp_path)
+    text = str(exc.value)
     assert "a-drift (8.0.0 -> 8.1.0): a's read drifts." in text
     assert "sites: 2 in 2 runs, e.g. r1 seq 3, r2 seq 3" in text
-    assert "refused until: --accept a-drift" in text
-    assert text.startswith("Divergences, each refusing its runs until it is accepted:")
+    assert "add: --accept a-drift" in text
     outcome = migrate(
         SqliteStore(tmp_path), None, to="8.1.0", choices=_choose(accept=["a-drift"])
     )
-    assert outcome.moved == ("r1", "r2") and not outcome.refused
+    assert outcome.moved == ("r1", "r2", "r3") and not outcome.refused
     assert {e["run_id"]: e["accepted"] for e in _manifest(tmp_path)} == {
-        "r3": {},
         "r1": {"a-drift": [3]},
         "r2": {"a-drift": [3]},
+        "r3": {},
     }
+
+
+def test_the_pass_keeps_the_refusals_it_found(forking, monkeypatch, tmp_path):
+    """A run refused whatever is chosen is reported in the same round as the
+    questions, not on the next invocation."""
+    step = Forking("8.0.0", "8.1.0", "a", forks=[1])
+    step.is_live = lambda rows: len(rows) == 1
+    monkeypatch.setattr(migrations, "STEPS", (step,))
+    _three(tmp_path)
+    with pytest.raises(Undecided) as exc:
+        migrate(SqliteStore(tmp_path), None, to="8.1.0", choices=_choose())
+    assert exc.value.report.refused == {
+        "r3": "run 'r3': it has a live episode; stop it first"
+    }
+    assert "refused whatever is chosen:\n  run 'r3': it has a live" in str(exc.value)
 
 
 def test_the_manifest_holds_one_entry_per_run_per_step(forking, tmp_path):
@@ -921,32 +946,75 @@ def test_the_manifest_holds_one_entry_per_run_per_step(forking, tmp_path):
     assert r1a["facts"] == {"settled": False}
     assert r1a["resolved"] == {"a": "yes"} and r1a["readings"] == {"a": {"2": "yes"}}
     assert r1a["runstate"] and r1a["at"] > 0
+    assert re.fullmatch(r"sha256:[0-9a-f]{64}", r1a["step_source"])
 
 
-def test_a_reading_refused_by_the_step_leaves_the_other_runs_migrated(
+def test_the_entry_is_written_before_the_publish_and_the_latest_is_read(
     forking, monkeypatch, tmp_path
 ):
-    _three(tmp_path)
-    step = forking[0]
+    """A crash between the two leaves an entry for an attempt that did not publish,
+    never a migrated run without one; the re-run's entry is the one read."""
+    from runstate.migrations import stores
 
-    def strict(rows, *, resolutions, history):
-        migrated = Forking.transform(
-            step, rows, resolutions=resolutions, history=history
+    _seed(tmp_path, "8.0.0", "r1")
+    target = DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1")
+    real = os.replace
+
+    def crash(*a, **k):
+        raise OSError("crashed before the publish")
+
+    monkeypatch.setattr(stores.os, "replace", crash)
+    with pytest.raises(OSError):
+        migrate(
+            SqliteStore(tmp_path), None, to="8.1.0", choices=_choose(resolve=["a=yes"])
         )
-        if set(migrated.readings["a"]) != set(
-            step._forked(rows, resolutions.assumptions)
-        ):
-            raise MigrationError("the chooser read no fork")
-        return migrated
+    assert not target.exists()
+    assert [e["readings"] for e in _manifest(tmp_path)] == [{"a": {"2": "yes"}}]
+    monkeypatch.setattr(stores.os, "replace", real)
+    migrate(SqliteStore(tmp_path), None, to="8.1.0", choices=_choose(resolve=["a=no"]))
+    assert target.exists() and len(_manifest(tmp_path)) == 2
+    (entry,) = SqliteStore(tmp_path).history("r1")
+    assert entry.readings == {"a": {2: "no"}}
 
-    monkeypatch.setattr(step, "transform", strict)
-    choices = _choose(resolve=["a=tests.migration_consumer:GARBLED"])
-    outcome = migrate(SqliteStore(tmp_path), None, to="8.1.0", choices=choices)
+
+@pytest.mark.parametrize(
+    "chooser, refusal",
+    [
+        ("GARBLED", "answered in another shape: {} is no word per fork"),
+        ("RAISING", "raised RuntimeError: a consumer's bug"),
+        ("ASKED_ELSEWHERE", "raised AttributeError"),
+    ],
+)
+def test_a_choosers_failure_refuses_its_runs_and_the_others_migrate(
+    forking, tmp_path, chooser, refusal
+):
+    """A consumer's chooser is code runstate did not write: a wrong shape, an
+    exception, or a chooser written for another question refuses the run, naming the
+    run, the projection and the chooser, and never escapes as a traceback."""
+    _three(tmp_path)
+    flag = f"--resolve a=tests.migration_consumer:{chooser}"
+    outcome = migrate(
+        SqliteStore(tmp_path), None, to="8.1.0", choices=_choose(resolve=[flag[10:]])
+    )
     assert outcome.moved == ("r3",)
-    assert [r.message for r in outcome.refused] == [
-        "run 'r1': the chooser read no fork",
-        "run 'r2': the chooser read no fork",
-    ]
+    for run, refused in zip(["r1", "r2"], outcome.refused, strict=True):
+        assert refused.message.startswith(f"run '{run}': {flag} {refusal}")
+
+
+def test_a_class_is_no_chooser(forking):
+    with pytest.raises(MigrationError, match="Asked is a class; name an instance"):
+        _choose(resolve=["a=tests.migration_consumer:Asked"])
+
+
+def test_a_step_without_facts_takes_none():
+    with pytest.raises(MigrationError, match="a step without facts takes none"):
+        parse_choices(
+            migrations.STEPS,
+            assume=["runstate.migrations.ambiguity:NO_FACTS.unstated"],
+            resolve=[],
+            accept=[],
+            cap=1,
+        )
 
 
 def test_the_cli_takes_the_users_word(forking, tmp_path, capsys):
@@ -970,9 +1038,7 @@ def test_the_cli_takes_the_users_word(forking, tmp_path, capsys):
     assert capsys.readouterr().out.split() == ["r1", "r2"]
 
 
-def test_the_cli_reports_a_divergence_it_refused(
-    forking, monkeypatch, tmp_path, capsys
-):
+def test_the_cli_asks_for_a_divergence(forking, monkeypatch, tmp_path, capsys):
     from runstate.cli import CAP, main
 
     monkeypatch.setattr(
@@ -980,7 +1046,8 @@ def test_the_cli_reports_a_divergence_it_refused(
     )
     _seed(tmp_path, "8.0.0", "r3", n=1)
     assert main(["migrate", str(tmp_path), "--to", "8.1.0"]) == 1
-    assert "refused until: --accept a-drift" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "nothing was migrated" in err and "add: --accept a-drift" in err
     assert main(["migrate", str(tmp_path), "--to", "8.1.0", "--accept", "a-drift"]) == 0
     assert _manifest(tmp_path)[0]["cap"] == CAP
 

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import formats, migrations
 from .migrations import MigrationError, migrate
-from .migrations.ambiguity import Undecided, parse_choices, render
+from .migrations.ambiguity import Undecided, parse_choices
 from .migrations.stores import PostgresStore, SqliteStore, Store
 
 # The URI schemes libpq reads as a DSN (a key=value DSN is no directory either,
@@ -88,8 +88,8 @@ def main(argv: list[str] | None = None) -> int:
         outcome = migrate(store, args.run_ids or None, to=args.to, choices=choices)
     except Undecided as exc:
         print(
-            "runstate migrate: nothing was migrated. Each projection below has forks "
-            "no --resolve decides:\n",
+            "runstate migrate: nothing was migrated. Each question below needs a "
+            "--resolve or an --accept:\n",
             file=sys.stderr,
         )
         print(str(exc), file=sys.stderr)
@@ -98,8 +98,6 @@ def main(argv: list[str] | None = None) -> int:
         print(rid)
     for refusal in outcome.refused:
         print(f"refused: {refusal.message}", file=sys.stderr)
-    if outcome.report.diverged:
-        print("\n" + render(outcome.report), file=sys.stderr)
     return 1 if outcome.refused else 0
 
 

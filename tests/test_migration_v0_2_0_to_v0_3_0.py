@@ -243,8 +243,10 @@ SUBS = [
     r(32, "lifecycle.stopped", _stopped(2, 13.0)),
 ]
 
-# Episodes: A is displaced by B and writes a late beat and a late stopped (the
-# cascade), B is killed, C errors before its first beat.
+# Episodes: B claims while A's records run on, then a beat and a stopped follow B's
+# claim (the cascade the positional rule attributes to B; no stopped released A, so
+# by the claim guard A was dead when B claimed and they are B's), B is killed, C
+# errors before its first beat.
 EPISODES = [
     r(1, "launcher.launched", _launched("local://n2/31", 1.0), rid="LA"),
     r(2, "lifecycle.started", _started("local://n2/31", 2.0), rid="LA"),
@@ -729,6 +731,66 @@ def test_drained_reads_the_claims_record_claim_gave():
     assert _named(none, 8, "honored") == [] and none.readings["stop-honored"] == {8: []}
 
 
+def test_a_record_claim_reading_must_be_a_claim_that_may_have_written_it():
+    """The candidates are the latest claim and the displaced claims still alive: C0
+    no stopped followed, so by the claim guard it was dead when C1 claimed."""
+    rows = [
+        r(1, "lifecycle.started", _started(DEAD, 1.0)),
+        r(2, "lifecycle.started", _started(DEAD, 2.0)),
+        r(3, "lifecycle.stopped", _stopped(None, 3.0)),
+        r(4, "lifecycle.started", _started(DEAD, 4.0)),
+        r(5, "lifecycle.heartbeat", _beat(1, 0, 5.0)),
+    ]
+    assert _forks(rows) == {"record-claim": [5]}
+    with pytest.raises(
+        MigrationError, match=r"claim 1 is neither the latest .*\[2, 4\]"
+    ):
+        _migrated_by(rows, _choices("record-claim=" + CONSUMER + "FIRST_CLAIM"))
+    assert (
+        _named(
+            _migrated_by(rows, _choices("record-claim=" + CONSUMER + "EARLIER_CLAIM")),
+            5,
+            "claim_seq",
+        )
+        == 2
+    )
+
+
+@pytest.mark.parametrize(
+    "chooser, refusal",
+    [
+        (
+            "ALL_STOPS",
+            "answered in another shape: at seq 7, frozenset({6}) is no claim",
+        ),
+        ("LISTED", "answered in another shape: a list, not a mapping of fork seqs"),
+        ("RAISING", "raised RuntimeError: a consumer's bug"),
+    ],
+)
+def test_a_choosers_failure_is_a_refusal_naming_it(chooser, refusal):
+    with pytest.raises(MigrationError) as exc:
+        _migrated_by(DISPLACED, _choices(f"record-claim={CONSUMER}{chooser}"))
+    assert str(exc.value).startswith(
+        f"--resolve record-claim={CONSUMER}{chooser} {refusal}"
+    )
+
+
+def test_a_record_claim_reading_that_changes_a_read_diverges_by_name(tmp_path):
+    """Read as A's displaced worker's, B's beat and exit name A: B's claim has no
+    exit, so the verdict, the frontier and the liveness reads all change, and the
+    divergence that names it is record-claim's, not the positional leak's."""
+    today = _migrated_by(DISPLACED, TODAY)
+    assert not any(today.divergences.values())
+    earlier = _migrated_by(DISPLACED, _choices(f"record-claim={CONSUMER}EARLIER_CLAIM"))
+    assert {n: list(s) for n, s in earlier.divergences.items() if s} == {
+        "reattributed-record": [7, 8]
+    }
+    before = _sqlite_reads(tmp_path, "today", today.rows)
+    after = _sqlite_reads(tmp_path, "earlier", earlier.rows)
+    assert (before["peek_terminal"], before["progress"]) == (("preempted", None, 1), 1)
+    assert (after["peek_terminal"], after["progress"]) == (None, None)
+
+
 def test_a_stop_honored_reading_may_name_only_stops_since_the_previous_stopped():
     with pytest.raises(MigrationError, match="not one since the previous stopped"):
         _migrated_by(
@@ -850,21 +912,15 @@ def test_the_cli_asks_for_each_fork_and_each_divergence(tmp_path, capsys):
     )
     assert not (tmp_path / "v0.3.0").exists()
     argv = ["migrate", str(tmp_path), *(f"--resolve={x}" for x in TODAY_RESOLVE)]
-    assert main(argv) == 1
+    assert main(argv) == 1  # the divergences are questions too: nothing migrates
     out = capsys.readouterr()
-    assert sorted(out.out.split()) == sorted(
-        set(GOLDEN) - {"episodes", "stops", "subs", "lazy"}
-    )
+    assert out.out == "" and not (tmp_path / "v0.3.0").exists()
     assert "stale-beat (0.2.0 -> 0.3.0): progress reads only" in out.err
     assert "sites: 2 in 2 runs, e.g. lazy seq 1, subs seq 30" in out.err
+    assert "add: --accept naked-stop" in out.err
     accept = ["--accept=stale-beat", "--accept=naked-stop", "--accept=ended-lease"]
     assert main([*argv, *accept]) == 0
-    assert sorted(capsys.readouterr().out.split()) == [
-        "episodes",
-        "lazy",
-        "stops",
-        "subs",
-    ]
+    assert sorted(capsys.readouterr().out.split()) == sorted(GOLDEN)
     entries = [
         json.loads(line)
         for line in (tmp_path / "runstate-migrations.jsonl").read_text().splitlines()
