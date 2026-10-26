@@ -809,11 +809,11 @@ def context(
         loading_only = r.topic is Topic.VALUE and all(
             x.role in (Role.LOADING, Role.STRAY) for x in roles[r.seq]
         )
-        # a stopped's final_step reads the clock, null included (null under
-        # ``finished`` says no pass finished)
+        # a null final_step reads no step: whether it is null is kept where no step
+        # is read (``_settled``)
         reads = (
             r.step is not None and not (zero and loading_only and r.step == 0)
-        ) or (r.topic is Topic.STOPPED and not r.malformed)
+        ) or r.final_step is not None
         blind[i] = blind[i + 1] and not reads
     control_before: list[int] = [0]
     named_before: list[frozenset[str]] = [frozenset()]
@@ -2281,11 +2281,18 @@ def _settled(ctx: Context, i: int, world: World) -> World:
             exited=world.exited & keep,
         )
     if ctx.blind[i]:
-        # no later record reads a step: every clock and every save's step is one
+        # no later record reads a step: every clock and every save's step is one. A
+        # null final_step still reads whether a pass began, finished or ticked, so
+        # each of those stays null or not (the review's Important 2)
         world = world._replace(
             workers=tuple(
                 w._replace(
-                    clock=0, floor=0, held=0, begun=None, finished=None, ticked=None
+                    clock=0,
+                    floor=0,
+                    held=0,
+                    begun=_zero(w.begun),
+                    finished=_zero(w.finished),
+                    ticked=_zero(w.ticked),
                 )
                 for w in world.workers
             ),
@@ -2294,6 +2301,10 @@ def _settled(ctx: Context, i: int, world: World) -> World:
             ),
         )
     return world
+
+
+def _zero(step: int | None) -> int | None:
+    return None if step is None else 0
 
 
 def _merged(steps: Iterable[Step]) -> list[Step]:
