@@ -1150,9 +1150,11 @@ a writer uses is its own.
 
 - **`acts`:** when the third party writes a `stopped`, and what it records. It is one fact because a writer's
   act follows the state it finds.
-  - The state of the claim it names: none (`unnamed`); held with its worker alive (`live`: a stop at any
+  - The state of the claim it acted on: none (`unnamed`); held with its worker alive (`live`: a stop at any
     time); held with its worker dead (`dead`); ended first by its worker's own `stopped` (`exited`); or ended
-    first otherwise, by a release or a later claim (`ended`).
+    first otherwise, by a release or a later claim (`ended`). In a log born in 0.3.0 the `stopped` names that
+    claim. In a log born in 0.2.0 the earlier step filled the name (above), so the claim is read through that
+    step's inference, and the state is still that of the claim the writer acted on, never of the name alone.
   - The act: a death report (`release`); nothing ended (`note`: a note, or the clearing of the stops it
     honours); or a process's end (`reap`).
 
@@ -1172,7 +1174,8 @@ the engine with the facts. It names what the log leaves open about who wrote a r
 reading the record's content and the log around it. Only consumer code may read a consumer's texts ("What
 moved out of the generic step", below). The engine hands it each log once, and it returns a reader for that
 log, whose state is that log's alone; it never keeps state across logs. The reader has one method per kind of
-record whose writer the log leaves open:
+record whose writer only its content can name. In a log born in 0.2.0 a heartbeat's writer is open too, since
+the earlier step filled its `claim_seq`, but the engine resolves that from the facts, not the classifier:
 
 ```python
 class Classifier(Protocol):
