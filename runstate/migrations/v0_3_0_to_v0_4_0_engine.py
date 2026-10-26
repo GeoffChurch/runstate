@@ -575,6 +575,14 @@ class Names(Protocol):
         ``honored`` and ``fold`` can be checked against."""
         ...
 
+    def progress(self, recs: Sequence[Rec]) -> tuple[int | None, ...]:
+        """Per record index, what runstate's ``progress()`` returned on the records
+        before it, which a third party's ``final_step`` under ``progress`` reads (§7):
+        the greater of the current episode's heartbeat step and its stopped's
+        ``final_step``, each where an integer. Which records are the episode's is the
+        reading the runstate that wrote the log made."""
+        ...
+
 
 class OwnNames:
     """A log born in format 0.3.0: a heartbeat's or a stopped's ``claim_seq`` names
@@ -588,6 +596,24 @@ class OwnNames:
 
     def honored(self) -> bool:
         return True
+
+    def progress(self, recs: Sequence[Rec]) -> tuple[int | None, ...]:
+        """By name: the newest heartbeat naming the newest claim, and the newest
+        stopped after it naming it, however formed; before any claim, the newest
+        claimless stopped."""
+        claim: int | None = None
+        beat: int | None = None
+        stop: int | None = None
+        out: list[int | None] = [None]
+        for r in recs:
+            if r.topic is Topic.STARTED:
+                claim, beat, stop = r.seq, None, None
+            elif r.topic is Topic.BEAT and r.claim == claim:
+                beat = r.step
+            elif r.topic is Topic.STOPPED and r.claim == claim:
+                stop = r.final_step
+            out.append(_greater(beat, stop))
+        return tuple(out)
 
 
 class InferredNames:
@@ -604,6 +630,29 @@ class InferredNames:
 
     def honored(self) -> bool:
         return False
+
+    def progress(self, recs: Sequence[Rec]) -> tuple[int | None, ...]:
+        """Positional (runstate 72d9c3f): the newest heartbeat of any claim, and the
+        newest stopped unless a started follows it."""
+        beat: int | None = None
+        stop: int | None = None
+        out: list[int | None] = [None]
+        for r in recs:
+            if r.topic is Topic.STARTED:
+                stop = None
+            elif r.topic is Topic.BEAT:
+                beat = r.step
+            elif r.topic is Topic.STOPPED:
+                stop = r.final_step
+            out.append(_greater(beat, stop))
+        return tuple(out)
+
+
+def _greater(beat: int | None, stop: int | None) -> int | None:
+    """``progress()``'s value from its two registers: the greater integer, else
+    None."""
+    steps = [x for x in (beat, stop) if x is not None]
+    return max(steps, default=None)
 
 
 class Refused(MigrationError):
@@ -668,7 +717,8 @@ class Context:
     control_before: tuple[int, ...]
     # per record index: the stops a stopped before it named
     named_before: tuple[frozenset[str], ...]
-    # per record index: the newest integer heartbeat step before it, None for none
+    # per record index: what runstate's ``progress()`` returned on the records before
+    # it (``Names.progress``)
     progress_before: tuple[int | None, ...]
     # the highest label a run-on is followed to: past every step the log names, by
     # ``run_on`` a claim and once more. A run-on no record pins is unbounded; its fork
@@ -817,14 +867,10 @@ def context(
         blind[i] = blind[i + 1] and not reads
     control_before: list[int] = [0]
     named_before: list[frozenset[str]] = [frozenset()]
-    progress_before: list[int | None] = [None]
     for r in recs:
         control_before.append(r.seq if r.topic is Topic.STOP else control_before[-1])
         named_before.append(named_before[-1] | set(r.honored))
-        progress = r.step if r.topic is Topic.BEAT and r.step is not None else None
-        progress_before.append(
-            progress if progress is not None else progress_before[-1]
-        )
+    names: Names = OwnNames() if isinstance(born, Born030) else InferredNames()
     return Context(
         recs=recs,
         born=born,
@@ -852,10 +898,10 @@ def context(
             for k, r in enumerate(recs)
             if r.topic in (Topic.STARTED, Topic.STOP, Topic.STOPPED)
         ),
-        names=OwnNames() if isinstance(born, Born030) else InferredNames(),
+        names=names,
         control_before=tuple(control_before),
         named_before=tuple(named_before),
-        progress_before=tuple(progress_before),
+        progress_before=names.progress(recs),
         horizon=max(labels, default=0) + run_on * (len(claims) + 1) + 1,
         by_seq={r.seq: i for i, r in enumerate(recs)},
         cap=cap,

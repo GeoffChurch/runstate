@@ -241,6 +241,18 @@ def _mutations() -> dict[str, Patch]:
             ]
         },
         "drain: a tick or exit": {"_drain": lambda ctx, world, w, seq: w},
+        # what a third party's ``final_step`` under ``progress`` reads
+        "progress: the beat alone": {"_greater": lambda beat, stop: beat},
+        "progress: by name in a log born in 0.2.0": {
+            "InferredNames": type(
+                "Named020", (E.InferredNames,), {"progress": E.OwnNames.progress}
+            )
+        },
+        "progress: by position in a log born in 0.3.0": {
+            "OwnNames": type(
+                "Inferred030", (E.OwnNames,), {"progress": E.InferredNames.progress}
+            )
+        },
         "time: upper bounds": {
             "bounds": lambda ctx, own, ended, _b=E.bounds: (_b(ctx, own, ended)[0], ())
         },

@@ -782,7 +782,7 @@ BEATLESS_FULL_STEP = _dated(
         r(5, "lifecycle.started", _started("local://n1/12", 5.0)),
         r(6, "value", _value(0.7, 2, 6.0), name="loss"),
         r(7, "value", _value({"status": "aligning step 2"}, 2, 6.5), name="status"),
-        r(8, "lifecycle.stopped", _stopped(False, BACKSTOP, 1, 5, [], 7.0)),
+        r(8, "lifecycle.stopped", _stopped(False, BACKSTOP, None, 5, [], 7.0)),
         r(9, "lifecycle.started", _started("local://n1/13", 8.0)),
         r(10, "value", _value(0.6, 3, 9.0), name="loss"),
         r(11, "lifecycle.heartbeat", _beat(3, 0, 9, 9.0)),

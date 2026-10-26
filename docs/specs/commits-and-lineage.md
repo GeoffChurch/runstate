@@ -1164,8 +1164,18 @@ a writer uses is its own.
   state (`always`; §3, "Who writes a death report"). It is decision D2's meaning, and the only place a
   release's meaning is not already the act's.
 - **`outcome`:** the outcome a release reports.
-- **`final-step`:** how the third party fills `final_step`: null, or the run's newest integer beat
-  (`progress`).
+- **`final-step`:** how the third party fills `final_step`: null, or the value runstate's `progress()`
+  returned when it wrote (`progress`): the greater of the current episode's heartbeat `step` and its
+  `stopped`'s `final_step`, each where an integer (an `int`, never a `bool`), else null. Which records are the
+  episode's is the reading the `progress()` of the runstate that wrote the log made, which a log's birth
+  tells:
+  - in a log born in 0.2.0, by position (runstate `72d9c3f`, `runstate/observables.py:463-501`;
+    `design-v0.2.md` §9): the newest heartbeat of any claim, whose `step` counts where an integer, while a
+    stepless one (a beacon) adds nothing; and the newest `stopped`, unless a newer `started` follows it;
+  - in a log born in 0.3.0, by name (`specs/observables.md`): with `c` the newest `started`, the newest
+    heartbeat naming `c`, and the newest `stopped` after `c` naming `c`, which wins even when it is malformed
+    or carries no `final_step`; when nothing has claimed, the newest `stopped` naming no claim
+    (`claim_seq` null).
 - **`honored`:** how the third party fills `honored`: empty, or every stop no `stopped` has named yet
   (`undischarged`). In a log born in 0.2.0 the earlier step filled it (above), so no element exists.
 

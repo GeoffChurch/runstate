@@ -297,7 +297,7 @@ class ThirdFinal(Enum):
     """An encoding. Element: each ``stopped`` it writes. How it fills ``final_step``."""
 
     NULL = "null"
-    PROGRESS = "progress"  # the newest integer beat on the log
+    PROGRESS = "progress"  # what runstate's ``progress()`` returned when it wrote
 
 
 class ThirdHonored(Enum):

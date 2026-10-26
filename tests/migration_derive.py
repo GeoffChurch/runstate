@@ -31,7 +31,7 @@ from typing import Any, NamedTuple, assert_never
 import runstate.migrations.v0_3_0_to_v0_4_0_facts as V
 from runstate.migrations import Row
 from tests.migration_sim import history as H
-from tests.migration_sim.render import render
+from tests.migration_sim.render import progress, render
 
 
 class Element(NamedTuple):
@@ -157,7 +157,6 @@ def observe(h: H.History) -> Observation:
     stops: list[tuple[int, str]] = []  # (seq, id)
     named: set[str] = set()
     control = 0
-    progress: int | None = None
     latest = -1
 
     def cut(c: int) -> None:
@@ -291,7 +290,12 @@ def observe(h: H.History) -> Observation:
             t["final_step"].append(
                 _by_value(
                     V.ThirdFinal(ev.final_step.value),
-                    {V.ThirdFinal.NULL: None, V.ThirdFinal.PROGRESS: progress},
+                    {
+                        V.ThirdFinal.NULL: None,
+                        V.ThirdFinal.PROGRESS: progress(
+                            rendered.rows[: seq - 1], positional=not born_0_3_0
+                        ),
+                    },
                 )
             )
             if born_0_3_0:  # in a log born in 0.2.0 the earlier step filled `honored`
@@ -360,7 +364,6 @@ def observe(h: H.History) -> Observation:
                     o["beat_pos"].append(one(V.BeatPos.AFTER_CLOSE))
                 beaten[c] = True
                 ticked[c] = begun[c]
-                progress = ticked[c]
             claimed_since = control if control > claim_seq[c] else 0
             o["watermark"].append(
                 _by_value(

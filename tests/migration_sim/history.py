@@ -221,7 +221,7 @@ class ThirdPartyFinal(Enum):
     """What a third party's ``stopped`` writes as its ``final_step``."""
 
     NULL = "null"  # the reclaim tool's
-    PROGRESS = "progress"  # the newest integer beat on the log (the backstop's)
+    PROGRESS = "progress"  # runstate's ``progress()`` as it wrote (render.progress)
 
 
 class Honors(Enum):

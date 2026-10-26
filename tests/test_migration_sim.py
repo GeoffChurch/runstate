@@ -1970,6 +1970,44 @@ REREVIEW_B = _h(
     Exit(1, False, None, YIELDED, Drain.TICKS, discards=False),
     Halt(1, Exited(0)),
 )
+
+
+# progress: a third party's ``final_step`` under ``progress`` is what runstate's
+# ``progress()`` returned as it wrote (§7). mycooc's W4 shape: the exit's final_step
+# past the newest beat, which either reading counts. Then a claim not yet beaten: the
+# positional reading (born in 0.2.0) takes the beat an earlier claim wrote, the
+# reading by name none.
+def _progress_past_the_beat(born: Born) -> History:
+    return History(
+        _h(
+            _claim(0, Fresh()),
+            _after(0, 0),
+            _finished(0, 1),
+            _preempted(0),
+            StopRequest("x0"),
+            ThirdPartyStop(0, Report(None), None, PROGRESS, Honors.UNDISCHARGED),
+        ).events,
+        born,
+    )
+
+
+def _progress_before_a_beat(born: Born) -> History:
+    return History(
+        _h(
+            _claim(0, Fresh()),
+            _after(0, 0),
+            _after(0, 1),
+            _killed(0),
+            _claim(1, FromSave(SaveOf(0, 1))),
+            _killed(1),
+            ThirdPartyStop(
+                1, Release(Outcome.LOST, Via.HELPER), None, PROGRESS, Honors.NONE
+            ),
+        ).events,
+        born,
+    )
+
+
 REREVIEW_J = _h(
     _claim(0, Fresh()),
     StopRequest("x0"),
@@ -2469,6 +2507,10 @@ NAMED = {
     "re-review A": REREVIEW_A,
     "re-review B": REREVIEW_B,
     "re-review J": REREVIEW_J,
+    "progress past the beat": _progress_past_the_beat(Born.V0_3_0),
+    "progress past the beat, born in 0.2.0": _progress_past_the_beat(Born.V0_2_0),
+    "progress before a beat": _progress_before_a_beat(Born.V0_3_0),
+    "progress before a beat, born in 0.2.0": _progress_before_a_beat(Born.V0_2_0),
     "MIDSAVE, landed": MIDSAVE_LANDED,
     "MIDSAVE, closed": MIDSAVE_CLOSED,
     "MIDSAVE, save-start": MIDSAVE_SAVE_START,

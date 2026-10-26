@@ -18,6 +18,8 @@ history's writers fill them:
   ``Fold.AT_CLAIM`` an answer before its claim (the reference Worker folds the
   answers once, at its claim: worker.py:85-118), under ``Fold.AT_DRAIN`` one
   before that drain (design-v0.2.md §6's drain);
+- **a third party's ``final_step``**, under ``ThirdPartyFinal.PROGRESS``, is what
+  runstate's ``progress()`` returned on the rows before it (``progress``);
 - **a third party's ``honored``**, under ``Honors.UNDISCHARGED``, is every stop
   no ``stopped`` has named yet (``undischarged_stops``, as mycooc's
   clear-staged-stop path reads it);
@@ -35,6 +37,7 @@ history's writers fill them:
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from typing import Any, NamedTuple, assert_never
 
 from runstate.migrations import Row
@@ -99,7 +102,6 @@ def render(history: History) -> Rendered:
     latest: int | None = None  # the newest started's seq
     positional = history.born is Born.V0_2_0
     control = 0  # the newest control record's seq
-    progress: int | None = None  # the newest integer beat's step
 
     def append(
         topic: str, body: dict[str, Any], *, name: str | None, request_id: str | None
@@ -161,8 +163,6 @@ def render(history: History) -> Rendered:
                 name=None,
                 request_id=None,
             )
-            if label is not None:
-                progress = label
         elif isinstance(ev, Exit):
             if ev.honors is Drain.EXIT:
                 drain(ev.claim)
@@ -191,7 +191,11 @@ def render(history: History) -> Rendered:
                 ids = tuple(sorted(since))
             elif ev.honors is Honors.UNDISCHARGED:
                 ids = tuple(sorted(set(stops) - named))
-            final = progress if ev.final_step is ThirdPartyFinal.PROGRESS else None
+            final = (
+                progress(rows, positional=positional)
+                if ev.final_step is ThirdPartyFinal.PROGRESS
+                else None
+            )
             if positional:
                 names = latest
             else:
@@ -223,6 +227,50 @@ def render(history: History) -> Rendered:
         seqs.append(seq)
         honoured.append(ids)
     return Rendered(tuple(rows), tuple(seqs), tuple(honoured), w)
+
+
+def progress(rows: Sequence[Row], *, positional: bool) -> int | None:
+    """What runstate's ``progress()`` returned on ``rows``: the greater of the current
+    episode's heartbeat ``step`` and its ``stopped``'s ``final_step``, each where an
+    integer. Which records are the episode's is the reading the runstate that wrote
+    the log made:
+
+    - ``positional`` (born in 0.2.0; runstate 72d9c3f, observables.py:463-501): the
+      newest heartbeat of any claim, and the newest ``stopped`` unless a ``started``
+      follows it;
+    - by name (born in 0.3.0): the newest heartbeat naming the newest claim, and the
+      newest ``stopped`` after that claim naming it, however formed; before any
+      claim, the newest ``stopped`` naming none.
+    """
+    records = [(r.seq, r.topic, json.loads(r.body)) for r in rows]
+    claim = max((s for s, t, _ in records if t == "lifecycle.started"), default=None)
+    floor = 0 if claim is None else claim
+
+    def newest(topic: str, *, after: int, naming: bool) -> dict[str, Any] | None:
+        for s, t, b in reversed(records):
+            if t == topic and s > after and (not naming or b["claim_seq"] == claim):
+                return b
+        return None
+
+    if positional:
+        beat = newest("lifecycle.heartbeat", after=0, naming=False)
+        stop = newest("lifecycle.stopped", after=floor, naming=False)
+    else:
+        beat = (
+            None
+            if claim is None
+            else newest("lifecycle.heartbeat", after=claim, naming=True)
+        )
+        stop = newest("lifecycle.stopped", after=floor, naming=True)
+    steps = [
+        v
+        for v in (
+            None if beat is None else beat["step"],
+            None if stop is None else stop["final_step"],
+        )
+        if isinstance(v, int) and not isinstance(v, bool)
+    ]
+    return max(steps, default=None)
 
 
 def _watermark(convention: Watermark, control: int, claim_seq: int, tail: int) -> int:
