@@ -936,7 +936,7 @@ record for, and each is the least-distorting way to do so.
   - It needs no fork and no choice per consumer, so every consumer's migrated log reads alike.
 
   *Its cost,* which the owner accepted (2026-10-25). The native reads can make a migrated exit's `honored`
-  differ from its 0.3.0 list in four cases. Each is named here as the simulator's `Truth.costs` labels it:
+  differ from its 0.3.0 list in five cases. Each is named here as the simulator's `Truth.costs` labels it:
   1. **`TICKS_EXIT`: a ticks-only exit honours a stop it did not list.** A writer whose exits list only the
      stops it read at its ticks omits a stop logged after its last tick. Its native exit drains every stop
      before it, and honours that one. A stop 0.3.0 left pending is spent there.
@@ -953,21 +953,28 @@ record for, and each is the least-distorting way to do so.
   4. **`DISCHARGED_EARLIER`: a later exit omits a stop an earlier one discharged.** A later claim already in
      the log, whose 0.3.0 exit honoured a stop, gets a migrated exit that omits it, because an earlier
      migrated exit already discharged it under case 1.
+  5. **`INFERRED_INPUT_LIST`: an exit's input list was an earlier step's inference.** In a log born in format
+     0.2.0, the 0.2.0 → 0.3.0 step filled every `stopped`'s `honored`, by the reading its consumer chose for
+     `stop-honored` (`reference-by-name.md` §6): under `positional`, every stop since the previous
+     `stopped`. The native exit's `honored` may then differ from that list in either direction. Every
+     difference in such a log is this case, since cases 1–4 describe a writer's own list, and such a log
+     carries none. The simulator counts 152 of them, all in its `positional` family.
 
   *What the cost changes:*
   - The recorded `honored` lists differ at once, in every case.
   - So does the stop fold (`undischarged_stops`), where case 1 spends a stop that 0.3.0 left pending, or left
-    for a later claim to honour.
+    for a later claim to honour, and where case 5 can spend a stop the inferred list left pending, or leave
+    pending one it named.
   - Running behaviour changes only if the migrated run is resumed: its next claim no longer finds that stop
     pending.
 
 **The writer facts** (*a draft until the candidate engine passes its oracle, Task 20 of
 `docs/plans/2026-10-23-migration-round.md`*). A consumer states what it knows about its writers in this
 vocabulary, and the step's candidates are the lineages of the histories that write the log and satisfy every
-statement. A fact is a choice a conforming 0.3.0 writer makes that no event of the log records; none names a
-0.4.0 encoding, since how 0.4.0 writes a history down is runstate's (above). This vocabulary, the classifier
-and the forks the engine reports replace the fifteen ambiguities below once the step is rebuilt on the engine
-(the plan's Task 22).
+statement and every classifier answer. A fact is a choice a conforming 0.3.0 writer makes that no event of the
+log records; none names a 0.4.0 encoding, since how 0.4.0 writes a history down is runstate's (above). This
+vocabulary, the classifier and the forks the engine reports replace the fifteen ambiguities below once the
+step is rebuilt on the engine (the plan's Task 22).
 - **A fact classifies** every element of one kind, a claim or one kind of act its writer makes, into one class
   of a closed domain. It is defined over what the writer does, never over a pattern in the log.
 - **A statement** is a subset of the domain: every such element of the writer's claims falls in it. It is true
@@ -979,15 +986,35 @@ and the forks the engine reports replace the fifteen ambiguities below once the 
   worker and of each third-party writer, and its classifier (below) names the versions, since
   `lifecycle.started` names no writer. One root can hold several versions: mycooc's worker changed its record
   order within its corpus.
+- **Facts and the classifier state one concern at two scopes.** A fact bounds what a version's elements may
+  be, from what its code does; the classifier answers what one record is, from its content; the engine
+  intersects the two. A consumer with no classifier still states facts, and no classifier answer widens a
+  fact.
 - **What refuses.** An unstated fact refuses nothing by itself. Where its value would decide an output, that
   output is a fork, reported with the facts that would settle it, and refused unless a chooser resolves it. A
-  stated fact that the log contradicts refuses the run: no history writes the log and satisfies every
-  statement. The refusal names each stated fact whose relaxation alone admits a history.
-- **Encodings.** Five facts say how a writer filled a 0.3.0 field that no output of the step reads: a worker's
-  `fold`, `honored` and `watermark`, and a third party's `final-step` and `honored`. Under E2 every record
-  stays in place and each native drain reads what lies before it, whatever the 0.3.0 worker folded or listed,
-  and 0.4.0 records no `final_step`. They stay in the vocabulary as checkable statements, since a log can
-  contradict them, and as the simulator's rendering inputs.
+  stated fact or a classifier answer that the log contradicts refuses the run: no history writes the log and
+  satisfies them all. The refusal names each stated fact and each classifier answer whose relaxation alone, to
+  its whole domain, admits a history. Where no single relaxation does, it names the smallest sets whose joint
+  relaxation does.
+- **Names an earlier step filled are no writer's.** In a log born in format 0.2.0, the 0.2.0 → 0.3.0 step
+  filled every `stopped`'s `honored` and every heartbeat's and `stopped`'s `claim_seq`, by the readings its
+  consumer chose for `stop-honored` and `record-claim` (`reference-by-name.md` §6). They are that step's
+  choices, so no fact states them. The step receives them from the earlier step's entry in the root's manifest
+  (`log-formats.md` §6), as a strategy receives the readings chosen before it (the owner, 2026-10-24). It then
+  reads such a name as that reading's inference, not as its writer's word: under `positional`, a displaced
+  worker's heartbeat or `stopped` after a later `started` names the later claim, and an exit's `honored` lists
+  every stop since the previous `stopped` (E2's case 5). The facts that describe how a writer fills those
+  fields hold only of a log born in 0.3.0.
+- **Encodings.** Four facts say only how a writer fills a field of its records: a worker's `fold`, `honored`
+  and `watermark`, and a third party's `final-step`. No output depends on them. Under E2 every record stays in
+  place and each native drain reads what lies before it, whatever the 0.3.0 worker folded, listed or wrote as
+  its watermark, and 0.4.0 records no `final_step`. They stay as checkable statements, since a log can
+  contradict them, and as the simulator's rendering inputs. A third party's `honored` is no such encoding: E2
+  writes a withdrawal for each id its `stopped` lists, so its list decides an output, and its fact says how
+  the list was filled.
+- **Other writers' acts.** `takeover` and `strays` describe what writers other than the version's worker do: a
+  gate that took its claim over, and a writer holding no claim. They are stated for the claim they concern,
+  since the log names neither writer.
 
 The terms. A worker's **pass** is one iteration of its loop, from its start to its **close**, the point its
 loop treats as done. A **tick** is a heartbeat with a step. A **save** is of state a later claim can load.
@@ -1003,11 +1030,11 @@ loop treats as done. A **tick** is a heartbeat with a step. A **save** is of sta
 | fact | one element per | classes | feeds |
 |---|---|---|---|
 | `stride` | pass | `next`, `skip` | Span; Origin; the cross-claim state |
-| `loading` | claim that writes a value with a step before its first pass | `loaded`, `zero` | Span; Origin |
+| `loading` | claim whose clock before its first pass labels a value or fills a `counter` `final_step` | `loaded`, `zero` | Span; Origin |
 | `values` | value the worker writes with a step | `loading`, `pass`, `between`, `teardown` | Span; End |
 | `beat-pos` | tick | `opening`, `inside`, `after-close` | Span |
 | `beat-cov` | pass the worker's loop continued past | `beaten`, `unbeaten` | Span |
-| `marker` | pass that closed | `recorded`, `silent` | Span |
+| `marker` | pass that closed neither at once after a value nor after a tick of its own | `recorded`, `silent` | Span |
 | `closing` | pass that closed | `at-value`, `other` | Span |
 | `loop-end` | own `stopped` without an error | `in-pass`, `after-close` | Span |
 | `discards` | own `stopped` without an error, inside a pass | `keeps`, `discards` | Span |
@@ -1018,30 +1045,36 @@ loop treats as done. A **tick** is a heartbeat with a step. A **save** is of sta
 | `save-cov` | pass the worker's loop continued past | `saved`, `unsaved` | the cross-claim state |
 | `leave-save` | own `stopped` without an error, after a pass's close | `saved`, `unsaved` | the cross-claim state |
 | `load` | claim | `fresh`, `restart`, `newest`, `older`, `outside` | Origin; the cross-claim state |
+| `rewinds` | rewind | `root`, `newest`, `older` | Span; Origin; the cross-claim state |
 | `takeover` | later claim that takes a claim of this version over | `dead`, `live` | End; Span; the cross-claim state |
 | `strays` | value no claim's worker wrote, while a claim of this version is the latest | `stepped`, `stepless` | Span |
 | `fold` | claim | `at-claim`, `at-drain` | none: an encoding |
-| `honored` | own `stopped` | `exit`, `ticks`, `positional` | none: an encoding |
+| `honored` | own `stopped`, in a log born in 0.3.0 | `exit`, `ticks` | none: an encoding |
 | `watermark` | heartbeat | `control`, `claimed`, `tail` | none: an encoding |
 
 - **`stride`:** whether the worker labels a pass with the step after the state it continues from (`next`): 0
   when fresh, the loaded state's step plus one, the last pass's plus one, or a rewound state's plus one.
   Otherwise it labels it above that (`skip`).
-- **`loading`:** what the worker's step clock reads before its first pass, which labels the values it writes
-  then: the loaded state's step (`loaded`, 0 when fresh), or 0 whatever it loaded (`zero`).
-- **`values`:** where in its program the worker writes a value:
+- **`loading`:** what the worker's step clock reads before its first pass: the loaded state's step (`loaded`,
+  0 when fresh), or 0 whatever it loaded (`zero`). That clock labels the values it writes before its first
+  pass, and fills a `counter` `final_step` when no pass finished.
+- **`values`:** where in its program the worker writes a value with a step:
   - before its first pass, or in a loop that ran none (`loading`);
   - inside a pass (`pass`);
   - after a pass's close, before its next pass or its own `stopped` (`between`), which holds both values after
     the tick and values after the loop;
   - after its own `stopped` (`teardown`).
+
+  Whether a node holds the value is the classifier's answer for its record, `register`.
 - **`beat-pos`:** where in a pass the worker ticks: as the pass's first act (`opening`, a loop that ticks
   first); after some act of the pass, before its close (`inside`); or after the close (`after-close`, the
   reference `steps()` driver).
 - **`beat-cov`:** whether the worker ticks a pass its loop continues past. A claim's last pass is no element:
   whether it ticked is an event, or `loop-end`'s.
-- **`marker`:** whether the worker writes a record of a pass before the pass's close: a value at its label, or
-  its tick. A `silent` pass is one the log cannot show: a run-on.
+- **`marker`:** whether the worker writes a value of a pass before the pass's close (`recorded`), or nothing
+  (`silent`: a run-on the log cannot show). Its element is narrowed to the passes the next two facts leave
+  open: a pass that closes at once after a value (`closing`), or after a tick of its own (`beat-pos`), has a
+  record before its close by definition.
 - **`closing`:** whether the writer treats a pass as done at once after a value of it, its closing value, so
   that nothing of the pass follows that value. The classifier says which values close their pass.
 - **`loop-end`:** where the worker leaves its loop for a clean exit: inside an open pass (`in-pass`), or after
@@ -1065,7 +1098,8 @@ loop treats as done. A **tick** is a heartbeat with a step. A **save** is of sta
   - after a pass's close, before its next pass or its own `stopped` (`between`);
   - after its own `stopped` (`after-exit`).
 
-  Which node a later load names follows from the place, by §6 and the target's second item.
+  Which node a later load names follows from the place, by §6 and the target's second item. A save records the
+  step of the state it holds, whatever the worker's clock reads.
 - **`save-cov`:** whether the worker saves a pass's completed state before its next pass begins.
 - **`leave-save`:** whether a worker that leaves its loop after a pass's close saves that pass's state before
   its clean exit.
@@ -1076,78 +1110,97 @@ loop treats as done. A **tick** is a heartbeat with a step. A **save** is of sta
 
   `newest` is the constraint across claims that the checkpoint carries forward: under it, which claim a later
   claim loaded depends on what the claims between them saved.
+- **`rewinds`:** whether, between passes, the worker reloads a state and drops what it wrote since its last
+  position, and which: the root (`root`), the newest save the run had made (`newest`), or an older one
+  (`older`). No record shows a rewind, and a rewind to the newest save writes the log no rewind writes, so
+  without the fact every point between passes is a fork.
 - **`takeover`:** when a later claim's gate judged a held claim of this version dead while its process lived,
-  whether its worker had halted (`dead`), or lived on and wrote after the later claim's `started` (`live`: the
-  takeover's surviving worker).
+  whether its worker had halted (`dead`) or still lived (`live`: the takeover's surviving worker, whom the
+  later claim's death report fences, §4).
 - **`strays`:** whether a writer that holds no claim writes a value into the run while a claim of this version
-  is the latest: a process before it claims, a claim-race loser, or another program. The value has a step
-  (`stepped`) or none (`stepless`).
+  is the latest, with a step (`stepped`) or none (`stepless`). Such a writer is a process before it claims, a
+  claim-race loser, or another program: mycooc's orchestrator writes a `completion_reason` register in the
+  middle of a held claim. No node holds such a value, and its step is no evidence of where the worker was.
 - **`fold`:** when the worker applies an answer that another party wrote after its claim, a `stopped`'s
   `honored` or a nak: once, at its claim (`at-claim`, the reference Worker), or at each drain (`at-drain`,
   `design-v0.2.md` §6). A readable exit can contradict it.
-- **`honored`:** which stops an own `stopped` lists:
-  - every stop the worker took in, its exit draining too (`exit`), or only those its ticks drained (`ticks`);
-  - every stop since the previous `stopped` (`positional`): how the 0.2.0 → 0.3.0 step fills every `honored`
-    of a log it migrates under its reading `stop-honored=positional` (`reference-by-name.md` §6).
+- **`honored`:** which stops an own `stopped` lists: every stop the worker took in, its exit draining too
+  (`exit`), or only those its ticks drained (`ticks`). In a log born in 0.2.0 the earlier step filled the list
+  (above), so no element exists.
 - **`watermark`:** what a heartbeat's `consumed_seq` holds: the newest control record before it (`control`),
   the newest since its claim, else 0 (`claimed`), or the newest record of any topic before it (`tail`).
+
+**Why these and no fewer** (the orthogonality test). Where one fact's classes imply another's, the later
+fact's element is narrowed so that it speaks only where the others do not: `marker` above, and `via` below,
+which covers only a release of a claim whose worker had exited. `save-cov` and `leave-save` ask one question
+of different passes, and a writer can answer them differently: mycooc saves on a throttle, and always when it
+leaves its loop. No fact is derivable from the others: `counter` reads `loading`'s clock, but which convention
+a writer uses is its own.
 
 **The third-party facts,** stated per third-party writer version, which the classifier names for each
 `stopped`:
 
 | fact | one element per | classes | feeds |
 |---|---|---|---|
-| `acts` | `stopped` it writes | a state (`unnamed`, `live`, `dead`, `ended`) with an act (`release`, `note`, `reap`) | End; Span; the cross-claim state |
-| `via` | release it writes | `helper`, `direct` | End |
+| `acts` | `stopped` it writes | a state (`unnamed`, `live`, `dead`, `exited`, `ended`) with an act (`release`, `note`, `reap`) | End; Span; the cross-claim state |
+| `via` | release it writes of a claim whose worker had exited | `if-held`, `always` | End |
 | `outcome` | release it writes | `preempted`, `errored`, `killed`, `lost` | End |
 | `final-step` | `stopped` it writes | `null`, `progress` | none: an encoding |
-| `honored` | `stopped` it writes | `none`, `undischarged` | none: an encoding |
+| `honored` | `stopped` it writes, in a log born in 0.3.0 | `none`, `undischarged` | none: E2 reads the list itself |
 
 - **`acts`:** when the third party writes a `stopped`, and what it records. It is one fact because a writer's
   act follows the state it finds.
   - The state of the claim it names: none (`unnamed`); held with its worker alive (`live`: a stop at any
-    time); held with its worker dead (`dead`); or ended by its worker's own `stopped`, a release or a later
-    claim (`ended`).
+    time); held with its worker dead (`dead`); ended first by its worker's own `stopped` (`exited`); or ended
+    first otherwise, by a release or a later claim (`ended`).
   - The act: a death report (`release`); nothing ended (`note`: a note, or the clearing of the stops it
     honours); or a process's end (`reap`).
 
   A release names its claim, so `unnamed` with `release` is no class.
-- **`via`:** how the third party writes a release's death report: through `report_death`, which writes nothing
-  on a claim with a readable exit (`helper`), or itself (`direct`; §3, "Who writes a death report"). It is
-  decision D2's meaning.
+- **`via`:** what the third party's release of a claim whose worker had already exited says: a death only
+  while the claim is held, so nothing there (`if-held`); or the death, with its cause, whatever the claim's
+  state (`always`; §3, "Who writes a death report"). It is decision D2's meaning, and the only place a
+  release's meaning is not already the act's.
 - **`outcome`:** the outcome a release reports.
-- **`final-step` and `honored`:** how the third party fills those fields. `final_step` is null, or the run's
-  newest integer beat (`progress`). `honored` is empty, or every stop no `stopped` has named yet
-  (`undischarged`, which is also the 0.2.0 → 0.3.0 step's positional list).
+- **`final-step`:** how the third party fills `final_step`: null, or the run's newest integer beat
+  (`progress`).
+- **`honored`:** how the third party fills `honored`: empty, or every stop no `stopped` has named yet
+  (`undischarged`). In a log born in 0.2.0 the earlier step filled it (above), so no element exists.
 
-**The classifier** is consumer code: a Protocol, resolved once where the configuration is read and passed to
+**The classifier** is consumer code: a Strategy, resolved once where the configuration is read and passed to
 the engine with the facts. It names what the log leaves open about who wrote a record and what the record is,
 reading the record's content and the log around it. Only consumer code may read a consumer's texts ("What
-moved out of the generic step", below).
+moved out of the generic step", below). The engine hands it each log once, and it returns a reader for that
+log, whose state is that log's alone; it never keeps state across logs. The reader has one method per kind of
+record whose writer the log leaves open:
 
 ```python
 class Classifier(Protocol):
-    # the versions of the worker whose `started` is at seq `claim`
-    def workers(self, log: Sequence[Row], claim: int) -> frozenset[str]: ...
+    def read(self, log: Sequence[Row]) -> LogReader: ...
 
-    # who wrote the `stopped` at seq `stopped`: OWN (its claim's worker), or third-party writer versions
-    def authors(self, log: Sequence[Row], stopped: int) -> frozenset[str]: ...
+class LogReader(Protocol):
+    # the versions of the worker whose `started` is at `seq`
+    def started(self, seq: int) -> frozenset[WorkerVersion]: ...
 
-    # what a third party's `stopped` records: Release(outcome), Note(), or Reap(exited n | killed s)
-    def acts(self, log: Sequence[Row], stopped: int, author: str) -> frozenset[Release | Note | Reap]: ...
+    # who wrote the `stopped` at `seq`, and what it records:
+    # OwnStop(), or ThirdStop(version, Release(outcome) | Note() | Reap(exited n | killed s))
+    def stopped(self, seq: int) -> frozenset[OwnStop | ThirdStop]: ...
 
-    # ValueRole(role, register), role one of loading, pass, closing, between, teardown, stray
-    def values(self, log: Sequence[Row], value: int) -> frozenset[ValueRole]: ...
+    # ValueRole(role, register): role loading, pass, closing, between, teardown or stray
+    def value(self, seq: int) -> frozenset[ValueRole]: ...
 ```
 
 - **Each method returns every answer the record allows:** one where the content decides, the whole domain
-  where it says nothing, and never a default. Where it names several versions, the engine reads the union of
-  their statements.
-- **A value's role** is where its writer wrote it: a worker's phase, as in `values`, or `stray`. `closing` is
-  a pass value that its pass closes at once after. `register` says that its writer keeps it outside every
-  lineage, as mycooc's `status` register, so no node holds it.
-- **The classifier is checkable** as the facts are: an answer that excludes every history consistent with the
-  log refuses the run, naming the record.
+  where it says nothing, and never a default. Where `started` names several versions, the claim satisfies one
+  version's whole statement: the engine never mixes one version's facts with another's.
+- **A value's role** is where its writer wrote it: a worker's phase, as in `values`, or `stray` for a writer
+  holding no claim. `closing` is a pass value that its pass closes at once after. `register` says that no node
+  holds it: a value with no step, a stray, or a value its writer keeps outside every lineage, as mycooc's
+  `status` register. A register's step, where its writer is the worker, still says where the worker was.
+- **The classifier can be wrong silently.** An answer that leaves no history refuses the run, naming the
+  record. But where the classifier alone separates two histories, a value's `closing` role or a stop's author,
+  a wrong answer gives one wrong lineage, not a refusal. The manifest records those answers as the consumer's
+  assertions.
 
 **The end-time fork** is a fork in Span.
 - **The question.** A native commit's `t` is when its pass ended (§3). A 0.3.0 log dates that end only where a
@@ -1171,7 +1224,6 @@ class Classifier(Protocol):
   - **A consumer's own chooser** may date the end from evidence off the log, such as checkpoint file times.
 - **A closing value is an argument, not a fact.** A consumer whose passes close at once after their closing
   value (`closing`) has its reason to choose `lower`, but the choice stays a chooser's.
-
 
 For each ambiguity below, the built-in nearest the rule the step encoded before, in
 `v0_3_0_to_v0_4_0_resolutions.py`, is marked "today's reading", with where that rule differs from it.
