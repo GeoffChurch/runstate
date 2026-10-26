@@ -3,8 +3,8 @@ own events, the target of commits-and-lineage.md §7. It says which iterations
 finished, and where; what each claim loaded; which stops each worker read, so
 that its drains follow the 0.3.0 watermarks; and who reported each death.
 
-The referee is the prose: §2–§4 and §7's encoding rules E1, E2 and E3. Each
-field follows from the history so:
+The referee is the prose: §2–§4 and §7's encoding rules E1 and E2. Each field
+follows from the history so:
 
 - **``starts``**: a claim's ``resume_from`` is the node its loaded save names,
   or null where it names none: a fresh start, a checkpoint from outside, or
@@ -39,15 +39,15 @@ field follows from the history so:
   - **torn** (null) if it carries an error, since every error exit discards its
     open iteration (§2), or if its loop discarded one;
   - **extendable** otherwise, holding the pending values;
-  - **``honored``** is what the native fold gives (§4, "``honored`` names every
-    stop pending at the exit, and every stop whose own condition held at a node
-    or a heartbeat"): every stop a drain of its worker took in unspent. Its
-    drains follow the 0.3.0 history (§7, the target's third item): each commit
-    (§4, ``commit()`` step 1), each 0.3.0 tick and beacon, whose watermark
-    records the read, and its exit (§4, the exit's step 1). The withdrawals E2
-    places spend stops in between, and the stops E3 moves arrive later. It
-    equals the 0.3.0 exit's ``honored`` for every readable exit and every stop
-    (the target's third item); the truth raises ``Residue`` where it does not.
+  - **``honored``** follows from the native reads (§7, E2; §4, "``honored``
+    names every stop pending at the exit, and every stop whose own condition
+    held at a node or a heartbeat"): every stop a drain of its worker took in
+    unspent. The drains read whatever lies before them, where 0.3.0 put it: each
+    commit (§4, ``commit()`` step 1), each 0.3.0 tick and beacon, whose
+    watermark records the read, and its exit (§4, the exit's step 1). The
+    withdrawals spend stops in between, and an exit spends what it honours.
+    Where it differs from the 0.3.0 exit's list, the difference is one of E2's
+    stated costs (``Cost``), and the truth raises ``Residue`` for any other.
 - **Fencing.** A release of a claim with no exit node, while its worker lives,
   fences that worker, and so does a takeover: it reads the death report at its
   next drain and writes nothing more (§4, "A released worker fences itself").
@@ -72,23 +72,16 @@ field follows from the history so:
 - **``terminations``**: every reap, as ``supervisor.terminated``; and a third
   party's report of a process's end (``Report(reap)``) as one under a launch the
   migration mints (``launch`` None).
-- **``moves``**: E3 (§7). A ``control.stop`` that a readable exit omits, logged
-  before that exit and named by no ``honored`` before it, moves, unchanged, to
-  just after that exit; several moved past one exit keep their order. It
-  applies before E2, so where E2 would move a later answer's withdrawal before
-  that exit, E3 applies instead.
-- **``withdrawals``**: one for each id that a ``stopped`` which is not its
-  claim's exit node honours, a third party's or a fenced worker's own, and that
-  is not already withdrawn, placed by E2 (§7): just after that ``stopped``, its
-  answer, unless a readable exit's ``honored`` would then be false. Where a
-  readable exit honours the stop though every drain of its worker that reads it
-  follows the answer, none is written; where one omits it though a drain of its
-  worker reads it before the answer, it stands just before the first such
-  drain, a commit's. Where two exits admit no place, the truth raises
-  ``NoCounterpart``: a fork the consumer resolves.
+- **``withdrawals``**: E2 (§7). One for each id that a ``stopped`` honours,
+  when that ``stopped`` is not its claim's exit node (a third party's, or a
+  fenced worker's own) and the id is not already withdrawn, just after that
+  ``stopped``, its answer. Every record stays where 0.3.0 put it: no stop
+  moves.
 
 ``evidence`` holds each death report's full E1 text (§7, E1), which A19 keeps
-out of the lineage: no fold parses it (§3).
+out of the lineage: no fold parses it (§3). ``costs`` names each stop where a
+native exit's ``honored`` differs from its 0.3.0 list, with the case of E2's
+stated cost it falls in.
 
 Nodes are named by their claim's 0.3.0 ``started`` seq and their index in it
 (``CommitId``, from 0), or by their claim alone (``ExitId``); values by their
@@ -96,11 +89,10 @@ Nodes are named by their claim's 0.3.0 ``started`` seq and their index in it
 equal ``Lineage``s need the same output.
 
 ``places`` says where the native writer puts each record, relative to the 0.3.0
-log: ``At(seq)`` for a record that is that 0.3.0 record renamed; ``MovedAfter``
-for a 0.3.0 stop E3 moved; ``After(seq, rank)`` for one it adds just after
-``seq`` (``rank`` orders the additions); and ``Ahead`` for one it adds just
-before such an addition. It is for the structural checks and for diagnosis, and
-is not part of the lineage.
+log: ``At(seq)`` for a record that is that 0.3.0 record renamed, and
+``After(seq, rank)`` for one it adds just after ``seq`` (``rank`` orders the
+additions). It is for the structural checks and for diagnosis, and is not part
+of the lineage.
 """
 
 from __future__ import annotations
@@ -114,17 +106,18 @@ from .history import (
     Beat,
     Claim,
     CommitOf,
+    Drain,
     Emit,
     Event,
     Exit,
     Exited,
     ExitOf,
     Finish,
+    Fold,
     History,
     Kind,
     Killed,
     Launched,
-    NoCounterpart,
     NodeRef,
     Outcome,
     PassSave,
@@ -201,17 +194,11 @@ class Terminated(NamedTuple):
 
 
 class Withdrawal(NamedTuple):
-    request_id: str
-    by: int  # the seq of the stopped that answered it
-    before: CommitId | None  # None: just after its answer; else just before that
-    # commit, whose drain reads the stop and its withdrawal together (E2)
-
-
-class MovedStop(NamedTuple):
-    """E3: a ``control.stop``, unchanged, that stands just after ``past``."""
+    """E2: a ``control.withdraw`` just after its answer, the ``stopped`` at
+    ``by``."""
 
     request_id: str
-    past: ExitId
+    by: int
 
 
 class Lineage(NamedTuple):
@@ -222,21 +209,12 @@ class Lineage(NamedTuple):
     deaths: tuple[Died, ...]  # sorted: a verdict reads their set (§5)
     terminations: tuple[Terminated, ...]
     withdrawals: tuple[Withdrawal, ...]
-    moves: tuple[MovedStop, ...]
 
 
 class At(NamedTuple):
     """The 0.3.0 record at ``seq``, renamed."""
 
     seq: int
-
-
-class MovedAfter(NamedTuple):
-    """The 0.3.0 record at ``moved``, which E3 moves to just after the record at
-    ``seq``, ahead of the step's additions there."""
-
-    seq: int
-    moved: int
 
 
 class After(NamedTuple):
@@ -247,15 +225,9 @@ class After(NamedTuple):
     rank: int
 
 
-class Ahead(NamedTuple):
-    """A record the step adds just before its addition at ``of``."""
-
-    of: After
-
-
-Place: TypeAlias = At | MovedAfter | After | Ahead
+Place: TypeAlias = At | After
 Record: TypeAlias = (
-    Start | Commit | RewindTo | ExitNode | Died | Terminated | Withdrawal | MovedStop
+    Start | Commit | RewindTo | ExitNode | Died | Terminated | Withdrawal
 )
 
 
@@ -263,8 +235,7 @@ class Slot(IntEnum):
     """Where among the records at one 0.3.0 seq a place falls, in order."""
 
     RECORD = 0  # the 0.3.0 record itself
-    MOVED = 1  # 0.3.0 records E3 moved to just after it
-    ADDED = 2  # records the step adds just after it
+    ADDED = 1  # records the step adds just after it
 
 
 class Key(NamedTuple):
@@ -272,9 +243,7 @@ class Key(NamedTuple):
 
     seq: int
     slot: Slot
-    rank: int  # MOVED: the moved record's 0.3.0 seq; ADDED: the addition's rank
-    ahead: int  # ADDED: 0 for a record just ahead of the addition at ``rank``,
-    # 1 for that addition
+    rank: int  # ADDED: the addition's rank
 
 
 class Placed(NamedTuple):
@@ -287,29 +256,51 @@ class Evidence(NamedTuple):
     text: str  # E1: ``migrated:``, the source's kind, and its own evidence
 
 
+class Case(Enum):
+    """E2's stated costs (§7): where a native exit's ``honored`` differs from
+    its 0.3.0 list, which the owner accepted (2026-10-25)."""
+
+    TICKS_EXIT = "ticks-exit"  # (1) an exit that lists only the stops its ticks
+    # read; its native exit drains every stop before it, and honours one more
+    CLEARED_BEFORE_TICK = "cleared-before-tick"  # (2) a tick-first loop, a stop
+    # cleared between an iteration's end and the next tick: the commit's drain
+    # read it first, and the native exit honours one more
+    ANSWERED_AFTER_CLAIM = "answered-after-claim"  # (3) an at-claim writer took
+    # in a stop another party answered after its claim; the withdrawal at the
+    # answer precedes its native drain, and the native exit omits it
+    NEXT_CLAIM = "next-claim"  # (1) or (2)'s consequence: "the next claim no
+    # longer honours the stop", which an earlier native exit spent
+
+
+class Cost(NamedTuple):
+    """A stop where a readable exit's native ``honored`` differs from its 0.3.0
+    list, and the case of E2's stated cost it falls in."""
+
+    exit: ExitId
+    request_id: str
+    case: Case
+
+
 class Truth(NamedTuple):
     lineage: Lineage
     places: tuple[Placed, ...]
     evidence: tuple[Evidence, ...]
+    costs: tuple[Cost, ...]
 
 
 def place_key(place: Place) -> Key:
     """The native log's order: ``At(s)`` follows every addition after ``s - 1``."""
     if isinstance(place, At):
-        return Key(place.seq, Slot.RECORD, 0, 0)
-    if isinstance(place, MovedAfter):
-        return Key(place.seq, Slot.MOVED, place.moved, 0)
+        return Key(place.seq, Slot.RECORD, 0)
     if isinstance(place, After):
-        return Key(place.seq, Slot.ADDED, place.rank, 1)
-    if isinstance(place, Ahead):
-        return Key(place.of.seq, Slot.ADDED, place.of.rank, 0)
+        return Key(place.seq, Slot.ADDED, place.rank)
     assert_never(place)
 
 
 class Residue(Exception):
-    """The referee's rules give this conforming history a lineage that makes a
-    readable exit's ``honored`` false (§7's target, third item): a gap in the
-    prose, which the model reports and never encodes around."""
+    """A native exit's ``honored`` differs from its 0.3.0 list outside E2's
+    stated costs (§7): a gap in the prose, which the model reports and never
+    encodes around."""
 
 
 def _reap_outcome(how: ProcessEnd) -> Outcome:
@@ -344,8 +335,11 @@ class _Answer(NamedTuple):
 
 class _ReadableExit(NamedTuple):
     claim: int
+    claim_seq: int
     seq: int
     honored: frozenset[str]  # its 0.3.0 record's
+    honors: Drain  # its writer's encoding of that list
+    fold: Fold  # its writer's
 
 
 def truth(history: History) -> Truth:
@@ -362,7 +356,7 @@ def truth(history: History) -> Truth:
     made: dict[int, int] = defaultdict(int)  # claim -> the commits it has made
     drains: dict[int, list[_Drain]] = defaultdict(list)
     stop_seqs: dict[str, int] = {}  # each stop's 0.3.0 seq
-    first_named: dict[str, int] = {}  # each id's first naming stopped's seq
+    folds: dict[int, Fold] = {}
     answers: list[_Answer] = []
     readable: list[_ReadableExit] = []
     newest_claim: dict[str, int] = {}  # launch -> the newest claim naming it
@@ -417,9 +411,6 @@ def truth(history: History) -> Truth:
     for i, ev in enumerate(events):
         seq = rendered.seqs[i]
         fenced = w.fenced[i]
-        for x in rendered.honored[i]:
-            assert seq is not None
-            first_named.setdefault(x, seq)
         cut = w.derived[i].cut
         if cut is not None:
             # a pass cut after its save, which the writer's cut_save says finished
@@ -442,6 +433,7 @@ def truth(history: History) -> Truth:
                 )
             claim_seqs[ev.claim] = seq
             processes[ev.claim] = ev.process
+            folds[ev.claim] = ev.fold
             if ev.launch is not None:
                 newest_claim[ev.launch] = ev.claim
             position[ev.claim] = node_id(w.origins[ev.claim])
@@ -477,7 +469,14 @@ def truth(history: History) -> Truth:
                 placed.append(Placed(exit_node, At(seq)))
                 drains[ev.claim].append(_Drain(At(seq), None, ends=True))
                 readable.append(
-                    _ReadableExit(ev.claim, seq, frozenset(rendered.honored[i]))
+                    _ReadableExit(
+                        ev.claim,
+                        claim_seqs[ev.claim],
+                        seq,
+                        frozenset(rendered.honored[i]),
+                        ev.honors,
+                        folds[ev.claim],
+                    )
                 )
                 exit_nodes.add(ev.claim)
                 ended.add(ev.claim)
@@ -520,16 +519,12 @@ def truth(history: History) -> Truth:
                     died(c, outcome, Source.REAP, _reap_text(ev.how), after())
         if seq is not None:
             last = seq
-    stops, moves = _move_unanswered_stops(stop_seqs, first_named, readable)
-    withdrawals = _place_withdrawals(answers, stops, readable, drains)
-    honored = _native_fold(withdrawals, stops, readable, drains)
-    for exit_ in readable:
-        if honored[exit_.claim] != exit_.honored:
-            raise Residue(
-                f"claim {exit_.claim}'s native honored "
-                f"{sorted(honored[exit_.claim])} differs from its 0.3.0 exit's "
-                f"{sorted(exit_.honored)}"
-            )
+    withdrawals = _withdrawals(answers)
+    stops = {x: place_key(At(seq)) for x, seq in stop_seqs.items()}
+    native = _native_fold(withdrawals, stops, drains)
+    withdrawn = {wd.request_id: place_key(place) for wd, place in withdrawals}
+    costs = _costs(readable, native, withdrawn, drains)
+    honored = native.taken
     by_seq = {s: c for c, s in claim_seqs.items()}
     finished: list[Placed] = []
     for p in placed:
@@ -539,12 +534,8 @@ def truth(history: History) -> Truth:
             record = record._replace(honored=tuple(sorted(honored[claim])))
         finished.append(Placed(record, p.place))
     finished += [Placed(wd, place) for wd, place in withdrawals]
-    finished += [
-        Placed(MovedStop(x, ExitId(claim_seqs[r.claim])), MovedAfter(r.seq, seq))
-        for x, (seq, r) in moves.items()
-    ]
     finished.sort(key=lambda p: place_key(p.place))
-    return Truth(_lineage(finished), tuple(finished), tuple(evidence))
+    return Truth(_lineage(finished), tuple(finished), tuple(evidence), tuple(costs))
 
 
 def _end_time(
@@ -603,78 +594,15 @@ def _claim_of(ev: Event) -> int | None:
     return None
 
 
-def _move_unanswered_stops(
-    stop_seqs: dict[str, int],
-    first_named: dict[str, int],
-    readable: list[_ReadableExit],
-) -> tuple[dict[str, Key], dict[str, tuple[int, _ReadableExit]]]:
-    """E3: each stop that a readable exit omits, logged before that exit, and
-    named by no ``honored`` before it, moves, unchanged, to just after that exit;
-    several moved past one exit keep their order. Returns each stop's place in
-    the native log, and each moved stop's 0.3.0 seq and the exit it follows."""
-    stops = {x: place_key(At(seq)) for x, seq in stop_seqs.items()}
-    moves: dict[str, tuple[int, _ReadableExit]] = {}
-    for r in readable:
-        exit_key = place_key(At(r.seq))
-        for x, key in stops.items():
-            answered = x in first_named and first_named[x] < r.seq
-            if key < exit_key and x not in r.honored and not answered:
-                stops[x] = place_key(MovedAfter(r.seq, stop_seqs[x]))
-                moves[x] = (stop_seqs[x], r)
-    return stops, moves
-
-
-def _place_withdrawals(
-    answers: list[_Answer],
-    stops: dict[str, Key],
-    readable: list[_ReadableExit],
-    drains: dict[int, list[_Drain]],
-) -> list[tuple[Withdrawal, Place]]:
-    """E2: a withdrawal for each id an answer honours and none has withdrawn,
-    at the nearest place to its answer that keeps every readable exit's
-    ``honored`` true."""
+def _withdrawals(answers: list[_Answer]) -> list[tuple[Withdrawal, Place]]:
+    """E2: a withdrawal for each id an answer honours that none has withdrawn,
+    just after its answer."""
     placed: list[tuple[Withdrawal, Place]] = []
     withdrawn: set[str] = set()
     for a in answers:
-        if a.request_id in withdrawn:
-            continue  # "not already withdrawn"
-        posted = stops[a.request_id]
-        answer = place_key(At(a.by))
-        keep_none = False
-        earliest: _Drain | None = None
-        for r in readable:
-            own = [d for d in drains[r.claim] if place_key(d.place) > posted]
-            before = [d for d in own if place_key(d.place) < answer]
-            if a.request_id in r.honored:
-                if own and not before:
-                    keep_none = True  # the exit spends the stop: none is written
-            elif before:
-                first = min(before, key=lambda d: place_key(d.place))
-                if earliest is None or place_key(first.place) < place_key(
-                    earliest.place
-                ):
-                    earliest = first
-        if keep_none and earliest is not None:
-            raise NoCounterpart(
-                f"E2 admits no place for the withdrawal of {a.request_id!r}: "
-                "which worker's read the lineage records is a fork"
-            )
-        if keep_none:
-            continue
-        withdrawn.add(a.request_id)
-        if earliest is None:
-            placed.append((Withdrawal(a.request_id, a.by, None), a.place))
-            continue
-        # "That drain is a commit's": a 0.3.0 tick after the stop takes it in,
-        # and E3 has moved past the exit every stop no record before it answers
-        if earliest.commit is None or not isinstance(earliest.place, After):
-            raise Residue(
-                f"E2 would place the withdrawal of {a.request_id!r} before a "
-                f"drain that is not a commit's, at {earliest.place}"
-            )
-        placed.append(
-            (Withdrawal(a.request_id, a.by, earliest.commit), Ahead(earliest.place))
-        )
+        if a.request_id not in withdrawn:  # "not already withdrawn"
+            withdrawn.add(a.request_id)
+            placed.append((Withdrawal(a.request_id, a.by), a.place))
     return placed
 
 
@@ -690,35 +618,107 @@ class _Read(NamedTuple):
 
     key: Key
     claim: int
-    ends: bool  # its exit's: what it has taken in is then spent
+    drain: _Drain
+
+
+class _Native(NamedTuple):
+    taken: dict[int, set[str]]  # claim -> the stops its drains took in unspent
+    first: dict[int, dict[str, _Drain]]  # claim -> stop -> the drain that took it
 
 
 def _native_fold(
     withdrawals: list[tuple[Withdrawal, Place]],
     stops: dict[str, Key],
-    readable: list[_ReadableExit],
     drains: dict[int, list[_Drain]],
-) -> dict[int, set[str]]:
-    """The stops each native exit honours: those a drain of its worker took in
-    unspent (§4), with stops spent by the withdrawals and by earlier exits."""
+) -> _Native:
+    """What each claim's native drains took in (§4): every stop before a drain
+    that no withdrawal and no earlier exit has spent. An exit spends what its
+    worker took in."""
     timeline: list[_Spend | _Read] = [
         _Spend(place_key(place), wd.request_id) for wd, place in withdrawals
     ]
     for claim, ds in drains.items():
-        timeline += [_Read(place_key(d.place), claim, d.ends) for d in ds]
+        timeline += [_Read(place_key(d.place), claim, d) for d in ds]
     timeline.sort(key=lambda e: e.key)
     spent: set[str] = set()
     taken: dict[int, set[str]] = defaultdict(set)
+    first: dict[int, dict[str, _Drain]] = defaultdict(dict)
     for entry in timeline:
         if isinstance(entry, _Spend):
             spent.add(entry.request_id)
             continue
         for x, posted in stops.items():
-            if posted < entry.key and x not in spent:
+            if posted < entry.key and x not in spent and x not in taken[entry.claim]:
                 taken[entry.claim].add(x)
-        if entry.ends:
+                first[entry.claim][x] = entry.drain
+        if entry.drain.ends:
             spent |= taken[entry.claim]
-    return {r.claim: taken[r.claim] for r in readable}
+    return _Native(taken, first)
+
+
+def _costs(
+    readable: list[_ReadableExit],
+    native: _Native,
+    withdrawn: dict[str, Key],
+    drains: dict[int, list[_Drain]],
+) -> list[Cost]:
+    """Each stop where a readable exit's native ``honored`` differs from its
+    0.3.0 list, with the case of E2's stated cost it falls in (§7); a
+    difference in none raises ``Residue``."""
+    costs: list[Cost] = []
+    spent_by: dict[str, int] = {}  # a stop -> an exit that honoured it natively only
+    for r in readable:
+        node = ExitId(r.claim_seq)
+        taken = native.taken[r.claim]
+        for x in sorted(taken - r.honored):
+            first = native.first[r.claim][x]
+            costs.append(Cost(node, x, _honoured_case(r, x, first, withdrawn, drains)))
+            spent_by[x] = r.seq
+        for x in sorted(r.honored - taken):
+            costs.append(Cost(node, x, _omitted_case(r, x, withdrawn, spent_by)))
+    return costs
+
+
+def _honoured_case(
+    r: _ReadableExit,
+    x: str,
+    first: _Drain,
+    withdrawn: dict[str, Key],
+    drains: dict[int, list[_Drain]],
+) -> Case:
+    """Why a native exit honours a stop its 0.3.0 list omits."""
+    read = place_key(first.place)
+    if first.commit is not None and x in withdrawn:
+        # the commit's drain read it, and it was cleared before the worker's
+        # next 0.3.0 drain (a tick, or its exit)
+        later = [
+            place_key(d.place)
+            for d in drains[r.claim]
+            if d.commit is None and place_key(d.place) > read
+        ]
+        if later and read < withdrawn[x] < min(later):
+            return Case.CLEARED_BEFORE_TICK
+    if r.honors is Drain.TICKS:
+        return Case.TICKS_EXIT
+    raise Residue(
+        f"the native exit of claim {r.claim} honours {x!r}, which its 0.3.0 "
+        "list omits, outside E2's stated costs"
+    )
+
+
+def _omitted_case(
+    r: _ReadableExit, x: str, withdrawn: dict[str, Key], spent_by: dict[str, int]
+) -> Case:
+    """Why a native exit omits a stop its 0.3.0 list names."""
+    claimed, exited = place_key(At(r.claim_seq)), place_key(At(r.seq))
+    if r.fold is Fold.AT_CLAIM and x in withdrawn and claimed < withdrawn[x] < exited:
+        return Case.ANSWERED_AFTER_CLAIM
+    if x in spent_by and spent_by[x] < r.seq:
+        return Case.NEXT_CLAIM
+    raise Residue(
+        f"the native exit of claim {r.claim} omits {x!r}, which its 0.3.0 list "
+        "names, outside E2's stated costs"
+    )
 
 
 def steps(history: History) -> dict[NodeId, int]:
@@ -757,7 +757,6 @@ def _lineage(placed: list[Placed]) -> Lineage:
         ),
         terminations=tuple(r for r in records if isinstance(r, Terminated)),
         withdrawals=tuple(r for r in records if isinstance(r, Withdrawal)),
-        moves=tuple(r for r in records if isinstance(r, MovedStop)),
     )
 
 
@@ -805,10 +804,10 @@ def violations(t: Truth) -> tuple[str, ...]:
                 if place_key(At(v)) >= key:
                     found.append(f"{r.node} commits seq {v}, which follows it")
             names_extendable(f"{r.node}'s parent", r.parent, key)
-        if isinstance(r, Commit) and r.values and r.t < max(r.values):
-            found.append(
-                f"{r.node}'s t {r.t} precedes seq {max(r.values)}, which it holds"
-            )
+            if isinstance(r, Commit) and r.values and r.t < max(r.values):
+                found.append(
+                    f"{r.node}'s t {r.t} precedes seq {max(r.values)}, which it holds"
+                )
         elif isinstance(r, Start):
             names_extendable(f"claim {r.claim_seq}'s resume_from", r.resume_from, key)
         elif isinstance(r, RewindTo):

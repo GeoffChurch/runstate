@@ -1004,9 +1004,10 @@ UNANSWERED_STOPS = replace(
 )
 """A stop before either of two claims, neither of which ticks in its last pass,
 by writers that fold at their claim or at each drain, the stops a third party
-clears, and an exit that lists only what its ticks drained: it omits a stop no
-record has answered, which E3 moves past it, pending for the next claim, whose
-exit may honour it. Run with ``claims=2, steps=1, stops=1``."""
+clears, and an exit that lists only what its ticks drained: it omits a stop its
+native exit drains and honours (E2's first stated cost), which the next claim,
+whose 0.3.0 exit honours it, then no longer honours. Run with ``claims=2,
+steps=1, stops=1``."""
 
 WITHDRAWALS = Space(
     origins=(Origins.FRESH,),
@@ -1043,12 +1044,13 @@ WITHDRAWALS = Space(
 """One claim, a stop inside its first pass or before its last iteration, and a
 third party that clears it in that iteration, before it begins or after a
 tick-first loop's tick, by a writer that applies the clearing at its claim or
-at its next drain: E2 places the withdrawal so that the exit's ``honored``
-stays true, at its answer, just before the drain that read the stop
-(CLEARED_AFTER_THE_END), or nowhere. Where the stop lands against an iteration
-end no record dates, the commit's drain reads it or not, and the withdrawal's
-place follows: the end-place fork, which E2 leaves alone. Run with
-``claims=1, steps=2, stops=1``."""
+at its next drain. The withdrawal stands at its answer (E2), and the native
+exit honours what the native drains read: a stop the commit's drain read
+before the clearing, which the 0.3.0 exit of an at-drain writer omits (E2's
+second stated cost, CLEARED_AFTER_THE_END), or none that an at-claim writer
+took in after the answer (the third). Where the stop lands against an
+iteration end no record dates, the commit's drain reads it or not: the
+end-place fork. Run with ``claims=1, steps=2, stops=1``."""
 
 
 # ----- SLOT: what each claim loaded, under a constraint across claims ----------------------
