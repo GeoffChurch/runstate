@@ -1395,7 +1395,12 @@ def rewinds(*, passes: int) -> Iterator[History]:
       the root or to any save it made, or does not, runs the next iteration above
       that state, saving it, and is killed or exits. A rewind to its newest save
       at its last iteration writes the log that no rewind writes: the rewind is
-      an event no record shows;
+      an event no record shows. The next iteration is the one after the state,
+      or, after a rewind below its last, the one after its last (a skip): every
+      heartbeat stays above the ones before, so M9 refuses none, and the rewind
+      shows only in what the iteration's commit continues. After a rewind to a
+      save it may save the reloaded state before that iteration, which then
+      saves or not: the reloaded state is then the newest save;
     - C2 loads any save that exists at its claim, runs one iteration, and
       completes.
 
@@ -1406,15 +1411,19 @@ def rewinds(*, passes: int) -> Iterator[History]:
         first: list[Event] = [_slot_claim(0, Fresh())]
         for s, keep in enumerate(kept):
             first += iteration(0, Step(s, SAVES if keep else STEPS), cut=Cut.DONE)
-        targets: list[tuple[int, list[Event]]] = [(passes - 1, [])]
-        targets.append((-1, [Rewind(0, None)]))
-        targets += [
-            (step, [Rewind(0, save)]) for save, step in loadable(tuple(first)).items()
-        ]
-        for step, rewind in targets:
-            for end in (KILL, PREEMPTED):
+        # the step rewound to, the events, and whether the next iteration may not save
+        targets: list[tuple[int, list[Event], bool]] = [(passes - 1, [], False)]
+        targets.append((-1, [Rewind(0, None)], False))
+        for save, step in loadable(tuple(first)).items():
+            targets.append((step, [Rewind(0, save)], False))
+            targets.append((step, [Rewind(0, save), Save(0)], True))
+        ends: tuple[Ending, ...] = (KILL, PREEMPTED)
+        for (step, rewind, resaved), end in itertools.product(targets, ends):
+            for label, saves in itertools.product(
+                sorted({step + 1, passes}), (SAVES, STEPS) if resaved else (SAVES,)
+            ):
                 rewound = first + rewind
-                rewound += iteration(0, Step(step + 1, SAVES), cut=Cut.DONE)
+                rewound += iteration(0, Step(label, saves), cut=Cut.DONE)
                 rewound += ending(0, end)
                 for r2, c2 in _resumes(rewound):
                     second: list[Event] = [_slot_claim(1, c2)]
@@ -1423,3 +1432,81 @@ def rewinds(*, passes: int) -> Iterator[History]:
                     history = History(tuple(rewound + second), Born.V0_3_0)
                     if conforms(history):
                         yield history
+
+
+# ----- ENDED: a third party's stopped on a claim something else ended first ---------
+
+
+def ended_stops() -> Iterator[History]:
+    """A third party's ``stopped`` naming a claim that something other than its
+    worker's own ``stopped`` ended first (``acts``' ``ended`` state): a release
+    before it, or a later claim. mycooc's backstop since 88425fa8 reports a reap
+    on the previous claim after a later one began, and its repair script writes a
+    note after a malformed release of the same claim (task-19-report.md):
+
+    - C0 runs one pass, saving it, with a stop request before its end or none,
+      and is killed, or exits preempted;
+    - optionally a third party releases C0 after its death (``lost``, through the
+      helper);
+    - C1 loads the newest save, runs one pass, and is killed or completes;
+    - a third party's ``stopped`` names C0: after the release (before C1), after
+      C1's ``started``, or after C1's end; it is a note, a reap, or a release
+      (with or without a cause, through the helper or directly), and honours no
+      stop or every undischarged one.
+    """
+    acts: tuple[Intent, ...] = (
+        Report(None),
+        Report(Killed(15)),
+        Release(Outcome.LOST, Via.HELPER),
+        Release(Outcome.ERRORED, Via.DIRECT),
+    )
+    firsts: tuple[Ending, ...] = (KILL, PREEMPTED)
+    lasts: tuple[Ending, ...] = (KILL, COMPLETES)
+    for stop, first_end, released, place, act, honors, last_end in itertools.product(
+        (False, True),
+        firsts,
+        (False, True),
+        ("released", "claimed", "ended"),
+        acts,
+        (Honors.NONE, Honors.UNDISCHARGED),
+        lasts,
+    ):
+        if place == "released" and not released:
+            continue
+        if released and isinstance(first_end, Stops):
+            continue  # the release of an exited claim is third-party-stop's own family
+        events: list[Event] = [_slot_claim(0, Fresh())]
+        events += iteration(0, Step(0, SAVES), cut=Cut.DONE)
+        if stop:
+            events.append(StopRequest("x0"))
+        events += ending(0, first_end)
+        later = ThirdPartyStop(
+            0,
+            act,
+            None if isinstance(act, Report) else "boom",
+            ThirdPartyFinal.NULL,
+            honors,
+        )
+        if released:
+            events.append(
+                ThirdPartyStop(
+                    0,
+                    Release(Outcome.LOST, Via.HELPER),
+                    None,
+                    ThirdPartyFinal.NULL,
+                    Honors.NONE,
+                )
+            )
+        if place == "released":
+            events.append(later)
+        for origin in _resumes(events) or [(-1, Fresh())]:
+            tail: list[Event] = [_slot_claim(1, origin[1])]
+            if place == "claimed":
+                tail.append(later)
+            tail += iteration(1, Step(origin[0] + 1, SAVES), cut=Cut.DONE)
+            tail += ending(1, last_end)
+            if place == "ended":
+                tail.append(later)
+            history = History(tuple(events + tail), Born.V0_3_0)
+            if conforms(history):
+                yield history

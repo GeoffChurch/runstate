@@ -76,6 +76,7 @@ from tests.migration_sim.enumerate import (
     StopSlot,
     Strays,
     Successor,
+    ended_stops,
     histories,
     rewinds,
     slot,
@@ -3876,3 +3877,37 @@ def test_a_third_partys_value_is_a_register_and_no_evidence() -> None:
         for h in _histories(FAMILIES["released-live"])
         for ev in h.events
     )
+
+
+def test_third_parties_stop_claims_something_else_ended(
+    conforms_to_0_3_0: Callable[[Rendered], None],
+) -> None:
+    """``acts``' ``ended`` state (Task 20): a third party's stopped naming a
+    claim that a release or a later claim ended first, as mycooc's backstop
+    since 88425fa8 (a reap on the previous claim) and its repair script (a note
+    after a malformed release) write. Every truth is well formed, every log
+    conforms to the 0.3.0 schemas, and each act is reached in the state."""
+    hs = list(ended_stops())
+    assert len(hs) < BOUND and len(set(hs)) == len(hs)
+    kinds: set[str] = set()
+    for h in hs:
+        assert violations(truth(h)) == ()
+        conforms_to_0_3_0(render(h))
+        for k, ev in enumerate(h.events):
+            if not (isinstance(ev, ThirdPartyStop) and ev.names == 0):
+                continue
+            # the events run in log order: what ended claim 0 is an event before
+            before = h.events[:k]
+            ended = any(isinstance(e, Claim) and e.claim == 1 for e in before) or any(
+                isinstance(e, ThirdPartyStop)
+                and e.names == 0
+                and isinstance(e.intent, Release)
+                for e in before
+            )
+            if ended:
+                kinds.add(
+                    ("note" if ev.intent.reap is None else "reap")
+                    if isinstance(ev.intent, Report)
+                    else "release"
+                )
+    assert kinds == {"note", "reap", "release"}
