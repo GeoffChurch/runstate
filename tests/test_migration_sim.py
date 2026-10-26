@@ -1859,7 +1859,7 @@ named above with their contents, as §7 states them."""
 DRAINED_AT_THE_TICK = _h(
     _claim(0, Fresh()),
     Begin(0, 0),
-    Finish(0, True, Undated.OWN_LAST),
+    Finish(0, True, TICKED),
     StopRequest("x0"),
     Beat(0, CONTROL),
     ThirdPartyStop(0, Report(None), None, NULL, Honors.UNDISCHARGED),

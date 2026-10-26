@@ -659,6 +659,7 @@ class _Worker:
     pass_save: PassSave | None = None  # the open pass's PassSave, if any
     pass_save_index: int | None = None  # the event that is that PassSave
     awaiting_tick: bool = False  # an end dated TICKED waits for its tick
+    undated_close: bool = False  # its last event closed a pass it left undated
     begun: int | None = None
     finished: int | None = None
     ticked: int | None = None
@@ -777,7 +778,10 @@ def _fold(events: tuple[Event, ...]) -> tuple[_State, Walk]:
 
 
 def _ticks(st: _State, ev: WorkerEvent) -> None:
-    """An end dated ``TICKED`` stands at its claim's tick, its very next event."""
+    """An end dated ``TICKED`` stands at its claim's tick, its very next event;
+    and a close its worker's tick follows at once is dated by that tick: "a tick
+    after the close" dates the end (§7, "The end-time fork"), so no history
+    leaves it undated."""
     if not 0 <= ev.claim < len(st.workers):
         return
     w = st.workers[ev.claim]
@@ -787,13 +791,21 @@ def _ticks(st: _State, ev: WorkerEvent) -> None:
                 "an end dated by its tick is followed at once by the tick"
             )
         w.awaiting_tick = False
+    if w.undated_close:
+        if isinstance(ev, Beat) and not w.released:
+            raise NotConforming(
+                "a close its tick follows at once is dated by the tick (§7)"
+            )
+        w.undated_close = False
 
 
 def _dated(st: _State, w: _Worker, i: int, ended: Ended) -> None:
     """A pass's close at event ``i``, dated ``ended``."""
     if isinstance(ended, Ticked):
         w.awaiting_tick = True
-    elif ended is Undated.NEXT:
+        return
+    w.undated_close = True
+    if ended is Undated.NEXT:
         st.next_record.append(i + 1)
     elif ended is not Undated.OWN_LAST:
         assert_never(ended)

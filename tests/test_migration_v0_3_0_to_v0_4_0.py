@@ -4224,6 +4224,70 @@ def test_the_step_imports_no_record_semantics():
     assert not {m for m in plain if m.startswith("runstate")}
 
 
+def _internal_imports(mod):
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(mod))
+    internal = {
+        (n.level, n.module, a.name)
+        for n in ast.walk(tree)
+        if isinstance(n, ast.ImportFrom)
+        and (n.level > 0 or (n.module or "").startswith(("runstate", "tests")))
+        for a in n.names
+    }
+    plain = {
+        a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names
+    }
+    return internal, plain
+
+
+def test_the_engine_imports_only_its_facts():
+    """The candidate engine is part of the step, under its import rule: from the
+    package it takes Row, MigrationError and its own facts module, and nothing of
+    the simulator, which is the other encoding the oracle checks it against."""
+    import runstate.migrations.v0_3_0_to_v0_4_0_engine as engine
+
+    internal, plain = _internal_imports(engine)
+    assert {(level, module) for level, module, _ in internal} == {
+        (1, None),
+        (1, "v0_3_0_to_v0_4_0_facts"),
+    }
+    assert {name for level, module, name in internal if module is None} == {
+        "MigrationError",
+        "Row",
+    }
+    assert not {m for m in plain if m.startswith(("runstate", "tests"))}
+
+
+def test_the_facts_module_imports_only_row():
+    import runstate.migrations.v0_3_0_to_v0_4_0_facts as facts
+
+    internal, plain = _internal_imports(facts)
+    assert internal == {(1, None, "Row")}
+    assert not {m for m in plain if m.startswith(("runstate", "tests"))}
+
+
+def test_the_simulator_never_imports_the_step():
+    """The two encodings stay independent: only the oracle harness imports both."""
+    import tests.migration_sim.build
+    import tests.migration_sim.enumerate
+    import tests.migration_sim.history
+    import tests.migration_sim.render
+    import tests.migration_sim.truth
+
+    for mod in (
+        tests.migration_sim.build,
+        tests.migration_sim.enumerate,
+        tests.migration_sim.history,
+        tests.migration_sim.render,
+        tests.migration_sim.truth,
+    ):
+        internal, plain = _internal_imports(mod)
+        named = {module or "" for _, module, _ in internal} | plain
+        assert not {m for m in named if "v0_3_0_to_v0_4_0" in m}, mod.__name__
+
+
 def _watermark_on(stop_body):
     """A's exit, a third party's later stop, and B's beat whose watermark names
     that stop."""
