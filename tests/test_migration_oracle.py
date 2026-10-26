@@ -34,7 +34,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from collections.abc import Callable, Iterator, Sequence
-from dataclasses import replace
+from dataclasses import fields, replace
 from functools import partial
 from typing import Any, NamedTuple
 
@@ -275,6 +275,9 @@ def families() -> dict[str, Callable[[], Iterator[H.History]]]:
     out["slot"] = lambda: enumeration.slot(beats=4, run_on=1)
     out["rewinds"] = lambda: enumeration.rewinds(passes=3)
     out["ended-stops"] = enumeration.ended_stops
+    out["placed-drains"] = enumeration.placed_drains
+    out["dated-closes"] = enumeration.dated_closes
+    out["dead-takeovers"] = enumeration.dead_takeovers
     return out
 
 
@@ -534,21 +537,200 @@ def test_a_false_fact_refuses_naming_it(name: str) -> None:
     for seq, facts in ob.claims.items():
         version = f"claim@{seq}"
         for fact, elements in facts.items():
-            if fact not in E._WORKER_DOMAINS or not elements:
+            if not elements:
                 continue
+            named = E.WorkerFact(fact)
             declared = getattr(cfg.workers[version], fact)
             for cls in sorted(declared, key=repr):
                 false = _narrowed(cfg, version, fact, declared - {cls})
                 g = E.candidates(rows, false, born=D.born(h), cap=CAP, run_on=RUN_ON)
                 if not E.admits(g):
-                    named = E.blame(
+                    b = E.blame(
                         rows, false, born=D.born(h), cap=BLAME_CAP, run_on=RUN_ON
                     )
-                    assert any(fact in n.split(" + ") for n in named), (
+                    assert any(named in n for n in b.names + b.undecided), (
                         fact,
                         cls,
-                        named,
+                        b,
                     )
+
+
+# ----- 3, directly: a stated fact the log contradicts refuses (Important 2) --------
+
+_P = H.Process("sim", 1000)
+
+
+def _claim0(fold: H.Fold) -> H.Claim:
+    return H.Claim(
+        0, _P, H.Gate.FREE, H.Fresh(), None, H.Clock.LOADED, fold, H.CutSave.CLOSED
+    )
+
+
+def _history(*events: H.Event) -> H.History:
+    h = H.History(events, H.Born.V0_3_0)
+    assert H.conforms(h)
+    return h
+
+
+def _ticked_pass(step: int) -> list[H.Event]:
+    return [
+        H.Begin(0, step),
+        H.Finish(0, False, H.TICKED),
+        H.Beat(0, H.Watermark.CONTROL),
+    ]
+
+
+def _exits(final: H.FinalStep) -> list[H.Event]:
+    return [H.Exit(0, False, None, final, H.Drain.EXIT, False), H.Halt(0, H.Exited(0))]
+
+
+def _refusal(
+    h: H.History, edit: Callable[[V.Configuration], V.Configuration]
+) -> E.Blame:
+    """The history's own facts admit its log; edited, they admit nothing: the refusal's
+    names."""
+    cfg = D.configuration([D.observe(h)])
+    rows = list(render(h).rows)
+
+    def run_(c: V.Configuration) -> E.Graph:
+        return E.candidates(rows, c, born=D.born(h), cap=CAP, run_on=RUN_ON)
+
+    assert E.admits(run_(cfg))
+    false = edit(cfg)
+    assert not E.admits(run_(false))
+    return E.blame(rows, false, born=D.born(h), cap=BLAME_CAP, run_on=RUN_ON)
+
+
+def _worker(
+    fact: str, keep: frozenset[Any]
+) -> Callable[[V.Configuration], V.Configuration]:
+    return lambda cfg: _narrowed(cfg, "claim@1", fact, keep)
+
+
+def _third(
+    seq: int, fact: str, keep: frozenset[Any]
+) -> Callable[[V.Configuration], V.Configuration]:
+    def edit(cfg: V.Configuration) -> V.Configuration:
+        third = dict(cfg.third_parties)
+        third[f"tp@{seq}"] = replace(third[f"tp@{seq}"], **{fact: keep})
+        return cfg._replace(third_parties=third)
+
+    return edit
+
+
+def test_a_null_final_step_reads_the_clock() -> None:
+    """A null ``final_step`` is a reading: an exit inside pass 0 under ``finished``
+    writes null where ``yielded`` would write 0, so stating ``yielded`` refuses, though
+    no later record reads a step (the review's probe; ``blind``)."""
+    h = _history(
+        _claim0(H.Fold.AT_CLAIM),
+        H.Begin(0, 0),
+        H.Emit(0, "loss", H.Stamp.METRIC),
+        *_exits(H.FinalStep.FINISHED),
+    )
+    b = _refusal(h, _worker("final_step", frozenset({V.FinalStep.YIELDED})))
+    assert (E.WorkerFact.FINAL_STEP,) in b.names
+
+
+def test_a_false_watermark_refuses() -> None:
+    """A heartbeat's ``consumed_seq`` is the newest control record before it; stating
+    ``tail`` says the record just before it, a value here."""
+    h = _history(
+        _claim0(H.Fold.AT_CLAIM),
+        H.StopRequest("x"),
+        H.Begin(0, 0),
+        H.Emit(0, "loss", H.Stamp.METRIC),
+        H.Finish(0, False, H.TICKED),
+        H.Beat(0, H.Watermark.CONTROL),
+        *_exits(H.FinalStep.YIELDED),
+    )
+    b = _refusal(h, _worker("watermark", frozenset({V.Watermark.TAIL})))
+    assert (E.WorkerFact.WATERMARK,) in b.names
+
+
+def test_a_false_honored_encoding_refuses() -> None:
+    """A stop posted after the last tick: the exit lists it under ``exit``, which drains
+    it, and not under ``ticks``."""
+    h = _history(
+        _claim0(H.Fold.AT_CLAIM),
+        *_ticked_pass(0),
+        H.StopRequest("x"),
+        *_exits(H.FinalStep.YIELDED),
+    )
+    b = _refusal(h, _worker("honored", frozenset({V.Honored.TICKS})))
+    assert (E.WorkerFact.HONORED,) in b.names
+
+
+def test_a_false_fold_refuses() -> None:
+    """A stop a third party's note names after the claim: an at-claim writer still takes
+    it in at its next drain, an at-drain one skips it, and the exit's list says
+    which."""
+    h = _history(
+        _claim0(H.Fold.AT_CLAIM),
+        H.StopRequest("x"),
+        H.ThirdPartyStop(
+            0, H.Report(None), None, H.ThirdPartyFinal.NULL, H.Honors.UNDISCHARGED
+        ),
+        *_ticked_pass(0),
+        *_exits(H.FinalStep.YIELDED),
+    )
+    b = _refusal(h, _worker("fold", frozenset({V.Fold.AT_DRAIN})))
+    assert (E.WorkerFact.FOLD,) in b.names
+
+
+def test_a_false_third_party_final_step_refuses() -> None:
+    """A third party that writes a null ``final_step`` after a tick: ``progress`` says
+    the tick's step."""
+    h = _history(
+        _claim0(H.Fold.AT_CLAIM),
+        *_ticked_pass(0),
+        H.ThirdPartyStop(
+            0, H.Report(None), None, H.ThirdPartyFinal.NULL, H.Honors.NONE
+        ),
+        *_exits(H.FinalStep.YIELDED),
+    )
+    seq = next(r.seq for r in render(h).rows if r.topic == "lifecycle.stopped")
+    edit = _third(seq, "final_step", frozenset({V.ThirdFinal.PROGRESS}))
+    assert (E.ThirdFact.FINAL_STEP,) in _refusal(h, edit).names
+
+
+def test_a_false_third_party_honored_refuses() -> None:
+    """A third party that lists nothing after a stop no stopped has named:
+    ``undischarged`` says the stop."""
+    h = _history(
+        _claim0(H.Fold.AT_CLAIM),
+        H.StopRequest("x"),
+        H.ThirdPartyStop(
+            0, H.Report(None), None, H.ThirdPartyFinal.NULL, H.Honors.NONE
+        ),
+        *_ticked_pass(0),
+        *_exits(H.FinalStep.YIELDED),
+    )
+    seq = next(r.seq for r in render(h).rows if r.topic == "lifecycle.stopped")
+    edit = _third(seq, "honored", frozenset({V.ThirdHonored.UNDISCHARGED}))
+    assert (E.ThirdFact.HONORED,) in _refusal(h, edit).names
+
+
+def test_a_relaxation_too_wide_to_follow_is_undecided() -> None:
+    """Blame names only a relaxation proven to admit a history; one with more states
+    than its cap to follow is reported undecided, with the cap (review Important 3)."""
+    h = _history(
+        _claim0(H.Fold.AT_CLAIM),
+        H.Begin(0, 0),
+        H.Emit(0, "loss", H.Stamp.METRIC),
+        *_exits(H.FinalStep.FINISHED),
+    )
+    cfg = _worker("final_step", frozenset({V.FinalStep.YIELDED}))(
+        D.configuration([D.observe(h)])
+    )
+    b = E.blame(list(render(h).rows), cfg, born=D.born(h), cap=1, run_on=RUN_ON)
+    assert b.cap == 1 and b.undecided and not b.names
+
+
+def test_a_refusal_can_name_every_fact() -> None:
+    """The facts a refusal may name are every field of the two fact types."""
+    assert {n.value for n in E.WorkerFact} == {f.name for f in fields(V.WorkerFacts)}
+    assert {n.value for n in E.ThirdFact} == {f.name for f in fields(V.ThirdPartyFacts)}
 
 
 def test_the_decode_reads_the_last_claim_first() -> None:

@@ -76,8 +76,11 @@ from tests.migration_sim.enumerate import (
     StopSlot,
     Strays,
     Successor,
+    dated_closes,
+    dead_takeovers,
     ended_stops,
     histories,
+    placed_drains,
     rewinds,
     slot,
 )
@@ -2354,7 +2357,34 @@ def _saved_before_the_tick(ended: Undated | Ticked) -> History:
     )
 
 
+# An exit inside the first pass under ``finished``: its final_step is null, which says
+# no pass finished. A null is a reading of the clock, so a statement that the exit
+# reports the pass it began is false of the log (the Task 20 review's Important 2),
+# whether or not a record with a step follows.
+def _exits_in_its_first_pass(after: list[Event]) -> History:
+    return _h(
+        Claim(
+            0,
+            own_process(0),
+            Gate.FREE,
+            Fresh(),
+            None,
+            Clock.LOADED,
+            Fold.AT_CLAIM,
+            CutSave.CLOSED,
+        ),
+        _open(0, 0, "loss"),
+        Exit(0, False, None, FinalStep.FINISHED, Drain.EXIT, discards=False),
+        after,
+        Halt(0, Exited(0)),
+    )
+
+
 NAMED = {
+    "an exit in its first pass, nothing after": _exits_in_its_first_pass([]),
+    "an exit in its first pass, a register after": _exits_in_its_first_pass(
+        [Emit(0, "status", Stamp.REGISTER)]
+    ),
     "a silent close before two stops a note withdraws": _closed_among_stops(0),
     "a silent close between two stops a note withdraws": _closed_among_stops(1),
     "a silent close after two stops a note withdraws": _closed_among_stops(2),
@@ -4027,3 +4057,58 @@ def test_third_parties_stop_claims_something_else_ended(
                     else "release"
                 )
     assert kinds == {"note", "reap", "release"}
+
+
+def test_placed_drains_reach_each_place() -> None:
+    """``placed_drains`` (the Task 20 review's Critical 1): a silent close before,
+    between and after the stops a stopped withdraws, so the native exit honours
+    nothing, some of them, or all, and two of those share a log."""
+    hs = list(placed_drains())
+    assert len(hs) < BOUND and len(set(hs)) == len(hs)
+    honoured: set[tuple[str, ...]] = set()
+    lineages: dict[tuple[Row, ...], set[Any]] = defaultdict(set)
+    for h in hs:
+        t = truth(h)
+        assert violations(t) == ()
+        honoured |= {x.honored for x in t.lineage.exits}
+        lineages[render(h).rows].add(t.lineage)
+    assert {(), ("a",), ("a", "b")} <= honoured
+    assert any(len(ls) > 1 for ls in lineages.values())
+
+
+def test_dated_closes_date_only_at_once() -> None:
+    """``dated_closes`` (the Task 20 review's Critical 2): a save between a close and
+    its tick leaves the close undated, a stop request does not."""
+    hs = list(dated_closes())
+    assert len(hs) < BOUND and len(set(hs)) == len(hs)
+    saved = [h for h in hs if any(isinstance(ev, Save) for ev in h.events)]
+    assert saved and all(
+        next(ev for ev in h.events if isinstance(ev, Finish)).ended is not TICKED
+        for h in saved
+    )
+    assert any(
+        isinstance(ev, StopRequest) for h in hs for ev in h.events if h not in saved
+    )
+    for h in hs:
+        assert violations(truth(h)) == ()
+
+
+def test_dead_takeovers_reuse_the_halted_process() -> None:
+    """``dead_takeovers``: a takeover in the process the held claim's worker ran in,
+    its worker halted first (``takeover=dead``) or after (``takeover=live``)."""
+    hs = list(dead_takeovers())
+    assert len(hs) < BOUND and len(set(hs)) == len(hs)
+    for h in hs:
+        assert violations(truth(h)) == ()
+        claims = [ev for ev in h.events if isinstance(ev, Claim)]
+        assert claims[1].gate is Gate.TAKEOVER
+        assert claims[1].process == claims[0].process
+    halted_first = [
+        h
+        for h in hs
+        if h.events.index(next(ev for ev in h.events if isinstance(ev, Halt)))
+        < h.events.index(
+            next(ev for ev in h.events if isinstance(ev, Claim) and ev.claim == 1)
+        )
+    ]
+    assert halted_first and len(halted_first) < len(hs)

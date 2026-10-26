@@ -37,9 +37,10 @@ its record and silent events decide (``Piece``); a lineage is one complete path'
 pieces. The coupling between claims flows only through the state: the pass is linear in
 records times states, never a search across claims.
 
-**What it does not read** (§7, "Encodings"): a worker's ``fold``, ``honored`` and
-``watermark``, and a third party's ``final-step`` and ``honored``, which decide no
-output under E2.
+**The encodings** (§7, "Encodings") decide no output under E2, but a log can contradict
+them, so the engine checks them: a worker's ``watermark`` at each heartbeat, its
+``honored`` and ``fold`` at its own stopped, where that list is its word (a log born in
+0.3.0), and a third party's ``final-step`` and ``honored``.
 """
 
 from __future__ import annotations
@@ -51,7 +52,15 @@ from collections import defaultdict
 from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Any, NamedTuple, TypeAlias, assert_never
+from typing import (
+    Any,
+    NamedTuple,
+    Protocol,
+    TypeAlias,
+    assert_never,
+    get_args,
+    get_type_hints,
+)
 
 from . import MigrationError, Row
 from .v0_3_0_to_v0_4_0_facts import (
@@ -68,6 +77,8 @@ from .v0_3_0_to_v0_4_0_facts import (
     Discards,
     Exited,
     FinalStep,
+    Fold,
+    Honored,
     Killed,
     Load,
     Loading,
@@ -88,10 +99,13 @@ from .v0_3_0_to_v0_4_0_facts import (
     Stray,
     Stride,
     Takeover,
+    ThirdFinal,
+    ThirdHonored,
     ThirdPartyFacts,
     ThirdStop,
     ValueRole,
     Via,
+    Watermark,
     WorkerFacts,
 )
 
@@ -128,6 +142,7 @@ class Rec(NamedTuple):
     honored: tuple[str, ...]
     malformed: bool  # a stopped in M10's {reason, honored, claim_seq} shape
     how: Exited | Killed | None  # a terminated's
+    consumed: int | None  # a heartbeat's consumed_seq
 
 
 _TOPICS = {t.value: t for t in Topic}
@@ -160,19 +175,22 @@ def read(rows: Sequence[Row]) -> tuple[Rec, ...]:
             )
         out.append(
             Rec(
-                r.seq,
-                topic,
-                when,
-                body["step"] if stepped else None,
-                body["claim_seq"] if named else None,
-                r.request_id,
-                body["handle"] if topic in (Topic.STARTED, Topic.LAUNCHED) else None,
-                body["completed"] if whole else False,
-                body["error"] if whole else None,
-                body["final_step"] if whole else None,
-                tuple(body["honored"]) if stopped else (),
-                malformed,
-                how,
+                seq=r.seq,
+                topic=topic,
+                t=when,
+                step=body["step"] if stepped else None,
+                claim=body["claim_seq"] if named else None,
+                request_id=r.request_id,
+                handle=(
+                    body["handle"] if topic in (Topic.STARTED, Topic.LAUNCHED) else None
+                ),
+                completed=body["completed"] if whole else False,
+                error=body["error"] if whole else None,
+                final_step=body["final_step"] if whole else None,
+                honored=tuple(body["honored"]) if stopped else (),
+                malformed=malformed,
+                how=how,
+                consumed=body["consumed_seq"] if topic is Topic.BEAT else None,
             )
         )
     return tuple(out)
@@ -492,6 +510,12 @@ class Wk(NamedTuple):
     # the index of the record its state was last fixed at: its silent events since
     # stand in the gaps after it
     fixed: int
+    # the 0.3.0 writer's own drains, which its stopped's ``honored`` lists (``honored``,
+    # ``fold``): its fold, None where no element can occur; the stops a drain has
+    # considered; those it took in
+    fold: Fold | None
+    considered: frozenset[str]
+    took: frozenset[str]
 
 
 class World(NamedTuple):
@@ -523,6 +547,54 @@ START = World(
 Step: TypeAlias = tuple[World, tuple[Piece, ...]]
 
 # ----- the context: a log, its configuration, and what the pass looks ahead to --------
+
+
+class Names(Protocol):
+    """What a log's names are worth, by its birth: resolved once, in ``context``."""
+
+    def writers(self, world: World, rec: Rec) -> Sequence[Wk]:
+        """The live workers that may have written a heartbeat or a worker's
+        stopped."""
+        ...
+
+    def may_name(self, a: Ahead, w: Wk) -> bool:
+        """Whether a heartbeat or a stopped ahead could be worker ``w``'s."""
+        ...
+
+    def honored(self) -> bool:
+        """Whether a stopped's ``honored`` is its writer's word, which the encodings
+        ``honored`` and ``fold`` can be checked against."""
+        ...
+
+
+class OwnNames:
+    """A log born in format 0.3.0: a heartbeat's or a stopped's ``claim_seq`` names
+    its writer's claim, and its ``honored`` is its writer's (§7)."""
+
+    def writers(self, world: World, rec: Rec) -> Sequence[Wk]:
+        return [w for w in world.workers if w.claim == rec.claim]
+
+    def may_name(self, a: Ahead, w: Wk) -> bool:
+        return w.claim in a.named
+
+    def honored(self) -> bool:
+        return True
+
+
+class InferredNames:
+    """A log born in format 0.2.0: the earlier step filled every ``claim_seq`` and
+    ``honored`` by its readings (``Born020``). An inference is no writer's word, so any
+    live worker may have written such a record, and no ``honored`` is checked; which
+    reading the earlier step used therefore changes no output here."""
+
+    def writers(self, world: World, rec: Rec) -> Sequence[Wk]:
+        return world.workers
+
+    def may_name(self, a: Ahead, w: Wk) -> bool:
+        return a.beacon or a.beat >= w.clock or a.stop
+
+    def honored(self) -> bool:
+        return False
 
 
 class Refused(MigrationError):
@@ -581,6 +653,14 @@ class Context:
     # the indices of the boundaries, in order: each claim's started, control.stop and
     # stopped, between which a commit's placement is an interval (``Gaps``)
     boundaries: tuple[int, ...]
+    # what the log's names are worth, by its birth
+    names: Names
+    # per record index: the seq of the newest control.stop before it, 0 for none
+    control_before: tuple[int, ...]
+    # per record index: the stops a stopped before it named
+    named_before: tuple[frozenset[str], ...]
+    # per record index: the newest integer heartbeat step before it, None for none
+    progress_before: tuple[int | None, ...]
     # the highest label a run-on is followed to: past every step the log names, by
     # ``run_on`` a claim and once more. A run-on no record pins is unbounded; its fork
     # is reported as reaching it.
@@ -726,6 +806,16 @@ def context(
             r.step is not None and not (zero and loading_only and r.step == 0)
         ) or (r.topic is Topic.STOPPED and not r.malformed)
         blind[i] = blind[i + 1] and not reads
+    control_before: list[int] = [0]
+    named_before: list[frozenset[str]] = [frozenset()]
+    progress_before: list[int | None] = [None]
+    for r in recs:
+        control_before.append(r.seq if r.topic is Topic.STOP else control_before[-1])
+        named_before.append(named_before[-1] | set(r.honored))
+        progress = r.step if r.topic is Topic.BEAT and r.step is not None else None
+        progress_before.append(
+            progress if progress is not None else progress_before[-1]
+        )
     return Context(
         recs=recs,
         born=born,
@@ -753,6 +843,10 @@ def context(
             for k, r in enumerate(recs)
             if r.topic in (Topic.STARTED, Topic.STOP, Topic.STOPPED)
         ),
+        names=OwnNames() if isinstance(born, Born030) else InferredNames(),
+        control_before=tuple(control_before),
+        named_before=tuple(named_before),
+        progress_before=tuple(progress_before),
         horizon=max(labels, default=0) + run_on * (len(claims) + 1) + 1,
         by_seq={r.seq: i for i, r in enumerate(recs)},
         cap=cap,
@@ -1212,9 +1306,7 @@ def _may_act(ctx: Context, i: int, w: Wk) -> bool:
         w.clock, w.idle if w.idle is not None else w.clock
     ):
         return True
-    if isinstance(ctx.born, Born030):
-        return w.claim in a.named
-    return a.beacon or a.beat >= w.clock or a.stop
+    return ctx.names.may_name(a, w)
 
 
 def _put(world: World, w: Wk | None, claim: int) -> tuple[Wk, ...]:
@@ -1248,14 +1340,77 @@ def _drain(ctx: Context, world: World, w: Wk, upto: int) -> Wk:
     return w._replace(taken=w.taken | new) if new else w
 
 
-def _writers(ctx: Context, world: World, rec: Rec) -> Iterable[Wk]:
-    """The live workers that may have written a heartbeat or a worker's stopped: the
-    claim it names, in a log born in 0.3.0; any, in one born in 0.2.0, whose names are
-    the earlier step's positional inference (§7).
-    """
-    if isinstance(ctx.born, Born030):
-        return [w for w in world.workers if w.claim == rec.claim]
-    return world.workers
+def _folds(ctx: Context, k: int) -> list[Fold | None]:
+    """The folds a claim of statement ``k`` may make (``fold``): none where no element
+    can occur, as in a log whose ``honored`` lists are no writer's word, or with no
+    stop. An empty statement says no element occurs; the engine then lets either fold
+    stand, and does not check that they agree."""
+    if not ctx.names.honored() or not ctx.posted:
+        return [None]
+    return list(ctx.workers[k].fold or Fold)
+
+
+def _drain03(ctx: Context, w: Wk, i: int) -> Wk:
+    """The 0.3.0 writer's own drain before record ``i``, what its ``honored`` lists (a
+    beat, a beacon, its exit under ``exit``): each stop posted before it is considered
+    once, at the first drain after it, and taken in unless an answer had spent it, one
+    named before its claim (``at-claim``) or before this drain (``at-drain``)."""
+    if w.fold is None:
+        return w
+    claimed = ctx.by_seq[w.claim]
+    spent = ctx.named_before[claimed if w.fold is Fold.AT_CLAIM else i]
+    seq = ctx.recs[i].seq
+    new = frozenset(x for s, x in ctx.posted if s < seq) - w.considered
+    if not new:
+        return w
+    return w._replace(considered=w.considered | new, took=w.took | (new - spent))
+
+
+def _watermarks(ctx: Context, i: int, w: Wk) -> set[int]:
+    """What a heartbeat at record ``i`` may hold as ``consumed_seq`` (``watermark``)."""
+    control = ctx.control_before[i]
+    tail = ctx.recs[i - 1].seq if i else 0
+    by = {
+        Watermark.CONTROL: control,
+        Watermark.CLAIMED: control if control > w.claim else 0,
+        Watermark.TAIL: tail,
+    }
+    return {by[x] for x in _wf(ctx, w).watermark}
+
+
+def _lists(ctx: Context, i: int, w: Wk) -> set[frozenset[str]]:
+    """What the worker's own stopped at record ``i`` may list as ``honored``
+    (``honored``): what its drains took in, its exit's own drain included (``exit``)
+    or not (``ticks``)."""
+    by = {
+        Honored.EXIT: _drain03(ctx, w, i).took,
+        Honored.TICKS: w.took,
+    }
+    return {frozenset(by[x]) for x in _wf(ctx, w).honored}
+
+
+def _third_answers(ctx: Context, i: int, rec: Rec, tp: ThirdPartyFacts) -> bool:
+    """Whether a third party's stopped at record ``i`` fills ``final_step`` and, where
+    it is its word, ``honored`` as the writer's statements say (``final-step``,
+    ``honored``)."""
+    finals = {ThirdFinal.NULL: None, ThirdFinal.PROGRESS: ctx.progress_before[i]}
+    if rec.final_step not in {finals[x] for x in tp.final_step}:
+        return False
+    if not ctx.names.honored():
+        return True
+    undischarged = (
+        frozenset(x for s, x in ctx.posted if s < rec.seq) - ctx.named_before[i]
+    )
+    lists = {
+        ThirdHonored.NONE: frozenset[str](),
+        ThirdHonored.UNDISCHARGED: undischarged,
+    }
+    return frozenset(rec.honored) in {lists[x] for x in tp.honored}
+
+
+def _writers(ctx: Context, world: World, rec: Rec) -> Sequence[Wk]:
+    """The live workers that may have written a heartbeat or a worker's stopped."""
+    return ctx.names.writers(world, rec)
 
 
 def _before(
@@ -1485,6 +1640,8 @@ def _beat(ctx: Context, i: int, world: World, rec: Rec) -> Iterator[Step]:
             assert x is not None
             if x.last is Last.CLOSES or x.stage is Stage.EXITED:
                 continue
+            if rec.consumed not in _watermarks(ctx, i, x):
+                continue
             pieces = run.pieces
             iterating = x.stage is Stage.ITERATING
             if rec.step is None:
@@ -1511,7 +1668,7 @@ def _beat(ctx: Context, i: int, world: World, rec: Rec) -> Iterator[Step]:
                     last=Last.OTHER,
                     dating=None,
                 )
-            y = _drain(ctx, world, y, rec.seq - 1)
+            y = _drain03(ctx, _drain(ctx, world, y, rec.seq - 1), i)
             after = world._replace(slot=run.slot, older=run.older)
             for nw in _acted(ctx, i, after, y):
                 yield nw, pieces + (PBeat(rec.seq, w.claim),)
@@ -1558,6 +1715,8 @@ def _exit(
     f = _wf(ctx, x)
     clean = rec.error is None
     inside = x.stage is Stage.ITERATING
+    if ctx.names.honored() and frozenset(rec.honored) not in _lists(ctx, i, x):
+        return
     if not any(
         _final(x, c) == rec.final_step
         for c in (f.final_step if clean else f.error_final_step)
@@ -1678,6 +1837,8 @@ def _third(
     names, and its withdrawals."""
     tp = ctx.third[answer.writer]
     act = answer.act
+    if not _third_answers(ctx, i, rec, tp):
+        return
     for prior, before in _ahead_of(ctx, i, world, rec):
         state = _state(prior, rec.claim)
         if Acts(state, _ACTS[type(act)]) not in tp.acts:
@@ -1903,7 +2064,7 @@ def _load(
     """The new claim's worker: its version, what it loaded, and its clock before its
     first pass (§7, ``loading``)."""
     c = rec.seq
-    for k in ctx.versions[c]:
+    for k, fold in ((k, x) for k in ctx.versions[c] for x in _folds(ctx, k)):
         f = ctx.workers[k]
         for ld in _loads(ctx, f, world):
             loaded = 0 if ld.step is None else ld.step
@@ -1939,6 +2100,9 @@ def _load(
                     dating=None,
                     peers=frozenset(x.claim for x in world.workers),
                     fixed=i,
+                    fold=fold,
+                    considered=frozenset(),
+                    took=frozenset(),
                 )
                 nworld = world._replace(
                     workers=_put(world, w, c), latest=c, slot=ld.slot, older=ld.older
@@ -2703,33 +2867,100 @@ def paths(g: Graph, *, cap: int) -> list[tuple[tuple[Piece, ...], ...]]:
 # ----- a refusal's names --------------------------------------------------------------
 
 
-_ROLES = frozenset(
-    ValueRole(r, reg)
-    for r in Role
-    for reg in (False, True)
-    if r is not Role.STRAY or reg
-)
+class WorkerFact(Enum):
+    """A worker fact a refusal may name: a field of ``WorkerFacts``, by name."""
+
+    STRIDE = "stride"
+    LOADING = "loading"
+    VALUES = "values"
+    BEAT_POS = "beat_pos"
+    BEAT_COV = "beat_cov"
+    MARKER = "marker"
+    CLOSING = "closing"
+    LOOP_END = "loop_end"
+    DISCARDS = "discards"
+    FINAL_STEP = "final_step"
+    ERROR_FINAL_STEP = "error_final_step"
+    CUT_SAVE = "cut_save"
+    SAVE_AT = "save_at"
+    SAVE_COV = "save_cov"
+    LEAVE_SAVE = "leave_save"
+    LOAD = "load"
+    REWINDS = "rewinds"
+    TAKEOVER = "takeover"
+    STRAYS = "strays"
+    FOLD = "fold"
+    HONORED = "honored"
+    WATERMARK = "watermark"
 
 
-class _Relaxed:
-    """A classifier whose answers for one kind of record are the whole domain: every
-    version, every author and act a record allows by its shape, every role."""
+class ThirdFact(Enum):
+    """A third-party fact a refusal may name: a field of ``ThirdPartyFacts``."""
 
-    def __init__(
-        self, inner: LogReader, method: str, configuration: Configuration
-    ) -> None:
+    ACTS = "acts"
+    VIA = "via"
+    OUTCOME = "outcome"
+    FINAL_STEP = "final_step"
+    HONORED = "honored"
+
+
+class Classified(Enum):
+    """A classifier answer a refusal may name: one method of its reader."""
+
+    STARTED = "started"
+    STOPPED = "stopped"
+    VALUE = "value"
+
+
+Named: TypeAlias = WorkerFact | ThirdFact | Classified
+
+
+def domain(owner: type, field: str) -> frozenset[Any]:
+    """A fact's whole domain, from its field's declared type: every member of its
+    element's enum; for ``acts``, every state and act but an unnamed release."""
+    (element,) = get_args(get_type_hints(owner)[field])
+    if element is Acts:
+        return frozenset(
+            Acts(s, a)
+            for s in ClaimState
+            for a in Act
+            if not (s is ClaimState.UNNAMED and a is Act.RELEASE)
+        )
+    return frozenset(element)
+
+
+class _Passing:
+    """A reader that passes every answer on: each relaxed reader below opens one."""
+
+    def __init__(self, inner: LogReader, configuration: Configuration) -> None:
         self._inner = inner
-        self._method = method
         self._cfg = configuration
 
     def started(self, seq: int) -> frozenset[Hashable]:
-        if self._method == "started":
-            return frozenset(self._cfg.workers)
         return self._inner.started(seq)
 
     def stopped(self, seq: int) -> frozenset[StopAnswer]:
-        if self._method != "stopped":
-            return self._inner.stopped(seq)
+        return self._inner.stopped(seq)
+
+    def value(self, seq: int) -> frozenset[ValueRole]:
+        return self._inner.value(seq)
+
+
+class _AllVersions(_Passing):
+    """Every claim may be any version."""
+
+    name = Classified.STARTED
+
+    def started(self, seq: int) -> frozenset[Hashable]:
+        return frozenset(self._cfg.workers)
+
+
+class _AllAuthors(_Passing):
+    """Every stopped may be any author's, with any act its shape allows."""
+
+    name = Classified.STOPPED
+
+    def stopped(self, seq: int) -> frozenset[StopAnswer]:
         acts: list[Release | Note | Reap] = [Release(o) for o in Outcome]
         acts.append(Note())
         acts += [
@@ -2741,73 +2972,105 @@ class _Relaxed:
         out |= {ThirdStop(w, a) for w in self._cfg.third_parties for a in acts}
         return frozenset(out)
 
+
+_ROLES = frozenset(
+    ValueRole(r, reg)
+    for r in Role
+    for reg in (False, True)
+    if r is not Role.STRAY or reg
+)
+
+
+class _AllRoles(_Passing):
+    """Every value may have any role."""
+
+    name = Classified.VALUE
+
     def value(self, seq: int) -> frozenset[ValueRole]:
-        return _ROLES if self._method == "value" else self._inner.value(seq)
+        return _ROLES
 
 
 class _Relaxing:
-    def __init__(self, inner: Configuration, method: str) -> None:
+    """A classifier whose readers open one kind of answer."""
+
+    def __init__(self, inner: Configuration, reader: type[_Passing]) -> None:
         self._inner = inner
-        self._method = method
+        self._reader = reader
 
     def read(self, log: Sequence[Row]) -> LogReader:
-        return _Relaxed(self._inner.classifier.read(log), self._method, self._inner)
+        return self._reader(self._inner.classifier.read(log), self._inner)
 
 
-_WORKER_DOMAINS: dict[str, frozenset[Any]] = {
-    "stride": frozenset(Stride),
-    "loading": frozenset(Loading),
-    "values": frozenset(Phase),
-    "beat_pos": frozenset(BeatPos),
-    "beat_cov": frozenset(Covered),
-    "marker": frozenset(Marker),
-    "closing": frozenset(Closing),
-    "loop_end": frozenset(LoopEnd),
-    "discards": frozenset(Discards),
-    "final_step": frozenset(FinalStep),
-    "error_final_step": frozenset(FinalStep),
-    "cut_save": frozenset(CutSave),
-    "save_at": frozenset(SaveAt),
-    "save_cov": frozenset(Saved),
-    "leave_save": frozenset(Saved),
-    "load": frozenset(Load),
-    "rewinds": frozenset(Rewinds),
-    "takeover": frozenset(Takeover),
-    "strays": frozenset(Stray),
-}
-_THIRD_DOMAINS: dict[str, frozenset[Any]] = {
-    "acts": frozenset(
-        Acts(s, a)
-        for s in ClaimState
-        for a in Act
-        if not (s is ClaimState.UNNAMED and a is Act.RELEASE)
-    ),
-    "via": frozenset(Via),
-    "outcome": frozenset(Outcome),
-}
+_READERS: tuple[type[_AllVersions | _AllAuthors | _AllRoles], ...] = (
+    _AllVersions,
+    _AllAuthors,
+    _AllRoles,
+)
 
 
-def _relaxed(configuration: Configuration, names: Sequence[str]) -> Configuration:
+def _relaxed(configuration: Configuration, names: Sequence[Named]) -> Configuration:
+    """The configuration with each named fact relaxed to its whole domain, in every
+    version, and each named answer opened to every answer."""
     workers = {
-        k: replace(f, **{n: _WORKER_DOMAINS[n] for n in names if n in _WORKER_DOMAINS})
+        k: replace(
+            f,
+            **{
+                n.value: domain(WorkerFacts, n.value)
+                for n in names
+                if isinstance(n, WorkerFact)
+            },
+        )
         for k, f in configuration.workers.items()
     }
     third = {
-        k: replace(f, **{n: _THIRD_DOMAINS[n] for n in names if n in _THIRD_DOMAINS})
+        k: replace(
+            f,
+            **{
+                n.value: domain(ThirdPartyFacts, n.value)
+                for n in names
+                if isinstance(n, ThirdFact)
+            },
+        )
         for k, f in configuration.third_parties.items()
     }
     out = Configuration(workers, third, configuration.classifier)
-    for n in names:
-        if n.startswith("classifier."):
-            out = out._replace(classifier=_Relaxing(out, n.removeprefix("classifier.")))
+    for reader in _READERS:
+        if reader.name in names:
+            out = out._replace(classifier=_Relaxing(out, reader))
     return out
 
 
-FACTS = tuple(_WORKER_DOMAINS) + tuple(f"third.{n}" for n in _THIRD_DOMAINS)
-"""The facts a refusal may name: the worker facts, then the third-party facts. The
-encodings decide no output, so no refusal names them."""
+def _stated(configuration: Configuration) -> list[Named]:
+    """The facts some version states short of their whole domain, then every
+    classifier answer."""
+    workers: list[Named] = [
+        n
+        for n in WorkerFact
+        if any(
+            getattr(f, n.value) != domain(WorkerFacts, n.value)
+            for f in configuration.workers.values()
+        )
+    ]
+    third: list[Named] = [
+        n
+        for n in ThirdFact
+        if any(
+            getattr(f, n.value) != domain(ThirdPartyFacts, n.value)
+            for f in configuration.third_parties.values()
+        )
+    ]
+    return workers + third + list(Classified)
 
-ANSWERS = ("classifier.started", "classifier.stopped", "classifier.value")
+
+class Blame(NamedTuple):
+    """What a refusal names (§7, "What refuses")."""
+
+    # each relaxation proven to admit a history: the single facts and answers, or,
+    # where none alone does, the smallest pairs
+    names: tuple[tuple[Named, ...], ...]
+    # the relaxations too wide to follow at ``cap``: whether they admit one is unknown
+    undecided: tuple[tuple[Named, ...], ...]
+    cap: int
 
 
 def blame(
@@ -2817,57 +3080,35 @@ def blame(
     born: Born,
     cap: int,
     run_on: int,
-) -> tuple[str, ...]:
-    """What a refusal names (§7, "What refuses"): each stated fact and classifier answer
-    whose relaxation alone, to its whole domain, admits a history; where none alone
-    does, the smallest pairs whose joint relaxation does. Empty where no relaxation of
-    one or two admits one."""
+) -> Blame:
+    """What a refusal names: each stated fact and classifier answer whose relaxation
+    alone, to its whole domain, admits a history; where none alone does, the smallest
+    pairs whose joint relaxation does. A relaxation with more than ``cap`` states to
+    follow at once is neither: it is reported as undecided, with the cap, and while a
+    single one is undecided no pair is tried."""
 
-    def admitted(names: Sequence[str]) -> bool:
-        plain = [n.removeprefix("third.") for n in names]
+    def admitted(names: tuple[Named, ...]) -> bool | None:
         try:
-            return admits(
-                candidates(
-                    rows,
-                    _relaxed(configuration, plain),
-                    born=born,
-                    cap=cap,
-                    run_on=run_on,
-                )
+            g = candidates(
+                rows,
+                _relaxed(configuration, names),
+                born=born,
+                cap=cap,
+                run_on=run_on,
             )
         except Refused:
-            return True  # too many to follow is not none
+            return None
+        return admits(g)
 
-    stated = [
-        n
-        for n in FACTS
-        if any(
-            getattr(f, n.removeprefix("third.")) != _all(n)
-            for f in _facts_of(configuration, n)
-        )
-    ] + list(ANSWERS)
-    singles = tuple(n for n in stated if admitted([n]))
-    if singles:
-        return singles
-    return tuple(
-        f"{a} + {b}"
-        for k, a in enumerate(stated)
-        for b in stated[k + 1 :]
-        if admitted([a, b])
-    )
-
-
-def _all(name: str) -> frozenset[Any]:
-    return (
-        _THIRD_DOMAINS[name.removeprefix("third.")]
-        if name.startswith("third.")
-        else _WORKER_DOMAINS[name]
-    )
-
-
-def _facts_of(configuration: Configuration, name: str) -> list[Any]:
-    return list(
-        configuration.third_parties.values()
-        if name.startswith("third.")
-        else configuration.workers.values()
+    stated = _stated(configuration)
+    found: dict[tuple[Named, ...], bool | None] = {(n,): admitted((n,)) for n in stated}
+    # pairs only where every single is known to admit nothing: an undecided single
+    # might admit one alone
+    if all(ok is False for ok in found.values()):
+        pairs = [(a, b) for k, a in enumerate(stated) for b in stated[k + 1 :]]
+        found = {names: admitted(names) for names in pairs}
+    return Blame(
+        tuple(n for n, ok in found.items() if ok),
+        tuple(n for n, ok in found.items() if ok is None),
+        cap,
     )

@@ -465,8 +465,10 @@ class StopHonored(Enum):
     NONE = "none"
 
 
-class Born030(NamedTuple):
-    """A log born in format 0.3.0: every name is its writer's."""
+@dataclass(frozen=True)
+class Born030:
+    """A log born in format 0.3.0: every name is its writer's. A dataclass: a field-less
+    NamedTuple would equal ``()``."""
 
 
 class Born020(NamedTuple):

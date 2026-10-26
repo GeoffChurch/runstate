@@ -209,6 +209,7 @@ def _mutations() -> dict[str, Patch]:
         },
         "merged: across pieces": {"_merged": _merged_across(merged)},
         "gate: a live takeover": {"_gate": _no_live_takeover()},
+        "gate: a dead takeover": {"_gate": _no_dead_takeover()},
         "owing: halts after its act": {
             "_acted": lambda ctx, i, world, w: (
                 x
@@ -287,6 +288,27 @@ def _no_live_takeover() -> Callable[..., Iterator[Any]]:
             p
             and any(w.claim == p for w in world.workers)
             and not (p in world.exited or p in world.released)
+        ):
+            return iter(())
+        return gate(ctx, i, world, rec, pieces)
+
+    return narrowed
+
+
+def _no_dead_takeover() -> Callable[..., Iterator[Any]]:
+    """The gate never passes a held claim whose worker halted in a process a later
+    claim runs in (``takeover=dead``)."""
+    gate = E._gate
+
+    def narrowed(
+        ctx: E.Context, i: int, world: E.World, rec: E.Rec, pieces: tuple[E.Piece, ...]
+    ) -> Iterator[Any]:
+        p = world.latest
+        if (
+            p
+            and not any(w.claim == p for w in world.workers)
+            and not (p in world.exited or p in world.released)
+            and ctx.handles[p] in ctx.reused[i]
         ):
             return iter(())
         return gate(ctx, i, world, rec, pieces)

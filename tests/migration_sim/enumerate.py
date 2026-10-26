@@ -65,14 +65,19 @@ from .build import (
     rest,
 )
 from .history import (
+    TICKED,
+    Beat,
+    Begin,
     Born,
     Claim,
     Clock,
     CutSave,
     Drain,
     Emit,
+    Ended,
     Undated,
     Event,
+    Exit,
     Exited,
     FinalStep,
     Finish,
@@ -1508,5 +1513,165 @@ def ended_stops() -> Iterator[History]:
             if place == "ended":
                 tail.append(later)
             history = History(tuple(events + tail), Born.V0_3_0)
+            if conforms(history):
+                yield history
+
+
+# ----- PLACED DRAINS: a silent close among stops a stopped then withdraws ------------
+
+
+def placed_drains() -> Iterator[History]:
+    """A pass that closes silently among stops a ``stopped`` then withdraws (§7, E2; the
+    Task 20 review's Critical 1): a commit's native drain reads where it stands, so
+    the exit honours what was posted before it and not yet withdrawn.
+
+    - One worker: a pass with a value, two stops with its silent close before, between
+      or after them, a third party's note honouring every undischarged stop or none,
+      and its exit, which drains or not, under either fold.
+    - Two workers: claim 0 is released while it lives; claim 1 runs a pass, a stop
+      comes, and claim 1's pass closes silently before or after claim 0's own
+      ``stopped``, which withdraws the stop; claim 1 then exits, draining or not.
+    """
+    for at, honors, drain, fold, ended in itertools.product(
+        (0, 1, 2),
+        (Honors.UNDISCHARGED, Honors.NONE),
+        (Drain.EXIT, Drain.TICKS),
+        (Fold.AT_CLAIM, Fold.AT_DRAIN),
+        (Undated.OWN_LAST, Undated.NEXT),
+    ):
+        stops: list[Event] = [StopRequest("a"), StopRequest("b")]
+        stops.insert(at, Finish(0, False, ended))
+        events: list[Event] = [
+            _placed_claim(0, fold),
+            Begin(0, 0),
+            Emit(0, VALUE, Stamp.METRIC),
+            *stops,
+            ThirdPartyStop(0, Report(None), None, ThirdPartyFinal.NULL, honors),
+            Exit(0, False, None, FinalStep.FINISHED, drain, False),
+            Halt(0, Exited(0)),
+        ]
+        history = History(tuple(events), Born.V0_3_0)
+        if conforms(history):
+            yield history
+    for first, drain, fold in itertools.product(
+        (True, False), (Drain.EXIT, Drain.TICKS), (Fold.AT_CLAIM, Fold.AT_DRAIN)
+    ):
+        close: list[Event] = [Finish(1, False, Undated.OWN_LAST)]
+        fenced: list[Event] = [
+            Exit(0, False, None, FinalStep.YIELDED, Drain.EXIT, False),
+            Halt(0, Exited(0)),
+        ]
+        events = [
+            _placed_claim(0, fold),
+            Begin(0, 0),
+            Emit(0, VALUE, Stamp.METRIC),
+            ThirdPartyStop(
+                0,
+                Release(Outcome.LOST, Via.HELPER),
+                None,
+                ThirdPartyFinal.NULL,
+                Honors.NONE,
+            ),
+            _placed_claim(1, fold),
+            Begin(1, 0),
+            Emit(1, VALUE, Stamp.METRIC),
+            StopRequest("a"),
+            *((close + fenced) if first else (fenced + close)),
+            Exit(1, False, None, FinalStep.FINISHED, drain, False),
+            Halt(1, Exited(0)),
+        ]
+        history = History(tuple(events), Born.V0_3_0)
+        if conforms(history):
+            yield history
+
+
+def _placed_claim(c: int, fold: Fold) -> Claim:
+    return Claim(
+        c,
+        own_process(c),
+        Gate.FREE,
+        Fresh(),
+        None,
+        Clock.LOADED,
+        fold,
+        CutSave.CLOSED,
+    )
+
+
+# ----- DATED CLOSES: what comes between a close and its worker's tick ---------------
+
+
+def dated_closes() -> Iterator[History]:
+    """A pass's close and its worker's tick, with nothing, a save of the worker's, a
+    stop request, or both between them (§7, "The end-time fork"; the Task 20 review's
+    Critical 2): the tick dates the close only where no act of the worker's came
+    between; another writer's record may. The close is dated by the tick, by the
+    claim's newest record, or by the next record, as each history allows; one pass or
+    two, the second ticked."""
+    betweens: tuple[tuple[Event, ...], ...] = (
+        (),
+        (Save(0),),
+        (StopRequest("x"),),
+        (Save(0), StopRequest("x")),
+        (StopRequest("x"), Save(0)),
+    )
+    ends: tuple[Ended, ...] = (TICKED, Undated.OWN_LAST, Undated.NEXT)
+    for passes, ended, between in itertools.product((1, 2), ends, betweens):
+        events: list[Event] = [_slot_claim(0, Fresh())]
+        events += [Begin(0, 0), Emit(0, VALUE, Stamp.METRIC), Finish(0, False, ended)]
+        events += [*between, Beat(0, Watermark.CONTROL)]
+        if passes == 2:
+            events += iteration(0, Step(1, STEPS), cut=Cut.DONE)
+        events += ending(0, COMPLETES)
+        history = History(tuple(events), Born.V0_3_0)
+        if conforms(history):
+            yield history
+
+
+# ----- DEAD TAKEOVERS: a later claim in the process its halted worker ran in ---------
+
+
+def dead_takeovers() -> Iterator[History]:
+    """A claim whose worker halted while its process lived, and a later claim, through a
+    takeover's gate, in that same process (``takeover=dead``): the gate judged the
+    held claim dead, and the process running on is the later claim's. Or the worker
+    still lived at the takeover and halted after it (``takeover=live``).
+
+    - C0 runs one or two passes, saving any, and halts without a ``stopped`` of its
+      own, before the takeover or after it;
+    - C1 claims through the takeover in C0's process, loading nothing or any save C0
+      made, runs one pass, and completes or is killed.
+    """
+    lasts: tuple[Ending, ...] = (KILL, COMPLETES)
+    for kept, halted, last_end in itertools.product(
+        itertools.chain.from_iterable(
+            itertools.product((False, True), repeat=n) for n in (1, 2)
+        ),
+        (True, False),
+        lasts,
+    ):
+        first: list[Event] = [_slot_claim(0, Fresh())]
+        for s, keep in enumerate(kept):
+            first += iteration(0, Step(s, SAVES if keep else STEPS), cut=Cut.DONE)
+        if halted:
+            first.append(Halt(0, None))
+        for step, origin in [(-1, Fresh()), *_resumes(first)]:
+            second: list[Event] = [
+                Claim(
+                    1,
+                    own_process(0),
+                    Gate.TAKEOVER,
+                    origin,
+                    None,
+                    Clock.LOADED,
+                    Fold.AT_CLAIM,
+                    CutSave.LANDED,
+                )
+            ]
+            second += iteration(1, Step(step + 1, STEPS), cut=Cut.DONE)
+            if not halted:
+                second.append(Halt(0, None))
+            second += ending(1, last_end)
+            history = History(tuple(first + second), Born.V0_3_0)
             if conforms(history):
                 yield history
