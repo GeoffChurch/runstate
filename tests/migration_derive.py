@@ -547,12 +547,6 @@ class OracleReader:
     def value(self, seq: int) -> frozenset[V.ValueRole]:
         return self._roles[seq]
 
-    def key(self) -> Hashable:
-        return (
-            tuple(sorted(self._stops.items(), key=repr)),
-            tuple(sorted(self._roles.items(), key=repr)),
-        )
-
 
 class Oracle:
     """The oracle classifier (``V.Classifier``): one reader, for the log its histories
@@ -563,10 +557,6 @@ class Oracle:
 
     def read(self, log: Sequence[Row]) -> OracleReader:
         return self._reader
-
-    def key(self) -> Hashable:
-        """What the classifier answers, as a value: two that answer alike are equal."""
-        return self._reader.key()
 
 
 def configuration(observations: Sequence[Observation]) -> V.Configuration:

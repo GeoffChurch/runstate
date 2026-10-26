@@ -47,7 +47,7 @@ jobs:
         run: black --check runstate/ tests/
 
   # The migration oracle (`-m oracle`): the 0.3.0 -> 0.4.0 step's engine against the
-  # simulator's exhaustive families, about ten minutes. The step is frozen once it
+  # simulator's exhaustive families (about 30 s locally). The step is frozen once it
   # ships, so the job runs only when the step, its engine or facts, the simulator or
   # the oracle changes, and on demand (Actions -> tests -> Run workflow). The default
   # job runs the oracle's named histories either way.

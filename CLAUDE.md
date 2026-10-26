@@ -291,13 +291,14 @@ green here does not imply green there.
 
 **The migration oracle is deselected too** (`-m "not oracle"`, the hook and CI's
 default job alike). `tests/test_migration_oracle.py` runs the 0.3.0 -> 0.4.0 step's
-engine against the simulator (`tests/migration_sim/`); its exhaustive families,
-marked `oracle`, take about ten minutes, and the step is frozen once it ships. Its
-named histories, named pairs and direct checks stay in the default run, in
-about 20 s. CI's `oracle` job runs the families when the step, its engine or facts
-module, the simulator or the oracle changes, and on demand (`workflow_dispatch`).
-Before committing to any of those, run `pytest -m oracle tests/` and
-`python -m tests.migration_mutation` (every mutant must be caught).
+engine against the simulator (`tests/migration_sim/`). Its exhaustive families,
+marked `oracle`, are the ones the mutation test needs (about 30 s), and the step is
+frozen once it ships. Its named histories, named pairs, narrowing check and direct
+checks stay in the default run (about 30 s). CI's `oracle` job runs the families
+when the step, its engine or facts module, the simulator or the oracle changes, and
+on demand (`workflow_dispatch`). Before committing to any of those, run
+`pytest -m oracle tests/` and `python -m tests.migration_mutation` (every mutant
+must be caught; about 3 minutes).
 
 The Channel conformance tests and the substrate-level convention tests are
 parametrized over the backends (`memory` + `sqlite` always, and `postgres` when

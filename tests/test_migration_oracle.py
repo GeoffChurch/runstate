@@ -11,12 +11,14 @@ referee").
 A history's facts are derived from its events (``tests/migration_derive.py``): one
 version per claim and per third party, each stating the classes its elements declare,
 and the oracle classifier's answers. So "correct under true facts" is a mechanical
-check. Over every family the simulator enumerates and every named history, five
-properties:
+check. Over the families the mutation test needs (``families``) and every named history,
+five properties:
 
 1. **No silent answer:** where two histories write one log and differ in truth, the
    engine, under the facts true of both, keeps both truths, and reports a fork in each
-   projection where they differ.
+   projection where they differ. It is checked over the named pairs; over the
+   families' shared logs it follows from 2, 5 and narrowing (the argument at
+   ``test_narrowing_only_removes_candidates``), which is checked instead.
 2. **Every truth reachable:** under a history's own facts, its truth is a candidate:
    its readings (Span's placements included, ``Truth.places``) and its end times.
 3. **Every output defined:** no crash, and every refusal names a fact or a record.
@@ -40,7 +42,7 @@ from __future__ import annotations
 import functools
 import json
 from collections import defaultdict
-from collections.abc import Callable, Hashable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import fields, replace
 from functools import partial
 from typing import Any, NamedTuple
@@ -199,29 +201,14 @@ truth = functools.lru_cache(maxsize=4096)(T.truth)
 observed = functools.lru_cache(maxsize=4096)(D.observe)
 
 
-def run(
-    histories: Sequence[H.History], *, graphs: dict[Hashable, E.Graph] | None = None
-) -> E.Graph:
+def run(histories: Sequence[H.History]) -> E.Graph:
     """The engine on the log ``histories`` write, under the facts and answers true of
-    every one of them. ``graphs`` keeps the graph per log and configuration, for checks
-    that run many alike; it changes no result."""
+    every one of them."""
     rows = rendered(histories[0]).rows
     cfg = D.configuration([observed(h) for h in histories])
-    key: Hashable = None
-    if graphs is not None:
-        assert isinstance(cfg.classifier, D.Oracle)
-        key = (
-            rows,
-            tuple(sorted(cfg.workers.items(), key=repr)),
-            tuple(sorted(cfg.third_parties.items(), key=repr)),
-            cfg.classifier.key(),
-        )
-        if key in graphs:
-            return graphs[key]
-    g = E.candidates(list(rows), cfg, born=D.born(histories[0]), cap=CAP, run_on=RUN_ON)
-    if graphs is not None:
-        graphs[key] = g
-    return g
+    return E.candidates(
+        list(rows), cfg, born=D.born(histories[0]), cap=CAP, run_on=RUN_ON
+    )
 
 
 def parsed(h: H.History) -> bool:
@@ -300,16 +287,16 @@ def times_over(g: E.Graph) -> dict[E.CommitId, set[float]] | None:
 
 
 def families() -> dict[str, Callable[[], Iterator[H.History]]]:
-    out: dict[str, Callable[[], Iterator[H.History]]] = {
-        name: partial(S._histories, f) for name, f in S.FAMILIES.items()
+    """The families the mutation test needs: each catches a mutant no named history
+    does (measured 2026-10-26, Task 20b). Every mutant the simulator's other families
+    and the oracle's own ``slot``, ``placed-drains``, ``dated-closes`` and
+    ``dead-takeovers`` caught, a named history catches too (task-20b-report.md)."""
+    return {
+        "save-points": partial(S._histories, S.FAMILIES["save-points"]),
+        "positional": partial(S._histories, S.FAMILIES["positional"]),
+        "rewinds": lambda: enumeration.rewinds(passes=3),
+        "ended-stops": enumeration.ended_stops,
     }
-    out["slot"] = lambda: enumeration.slot(beats=4, run_on=1)
-    out["rewinds"] = lambda: enumeration.rewinds(passes=3)
-    out["ended-stops"] = enumeration.ended_stops
-    out["placed-drains"] = enumeration.placed_drains
-    out["dated-closes"] = enumeration.dated_closes
-    out["dead-takeovers"] = enumeration.dead_takeovers
-    return out
 
 
 FAMILIES = families()
@@ -375,16 +362,11 @@ PROJECTIONS: tuple[tuple[E.Projection, Callable[[E.Reading], object]], ...] = (
 )
 
 
-def silent(
-    one: H.History,
-    other: H.History,
-    *,
-    graphs: dict[Hashable, E.Graph] | None = None,
-) -> list[str]:
+def silent(one: H.History, other: H.History) -> list[str]:
     """Where the engine, under the facts true of both, leaves either truth out, or
     reports no fork in a projection where the two differ. A truth's end times are part
     of its being a candidate (``matches``)."""
-    g = run([one, other], graphs=graphs)
+    g = run([one, other])
     assert E.admits(g), "refused under the facts true of both"
     a, b = want(one), want(other)
     found = [
@@ -406,15 +388,53 @@ def test_named_pairs_are_forks() -> None:
         assert silent(one, other) == [], (pair.one, pair.other)
 
 
-@pytest.mark.oracle
-@pytest.mark.parametrize("family", list(FAMILIES))
-def test_family_logs_two_truths_write_are_forks(family: str) -> None:
-    for hs in by_log(FAMILIES[family]()).values():
-        reps = [h for h in distinct(hs) if parsed(h)]
-        graphs: dict[Hashable, E.Graph] = {}
-        for k, one in enumerate(reps):
-            for other in reps[k + 1 :]:
-                assert silent(one, other, graphs=graphs) == []
+# Property 1 over every other shared log follows from 2, 5 and narrowing. Where two
+# histories write one log, the facts true of both state, per version, the union of what
+# each history's own facts state, and the classifier gives the union of their answers
+# (``D.configuration``). Wider facts admit a superset of lineages (the engine's
+# "Narrowing"), so each truth, a candidate under its own facts (2), is a candidate
+# under the facts true of both. Where the two truths differ in a projection, two
+# candidates read differently at that projection's key, and the engine's forks are the
+# explicit list's (5): it reports the fork. The named pairs above, each an ambiguity
+# §7 names, are checked directly; narrowing is checked here.
+
+# the named histories short enough that every widened run lists its candidates at once
+NARROWING_RECORDS = 10
+
+
+def test_narrowing_only_removes_candidates() -> None:
+    """Under a history's own facts with one class added to one stated fact, in every
+    version, each candidate of its own facts is still one. A widened run too wide to
+    follow at BLAME_CAP is skipped, and such runs stay few."""
+    decided = undecided = 0
+    for name, h in S.NAMED.items():
+        rows = list(render(h).rows)
+        if len(rows) > NARROWING_RECORDS or not parsed(h):
+            continue
+        cfg = D.configuration([observed(h)])
+        own = candidates_listed(
+            E.candidates(rows, cfg, born=D.born(h), cap=CAP, run_on=RUN_ON)
+        )
+        for fact in E._stated(cfg):
+            if isinstance(fact, E.Classified):
+                continue
+            for cls in E._unstated(cfg, fact):
+                try:
+                    wide = candidates_listed(
+                        E.candidates(
+                            rows,
+                            E._added(cfg, fact, cls),
+                            born=D.born(h),
+                            cap=BLAME_CAP,
+                            run_on=RUN_ON,
+                        )
+                    )
+                except (E.Refused, E.TooMany):
+                    undecided += 1
+                    continue
+                decided += 1
+                assert all(c in wide for c in own), (name, fact, cls)
+    assert undecided * 20 < decided, (decided, undecided)
 
 
 # ----- 5: the candidate set is order-free, and the decode follows its rule ------------

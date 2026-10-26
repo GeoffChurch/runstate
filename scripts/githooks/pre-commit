@@ -9,9 +9,9 @@
 # WEAKER than CI in one respect: without RUNSTATE_TEST_PG_DSN the ~215 Postgres
 # tests skip here and CI runs them, so a green hook does not imply a green CI.
 #
-# The migration oracle's families (`-m oracle`, about ten minutes) are deselected,
-# as in CI's default job; CI's oracle job runs them when the 0.3.0 -> 0.4.0 step or
-# its simulator changes. Run `pytest -m oracle tests/` before committing to either.
+# The migration oracle's families (`-m oracle`) are deselected, as in CI's default
+# job; CI's oracle job runs them when the 0.3.0 -> 0.4.0 step or its simulator
+# changes. Run `pytest -m oracle tests/` before committing to either.
 #
 # Bypass with `git commit --no-verify`.
 . "$(git rev-parse --show-toplevel)/scripts/githooks/_common.sh"

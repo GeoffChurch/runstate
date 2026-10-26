@@ -369,8 +369,6 @@ def checks() -> Iterator[tuple[str, Callable[[], None]]]:
     yield "a tick dates its close", dating
     for fam, make in O.FAMILIES.items():
         yield f"family {fam}", partial(_family_own, make)
-    for fam, make in O.FAMILIES.items():
-        yield f"family {fam} pairs", partial(_family_pairs, make)
 
 
 def _family_own(make: Callable[[], Iterator[Any]]) -> None:
@@ -380,14 +378,6 @@ def _family_own(make: Callable[[], Iterator[Any]]) -> None:
 
 def _no_silence(one: Any, other: Any) -> None:
     assert O.silent(one, other) == []
-
-
-def _family_pairs(make: Callable[[], Iterator[Any]]) -> None:
-    for hs in O.by_log(make()).values():
-        reps = [h for h in O.distinct(hs) if O.parsed(h)]
-        for k, one in enumerate(reps):
-            for other in reps[k + 1 :]:
-                assert O.silent(one, other) == []
 
 
 class Broken(Exception):
