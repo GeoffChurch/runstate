@@ -239,10 +239,15 @@ What the site tests rely on as settled by 0.2.0's conventions:
 The entries:
 - **`record-claim`: which claim a heartbeat or `stopped` speaks for.**
   - **Site:** a heartbeat or `stopped` after the `started` of a claim that is not the run's first, when an
-    earlier claim was followed, before that `started`, by a `stopped` that is not `completed: true`, and no
-    `launcher.terminated` of that earlier claim's launch, carrying its handle, precedes the record. Such a
-    `stopped` let a later claim begin, and a third party may have written it, so the earlier claim's
-    worker may have outlived it.
+    earlier claim was followed, before **its own successor's** `started`, by a `stopped` that is not
+    `completed: true` (a malformed one counts), and no `launcher.terminated` of that earlier claim's launch,
+    carrying its handle, precedes the record. Such a `stopped` let the next claim begin, and a third party
+    may have written it, so the earlier claim's worker may have outlived it. Only the release before a
+    claim's own successor counts: by the claim guard below, a claim that no `stopped` followed before the
+    next claim began was dead then, so a `stopped` after that cannot have let it live on (*narrowed
+    2026-10-26*; the literal "before that `started`" would have counted it).
+  - **Candidates:** the latest claim before the record, and each earlier claim the site test finds
+    displaced and still alive. A reading naming any other claim is one the log excludes, and is refused.
   - **H1:** the latest claim's worker wrote the record, which needs the latest claim before it.
   - **H2:** a third party's `stopped` released the earlier claim while its worker lived, and that displaced
     worker wrote the record after the later claim began, which needs the earlier claim.
@@ -319,10 +324,13 @@ one on the golden logs. The final review's fuzz (7,000 synthetic logs, master's 
 
 **Divergences** (`log-formats.md` §6; *declared 2026-10-26*). Each class above is a divergence, a rule under
 which a read of the migrated log answers differently from the same read of the input log, and so is each
-difference a reading other than the positional one makes. The step declares five, and finds each by
-computing both reads, its own copies of 0.2.0's positional folds (`72d9c3f`) on the input and 0.3.0's
-by-name folds on the output: `progress`, `undischarged_stops` and `live_demand`, the only reads its rules
-change. A run where one fires is refused until the user names it with `--accept`.
+difference a reading other than the positional one makes. The step declares six, and finds each by
+computing the reads, its own copies of 0.2.0's positional folds (`72d9c3f`) on the input and 0.3.0's
+by-name folds on the output: `progress`, the verdict `peek_terminal` reads off a `stopped` (with whether
+`live_episode` finds the latest claim ended), `undischarged_stops` and `live_demand`. The step's rules
+change only `progress`, `undischarged_stops` and `live_demand`; a `record-claim` reading other than the
+positional one can change every one of the four. A divergence that fires halts the detection pass until the
+user names it with `--accept`.
 
 | divergence | the read it changes, and how | fires |
 |---|---|---|
@@ -331,12 +339,19 @@ change. A run where one fires is refused until the user names it with `--accept`
 | `ended-lease` | `live_demand` no longer lists a lease bound to the latest claim once a terminal names it | an ended lease, under `first-claim` or a proven binding |
 | `unhonored-stop` | `undischarged_stops` lists a stop a later `stopped` cleared positionally | under `stop-honored`'s `drained` or `none` |
 | `unbound-lease` | `live_demand` lists a lease a later claim voided positionally | under `lease-bound`'s `unbound`, where a second claim follows the lease |
+| `reattributed-record` | any of the four reads, where a heartbeat or `stopped` names another claim than by position | under a consumer's `record-claim` reading |
 
-Each is a direction of one read: a stop or a lease that only the input's read lists is `naked-stop` or
-`ended-lease`, and one that only the output's lists is `unhonored-stop` or `unbound-lease`. A test checks
-every golden log, under four sets of readings, against master's reads and runstate's: each divergence fires
-exactly where its read answers differently, and nothing else differs. `peek_terminal` and `live_episode`
-answer alike under every reading, since `record-claim`'s built-in is the positional one.
+**Which one fires is named by the link that changed the read.** The step computes the output three ways:
+under the positional readings, under `record-claim`'s reading with the others positional, and under every
+reading. Where a read answers differently on the output than on the input, it fires the rule's divergence if
+the positional output already differs (`stale-beat`, `naked-stop`, `ended-lease`), `reattributed-record` if
+`record-claim`'s reading changed it further, and `unhonored-stop` or `unbound-lease` if `stop-honored`'s or
+`lease-bound`'s did. A read changed and changed back fires nothing: under `unbound`, the ended lease that
+`first-claim` would void stays listed, as 0.2.0 listed it. A test checks every golden log, under four sets
+of readings, against master's reads and runstate's: each divergence fires exactly where its read answers
+differently, and nothing else differs. Under the positional `record-claim`, `peek_terminal` and
+`live_episode` answer alike; under a consumer's reading they may not, and `reattributed-record` says so (a
+test reads the verdict of a displaced worker's exit go from `preempted` to none).
 
 **Known limits:**
 - Under `record-claim`'s `positional`, a historical misattribution is copied faithfully, not corrected:

@@ -269,9 +269,10 @@ projections and divergences.
   user states nothing, every fact its whole domain; and how the manifest renders a statement, the
   classifier's identity included. A step with nothing to state declares `NO_FACTS`.
 - **`PROJECTIONS`:** its closed set, in the order the step asks them, each a `Projection`: its name; a
-  one-sentence definition; what its readings are; and its generic built-in choosers, each with a one-line
-  description, to which `refuse` is always added. The set may be empty. It is a tuple of module constants,
-  not an enum, since each projection carries its own question and answer types.
+  one-sentence definition; what its readings are; its generic built-in choosers, each with a one-line
+  description, to which `refuse` is always added; and its answer's shape, which turns whatever a chooser
+  returned into the typed answer or says what is wrong with it. The set may be empty. It is a tuple of
+  module constants, not an enum, since each projection carries its own question and answer types.
 - **`DIVERGENCES`:** its closed set, each a `Divergence`: its name, and the reads it changes and how, in one
   sentence. The set may be empty.
 - **`detect(rows, *, assumptions, history)`:** the run's forks of each projection, from the input log and
@@ -322,15 +323,19 @@ manifest's readings mean:
   the light of what it was.
 
 **The detection pass.** `runstate migrate` first runs every selected run's chain of steps in memory, sealing
-and writing nothing: step 2 above, for the whole root before any run is sealed. It goes **step by step**. A
-step's forks are found on its input log, which for a later step is the earlier step's output. A projection
-**forks** in the root when any run has a fork of it. **The pass refuses unless every projection that forks
-has a `--resolve`,** and then writes nothing at all. There is no default and no accept-all.
+nothing and changing no log's content: step 2 above, for the whole root before any run is sealed. (On SQLite
+it opens each log read-write, as every pre-seal read does, so it can roll back a dead writer's hot journal or
+checkpoint its WAL; neither changes a committed record.) It goes **step by step**. A step's forks are found
+on its input log, which for a later step is the earlier step's output. A projection **forks** in the root
+when any run has a fork of it, and a divergence **fires** in it when any run's dry run fires it. **The pass
+refuses unless every projection that forks has a `--resolve` and every divergence that fires has an
+`--accept`,** and then migrates nothing: the user meets every question before anything is written. There is
+no default and no accept-all.
 
-**A later step's forks are undecided until every fork of the earlier steps in the chain is resolved,** since
-they are found on their output. So a user resolves in one round per step: a root at format 0.2.0 that
-migrates to 0.4.0 takes at most two. On refusal the pass prints a summary **per projection**, never a list
-of every site:
+**A later step's forks are undecided until every fork of the earlier steps in the chain is resolved, and
+every divergence they fire accepted,** since they are found on their output. So a user resolves in one round
+per step: a root at format 0.2.0 that migrates to 0.4.0 takes at most two. On refusal the pass prints a
+summary **per projection**, never a list of every site:
 - the step, the projection's name and its one-sentence definition;
 - its readings, and its built-in choosers, each with a one-line description;
 - how many forks it has, in how many runs;
@@ -339,8 +344,9 @@ of every site:
   fact can;
 - the option to add, `--resolve <projection>=<chooser>`.
 
-It then names the later steps whose forks are undecided until these are resolved, and the divergences found
-so far, in the runs whose forks are all decided.
+It prints one summary per divergence that fires unaccepted (below), names the later steps whose forks are
+undecided until these are answered, and lists the runs already refused whatever is chosen (a live run, a
+step's own refusal), so the user meets them in the same round.
 
 ```
 stop-honored (0.2.0 -> 0.3.0): which stops a lifecycle.stopped answered, of those since the previous one.
@@ -356,17 +362,22 @@ stop-honored (0.2.0 -> 0.3.0): which stops a lifecycle.stopped answered, of thos
 
 **Divergences.** Detection finds each divergence where its rule fires, on the dry run once the step's forks
 are resolved, since a reading can make a rule fire, and reports it by name: the reads it changes and how,
-how many sites in how many runs, and the first three sites. **A run where a divergence fires is refused
-until the user accepts it by name,** `--accept <divergence>`; `refuse` is the only alternative, and it is
-what happens to a run whose divergence is not accepted. The refused run is left untouched and the others go
-on, as for any refusal (below), and the command prints one summary per divergence:
+how many sites in how many runs, and the first three sites. **A divergence that fires halts the detection
+pass until the user accepts it by name,** `--accept <divergence>`, exactly as a fork without a chooser does
+(the owner, 2026-10-26): it is a question the user has not answered, and the approved contract is that
+nothing is written until every question is. `refuse` is the only alternative: the invocation is refused,
+and a user who wants the runs it fires in left behind names the other runs.
 
 ```
 ended-lease (0.2.0 -> 0.3.0): live_demand no longer lists a lease bound to the latest claim once a terminal
   names that claim, which 0.2.0's listed though no worker would serve it.
   sites: <n> in <m> runs, e.g. <rid> seq <seq>, <rid> seq <seq>
-  refused until: --accept ended-lease
+  add: --accept ended-lease
 ```
+
+A divergence is named by the link that made the read differ: a rule of the step, or a reading other than
+the one the input format's own read took. A read changed back along the way changed nothing, so nothing
+fires for it.
 
 An acceptance holds for every run of the invocation where its rule fires; an `--accept` of a divergence that
 fires nowhere is allowed, so a consumer can keep one set of choices for every root.
@@ -375,18 +386,21 @@ fires nowhere is allowed, so a consumer can keep one set of choices for every ro
 - **`--assume <module:attr>`,** repeatable, imports the object and checks that it is a statement of a
   registered step's facts, which it then states for every step of that kind. It refuses an import that
   fails, an object that is no step's statement, and two for one step.
-- **`--resolve <projection>=<chooser>`,** repeatable, one per projection. `<projection>` is a name some step
-  of the chain declares. Names are unique across the registered steps: the runner refuses to start when two
-  steps declare one projection, or one divergence, as it refuses two steps that leave one format.
-  `<chooser>` is a built-in's name, spelled with no colon, or `module:attr`, naming an object that
-  implements the `Chooser` Protocol; the check is the Protocol's, that the object has `choose`, and the
-  step checks every answer it gives. It refuses an unknown projection, an unknown built-in, an import that
-  fails, and an object that is no chooser. A `--resolve` for a projection that does not fork is accepted,
-  so a consumer can keep one set of choices for every root. An explicit `--resolve <projection>=refuse`
-  refuses only the runs with a fork of it, and the rest migrate. A projection that forks and is left
-  unresolved refuses the whole invocation.
-- **`--accept <divergence>`,** repeatable, names a divergence some registered step declares. It refuses an
-  unknown name and a repeated one.
+- **`--resolve <projection>=<chooser>`,** repeatable, one per projection. `<projection>` is a name some
+  registered step declares, so a consumer can keep one set of choices for every root. Names are unique
+  across the registered steps: the runner refuses to start when two steps declare one projection, or one
+  divergence, as it refuses two steps that leave one format. `<chooser>` is a built-in's name, spelled with
+  no colon, or `module:attr`, naming an instance that implements the `Chooser` Protocol. It refuses an
+  unknown projection, an unknown built-in, an import that fails, a class where an instance is needed, and an
+  object that is no chooser. A `--resolve` for a projection that does not fork is accepted. An explicit
+  `--resolve <projection>=refuse` refuses only the runs with a fork of it, and the rest migrate. A
+  projection that forks and is left unresolved refuses the whole invocation.
+- **A consumer's chooser is validated where it is called,** since the Protocol's check is only that the
+  object has `choose`. A chooser that raises, answers in another shape than its projection's, or was written
+  for another projection's question refuses the run, naming the run, the projection and the chooser, and
+  never escapes as a traceback. The step then checks the answer against what the log proves.
+- **`--accept <divergence>`,** repeatable, names a divergence some registered step declares, resolved to its
+  declaration once. It refuses an unknown name and a repeated one.
 - **`--cap N`** bounds the states a step may hold at once on one run before it refuses the run, naming the
   record: the 0.3.0 → 0.4.0 engine's cap. It decides a refusal, so it is set at the edge, the command line,
   and recorded with each migrated run, never as a library default. The command line's value is 3,000. The
@@ -397,10 +411,10 @@ fires nowhere is allowed, so a consumer can keep one set of choices for every ro
   more records can still exceed a machine's memory; `--cap` lowers it.
 
 **Carrying on past refusals.** Once the detection pass is satisfied, `migrate` migrates every run it can.
-A run refused by a chooser, by `refuse`, by an unaccepted divergence, or by a step's own refusal is left
-untouched, and the other runs go on. `migrate()` returns the runs it moved and every refusal, each naming
-its run, with the divergences that refused runs, and the command prints them and exits nonzero when any run
-was refused.
+A run refused by a chooser, by `refuse`, or by a step's own refusal is left untouched, and the other runs go
+on. (A divergence refuses a run here only where records landed after the pass read it.) `migrate()` returns
+the runs it moved and every refusal, each naming its run, and the command prints them and exits nonzero
+when any run was refused.
 
 **The manifest** records, for each root, what every migrated run was migrated under. The log formats are
 untouched: the manifest belongs to the root, outside every format's address.
@@ -409,15 +423,19 @@ untouched: the manifest belongs to the root, outside every format's address.
 - **Postgres:** the table `manifest` in the schema `runstate_migrations`. That schema is outside every
   `runstate_v…` schema, so check 1 does not read it as a format, and the table is not named `log`, so
   check 4 does not read it as a legacy log.
-- **One entry per run per step:** the run id; the step's `FROM` and `TO`; the runstate version that ran it;
-  when; the cap; the facts, as `--assume` spelled them (null when unstated) and as the step renders them,
-  the classifier's identity included; each projection's chooser as it was given, a built-in's name or
-  `module:attr`; each fork's seq with the reading it was given; and each divergence that fired, with its
-  sites, every one accepted. Proven sites are not recorded.
-- **When it is written:** once the run's new log is published. On Postgres the entry is inserted in the
-  sealing transaction. On SQLite it is built before the publish and appended after the rename, so a crash
-  between the two leaves a migrated run with no entry, which a re-run cannot add, since the run is no longer
-  at the old format (a known limit).
+- **One entry per run per step:** the run id; the step's `FROM` and `TO`; the code that ran it, as the
+  runstate version with the commit its install records (a git pin's), and the SHA-256 of the step module's
+  source, since a pin's version string (`0.3.0.dev0`) names no code; when; the cap; the facts, as `--assume`
+  spelled them (null when unstated) and as the step renders them, the classifier's identity included; each
+  projection's chooser as it was given, a built-in's name or `module:attr`, or null where none was given, as
+  for a projection that forked in no run; each fork's seq with the reading it was given; and each
+  divergence that fired, with its sites, every one accepted. Proven sites are not recorded.
+- **When it is written:** with the run's new log. On Postgres the entry is inserted in the sealing
+  transaction. On SQLite it is appended before the rename that publishes the log, so a migrated run always
+  has its entry. A crash between the two leaves an entry for an attempt that did not publish; a re-run
+  appends its own. **A reader takes a run's latest entry per step:** the attempt that published last wrote
+  the last line. A later step's `history` is these, oldest first. On NFS, `O_APPEND` is not atomic, so two
+  migrators of one root can interleave lines: run one migrator per root (a known limit).
 - **Copying a run** between roots (§8) copies its log at its format's address. Its manifest entries go with
   it only if they are copied by hand.
 - **Collecting a run** (`store.md` Recipe 3) leaves its manifest entries behind unless the collector deletes
@@ -522,19 +540,24 @@ On SQLite and Postgres (Memory has no addresses):
     step, a cap below one, and two steps declaring one name;
   - `detect` takes no chooser, and finds the same forks whatever the choices; a stated fact settles the
     forks it names, and the manifest records it;
-  - the detection pass writes nothing while a projection that forks has no `--resolve`, prints one summary
-    per projection with at most three example forks and the facts that would settle them, and holds a later
-    step's forks undecided until the earlier step's are resolved;
+  - the detection pass migrates nothing while a projection that forks has no `--resolve` or a divergence
+    that fires has no `--accept`, prints one summary per question with at most three examples and the facts
+    that would settle a fork, keeps the runs already refused, and holds a later step's forks undecided
+    until the earlier step's are answered;
   - an explicit `refuse` refuses only the runs with a fork, and the others migrate;
-  - a run refused by a chooser or a step leaves the other runs migrated, and the command exits nonzero;
+  - a run refused by a chooser or a step leaves the other runs migrated, and the command exits nonzero; a
+    chooser that raises, answers in another shape or was written for another projection is a refusal
+    naming the run, the projection and the chooser, and a class is refused where an instance is needed;
   - a chooser sees its forks with the earlier readings; a later step receives the earlier steps' entries,
     from this invocation and from the manifest; a proven site reads the same under every chooser, and a
-    reading the log excludes is refused;
-  - a divergence refuses its runs until it is accepted, and is reported once per name; each of the 0.2.0 →
-    0.3.0 step's divergences fires exactly where one of the three reads it names answers differently,
-    checked against master's reads on the golden logs under four sets of readings;
+    reading the log excludes is refused, a `record-claim` reading naming a claim proven dead among them;
+  - a divergence halts the pass until it is accepted, and is reported once per name; each of the 0.2.0 →
+    0.3.0 step's divergences fires exactly where a read it names answers differently, checked against
+    master's reads on the golden logs under four sets of readings, and a `record-claim` reading that changes
+    the verdict fires `reattributed-record`, not the positional leak's `stale-beat`;
   - the manifest holds one entry per migrated run per step, written in the sealing transaction on Postgres,
-    and none for a refused run; a root holding it opens as it did without it.
+    and on SQLite before the publish, the latest per step read back; none for a refused run; a root holding
+    it opens as it did without it.
 
 ## 11. Ripple
 
