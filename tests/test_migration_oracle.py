@@ -444,6 +444,10 @@ def _reads(ctx: E.Context, path: Path) -> dict[E.Key, tuple[E.Read, ...]]:
     return out
 
 
+def _pieces(path: Path) -> tuple[E.Piece, ...]:
+    return tuple(p for part in path for p in part)
+
+
 def last_first(ctx: E.Context) -> list[int]:
     """The decode's order of subjects: the claims, last first, then the run."""
     claims = sorted(r.seq for r in ctx.recs if r.topic is E.Topic.STARTED)
@@ -454,8 +458,9 @@ def listed_questions(
     ctx: E.Context, listed: Sequence[Path], order: Sequence[int]
 ) -> list[E.Question]:
     """The forks of an explicit list of paths, subject by subject in ``order``, then by
-    projection and position: what the engine's ``questions`` must find, read off the list
-    instead of the graph. Their witnesses are any listed path that reads each answer."""
+    projection and position: what the engine's ``questions`` must find, read off the
+    list instead of the graph. Their witnesses are any listed path that reads each
+    answer."""
     reads = [_reads(ctx, path) for path in listed]
     keys = {key for r in reads for key in r}
     rank = {s: k for k, s in enumerate(order)}
@@ -470,7 +475,7 @@ def listed_questions(
             by.setdefault(r.get(key, ()), path)
         if len(by) > 1:
             answers = tuple(
-                E.Answer(v, tuple(p for part in path for p in part))
+                E.Answer(v, partial(_pieces, path))
                 for v, path in sorted(by.items(), key=lambda kv: repr(kv[0]))
             )
             out.append(E.Question(key, answers))

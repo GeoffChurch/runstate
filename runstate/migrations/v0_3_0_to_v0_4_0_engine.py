@@ -50,7 +50,8 @@ import itertools
 import json
 from collections import defaultdict
 from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+from functools import partial
 from enum import Enum
 from typing import (
     Any,
@@ -510,8 +511,9 @@ class Wk(NamedTuple):
     dating: int | None
     # the claims whose workers were alive beside it when it claimed
     peers: frozenset[int]
-    # the index of the record its state was last fixed at: its silent events since
-    # stand in the gaps after it
+    # where its state was last fixed: the boundary at or before that record, by index.
+    # Its silent events since stand in the gaps after it; the gaps before its own last
+    # record there are ruled out by that record, where an end time is read (``bounds``)
     fixed: int
     # the 0.3.0 writer's own drains, which its stopped's ``honored`` lists (``honored``,
     # ``fold``): its fold, None where no element can occur; the stops a drain has
@@ -1480,6 +1482,11 @@ class _Span(NamedTuple):
     last: int
 
 
+def _interval(ctx: Context, k: int) -> int:
+    """The index of the boundary at or before record ``k``."""
+    return ctx.boundaries[bisect.bisect_right(ctx.boundaries, k) - 1]
+
+
 def _spans(ctx: Context, fixed: int, i: int) -> list[_Span]:
     """The boundary intervals that the gaps from the one after record ``fixed`` to the
     one before record ``i`` fall in, each with its first and last gap there."""
@@ -1516,7 +1523,7 @@ def _placed(
         for k, p in enumerate(run.pieces)
         if isinstance(p, (PCommit, PRewind)) and p.gaps == UNPLACED
     ]
-    spans = _spans(ctx, w.fixed, i)
+    spans = _spans(ctx, w.fixed, i) if new else []
     closes = [k for k in new if isinstance(run.pieces[k], PCommit)]
     last = run.pieces[closes[-1]] if closes else None
     datable = (
@@ -1537,7 +1544,9 @@ def _placed(
             if y is not None and isinstance(p, PCommit):
                 y = _commit_drain(ctx, world, y, g)
         if y is not None:
-            y = y._replace(fixed=i, dating=y.dating if datable else None)
+            y = y._replace(
+                fixed=_interval(ctx, i), dating=y.dating if datable else None
+            )
         yield Run(y, run.slot, run.older, tuple(pieces))
 
 
@@ -1933,7 +1942,7 @@ def _released(
         yield fw, out + wd
         return
     for c in _cut(ctx, w, world.slot, _just_before(ctx, i)):
-        z = c.w._replace(released=True, dating=None, fixed=i)
+        z = c.w._replace(released=True, dating=None, fixed=_interval(ctx, i))
         fw, wd = _withdraw(nworld._replace(slot=c.slot), rec)
         for promised in _promised(ctx, i, fw.older, _landed(c)):
             for s2, o2 in _offer(ctx, i, fw.slot, promised, _offers(ctx, z)):
@@ -2456,10 +2465,11 @@ def bounds(
 ) -> tuple[float, tuple[float, ...]]:
     """An undated commit's lower bound, the newest ``t`` among its claim's own records
     at or before it; and its upper bounds, the ``t`` of the record after each gap it may
-    stand in, earliest first (none after the log's last record)."""
-    last = max(s for s in own if s <= gaps.first)
+    stand in, earliest first (none after the log's last record). It stands after its
+    claim's own last record before it, whatever its gaps say."""
+    last = max(s for s in own if s <= gaps.last)
     low = ctx.recs[ctx.by_seq[last]].t
-    g0, g1 = ctx.by_seq[gaps.first], ctx.by_seq[gaps.last]
+    g0, g1 = ctx.by_seq[max(gaps.first, last)], ctx.by_seq[gaps.last]
     n = len(ctx.recs)
     return low, tuple(ctx.recs[g + 1].t for g in range(g0, g1 + 1) if g + 1 < n)
 
@@ -2761,12 +2771,17 @@ def _mine(ctx: Context, e: Edge, layer: int, key: Key) -> tuple[Read, ...]:
     return tuple(out)
 
 
-class Answer(NamedTuple):
-    """One way the paths left read a subject's projection at one position, with one
-    complete path's pieces that read it so (its witness)."""
+@dataclass(frozen=True)
+class Answer:
+    """One way the paths left read a subject's projection at one position, and one
+    complete path's pieces that read it so (its witness), found when asked for. Two
+    answers are equal when their values are."""
 
     value: tuple[Read, ...]
-    witness: tuple[Piece, ...]
+    find: Callable[[], tuple[Piece, ...]] = field(compare=False, repr=False)
+
+    def witness(self) -> tuple[Piece, ...]:
+        return self.find()
 
 
 class Question(NamedTuple):
@@ -2870,6 +2885,13 @@ def _restrict(
     return replace(g, live=_alive(live))
 
 
+def _witnessed(
+    g: Graph, key: Key, window: tuple[int, int], value: tuple[Read, ...]
+) -> tuple[Piece, ...]:
+    """A complete path that reads ``value`` at ``key``."""
+    return witness(_restrict(g, key, window, value))
+
+
 def _question(
     g: Graph, key: Key, window: tuple[int, int], *, cap: int
 ) -> Question | None:
@@ -2885,20 +2907,20 @@ def _question(
         return Question(
             key,
             tuple(
-                Answer(v, _witness(g, lo, e))
+                Answer(v, partial(_witness, g, lo, e))
                 for v, e in sorted(by.items(), key=lambda kv: repr(kv[0]))
             ),
         )
     values = sorted(_values(g, key, window, cap=cap), key=repr)
     if len(values) < 2:
         return None
-    answers = tuple(Answer(v, witness(_restrict(g, key, window, v))) for v in values)
+    answers = tuple(Answer(v, partial(_witnessed, g, key, window, v)) for v in values)
     return Question(key, answers)
 
 
 def _order(g: Graph, windows: Mapping[Key, tuple[int, int]]) -> list[Key]:
-    """The keys in the decode's order: subjects last claim first, then the run; for each,
-    End, Span, Origin; positions in log order."""
+    """The keys in the decode's order: subjects last claim first, then the run; for
+    each, End, Span, Origin; positions in log order."""
     rank = {s: k for k, s in enumerate(subjects(g))}
     projections = list(Projection)
     return sorted(
