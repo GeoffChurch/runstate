@@ -27,6 +27,7 @@ from runstate import migrations
 from runstate.channel.sqlite import SqliteChannel
 from runstate.formats import FORMATS, DirectoryLayout
 from runstate.migrations import RENUMBERING_FROM, STEPS, MigrationError, Row, migrate
+from runstate.migrations.ambiguity import parse_choices, resolutions
 from runstate.migrations.stores import SqliteStore
 from runstate.migrations.v0_3_0_to_v0_4_0 import (
     After,
@@ -68,6 +69,12 @@ from runstate.migrations.v0_3_0_to_v0_4_0 import (
 )
 
 step = V0_3_0_to_V0_4_0()
+# The step declares nothing for a user to give until Task 22 rebuilds it on the engine.
+NONE = parse_choices([step], assume=[], resolve=[], accept=[], cap=1)
+
+
+def transform(rows):
+    return step.transform(rows, resolutions=resolutions(step, NONE), history=()).rows
 
 
 def r(seq, topic, body, rid=None, name=None, t=0.0):
@@ -2609,7 +2616,7 @@ def test_a_stopped_of_any_other_shape_is_refused_by_seq(body):
     with pytest.raises(MigrationError, match=r"lifecycle\.stopped at seq 2 "):
         parse(rows)
     with pytest.raises(MigrationError, match=r"lifecycle\.stopped at seq 2 "):
-        step.transform(rows)
+        transform(rows)
 
 
 @pytest.mark.parametrize(
@@ -2701,7 +2708,7 @@ def test_a_heartbeats_watermark_must_name_a_record_before_it(consumed):
     with pytest.raises(MigrationError, match=match):
         parse(rows)
     with pytest.raises(MigrationError, match=match):
-        step.transform(rows)
+        transform(rows)
 
 
 # Watermarks naming a heartbeat with a step, each refused. A watermark is a read
@@ -2766,7 +2773,7 @@ def test_a_watermark_naming_a_heartbeat_with_a_step_is_refused(rows, beat, named
     with pytest.raises(MigrationError, match=match):
         parse(rows)
     with pytest.raises(MigrationError, match=match):
-        step.transform(rows)
+        transform(rows)
 
 
 @pytest.mark.parametrize("steps", [[0, 0], [0, 2, 1]], ids=["repeat", "below"])
@@ -2781,7 +2788,7 @@ def test_an_in_claim_rewind_is_refused_by_seq(steps):
     with pytest.raises(MigrationError, match=match):
         parse(rows)
     with pytest.raises(MigrationError, match=match):
-        step.transform(rows)
+        transform(rows)
 
 
 def test_stepless_beats_and_another_claims_steps_are_no_rewind():
@@ -3077,7 +3084,7 @@ def test_a_run_is_refused_by_its_lowest_refused_seq(drained_at, unattributable_a
     first record it cannot carry, before any pass that needs the whole log."""
     rows = _two_refusals(drained_at, unattributable_at)
     with pytest.raises(MigrationError, match=r"^the \S+ at seq 5 "):
-        step.transform(rows)
+        transform(rows)
 
 
 # ----- the 0.4.0 rows: the records, and third parties' stops -----------------------------
@@ -3142,7 +3149,7 @@ def _terminated4(reason, exit_code, signal, t):
 def _rows(rows):
     return [
         (x.seq, x.topic, x.name, x.request_id, json.loads(x.body))
-        for x in step.transform(rows)
+        for x in transform(rows)
     ]
 
 
@@ -3785,7 +3792,7 @@ def test_every_output_entry_is_a_goldens():
 @pytest.mark.parametrize("rid", list(GOLDEN))
 def test_transform_is_deterministic(rid):
     """SQLite calls it twice, the dry run before the seal and the run after."""
-    assert step.transform(list(GOLDEN[rid])) == step.transform(list(GOLDEN[rid]))
+    assert transform(list(GOLDEN[rid])) == transform(list(GOLDEN[rid]))
 
 
 @pytest.mark.parametrize("rid", list(GOLDEN))
@@ -3796,7 +3803,7 @@ def test_every_goldens_output_rows_are_pinned_exactly(rid):
 
 
 def test_launcher_records_keep_their_bodies_byte_for_byte():
-    out = step.transform(LAUNCHED)
+    out = transform(LAUNCHED)
     assert [out[0].body, out[4].body] == [LAUNCHED[0].body, LAUNCHED[4].body]
 
 
@@ -3822,7 +3829,7 @@ def test_withdrawals_follow_their_stop_in_honored_order_each_dated_by_it():
             r(4, "value", _value({"x": 1}, None, 4.0), name="note"),
         ]
     )
-    out = step.transform(rows)
+    out = transform(rows)
     assert [(x.seq, x.topic, x.request_id, x.created_at) for x in out] == [
         (1, "control.stop", "b", 1000.25),
         (2, "control.stop", "a", 1000.5),
@@ -3833,7 +3840,7 @@ def test_withdrawals_follow_their_stop_in_honored_order_each_dated_by_it():
 
 
 def test_a_death_or_a_terminated_keeps_its_stops_created_at():
-    out = step.transform(CLAIMLESS_BACKSTOP)
+    out = transform(CLAIMLESS_BACKSTOP)
     assert [x.created_at for x in out] == [1000.25, 1.0, 1.0, 1000.75]
 
 
@@ -3888,7 +3895,7 @@ def _schema_errors(row):
 
 @pytest.mark.parametrize("rid", list(GOLDEN))
 def test_every_output_row_validates_against_the_0_4_0_schemas(rid):
-    out = step.transform(GOLDEN[rid])
+    out = transform(GOLDEN[rid])
     assert [x.seq for x in out] == list(range(1, len(out) + 1))
     errors = {x.seq: _schema_errors(x) for x in out}
     assert {seq: e for seq, e in errors.items() if e} == {}
@@ -3908,12 +3915,12 @@ def test_every_exit_and_death_names_a_claim_and_a_claim_exits_once(rid):
 
 def test_a_stop_with_a_time_atom_is_written_as_it_is():
     rows = [r(1, "control.stop", {"from": {"time_seconds": 5}}, rid="h")]
-    assert step.transform(rows) == rows
+    assert transform(rows) == rows
 
 
 def test_an_attributed_death_keeps_its_terminateds_created_at():
     """It is placed after the terminated, and takes its anchor's."""
-    out = step.transform(ATTRIBUTED)
+    out = transform(ATTRIBUTED)
     assert [x.created_at for x in out] == [1000.25, 1000.5, 1000.75, 1001.0, 1001.0]
 
 
@@ -3986,7 +3993,7 @@ def test_an_envelope_field_0_4_0_pins_null_is_refused_by_seq(topic, body, name, 
     with pytest.raises(MigrationError, match=rf"{topic} at seq 2 carries "):
         parse(rows)
     with pytest.raises(MigrationError, match=rf"{topic} at seq 2 carries "):
-        step.transform(rows)
+        transform(rows)
 
 
 # ----- refusals through the runner (Review Focus 5) -----------------------------------
@@ -4092,11 +4099,12 @@ def test_a_refusal_comes_before_the_seal_and_names_the_run_and_the_seq(
     rows = REFUSED[case]
     old = _seed_0_3_0(tmp_path, "r1", rows)
     last = rows[-1]
-    with pytest.raises(
-        MigrationError,
-        match=rf"^run 'r1': the {re.escape(last.topic)} at seq {last.seq} ",
-    ):
-        migrate(SqliteStore(tmp_path), ["r1"], to="0.4.0")
+    (refused,) = migrate(
+        SqliteStore(tmp_path), ["r1"], to="0.4.0", choices=NONE
+    ).refused
+    assert re.match(
+        rf"^run 'r1': the {re.escape(last.topic)} at seq {last.seq} ", refused.message
+    )
     assert os.stat(old).st_mode & 0o200  # not sealed
     assert not FORMATS["0.4.0"].sqlite_path(tmp_path, "r1").exists()
     ch = SqliteChannel(old)  # still writable
@@ -4198,8 +4206,9 @@ def test_the_step_renumbers_and_is_not_registered_yet():
 def test_the_step_imports_no_record_semantics():
     """log-formats §6: the step is retained forever, so it must read 0.3.0 and
     write 0.4.0 as they were defined, whatever later code does. From the package
-    it takes only Row, MigrationError and resolve(), an OS probe of a handle
-    rather than a format rule, and never runstate.lineage."""
+    it takes only Row, MigrationError, resolve(), an OS probe of a handle rather
+    than a format rule, and the shared mechanism of ambiguity.py, and never
+    runstate.lineage."""
     import ast
     import inspect
 
@@ -4213,11 +4222,12 @@ def test_the_step_imports_no_record_semantics():
         and (n.level > 0 or (n.module or "").startswith("runstate"))
         for a in n.names
     }
-    assert internal == {
+    assert {x for x in internal if x[1] != "ambiguity"} == {
         (1, None, "MigrationError"),
         (1, None, "Row"),
         (2, "vocabulary.handle", "resolve"),
     }
+    assert {level for level, module, _ in internal if module == "ambiguity"} == {1}
     plain = {
         a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names
     }
@@ -4313,7 +4323,7 @@ def test_a_watermark_naming_a_stop_that_leaves_the_log_is_refused():
         r"lifecycle\.stopped at seq 4, a third party's that becomes only its "
         r"withdrawals",
     ):
-        step.transform(rows)
+        transform(rows)
 
 
 def test_a_watermark_naming_a_stop_replaced_in_place_names_its_replacement():

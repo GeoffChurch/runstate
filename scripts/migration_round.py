@@ -126,6 +126,7 @@ from runstate import lineage as reads  # noqa: E402
 from runstate.channel import Envelope, MemoryChannel  # noqa: E402
 from runstate.migrations import MigrationError, Row, transform_checked  # noqa: E402
 from runstate.migrations import v0_3_0_to_v0_4_0 as step04  # noqa: E402
+from runstate.migrations.ambiguity import parse_choices, resolutions  # noqa: E402
 from runstate.migrations.v0_2_0_to_v0_3_0 import V0_2_0_to_V0_3_0  # noqa: E402
 from runstate.migrations.v0_3_0_to_v0_4_0 import (  # noqa: E402
     Commit,
@@ -144,6 +145,26 @@ from runstate.migrations.v0_3_0_to_v0_4_0 import (  # noqa: E402
     _Exit,
     _Release,
     _REPORTED_LATER,
+)
+
+# The 0.2.0 -> 0.3.0 step under the readings it encoded before its projections were
+# declared. The runner measures what the step writes, so no divergence is a refusal
+# here: transform_checked reports where each fires and refuses none (Task 22 makes the
+# choosers the runner's configuration).
+_STEP_0_2_0 = V0_2_0_to_V0_3_0()
+_POSITIONAL = resolutions(
+    _STEP_0_2_0,
+    parse_choices(
+        [_STEP_0_2_0],
+        assume=[],
+        resolve=[
+            "record-claim=positional",
+            "stop-honored=positional",
+            "lease-bound=first-claim",
+        ],
+        accept=[],
+        cap=1,
+    ),
 )
 
 _PROTOCOL = Path(__file__).resolve().parent.parent / "protocol"
@@ -1985,7 +2006,9 @@ def measure(found: Found, *, max_rows: int, max_bytes: int, stack: Stack) -> Run
     rows03, env03 = rows, env
     if found.format == V0_2_0_to_V0_3_0.FROM:
         try:
-            rows03 = transform_checked(V0_2_0_to_V0_3_0(), rows)
+            rows03 = transform_checked(
+                _STEP_0_2_0, rows, resolutions=_POSITIONAL, history=()
+            ).rows
         except MigrationError as exc:
             return _refused(base, StepName.FROM_0_2_0, exc)
         except Exception as exc:

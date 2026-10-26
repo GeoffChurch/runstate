@@ -367,6 +367,18 @@ from typing import Any, ClassVar, NamedTuple, TypeGuard, assert_never
 
 from ..vocabulary.handle import resolve
 from . import MigrationError, Row
+from .ambiguity import (
+    NO_FACTS,
+    Assumptions,
+    Detected,
+    Divergence,
+    Facts,
+    History,
+    Migrated,
+    NoFacts,
+    Projection,
+    Resolutions,
+)
 
 # ----- format 0.3.0's record semantics, frozen here -----------------------------
 #
@@ -2536,6 +2548,12 @@ class V0_3_0_to_V0_4_0:
     FROM = "0.3.0"
     TO = "0.4.0"
     RENUMBERS: ClassVar[bool] = True
+    # Until the step is rebuilt on the engine (the plan's Task 22), it declares no
+    # facts, projections or divergences, and §7's fifteen ambiguities stay frozen,
+    # unencoded: the step writes what its passes write today.
+    FACTS: ClassVar[Facts[NoFacts]] = NO_FACTS
+    PROJECTIONS: ClassVar[tuple[Projection[Any, Any], ...]] = ()
+    DIVERGENCES: ClassVar[tuple[Divergence, ...]] = ()
 
     def is_live(self, rows: list[Row]) -> bool:
         """0.3.0's liveness, by name: the latest claim is live unless a
@@ -2563,9 +2581,17 @@ class V0_3_0_to_V0_4_0:
             )
         return resolve(handle) is not False
 
-    def transform(self, rows: list[Row]) -> list[Row]:
+    def detect(
+        self, rows: list[Row], *, assumptions: Assumptions, history: History
+    ) -> Detected:
+        """No forks: the step declares no projections yet."""
+        return Detected({})
+
+    def transform(
+        self, rows: list[Row], *, resolutions: Resolutions, history: History
+    ) -> Migrated:
         """The passes, in order (``run_passes``), then the 0.4.0 rows, renumbered
         gapless from 1. Pure and deterministic: every refusal raises before a
         row is returned, so the runner's dry run refuses a run before it seals
         it."""
-        return [write(o) for o in run_passes(rows).outs]
+        return Migrated([write(o) for o in run_passes(rows).outs], {}, {})

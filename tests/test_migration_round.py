@@ -834,9 +834,12 @@ def test_a_shipped_step_that_breaks_preservation_is_its_refusal(tmp_path, monkey
     from runstate.migrations.v0_2_0_to_v0_3_0 import V0_2_0_to_V0_3_0
 
     real = V0_2_0_to_V0_3_0.transform
-    monkeypatch.setattr(
-        V0_2_0_to_V0_3_0, "transform", lambda self, rows: real(self, rows)[:-1]
-    )
+
+    def dropping(self, rows, **given):
+        migrated = real(self, rows, **given)
+        return migrated._replace(rows=migrated.rows[:-1])
+
+    monkeypatch.setattr(V0_2_0_to_V0_3_0, "transform", dropping)
     root = tmp_path / "root"
     _write(root / "v0.2.0" / "old.db", _v0_2_0())
     out = tmp_path / "out"
@@ -913,10 +916,16 @@ def test_a_step_that_crashes_is_recorded_not_raised(tmp_path, monkeypatch):
 def test_the_runner_writes_the_steps_own_rows():
     """The runner runs the passes once and writes their records, as
     ``transform`` does."""
+    from runstate.migrations.ambiguity import parse_choices, resolutions
     from runstate.migrations.v0_3_0_to_v0_4_0 import V0_3_0_to_V0_4_0, run_passes
 
+    step = V0_3_0_to_V0_4_0()
+    given = resolutions(
+        step, parse_choices([step], assume=[], resolve=[], accept=[], cap=1)
+    )
     for rows in GOLDEN.values():
-        assert mr._rows_0_4_0(run_passes(rows)) == V0_3_0_to_V0_4_0().transform(rows)
+        written = step.transform(rows, resolutions=given, history=()).rows
+        assert mr._rows_0_4_0(run_passes(rows)) == written
 
 
 # ----- the files ---------------------------------------------------------------------------

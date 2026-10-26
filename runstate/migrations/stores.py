@@ -6,19 +6,40 @@ import os
 import sqlite3
 import uuid
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from urllib.request import pathname2url
+
+if TYPE_CHECKING:
+    import psycopg
 
 from .. import formats
 from ..channel.sqlite import _SCHEMA
-from . import MigrationError, Row, Step, transform_checked
+from . import MigrationError, Planned, Row
+from .ambiguity import Entry, History
 from .seal import seal_postgres, seal_sqlite
 
 
 class Store(Protocol):
     def formats_of(self, run_ids: list[str] | None) -> dict[str, str]: ...
 
-    def migrate_one(self, step: Step, run_id: str) -> None: ...
+    def rows(self, version: str, run_id: str) -> list[Row]:
+        """A run's rows at format ``version``, read without sealing: the detection
+        pass's input."""
+        ...
+
+    def history(self, run_id: str) -> History:
+        """The run's entries in the root's manifest, oldest first."""
+        ...
+
+    def migrate_one(self, planned: Planned, run_id: str) -> None:
+        """Migrate one run by one step, and record it in the root's manifest."""
+        ...
+
+
+# The root's manifest (log-formats.md §6): outside every format's address, so no
+# opening check reads it as a format or a legacy log.
+SQLITE_MANIFEST = "runstate-migrations.jsonl"
+PG_MANIFEST_SCHEMA = "runstate_migrations"
 
 
 def _read_sqlite(path: Path) -> list[Row]:
@@ -70,28 +91,45 @@ class SqliteStore:
             raise MigrationError(f"no log in any known format for {sorted(missing)}")
         return found
 
-    def migrate_one(self, step: Step, run_id: str) -> None:
-        """Refuse untouched a run that is live, or that the step refuses: before
-        the seal, read the rows once, ask ``is_live``, and dry-run ``transform``,
-        so a deterministic refusal leaves the run writable and a re-run refuses
-        it the same way. Then seal (unless an earlier failed attempt already
-        did); re-read, since the seal checkpoints any WAL frames; transform; and
-        write the new log to a hidden temporary file, renamed into place.
+    def rows(self, version: str, run_id: str) -> list[Row]:
+        return _read_sqlite(formats.FORMATS[version].sqlite_path(self._root, run_id))
+
+    def history(self, run_id: str) -> History:
+        path = self._root / SQLITE_MANIFEST
+        if not path.exists():
+            return ()
+        with path.open() as f:
+            entries = [Entry.from_json(line) for line in f if line.strip()]
+        return tuple(e for e in entries if e.run_id == run_id)
+
+    def migrate_one(self, planned: Planned, run_id: str) -> None:
+        """Refuse untouched a run that is live, or that the step, a chooser or an
+        unaccepted divergence refuses: before the seal, read the rows once, ask
+        ``is_live``, and dry-run ``transform``, so a deterministic refusal leaves
+        the run writable and a re-run refuses it the same way. Then seal (unless an
+        earlier failed attempt already did); re-read, since the seal checkpoints any
+        WAL frames; transform; write the new log to a hidden temporary file, renamed
+        into place; and append the run's entry to the root's manifest.
 
         One residual: on a run that is not live, records landing between the
         pre-seal read and the seal can still make the post-seal transform
         refuse. The run is then left sealed and unmigrated, and recovery is
-        log-formats.md §8's rollback."""
+        log-formats.md §8's rollback. Another: a crash between the rename and the
+        append leaves a migrated run with no entry (log-formats.md §6)."""
+        step = planned.step
         src = formats.FORMATS[step.FROM].sqlite_path(self._root, run_id)
         dst = formats.FORMATS[step.TO].sqlite_path(self._root, run_id)
+        history = self.history(run_id)
         if os.stat(src).st_mode & 0o222:  # not yet sealed
             rows = _read_sqlite(src)
             if step.is_live(rows):
                 raise MigrationError("it has a live episode; stop it first")
             # the dry run: a refusal raises before the seal
-            transform_checked(step, rows)
+            planned.run(rows, history)
             seal_sqlite(src)
-        out = transform_checked(step, _read_sqlite(src))
+        migrated = planned.run(_read_sqlite(src), history)
+        out = migrated.rows
+        entry = planned.entry(run_id, migrated)  # before the publish: it can fail
         dst.parent.mkdir(exist_ok=True)
         # A temporary file of this call's own, beside the address: two migrators
         # of one run never unlink or publish each other's. Hidden, and not
@@ -115,6 +153,8 @@ class SqliteStore:
         except BaseException:
             tmp.unlink(missing_ok=True)
             raise
+        with (self._root / SQLITE_MANIFEST).open("a") as f:
+            f.write(entry.to_json() + "\n")
 
 
 class PostgresStore:
@@ -145,10 +185,36 @@ class PostgresStore:
             raise MigrationError(f"no log in any known format for {sorted(missing)}")
         return found
 
-    def migrate_one(self, step: Step, run_id: str) -> None:
+    def rows(self, version: str, run_id: str) -> list[Row]:
         import psycopg
         from psycopg import sql
 
+        with psycopg.connect(self._dsn) as conn:
+            return [
+                Row(*r)
+                for r in conn.execute(
+                    sql.SQL(
+                        "SELECT seq, topic, name, request_id, body, created_at"
+                        " FROM {}.log WHERE run_id = %s ORDER BY seq"
+                    ).format(sql.Identifier(formats.FORMATS[version].pg_schema())),
+                    [run_id],
+                )
+            ]
+
+    def history(self, run_id: str) -> History:
+        import psycopg
+
+        with psycopg.connect(self._dsn) as conn:
+            return _pg_history(conn, run_id)
+
+    def migrate_one(self, planned: Planned, run_id: str) -> None:
+        """Seal, read, refuse or transform, write the new log and insert the run's
+        manifest entry, all in one transaction: a refusal or a failure rolls every
+        part of it back."""
+        import psycopg
+        from psycopg import sql
+
+        step = planned.step
         src = sql.Identifier(formats.FORMATS[step.FROM].pg_schema())
         dst_name = formats.FORMATS[step.TO].pg_schema()
         dst = sql.Identifier(dst_name)
@@ -169,6 +235,7 @@ class PostgresStore:
             ]
             if step.is_live(rows):
                 raise MigrationError("it has a live episode; stop it first")
+            migrated = planned.run(rows, _pg_history(conn, run_id))
             from ..channel.postgres import (
                 _CREATE_INDEX,
                 _CREATE_NAME_INDEX,
@@ -183,5 +250,45 @@ class PostgresStore:
                 cur.executemany(
                     "INSERT INTO log (run_id, seq, topic, name, request_id, body, created_at)"
                     " VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                    [(run_id, *r) for r in transform_checked(step, rows)],
+                    [(run_id, *r) for r in migrated.rows],
                 )
+            _pg_manifest(conn)
+            conn.execute(
+                sql.SQL(
+                    "INSERT INTO {}.manifest (run_id, entry) VALUES (%s, %s)"
+                ).format(sql.Identifier(PG_MANIFEST_SCHEMA)),
+                [run_id, planned.entry(run_id, migrated).to_json()],
+            )
+
+
+def _pg_manifest(conn: "psycopg.Connection[Any]") -> None:
+    """The root's manifest table, created on first use."""
+    from psycopg import sql
+
+    schema = sql.Identifier(PG_MANIFEST_SCHEMA)
+    conn.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(schema))
+    conn.execute(
+        sql.SQL(
+            "CREATE TABLE IF NOT EXISTS {}.manifest (id bigserial PRIMARY KEY,"
+            " run_id text NOT NULL, entry text NOT NULL)"
+        ).format(schema)
+    )
+
+
+def _pg_history(conn: "psycopg.Connection[Any]", run_id: str) -> History:
+    from psycopg import sql
+
+    reg = conn.execute(
+        "SELECT to_regclass(%s)", [f"{PG_MANIFEST_SCHEMA}.manifest"]
+    ).fetchone()
+    if reg is None or reg[0] is None:
+        return ()
+    return tuple(
+        Entry.from_json(text)
+        for (text,) in conn.execute(
+            sql.SQL(
+                "SELECT entry FROM {}.manifest WHERE run_id = %s ORDER BY id"
+            ).format(sql.Identifier(PG_MANIFEST_SCHEMA)),
+            [run_id],
+        )
+    )
