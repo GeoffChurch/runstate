@@ -544,6 +544,12 @@ class OracleReader:
     def value(self, seq: int) -> frozenset[V.ValueRole]:
         return self._roles[seq]
 
+    def key(self) -> Hashable:
+        return (
+            tuple(sorted(self._stops.items(), key=repr)),
+            tuple(sorted(self._roles.items(), key=repr)),
+        )
+
 
 class Oracle:
     """The oracle classifier (``V.Classifier``): one reader, for the log its histories
@@ -554,6 +560,10 @@ class Oracle:
 
     def read(self, log: Sequence[Row]) -> OracleReader:
         return self._reader
+
+    def key(self) -> Hashable:
+        """What the classifier answers, as a value: two that answer alike are equal."""
+        return self._reader.key()
 
 
 def configuration(observations: Sequence[Observation]) -> V.Configuration:
@@ -585,6 +595,15 @@ def configuration(observations: Sequence[Observation]) -> V.Configuration:
                 third[a.writer] = V.ThirdPartyFacts(
                     frozenset(), frozenset(), frozenset(), frozenset(), frozenset()
                 )
+    # true of every history by construction: each element's declared class is among
+    # the classes its behaviour is consistent with, and a union only widens. ``holds``
+    # checks it, as the engine checks a statement against a log.
+    for ob in observations:
+        for seq, facts in ob.claims.items():
+            statement = workers[f"claim@{seq}"]
+            assert all(holds(getattr(statement, k), es) for k, es in facts.items())
+        for key, facts in ob.third.items():
+            assert all(holds(getattr(third[key], k), es) for k, es in facts.items())
     reader = OracleReader(
         {k: frozenset(v) for k, v in stops.items()},
         {k: frozenset(v) for k, v in roles.items()},

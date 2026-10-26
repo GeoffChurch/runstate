@@ -3,7 +3,8 @@ conforming 0.3.0 writers.
 
 The two encodings of §7's target are independent: the step's engine
 (``runstate.migrations.v0_3_0_to_v0_4_0_engine``) never imports ``tests/migration_sim``,
-and the simulator never imports the step. This module is the only one that imports both.
+and the simulator never imports the step. This module, and the mutation test that runs
+it (``tests/migration_mutation.py``), are the only ones that import both.
 Where they disagree, the prose decides which is wrong (commits-and-lineage.md §7, "The
 referee").
 
@@ -31,9 +32,10 @@ domain: its refusal names the record, which property 3 accepts.
 
 from __future__ import annotations
 
+import functools
 import json
 from collections import defaultdict
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Hashable, Iterator, Sequence
 from dataclasses import fields, replace
 from functools import partial
 from typing import Any, NamedTuple
@@ -89,8 +91,8 @@ class Want(NamedTuple):
 def want(h: H.History) -> Want:
     """The truth of ``h``, read as the engine reads a path: Origin, End and Span per
     claim, and the run's End."""
-    t = T.truth(h)
-    rows = render(h).rows
+    t = truth(h)
+    rows = rendered(h).rows
     named = {r.seq: _claim_seq(r) for r in rows if r.topic == "lifecycle.stopped"}
     claims = [r.seq for r in rows if r.topic == "lifecycle.started"]
     L = t.lineage
@@ -185,19 +187,43 @@ def matches(ctx: E.Context, pieces: Sequence[E.Piece], w: Want) -> bool:
 # ----- the engine on a log ------------------------------------------------------------
 
 
-def run(histories: Sequence[H.History]) -> E.Graph:
+# A history's render, truth and observation, each read by several checks: kept for the
+# histories one family test reads together. The size changes no result.
+rendered = functools.lru_cache(maxsize=4096)(render)
+truth = functools.lru_cache(maxsize=4096)(T.truth)
+observed = functools.lru_cache(maxsize=4096)(D.observe)
+
+
+def run(
+    histories: Sequence[H.History], *, graphs: dict[Hashable, E.Graph] | None = None
+) -> E.Graph:
     """The engine on the log ``histories`` write, under the facts and answers true of
-    every one of them."""
-    rows = list(render(histories[0]).rows)
-    cfg = D.configuration([D.observe(h) for h in histories])
-    return E.candidates(rows, cfg, born=D.born(histories[0]), cap=CAP, run_on=RUN_ON)
+    every one of them. ``graphs`` keeps the graph per log and configuration, for checks
+    that run many alike; it changes no result."""
+    rows = rendered(histories[0]).rows
+    cfg = D.configuration([observed(h) for h in histories])
+    key: Hashable = None
+    if graphs is not None:
+        assert isinstance(cfg.classifier, D.Oracle)
+        key = (
+            rows,
+            tuple(sorted(cfg.workers.items(), key=repr)),
+            tuple(sorted(cfg.third_parties.items(), key=repr)),
+            cfg.classifier.key(),
+        )
+        if key in graphs:
+            return graphs[key]
+    g = E.candidates(list(rows), cfg, born=D.born(histories[0]), cap=CAP, run_on=RUN_ON)
+    if graphs is not None:
+        graphs[key] = g
+    return g
 
 
 def parsed(h: H.History) -> bool:
     """Whether the step's parse reads the log: what it refuses (M9) never reaches the
     engine."""
     try:
-        parse(list(render(h).rows))
+        parse(list(rendered(h).rows))
     except MigrationError:
         return False
     return True
@@ -287,7 +313,7 @@ FAMILIES = families()
 def by_log(histories: Iterator[H.History]) -> dict[tuple[Row, ...], list[H.History]]:
     groups: dict[tuple[Row, ...], list[H.History]] = defaultdict(list)
     for h in histories:
-        groups[render(h).rows].append(h)
+        groups[rendered(h).rows].append(h)
     return groups
 
 
@@ -295,7 +321,7 @@ def distinct(hs: Sequence[H.History]) -> list[H.History]:
     """One history per distinct truth."""
     seen: dict[T.Lineage, H.History] = {}
     for h in hs:
-        seen.setdefault(T.truth(h).lineage, h)
+        seen.setdefault(truth(h).lineage, h)
     return list(seen.values())
 
 
@@ -313,7 +339,7 @@ def own(h: H.History) -> None:
     ), f"refused at record {g.stopped_at} under the history's own facts"
     w = want(h)
     assert reachable(g, w, cap=PATHS), "the history's truth is no candidate"
-    if not E.questions(g):  # one answer: it must be the truth, its end times too
+    if not E.forked(g, cap=PATHS):  # one answer: the truth, its end times too
         assert readings_of(g.ctx, E.witness(g)) == w.readings
         times = times_over(g)
         if times is not None:
@@ -343,11 +369,16 @@ PROJECTIONS: tuple[tuple[E.Projection, Callable[[E.Reading], object]], ...] = (
 )
 
 
-def silent(one: H.History, other: H.History) -> list[str]:
+def silent(
+    one: H.History,
+    other: H.History,
+    *,
+    graphs: dict[Hashable, E.Graph] | None = None,
+) -> list[str]:
     """Where the engine, under the facts true of both, leaves either truth out, or
     reports no fork in a projection where the two differ. A truth's end times are part
     of its being a candidate (``matches``)."""
-    g = run([one, other])
+    g = run([one, other], graphs=graphs)
     assert E.admits(g), "refused under the facts true of both"
     a, b = want(one), want(other)
     found = [
@@ -355,7 +386,7 @@ def silent(one: H.History, other: H.History) -> list[str]:
         for name, w in (("first", a), ("second", b))
         if not reachable(g, w, cap=PATHS)
     ]
-    forked = {(q.subject, q.projection) for q in E.questions(g)}
+    forked = {(k.subject, k.projection) for k in E.forked(g, cap=PATHS)}
     for s, ra in a.readings.items():
         for projection, of in PROJECTIONS:
             if of(ra) != of(b.readings[s]) and (s, projection) not in forked:
@@ -373,9 +404,10 @@ def test_named_pairs_are_forks() -> None:
 def test_family_logs_two_truths_write_are_forks(family: str) -> None:
     for hs in by_log(FAMILIES[family]()).values():
         reps = [h for h in distinct(hs) if parsed(h)]
+        graphs: dict[Hashable, E.Graph] = {}
         for k, one in enumerate(reps):
             for other in reps[k + 1 :]:
-                assert silent(one, other) == []
+                assert silent(one, other, graphs=graphs) == []
 
 
 # ----- 5: the candidate set is order-free, and the decode follows its rule ------------
@@ -401,8 +433,15 @@ def last(q: E.Question) -> E.Answer:
 Path = tuple[tuple[E.Piece, ...], ...]
 
 
-def _at(ctx: E.Context, path: Path, s: int, pr: E.Projection, k: int) -> Any:
-    return E._reads(ctx, E.Edge(0, 0, path[k]), s, pr)
+def _reads(ctx: E.Context, path: Path) -> dict[E.Key, tuple[E.Read, ...]]:
+    """What one listed path reads at each key, in order."""
+    out: dict[E.Key, tuple[E.Read, ...]] = defaultdict(tuple)
+    for k, part in enumerate(path):
+        for p in part:
+            r = E._read(ctx, p, k)
+            if r is not None:
+                out[r[0]] += (r[1],)
+    return out
 
 
 def last_first(ctx: E.Context) -> list[int]:
@@ -414,22 +453,27 @@ def last_first(ctx: E.Context) -> list[int]:
 def listed_questions(
     ctx: E.Context, listed: Sequence[Path], order: Sequence[int]
 ) -> list[E.Question]:
-    """The forks of an explicit list of paths, subject by subject in ``order``: what the
-    engine's ``questions`` must find, read off the list instead of the graph. Their
-    witnesses are any listed path that reads each answer."""
+    """The forks of an explicit list of paths, subject by subject in ``order``, then by
+    projection and position: what the engine's ``questions`` must find, read off the list
+    instead of the graph. Their witnesses are any listed path that reads each answer."""
+    reads = [_reads(ctx, path) for path in listed]
+    keys = {key for r in reads for key in r}
+    rank = {s: k for k, s in enumerate(order)}
+    projections = list(E.Projection)
     out: list[E.Question] = []
-    for s in order:
-        for pr in E.Projection:
-            for k in range(len(listed[0])):
-                by: dict[Any, Path] = {}
-                for path in listed:
-                    by.setdefault(_at(ctx, path, s, pr, k), path)
-                if len(by) > 1:
-                    answers = tuple(
-                        E.Answer(v, tuple(p for part in path for p in part))
-                        for v, path in sorted(by.items(), key=lambda kv: repr(kv[0]))
-                    )
-                    out.append(E.Question(s, pr, k, answers))
+    for key in sorted(
+        (x for x in keys if x.subject in rank),
+        key=lambda x: (rank[x.subject], projections.index(x.projection), x.position),
+    ):
+        by: dict[tuple[E.Read, ...], Path] = {}
+        for path, r in zip(listed, reads):
+            by.setdefault(r.get(key, ()), path)
+        if len(by) > 1:
+            answers = tuple(
+                E.Answer(v, tuple(p for part in path for p in part))
+                for v, path in sorted(by.items(), key=lambda kv: repr(kv[0]))
+            )
+            out.append(E.Question(key, answers))
     return out
 
 
@@ -447,9 +491,7 @@ def decoded_by_list(
         choice = pick(q)
         assert choice is not None
         left = [
-            path
-            for path in left
-            if _at(ctx, path, q.subject, q.projection, q.layer) == choice.value
+            path for path in left if _reads(ctx, path).get(q.key, ()) == choice.value
         ]
     readings = {
         tuple(sorted(readings_of(ctx, [p for part in path for p in part]).items()))
@@ -460,8 +502,9 @@ def decoded_by_list(
 
 
 def ordered(h: H.History | Sequence[H.History]) -> None:
-    """Property 5: the engine's forks are the explicit list's, each read off one layer;
-    and its decode, fork by fork, gives what the rule gives over the list."""
+    """Property 5: the engine's forks are the explicit list's, each gathered over its
+    own window of the graph; and its decode, fork by fork, gives what the rule gives
+    over the list."""
     hs = [h] if isinstance(h, H.History) else list(h)
     if not parsed(hs[0]):
         return
@@ -471,17 +514,16 @@ def ordered(h: H.History | Sequence[H.History]) -> None:
     except E.TooMany:
         return  # too many to list: the engine's own forks stand alone
     found = [
-        (q.subject, q.projection, q.layer, tuple(a.value for a in q.answers))
-        for q in E.questions(g)
+        (q.key, tuple(a.value for a in q.answers)) for q in E.questions(g, cap=PATHS)
     ]
     want_ = [
-        (q.subject, q.projection, q.layer, tuple(a.value for a in q.answers))
+        (q.key, tuple(a.value for a in q.answers))
         for q in listed_questions(g.ctx, listed, last_first(g.ctx))
     ]
     assert found == want_
     for pick in (first, last):
-        d = E.decode(g, pick)
-        assert E.questions(d) == []
+        d = E.decode(g, pick, cap=PATHS)
+        assert E.questions(d, cap=PATHS) == []
         got = readings_of(g.ctx, E.witness(d))
         assert got == decoded_by_list(g.ctx, listed, pick, last_first(g.ctx))
 
@@ -774,7 +816,7 @@ def test_the_decode_reads_the_last_claim_first() -> None:
             return min(q.answers, key=holder)
         return min(q.answers, key=lambda a: len(a.value))
 
-    got = readings_of(g.ctx, E.witness(E.decode(g, oldest_then_least)))
+    got = readings_of(g.ctx, E.witness(E.decode(g, oldest_then_least, cap=PATHS)))
     a, c = got[1], got[12]
     assert c.origin == E.CommitId(1, 2) and len(a.span.commits) == 3
     forward = decoded_by_list(

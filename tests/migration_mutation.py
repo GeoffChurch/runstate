@@ -8,6 +8,9 @@ tells apart (property 1). A mutation the oracle does not catch is a blind spot o
 oracle: no family or named history needs that rule. It is recorded, and closed by a
 family or argued harmless.
 
+With the oracle, it is the only module that imports both encodings: it patches the
+engine and runs the oracle's checks over the simulator's histories.
+
 Run from the repository root: ``python -m tests.migration_mutation [name ...]``. It
 prints, per mutation, the first check that caught it, or ``SURVIVED``.
 """
@@ -255,7 +258,9 @@ def _mutations() -> dict[str, Patch]:
             "reading": lambda ctx, s, ps: reading(ctx, s, ps)._replace(origin=None)
         },
         "read: an exit": {
-            "_read": lambda ctx, p: None if isinstance(p, E.PExit) else read(ctx, p)
+            "_read": lambda ctx, p, k: (
+                None if isinstance(p, E.PExit) else read(ctx, p, k)
+            )
         },
     }
 

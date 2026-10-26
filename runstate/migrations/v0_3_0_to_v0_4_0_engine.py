@@ -328,10 +328,13 @@ class PBeat(NamedTuple):
 
 
 class PRewind(NamedTuple):
+    """Span: a reload between passes, placed as a commit is (``Gaps``)."""
+
     claim: int
     commits: int
     epoch: int
     target: Node | None
+    gaps: Gaps
 
 
 class PExit(NamedTuple):
@@ -452,10 +455,10 @@ class Held(NamedTuple):
     gen: int
 
 
-NOTHING = Held(-1, None, 0, -1)
+NOTHING = Held(step=-1, node=None, by=0, gen=-1)
 """No save at all: the checkpoint may hold nothing."""
 
-SOME = Held(-2, None, 0, -2)
+SOME = Held(step=-2, node=None, by=0, gen=-2)
 """A save whose identity nothing after reads: no later claim or rewind takes the newest
 save (C's BLOCKED)."""
 
@@ -521,6 +524,9 @@ class Wk(NamedTuple):
 class World(NamedTuple):
     workers: tuple[Wk, ...]  # in claim order
     latest: int  # the latest claim's seq; 0 before any
+    # the statement the latest claim's version makes, the version its worker loaded as:
+    # a later gate and a stray read it after its worker has ended; None before any
+    version: int | None
     released: frozenset[int]  # claims a release named
     ended: frozenset[int]  # claims an exit node or a death report ended (§2, ``ended``)
     nodes: frozenset[int]  # claims with an exit node
@@ -534,6 +540,7 @@ class World(NamedTuple):
 START = World(
     workers=(),
     latest=0,
+    version=None,
     released=frozenset(),
     ended=frozenset(),
     nodes=frozenset(),
@@ -866,6 +873,11 @@ def _wf(ctx: Context, w: Wk) -> WorkerFacts:
 # ----- saves: what a worker may save, and what a stated save rules out ----------------
 
 
+def _held(w: Wk, step: int, node: Node | None) -> Held:
+    """A save the worker makes now: of a state at ``step``, naming ``node``."""
+    return Held(step=step, node=node, by=w.claim, gen=w.passes)
+
+
 def _offers(ctx: Context, w: Wk) -> frozenset[Held]:
     """The saves the worker may make in its stage, at any moment of it: the state it
     loaded, before its first pass; its partial state, in a pass (and, once fenced, its
@@ -877,15 +889,15 @@ def _offers(ctx: Context, w: Wk) -> frozenset[Held]:
     node = None if w.released else w.state
     out: set[Held] = set()
     if w.stage is Stage.LOADING and SaveAt.BEFORE_LOOP in at:
-        out.add(Held(w.held, node, w.claim, w.passes))
+        out.add(_held(w, w.held, node))
     elif w.stage is Stage.ITERATING:
         if SaveAt.PARTIAL in at or (w.released and SaveAt.IN_PASS in at):
-            out.add(Held(w.clock, None, w.claim, w.passes))
+            out.add(_held(w, w.clock, None))
     elif w.stage is Stage.BETWEEN and SaveAt.BETWEEN in at:
-        out.add(Held(w.held, node, w.claim, w.passes))
+        out.add(_held(w, w.held, node))
     elif w.stage is Stage.EXITED and SaveAt.AFTER_EXIT in at:
         kept = w.kind is Kind.EXTENDABLE and not w.released
-        out.add(Held(w.held, ExitId(w.claim) if kept else None, w.claim, w.passes))
+        out.add(_held(w, w.held, ExitId(w.claim) if kept else None))
     return frozenset(out)
 
 
@@ -894,7 +906,7 @@ def _completed(ctx: Context, w: Wk, node: Node | None) -> Held | None:
     between passes, where its version may make one (§7, ``save-at``)."""
     at = _wf(ctx, w).save_at
     if {SaveAt.IN_PASS, SaveAt.AT_CLOSE, SaveAt.BETWEEN} & at:
-        return Held(w.clock, None if w.released else node, w.claim, w.passes)
+        return _held(w, w.clock, None if w.released else node)
     return None
 
 
@@ -990,7 +1002,13 @@ def _cut(ctx: Context, w: Wk, slot: frozenset[Held], gaps: Gaps) -> Iterator[Cut
     for landed in (True, False):
         finishes = {CutSave.SAVE_START} | ({CutSave.LANDED} if landed else set())
         if finishes & stated:
-            piece = PCommit(w.claim, w.commits, w.epoch, w.position, gaps)
+            piece = PCommit(
+                claim=w.claim,
+                nth=w.commits,
+                epoch=w.epoch,
+                parent=w.position,
+                gaps=gaps,
+            )
             y = w._replace(
                 commits=w.commits + 1,
                 epoch=w.epoch + 1,
@@ -999,10 +1017,10 @@ def _cut(ctx: Context, w: Wk, slot: frozenset[Held], gaps: Gaps) -> Iterator[Cut
                 held=w.clock,
                 dating=None,
             )
-            made = Held(w.clock, node, w.claim, w.passes) if landed else None
+            made = _held(w, w.clock, node) if landed else None
             yield Cut(y, _made(slot, w, made) if made else slot, (piece,), made)
         if landed and (set(CutSave) - finishes) & stated:
-            made = Held(w.clock, None, w.claim, w.passes)
+            made = _held(w, w.clock, None)
             yield Cut(w, _made(slot, w, made), (), made)
 
 
@@ -1096,7 +1114,15 @@ def _silent(
         node: Node | None = None
         if not x.released:
             node = CommitId(x.claim, x.commits)
-            new = (PCommit(x.claim, x.commits, x.epoch, x.position, UNPLACED),)
+            new = (
+                PCommit(
+                    claim=x.claim,
+                    nth=x.commits,
+                    epoch=x.epoch,
+                    parent=x.position,
+                    gaps=UNPLACED,
+                ),
+            )
             y = y._replace(
                 position=node,
                 commits=x.commits + 1,
@@ -1164,7 +1190,15 @@ def _silent(
         )
         new: tuple[Piece, ...] = ()
         if not x.released:
-            new = (PRewind(x.claim, x.commits, x.epoch, node),)
+            new = (
+                PRewind(
+                    claim=x.claim,
+                    commits=x.commits,
+                    epoch=x.epoch,
+                    target=node,
+                    gaps=UNPLACED,
+                ),
+            )
             y = y._replace(position=node, epoch=x.epoch + 1)
         for s2, o2 in _offer(ctx, i, slot, older, _offers(ctx, y)):
             visit(y, s2, o2, pieces + new, True)
@@ -1480,10 +1514,11 @@ def _placed(
     new = [
         k
         for k, p in enumerate(run.pieces)
-        if isinstance(p, PCommit) and p.gaps == UNPLACED
+        if isinstance(p, (PCommit, PRewind)) and p.gaps == UNPLACED
     ]
     spans = _spans(ctx, w.fixed, i)
-    last = run.pieces[new[-1]] if new else None
+    closes = [k for k in new if isinstance(run.pieces[k], PCommit)]
+    last = run.pieces[closes[-1]] if closes else None
     datable = (
         tick
         and x is not None
@@ -1497,9 +1532,9 @@ def _placed(
         for k, j in zip(new, choice):
             g = _gaps(ctx, spans[j], spans[j].first, spans[j].last)
             p = pieces[k]
-            assert isinstance(p, PCommit)
+            assert isinstance(p, (PCommit, PRewind))
             pieces[k] = p._replace(gaps=g)
-            if y is not None:
+            if y is not None and isinstance(p, PCommit):
                 y = _commit_drain(ctx, world, y, g)
         if y is not None:
             y = y._replace(fixed=i, dating=y.dating if datable else None)
@@ -1548,16 +1583,7 @@ def _stray(ctx: Context, world: World, rec: Rec, roles: frozenset[ValueRole]) ->
     if not any(r.role is Role.STRAY for r in roles):
         return False
     cls = Stray.STEPLESS if rec.step is None else Stray.STEPPED
-    return world.latest == 0 or any(
-        cls in ctx.workers[k].strays for k in _latest(ctx, world)
-    )
-
-
-def _latest(ctx: Context, world: World) -> tuple[int, ...]:
-    """The statements the latest claim's version may make: the version of its worker
-    alive, or, once it has ended, any its classifier names."""
-    w = next((x for x in world.workers if x.claim == world.latest), None)
-    return (w.facts,) if w is not None else ctx.versions.get(world.latest, ())
+    return world.version is None or cls in ctx.workers[world.version].strays
 
 
 _ROLE_STAGE = {
@@ -1755,7 +1781,7 @@ def _exit(
             if c.kept and keeps:
                 # the landed save of the open pass's completed state, which an exit that
                 # keeps the pass holds (§6)
-                held = Held(x.clock, ExitId(x.claim), x.claim, x.passes)
+                held = _held(x, x.clock, ExitId(x.claim))
                 s = (s - set(made)) | {held}
                 made = [held]
             z = _drain(ctx, world, z, rec.seq - 1)._replace(
@@ -1765,13 +1791,13 @@ def _exit(
             out = pieces + (
                 PStop(rec.seq, x.claim, Author.EXIT, None),
                 PExit(
-                    x.claim,
-                    rec.seq,
-                    z.epoch,
-                    z.position,
-                    kind,
-                    not clean or discards,
-                    honored,
+                    claim=x.claim,
+                    seq=rec.seq,
+                    epoch=z.epoch,
+                    parent=z.position,
+                    kind=kind,
+                    discarded=not clean or discards,
+                    honored=honored,
                 ),
             )
             nworld = nworld._replace(
@@ -1976,9 +2002,8 @@ def _gate(
         # its worker has ended; its process with it, unless a claim from here on runs in
         # it
         if not free and ctx.handles[p] in ctx.reused[i]:
-            if not any(
-                Takeover.DEAD in ctx.workers[k].takeover for k in ctx.versions[p]
-            ):
+            assert world.version is not None  # the latest claim's
+            if Takeover.DEAD not in ctx.workers[world.version].takeover:
                 return
         yield from _reported(ctx, i, world, rec, pieces, p)
         return
@@ -2105,7 +2130,11 @@ def _load(
                     took=frozenset(),
                 )
                 nworld = world._replace(
-                    workers=_put(world, w, c), latest=c, slot=ld.slot, older=ld.older
+                    workers=_put(world, w, c),
+                    latest=c,
+                    version=k,
+                    slot=ld.slot,
+                    older=ld.older,
                 )
                 # every live worker may save after the claim: its offers join the
                 # checkpoint again
@@ -2384,11 +2413,20 @@ class Lineage(NamedTuple):
     withdrawals: tuple[PWithdrawal, ...]
 
 
-class EndTime(Enum):
-    """The end-time fork's generic choosers (§7)."""
+EndChooser: TypeAlias = Callable[[CommitId, float, tuple[float, ...]], float]
+"""The end-time fork's chooser (§7): an undated commit's end time from its lower bound
+and its upper bounds, earliest first. A consumer's own may date it off the log."""
 
-    LOWER = "lower"  # the claim's newest own record's t at or before the commit
-    UPPER = "upper"  # the t of the next record after it
+
+def lower(commit: CommitId, low: float, highs: tuple[float, ...]) -> float:
+    """``lower``: the newest ``t`` among the claim's own records at or before it."""
+    return low
+
+
+def upper(commit: CommitId, low: float, highs: tuple[float, ...]) -> float:
+    """``upper``: the ``t`` of the next record after it; its lower bound after the
+    log's last record."""
+    return highs[0] if highs else low
 
 
 def _own(ps: Iterable[Piece]) -> dict[int, list[int]]:
@@ -2420,10 +2458,10 @@ def bounds(
     at or before it; and its upper bounds, the ``t`` of the record after each gap it may
     stand in, earliest first (none after the log's last record)."""
     last = max(s for s in own if s <= gaps.first)
-    lower = ctx.recs[ctx.by_seq[last]].t
+    low = ctx.recs[ctx.by_seq[last]].t
     g0, g1 = ctx.by_seq[gaps.first], ctx.by_seq[gaps.last]
     n = len(ctx.recs)
-    return lower, tuple(ctx.recs[g + 1].t for g in range(g0, g1 + 1) if g + 1 < n)
+    return low, tuple(ctx.recs[g + 1].t for g in range(g0, g1 + 1) if g + 1 < n)
 
 
 def times(ctx: Context, pieces: Sequence[Piece]) -> dict[CommitId, frozenset[float]]:
@@ -2438,12 +2476,12 @@ def times(ctx: Context, pieces: Sequence[Piece]) -> dict[CommitId, frozenset[flo
             if t is not None:
                 out[CommitId(p.claim, p.nth)] = frozenset({t})
             else:
-                lower, uppers = bounds(ctx, own[p.claim], p.gaps)
-                out[CommitId(p.claim, p.nth)] = frozenset({lower, *uppers})
+                low, highs = bounds(ctx, own[p.claim], p.gaps)
+                out[CommitId(p.claim, p.nth)] = frozenset({low, *highs})
     return out
 
 
-def lineage(ctx: Context, pieces: Iterable[Piece], *, when: EndTime) -> Lineage:
+def lineage(ctx: Context, pieces: Iterable[Piece], *, when: EndChooser) -> Lineage:
     """The lineage of one path's pieces."""
     ps = list(pieces)
     own = _own(ps)
@@ -2460,8 +2498,8 @@ def lineage(ctx: Context, pieces: Iterable[Piece], *, when: EndTime) -> Lineage:
         if isinstance(p, PCommit):
             t = dated.get((p.claim, p.nth))
             if t is None:
-                lower, uppers = bounds(ctx, own[p.claim], p.gaps)
-                t = lower if when is EndTime.LOWER or not uppers else uppers[0]
+                low, highs = bounds(ctx, own[p.claim], p.gaps)
+                t = when(CommitId(p.claim, p.nth), low, highs)
             commits.append(
                 Commit(
                     CommitId(p.claim, p.nth),
@@ -2681,39 +2719,50 @@ Read: TypeAlias = (
 )
 
 
-def _read(ctx: Context, p: Piece) -> tuple[int, Projection, Read] | None:
-    """What a ``Reading`` reads of one piece: its subject, its projection, and the piece
-    cut to that. None for a piece no reading reads: who wrote a value or a beat, a
-    stopped's author, a fence, a run's end, a commit's date (end times stand apart)."""
+class Key(NamedTuple):
+    """Where a fork is asked: a subject, a projection, and a position. A record's own
+    pieces stand at its index; a commit or a rewind a silent run made, at its
+    placement's boundary, wherever the pass read it in: so one commit is one question,
+    whichever later record its worker was read at."""
+
+    subject: int
+    projection: Projection
+    position: int
+
+
+def _read(ctx: Context, p: Piece, layer: int) -> tuple[Key, Read] | None:
+    """What a ``Reading`` reads of one piece at layer ``layer``: where it is asked, and
+    the piece cut to what is read. None for a piece no reading reads: who wrote a value
+    or a beat, a stopped's author, a fence, a run's end, a commit's date (end times
+    stand apart)."""
     if isinstance(p, PStart):
-        return p.claim, Projection.ORIGIN, Resumes(p.claim, p.resume)
+        return Key(p.claim, Projection.ORIGIN, layer), Resumes(p.claim, p.resume)
     if isinstance(p, (PDied, PWithdrawal, PTerminated)):
-        return _subject(ctx, p), Projection.END, p
-    if isinstance(p, PCommit):
+        return Key(_subject(ctx, p), Projection.END, layer), p
+    if isinstance(p, (PCommit, PRewind)):
         # where in its interval it stands, and its end time, are no part of Span
         at = Gaps(p.gaps.after, p.gaps.after, p.gaps.after)
-        return p.claim, Projection.SPAN, p._replace(gaps=at)
-    if isinstance(p, (PHold, PRewind, PExit)):
-        return p.claim, Projection.SPAN, p
+        key = Key(p.claim, Projection.SPAN, ctx.by_seq[p.gaps.after])
+        return key, p._replace(gaps=at)
+    if isinstance(p, (PHold, PExit)):
+        return Key(p.claim, Projection.SPAN, layer), p
     if isinstance(p, (PValue, PBeat, PStop, PFence, PRunEnd, PDate)):
         return None
     assert_never(p)
 
 
-def _reads(
-    ctx: Context, e: Edge, subject: int, projection: Projection
-) -> tuple[Read, ...]:
-    """What one edge decides of a subject's projection."""
+def _mine(ctx: Context, e: Edge, layer: int, key: Key) -> tuple[Read, ...]:
+    """What one edge decides at ``key``."""
     out: list[Read] = []
     for p in e.pieces:
-        r = _read(ctx, p)
-        if r is not None and r[0] == subject and r[1] is projection:
-            out.append(r[2])
+        r = _read(ctx, p, layer)
+        if r is not None and r[0] == key:
+            out.append(r[1])
     return tuple(out)
 
 
 class Answer(NamedTuple):
-    """One way the paths left read a subject's projection at one record, with one
+    """One way the paths left read a subject's projection at one position, with one
     complete path's pieces that read it so (its witness)."""
 
     value: tuple[Read, ...]
@@ -2721,12 +2770,10 @@ class Answer(NamedTuple):
 
 
 class Question(NamedTuple):
-    """A fork: the paths read a subject's projection at one record more than one way.
-    ``layer`` is the record's index, or the number of records for the log's end."""
+    """A fork: the paths read a subject's projection at one position more than one
+    way."""
 
-    subject: int
-    projection: Projection
-    layer: int
+    key: Key
     answers: tuple[Answer, ...]
 
 
@@ -2750,58 +2797,137 @@ def _witness(g: Graph, k: int, e: Edge) -> tuple[Piece, ...]:
 
 
 def witness(g: Graph) -> tuple[Piece, ...]:
-    """One complete path's pieces: the answer itself, where ``questions`` finds no
+    """One complete path's pieces: the answer itself, where ``forked`` finds no
     fork."""
     assert admits(g)
     return _witness(g, 0, g.live[0][0])
 
 
-def _question(
-    g: Graph, subject: int, projection: Projection, k: int
-) -> Question | None:
-    """The fork at layer ``k``, if the live edges there read the subject's projection
-    more than one way."""
-    by: dict[tuple[Read, ...], Edge] = {}
-    for e in g.live[k]:
-        by.setdefault(_reads(g.ctx, e, subject, projection), e)
-    if len(by) < 2:
-        return None
-    answers = tuple(
-        Answer(value, _witness(g, k, e))
-        for value, e in sorted(by.items(), key=lambda kv: repr(kv[0]))
-    )
-    return Question(subject, projection, k, answers)
-
-
-def _marks(g: Graph) -> dict[tuple[int, Projection], list[int]]:
-    """For each subject and projection, the layers whose edges read it."""
-    out: dict[tuple[int, Projection], list[int]] = defaultdict(list)
+def _windows(g: Graph) -> dict[Key, tuple[int, int]]:
+    """Each key's window: the first and last layer whose edges read it."""
+    out: dict[Key, tuple[int, int]] = {}
     for k, es in enumerate(g.live):
-        found = {
-            (r[0], r[1])
-            for e in es
-            for p in e.pieces
-            if (r := _read(g.ctx, p)) is not None
-        }
-        for key in found:
-            out[key].append(k)
+        for e in es:
+            for p in e.pieces:
+                r = _read(g.ctx, p, k)
+                if r is not None:
+                    lo, _ = out.get(r[0], (k, k))
+                    out[r[0]] = (lo, k)
     return out
 
 
-def questions(g: Graph) -> list[Question]:
-    """Every fork of the candidate set, per subject, projection and record, each with
+def _values(
+    g: Graph, key: Key, window: tuple[int, int], *, cap: int
+) -> set[tuple[Read, ...]]:
+    """What the paths read at ``key``: each path's reads there, in order, gathered over
+    the key's window, per state. Raises ``TooMany`` past ``cap`` at a state."""
+    lo, hi = window
+    at: dict[int, set[tuple[Read, ...]]] = {e.src: {()} for e in g.live[lo]}
+    for k in range(lo, hi + 1):
+        nxt: dict[int, set[tuple[Read, ...]]] = defaultdict(set)
+        for e in g.live[k]:
+            mine = _mine(g.ctx, e, k, key)
+            for v in at.get(e.src, ()):
+                nxt[e.dst].add(v + mine)
+        if any(len(vs) > cap for vs in nxt.values()):
+            raise TooMany(f"more than {cap} answers at {key} reach one state")
+        at = nxt
+    return {v for vs in at.values() for v in vs}
+
+
+def _restrict(
+    g: Graph, key: Key, window: tuple[int, int], value: tuple[Read, ...]
+) -> Graph:
+    """The graph of the complete paths that read ``value`` at ``key``. Inside the key's
+    window a state is split by what the path read there so far, a prefix of ``value``;
+    it is whole again after."""
+    lo, hi = window
+    split: dict[tuple[int, int, tuple[Read, ...]], int] = {}
+
+    def sid(k: int, state: int, prefix: tuple[Read, ...]) -> int:
+        """A split state's id in layer ``k``, apart from every whole one's."""
+        return split.setdefault((k, state, prefix), -1 - len(split))
+
+    live = list(g.live)
+    at: dict[int, set[tuple[Read, ...]]] = {e.src: {()} for e in g.live[lo]}
+    for k in range(lo, hi + 1):
+        kept: list[Edge] = []
+        nxt: dict[int, set[tuple[Read, ...]]] = defaultdict(set)
+        for e in g.live[k]:
+            mine = _mine(g.ctx, e, k, key)
+            for prefix in at.get(e.src, ()):
+                reached = prefix + mine
+                if reached != value[: len(reached)]:
+                    continue
+                if k == hi and reached != value:
+                    continue
+                src = e.src if k == lo else sid(k, e.src, prefix)
+                dst = e.dst if k == hi else sid(k + 1, e.dst, reached)
+                kept.append(Edge(src, dst, e.pieces))
+                nxt[e.dst].add(reached)
+        live[k] = tuple(dict.fromkeys(kept))
+        at = nxt
+    return replace(g, live=_alive(live))
+
+
+def _question(
+    g: Graph, key: Key, window: tuple[int, int], *, cap: int
+) -> Question | None:
+    """The fork at ``key``, if the paths read it more than one way, each answer with a
+    witness."""
+    lo, hi = window
+    if lo == hi:  # read off one layer: each answer's witness runs through its edge
+        by: dict[tuple[Read, ...], Edge] = {}
+        for e in g.live[lo]:
+            by.setdefault(_mine(g.ctx, e, lo, key), e)
+        if len(by) < 2:
+            return None
+        return Question(
+            key,
+            tuple(
+                Answer(v, _witness(g, lo, e))
+                for v, e in sorted(by.items(), key=lambda kv: repr(kv[0]))
+            ),
+        )
+    values = sorted(_values(g, key, window, cap=cap), key=repr)
+    if len(values) < 2:
+        return None
+    answers = tuple(Answer(v, witness(_restrict(g, key, window, v))) for v in values)
+    return Question(key, answers)
+
+
+def _order(g: Graph, windows: Mapping[Key, tuple[int, int]]) -> list[Key]:
+    """The keys in the decode's order: subjects last claim first, then the run; for each,
+    End, Span, Origin; positions in log order."""
+    rank = {s: k for k, s in enumerate(subjects(g))}
+    projections = list(Projection)
+    return sorted(
+        windows,
+        key=lambda x: (rank[x.subject], projections.index(x.projection), x.position),
+    )
+
+
+def questions(g: Graph, *, cap: int) -> list[Question]:
+    """Every fork of the candidate set, per subject, projection and position, each with
     its answers and their witnesses, in the decode's order: what is reported of an
-    ambiguous run. Each is read off one layer's live edges: the forks are counted
-    apart, never multiplied into whole readings."""
-    marks = _marks(g)
+    ambiguous run. Each is read off the key's own window of the graph: the forks are
+    counted apart, never multiplied into whole readings."""
+    windows = _windows(g)
     out: list[Question] = []
-    for subject in subjects(g):
-        for projection in Projection:
-            for k in marks.get((subject, projection), []):
-                q = _question(g, subject, projection, k)
-                if q is not None:
-                    out.append(q)
+    for key in _order(g, windows):
+        q = _question(g, key, windows[key], cap=cap)
+        if q is not None:
+            out.append(q)
     return out
+
+
+def forked(g: Graph, *, cap: int) -> frozenset[Key]:
+    """The keys the candidates fork at: where ``questions`` finds a fork, without its
+    witnesses."""
+    windows = _windows(g)
+    return frozenset(
+        key for key, w in windows.items() if len(_values(g, key, w, cap=cap)) > 1
+    )
 
 
 Chooser: TypeAlias = Callable[[Question], Answer | None]
@@ -2816,35 +2942,28 @@ class Undecided(MigrationError):
         self.question = question
 
 
-def decode(g: Graph, choose: Chooser) -> Graph:
+def decode(g: Graph, choose: Chooser, *, cap: int) -> Graph:
     """The decode's stated rule: from the last claim back to the first, then the run;
-    for each, its End, its Span, then its Origin; within a projection, record by record.
-    Where the paths left read the subject's projection at a record more than one way,
-    the chooser picks one answer, and only the paths through it are kept before the
-    next fork is read. It follows the graph choice by choice and never lists paths."""
-    marks = _marks(g)
-    for subject in subjects(g):
-        for projection in Projection:
-            for k in marks.get((subject, projection), []):
-                q = _question(g, subject, projection, k)
-                if q is None:
-                    continue
-                pick = choose(q)
-                if pick is None:
-                    raise Undecided(
-                        f"the chooser refused the fork of claim {subject}'s "
-                        f"{projection.value} at record {k}",
-                        q,
-                    )
-                if pick.value not in {a.value for a in q.answers}:
-                    raise MigrationError("the chooser picked no answer of the fork")
-                live = list(g.live)
-                live[k] = tuple(
-                    e
-                    for e in g.live[k]
-                    if _reads(g.ctx, e, subject, projection) == pick.value
-                )
-                g = replace(g, live=_alive(live))
+    for each, its End, its Span, then its Origin; within a projection, position by
+    position in log order. Where the paths left read a subject's projection at a
+    position more than one way, the chooser picks one answer, and only the paths through
+    it are kept before the next fork is read. It follows the graph choice by choice: a
+    fork's answers are gathered over its own window, never whole paths."""
+    windows = _windows(g)
+    for key in _order(g, windows):
+        q = _question(g, key, windows[key], cap=cap)
+        if q is None:
+            continue
+        pick = choose(q)
+        if pick is None:
+            raise Undecided(
+                f"the chooser refused the fork of claim {key.subject}'s "
+                f"{key.projection.value} at record {key.position}",
+                q,
+            )
+        if pick.value not in {a.value for a in q.answers}:
+            raise MigrationError("the chooser picked no answer of the fork")
+        g = _restrict(g, key, windows[key], pick.value)
     return g
 
 

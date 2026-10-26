@@ -1525,28 +1525,32 @@ def placed_drains() -> Iterator[History]:
     Task 20 review's Critical 1): a commit's native drain reads where it stands, so
     the exit honours what was posted before it and not yet withdrawn.
 
-    - One worker: a pass with a value, two stops with its silent close before, between
-      or after them, a third party's note honouring every undischarged stop or none,
-      and its exit, which drains or not, under either fold.
+    - One worker: a pass with a value, two stops and a third party's note honouring
+      every undischarged stop or none, with its silent close before, between or after
+      the stops, or after the note; and its exit, which drains or not, under either
+      fold.
     - Two workers: claim 0 is released while it lives; claim 1 runs a pass, a stop
       comes, and claim 1's pass closes silently before or after claim 0's own
       ``stopped``, which withdraws the stop; claim 1 then exits, draining or not.
     """
     for at, honors, drain, fold, ended in itertools.product(
-        (0, 1, 2),
+        (0, 1, 2, 3),
         (Honors.UNDISCHARGED, Honors.NONE),
         (Drain.EXIT, Drain.TICKS),
         (Fold.AT_CLAIM, Fold.AT_DRAIN),
         (Undated.OWN_LAST, Undated.NEXT),
     ):
-        stops: list[Event] = [StopRequest("a"), StopRequest("b")]
-        stops.insert(at, Finish(0, False, ended))
+        among: list[Event] = [
+            StopRequest("a"),
+            StopRequest("b"),
+            ThirdPartyStop(0, Report(None), None, ThirdPartyFinal.NULL, honors),
+        ]
+        among.insert(at, Finish(0, False, ended))
         events: list[Event] = [
             _placed_claim(0, fold),
             Begin(0, 0),
             Emit(0, VALUE, Stamp.METRIC),
-            *stops,
-            ThirdPartyStop(0, Report(None), None, ThirdPartyFinal.NULL, honors),
+            *among,
             Exit(0, False, None, FinalStep.FINISHED, drain, False),
             Halt(0, Exited(0)),
         ]
