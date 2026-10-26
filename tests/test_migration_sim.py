@@ -2129,7 +2129,7 @@ def _d78_real(cut_save: CutSave) -> History:
             Emit(c, STATUS, Stamp.REGISTER),  # saving results
         ]
 
-    return _h(
+    born_0_2_0 = _h(
         first,
         Emit(0, STATUS, Stamp.REGISTER),  # saving results
         _killed(0),
@@ -2150,6 +2150,9 @@ def _d78_real(cut_save: CutSave) -> History:
         Emit(2, STATUS, Stamp.REGISTER),  # done
         Halt(2, Exited(0)),
     )
+    # the real log was born in 0.2.0: its honored and claim_seq are the 0.2.0 ->
+    # 0.3.0 step's positional names (task-19-rereview.md, Minor B)
+    return replace(born_0_2_0, born=Born.V0_2_0)
 
 
 D78_REAL = _d78_real(CutSave.LANDED)
@@ -3361,6 +3364,7 @@ def test_d78b72f1_in_mycoocs_record_order() -> None:
     (task-17-convention-table.md, "d78b72f1 does not depend on it")."""
     store = _d78_store_copy()
     assert len(store) == 4243
+    assert D78_REAL.born is Born.V0_2_0  # as the real log was
     assert hashlib.sha256(json.dumps(store).encode()).hexdigest() == D78_DIGEST
     rendered = [
         (
