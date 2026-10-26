@@ -64,6 +64,9 @@ class SqliteStore:
         """Refuses a root that is not a directory: it holds no runs, and a
         migration that found none would report success having done nothing."""
         self._root = Path(root)
+        # the root's manifest by run id, read once, then kept with every entry this
+        # store appends: the detection pass and each step ask it once per run
+        self._entries: dict[str, list[Entry]] | None = None
         if not self._root.is_dir():
             raise MigrationError(
                 f"{root} is not a directory, so it holds no sqlite logs. For a "
@@ -95,12 +98,19 @@ class SqliteStore:
         return _read_sqlite(formats.FORMATS[version].sqlite_path(self._root, run_id))
 
     def history(self, run_id: str) -> History:
-        path = self._root / SQLITE_MANIFEST
-        if not path.exists():
-            return ()
-        with path.open() as f:
-            entries = [Entry.from_json(line) for line in f if line.strip()]
-        return tuple(e for e in entries if e.run_id == run_id)
+        return tuple(self._manifest().get(run_id, ()))
+
+    def _manifest(self) -> dict[str, list[Entry]]:
+        if self._entries is None:
+            self._entries = {}
+            path = self._root / SQLITE_MANIFEST
+            if path.exists():
+                with path.open() as f:
+                    for line in f:
+                        if line.strip():
+                            e = Entry.from_json(line)
+                            self._entries.setdefault(e.run_id, []).append(e)
+        return self._entries
 
     def migrate_one(self, planned: Planned, run_id: str) -> None:
         """Refuse untouched a run that is live, or that the step, a chooser or an
@@ -155,6 +165,7 @@ class SqliteStore:
             raise
         with (self._root / SQLITE_MANIFEST).open("a") as f:
             f.write(entry.to_json() + "\n")
+        self._manifest().setdefault(run_id, []).append(entry)
 
 
 class PostgresStore:
@@ -271,6 +282,11 @@ def _pg_manifest(conn: "psycopg.Connection[Any]") -> None:
         sql.SQL(
             "CREATE TABLE IF NOT EXISTS {}.manifest (id bigserial PRIMARY KEY,"
             " run_id text NOT NULL, entry text NOT NULL)"
+        ).format(schema)
+    )
+    conn.execute(
+        sql.SQL(
+            "CREATE INDEX IF NOT EXISTS manifest_run_id ON {}.manifest (run_id)"
         ).format(schema)
     )
 

@@ -95,6 +95,7 @@ positionally and which a reading leaves unbound.
 from __future__ import annotations
 
 import json
+from bisect import bisect_left, bisect_right
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -246,17 +247,21 @@ def _starts(rows: Sequence[Row]) -> list[int]:
     return [x.seq for x in rows if x.topic == _Topic.STARTED]
 
 
-def _since(rows: Sequence[Row], seq: int) -> frozenset[int]:
-    """The stops since the ``stopped`` before ``seq``, up to ``seq``."""
-    out: set[int] = set()
+def _since(rows: Sequence[Row]) -> dict[int, frozenset[int]]:
+    """Each ``stopped``'s stops since the ``stopped`` before it, by its seq."""
+    out: dict[int, frozenset[int]] = {}
+    stops: set[int] = set()
     for x in rows:
-        if x.seq >= seq:
-            break
         if x.topic == _Topic.STOPPED:
-            out = set()
+            out[x.seq], stops = frozenset(stops), set()
         elif x.topic == _Topic.STOP:
-            out.add(x.seq)
-    return frozenset(out)
+            stops.add(x.seq)
+    return out
+
+
+def _latest_before(seqs: Sequence[int], seq: int) -> int:
+    """The greatest of the ascending ``seqs`` below ``seq``."""
+    return seqs[bisect_left(seqs, seq) - 1]
 
 
 class PositionalClaim:
@@ -264,14 +269,15 @@ class PositionalClaim:
 
     def choose(self, question: ClaimQuestion) -> ClaimAnswer:
         starts = _starts(question.rows)
-        return {s: max(c for c in starts if c < s) for s in question.sites}
+        return {s: _latest_before(starts, s) for s in question.sites}
 
 
 class PositionalHonored:
     """``positional``: every stop since the previous ``stopped``."""
 
     def choose(self, question: HonoredQuestion) -> HonoredAnswer:
-        return {s: _since(question.rows, s) for s in question.sites}
+        since = _since(question.rows)
+        return {s: since[s] for s in question.sites}
 
 
 class DrainedHonored:
@@ -279,17 +285,19 @@ class DrainedHonored:
     consumed, its ``consumed_seq`` at or above the stop's seq."""
 
     def choose(self, question: HonoredQuestion) -> HonoredAnswer:
-        beats = [x for x in question.rows if x.topic == _Topic.HEARTBEAT]
+        since = _since(question.rows)
+        sites = set(question.sites)
+        consumed: dict[int | None, object] = {}  # claim -> its newest beat's watermark
         out: dict[int, frozenset[int]] = {}
-        for s in question.sites:
-            claim = question.claims[s]
-            mine = [b for b in beats if b.seq < s and question.claims[b.seq] == claim]
-            consumed = json.loads(mine[-1].body).get("consumed_seq") if mine else None
-            out[s] = frozenset(
-                x
-                for x in _since(question.rows, s)
-                if _is_step(consumed) and consumed >= x
-            )
+        for x in question.rows:
+            if x.topic == _Topic.HEARTBEAT:
+                body = json.loads(x.body)
+                consumed[question.claims[x.seq]] = body.get("consumed_seq")
+            elif x.seq in sites:
+                mark = consumed.get(question.claims[x.seq])
+                out[x.seq] = frozenset(
+                    s for s in since[x.seq] if _is_step(mark) and mark >= s
+                )
         return out
 
 
@@ -305,7 +313,7 @@ class FirstClaim:
 
     def choose(self, question: BoundQuestion) -> BoundAnswer:
         starts = _starts(question.rows)
-        return {s: min(c for c in starts if c > s) for s in question.sites}
+        return {s: starts[bisect_right(starts, s)] for s in question.sites}
 
 
 class Unbound:
@@ -720,11 +728,12 @@ def _honored(
             resolutions, HonoredQuestion(rows, tuple(sites), claims)
         )
         read = _at_sites(STOP_HONORED, resolutions, answer, sites)
+    since = _since(rows)
     out: dict[int, frozenset[int]] = {}
     for e in records:
         if e.topic == _Topic.STOPPED:
             stops = frozenset(read.get(e.seq, frozenset()))
-            if not stops <= _since(rows, e.seq):
+            if not stops <= since[e.seq]:
                 raise _excluded(
                     STOP_HONORED,
                     resolutions,
