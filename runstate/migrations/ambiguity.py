@@ -512,6 +512,13 @@ def render(report: Report) -> str:
                 for label, runs in sorted(report.undecided.items())
             )
         )
+    if report.diverged:
+        out.append(
+            "Divergences found so far, in the runs whose forks are all decided, each "
+            "refusing its runs until it is accepted:"
+            if report.forks
+            else "Divergences, each refusing its runs until it is accepted:"
+        )
     for (label, d), sites in report.diverged.items():
         out.append(
             "\n".join(

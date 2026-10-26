@@ -894,6 +894,7 @@ def test_a_divergence_refuses_its_runs_until_it_is_accepted(
     assert "a-drift (8.0.0 -> 8.1.0): a's read drifts." in text
     assert "sites: 2 in 2 runs, e.g. r1 seq 3, r2 seq 3" in text
     assert "refused until: --accept a-drift" in text
+    assert text.startswith("Divergences, each refusing its runs until it is accepted:")
     outcome = migrate(
         SqliteStore(tmp_path), None, to="8.1.0", choices=_choose(accept=["a-drift"])
     )

@@ -159,10 +159,10 @@ verdict plane an unnamed lifecycle record raises the existing `MalformedRecordEr
 `runstate/migrations/v0_2_0_to_v0_3_0.py`, under `log-formats.md` §6. It reads
 `<root>/v0.2.0/<rid>.db` and writes `<root>/v0.3.0/<rid>.db`, **preserving every record's seq**, because
 `claim_seq` values point at seqs. It deletes nothing, and appends only `lifecycle.bound` records, after the
-last record. Every name it writes is exactly what the positional rule said; the step's docstring is the
-precise statement of the rules. Where the positional rule answers a question the 0.2.0 log leaves open, the
-answer is the reading of one of the step's declared ambiguities, which a user chooses explicitly (below,
-"Ambiguities").
+last record. Where 0.2.0's conventions settle a name, it writes exactly what the positional rule said; the
+step's docstring is the precise statement of the rules. Where the positional rule answers a question the
+0.2.0 log leaves open, the answer is the reading of one of the step's declared projections, whose chooser a
+user names explicitly (below, "Ambiguities").
 
 - **Stops.** A nameless stop gets the deterministic id `stop@<seq>`. A stop keeps its id only if no other
   control request bears it, unsubscribes aside: it is the only stop with that id, and no subscription or
@@ -206,15 +206,18 @@ answer is the reading of one of the step's declared ambiguities, which a user ch
   claim is live unless a `stopped` follows it or its handle resolves dead, and an unresolvable foreign
   handle reads as live.
 
-**Ambiguities** (*specified 2026-10-24, not yet encoded*; review §12, item 16; `log-formats.md` §6,
+**Ambiguities** (*specified 2026-10-24, encoded 2026-10-26*; review §12, item 16; `log-formats.md` §6,
 "Ambiguity"). The step judges against any writer conforming to format 0.2.0, whose records named nothing
 and were related by position (§1's table). Three of its answers are inferences that 0.2.0's records do not
-settle. They are its declared ambiguities, and the positional rule is one reading of each, which a user
-must choose. The built-in strategies are in `v0_2_0_to_v0_3_0_resolutions.py`. The step is shipped, and no
-consumer has run it yet, so each consumer's first migration is its first choice. Each site test reads only
-the 0.2.0 log; a strategy receives the readings given before it.
+settle. They are its declared projections, asked in the table's order, and the positional rule is one
+reading of each, whose chooser a user must name. The step states no facts (`NO_FACTS`, the plan's Task
+21): each fork is settled by a chooser, and `record-claim`'s `positional` is itself the user's statement
+about their own orchestration (below). The built-in choosers are in the step's module,
+`v0_2_0_to_v0_3_0.py`. The step is shipped, and no consumer has run it yet, so each consumer's first
+migration is its first choice. Each site test reads only the 0.2.0 log; a chooser is asked once per run,
+with every fork of its projection and the readings given before it.
 
-| ambiguity | the question | built-ins | the step's reading today |
+| projection | the question | built-ins | the step's reading today |
 |---|---|---|---|
 | `record-claim` | which claim a heartbeat or `stopped` speaks for | `positional`, `refuse` | `positional` |
 | `stop-honored` | which stops a `stopped` answered | `positional`, `drained`, `none`, `refuse` | `positional` |
@@ -283,7 +286,7 @@ The entries:
 
 **Carried unread.** A `stopped` whose body 0.2.0 does not define is carried with its body unread, the step
 adding only the names its rules write: the step relates it by position and never reads its body, so it
-declares no ambiguity for it. The 0.3.0 → 0.4.0 step, which reads it, declares `malformed-stop`
+declares no projection for it. The 0.3.0 → 0.4.0 step, which reads it, declares `malformed-stop`
 (`commits-and-lineage.md` §7; `log-formats.md` §6). Since the step does not read it, a malformed `stopped`
 proves nothing in a site test: in `record-claim`'s, it counts as a `stopped` that is not `completed: true`,
 the way that makes the site wider.
@@ -314,6 +317,27 @@ A worker resumed on a migrated log serves exactly the demand master's next worke
 one on the golden logs. The final review's fuzz (7,000 synthetic logs, master's reads computed at
 `72d9c3f`) found no difference outside the three classes, and none in the demand a resumed worker faces.
 
+**Divergences** (`log-formats.md` §6; *declared 2026-10-26*). Each class above is a divergence, a rule under
+which a read of the migrated log answers differently from the same read of the input log, and so is each
+difference a reading other than the positional one makes. The step declares five, and finds each by
+computing both reads, its own copies of 0.2.0's positional folds (`72d9c3f`) on the input and 0.3.0's
+by-name folds on the output: `progress`, `undischarged_stops` and `live_demand`, the only reads its rules
+change. A run where one fires is refused until the user names it with `--accept`.
+
+| divergence | the read it changes, and how | fires |
+|---|---|---|
+| `stale-beat` | `progress` reads only the records that name the latest claim | the stale-beat leak, under any reading |
+| `naked-stop` | `undischarged_stops` no longer lists a stop its own nak answered | a naked stop, under any reading |
+| `ended-lease` | `live_demand` no longer lists a lease bound to the latest claim once a terminal names it | an ended lease, under `first-claim` or a proven binding |
+| `unhonored-stop` | `undischarged_stops` lists a stop a later `stopped` cleared positionally | under `stop-honored`'s `drained` or `none` |
+| `unbound-lease` | `live_demand` lists a lease a later claim voided positionally | under `lease-bound`'s `unbound`, where a second claim follows the lease |
+
+Each is a direction of one read: a stop or a lease that only the input's read lists is `naked-stop` or
+`ended-lease`, and one that only the output's lists is `unhonored-stop` or `unbound-lease`. A test checks
+every golden log, under four sets of readings, against master's reads and runstate's: each divergence fires
+exactly where its read answers differently, and nothing else differs. `peek_terminal` and `live_episode`
+answer alike under every reading, since `record-claim`'s built-in is the positional one.
+
 **Known limits:**
 - Under `record-claim`'s `positional`, a historical misattribution is copied faithfully, not corrected:
   episode-aim's objection, stated in the step's docstring. A displaced worker's late heartbeat or `stopped`
@@ -335,7 +359,8 @@ At the consumer's own time, in this order:
 2. Bump its pin to the commit that introduces format 0.3.0.
 3. Onboard: move its legacy logs into `v0.2.0/`, as the `LogFormatMissing` message instructs.
 4. Migrate a **copy** first and compare its reads, then run `runstate migrate <root>`, with a `--resolve`
-   for each ambiguity its detection pass reports (§6, "Ambiguities"; `log-formats.md` §6).
+   for each projection its detection pass reports, and an `--accept` for each divergence it reports (§6,
+   "Ambiguities" and "Divergences"; `log-formats.md` §6).
 5. Change its code:
    - mint a `request_id` on every `control.stop` (none of the corpus's 184 stops has one). Grep its
      code for every send of `control.stop` (`Topic.CONTROL_STOP`) and check each carries a
