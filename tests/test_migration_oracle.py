@@ -68,6 +68,8 @@ PATHS = 4000
 # states in one layer for a refusal's relaxed runs: each relaxes a fact to its whole
 # domain, and too many to follow counts as admitted, so a smaller cap only names more
 BLAME_CAP = 300
+# states summed over every layer: the oracle's logs are small, so it never binds
+BUDGET = 10_000_000
 # labels past the log's highest step that a run of passes no record pins is followed to,
 # a claim: the oracle's histories run on by at most one pass
 RUN_ON = 2
@@ -207,7 +209,12 @@ def run(histories: Sequence[H.History]) -> E.Graph:
     rows = rendered(histories[0]).rows
     cfg = D.configuration([observed(h) for h in histories])
     return E.candidates(
-        list(rows), cfg, born=D.born(histories[0]), cap=CAP, run_on=RUN_ON
+        list(rows),
+        cfg,
+        born=D.born(histories[0]),
+        cap=CAP,
+        budget=BUDGET,
+        run_on=RUN_ON,
     )
 
 
@@ -413,7 +420,9 @@ def test_narrowing_only_removes_candidates() -> None:
             continue
         cfg = D.configuration([observed(h)])
         own = candidates_listed(
-            E.candidates(rows, cfg, born=D.born(h), cap=CAP, run_on=RUN_ON)
+            E.candidates(
+                rows, cfg, born=D.born(h), cap=CAP, budget=BUDGET, run_on=RUN_ON
+            )
         )
         for fact in E._stated(cfg):
             if isinstance(fact, E.Classified):
@@ -426,6 +435,7 @@ def test_narrowing_only_removes_candidates() -> None:
                             E._added(cfg, fact, cls),
                             born=D.born(h),
                             cap=BLAME_CAP,
+                            budget=BUDGET,
                             run_on=RUN_ON,
                         )
                     )
@@ -681,10 +691,19 @@ def test_a_false_fact_refuses_naming_it(case: FalseFact) -> None:
         declared = getattr(cfg.workers[version], case.fact.value)
         for cls in sorted(declared, key=repr):
             false = _narrowed(cfg, version, case.fact.value, declared - {cls})
-            g = E.candidates(rows, false, born=D.born(h), cap=CAP, run_on=RUN_ON)
+            g = E.candidates(
+                rows, false, born=D.born(h), cap=CAP, budget=BUDGET, run_on=RUN_ON
+            )
             if not E.admits(g):
                 refused += 1
-                b = E.blame(rows, false, born=D.born(h), cap=BLAME_CAP, run_on=RUN_ON)
+                b = E.blame(
+                    rows,
+                    false,
+                    born=D.born(h),
+                    cap=BLAME_CAP,
+                    budget=BUDGET,
+                    run_on=RUN_ON,
+                )
                 assert any(case.fact in n for n in b.names), (cls, b)
     assert refused, "the sample's narrowing admits a history"
 
@@ -727,12 +746,16 @@ def _refusal(
     rows = list(render(h).rows)
 
     def run_(c: V.Configuration) -> E.Graph:
-        return E.candidates(rows, c, born=D.born(h), cap=CAP, run_on=RUN_ON)
+        return E.candidates(
+            rows, c, born=D.born(h), cap=CAP, budget=BUDGET, run_on=RUN_ON
+        )
 
     assert E.admits(run_(cfg))
     false = edit(cfg)
     assert not E.admits(run_(false))
-    return E.blame(rows, false, born=D.born(h), cap=BLAME_CAP, run_on=RUN_ON)
+    return E.blame(
+        rows, false, born=D.born(h), cap=BLAME_CAP, budget=BUDGET, run_on=RUN_ON
+    )
 
 
 def _worker(
@@ -857,8 +880,20 @@ def test_a_relaxation_too_wide_to_follow_is_undecided() -> None:
     cfg = _worker("final_step", frozenset({V.FinalStep.YIELDED}))(
         D.configuration([D.observe(h)])
     )
-    b = E.blame(list(render(h).rows), cfg, born=D.born(h), cap=1, run_on=RUN_ON)
+    b = E.blame(
+        list(render(h).rows), cfg, born=D.born(h), cap=1, budget=BUDGET, run_on=RUN_ON
+    )
     assert b.cap == 1 and b.undecided and not b.names
+
+
+def test_a_budget_too_small_refuses_naming_the_record() -> None:
+    """The states summed over the layers are bounded apart from the widest layer: past
+    the budget the run is refused, naming the record it was reached at."""
+    h = S.NAMED["golden DISPLACED"]
+    rows = list(render(h).rows)
+    cfg = D.configuration([D.observe(h)])
+    with pytest.raises(E.Refused, match=r"more than 3 states summed over the layers"):
+        E.candidates(rows, cfg, born=D.born(h), cap=CAP, budget=3, run_on=RUN_ON)
 
 
 def test_a_refusal_can_name_every_fact() -> None:
@@ -893,6 +928,7 @@ def test_the_decode_reads_the_last_claim_first() -> None:
         cfg._replace(workers=loose),
         born=D.born(h),
         cap=CAP,
+        budget=BUDGET,
         run_on=RUN_ON,
     )
     assert len(candidates_listed(g)) == 3

@@ -329,12 +329,13 @@ class PCommit(NamedTuple):
 
 
 class PDate(NamedTuple):
-    """A commit dated by its own tick, which follows its close at once (§7, "The
-    end-time fork")."""
+    """A commit dated by its own tick, the heartbeat at ``seq``, which follows its close
+    at once (§7, "The end-time fork"): the step writes the commit in its place."""
 
     claim: int
     nth: int
     t: float
+    seq: int
 
 
 class PHold(NamedTuple):
@@ -762,6 +763,10 @@ class Context:
     # the states the pass may hold at once, in a layer or in one worker's silent run:
     # past it the run is refused, naming the record
     cap: int
+    # the states the graph may hold summed over every layer, which its memory follows
+    # (about 420 bytes a state, its edges included): past it the run is refused,
+    # naming the record
+    budget: int
 
 
 def context(
@@ -770,6 +775,7 @@ def context(
     *,
     born: Born,
     cap: int,
+    budget: int,
     run_on: int,
 ) -> Context:
     """One log, read once, with its classifier's answers and what the pass looks ahead
@@ -939,6 +945,7 @@ def context(
         horizon=max(labels, default=0) + run_on * (len(claims) + 1) + 1,
         by_seq={r.seq: i for i, r in enumerate(recs)},
         cap=cap,
+        budget=budget,
     )
 
 
@@ -1777,7 +1784,7 @@ def _beat(ctx: Context, i: int, world: World, rec: Rec) -> Iterator[Step]:
                     continue
                 dates = _dated(x)
                 if dates is not None:
-                    pieces += (PDate(x.claim, dates, rec.t),)
+                    pieces += (PDate(x.claim, dates, rec.t, rec.seq),)
                 y = x._replace(
                     tick_due=False,
                     ticked=x.clock,
@@ -2421,6 +2428,7 @@ def build(ctx: Context) -> Graph:
     layer: dict[World, int] = {START: 0}
     edges: list[list[Edge]] = []
     widths = [1]
+    held = 1  # the states summed over the layers so far
     for i in range(len(ctx.recs)):
         nxt: dict[World, int] = {}
         es: dict[Edge, None] = {}
@@ -2432,6 +2440,14 @@ def build(ctx: Context) -> Graph:
             if len(nxt) > ctx.cap:
                 raise _too_many(ctx, ctx.recs[i].seq, "after")
         widths.append(len(nxt))
+        held += len(nxt)
+        if held > ctx.budget:
+            raise Refused(
+                f"more than {ctx.budget} states summed over the layers by the record "
+                f"at seq {ctx.recs[i].seq}: the stated facts leave too many histories "
+                "to keep",
+                (f"seq {ctx.recs[i].seq}",),
+            )
         edges.append(list(es))
         layer = nxt
         if not nxt:
@@ -2461,12 +2477,16 @@ def candidates(
     *,
     born: Born,
     cap: int,
+    budget: int,
     run_on: int,
 ) -> Graph:
     """The candidate set of one run's rows: the pass's graph, whose complete paths are
-    the candidates. ``cap`` bounds the states held at once; ``run_on`` how far past the
-    log's steps a run of passes no record pins is followed, a claim."""
-    return build(context(rows, configuration, born=born, cap=cap, run_on=run_on))
+    the candidates. ``cap`` bounds the states held at once; ``budget`` the states held
+    summed over every layer; ``run_on`` how far past the log's steps a run of passes no
+    record pins is followed, a claim."""
+    return build(
+        context(rows, configuration, born=born, cap=cap, budget=budget, run_on=run_on)
+    )
 
 
 # ----- the lineage a path writes ------------------------------------------------------
@@ -2913,6 +2933,24 @@ def witness(g: Graph) -> tuple[Piece, ...]:
     return _witness(g, 0, g.live[0][0])
 
 
+def written(g: Graph) -> tuple[tuple[Piece, ...], ...]:
+    """The path the step writes once every fork is decided: one complete path, as its
+    edge's pieces at each layer, the last the log's end. Paths that remain read alike;
+    where they still differ (an end time, where in its interval a commit stands, who
+    wrote a record no reading reads), each layer takes the edge whose pieces come first
+    by ``repr``, a fixed order that no hash order changes."""
+    assert admits(g)
+    out: list[tuple[Piece, ...]] = []
+    state = 0
+    for es in g.live:
+        e = min(
+            (x for x in es if x.src == state), key=lambda x: (repr(x.pieces), x.dst)
+        )
+        out.append(e.pieces)
+        state = e.dst
+    return tuple(out)
+
+
 def _windows(g: Graph) -> dict[Key, tuple[int, int]]:
     """Each key's window: the first and last layer whose edges read it."""
     out: dict[Key, tuple[int, int]] = {}
@@ -3148,6 +3186,66 @@ class Classified(Enum):
     VALUE = "value"
 
 
+# The cross-claim state (§7's "feeds"): what a later claim reads of an earlier one.
+_CROSS: frozenset[WorkerFact | ThirdFact] = frozenset(
+    {
+        WorkerFact.STRIDE,
+        WorkerFact.CUT_SAVE,
+        WorkerFact.SAVE_AT,
+        WorkerFact.SAVE_COV,
+        WorkerFact.LEAVE_SAVE,
+        WorkerFact.LOAD,
+        WorkerFact.REWINDS,
+        WorkerFact.TAKEOVER,
+        ThirdFact.ACTS,
+    }
+)
+FEEDS: Mapping[Projection, frozenset[WorkerFact | ThirdFact]] = {
+    Projection.END: _CROSS
+    | {
+        WorkerFact.VALUES,
+        WorkerFact.FINAL_STEP,
+        WorkerFact.ERROR_FINAL_STEP,
+        ThirdFact.VIA,
+        ThirdFact.OUTCOME,
+    },
+    Projection.SPAN: _CROSS
+    | {
+        WorkerFact.LOADING,
+        WorkerFact.VALUES,
+        WorkerFact.BEAT_POS,
+        WorkerFact.BEAT_COV,
+        WorkerFact.MARKER,
+        WorkerFact.CLOSING,
+        WorkerFact.LOOP_END,
+        WorkerFact.DISCARDS,
+        WorkerFact.FINAL_STEP,
+        WorkerFact.ERROR_FINAL_STEP,
+        WorkerFact.STRAYS,
+    },
+    Projection.ORIGIN: _CROSS | {WorkerFact.LOADING},
+}
+"""The facts whose value can decide each projection: §7's "feeds" column, every fact
+feeding the cross-claim state included, since a later claim reads it. An
+over-approximation of the facts that settle a fork there."""
+
+
+def settled_by(configuration: Configuration, key: Key) -> tuple[str, ...]:
+    """The facts whose statement could settle the fork at ``key``: each that feeds its
+    projection and that some version states with more than one class. An
+    over-approximation (``FEEDS``): stating one may leave the fork open."""
+    out: set[str] = set()
+    for n in FEEDS[key.projection]:
+        versions: Iterable[WorkerFacts | ThirdPartyFacts] = (
+            configuration.workers.values()
+            if isinstance(n, WorkerFact)
+            else configuration.third_parties.values()
+        )
+        if any(len(getattr(f, n.value)) > 1 for f in versions):
+            out.add(n.value.replace("_", "-"))
+    return tuple(sorted(out))
+
+
 Named: TypeAlias = WorkerFact | ThirdFact | Classified
 
 
@@ -3359,6 +3457,7 @@ def blame(
     *,
     born: Born,
     cap: int,
+    budget: int,
     run_on: int,
 ) -> Blame:
     """What a refusal names: each stated fact and classifier answer whose relaxation
@@ -3374,7 +3473,9 @@ def blame(
 
     def admitted(relaxed: Configuration) -> bool | None:
         try:
-            g = candidates(rows, relaxed, born=born, cap=cap, run_on=run_on)
+            g = candidates(
+                rows, relaxed, born=born, cap=cap, budget=budget, run_on=run_on
+            )
         except Refused:
             return None
         return admits(g)

@@ -27,7 +27,7 @@ from runstate import migrations
 from runstate.channel.sqlite import SqliteChannel
 from runstate.formats import FORMATS, DirectoryLayout
 from runstate.migrations import RENUMBERING_FROM, STEPS, MigrationError, Row, migrate
-from runstate.migrations.ambiguity import parse_choices, resolutions
+from runstate.migrations.ambiguity import Limits, parse_choices, resolutions
 from runstate.migrations.stores import SqliteStore
 from runstate.migrations.v0_3_0_to_v0_4_0 import (
     After,
@@ -70,7 +70,8 @@ from runstate.migrations.v0_3_0_to_v0_4_0 import (
 
 step = V0_3_0_to_V0_4_0()
 # The step declares nothing for a user to give until Task 22 rebuilds it on the engine.
-NONE = parse_choices([step], assume=[], resolve=[], accept=[], cap=1)
+ONE = Limits(cap=1, budget=1, run_on=0)
+NONE = parse_choices([step], assume=[], resolve=[], accept=[], limits=ONE)
 
 
 def transform(rows):

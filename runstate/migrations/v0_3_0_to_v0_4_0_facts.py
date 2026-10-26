@@ -24,8 +24,9 @@ default.
 **Names an earlier step filled.** In a log born in format 0.2.0 the 0.2.0 -> 0.3.0 step
 filled every ``stopped``'s ``honored`` and every heartbeat's and ``stopped``'s
 ``claim_seq``, by the readings its consumer chose for ``stop-honored`` and
-``record-claim`` (reference-by-name.md §6). They are that step's choices, which this
-step receives (``Born020``); no fact states them.
+``record-claim`` (reference-by-name.md §6). They are that step's choices, recorded in
+the root's manifest, which tells this step the log's birth (``Born020``); no fact states
+them.
 """
 
 from __future__ import annotations
@@ -449,37 +450,19 @@ class Configuration(NamedTuple):
 # ----- the earlier step's readings ----------------------------------------------------
 
 
-class RecordClaim(Enum):
-    """The 0.2.0 -> 0.3.0 step's reading of ``record-claim`` (reference-by-name.md
-    §6)."""
-
-    POSITIONAL = "positional"  # the latest claim before the record
-
-
-class StopHonored(Enum):
-    """The 0.2.0 -> 0.3.0 step's reading of ``stop-honored`` (reference-by-name.md
-    §6)."""
-
-    POSITIONAL = "positional"  # every stop since the previous stopped
-    DRAINED = "drained"  # those the newest heartbeat of its claim had consumed
-    NONE = "none"
-
-
 @dataclass(frozen=True)
 class Born030:
     """A log born in format 0.3.0: every name is its writer's. A dataclass: a field-less
     NamedTuple would equal ``()``."""
 
 
-class Born020(NamedTuple):
+@dataclass(frozen=True)
+class Born020:
     """A log born in format 0.2.0: the 0.2.0 -> 0.3.0 step filled every heartbeat's and
-    ``stopped``'s ``claim_seq`` and every ``stopped``'s ``honored``, by these readings,
-    which the root's manifest carries (log-formats.md §6). Such a name is that reading's
-    inference, never its writer's word.
-    """
-
-    record_claim: RecordClaim
-    stop_honored: StopHonored
+    ``stopped``'s ``claim_seq`` and every ``stopped``'s ``honored``, by the readings its
+    consumer chose, which the root's manifest records (log-formats.md §6). Such a name is
+    that reading's inference, never its writer's word, whichever reading it was: the
+    step reads none of them, so none is carried here."""
 
 
 Born: TypeAlias = Born030 | Born020

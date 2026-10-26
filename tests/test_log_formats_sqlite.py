@@ -18,11 +18,13 @@ from runstate import (
 from runstate.channel.sqlite import SqliteChannel
 from runstate.formats import FORMATS
 from runstate.migrations import STEPS, migrate
-from runstate.migrations.ambiguity import parse_choices
+from runstate.migrations.ambiguity import Limits, parse_choices
 from runstate.migrations.stores import SqliteStore
 
 # The logs below hold values only: no fork, and no divergence fires.
-NOTHING = parse_choices(STEPS, assume=[], resolve=[], accept=[], cap=1)
+# the limits of a step that reads none of them
+ONE = Limits(cap=1, budget=1, run_on=0)
+NOTHING = parse_choices(STEPS, assume=[], resolve=[], accept=[], limits=ONE)
 
 
 def _path(root, rid):

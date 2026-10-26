@@ -13,6 +13,7 @@ from runstate.channel.sqlite import SqliteChannel
 from runstate.formats import DirectoryLayout
 from runstate.migrations import MigrationError, Planned, Row, chain, migrate
 from runstate.migrations.ambiguity import (
+    Limits,
     NO_FACTS,
     Builtin,
     Detected,
@@ -30,8 +31,9 @@ from runstate.migrations.stores import PostgresStore, SqliteStore
 from tests.migration_consumer import ASKED, UNSETTLED, ToyFacts
 
 # The toy steps declare no facts, projections or divergences: the user has nothing
-# to give them. The cap is the command line's, which no toy reads.
-NONE = parse_choices([], assume=[], resolve=[], accept=[], cap=1)
+# to give them. The limits are the command line's, which no toy reads.
+ONE = Limits(cap=1, budget=1, run_on=0)
+NONE = parse_choices([], assume=[], resolve=[], accept=[], limits=ONE)
 
 
 class Tag:
@@ -701,7 +703,7 @@ def _choose(**given):
         assume=given.get("assume", []),
         resolve=given.get("resolve", []),
         accept=given.get("accept", []),
-        cap=given.get("cap", 7),
+        limits=given.get("limits", Limits(cap=7, budget=70, run_on=3)),
     )
 
 
@@ -733,7 +735,18 @@ def test_the_command_line_refuses_what_names_nothing(forking):
         ({"resolve": ["a=tests.migration_consumer:MISSING"]}, "cannot import it"),
         ({"resolve": ["a=tests.migration_consumer:NOT_A_CHOOSER"]}, "is no chooser"),
         ({"accept": ["c-drift"]}, "no step declares the divergence 'c-drift'"),
-        ({"cap": 0}, "--cap 0: a step must be let hold one state at least"),
+        (
+            {"limits": Limits(cap=0, budget=1, run_on=0)},
+            "--cap 0: a step must be let hold one state at least",
+        ),
+        (
+            {"limits": Limits(cap=5, budget=4, run_on=0)},
+            "--budget 4: below --cap 5",
+        ),
+        (
+            {"limits": Limits(cap=1, budget=1, run_on=-1)},
+            "--run-on -1: a count of labels",
+        ),
         ({"accept": ["a-drift", "a-drift"]}, "an --accept is given twice"),
         (
             {"assume": ["tests.migration_consumer:NOT_A_CHOOSER"]},
@@ -765,7 +778,7 @@ def test_a_chooser_named_by_module_and_attr_is_the_object_it_names(forking):
     assert choices.resolved["a"].chooser is ASKED
     assert choices.resolved["a"].spelling == "tests.migration_consumer:ASKED"
     assert choices.resolved["b"].spelling == "refuse"
-    assert choices.cap == 7
+    assert choices.limits == Limits(cap=7, budget=70, run_on=3)
 
 
 def test_detection_takes_no_chooser_and_finds_the_same_forks_whatever_the_choices(
@@ -933,7 +946,9 @@ def test_the_pass_keeps_the_refusals_it_found(forking, monkeypatch, tmp_path):
 
 def test_the_manifest_holds_one_entry_per_run_per_step(forking, tmp_path):
     _three(tmp_path)
-    choices = _choose(resolve=["a=yes", "b=no"], cap=11)
+    choices = _choose(
+        resolve=["a=yes", "b=no"], limits=Limits(cap=11, budget=12, run_on=1)
+    )
     migrate(SqliteStore(tmp_path), None, to="8.2.0", choices=choices)
     entries = _manifest(tmp_path)
     assert sorted((e["run_id"], e["from"], e["to"]) for e in entries) == [
@@ -942,7 +957,8 @@ def test_the_manifest_holds_one_entry_per_run_per_step(forking, tmp_path):
         for a, b in [("8.0.0", "8.1.0"), ("8.1.0", "8.2.0")]
     ]
     (r1a,) = [e for e in entries if e["run_id"] == "r1" and e["from"] == "8.0.0"]
-    assert r1a["cap"] == 11 and r1a["assumed"] is None
+    assert (r1a["cap"], r1a["budget"], r1a["run_on"]) == (11, 12, 1)
+    assert r1a["assumed"] is None
     assert r1a["facts"] == {"settled": False}
     assert r1a["resolved"] == {"a": "yes"} and r1a["readings"] == {"a": {"2": "yes"}}
     assert r1a["runstate"] and r1a["at"] > 0
@@ -1013,7 +1029,7 @@ def test_a_step_without_facts_takes_none():
             assume=["runstate.migrations.ambiguity:NO_FACTS.unstated"],
             resolve=[],
             accept=[],
-            cap=1,
+            limits=ONE,
         )
 
 
@@ -1029,17 +1045,18 @@ def test_the_cli_takes_the_users_word(forking, tmp_path, capsys):
         main(["migrate", str(tmp_path), "--resolve", "z=yes"])
     assert "no step declares the projection 'z'" in capsys.readouterr().err
     argv = ["migrate", str(tmp_path), "--to", "8.1.0", "--resolve", "a=refuse"]
-    assert main([*argv, "--cap", "5"]) == 1
+    assert main([*argv, "--cap", "5", "--budget", "50", "--run-on", "4"]) == 1
     out = capsys.readouterr()
     assert out.out.split() == ["r3"]
     assert "refused: run 'r1'" in out.err
-    assert _manifest(tmp_path)[0]["cap"] == 5
+    e = _manifest(tmp_path)[0]
+    assert (e["cap"], e["budget"], e["run_on"]) == (5, 50, 4)
     assert main(["migrate", str(tmp_path), "--to", "8.1.0", "--resolve", "a=no"]) == 0
     assert capsys.readouterr().out.split() == ["r1", "r2"]
 
 
 def test_the_cli_asks_for_a_divergence(forking, monkeypatch, tmp_path, capsys):
-    from runstate.cli import CAP, main
+    from runstate.cli import BUDGET, CAP, RUN_ON, main
 
     monkeypatch.setattr(
         migrations, "STEPS", (Forking("8.0.0", "8.1.0", "a", diverge=[0]),)
@@ -1049,7 +1066,8 @@ def test_the_cli_asks_for_a_divergence(forking, monkeypatch, tmp_path, capsys):
     err = capsys.readouterr().err
     assert "nothing was migrated" in err and "add: --accept a-drift" in err
     assert main(["migrate", str(tmp_path), "--to", "8.1.0", "--accept", "a-drift"]) == 0
-    assert _manifest(tmp_path)[0]["cap"] == CAP
+    e = _manifest(tmp_path)[0]
+    assert (e["cap"], e["budget"], e["run_on"]) == (CAP, BUDGET, RUN_ON)
 
 
 def test_postgres_writes_the_manifest_entry_in_the_sealing_transaction(

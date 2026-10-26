@@ -10,6 +10,7 @@ pass over the whole root, writing nothing, before it migrates any run."""
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import inspect
 import json
@@ -205,10 +206,10 @@ class Planned(NamedTuple):
             run_id=run_id,
             from_format=self.step.FROM,
             to_format=self.step.TO,
-            runstate=_RUNSTATE,
-            step_source=_source(self.step),
+            runstate=_runstate(),
+            step_source=_source(type(self.step)),
             at=time.time(),
-            cap=a.cap,
+            limits=a.limits,
             assumed=a.given,
             facts=facts.describe(facts.of(a)),
             resolved={n: c.spelling for n, c in self.resolutions.choosers.items()},
@@ -217,25 +218,24 @@ class Planned(NamedTuple):
         )
 
 
+@functools.cache
 def _runstate() -> str:
     """The installed runstate's version, with the commit its install records: a git
     pin's ``direct_url.json`` names one, which the version string (a ``.dev0``) does
-    not."""
+    not. Read once, when the first entry is written, never at import."""
     dist = metadata.distribution("runstate")
     direct = dist.read_text("direct_url.json")
     commit = json.loads(direct).get("vcs_info", {}).get("commit_id") if direct else None
     return dist.version if commit is None else f"{dist.version}+{commit}"
 
 
-_RUNSTATE = _runstate()
-
-
-def _source(step: Step) -> str:
+@functools.cache
+def _source(step: type) -> str:
     """The digest of the step module's source: the code that migrated the run, whatever
-    the version string says."""
-    path = inspect.getsourcefile(type(step))
+    the version string says. Read once per step."""
+    path = inspect.getsourcefile(step)
     if path is None:
-        raise MigrationError(f"step {step.FROM} -> {step.TO} has no source file")
+        raise MigrationError(f"the step {step.__name__} has no source file")
     return "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 

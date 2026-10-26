@@ -14,7 +14,10 @@ from runstate import (
 )
 from runstate.formats import FORMATS, DirectoryLayout
 from runstate.migrations import STEPS, migrate
-from runstate.migrations.ambiguity import parse_choices
+from runstate.migrations.ambiguity import Limits, parse_choices
+
+# the limits of a step that reads none of them
+ONE = Limits(cap=1, budget=1, run_on=0)
 
 
 @pytest.fixture
@@ -216,7 +219,7 @@ def test_onboarding_leaves_a_tombstone_an_old_writer_cannot_use(scratch_db, sche
         with pytest.raises(LogFormatMismatch, match="runstate migrate"):
             locate("r1", root=dsn, backend="postgres")
     # the log holds values only: no fork, and no divergence fires
-    nothing = parse_choices(STEPS, assume=[], resolve=[], accept=[], cap=1)
+    nothing = parse_choices(STEPS, assume=[], resolve=[], accept=[], limits=ONE)
     assert migrate(PostgresStore(dsn), None, to=LOG_FORMAT, choices=nothing).moved == (
         "r1",
     )

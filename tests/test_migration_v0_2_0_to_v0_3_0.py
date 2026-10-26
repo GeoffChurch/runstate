@@ -21,7 +21,10 @@ from runstate import LOG_FORMAT, Worker, create_channel
 from runstate.channel.sqlite import _SCHEMA, SqliteChannel
 from runstate.formats import FORMATS, DirectoryLayout
 from runstate.migrations import STEPS, MigrationError, Row, chain, migrate
-from runstate.migrations.ambiguity import parse_choices, resolutions
+from runstate.migrations.ambiguity import Limits, parse_choices, resolutions
+
+# the limits of a step that reads none of them
+ONE = Limits(cap=1, budget=1, run_on=0)
 from runstate.migrations.stores import SqliteStore
 from runstate.migrations.v0_2_0_to_v0_3_0 import V0_2_0_to_V0_3_0
 from runstate.observables import (
@@ -49,7 +52,7 @@ TODAY = parse_choices(
     assume=[],
     resolve=TODAY_RESOLVE,
     accept=["stale-beat", "naked-stop", "ended-lease"],
-    cap=1,
+    limits=ONE,
 )
 
 
@@ -645,7 +648,7 @@ def _choices(*resolve, accept=()):
         assume=[],
         resolve=[f"{k}={v}" for k, v in given.items()],
         accept=list(accept),
-        cap=1,
+        limits=ONE,
     )
 
 

@@ -916,12 +916,14 @@ def test_a_step_that_crashes_is_recorded_not_raised(tmp_path, monkeypatch):
 def test_the_runner_writes_the_steps_own_rows():
     """The runner runs the passes once and writes their records, as
     ``transform`` does."""
-    from runstate.migrations.ambiguity import parse_choices, resolutions
+    from runstate.migrations.ambiguity import Limits, parse_choices, resolutions
+
+    ONE = Limits(cap=1, budget=1, run_on=0)
     from runstate.migrations.v0_3_0_to_v0_4_0 import V0_3_0_to_V0_4_0, run_passes
 
     step = V0_3_0_to_V0_4_0()
     given = resolutions(
-        step, parse_choices([step], assume=[], resolve=[], accept=[], cap=1)
+        step, parse_choices([step], assume=[], resolve=[], accept=[], limits=ONE)
     )
     for rows in GOLDEN.values():
         written = step.transform(rows, resolutions=given, history=()).rows

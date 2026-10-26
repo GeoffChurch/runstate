@@ -126,7 +126,11 @@ from runstate import lineage as reads  # noqa: E402
 from runstate.channel import Envelope, MemoryChannel  # noqa: E402
 from runstate.migrations import MigrationError, Row, transform_checked  # noqa: E402
 from runstate.migrations import v0_3_0_to_v0_4_0 as step04  # noqa: E402
-from runstate.migrations.ambiguity import parse_choices, resolutions  # noqa: E402
+from runstate.migrations.ambiguity import (  # noqa: E402
+    Limits,
+    parse_choices,
+    resolutions,
+)
 from runstate.migrations.v0_2_0_to_v0_3_0 import V0_2_0_to_V0_3_0  # noqa: E402
 from runstate.migrations.v0_3_0_to_v0_4_0 import (  # noqa: E402
     Commit,
@@ -163,7 +167,7 @@ _POSITIONAL = resolutions(
             "lease-bound=first-claim",
         ],
         accept=[],
-        cap=1,
+        limits=Limits(cap=1, budget=1, run_on=0),
     ),
 )
 

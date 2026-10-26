@@ -215,6 +215,18 @@ class Migrated(NamedTuple):
 # ----- the user's word -----------------------------------------------------------------
 
 
+class Limits(NamedTuple):
+    """What bounds a step's work on one run. Each can decide a result (a refusal, or how
+    far an unpinned run of passes is followed), so each is set where the command line is
+    read and recorded with every migrated run; a step reads only those it needs."""
+
+    cap: int  # the states a step may hold at once (a refusal past it names the record)
+    budget: int  # the states it may hold summed over every layer, which memory follows
+    run_on: (
+        int  # how many labels past the log's steps an unpinned run is followed, a claim
+    )
+
+
 class Assumed(NamedTuple):
     """One ``--assume module:attr``: its spelling and the object it names."""
 
@@ -226,23 +238,21 @@ class Assumed(NamedTuple):
 class Choices:
     """What the user gave, across a chain: possibly fewer choosers than its steps'
     projections, since a later step's forks are found only once the earlier steps'
-    are decided. ``cap`` bounds the work a step may do on one run (a step's refusal past
-    it names the record), set where the command line is read and recorded with the
-    run."""
+    are decided. ``limits`` bound the work a step may do on one run."""
 
     assumed: tuple[Assumed, ...]
     resolved: Mapping[str, Chosen]
     accepted: frozenset[Divergence]
-    cap: int
+    limits: Limits
 
 
 class Assumptions(NamedTuple):
     """What one step's detection reads: the facts stated for it (or its ``unstated``
-    ones, ``given`` None) and the cap."""
+    ones, ``given`` None) and the limits."""
 
     facts: object
     given: str | None
-    cap: int
+    limits: Limits
 
 
 class Resolutions(NamedTuple):
@@ -263,8 +273,8 @@ def assumptions(step: Step, choices: Choices) -> Assumptions:
             + ", ".join(a.spelling for a in mine)
         )
     if mine:
-        return Assumptions(mine[0].facts, mine[0].spelling, choices.cap)
-    return Assumptions(step.FACTS.unstated, None, choices.cap)
+        return Assumptions(mine[0].facts, mine[0].spelling, choices.limits)
+    return Assumptions(step.FACTS.unstated, None, choices.limits)
 
 
 def resolutions(step: Step, choices: Choices) -> Resolutions:
@@ -319,15 +329,26 @@ def parse_choices(
     assume: Sequence[str],
     resolve: Sequence[str],
     accept: Sequence[str],
-    cap: int,
+    limits: Limits,
 ) -> Choices:
     """The command line's choices, each resolved once, before the detection pass:
     ``--assume module:attr`` to an object of exactly one step's facts' kind;
     ``--resolve <projection>=<chooser>`` to a built-in, or to the ``Chooser`` that
     ``module:attr`` names; ``--accept <divergence>`` to a declared name."""
     check_names(steps)
-    if cap < 1:
-        raise MigrationError(f"--cap {cap}: a step must be let hold one state at least")
+    if limits.cap < 1:
+        raise MigrationError(
+            f"--cap {limits.cap}: a step must be let hold one state at least"
+        )
+    if limits.budget < limits.cap:
+        raise MigrationError(
+            f"--budget {limits.budget}: below --cap {limits.cap}, it would refuse a run "
+            "the cap admits"
+        )
+    if limits.run_on < 0:
+        raise MigrationError(
+            f"--run-on {limits.run_on}: a count of labels, never below 0"
+        )
     projections = {p.name: p for s in steps for p in s.PROJECTIONS}
     divergences = {d.name: d for s in steps for d in s.DIVERGENCES}
     assumed: list[Assumed] = []
@@ -365,7 +386,7 @@ def parse_choices(
     if len(set(accept)) < len(accept):
         raise MigrationError("an --accept is given twice")
     choices = Choices(
-        tuple(assumed), resolved, frozenset(divergences[n] for n in accept), cap
+        tuple(assumed), resolved, frozenset(divergences[n] for n in accept), limits
     )
     for s in steps:
         assumptions(s, choices)  # two --assume for one step refuse here
@@ -405,7 +426,7 @@ class Entry:
     )
     step_source: str  # "sha256:<hex>" of the step module's source: the code that ran
     at: float
-    cap: int
+    limits: Limits
     assumed: str | None  # the --assume spelling; None when its facts were unstated
     facts: Json  # the step's rendering of them
     resolved: Mapping[str, str | None]  # each projection's chooser as spelled, or None
@@ -421,7 +442,9 @@ class Entry:
                 "runstate": self.runstate,
                 "step_source": self.step_source,
                 "at": self.at,
-                "cap": self.cap,
+                "cap": self.limits.cap,
+                "budget": self.limits.budget,
+                "run_on": self.limits.run_on,
                 "assumed": self.assumed,
                 "facts": self.facts,
                 "resolved": dict(self.resolved),
@@ -444,7 +467,7 @@ class Entry:
             runstate=e["runstate"],
             step_source=e["step_source"],
             at=e["at"],
-            cap=e["cap"],
+            limits=Limits(cap=e["cap"], budget=e["budget"], run_on=e["run_on"]),
             assumed=e["assumed"],
             facts=e["facts"],
             resolved=e["resolved"],

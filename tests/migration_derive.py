@@ -608,4 +608,4 @@ def born(h: H.History) -> V.Born:
     """The earlier step's readings the simulator renders by: positional, both."""
     if h.born is H.Born.V0_3_0:
         return V.Born030()
-    return V.Born020(V.RecordClaim.POSITIONAL, V.StopHonored.POSITIONAL)
+    return V.Born020()

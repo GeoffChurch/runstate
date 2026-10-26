@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import formats, migrations
 from .migrations import MigrationError, migrate
-from .migrations.ambiguity import Undecided, parse_choices
+from .migrations.ambiguity import Limits, Undecided, parse_choices
 from .migrations.stores import PostgresStore, SqliteStore, Store
 
 # The URI schemes libpq reads as a DSN (a key=value DSN is no directory either,
@@ -26,6 +26,19 @@ _DSN_SCHEMES = ("postgres://", "postgresql://")
 # quarter, and refuses b02eb431 under facts too wide to follow at seq 81, in 6 s and
 # 105 MB, where 20,000 exhausted 4 GB (the round's Task 21 report).
 CAP = 3000
+
+# The states a step may hold on one run summed over every layer, which memory follows:
+# the cap bounds one layer, so a long log can hold a near-cap layer for thousands of
+# records (about 16 GB at 3,000 over 13,000). 6,000,000 states is about 2.5 GB, clearing
+# the most measured on the real corpora (664f8795's 4.3 million, 1.8 GB) by two fifths.
+BUDGET = 6_000_000
+
+# How many labels past the log's highest step a run of passes that no record pins is
+# followed, per claim (the 0.3.0 -> 0.4.0 engine's horizon). A run-on past it is cut
+# there, so it decides how many silent passes a reading may hold. 2 follows the oracle,
+# whose histories run on by at most one pass; a writer whose silent runs are longer
+# raises it.
+RUN_ON = 2
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -63,6 +76,20 @@ def main(argv: list[str] | None = None) -> int:
         default=CAP,
         help=f"the states a step may hold at once on one run (default {CAP})",
     )
+    m.add_argument(
+        "--budget",
+        type=int,
+        default=BUDGET,
+        help="the states a step may hold on one run summed over every layer "
+        f"(default {BUDGET})",
+    )
+    m.add_argument(
+        "--run-on",
+        type=int,
+        default=RUN_ON,
+        help="labels past the log's steps an unpinned run of passes is followed, a "
+        f"claim (default {RUN_ON})",
+    )
     args = p.parse_args(argv)
     if args.backend == "sqlite" and args.root.startswith(_DSN_SCHEMES):
         p.error(
@@ -75,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
             assume=args.assume,
             resolve=args.resolve,
             accept=args.accept,
-            cap=args.cap,
+            limits=Limits(cap=args.cap, budget=args.budget, run_on=args.run_on),
         )
     except MigrationError as exc:
         p.error(str(exc))
