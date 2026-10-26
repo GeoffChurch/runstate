@@ -1,17 +1,23 @@
-"""The writer facts a simulator history satisfies, derived from its events (Task 19's ``derive.py``, taken over by the
-oracle harness, ``tests/test_migration_oracle.py``).
+"""The writer facts a simulator history satisfies, derived from its events (Task 19's
+``derive.py``, taken over by the oracle harness, ``tests/test_migration_oracle.py``).
 
-``observe(history)`` lists, per claim and per fact, the fact's elements in that claim: for each, the classes its
-behaviour is consistent with (one, except where classes coincide on it) and the class the history declares. Each
-third party's ``stopped`` gets the same for the third-party facts, each record its own writer, named by its seq. It
-also gives the oracle classifier's answers (each stop's author and act, each value's role), read off the history.
+``observe(history)`` lists, per claim and per fact, the fact's elements in that claim:
+for each, the classes its behaviour is consistent with (one, except where classes
+coincide on it) and the class the history declares. Each third party's ``stopped`` gets
+the same for the third-party facts, each record its own writer, named by its seq. It
+also gives the oracle classifier's answers (each stop's author and act, each value's
+role), read off the history.
 
-It reads only the history's fields and its walk, which is the claim that each fact is a predicate over the history.
-It never imports the step: with the simulator, it is the harness's half.
+It reads only the history's fields and its walk, which is the claim that each fact is a
+predicate over the history. It never imports the step: with the simulator, it is the
+harness's half.
 
-- ``holds(statement, elements)``: a statement is true when every element has a class in it, the engine's check.
-- ``declared(elements)``: the statement the history's own fields make, the canonical true one the harness uses.
-- ``configuration(...)``: an oracle configuration from observations, one version per claim and per third party.
+- ``holds(statement, elements)``: a statement is true when every element has a class in
+  it, the engine's check.
+- ``declared(elements)``: the statement the history's own fields make, the canonical
+  true one the harness uses.
+- ``configuration(...)``: an oracle configuration from observations, one version per
+  claim and per third party.
 """
 
 from __future__ import annotations
@@ -43,9 +49,8 @@ def one(c: Any) -> Element:
 class Observation(NamedTuple):
     claims: dict[int, Facts]  # claim seq -> worker facts' elements
     third: dict[str, Facts]  # "tp@<seq>" -> that third party's facts' elements
-    stops: dict[
-        int, V.StopAnswer
-    ]  # seq of a stopped -> OwnStop(), or ThirdStop("tp@<seq>", act)
+    # seq of a stopped -> OwnStop(), or ThirdStop("tp@<seq>", act)
+    stops: dict[int, V.StopAnswer]
     roles: dict[int, V.ValueRole]  # seq of a value -> its role
     starts: tuple[int, ...]  # each claim's started seq, by claim index
 
@@ -85,7 +90,8 @@ _SAVE_AT = {
 def _loaded_step(
     events: tuple[H.Event, ...], i: int, origin: H.Origin | H.SaveRef | None
 ) -> int | None:
-    """The step of the state a load or rewind at event ``i`` takes: None for a fresh start."""
+    """The step of the state a load or rewind at event ``i`` takes: None for a fresh
+    start."""
     if origin is None or isinstance(origin, H.Fresh):
         return None
     if isinstance(origin, H.FromOutside):
@@ -95,20 +101,23 @@ def _loaded_step(
 
 
 def _by_value(declared: Enum, values: dict[Any, Any]) -> Element:
-    """An encoding's element: every convention that writes the value the declared one writes."""
+    """An encoding's element: every convention that writes the value the declared one
+    writes."""
     return Element(
         frozenset(k for k, v in values.items() if v == values[declared]), declared
     )
 
 
 def _clock(claim: H.Claim, loaded: int | None) -> Element:
-    """``loading``'s element: a claim whose pre-pass clock is read. Both classes read alike over a state at 0."""
+    """``loading``'s element: a claim whose pre-pass clock is read. Both classes read
+    alike over a state at 0."""
     decl = V.Loading(claim.clock.value)
     return Element(frozenset(V.Loading) if not loaded else frozenset({decl}), decl)
 
 
 def _renders_alike(h: H.History, i: int, **change: Any) -> bool:
-    """Whether event ``i`` with ``change`` renders the same log: the changed choice is not exercised there."""
+    """Whether event ``i`` with ``change`` renders the same log: the changed choice is
+    not exercised there."""
     other = H.History(
         h.events[:i] + (replace(h.events[i], **change),) + h.events[i + 1 :], h.born
     )
@@ -152,7 +161,8 @@ def observe(h: H.History) -> Observation:
     latest = -1
 
     def cut(c: int) -> None:
-        """The open pass of claim c ends other than by its close: cut-save's element, if it saved inside."""
+        """The open pass of claim c ends other than by its close: cut-save's element, if
+        it saved inside."""
         ps = pass_save[c]
         if phase[c] != "iterating" or ps is None or c in released:
             return
@@ -220,7 +230,8 @@ def observe(h: H.History) -> Observation:
             control = seq
             continue
         if isinstance(ev, (H.Stray, H.ThirdPartyValue)):
-            # a value no claim's worker wrote: before a claim's started, or mid-claim (a third party's register)
+            # a value no claim's worker wrote: before a claim's started, or mid-claim (a
+            # third party's register)
             assert seq is not None
             roles[seq] = V.ValueRole(V.Role.STRAY, True)
             if latest >= 0:
@@ -435,9 +446,8 @@ def observe(h: H.History) -> Observation:
             name = "final_step" if ev.error is None else "error_final_step"
             o[name].append(_by_value(V.FinalStep(ev.final_step.value), conventions))
             if ev.final_step is H.FinalStep.COUNTER and finished[c] is None:
-                o["loading"].append(
-                    _clock(claim_of[c], loaded[c])
-                )  # the counter reads the pre-pass clock
+                # the counter reads the pre-pass clock
+                o["loading"].append(_clock(claim_of[c], loaded[c]))
             if born_0_3_0:  # in a log born in 0.2.0 the earlier step filled `honored`
                 decl_h = V.Honored(ev.honors.value)
                 other = H.Drain.TICKS if ev.honors is H.Drain.EXIT else H.Drain.EXIT
@@ -458,7 +468,8 @@ def observe(h: H.History) -> Observation:
         if not isinstance(ev, H.Begin):
             acts_in_pass[c] += 1
         last_act[c] = (i, ev)
-    # fold: an element wherever the other fold would render the log differently (render.py reads it at drains)
+    # fold: an element wherever the other fold would render the log differently
+    # (render.py reads it at drains)
     for i, ev in enumerate(events):
         if isinstance(ev, H.Claim) and stops:
             flip = H.Fold.AT_DRAIN if ev.fold is H.Fold.AT_CLAIM else H.Fold.AT_CLAIM
@@ -477,12 +488,12 @@ def declared(elements: list[Element]) -> frozenset[Any]:
     return frozenset(e.declared for e in elements)
 
 
-# ----- the oracle configuration -----------------------------------------------------------------------------------------
+# ----- the oracle configuration -------------------------------------------------------
 
 
 def worker_facts(facts: Facts) -> V.WorkerFacts:
-    """The statement a claim's elements declare: each fact the classes its elements name, and none where it has none
-    (the element never occurs)."""
+    """The statement a claim's elements declare: each fact the classes its elements
+    name, and none where it has none (the element never occurs)."""
     return V.WorkerFacts(
         **{f.name: declared(facts.get(f.name, [])) for f in fields(V.WorkerFacts)}
     )
@@ -513,7 +524,8 @@ def union_third(a: V.ThirdPartyFacts, b: V.ThirdPartyFacts) -> V.ThirdPartyFacts
 
 
 class OracleReader:
-    """The oracle classifier for one log: the answers read off the histories, a set per record."""
+    """The oracle classifier for one log: the answers read off the histories, a set per
+    record."""
 
     def __init__(
         self,
@@ -534,7 +546,8 @@ class OracleReader:
 
 
 class Oracle:
-    """The oracle classifier (``V.Classifier``): one reader, for the log its histories write."""
+    """The oracle classifier (``V.Classifier``): one reader, for the log its histories
+    write."""
 
     def __init__(self, reader: OracleReader) -> None:
         self._reader = reader
@@ -544,8 +557,9 @@ class Oracle:
 
 
 def configuration(observations: Sequence[Observation]) -> V.Configuration:
-    """The facts and answers true of every one of ``observations``, histories that write one log: per claim and per
-    third party, the union of their declared statements; per record, the union of their classifier answers.
+    """The facts and answers true of every one of ``observations``, histories that write
+    one log: per claim and per third party, the union of their declared statements; per
+    record, the union of their classifier answers.
     """
     workers: dict[Hashable, V.WorkerFacts] = {}
     third: dict[Hashable, V.ThirdPartyFacts] = {}
@@ -563,7 +577,8 @@ def configuration(observations: Sequence[Observation]) -> V.Configuration:
             stops[seq].add(a)
         for seq, r in ob.roles.items():
             roles[seq].add(r)
-    # a third party one history names may be a worker's exit in another: each needs facts for every key named
+    # a third party one history names may be a worker's exit in another: each needs
+    # facts for every key named
     for seq, answers in stops.items():
         for a in answers:
             if isinstance(a, V.ThirdStop) and a.writer not in third:
