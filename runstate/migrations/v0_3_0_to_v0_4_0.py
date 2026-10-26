@@ -2,209 +2,59 @@
 
 Format 0.3.0 numbered a run's iterations by the ``step`` of its heartbeats and
 values; 0.4.0 records them as nodes (lifecycle-v0.6, supervisor-v0.5,
-value-v0.3, subscription-v0.4). This step writes the nodes, and **every
-inference copies what the old positional reading implied**, the standard of
-the 0.2.0 -> 0.3.0 step. An inference is labelled as one.
+value-v0.3, subscription-v0.4). This step writes the conforming 0.4.0 lineage that
+records the 0.3.0 history's own events, under the consumer's word (§7, "The
+target"). It is the only step that renumbers, and the last that may (log-formats.md
+§6): from 0.4.0 on, checkpoints hold seqs.
 
-It is the only step that renumbers, and the last that may (log-formats.md §6):
-it moves commits and inserts records, so the runner does not hold it to the
-seq-and-topic preservation every other step keeps. From 0.4.0 on, checkpoints
-hold seqs.
+A run goes through four parts, in this order:
 
-It reads a run in six passes (§7), each a function from the parsed log and the
-earlier passes' results to a frozen result, then writes the rows.
-``run_passes`` runs them, in this order, and nothing else does:
+1. **The boundary** (``parse``): every record read as 0.3.0 pins it, and refused
+   where the step cannot carry it (below).
+2. **The candidates** (``v0_3_0_to_v0_4_0_engine``): the 0.4.0 lineages of every
+   conforming 0.3.0 history that writes the log and satisfies the consumer's stated
+   facts and its classifier's answers (``FACTS``; §7, "The writer facts"). A
+   statement of none is the whole domain of every fact (``UNSTATED``). In a log born
+   in format 0.2.0, which the root's manifest records (``_born``), the names the
+   earlier step filled are its inference, never their writer's word.
+3. **The decode** (``_decide``): each fork of a subject's End, Span or Origin,
+   asked of the chooser its projection was given, in the decode's stated order
+   (subjects from the last claim back to the first, then the run; for each, End,
+   Span, Origin; positions in log order), the candidates through each answer kept;
+   then the end-time fork of each commit no record dates (``END_TIME``). A
+   projection no ``--resolve`` decides refuses at its first fork.
+4. **The writing** (``_layout``, ``_numbered``): the decided lineage written as
+   0.4.0 records under runstate's encoding rules, the same for every consumer
+   (§7, E1 and E2), and renumbered once:
+   - each input record stands where it stood (E2): a ``started`` gains its
+     ``resume_from`` and ``sources: []``; a heartbeat that dates a commit, the tick
+     that follows its close at once, becomes that commit, and any other a
+     ``lifecycle.heartbeat`` without ``step``; a value drops ``step``; a
+     ``launcher.*`` record moves to ``supervisor.*``; a stop, a ``nak`` and a user's
+     topic are carried as they are;
+   - a ``stopped`` becomes its claim's exit node (``parent``, ``values``, and the
+     ``honored`` its native drains give, E2), a death report in its place (E1:
+     ``migrated: stopped[: <its own evidence>]``), a ``supervisor.terminated`` under
+     a launch id minted ``backstop@<seq>``, or nothing; each id a third party's or a
+     fenced worker's ``stopped`` honours, not already withdrawn, is a
+     ``control.withdraw`` just after it, dated by it;
+   - a death report attributed from a launch's ``terminated`` stands just after it
+     (``migrated: reap: signal s`` or ``exit n``), and one a later claim's gate
+     proves (``migrated: gate: <handle>``) just before that claim's ``started``;
+   - a commit or a rewind no record dates stands just after the latest of its
+     interval's first record and its claim's own last record before it, its ``t``
+     the end-time chooser's, its ``consumed_seq`` the newest control record before
+     it;
+   - every seq-valued field is renamed to the record it named; each input record
+     keeps its ``created_at``, and a record the step adds takes that of the record
+     it stands after (a gate's death, that of the claim it precedes).
 
-1. **Claim attribution** (``attribute``): which claim each heartbeat and each
-   value belongs to.
-2. **Classification** (``classify``): who wrote each ``lifecycle.stopped``, and
-   what it ends; then what each third party's becomes, and which claim a
-   launch's ``terminated`` reports dead (``report``).
-3. **Synthesis** (``synthesize``): M2, M4 and M5 assign values to commits or
-   leave them, synthesizing the commits M5 names, with M8's fields.
-4. **M1** (``link``): parents and ``resume_from``.
-5. **M6** (``place``, then ``renumber``): the moves and the withdrawals, then
-   renumbering.
-6. **M7** (``rename``): the renames.
+Where each divergence fires is computed from the decided lineage and the input
+(``_diverged``; §7, "The divergences"): each a rule under which a read of the
+migrated log answers differently from the same read of the input log.
 
-``write`` then writes each record's 0.4.0 row.
-
-The rules:
-
-- **Attribution.** A heartbeat belongs to the claim its ``claim_seq`` names, as
-  every 0.3.0 read of it did. A value names none, so it belongs to the latest
-  claim before it: the positional rule the 0.2.0 -> 0.3.0 step stated for
-  episodes, an inference. A value before every claim belongs to none.
-- **Classification.** The first ``stopped`` naming a claim is the claim's
-  **end**, one of two:
-  - **a third party's release,** when it is the reclaim tool's malformed body
-    (M10), or the runner's hard-crash backstop, identified by its error text,
-    "subprocess exited N with no terminal record": the backstop is a third
-    party's wherever it falls;
-  - otherwise the rule for lone stops decides, from the log alone: **the
-    worker's exit**, as the old read implied, unless the log contradicts
-    that, which makes it **a third party's release**.
-
-  Every later ``stopped`` naming the same claim is **a third party's later
-  stop**: the claim has already ended. A ``stopped`` naming no claim is
-  **claimless**, whatever its shape, the backstop's included: a death report
-  must name a claim.
-- **Third parties' stops** (``report``; review §12, item 14; owner ruling c′).
-  A release becomes a ``supervisor.died``: ``errored`` when its ``error`` is
-  set and ``preempted`` otherwise, a completed one included, since a death is
-  never a completion, with the ``error`` as the evidence, else
-  "migrated: third-party stopped"; M10's body is ``preempted``, its
-  ``reason`` the evidence. A later stop becomes a death only when its
-  ``error`` is set, and otherwise only its withdrawals, so the repair
-  script's copy of a release and the "clear staged stop" default body write no
-  death. A claimless stop becomes only its withdrawals. **The backstop that
-  ends no claim**, later or claimless, becomes a ``supervisor.terminated``:
-  the runner's report of its subprocess's end, ``exited`` with the N its text
-  names, or ``killed`` by signal -N when N is negative, under a launch id
-  minted ``backstop@<seq>``, fresh against every request id in the run.
-  Whatever a third party's stop becomes, each id it honored becomes a
-  ``control.withdraw`` just after it, so the stops stay spent; a stop that
-  becomes nothing else leaves the log, its withdrawals taking its place.
-  Every record a stop becomes carries its ``t``, or, for M10's body, which
-  has none, its ``created_at``.
-- **Attributed death reports** (``report``; review §12, items 13 and 14). A
-  claim that 0.3.0 saw ended only by its launch's ``launcher.terminated`` gets
-  a ``supervisor.died`` from it, placed just after it, when the launch's
-  handle is the claim's: the same ``local://host/pid``, compared whole, since
-  two hosts can share a pid. The launch is the one the claim names, by the
-  launch id its ``started`` re-emitted, and its handle is its
-  ``launcher.launched``'s, found by that id anywhere in the log, since a child
-  can claim before its parent writes ``launched``. The report mirrors the live
-  reap (§3): a signal is ``killed``, a nonzero exit code ``errored`` and an exit
-  0 ``lost``, with ``signal s`` or ``exit n`` as the evidence and the
-  ``terminated``'s ``t``.
-
-  Only a claim no ``stopped`` names can get one, and only the newest claim
-  naming its launch, since §3's live launcher reports only for that claim. An
-  older claim of the same launch stays as 0.3.0 left it, with no report; only
-  the latest claim enters the verdict. Only a ``terminated`` after the claim
-  ends it, since 0.3.0 read only the records after a claim. A launch whose
-  handle differs, a wrapper's or another host's, gets none. The
-  ``terminated`` a ``died`` is attributed from is its claim's end, as a
-  ``stopped`` naming it would be, since a death report ends its claim (§2):
-  a value after it is after its claim's end (M4).
-- **Lone stops** (``_lone_stop_rule``; the implementation round's census of
-  who wrote them). The first ``stopped`` naming a claim, well-formed and not
-  the backstop, is the worker's exit, which is what 0.3.0 defined the topic to
-  mean, unless the log contradicts that. It is a third party's release when
-  either:
-  - **its claim beats after it:** a heartbeat naming the same claim has a
-    higher seq. The worker outlived the stop, so the stop is not its exit;
-  - **it was written after the time it reports:** its ``t`` precedes its
-    record's ``created_at`` by more than ``_REPORTED_LATER`` (60 s). A worker
-    reporting its own exit stamps both from one clock at one moment. On SQLite
-    that holds exactly: SqliteChannel stamps ``created_at`` with the writer's
-    own ``time.time()`` at insert, behind a 5 s ``busy_timeout``. On Postgres
-    it holds under the observer clock's assumption (observer-clock.md §4)
-    that a writer's clock agrees with the store's to within the tolerance:
-    PostgresChannel stamps ``created_at`` with the server's
-    ``clock_timestamp()`` (a known limit below). A later reporter dates the
-    stop to an event it learned of afterwards, as mycooc's reclaim tool does
-    with SLURM's end time.
-
-  So every lone stop is attributed. Where the log does not contradict a stop,
-  nothing in it tells a third party's from the worker's own, and reading it as
-  the worker's is what the topic means (a known limit below).
-- **Synthesis.** Each heartbeat with an integer step is a commit. A value with
-  one goes to a commit of its own claim, never another's:
-  - **M2:** the commit carrying its step, even when the value follows that
-    beat;
-  - **leading values,** below the claim's first real beat, go to its first
-    commit;
-  - **a claim that beat no integer step reaches no step,** the reading the
-    migration takes: its integer-step values are left as loading, whether it
-    wrote them while it loaded or in a step it never beat, even at or below a
-    clean exit's last step, and nothing is synthesized in it. A trailing
-    value is one above a claim's last real beat. The reading replaces one
-    that inferred a beatless claim's position from the claims before it,
-    which had two self-consistent answers wherever the claim's values sat
-    above the inferred step: the third place could synthesize in it or in
-    the claim it was inferred from. M1's ``resume_from`` for such a claim
-    (pass 4) reads the commits after synthesis, as §7's pass order says;
-  - **M5** synthesizes a commit in exactly three places (``Place``): a tick
-    skipped between two real beats, even one with no values; a trailing step,
-    above the claim's last real beat, at or below a non-error exit's last
-    step; and a trailing step s, whatever ended its claim, of the newest
-    claim before a later claim whose first real beat is s+1, in claim order,
-    to reach step s, by a commit or by trailing values (``_newest_reaching``,
-    which M1 reuses among its candidates). It is the claim M1 will choose
-    wherever its commit at s is a candidate, as it is unless a displaced
-    worker beat after the later claim began (a known limit).
-
-  "The exit's last step" is the 0.3.0 ``final_step``; a null one reached no
-  step. Only an exit node has one: a claim a third party released, or that
-  nothing ended, has no last step to be above. Every other value is left
-  uncommitted, with the first reason that holds (``Uncommitted``): stepless,
-  a register (M3); before every claim; after its claim's end (M4), whatever
-  ended it, the end being the first ``stopped`` naming the claim or the
-  ``terminated`` a ``died`` is attributed from; a claim's that beat no step
-  (loading); above its claim's exit's last step; or a trailing step no exit
-  vouches for, which M5's third place does not reach.
-- **The exit node.** The worker's exit holds ``[]``, or null when it errored:
-  it discarded its open iteration. A third party's release becomes a death,
-  not an exit node.
-- **M8.** A synthetic commit takes ``t`` from the last value it commits that
-  carries one, else from the real heartbeat before it in its claim; and
-  ``consumed_seq`` from that heartbeat. M5 synthesizes only above a claim's
-  first real beat, so that heartbeat always exists, and M8's further
-  fallbacks never apply. It is worked out once and carried on the commit
-  (``Synthetic.previous``), the one fact M8, candidacy and placement read.
-- **M1** (``link``) reads the commits after synthesis, in claim order, never
-  by step nearness, and chooses a claim's resume point among its
-  **candidates**: the commits placed below its ``started``, which only a
-  beat can decide (``_beaten``): a real commit's own heartbeat, a synthetic
-  one's real heartbeat before it in its claim. A claim's later
-  commits take its previous commit as ``parent``. Its first commit, at old
-  step s, takes the candidate at s-1 of the newest claim before it to hold
-  one; at step 0 it is a fresh start, and with no candidate at s-1 its parent
-  is null, a parentless resume. ``started.resume_from`` is the first commit's
-  parent, and a claim that beat no integer step takes, as an inference, the
-  newest candidate of the newest claim before it to hold one. Each rule is a
-  ``ResumeFrom`` variant, so a report can name it. A commit is the parent
-  even where an extendable exit follows it. The exit node's ``parent`` is the
-  claim's position: its newest commit, else its resume point.
-- **M6** (``place``), the reading the migration takes: a commit goes just
-  after the latest of the records it must follow: its last committed value,
-  its parent, the record its ``consumed_seq`` names and, for a real commit,
-  its own heartbeat. §7 lists the first three; the heartbeat is added, so a
-  commit only moves forward. A commit asserts that its values are complete,
-  so it moves past a value it commits that follows its heartbeat (M2's
-  post-loop values), and past a parent that moved so; a node is never placed
-  before the event that recorded it. With the heartbeat added, every commit
-  has a place: a real commit's heartbeat follows its claim's ``started``, and
-  a synthetic commit's parent is a commit of its own claim. A commit is then
-  placed below a later claim's ``started`` exactly when M1 counts it a
-  candidate. A real commit is its heartbeat's record, moved; a synthetic one
-  is new. The commits are placed in claim order, each claim's in its order,
-  so a parent is placed before its child, and M6 places at most one record
-  after any record. Then every record is renumbered once (``renumber``): a
-  pass that adds records places them through the same ``After``, just after
-  a record, and the one renumbering resolves them all.
-- **The records** (``write``): ``started`` gains ``resume_from`` and
-  ``sources: []``; a commit carries ``fired: []`` and ``expired: []``; a
-  stepless heartbeat drops ``step``; the exit node drops ``final_step`` and
-  carries ``parent``, ``values``, ``fired: []`` and ``expired: []``; a value
-  drops ``step``; ``launcher.*`` records move to ``supervisor.*``. A record
-  whose body 0.4.0 keeps is written with its body's stored text.
-- **M7** (``rename``): every seq-valued field the 0.4.0 schemas define is
-  renumbered to name the record it named: ``claim_seq`` (on a heartbeat, a
-  commit, an exit and a ``died``), ``consumed_seq``, ``parent``, ``values``
-  and ``resume_from``. A ``consumed_seq`` is a drain watermark, a read
-  position: 0 names nothing and stays 0, and otherwise it names a record
-  before its heartbeat that M6 never moves, so renaming it keeps the records
-  it covers. Request ids are strings, so a ``stop@N`` stays as it is. Each
-  0.3.0 record keeps its ``created_at``; a record the step adds takes that of
-  the record it is placed after.
-
-**Refused**, each naming the seq. ``parse`` reads the records in seq order
-and refuses the first it cannot carry; a refusal that needs the whole log
-(the attributed death report's, and a watermark naming a stop that leaves it)
-names the lowest seq its pass refuses. Since the step writes a record whose
+**Refused at the boundary**, each naming the seq. ``parse`` reads the records in
+seq order and refuses the first it cannot carry. Since the step writes a record whose
 body 0.4.0 keeps with its stored text, it reads every record at the boundary
 as 0.3.0 pins it, so an input it accepts never yields a row 0.4.0 rejects. It
 reads a body strictly: an integer only as a JSON integer, so it refuses a
@@ -229,7 +79,7 @@ whole-number float such as 3.0, which 0.3.0's schemas accept. It refuses:
   - **a subscription's every record:** a ``control.subscribe``, a
     ``control.unsubscribe``, a ``lifecycle.bound``, which binds a lease to a
     claim, and a sample, a value bearing a ``request_id``. Refusing the
-    ``bound`` too keeps every lease out of the passes, whether or not its
+    ``bound`` too keeps every lease out of the engine, whether or not its
     subscribe is in the log;
   - **a ``control.stop`` whose ``from`` holds a step atom,** at any depth,
     which subscription-v0.4 removed;
@@ -263,121 +113,92 @@ whole-number float such as 3.0, which 0.3.0's schemas accept. It refuses:
 - a heartbeat whose ``consumed_seq`` names a heartbeat with an integer step:
   lifecycle-v0.5 defines the watermark as a read position in the control
   order, and the reference Worker sets it only to a control record's seq.
-  Such a heartbeat is a commit M6 may move, and a watermark renamed to a moved
-  record would cover records it never covered, as a stop it had not drained,
-  or precede the record it names. A watermark naming a value or any other
-  record M6 never moves is read as it is;
+  Such a heartbeat may become a commit, which the watermark would then name.
+  A watermark naming a value or any other record is read as it is;
 - an envelope field 0.4.0 pins null that 0.3.0 left open and that holds a
   value: a lifecycle record's or a stop's ``name``, a heartbeat's or a
   ``stopped``'s ``request_id``. No 0.3.0 reference writer set one, and the
   step cannot carry it;
-- a heartbeat whose ``consumed_seq`` names a third party's stop that becomes
-  only its withdrawals: it leaves the log, so renaming cannot carry the
-  watermark;
-- **a launch that not exactly one ``launched`` names,** where an attributed
-  death report reads it: its ``terminated`` follows the newest claim naming
-  it, which no ``stopped`` ended. Without one there is no handle to attribute
-  the death by, and writing no ``died`` would leave the claim open forever in
-  0.4.0. Elsewhere nothing needs the handle, and the ``terminated`` is
-  carried.
+- **a ``stopped`` whose body is M10's** (log-formats.md §6, the malformed-record
+  rule) under the unstated classifier: only a consumer's classifier may read
+  it.
+
+**Refused after the boundary**, each naming why:
+- **no history of the stated writers writes the log** (the engine admits no
+  candidate): the refusal names each fact or classifier answer whose relaxation
+  alone admits one, else the pairs, and those undecided past the cap (§7, "What
+  refuses");
+- **past a limit:** more states in one layer than the cap, or summed over the
+  layers than the budget, named by the record;
+- **a chooser's refusal,** or an answer of another shape, naming the projection
+  and the chooser (``Projection.ask``);
+- **a name of a record that leaves the log:** a heartbeat's ``consumed_seq``
+  naming a ``stopped`` that becomes nothing (a note, a fenced exit), whose
+  withdrawals stand in its place: renumbering cannot carry the name;
+- **an attributed death report whose launch several ``launched`` name:** the
+  claimant's handle is not known.
 
 **Known limits:**
 
-- A backstop's ``terminated`` names a launch no ``launched`` record names: the
-  runner wrote no launch record, and its id is minted.
-- Each id a third party's stop honored is withdrawn, even one another record
-  already spent: a second withdrawal of a spent request changes nothing.
-- A third party's stop that honors an id no stop bears becomes a withdrawal of
-  a request that never existed. It is harmless: a withdrawal spends a request,
-  and there is none to spend.
-- A displaced worker's values are attributed to its successor's claim, because
-  the positional rule did so, and the log does not record which worker wrote
-  them. Its heartbeats name its own claim and keep it. Above its successor's
-  exit's last step such a value stays uncommitted, but a successor with no exit
-  node has no last step, so the value counts as that claim reaching its step.
-- M5 synthesizes a trailing step only where values say it was reached. A
-  trailing step above a gap of steps with no values leaves the gap without
-  commits, so a claim that resumes from above it counts too few (P1). A
-  0.3.0 worker's trailing values sit one step above its last beat.
-- A value before every claim is no claim's, so no lineage holds it, where
-  0.3.0's ``value_series`` read it.
-- A third party's lone stop that the log does not contradict reads as its
-  claim's exit: a default body, a ``t`` within ``_REPORTED_LATER`` of its
-  ``created_at``, and no beat of its claim after it. It then vouches for its
-  claim's iteration, committing the claim's pending values up to its
-  ``final_step``. The writers that can produce one are the runner's
-  backstop's ``error: null`` variants, mycooc's ``resume_fanout`` on an
-  unstopped claim, and the reclaim tool before ``ffe05f6e``, which dated its
-  stop when it wrote it. The local corpus holds none of them.
-- The rule for lone stops reads the other way on a Postgres-backed log whose
-  worker's clock lags the server's by more than ``_REPORTED_LATER``:
-  PostgresChannel stamps ``created_at`` with the server's
-  ``clock_timestamp()``, while the worker stamps ``t`` with its own host's
-  clock, so its genuine exit reads as written after the time it reports. It
-  becomes a preempted death, or an errored one, and its claim's pending values
-  stay uncommitted. The rule shares the observer clock's assumption
-  (observer-clock.md §4) that a writer's clock agrees with the store's to
-  within the tolerance; on SQLite both are the writer's, and it holds exactly.
-- A beat after its claim's end, whoever ended it, still commits. M4 leaves a
-  value after the end uncommitted, but a heartbeat with an integer step is a
-  commit wherever it falls: after a third party's release, or the
-  ``terminated`` a death is attributed from, it is a commit placed after the
-  ``died``. A released stop's claim beating after it is one such case, the
-  beat being what makes the stop a release. Whether such a beat should commit
-  nothing, as such a value does, is the owner's decision.
-- A claim that beat no integer step reaches no step, even one that finished
-  a whole step and checkpointed it before it crashed: nothing is synthesized
-  in it, so the next claim's first commit may be a parentless resume, which
-  P3 names. One whose exit is clean gets no commit either: its step values at
-  or below its exit's last step, which the exit vouches for, are left as
-  loading, not synthesized.
-- A claim that beat no integer step resumes, by inference, from the newest
-  candidate before it: the log does not say which checkpoint it loaded.
-- A claim that loaded a checkpoint a displaced worker saved after the claim
-  began has no candidate at the step below its first: its first commit is a
-  parentless resume, which P3 names. A 0.3.0 worker claimed and then loaded,
-  where a 0.4.0 worker loads first, and ``resume_from`` must name a node below
-  its ``started``.
-- M5's third place and M1 can choose different claims. The third place asks
-  which claim before a resuming one reached step s at all; M1 asks only among
-  the candidates. They differ only where a displaced worker beat after the
-  resuming claim began. M1 then takes an older claim's candidate at s, or
-  none, a parentless resume. The third place stays unfiltered: it decides
-  only whether a trailing step finished, and moving the synthesis to an older
-  claim would credit it with a checkpoint the displaced worker may have
-  saved. It errs, as M4 does, towards committing too little. The third place
-  synthesizes a commit M1 then passes over only when values pass 1 gives its
-  claim precede the resuming claim while that claim's own beat below them
-  follows it, which takes a second displaced worker's values. M1 passes it
-  over only for that resuming claim: a later claim begun after the beat
-  before it, whose first real beat is s+1, can still resume from it. Either
-  way M1 errs towards a parentless resume, which P3 names, never towards a
-  resume point placed after its claim.
+- The unstated facts let a log run on, rewind and load at every step to the
+  horizon, so all but the smallest logs exceed the cap under them: a consumer
+  states its writers' facts.
+- The end-time fork is detected per claim, on the commits no record dates on any
+  candidate; a commit dated on some candidates and not on the decided one asks the
+  end-time chooser without having been reported.
+- ``written`` picks among the paths left after the decode, which read alike, by
+  the ``repr`` of their pieces; two edges with the same pieces to different states
+  are told apart by their state's number, which hash order can change.
+- A divergence fires where its rule applies; the reads it names may still answer
+  alike there (``third-party-release`` on a claim no verdict reads).
 """
 
 from __future__ import annotations
 
 import json
-import re
-from bisect import bisect_right
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
-from enum import StrEnum
-from typing import Any, ClassVar, NamedTuple, TypeGuard, assert_never
+from collections import defaultdict
+from collections.abc import Callable, Hashable, Mapping, Sequence
+from dataclasses import dataclass, fields, is_dataclass, replace
+from enum import Enum, StrEnum
+from typing import Any, ClassVar, NamedTuple, TypeGuard, assert_never, cast
 
 from ..vocabulary.handle import resolve
 from . import MigrationError, Row
+from . import v0_3_0_to_v0_4_0_engine as E
 from .ambiguity import (
-    NO_FACTS,
     Assumptions,
+    Builtin,
     Detected,
     Divergence,
     Facts,
+    Fork,
     History,
+    Json,
+    Limits,
     Migrated,
-    NoFacts,
     Projection,
+    Refusal,
     Resolutions,
+)
+from .v0_3_0_to_v0_4_0_engine import domain
+from .v0_3_0_to_v0_4_0_facts import (
+    Born,
+    Born020,
+    Born030,
+    Configuration,
+    Exited,
+    Killed,
+    LogReader,
+    Note,
+    Outcome,
+    OwnStop,
+    Release,
+    Role,
+    StopAnswer,
+    ThirdPartyFacts,
+    ThirdStop,
+    ValueRole,
+    WorkerFacts,
 )
 
 # ----- format 0.3.0's record semantics, frozen here -----------------------------
@@ -491,20 +312,6 @@ class _Malformed:
 
 
 _Stop = _Stopped | _Malformed
-
-
-@dataclass(frozen=True)
-class Exited:
-    """A process that exited with ``code``."""
-
-    code: int
-
-
-@dataclass(frozen=True)
-class Killed:
-    """A process a signal killed."""
-
-    signal: int
 
 
 @dataclass(frozen=True)
@@ -803,7 +610,7 @@ def _a_second_reap(t: _Terminated, reaped: Mapping[str, int]) -> None:
 @dataclass(frozen=True)
 class _Log:
     """One run's 0.3.0 records, read once at the boundary: every record, and
-    the typed bodies of those the passes interpret, each in seq order. Every
+    the typed bodies of those the step writes from, each in seq order. Every
     record is 0.3.0's, as its schemas pin it, M10's bodies excepted. Every
     ``claim_seq`` on ``beats`` and ``stops`` names a claim before its record,
     every nonzero ``consumed_seq`` names a record before its heartbeat, each
@@ -914,8 +721,8 @@ def _a_record_before_it(b: _Beat, seen: set[int]) -> None:
     """``seen`` holds the seqs before the heartbeat. Its ``consumed_seq`` is a
     drain watermark: 0 for none, else the seq of a record before it. That
     record is never an integer-step heartbeat, which ``_names_no_commit``
-    refuses, nor a stop that leaves the log, which ``report`` refuses
-    (``_drained_from_nothing``)."""
+    refuses; one naming a stop that leaves the log is refused where it is
+    renamed (``_numbered``)."""
     if b.consumed_seq != 0 and b.consumed_seq not in seen:
         raise MigrationError(
             f"the {_Topic.HEARTBEAT} at seq {b.seq} has consumed_seq "
@@ -928,8 +735,8 @@ def _names_no_commit(b: _Beat, commits: Mapping[int, int]) -> None:
     """``commits`` maps each heartbeat with an integer step before ``b`` to its
     step. lifecycle-v0.5 defines the watermark as a read position in the
     control order, and the reference Worker sets it only to a control record's
-    seq. Such a heartbeat is a commit M6 may move, and a watermark renamed to a
-    moved record would cover records it never covered."""
+    seq. Such a heartbeat may become a commit, which a watermark renamed to it
+    would then name, as if the commit were a control record."""
     step = commits.get(b.consumed_seq)
     if step is not None:
         raise MigrationError(
@@ -1028,1323 +835,467 @@ def parse(rows: list[Row]) -> _Log:
     )
 
 
-# ----- pass 1: claim attribution --------------------------------------------------
+# ----- the facts a consumer states ---------------------------------------------------
 
 
-@dataclass(frozen=True)
-class Claim:
-    """A claim, and the heartbeats and values pass 1 attributes to it, each in
-    seq order."""
+class _AnyReader:
+    """The unstated classifier's reader: every answer each record allows. A reap's
+    process end is no answer it can give, since only a writer's own text says how a
+    process ended."""
 
-    started: _Started
-    beats: tuple[_Beat, ...]
-    values: tuple[_Value, ...]
+    def started(self, seq: int) -> frozenset[Hashable]:
+        return frozenset({_ANY})
 
+    def stopped(self, seq: int) -> frozenset[StopAnswer]:
+        acts: list[Release | Note] = [Release(o) for o in Outcome]
+        acts.append(Note())
+        return frozenset({OwnStop(), *(ThirdStop(_ANY, a) for a in acts)})
 
-@dataclass(frozen=True)
-class Attribution:
-    """Pass 1: every claim, in claim order, and the values before every claim."""
+    def value(self, seq: int) -> frozenset[ValueRole]:
+        return _ROLES
 
-    claims: tuple[Claim, ...]
-    unclaimed: tuple[_Value, ...]
 
+class Unstated:
+    """The classifier no consumer states: it reads no record's content, so a record
+    whose body 0.3.0 does not define stays unread (``_unread``)."""
 
-def attribute(log: _Log) -> Attribution:
-    """A heartbeat is the claim's its ``claim_seq`` names. A value is the latest
-    claim's before it (an inference: the positional rule), or no claim's."""
-    order = [c.seq for c in log.claims]
-    beats: dict[int, list[_Beat]] = {c: [] for c in order}
-    values: dict[int, list[_Value]] = {c: [] for c in order}
-    unclaimed: list[_Value] = []
-    for b in log.beats:
-        beats[b.claim_seq].append(b)
-    for v in log.values:
-        before = bisect_right(order, v.seq)
-        if before:
-            values[order[before - 1]].append(v)
-        else:
-            unclaimed.append(v)
-    return Attribution(
-        claims=tuple(
-            Claim(c, tuple(beats[c.seq]), tuple(values[c.seq])) for c in log.claims
-        ),
-        unclaimed=tuple(unclaimed),
-    )
+    def read(self, log: Sequence[Row]) -> LogReader:
+        return _AnyReader()
 
 
-# ----- pass 2: classification -----------------------------------------------------
-
-# mycooc's runner writes it when its worker exits nonzero with no terminal record
-# (run_experiment.py, _SyncHandle); N is the exit code, negative for a signal.
-_BACKSTOP = re.compile(r"subprocess exited (-?\d+) with no terminal record")
-
-
-def _is_backstop(stop: _Stopped) -> bool:
-    return stop.error is not None and _BACKSTOP.fullmatch(stop.error) is not None
-
-
-@dataclass(frozen=True)
-class _Exit:
-    """The worker's own exit: it becomes the exit node."""
-
-    stop: _Stopped
-
-
-@dataclass(frozen=True)
-class _Release:
-    """A third party's stop that ends its claim: it becomes a ``died``."""
-
-    stop: _Stop
-
-
-End = _Exit | _Release
-"""How a claim ended: the first ``stopped`` naming it, by who wrote it. A later
-pass matches on the variant, ending in ``assert_never``. A well-formed one that
-is not the backstop is the worker's exit unless the log contradicts that, in
-one of two ways (``_lone_stop_rule``): its claim beats after it, or it was
-written after the time it reports."""
-
-
-class _Later(NamedTuple):
-    """A third party's ``stopped`` after the first naming the same claim."""
-
-    claim: int
-    stop: _Stop
-
-
-# A worker reporting its own exit stamps the stop's t and its record's created_at
-# from one clock at one moment. On SQLite that holds exactly: SqliteChannel stamps
-# created_at with the writer's own time.time() at insert, behind a 5 s
-# busy_timeout. On Postgres it holds under the observer clock's assumption
-# (observer-clock.md §4) that a writer's clock agrees with the store's to within
-# this tolerance: PostgresChannel stamps created_at with the server's
-# clock_timestamp(), so a worker whose clock lags the server's by more reads as a
-# later reporter (a known limit). A stop whose t precedes its created_at by more
-# than this many seconds was written after the time it reports, by a writer that
-# dated it to an event it learned of afterwards, as mycooc's reclaim tool dates
-# one with SLURM's end time. Part of the step's frozen semantics.
-_REPORTED_LATER = 60.0
-
-
-def _lone_stop_rule(stop: _Stopped, *, beaten_after: bool) -> End:
-    """THE RULE FOR LONE STOPS (§7, "lone stops"; the census of their writers):
-    how the first ``stopped`` naming a claim ended it, when it is well-formed
-    and not the backstop. It is the worker's exit, which is what 0.3.0 defined
-    the topic to mean, unless the log contradicts that. It is a third party's
-    release when either:
-
-    - **its claim beats after it** (``beaten_after``): a heartbeat naming the
-      same claim has a higher seq, so the worker outlived the stop;
-    - **it was written after the time it reports:** its ``t`` precedes its
-      record's ``created_at`` by more than ``_REPORTED_LATER`` seconds."""
-    if beaten_after or stop.created_at - stop.t > _REPORTED_LATER:
-        return _Release(stop)
-    return _Exit(stop)
-
-
-@dataclass(frozen=True)
-class Classification:
-    """Pass 2: every ``stopped``, by who wrote it and what it ends. Each is in
-    exactly one field. A claim's end is the first ``stopped`` naming it, or,
-    when none does, the ``terminated`` a ``died`` is attributed from, which
-    ``report`` decides (``Reports.deaths``). ``ends`` maps each claim a
-    ``stopped`` ended to that end, by who wrote it. ``later`` and
-    ``claimless`` are in seq order."""
-
-    ends: Mapping[int, End]
-    later: tuple[_Later, ...]
-    claimless: tuple[_Stop, ...]  # names no claim, so ends none
-
-
-def classify(log: _Log) -> Classification:
-    """The first ``stopped`` naming a claim ends it. It is a third party's
-    release when it is malformed (M10) or the backstop, which is a third
-    party's wherever it falls. Otherwise the rule for lone stops decides: the
-    worker's exit, unless the log contradicts that, which makes it a release:
-    a heartbeat naming its claim follows it, or its ``t`` precedes its
-    ``created_at`` by more than ``_REPORTED_LATER``. Every later one naming
-    that claim is a third party's."""
-    ends: dict[int, End] = {}
-    later: list[_Later] = []
-    claimless: list[_Stop] = []
-    last_beat = {b.claim_seq: b.seq for b in log.beats}  # in seq order: the last
-    for s in log.stops:
-        claim = s.claim_seq
-        if claim is None:
-            claimless.append(s)
-        elif claim in ends:
-            later.append(_Later(claim, s))
-        elif isinstance(s, _Malformed) or _is_backstop(s):
-            ends[claim] = _Release(s)
-        else:
-            beat = last_beat.get(claim)
-            beaten_after = beat is not None and beat > s.seq
-            ends[claim] = _lone_stop_rule(s, beaten_after=beaten_after)
-    return Classification(ends, tuple(later), tuple(claimless))
-
-
-# ----- pass 2, continued: what a third party's stop becomes -----------------------
-
-_THIRD_PARTY = "migrated: third-party stopped"  # evidence when nothing says more
-
-
-class Outcome(StrEnum):
-    """How a claim died (supervisor-v0.5's ``died.outcome``). A death is never a
-    completion."""
-
-    PREEMPTED = "preempted"
-    ERRORED = "errored"
-    KILLED = "killed"
-    LOST = "lost"
-
-
-@dataclass(frozen=True)
-class Death:
-    """A ``supervisor.died``: the claim it names, by its 0.3.0 seq, how it
-    ended, and the evidence. A third party's stop becomes one in its place,
-    and §7 attributes one from a launch's ``terminated``, just after it."""
-
-    claim: int
-    outcome: Outcome
-    evidence: str
-
-
-@dataclass(frozen=True)
-class Reap:
-    """A ``supervisor.terminated`` in a backstop's place, when the backstop ends
-    no claim (owner ruling c′): the runner's report of how its subprocess
-    ended, under ``launch_id``, a launch id minted for it."""
-
-    launch_id: str
-    how: Exited | Killed
-
-
-@dataclass(frozen=True)
-class Dropped:
-    """Nothing in its stop's place: the stop becomes only its withdrawals,
-    which take its place."""
-
-
-Becomes = Death | Reap | Dropped
-
-
-@dataclass(frozen=True)
-class Report:
-    """A third party's ``stopped``: what it becomes in its place, and ``t``, the
-    time every record it becomes carries: its own, or, for M10's body, which
-    has none, its ``created_at``. Whatever it becomes, each id it honored
-    becomes a ``control.withdraw`` placed after it (pass 5), so the stops stay
-    spent."""
-
-    stop: _Stop
-    becomes: Becomes
-    t: float
-
-
-@dataclass(frozen=True)
-class AttributedDeath:
-    """§7's attributed death report: the death a launch's ``terminated``
-    reports of its claim, and ``t``, the terminated's."""
-
-    death: Death
-    t: float
-
-
-@dataclass(frozen=True)
-class Reports:
-    """Pass 2's third parties: every third party's ``stopped``, by its seq, in
-    seq order, and every attributed death report, by the seq of the
-    ``terminated`` it follows. A worker's exit is not among them: it becomes
-    its claim's exit node."""
-
-    stops: Mapping[int, Report]
-    deaths: Mapping[int, AttributedDeath]
-
-
-def _fresh(base: str, taken: set[str]) -> str:
-    """``base``, or ``base~k`` for the least k >= 2 not in ``taken``; then
-    taken. The 0.2.0 -> 0.3.0 step's minting, carried here."""
-    cand, k = base, 1
-    while cand in taken:
-        k += 1
-        cand = f"{base}~{k}"
-    taken.add(cand)
-    return cand
-
-
-def _evidence(text: str | None) -> str:
-    """A death's evidence: the text its writer gave, else the migration's label,
-    since evidence is never empty (supervisor-v0.5)."""
-    return text if text else _THIRD_PARTY
-
-
-def _death(stop: _Stop) -> Death:
-    """The mapping of a third party's stop that names a claim to a death: M10's
-    body is ``preempted``, its reason the evidence (§7, M10). A well-formed one
-    is ``errored`` when its ``error`` is set, an empty one included, as 0.3.0's
-    verdict read it, and ``preempted`` otherwise, a completed one included,
-    since a death is never a completion; its ``error`` is the evidence."""
-    claim = stop.claim_seq
-    assert claim is not None  # an end and a later stop name their claim
-    match stop:
-        case _Malformed(reason=reason):
-            return Death(claim, Outcome.PREEMPTED, _evidence(reason))
-        case _Stopped(error=None):
-            return Death(claim, Outcome.PREEMPTED, _THIRD_PARTY)
-        case _Stopped(error=error):
-            return Death(claim, Outcome.ERRORED, _evidence(error))
-        case _:
-            assert_never(stop)
-
-
-def _how(stop: _Stopped) -> Exited | Killed:
-    """How the backstop's subprocess ended, by the N its text names, a Popen
-    return code: a signal -N when N is negative, else an exit N. The runner
-    writes the backstop only for a nonzero N."""
-    assert stop.error is not None, f"the stop at seq {stop.seq} is no backstop"
-    found = _BACKSTOP.fullmatch(stop.error)
-    assert found is not None, f"the stop at seq {stop.seq} is no backstop"
-    n = int(found[1])
-    return Killed(-n) if n < 0 else Exited(n)
-
-
-class _Refusal(NamedTuple):
-    """A refusal a pass after ``parse`` finds, by the seq it names."""
-
-    seq: int
-    error: MigrationError
-
-
-def _refuse_the_first(refusals: Sequence[_Refusal]) -> None:
-    """Raises the refusal naming the lowest seq, so a run's refusal names its
-    first refused record whichever check finds it."""
-    if refusals:
-        raise min(refusals, key=lambda x: x.seq).error
-
-
-def _reported(how: Exited | Killed, claim: int) -> Death:
-    """The live reap's mapping (§3), with ``signal s`` or ``exit n`` as the
-    evidence: a signal is ``killed``, a nonzero exit code ``errored``, and an
-    exit 0 ``lost``. An exit 0 says only that the process is gone, which
-    reports only while the claim is held, as one nothing else ended is."""
-    match how:
-        case Killed(signal=signal):
-            return Death(claim, Outcome.KILLED, f"signal {signal}")
-        case Exited(code=0):
-            return Death(claim, Outcome.LOST, "exit 0")
-        case Exited(code=code):
-            return Death(claim, Outcome.ERRORED, f"exit {code}")
-        case _:
-            assert_never(how)
-
-
-class _Attributions(NamedTuple):
-    """§7's attributed death reports, by the seq of the ``terminated`` each
-    follows, and the launches refused for want of a handle."""
-
-    deaths: dict[int, AttributedDeath]
-    refused: list[_Refusal]
-
-
-def _attributed(log: _Log, classification: Classification) -> _Attributions:
-    """The newest claim naming a launch, which no ``stopped`` names, gets a death
-    report from the launch's ``terminated`` after it when the launch's handle,
-    its ``launched``'s, found by its id anywhere in the log, is the claim's,
-    compared whole. ``parse`` holds each launch to one ``terminated``. Refused:
-    a launch that not exactly one ``launched`` names, since there is then no
-    handle to attribute the death by."""
-    newest: dict[str, _Started] = {}
-    for c in log.claims:  # in claim order, so each launch keeps its newest
-        if c.launch_id is not None:
-            newest[c.launch_id] = c
-    launched: dict[str, list[_Launched]] = {}
-    for x in log.launched:
-        launched.setdefault(x.launch_id, []).append(x)
-    deaths: dict[int, AttributedDeath] = {}
-    refused: list[_Refusal] = []
-    for reap in log.terminated:
-        claim = newest.get(reap.launch_id)
-        if claim is None or claim.seq > reap.seq or claim.seq in classification.ends:
-            continue  # no claim's launch; the claim's, but before it; or a stopped's
-        found = launched.get(reap.launch_id, [])
-        if len(found) != 1:
-            error = MigrationError(
-                f"the {_Topic.TERMINATED} at seq {reap.seq} ends launch "
-                f"{reap.launch_id!r}, which {len(found)} {_Topic.LAUNCHED} records "
-                "name: without exactly one there is no handle to attribute its "
-                f"death to the claim at seq {claim.seq} by"
-            )
-            refused.append(_Refusal(reap.seq, error))
-        elif found[0].handle == claim.handle:  # else a wrapper's, or another host's
-            deaths[reap.seq] = AttributedDeath(_reported(reap.how, claim.seq), reap.t)
-    return _Attributions(deaths, refused)
-
-
-def _drained_from_nothing(log: _Log, seqs: set[int]) -> list[_Refusal]:
-    """``seqs`` holds the stops that leave the log. A heartbeat's watermark
-    naming one is refused: a watermark is a read position in the control order,
-    which the reference Worker sets only to a control record's seq, and
-    renaming cannot carry one that names a record that leaves the log."""
-    return [
-        _Refusal(
-            b.seq,
-            MigrationError(
-                f"the {_Topic.HEARTBEAT} at seq {b.seq} has consumed_seq "
-                f"{b.consumed_seq}, which names the {_Topic.STOPPED} at seq "
-                f"{b.consumed_seq}, a third party's that becomes only its "
-                "withdrawals: renaming cannot carry a watermark that names a "
-                "record that leaves the log"
-            ),
-        )
-        for b in log.beats
-        if b.consumed_seq in seqs
-    ]
-
-
-def report(log: _Log, classification: Classification) -> Reports:
-    """What each third party's ``stopped`` becomes (review §12, item 14; owner
-    ruling c′):
-
-    - **a release,** the stop that ends its claim, becomes a death
-      (``_death``);
-    - **the backstop that ends no claim,** after its claim's end or naming
-      none, becomes a ``supervisor.terminated`` (``Reap``): the runner's report
-      of how its subprocess ended, by the N its text names, under a launch id
-      minted ``backstop@<seq>`` with its 0.3.0 seq, fresh against every request
-      id in the run and every one minted before it;
-    - **any other later stop** becomes a death only when its ``error`` is set,
-      and otherwise only its withdrawals: once the claim has ended, only a
-      report with a cause is written (§3). M10's body has no ``error``;
-    - **any other claimless stop** becomes only its withdrawals: a death names
-      a claim.
-
-    A claim that 0.3.0 saw ended only by its launch's ``launcher.terminated``
-    gets an attributed death report (§7; ``_attributed``). A refusal names the
-    lowest seq any of the pass's checks refuses."""
-    attributions = _attributed(log, classification)
-    ends = {end.stop.seq: end for end in classification.ends.values()}
-    later = {x.stop.seq for x in classification.later}
-    taken = {x.request_id for x in log.records if x.request_id is not None}
-    taken |= {i for s in log.stops for i in s.honored}
-    stops: dict[int, Report] = {}
-    for s in log.stops:  # in seq order, so the minting is deterministic
-        becomes: Becomes
-        match ends.get(s.seq):
-            case _Exit():
-                continue  # its claim's exit node
-            case _Release():
-                becomes = _death(s)
-            case None if isinstance(s, _Stopped) and _is_backstop(s):
-                becomes = Reap(_fresh(f"backstop@{s.seq}", taken), _how(s))
-            case None if (
-                isinstance(s, _Stopped) and s.seq in later and s.error is not None
-            ):
-                becomes = _death(s)
-            case None:
-                becomes = Dropped()
-            case end:
-                assert_never(end)
-        t = s.t if isinstance(s, _Stopped) else s.created_at
-        stops[s.seq] = Report(s, becomes, t)
-    dropped = {seq for seq, x in stops.items() if isinstance(x.becomes, Dropped)}
-    _refuse_the_first(attributions.refused + _drained_from_nothing(log, dropped))
-    return Reports(stops, attributions.deaths)
-
-
-# ----- pass 3: synthesis ----------------------------------------------------------
-
-
-class Place(StrEnum):
-    """The three places M5 synthesizes a step commit, and the only three:
-
-    - a tick skipped between two real beats of one claim, even one with no
-      values;
-    - a trailing step at or below a non-error exit's last step;
-    - a trailing step s, whatever ended its claim, of the newest claim before
-      a later claim whose first real beat is s+1 to reach step s: the claim M1
-      will choose, wherever its commit at s is a candidate."""
-
-    SKIPPED_TICK = "skipped tick"
-    BEFORE_A_CLEAN_EXIT = "trailing step before a non-error exit"
-    RESUMED_FROM = "trailing step a later claim resumed from"
-
-
-class Uncommitted(StrEnum):
-    """Why a value stays outside every lineage. A value takes the first reason
-    that holds, in this order:
-
-    - it is stepless, a register (M3), wherever it stands;
-    - it is before every claim, so no claim's (pass 1);
-    - it is after its claim's end (M4), whatever ended the claim: the first
-      ``stopped`` naming it, or the ``terminated`` a ``died`` is attributed
-      from;
-    - it is a claim's that beat no integer step, which so reached no step
-      (P3's loading cells): whether it wrote it while it loaded or in a step
-      it never beat, even at or below a clean exit's last step;
-    - it is a trailing step above its claim's exit's last step;
-    - it is a trailing step no exit vouches for, which M5's third place does
-      not reach: nothing says its iteration finished."""
-
-    STEPLESS = "stepless"
-    BEFORE_EVERY_CLAIM = "before every claim"
-    AFTER_ITS_END = "after its claim's end"
-    LOADING = "a claim's that beat no step"
-    ABOVE_THE_LAST_STEP = "above its exit's last step"
-    UNREACHED = "an unreached trailing step"
-
-
-@dataclass(frozen=True)
-class Real:
-    """A commit that is a 0.3.0 heartbeat with an integer step."""
-
-    beat: _Beat
-
-
-@dataclass(frozen=True)
-class Synthetic:
-    """A commit M5 synthesizes, at ``place``. ``previous`` is the real heartbeat
-    before it in its claim, worked out once (``_claim_commits``) and read by
-    every pass that needs it: M8 here, candidacy (``_beaten``) and placement.
-    M8's fields:
-
-    - ``t`` from the last value it commits that carries one, else from
-      ``previous``;
-    - its ``consumed_seq`` is ``previous``'s.
-
-    M5 synthesizes only above a claim's first real beat, so ``previous`` always
-    exists, and M8's further fallbacks (the ``created_at`` of the record it is
-    placed after; a ``consumed_seq`` of 0) never apply. Its ``fired`` and
-    ``expired`` are ``[]``, as on every migrated node."""
-
-    place: Place
-    previous: _Beat
-    t: float
-
-
-@dataclass(frozen=True)
-class Commit:
-    """A commit at old step ``step``, and the seqs of the values it commits, in
-    seq order."""
-
-    step: int
-    values: tuple[int, ...]
-    origin: Real | Synthetic
-
-
-@dataclass(frozen=True)
-class ExitNode:
-    """A claim's end that becomes its exit node: the worker's exit. ``values``
-    are what it holds: ``()`` when it vouches for its iteration (a non-error
-    exit), None when it discards its open iteration (an error exit). Its
-    ``parent`` is its claim's newest commit, else its resume point (pass 4)."""
-
-    stop: _Stopped
-    values: tuple[()] | None
-
-
-class Left(NamedTuple):
-    """A value no commit holds, and why."""
-
-    value: _Value
-    why: Uncommitted
-
-
-@dataclass(frozen=True)
-class ClaimCommits:
-    """A claim's commits, real and synthetic, in its order, which is old-step
-    order; and its exit node, when its end is one. A claim that beat no integer
-    step commits nothing."""
-
-    claim: Claim
-    commits: tuple[Commit, ...]
-    exit: ExitNode | None
-
-
-@dataclass(frozen=True)
-class Synthesis:
-    """Pass 3: each claim's commits, in claim order, and every value no commit
-    holds, in seq order. Each value is committed once or left once."""
-
-    claims: tuple[ClaimCommits, ...]
-    uncommitted: tuple[Left, ...]
-
-
-def _exit_node(end: End | None) -> ExitNode | None:
-    match end:
-        case _Exit(stop):
-            return ExitNode(stop, () if stop.error is None else None)
-        case _Release() | None:
-            return None
-        case _:
-            assert_never(end)
-
-
-def _under_the_ceiling(node: ExitNode | None, step: int) -> bool:
-    """Whether a trailing step is at or below its claim's exit's last step, the
-    0.3.0 ``final_step``, its ceiling. A claim with no exit node has no ceiling,
-    so every step is under it; an exit whose ``final_step`` is null reached no
-    step, so none is."""
-    if node is None:
-        return True
-    last = node.stop.final_step
-    return last is not None and step <= last
-
-
-@dataclass(frozen=True)
-class _Reading:
-    """A claim read by M2, M3, M4 and M5's first two places, before M5's third
-    place looks across claims.
-
-    ``real`` holds its heartbeats with an integer step, by step, ascending.
-    ``placed`` maps each commit's step (real, or synthesized at a
-    ``synthesized_at`` place) to the values it commits. ``trailing`` maps each
-    trailing step that only M5's third place can commit to its values.
-    ``left`` holds the values no commit can hold."""
-
-    claim: Claim
-    exit: ExitNode | None
-    real: Mapping[int, _Beat]
-    synthesized_at: Mapping[int, Place]
-    placed: Mapping[int, tuple[_Value, ...]]
-    trailing: Mapping[int, tuple[_Value, ...]]
-    left: tuple[Left, ...]
-
-    @property
-    def first(self) -> int | None:
-        """The step of its first real beat."""
-        return next(iter(self.real), None)
-
-    @property
-    def reached(self) -> frozenset[int]:
-        """The steps it reached, by a commit or by trailing values."""
-        return frozenset(self.placed) | frozenset(self.trailing)
-
-
-def _read(claim: Claim, node: ExitNode | None, end: int | None) -> _Reading:
-    """``node`` is its exit node, and ``end`` the seq of the record that ends it
-    (``_ends``), each None when it has none."""
-    real: dict[int, _Beat] = {}
-    for b in claim.beats:
-        if b.step is not None:
-            real[b.step] = b  # ascending: parse refuses an in-claim rewind
-    steps = list(real)
-    synthesized_at: dict[int, Place] = {}
-    if steps:
-        for s in range(steps[0] + 1, steps[-1]):
-            if s not in real:
-                synthesized_at[s] = Place.SKIPPED_TICK
-    placed: dict[int, list[_Value]] = {
-        s: [] for s in sorted(real.keys() | synthesized_at)
-    }
-    trailing: dict[int, list[_Value]] = {}
-    left: list[Left] = []
-    for v in claim.values:
-        if v.step is None:
-            left.append(Left(v, Uncommitted.STEPLESS))
-        elif end is not None and v.seq > end:
-            left.append(Left(v, Uncommitted.AFTER_ITS_END))
-        elif not steps:  # a claim that beat no step reached none
-            left.append(Left(v, Uncommitted.LOADING))
-        elif v.step in placed:  # M2: a real beat's step, or a skipped tick's
-            placed[v.step].append(v)
-        elif v.step < steps[0]:  # a leading value
-            placed[steps[0]].append(v)
-        elif not _under_the_ceiling(node, v.step):  # trailing from here on
-            left.append(Left(v, Uncommitted.ABOVE_THE_LAST_STEP))
-        elif node is not None and node.values is not None:  # the exit vouches
-            synthesized_at[v.step] = Place.BEFORE_A_CLEAN_EXIT
-            placed[v.step] = [v]
-        else:
-            trailing.setdefault(v.step, []).append(v)
-    return _Reading(
-        claim,
-        node,
-        real,
-        synthesized_at,
-        {s: tuple(vs) for s, vs in placed.items()},
-        {s: tuple(vs) for s, vs in trailing.items()},
-        tuple(left),
-    )
-
-
-def _newest_reaching(
-    reached: Sequence[frozenset[int]], before: int, step: int
-) -> int | None:
-    """THE NEWEST CLAIM TO REACH A STEP: the index of the newest claim before
-    the claim at index ``before``, in claim order, whose ``reached`` steps hold
-    ``step``; None when no claim's do. Claim order, never step nearness (Review
-    Focus 2).
-
-    Pass 4 (M1) asks it of the steps of each claim's candidates, after
-    synthesis, for a first commit's parent at the step below it: there it is
-    the claim M1 chooses. M5's third place asks it of the steps each claim
-    reached by a commit or by trailing values, before synthesis: there it is
-    the claim M1 will choose wherever that claim's commit at the step is a
-    candidate. Without a displaced worker it always is, since the third place
-    turns the trailing step it chooses into a candidate; where the two differ
-    is a known limit (the module docstring)."""
-    for i in range(before - 1, -1, -1):
-        if step in reached[i]:
-            return i
-    return None
-
-
-def _synthetic(place: Place, values: Sequence[_Value], previous: _Beat) -> Synthetic:
-    """M8. ``previous`` is the claim's real heartbeat before the commit."""
-    dated = [v.t for v in values if v.t is not None]
-    return Synthetic(place, previous, dated[-1] if dated else previous.t)
-
-
-def _claim_commits(r: _Reading, resumed: set[int]) -> tuple[ClaimCommits, list[Left]]:
-    """A claim's commits, once M5's third place has chosen ``resumed``, the
-    trailing steps it commits in this claim."""
-    synthesized_at = dict(r.synthesized_at)
-    placed = dict(r.placed)
-    left = list(r.left)
-    for s, values in r.trailing.items():
-        if s in resumed:
-            synthesized_at[s] = Place.RESUMED_FROM
-            placed[s] = values
-        else:
-            left.extend(Left(v, Uncommitted.UNREACHED) for v in values)
-    commits: list[Commit] = []
-    previous: _Beat | None = None  # the real heartbeat before each step
-    for s in sorted(placed):
-        values = placed[s]
-        beat = r.real.get(s)
-        if beat is None:
-            # M5 synthesizes only above the first real beat, which is placed first
-            assert previous is not None
-            origin: Real | Synthetic = _synthetic(synthesized_at[s], values, previous)
-        else:
-            origin = Real(beat)
-            previous = beat
-        commits.append(Commit(s, tuple(v.seq for v in values), origin))
-    return ClaimCommits(r.claim, tuple(commits), r.exit), left
-
-
-def _ends(
-    classification: Classification, deaths: Mapping[int, AttributedDeath]
-) -> dict[int, int]:
-    """M4's end of each ended claim, by the claim's seq: the seq of the record
-    that ends it. That is the first ``stopped`` naming it, or, for a claim no
-    ``stopped`` names, the ``terminated`` a ``died`` is attributed from
-    (``report``), since a death report ends its claim (§2)."""
-    ends = {claim: end.stop.seq for claim, end in classification.ends.items()}
-    for terminated, d in deaths.items():
-        assert d.death.claim not in ends, f"the claim {d.death.claim} ends twice"
-        ends[d.death.claim] = terminated
-    return ends
-
-
-def synthesize(
-    attribution: Attribution,
-    classification: Classification,
-    deaths: Mapping[int, AttributedDeath],
-) -> Synthesis:
-    """M2 and M5 assign each value to a commit of its claim, synthesizing the
-    commits M5 names; every other value is left, with its reason, M4's among
-    them. ``deaths`` are pass 2's attributed death reports (``Reports.deaths``):
-    with the first ``stopped`` naming each claim, they say where each claim
-    ends (M4). Each claim is read alone first, then M5's third place looks
-    across claims; no claim's reading depends on another's, so nothing is
-    circular."""
-    ends = _ends(classification, deaths)
-    readings = [
-        _read(
-            c,
-            _exit_node(classification.ends.get(c.started.seq)),
-            ends.get(c.started.seq),
-        )
-        for c in attribution.claims
-    ]
-    reached = [r.reached for r in readings]
-    resumed: list[set[int]] = [set() for _ in readings]
-    for i, r in enumerate(readings):
-        first = r.first
-        if first is not None and first > 0:
-            j = _newest_reaching(reached, i, first - 1)
-            if j is not None and first - 1 in readings[j].trailing:
-                resumed[j].add(first - 1)
-    claims: list[ClaimCommits] = []
-    left = [
-        Left(
-            v,
-            Uncommitted.STEPLESS if v.step is None else Uncommitted.BEFORE_EVERY_CLAIM,
-        )
-        for v in attribution.unclaimed
-    ]
-    for r, steps in zip(readings, resumed, strict=True):
-        claim, its_left = _claim_commits(r, steps)
-        claims.append(claim)
-        left.extend(its_left)
-    return Synthesis(tuple(claims), tuple(sorted(left, key=lambda x: x.value.seq)))
-
-
-# ----- pass 4: parents and resume points (M1) -------------------------------------
-
-
-class CommitRef(NamedTuple):
-    """A commit by pass 3's identity: its claim's seq and its old step, unique
-    within the claim, whose steps rise (M9). Pass 4 writes no seqs: pass 5
-    places the commits and renumbers."""
-
-    claim: int
-    step: int
-
-
-@dataclass(frozen=True)
-class Fresh:
-    """Its first commit is at old step 0, with no step below it: a fresh start,
-    with no resume point."""
-
-    node: ClassVar[None] = None
-
-
-@dataclass(frozen=True)
-class Resumed:
-    """Its first commit, at old step s, resumes from ``node``: the candidate at
-    s-1 of the newest claim before it, in claim order, to hold one."""
-
-    node: CommitRef
-
-
-@dataclass(frozen=True)
-class Parentless:
-    """No claim before it holds a candidate at s-1: a parentless resume, with
-    no resume point, which P1 counts and P3 names."""
-
-    node: ClassVar[None] = None
-
-
-@dataclass(frozen=True)
-class Inferred:
-    """It beat no integer step, so it commits nothing: by inference, ``node`` is
-    the newest candidate of the newest claim before it to hold one, or None
-    when no claim does."""
-
-    node: CommitRef | None
-
-
-ResumeFrom = Fresh | Resumed | Parentless | Inferred
-"""A claim's ``started.resume_from``, by the rule M1 decided it by: ``node`` is
-the commit it names, or None, and only ``Resumed`` and ``Inferred`` name one. A
-report counts the rules by variant."""
-
-
-@dataclass(frozen=True)
-class Linkage:
-    """Pass 4: every claim's resume point, by its seq, in claim order; every
-    commit's ``parent``; and each exit node's ``parent``, by its claim's seq.
-    Each names a commit or nothing, never an exit node."""
-
-    resume_from: Mapping[int, ResumeFrom]
-    parents: Mapping[CommitRef, CommitRef | None]
-    exits: Mapping[int, CommitRef | None]
-
-
-class _Beaten(NamedTuple):
-    """A commit, and the seq of the beat that decides whether it is a
-    candidate for a later claim."""
-
-    commit: CommitRef
-    beat: int
-
-
-def _beaten(c: ClaimCommits) -> list[_Beaten]:
-    """A claim's commits, in its order, each with the beat that decides whether
-    it is placed below a later claim's ``started``: its own heartbeat when it is
-    real, else ``Synthetic.previous``, the real heartbeat before it in its
-    claim, the one M8 dates it by. M6 places a real commit no earlier than its
-    heartbeat, and a synthetic commit after its parent, so that beat binds it
-    too.
-
-    Only beats can follow that ``started``, of all M6 places a commit after.
-    Pass 1 attributes values by position, so an earlier claim's committed values
-    precede it. A ``consumed_seq`` names a record before its heartbeat, and a
-    synthetic commit's is the heartbeat's before it (M8). A first commit's
-    parent is a candidate of an earlier claim. A later commit's parents are its
-    claim's commits below it, whose beats precede the one that decides it. If
-    pass 1 ever attributes values by name rather than by position, revisit this
-    rule."""
-    beaten: list[_Beaten] = []
-    for k in c.commits:
-        match k.origin:
-            case Real(beat=beat) | Synthetic(previous=beat):
-                beaten.append(_Beaten(CommitRef(c.claim.started.seq, k.step), beat.seq))
-            case _:
-                assert_never(k.origin)
-    return beaten
-
-
-def _resume_from(
-    claims: Sequence[ClaimCommits], beaten: Sequence[Sequence[_Beaten]], i: int
-) -> ResumeFrom:
-    """M1's resume point for the claim at index ``i``, among its candidates:
-    the commits of the claims before it whose deciding beat (``beaten``, each
-    claim's) precedes its ``started``."""
-    below = claims[i].claim.started.seq
-    held = [[x.commit for x in b if x.beat < below] for b in beaten[:i]]
-    commits = claims[i].commits
-    if not commits:  # it beat no integer step
-        return Inferred(next((h[-1] for h in reversed(held) if h), None))
-    first = commits[0].step
-    if first == 0:
-        return Fresh()
-    j = _newest_reaching([frozenset(x.step for x in h) for h in held], i, first - 1)
-    if j is None:
-        return Parentless()
-    # its steps rise, so the chosen claim's last commit at s-1 is its only one
-    return Resumed(CommitRef(claims[j].claim.started.seq, first - 1))
-
-
-def link(synthesis: Synthesis) -> Linkage:
-    """M1. A claim's first commit takes its resume point as ``parent``, and each
-    later commit the claim's previous commit; its exit node takes its position
-    at the exit: its newest commit, else its resume point. A commit is the
-    parent even where an extendable exit follows it, since every 0.3.0
-    checkpoint was saved at a step, never after an exit (review §12, item 14).
-
-    The claims are read in claim order, after synthesis, so every commit M5
-    synthesized can be a parent. A resume point is chosen among the
-    candidates, the commits placed below the claim's ``started``: a displaced
-    worker's commit made or completed after the claim began is never its
-    resume point."""
-    claims = synthesis.claims
-    beaten = [_beaten(c) for c in claims]
-    resume_from: dict[int, ResumeFrom] = {}
-    parents: dict[CommitRef, CommitRef | None] = {}
-    exits: dict[int, CommitRef | None] = {}
-    for i, c in enumerate(claims):
-        claim = c.claim.started.seq
-        start = _resume_from(claims, beaten, i)
-        resume_from[claim] = start
-        position = start.node  # a started leaves its resume point
-        for k in c.commits:
-            parents[CommitRef(claim, k.step)] = position
-            position = CommitRef(claim, k.step)  # a commit leaves itself
-        if c.exit is not None:
-            exits[claim] = position
-    return Linkage(resume_from, parents, exits)
-
-
-# ----- pass 5: placement and renumbering (M6) ---------------------------------------
-
-
-@dataclass(frozen=True)
-class Input:
-    """An input record, by its 0.3.0 seq. A real commit is its heartbeat's
-    record, moved, so it is keyed by the heartbeat's seq."""
-
-    seq: int
-
-
-@dataclass(frozen=True)
-class Synthesized:
-    """A commit M5 synthesized, a record the input does not hold, by pass 3's
-    identity."""
-
-    ref: CommitRef
-
-
-@dataclass(frozen=True)
-class Withdrawal:
-    """A ``control.withdraw`` a third party's stop becomes, one per id it
-    honored: the stop's 0.3.0 seq and the id, unique within its ``honored``."""
-
-    stop: int
-    request_id: str
-
-
-@dataclass(frozen=True)
-class Attributed:
-    """A ``supervisor.died`` §7 attributes from a launch's ``terminated``, by
-    the terminated's 0.3.0 seq: one launch, one newest claim, so at most one
-    follows any terminated."""
-
-    terminated: int
-
-
-Key = Input | Synthesized | Withdrawal | Attributed
-"""An output record before renumbering. A pass that adds records adds a
-variant for them, and places each through ``After``."""
-
-
-@dataclass(frozen=True)
-class After:
-    """A record placed just after ``anchor``, wherever the anchor itself is
-    placed: an anchor is a record, never a seq. Records placed after one anchor
-    follow it in ``tie`` order, each with the records placed after it. Two
-    records placed after one anchor never share a tie. M6 places at most one
-    record after any record, so the ties order the records a later pass
-    places; a commit's tie is its (claim seq, old step)."""
-
-    anchor: Key
-    tie: tuple[int, ...]
-
-
-@dataclass(frozen=True)
-class Placement:
-    """Pass 5: each commit's key, by pass 3's identity; where every record
-    placed after another goes: every synthetic commit, every real commit that
-    moves (M6), every withdrawal and every attributed death report; and
-    ``dropped``, the input records that leave the output: each third party's
-    stop that becomes only its withdrawals, which take its place. Every other
-    input record keeps its place."""
-
-    commits: Mapping[CommitRef, Key]
-    moves: Mapping[Key, After]
-    dropped: frozenset[Key]
-
-
-def place(synthesis: Synthesis, linkage: Linkage, reports: Reports) -> Placement:
-    """M6, as the migration reads it, then the withdrawals and the attributed
-    death reports. Each id a third party's stop honored is withdrawn just after
-    the stop, in ``honored`` order, whatever the stop becomes: in its place, a
-    death or a terminated replaces it, and a stop that becomes nothing else
-    leaves the output, its withdrawals taking its place. A stop never moves,
-    and M6 never places a commit after one, so each stop's withdrawals are the
-    only records placed after it. An attributed death report goes just after
-    its ``terminated``, the only record placed there, with its claim's seq as
-    its tie.
-
-    M6: each commit goes just after the latest of
-    the records it must follow: its last committed value, its parent, the record
-    its ``consumed_seq`` names, and, for a real commit, its own heartbeat. A
-    real commit that follows them all at its heartbeat stays there.
-
-    The record its ``consumed_seq`` names never decides, so it is asserted
-    rather than compared: ``parse`` holds it to a record before the heartbeat
-    whose watermark it is, and never one M6 moves, and the commit follows that
-    heartbeat, a synthetic commit through its parent. A synthetic commit's
-    watermark is the real heartbeat's before it (M8).
-
-    The commits are placed in claim order, each claim's in its order, so a
-    commit's parent, its claim's previous commit or a resume point in an
-    earlier claim, is placed before it. Of the records a commit follows, only
-    its parent can have moved: values never move and its heartbeat is its own.
-    So a record's position is the seq of the input record it follows from and
-    its depth below it: one that stays is at (its seq, 0), and a moved one one
-    deeper than its anchor. That orders one moved record against any unmoved
-    ones, which is every comparison M6 makes.
-
-    For the same reasons M6 places at most one record after any record: a
-    commit's last value is its own, and a parent is the latest record only for
-    its claim's next commit, since a resume point precedes the claim's
-    ``started``. The ties order the records a later pass places."""
-    keys: dict[CommitRef, Key] = {}
-    moves: dict[Key, After] = {}
-    below: dict[Key, tuple[int, int]] = {}  # a moved record's root seq and depth
-
-    def position(key: Key) -> tuple[int, int]:
-        if key in below:
-            return below[key]
-        assert isinstance(key, Input), f"{key} is not placed yet"
-        return key.seq, 0
-
-    for c in synthesis.claims:
-        for k in c.commits:
-            ref = CommitRef(c.claim.started.seq, k.step)
-            parent = linkage.parents[ref]
-            assert parent is None or parent in keys, f"{ref} precedes its parent"
-            follows: list[Key] = [Input(v) for v in k.values[-1:]]
-            if parent is not None:
-                follows.append(keys[parent])
-            match k.origin:
-                case Real(beat):
-                    own: Key = Input(beat.seq)
-                    consumed = beat.consumed_seq
-                    follows.append(own)
-                case Synthetic(previous=previous):
-                    own = Synthesized(ref)
-                    consumed = previous.consumed_seq
-                    # M5 synthesizes only above a claim's first real beat, so a
-                    # synthetic commit's parent is a commit of its own claim
-                    assert follows, f"the synthetic commit {ref} follows nothing"
-                case _:
-                    assert_never(k.origin)
-            keys[ref] = own
-            latest = max(follows, key=position)
-            assert consumed == 0 or position(Input(consumed)) < position(latest)
-            if latest != own:
-                moves[own] = After(latest, ref)
-                root, depth = position(latest)
-                below[own] = (root, depth + 1)
-    dropped: set[Key] = set()
-    for seq, x in reports.stops.items():
-        for i, request_id in enumerate(x.stop.honored):
-            moves[Withdrawal(seq, request_id)] = After(Input(seq), (i,))
-        if isinstance(x.becomes, Dropped):
-            dropped.add(Input(seq))
-    for seq, d in reports.deaths.items():
-        moves[Attributed(seq)] = After(Input(seq), (d.death.claim,))
-    return Placement(keys, moves, frozenset(dropped))
-
-
-def renumber(
-    seqs: Sequence[int], moves: Mapping[Key, After], dropped: frozenset[Key]
-) -> Mapping[Key, int]:
-    """THE RENUMBERING, once, for every record placed by any pass: each input
-    record in ``seqs`` (input order) that ``moves`` does not move keeps its
-    order, and each record ``moves`` places follows its anchor, after the
-    records placed after that anchor with a lower tie, each with its own. An
-    input record in ``dropped`` takes no seq, and the records placed after it
-    take its place. Returns every record's 0.4.0 seq, gapless from 1, in output
-    order."""
-    after: dict[Key, list[tuple[tuple[int, ...], Key]]] = {}
-    for key, at in moves.items():
-        after.setdefault(at.anchor, []).append((at.tie, key))
-    out: dict[Key, int] = {}
-    stack: list[Key] = [Input(s) for s in reversed(seqs) if Input(s) not in moves]
-    while stack:
-        key = stack.pop()
-        if key not in dropped:
-            out[key] = len(out) + 1
-        placed = sorted(after.pop(key, []), key=lambda x: x[0])
-        ties = [tie for tie, _ in placed]
-        assert len(set(ties)) == len(ties), f"records after {key} share a tie"
-        stack.extend(k for _, k in reversed(placed))
-    assert not after, f"placed after records no order holds: {list(after)}"
-    return out
-
-
-# ----- pass 6: the renames (M7) ------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class ToStarted:
-    """A claim's ``started``, with its ``resume_from`` (M1) renumbered."""
-
-    started: _Started
-    resume_from: int | None
-
-
-@dataclass(frozen=True)
-class ToCommit:
-    """A commit, real or synthetic, named ``ref`` by pass 3's identity: the
-    claim it speaks for, its watermark (0 for none), its parent and the values
-    it commits, renumbered."""
-
-    ref: CommitRef
-    origin: Real | Synthetic
-    claim_seq: int
-    consumed_seq: int
-    parent: int | None
-    values: tuple[int, ...]
-
-
-@dataclass(frozen=True)
-class ToHeartbeat:
-    """A stepless heartbeat, a beat: its claim and its watermark (0 for none),
-    renumbered."""
-
-    beat: _Beat
-    claim_seq: int
-    consumed_seq: int
-
-
-@dataclass(frozen=True)
-class ToExit:
-    """A claim's exit node: its claim and its parent, the claim's position at
-    the exit, renumbered."""
-
-    node: ExitNode
-    claim_seq: int
-    parent: int | None
-
-
-@dataclass(frozen=True)
-class ToDied:
-    """A death, a third party's stop's or one attributed from a launch's
-    ``terminated``: the claim it names, renumbered, and the ``t`` of the
-    record it comes from."""
-
-    death: Death
-    claim_seq: int
-    t: float
-
-
-@dataclass(frozen=True)
-class ToReap:
-    """A backstop that ends no claim, which becomes a ``terminated``, and the
-    backstop's ``t``. It holds no seq."""
-
-    reap: Reap
-    t: float
-
-
-@dataclass(frozen=True)
-class ToWithdraw:
-    """A withdrawal of the stop ``request_id`` names, dated by the stop that
-    honored it. It holds no seq."""
-
-    request_id: str
-    t: float
-
-
-@dataclass(frozen=True)
-class ToValue:
-    """A value. It holds no seq."""
-
-    value: _Value
-
-
-@dataclass(frozen=True)
-class NoSeqs:
-    """A record whose body 0.4.0 keeps and which holds no seq: a
-    ``control.stop``, a ``launcher.*`` record, a ``nak``, or a topic 0.3.0
-    does not define."""
-
-    record: _Record
-
-
-Remapped = (
-    ToStarted
-    | ToCommit
-    | ToHeartbeat
-    | ToExit
-    | ToDied
-    | ToReap
-    | ToWithdraw
-    | ToValue
-    | NoSeqs
+_ANY = "any"
+_ROLES = frozenset(
+    ValueRole(r, register)
+    for r in Role
+    for register in (False, True)
+    if r is not Role.STRAY or register
 )
-"""An output record with every seq-valued field renumbered (M7), before its
-0.4.0 body is written."""
 
-
-@dataclass(frozen=True)
-class Out:
-    """An output record: its 0.4.0 seq, its key, its ``created_at`` and its
-    renamed fields."""
-
-    seq: int
-    key: Key
-    created_at: float
-    record: Remapped
-
-
-def rename(
-    log: _Log,
-    synthesis: Synthesis,
-    linkage: Linkage,
-    reports: Reports,
-    placement: Placement,
-    numbering: Mapping[Key, int],
-) -> tuple[Out, ...]:
-    """M7: every output record, in output order, with every seq-valued field
-    the 0.4.0 schemas define renumbered to name the record it named:
-    ``claim_seq`` (on a heartbeat, a commit, an exit and a death),
-    ``consumed_seq``, ``parent``, ``values`` and ``resume_from``. A
-    ``consumed_seq`` of 0 names nothing and stays 0. Request ids are strings,
-    so a ``stop@N`` stays as it is.
-
-    An input record keeps its ``created_at``, and so does a stop that becomes a
-    death or a terminated in its place. A record placed after another takes
-    that of its anchor: a withdrawal its stop's, whether the stop stays or
-    leaves, and an attributed death its ``terminated``'s."""
-
-    def new(seq: int) -> int:
-        return numbering[Input(seq)]
-
-    def node(ref: CommitRef | None) -> int | None:
-        return None if ref is None else numbering[placement.commits[ref]]
-
-    def watermark(seq: int) -> int:
-        return 0 if seq == 0 else new(seq)
-
-    def commit(ref: CommitRef, k: Commit) -> ToCommit:
-        match k.origin:
-            case Real(beat=beat) | Synthetic(previous=beat):  # M8's, for a synthetic
-                consumed = beat.consumed_seq
-            case _:
-                assert_never(k.origin)
-        return ToCommit(
-            ref,
-            k.origin,
-            claim_seq=new(ref.claim),
-            consumed_seq=watermark(consumed),
-            parent=node(linkage.parents[ref]),
-            values=tuple(new(v) for v in k.values),
+UNSTATED = Configuration(
+    {
+        _ANY: WorkerFacts(
+            **{f.name: domain(WorkerFacts, f.name) for f in fields(WorkerFacts)}
         )
-
-    records = {x.seq: x for x in log.records}
-    claims = {c.seq: c for c in log.claims}
-    beats = {b.seq: b for b in log.beats}
-    values = {v.seq: v for v in log.values}
-    commits = {
-        placement.commits[CommitRef(c.claim.started.seq, k.step)]: (
-            CommitRef(c.claim.started.seq, k.step),
-            k,
+    },
+    {
+        _ANY: ThirdPartyFacts(
+            **{f.name: domain(ThirdPartyFacts, f.name) for f in fields(ThirdPartyFacts)}
         )
-        for c in synthesis.claims
-        for k in c.commits
+    },
+    Unstated(),
+)
+"""The facts when a consumer states none: one worker version and one third-party
+version, every fact its whole domain, and a classifier that answers every record's
+whole domain."""
+
+
+def _value_of(x: object) -> Json:
+    if isinstance(x, Enum):
+        return cast(Json, x.value)
+    if isinstance(x, (frozenset, set)):
+        return sorted((_value_of(v) for v in x), key=repr)
+    if isinstance(x, tuple):
+        return [_value_of(v) for v in x]
+    return cast(Json, x)
+
+
+def _describe(c: Configuration) -> Json:
+    """A statement as the manifest records it: each version's facts by class, and the
+    classifier's identity, since its answers are the consumer's assertions."""
+
+    def facts(f: WorkerFacts | ThirdPartyFacts) -> dict[str, Json]:
+        return {x.name: _value_of(getattr(f, x.name)) for x in fields(f)}
+
+    kind = type(c.classifier)
+    return {
+        "workers": {str(k): facts(f) for k, f in c.workers.items()},
+        "third_parties": {str(k): facts(f) for k, f in c.third_parties.items()},
+        "classifier": f"{kind.__module__}:{kind.__qualname__}",
     }
-    exits = {c.exit.stop.seq: c.exit for c in synthesis.claims if c.exit is not None}
 
-    def renamed(r: _Record) -> Remapped:
-        match r.topic:
-            case _Topic.STARTED:
-                return ToStarted(claims[r.seq], node(linkage.resume_from[r.seq].node))
-            case _Topic.HEARTBEAT if Input(r.seq) in commits:
-                return commit(*commits[Input(r.seq)])
-            case _Topic.HEARTBEAT:
-                b = beats[r.seq]
-                return ToHeartbeat(b, new(b.claim_seq), watermark(b.consumed_seq))
-            case _Topic.STOPPED if r.seq in exits:
-                exit = exits[r.seq]
-                claim = exit.stop.claim_seq
-                assert claim is not None  # an exit node ends the claim it names
-                return ToExit(exit, new(claim), node(linkage.exits[claim]))
-            case _Topic.STOPPED:
-                x = reports.stops[r.seq]
-                match x.becomes:
-                    case Death(claim=claim) as death:
-                        return ToDied(death, new(claim), x.t)
-                    case Reap() as reap:
-                        return ToReap(reap, x.t)
-                    case Dropped():
-                        raise AssertionError(f"the dropped stop {r.seq} is numbered")
-                    case _:
-                        assert_never(x.becomes)
-            case _Topic.VALUE:
-                return ToValue(values[r.seq])
-            case _:
-                return NoSeqs(r)
 
-    out: list[Out] = []
-    created: dict[Key, float] = {Input(x.seq): x.created_at for x in log.records}
-    for key, seq in sorted(numbering.items(), key=lambda x: x[1]):
-        match key:
-            case Input(old):
-                record = renamed(records[old])
-            case Synthesized():
-                record = commit(*commits[key])
-            case Withdrawal(stop=stop, request_id=request_id):
-                record = ToWithdraw(request_id, reports.stops[stop].t)
-            case Attributed(terminated=terminated):
-                d = reports.deaths[terminated]
-                record = ToDied(d.death, new(d.death.claim), d.t)
-            case _:
-                assert_never(key)
-        if not isinstance(key, Input):  # its anchor is numbered before it, or dropped
-            created[key] = created[placement.moves[key].anchor]
-        out.append(Out(seq, key, created[key], record))
+FACTS: Facts[Configuration] = Facts(Configuration, UNSTATED, _describe)
+
+
+# ----- the projections, and their built-in choosers ----------------------------------
+
+
+def _answer(question: E.Question, answer: object) -> E.Answer:
+    """A fork's answer is one of its own."""
+    if not isinstance(answer, E.Answer) or answer not in question.answers:
+        raise ValueError("the answer is none of the fork's own")
+    return answer
+
+
+def _rank(node: E.Node | None) -> tuple[int, int, int]:
+    """A node's age: a later claim's is newer, and within a claim a later commit's, its
+    exit newest; no node is oldest."""
+    if node is None:
+        return (-1, -1, -1)
+    if isinstance(node, E.CommitId):
+        return (node.claim, 0, node.nth)
+    return (node.claim, 1, 0)
+
+
+def _commits(a: E.Answer) -> int:
+    return sum(isinstance(p, (E.PCommit, E.PRewind)) for p in a.value)
+
+
+def _holds(a: E.Answer) -> int:
+    return sum(isinstance(p, E.PHold) for p in a.value)
+
+
+def _parents(a: E.Answer) -> tuple[tuple[int, int, int], ...]:
+    """The ages of the nodes an answer's commits, rewinds and exit continue."""
+    out: list[tuple[int, int, int]] = []
+    for p in a.value:
+        if isinstance(p, (E.PCommit, E.PExit)):
+            out.append(_rank(p.parent))
+        elif isinstance(p, E.PRewind):
+            out.append(_rank(p.target))
+        elif isinstance(p, E.Resumes):
+            out.append(_rank(p.resume))
     return tuple(out)
 
 
-# ----- the 0.4.0 rows -----------------------------------------------------------------
+class _Least:
+    """The one answer least by ``key``, or a refusal where several tie: a built-in never
+    picks among answers it cannot tell apart."""
+
+    def __init__(self, name: str, key: Callable[[E.Answer], Any]) -> None:
+        self._name = name
+        self._key = key
+
+    def choose(self, question: E.Question) -> E.Answer | Refusal:
+        best = min(self._key(a) for a in question.answers)
+        least = [a for a in question.answers if self._key(a) == best]
+        if len(least) > 1:
+            return Refusal(f"{len(least)} answers tie under {self._name}")
+        return least[0]
+
+
+def _newest(a: E.Answer) -> tuple[tuple[int, int, int], ...]:
+    return tuple((-x, -y, -z) for x, y, z in _parents(a))
+
+
+def _builtin(name: str, key: Callable[[E.Answer], Any], description: str) -> Builtin:
+    return Builtin(name, _Least(name, key), description)
+
+
+FEWEST = _builtin(
+    "fewest",
+    lambda a: (_commits(a), _holds(a), _newest(a)),
+    "the fewest iterations finished, then the fewest values held, then the newest "
+    "nodes continued",
+)
+MOST = _builtin(
+    "most",
+    lambda a: (-_commits(a), -_holds(a), _newest(a)),
+    "the most iterations finished, then the most values held, then the newest nodes "
+    "continued",
+)
+NEWEST = _builtin(
+    "newest",
+    _newest,
+    "continue the newest node offered (a later claim's, a later commit's)",
+)
+
+END = Projection[E.Question, E.Answer](
+    name="end",
+    definition="how a claim ended: its death reports, and the stops its stops answer",
+    readings="the claim's death reports, withdrawals and process ends",
+    generic=(),
+    check=_answer,
+)
+SPAN = Projection[E.Question, E.Answer](
+    name="span",
+    definition="what a claim did: its finished iterations, where each stands and what "
+    "it holds, its rewinds, and its exit",
+    readings="the claim's commits (parent, values, placement), rewinds and exit node",
+    generic=(FEWEST, MOST),
+    check=_answer,
+)
+ORIGIN = Projection[E.Question, E.Answer](
+    name="origin",
+    definition="where a claim's state came from: the node it resumed from, if any",
+    readings="the claim's resume_from: a node of the run, or none",
+    generic=(NEWEST,),
+    check=_answer,
+)
+
+
+class EndTime(NamedTuple):
+    """An undated commit's end time (§7, "The end-time fork"): its lower bound, the
+    newest ``t`` among its claim's own records at or before it, and its upper bounds,
+    the ``t`` of the record after each gap it may stand in, earliest first."""
+
+    claim: int
+    nth: int
+    low: float
+    highs: tuple[float, ...]
+
+
+class _Lower:
+    def choose(self, question: EndTime) -> float:
+        return E.lower(E.CommitId(question.claim, question.nth), question.low, ())
+
+
+class _Upper:
+    def choose(self, question: EndTime) -> float:
+        c = E.CommitId(question.claim, question.nth)
+        return E.upper(c, question.low, question.highs)
+
+
+def _end_time(question: EndTime, answer: object) -> float:
+    """An end time is a number at or after the lower bound: a commit is written after
+    the values it holds (§3)."""
+    if isinstance(answer, bool) or not isinstance(answer, (int, float)):
+        raise ValueError(f"{answer!r} is no time")
+    if answer < question.low:
+        raise ValueError(f"{answer} precedes the lower bound {question.low}")
+    return float(answer)
+
+
+END_TIME = Projection[EndTime, float](
+    name="end-time",
+    definition="when an iteration ended that no record dates",
+    readings="a time at or after the newest of its claim's own records before it",
+    generic=(
+        Builtin("lower", _Lower(), "the newest t of the claim's own records before it"),
+        Builtin("upper", _Upper(), "the t of the next record after it"),
+    ),
+    check=_end_time,
+)
+
+_BY_KEY: Mapping[E.Projection, Projection[E.Question, E.Answer]] = {
+    E.Projection.END: END,
+    E.Projection.SPAN: SPAN,
+    E.Projection.ORIGIN: ORIGIN,
+}
+
+
+# ----- the divergences -----------------------------------------------------------------
+
+UNHELD_VALUE = Divergence(
+    "unheld-value",
+    "series: a value with a step that no node holds (loading, a register, a stray, "
+    "after its claim's end, of an iteration that never finished) leaves every lineage",
+)
+RECOUNTED_VALUE = Divergence(
+    "recounted-value",
+    "series: a value a node holds is read at that node's count along its lineage, "
+    "where it differs from the value's own step (a leading value, a stride, a resume "
+    "from outside or from no node)",
+)
+OFF_HEAD_VALUE = Divergence(
+    "off-head-value",
+    "series: a value a node holds off the newest claim's lineage (a displaced "
+    "worker's branch, a claim resumed from an older node) is read on no head",
+)
+SEVERAL_VALUES = Divergence(
+    "several-values",
+    "series: one node holds several values of one name, each an element, where 0.3.0 "
+    "read the newest at its step",
+)
+EXIT_HONORED = Divergence(
+    "exit-honored",
+    "the stop fold and the exit's honored (E2): a migrated exit honours the stops its "
+    "native drains read, which can differ from its 0.3.0 list (E2's five cost cases)",
+)
+THIRD_PARTY_RELEASE = Divergence(
+    "third-party-release",
+    "the verdict: a third party's stopped read as a release is a death report, whose "
+    "outcome is its act's, where 0.3.0 read the stopped's own fields",
+)
+THIRD_PARTY_NOTE = Divergence(
+    "third-party-note",
+    "the verdict: a third party's stopped that ends nothing (a note, a second report "
+    "without a cause) leaves the log, where 0.3.0 read it as its claim's end",
+)
+THIRD_PARTY_REAP = Divergence(
+    "third-party-reap",
+    "the verdict: a third party's stopped read as a process's end is a terminated, "
+    "on which a claimed run's verdict no longer rests",
+)
+FENCED_EXIT = Divergence(
+    "fenced-exit",
+    "the verdict: a worker's own stopped after a release or a takeover fenced it is "
+    "no exit node and leaves the log, where 0.3.0 read it as its claim's end",
+)
+ATTRIBUTED_DEATH = Divergence(
+    "attributed-death",
+    "the verdict: a claim that 0.3.0 saw ended only by its launch's terminated gets a "
+    "death report from it (an exit 0 is lost, not completed)",
+)
+UNATTRIBUTED_REAP = Divergence(
+    "unattributed-reap",
+    "the verdict: a launch's terminated that reports no claim dead (a wrapper's, "
+    "another host's) leaves the newest claim naming its launch held, where 0.3.0 "
+    "took it as that claim's verdict when nothing else ended it",
+)
+
+DIVERGENCES: tuple[Divergence, ...] = (
+    UNHELD_VALUE,
+    RECOUNTED_VALUE,
+    OFF_HEAD_VALUE,
+    SEVERAL_VALUES,
+    EXIT_HONORED,
+    THIRD_PARTY_RELEASE,
+    THIRD_PARTY_NOTE,
+    THIRD_PARTY_REAP,
+    FENCED_EXIT,
+    ATTRIBUTED_DEATH,
+    UNATTRIBUTED_REAP,
+)
+
+
+# ----- the candidates ---------------------------------------------------------------
+
+
+def _born(history: History) -> Born:
+    """A log's birth, from the root's manifest (§7, "Names an earlier step filled"): an
+    entry of the 0.2.0 -> 0.3.0 step means the earlier step filled its names. No entry
+    means born in 0.3.0, which holds because no consumer ran that step before the
+    manifest existed."""
+    if any(e.from_format == "0.2.0" for e in history):
+        return Born020()
+    return Born030()
+
+
+def _unread(log: _Log, configuration: Configuration) -> None:
+    """The malformed-record rule (log-formats.md §6): a ``stopped`` whose body 0.3.0 does
+    not define (M10's) has no conforming writer, so only a consumer's classifier may
+    read it. Under the unstated one it is refused."""
+    if not isinstance(configuration.classifier, Unstated):
+        return
+    for s in log.stops:
+        if isinstance(s, _Malformed):
+            raise MigrationError(
+                f"the {_Topic.STOPPED} at seq {s.seq} has a body format 0.3.0 does "
+                "not define (M10's {reason, honored, claim_seq}): only a consumer's "
+                "classifier may read it, and none was stated (--assume)"
+            )
+
+
+def _candidates(
+    rows: list[Row], configuration: Configuration, limits: Limits, history: History
+) -> E.Graph:
+    """The engine's candidates, or the run's refusal naming why: what blame proves
+    or leaves undecided, or the record past a limit."""
+    born = _born(history)
+    g = E.candidates(
+        rows,
+        configuration,
+        born=born,
+        cap=limits.cap,
+        budget=limits.budget,
+        run_on=limits.run_on,
+    )
+    if E.admits(g):
+        return g
+    at = (
+        f"the record at seq {g.ctx.recs[g.stopped_at].seq}"
+        if g.stopped_at is not None and g.stopped_at < len(g.ctx.recs)
+        else "the log's end"
+    )
+    b = E.blame(
+        rows,
+        configuration,
+        born=born,
+        cap=limits.cap,
+        budget=limits.budget,
+        run_on=limits.run_on,
+    )
+
+    def names(found: tuple[tuple[E.Named, ...], ...]) -> str:
+        return "; ".join(" with ".join(n.value for n in x) for x in found)
+
+    proven = f"relaxing {names(b.names)} admits one" if b.names else "no relaxation"
+    open_ = (
+        f"; undecided past the cap of {b.cap}: {names(b.undecided)}"
+        if b.undecided
+        else ""
+    )
+    raise MigrationError(
+        f"no history of the stated writers writes the log, stopped at {at}: "
+        f"{proven}{open_}"
+    )
+
+
+def _site(g: E.Graph, key: E.Key) -> int:
+    return g.ctx.recs[key.position].seq
+
+
+def _jsonable(x: object) -> Json:
+    """A reading as the manifest records it: each piece by its type and fields."""
+    if isinstance(x, tuple) and hasattr(x, "_fields"):
+        return {
+            "is": type(x).__name__,
+            **{f: _jsonable(getattr(x, f)) for f in x._fields},
+        }
+    if isinstance(x, tuple):
+        return [_jsonable(v) for v in x]
+    if isinstance(x, Enum):
+        return cast(Json, x.value)
+    if is_dataclass(x):
+        return {"is": type(x).__name__}
+    return cast(Json, x)
+
+
+class _Decided(NamedTuple):
+    """One run as the choosers read it: the path the step writes, and each fork's
+    reading by projection and site (by subject where several share a site)."""
+
+    ctx: E.Context
+    parts: tuple[tuple[E.Piece, ...], ...]
+    lineage: E.Lineage
+    readings: Mapping[str, Mapping[int, Json]]
+
+
+def _decide(g: E.Graph, resolutions: Resolutions) -> _Decided:
+    """The decode (§7, the decode order), each fork routed to its projection's chooser,
+    then the end-time fork of every commit no record dates."""
+    readings: dict[str, dict[int, dict[str, Json]]] = {
+        p.name: {} for p in (END, SPAN, ORIGIN, END_TIME)
+    }
+
+    def route(q: E.Question) -> E.Answer:
+        p = _BY_KEY[q.key.projection]
+        a = p.ask(resolutions, q)
+        readings[p.name].setdefault(_site(g, q.key), {})[str(q.key.subject)] = (
+            _jsonable(a.value)
+        )
+        return a
+
+    decided = E.decode(g, route, cap=resolutions.assumptions.limits.cap)
+    parts = E.written(decided)
+
+    def when(c: E.CommitId, low: float, highs: tuple[float, ...]) -> float:
+        t = END_TIME.ask(resolutions, EndTime(c.claim, c.nth, low, highs))
+        readings[END_TIME.name].setdefault(c.claim, {})[str(c.nth)] = t
+        return t
+
+    lineage = E.lineage(g.ctx, [p for part in parts for p in part], when=when)
+    return _Decided(
+        g.ctx,
+        parts,
+        lineage,
+        {p: {s: dict(v) for s, v in by.items()} for p, by in readings.items()},
+    )
+
+
+# ----- the 0.4.0 records ------------------------------------------------------------
 
 
 class _Written(StrEnum):
-    """The topics format 0.4.0 defines that the step writes in place of another
-    or anew, as it spells them (lifecycle-v0.6, subscription-v0.4,
-    supervisor-v0.5, value-v0.3). A ``nak``, a stop and a topic 0.3.0 does not
-    define keep their own."""
+    """The topics format 0.4.0 defines that the step writes in place of another or
+    anew, as it spells them (lifecycle-v0.6, subscription-v0.4, supervisor-v0.5,
+    value-v0.3). A ``nak``, a stop and a topic 0.3.0 does not define keep their own."""
 
     STARTED = "lifecycle.started"
     COMMIT = "lifecycle.commit"
     HEARTBEAT = "lifecycle.heartbeat"
+    REWIND = "lifecycle.rewind"
     STOPPED = "lifecycle.stopped"
     WITHDRAW = "control.withdraw"
     LAUNCHED = "supervisor.launched"
@@ -2353,183 +1304,569 @@ class _Written(StrEnum):
     VALUE = "value"
 
 
-def _dumps(body: _Body) -> str:
-    return json.dumps(body, separators=(",", ":"))  # as the channels write a body
+_MIGRATED = "migrated"  # E1: a death report the step writes says so
 
 
-def _commit_t(origin: Real | Synthetic) -> float:
-    match origin:
-        case Real(beat):
-            return beat.t
-        case Synthetic(t=t):
-            return t
+def _evidence(kind: str, own: str | None) -> str:
+    """E1: ``migrated: <the 0.3.0 record's kind>[: <its own evidence>]``."""
+    return f"{_MIGRATED}: {kind}" if not own else f"{_MIGRATED}: {kind}: {own}"
+
+
+def _reaped(how: Exited | Killed) -> str:
+    match how:
+        case Exited(code=code):
+            return f"exit {code}"
+        case Killed(signal=signal):
+            return f"signal {signal}"
         case _:
-            assert_never(origin)
+            assert_never(how)
 
 
-def _carried(o: Out, r: _Record) -> Row:
-    """A record whose body 0.4.0 keeps, written with its body's stored text, its
-    name and its request id: a ``launcher.*`` record moves to ``supervisor.*``,
-    and every other keeps its topic too."""
-    topic = r.topic
-    match r.topic:
-        case _Topic.LAUNCHED:
-            topic = _Written.LAUNCHED.value
-        case _Topic.TERMINATED:
-            topic = _Written.TERMINATED.value
-    return Row(o.seq, topic, r.name, r.request_id, r.text, o.created_at)
+class _Ref(NamedTuple):
+    """A seq-valued field before renumbering: an input record by its 0.3.0 seq, or a
+    node by its name."""
 
-
-def write(o: Out) -> Row:
-    """The 0.4.0 row of an output record (§3): exactly its schema's fields, each
-    present, null or ``[]`` where it does not apply. Every lifecycle record,
-    death, terminated and withdrawal is written with ``name`` null; a value
-    keeps its name. ``request_id`` is the launch id on a ``started``, the
-    minted launch id on a backstop's ``terminated``, the stop's on a
-    withdrawal, and null on every other record the step writes in place of
-    another or anew.
-
-    - ``started`` gains ``resume_from`` (M1) and ``sources: []``;
-    - a commit, real or synthetic, carries its claim, watermark, parent and
-      values, ``fired: []`` and ``expired: []``, and its ``t``: its
-      heartbeat's, or M8's;
-    - a stepless heartbeat drops ``step``;
-    - the exit node drops ``final_step`` and carries what it ``honored``, its
-      ``parent``, ``values`` (``[]``, or null when it discarded its open
-      iteration), ``fired: []`` and ``expired: []``;
-    - a value drops ``step``."""
-
-    def row(topic: _Written, request_id: str | None, body: _Body) -> Row:
-        return Row(o.seq, topic.value, None, request_id, _dumps(body), o.created_at)
-
-    match o.record:
-        case ToStarted(started=s, resume_from=resume_from):
-            return row(
-                _Written.STARTED,
-                s.launch_id,
-                {
-                    "handle": s.handle,
-                    "t": s.t,
-                    "resume_from": resume_from,
-                    "sources": [],
-                },
-            )
-        case ToCommit() as k:
-            return row(
-                _Written.COMMIT,
-                None,
-                {
-                    "claim_seq": k.claim_seq,
-                    "consumed_seq": k.consumed_seq,
-                    "parent": k.parent,
-                    "values": list(k.values),
-                    "fired": [],
-                    "expired": [],
-                    "t": _commit_t(k.origin),
-                },
-            )
-        case ToHeartbeat(beat=b, claim_seq=claim, consumed_seq=consumed):
-            return row(
-                _Written.HEARTBEAT,
-                None,
-                {"claim_seq": claim, "consumed_seq": consumed, "t": b.t},
-            )
-        case ToExit(
-            node=ExitNode(stop=stop, values=values), claim_seq=claim, parent=parent
-        ):
-            return row(
-                _Written.STOPPED,
-                None,
-                {
-                    "completed": stop.completed,
-                    "error": stop.error,
-                    "claim_seq": claim,
-                    "honored": list(stop.honored),
-                    "parent": parent,
-                    "values": None if values is None else list(values),
-                    "fired": [],
-                    "expired": [],
-                    "t": stop.t,
-                },
-            )
-        case ToDied(death=d, claim_seq=claim, t=t):
-            return row(
-                _Written.DIED,
-                None,
-                {
-                    "claim_seq": claim,
-                    "outcome": d.outcome.value,
-                    "evidence": d.evidence,
-                    "t": t,
-                },
-            )
-        case ToReap(reap=reap, t=t):
-            match reap.how:
-                case Exited(code=code):
-                    how: _Body = {"reason": "exited", "exit_code": code, "signal": None}
-                case Killed(signal=signal):
-                    how = {"reason": "killed", "exit_code": None, "signal": signal}
-                case _:
-                    assert_never(reap.how)
-            return row(_Written.TERMINATED, reap.launch_id, {**how, "t": t})
-        case ToWithdraw(request_id=request_id, t=t):
-            return row(_Written.WITHDRAW, request_id, {"t": t})
-        case ToValue(value=v):
-            body = {"value": v.value, "t": v.t}
-            return Row(
-                o.seq, _Written.VALUE.value, v.name, None, _dumps(body), o.created_at
-            )
-        case NoSeqs(record=r):
-            return _carried(o, r)
-        case _:
-            assert_never(o.record)
-
-
-# ----- the step ---------------------------------------------------------------------
+    seq: int | None = None
+    node: E.Node | None = None
 
 
 @dataclass(frozen=True)
-class Passes:
-    """Every pass's result for one run, in pass order, each from the parsed log
-    and the results before it; ``outs`` are the records ``write`` writes."""
+class _Out:
+    """One output record before renumbering: its topic, envelope and body, whose
+    seq-valued fields are ``_Ref``s; the input record it stands for, if any; the node
+    it is, if any; and its ``created_at``."""
 
-    log: _Log
-    attribution: Attribution
-    classification: Classification
-    reports: Reports
-    synthesis: Synthesis
-    linkage: Linkage
-    placement: Placement
-    numbering: Mapping[Key, int]
-    outs: tuple[Out, ...]
+    topic: str
+    name: str | None
+    request_id: str | None
+    body: Mapping[str, Any] | None  # None: the input record's stored text, carried
+    text: str | None
+    stands_for: int | None
+    node: E.Node | None
+    created_at: float
 
 
-def run_passes(rows: list[Row]) -> Passes:
-    """THE PASS ORDER (§7), the one wiring of the passes: ``transform`` writes
-    its ``outs``. ``report`` runs before ``synthesize``, which reads the
-    attributed death reports for M4."""
-    log = parse(rows)
-    attribution = attribute(log)
-    classification = classify(log)
-    reports = report(log, classification)
-    synthesis = synthesize(attribution, classification, reports.deaths)
-    linkage = link(synthesis)
-    placement = place(synthesis, linkage, reports)
-    numbering = renumber(
-        [x.seq for x in log.records], placement.moves, placement.dropped
+def _pieces(parts: Sequence[Sequence[E.Piece]], kind: type[Any]) -> list[Any]:
+    return [p for part in parts for p in part if isinstance(p, kind)]
+
+
+def _fresh(base: str, taken: set[str]) -> str:
+    """``base``, or ``base~k`` for the least k >= 2 not in ``taken``; then taken. The
+    0.2.0 -> 0.3.0 step's minting, carried here."""
+    cand, k = base, 1
+    while cand in taken:
+        k += 1
+        cand = f"{base}~{k}"
+    taken.add(cand)
+    return cand
+
+
+def _layout(log: _Log, d: _Decided) -> list[_Out]:
+    """The output records in order (§7, "Records"; E2: no record moves). Each input
+    record stands where it stood, written as 0.4.0 writes what it was; a stop's
+    withdrawals and an attributed death follow it at once; a death the gate proves
+    stands just before the claim that passed it; and each commit or rewind no record
+    dates stands just after the latest of its interval's first record and its claim's
+    own last record before it, each record's in claim and commit order."""
+    ctx, parts, lin = d.ctx, d.parts, d.lineage
+    records = {r.seq: r for r in log.records}
+    claims = {c.seq: c for c in log.claims}
+    beats = {b.seq: b for b in log.beats}
+    values = {v.seq: v for v in log.values}
+    stops = {s.seq: s for s in log.stops}
+    terminated = {t.seq: t for t in log.terminated}
+    flat = [p for part in parts for p in part]
+    own = E._own(flat)
+    starts = {s.claim: s.resume_from for s in lin.starts}
+    commits = {c.node: c for c in lin.commits}
+    exits = {x.node.claim: x for x in lin.exits}
+    dated = {(p.claim, p.nth): p.seq for p in _pieces(parts, E.PDate)}
+    by_tick = {seq: E.CommitId(*k) for k, seq in dated.items()}
+    gaps = {E.CommitId(p.claim, p.nth): p.gaps for p in _pieces(parts, E.PCommit)}
+    taken = {r.request_id for r in log.records if r.request_id is not None}
+    taken |= {x for s in log.stops for x in s.honored}
+
+    def low(claim: int, g: E.Gaps) -> tuple[int, float]:
+        """Where an undated record stands, the seq it follows, and its lower bound."""
+        last = max(s for s in own[claim] if s <= g.last)
+        at = max(g.first, last)
+        return at, ctx.recs[ctx.by_seq[last]].t
+
+    after: dict[int, list[tuple[tuple[int, int, int], _Out]]] = defaultdict(list)
+    before: dict[int, list[_Out]] = defaultdict(list)
+    for c in lin.commits:
+        if (c.node.claim, c.node.nth) in dated:
+            continue
+        at, _ = low(c.node.claim, gaps[c.node])
+        after[at].append(((c.node.claim, c.node.nth, 1), _commit(c, None)))
+    for p in _pieces(parts, E.PRewind):
+        at, t = low(p.claim, p.gaps)
+        rw = _Out(
+            _Written.REWIND,
+            None,
+            None,
+            {
+                "claim_seq": _Ref(seq=p.claim),
+                "resume_from": _Ref(node=p.target),
+                "t": t,
+            },
+            None,
+            None,
+            None,
+            0.0,
+        )
+        after[at].append(((p.claim, p.commits, 0), rw))
+    for i, part in enumerate(parts[: len(ctx.recs)]):
+        later = ctx.recs[i].seq
+        for p in part:
+            if isinstance(p, E.PDied) and p.source is E.Source.GATE:
+                dead = claims[p.claim]
+                before[later].append(
+                    _died(p, _evidence("gate", dead.handle), claims[later].t)
+                )
+
+    out: list[_Out] = []
+    for i, r in enumerate(log.records):
+        part = parts[i]
+        for x in before[r.seq]:
+            out.append(replace(x, created_at=r.created_at))
+        mine: list[_Out] = []
+        match r.topic:
+            case _Topic.STARTED:
+                s = claims[r.seq]
+                mine.append(
+                    _Out(
+                        _Written.STARTED,
+                        None,
+                        s.launch_id,
+                        {
+                            "handle": s.handle,
+                            "t": s.t,
+                            "resume_from": _Ref(node=starts[s.seq]),
+                            "sources": [],
+                        },
+                        None,
+                        r.seq,
+                        None,
+                        r.created_at,
+                    )
+                )
+            case _Topic.HEARTBEAT if r.seq in by_tick:
+                b = beats[r.seq]
+                node = by_tick[r.seq]
+                mine.append(
+                    replace(
+                        _commit(commits[node], _Ref(seq=b.consumed_seq)),
+                        stands_for=r.seq,
+                        created_at=r.created_at,
+                    )
+                )
+            case _Topic.HEARTBEAT:
+                b = beats[r.seq]
+                (beat,) = [p for p in part if isinstance(p, E.PBeat)]
+                mine.append(
+                    _Out(
+                        _Written.HEARTBEAT,
+                        None,
+                        None,
+                        {
+                            "claim_seq": _Ref(seq=beat.writer),
+                            "consumed_seq": _Ref(seq=b.consumed_seq),
+                            "t": b.t,
+                        },
+                        None,
+                        r.seq,
+                        None,
+                        r.created_at,
+                    )
+                )
+            case _Topic.VALUE:
+                v = values[r.seq]
+                mine.append(
+                    _Out(
+                        _Written.VALUE,
+                        v.name,
+                        None,
+                        {"value": v.value, "t": v.t},
+                        None,
+                        r.seq,
+                        None,
+                        r.created_at,
+                    )
+                )
+            case _Topic.STOPPED:
+                mine += _stopped(stops[r.seq], part, exits, taken)
+            case _Topic.LAUNCHED | _Topic.TERMINATED:
+                topic = (
+                    _Written.LAUNCHED
+                    if r.topic == _Topic.LAUNCHED
+                    else _Written.TERMINATED
+                )
+                mine.append(
+                    _Out(
+                        topic,
+                        r.name,
+                        r.request_id,
+                        None,
+                        r.text,
+                        r.seq,
+                        None,
+                        r.created_at,
+                    )
+                )
+            case _:
+                mine.append(
+                    _Out(
+                        r.topic,
+                        r.name,
+                        r.request_id,
+                        None,
+                        r.text,
+                        r.seq,
+                        None,
+                        r.created_at,
+                    )
+                )
+        stop = stops.get(r.seq)
+        for w in (p for p in part if isinstance(p, E.PWithdrawal)):
+            assert stop is not None  # a withdrawal answers a stopped
+            mine.append(
+                _Out(
+                    _Written.WITHDRAW,
+                    None,
+                    w.request_id,
+                    {"t": stop.t if isinstance(stop, _Stopped) else stop.created_at},
+                    None,
+                    None,
+                    None,
+                    r.created_at,
+                )
+            )
+        for p in part:
+            if isinstance(p, E.PDied) and p.source is E.Source.REAP:
+                reap = terminated[r.seq]
+                _one_launched(log, reap)
+                died = _died(p, _evidence("reap", _reaped(reap.how)), reap.t)
+                mine.append(replace(died, created_at=r.created_at))
+        out += mine
+        for _, x in sorted(after[r.seq], key=lambda kx: kx[0]):
+            out.append(replace(x, created_at=r.created_at))
+    return out
+
+
+def _one_launched(log: _Log, reap: _Terminated) -> None:
+    """An attributed death report reads its launch's handle off the one ``launched``
+    naming it: two leave the claimant unknown."""
+    n = sum(1 for x in log.launched if x.launch_id == reap.launch_id)
+    if n != 1:
+        raise MigrationError(
+            f"the {_Topic.TERMINATED} at seq {reap.seq} reports launch "
+            f"{reap.launch_id!r}, which {n} {_Topic.LAUNCHED} records name: its "
+            "death report needs the launch's one handle"
+        )
+
+
+def _commit(c: E.Commit, consumed: _Ref | None) -> _Out:
+    """A commit: dated, by its tick (whose watermark it keeps), or not, its ``t`` the
+    end-time chooser's and its watermark the newest control record before it
+    (``consumed`` None, filled where it is numbered)."""
+    return _Out(
+        _Written.COMMIT,
+        None,
+        None,
+        {
+            "claim_seq": _Ref(seq=c.node.claim),
+            "consumed_seq": consumed,
+            "parent": _Ref(node=c.parent),
+            "values": [_Ref(seq=v) for v in c.values],
+            "fired": [],
+            "expired": [],
+            "t": c.t,
+        },
+        None,
+        None,
+        c.node,
+        0.0,
     )
-    outs = rename(log, synthesis, linkage, reports, placement, numbering)
-    return Passes(
-        log,
-        attribution,
-        classification,
-        reports,
-        synthesis,
-        linkage,
-        placement,
-        numbering,
-        outs,
+
+
+def _died(p: E.PDied, evidence: str, t: float) -> _Out:
+    return _Out(
+        _Written.DIED,
+        None,
+        None,
+        {
+            "claim_seq": _Ref(seq=p.claim),
+            "outcome": p.outcome.value,
+            "evidence": evidence,
+            "t": t,
+        },
+        None,
+        None,
+        None,
+        0.0,
     )
+
+
+def _stopped(
+    stop: _Stop,
+    part: Sequence[E.Piece],
+    exits: Mapping[int, E.ExitNode],
+    taken: set[str],
+) -> list[_Out]:
+    """What a ``stopped`` becomes (§7, "Records"; E1): its claim's exit node; a death
+    report in its place; a process's end; or nothing, its withdrawals in its place."""
+    (who,) = [p for p in part if isinstance(p, E.PStop)]
+    match who.author:
+        case E.Author.EXIT:
+            assert isinstance(stop, _Stopped)  # no worker writes a body 0.3.0 lacks
+            x = exits[who.claim] if who.claim is not None else None
+            assert x is not None
+            return [
+                _Out(
+                    _Written.STOPPED,
+                    None,
+                    None,
+                    {
+                        "completed": stop.completed,
+                        "error": stop.error,
+                        "claim_seq": _Ref(seq=x.node.claim),
+                        "honored": list(x.honored),
+                        "parent": _Ref(node=x.parent),
+                        "values": (
+                            None
+                            if x.values is None
+                            else [_Ref(seq=v) for v in x.values]
+                        ),
+                        "fired": [],
+                        "expired": [],
+                        "t": stop.t,
+                    },
+                    None,
+                    stop.seq,
+                    x.node,
+                    stop.created_at,
+                )
+            ]
+        case E.Author.FENCED:
+            return []
+        case E.Author.THIRD:
+            t = stop.t if isinstance(stop, _Stopped) else stop.created_at
+            own = stop.error if isinstance(stop, _Stopped) else stop.reason
+            for p in part:
+                if isinstance(p, E.PDied) and p.source is E.Source.STOPPED:
+                    died = _died(p, _evidence("stopped", own), t)
+                    return [
+                        replace(died, stands_for=stop.seq, created_at=stop.created_at)
+                    ]
+                if isinstance(p, E.PTerminated) and p.launch is None:
+                    how = _how(p.how)
+                    launch = _fresh(f"backstop@{stop.seq}", taken)
+                    return [
+                        _Out(
+                            _Written.TERMINATED,
+                            None,
+                            launch,
+                            {**how, "t": t},
+                            None,
+                            stop.seq,
+                            None,
+                            stop.created_at,
+                        )
+                    ]
+            return []
+        case _:
+            assert_never(who.author)
+
+
+def _how(how: Exited | Killed) -> dict[str, Any]:
+    match how:
+        case Exited(code=code):
+            return {"reason": "exited", "exit_code": code, "signal": None}
+        case Killed(signal=signal):
+            return {"reason": "killed", "exit_code": None, "signal": signal}
+        case _:
+            assert_never(how)
+
+
+def _dumps(body: Mapping[str, Any]) -> str:
+    return json.dumps(body, separators=(",", ":"))  # as the channels write a body
+
+
+def _numbered(outs: Sequence[_Out], log: _Log) -> list[Row]:
+    """THE RENUMBERING, once (M7): each record its 0.4.0 seq, gapless from 1, and every
+    seq-valued field renamed to the record it named. A watermark of 0 stays 0; an
+    undated commit's is the newest control record before it."""
+    seqs: dict[int, int] = {}
+    nodes: dict[E.Node, int] = {}
+    for k, o in enumerate(outs, 1):
+        if o.stands_for is not None:
+            seqs[o.stands_for] = k
+        if o.node is not None:
+            nodes[o.node] = k
+
+    records = {r.seq: r for r in log.records}
+
+    def ref(x: _Ref, o: _Out, field: str) -> int | None:
+        if x.node is not None:
+            return nodes[x.node]
+        if x.seq is None:
+            return None
+        if x.seq == 0 and field == "consumed_seq":
+            return 0  # a watermark that names nothing
+        if x.seq not in seqs:
+            whose = (
+                f"the {records[o.stands_for].topic} at seq {o.stands_for}"
+                if o.stands_for is not None
+                else f"a {o.topic} the step writes"
+            )
+            raise MigrationError(
+                f"{whose} has {field} {x.seq}, which names the "
+                f"{records[x.seq].topic} at seq {x.seq}, which leaves the log: "
+                "renumbering cannot carry the name"
+            )
+        return seqs[x.seq]
+
+    def body(o: _Out, control: int) -> dict[str, Any]:
+        assert o.body is not None
+        out: dict[str, Any] = {}
+        for k, v in o.body.items():
+            if isinstance(v, _Ref):
+                out[k] = ref(v, o, k)
+            elif isinstance(v, list):
+                out[k] = [ref(x, o, k) if isinstance(x, _Ref) else x for x in v]
+            elif v is None and k == "consumed_seq":
+                out[k] = control
+            else:
+                out[k] = v
+        return out
+
+    rows: list[Row] = []
+    control = 0
+    for k, o in enumerate(outs, 1):
+        topic = str(o.topic)  # a _Written's value: the row holds the plain text
+        if o.text is not None:
+            rows.append(Row(k, topic, o.name, o.request_id, o.text, o.created_at))
+        else:
+            rows.append(
+                Row(
+                    k,
+                    topic,
+                    o.name,
+                    o.request_id,
+                    _dumps(body(o, control)),
+                    o.created_at,
+                )
+            )
+        if o.topic.startswith("control."):
+            control = k
+    return rows
+
+
+# ----- where each divergence fires ------------------------------------------------------
+
+
+def _chain(
+    node: E.Node | None, parents: Mapping[E.Node, E.Node | None]
+) -> list[E.Node]:
+    """The nodes from ``node`` back to the root."""
+    out: list[E.Node] = []
+    while node is not None:
+        out.append(node)
+        node = parents[node]
+    return out
+
+
+def _head(lin: E.Lineage) -> E.Node | None:
+    """The newest claim's head (LatestClaimHead, §5): its exit node, else its position
+    after its last commit or rewind, else its resume point."""
+    if not lin.starts:
+        return None
+    claim = max(s.claim for s in lin.starts)
+    exit_ = next((x for x in lin.exits if x.node.claim == claim), None)
+    if exit_ is not None:
+        return exit_.node
+    position = next(s.resume_from for s in lin.starts if s.claim == claim)
+    steps: list[tuple[int, int, E.Node | None]] = [
+        (c.node.nth, 1, c.node) for c in lin.commits if c.node.claim == claim
+    ]
+    steps += [(r.commits, 0, r.target) for r in lin.rewinds if r.claim == claim]
+    for _, _, node in sorted(steps, key=lambda x: (x[0], x[1])):
+        position = node
+    return position
+
+
+def _diverged(log: _Log, d: _Decided) -> dict[str, tuple[int, ...]]:
+    """Each divergence's sites, by the 0.3.0 seq of the record its rule fires at (§7,
+    "The divergences"). Each fires where its rule applies, which a read may then
+    answer differently; a rule that cannot apply here fires nowhere."""
+    lin, parts = d.lineage, d.parts
+    sites: dict[str, set[int]] = {x.name: set() for x in DIVERGENCES}
+    parents: dict[E.Node, E.Node | None] = {c.node: c.parent for c in lin.commits}
+    parents |= {x.node: x.parent for x in lin.exits}
+    held: dict[int, E.Node] = {}
+    for c in lin.commits:
+        held |= {v: c.node for v in c.values}
+    for x in lin.exits:
+        held |= {v: x.node for v in x.values or ()}
+    count = {
+        n: sum(isinstance(m, E.CommitId) for m in _chain(n, parents)) for n in parents
+    }
+    on_head = set(_chain(_head(lin), parents))
+    values = {v.seq: v for v in log.values}
+    for v in log.values:
+        if v.step is None:
+            continue
+        node = held.get(v.seq)
+        if node is None:
+            sites[UNHELD_VALUE.name].add(v.seq)
+            continue
+        if count[node] - 1 != v.step:
+            sites[RECOUNTED_VALUE.name].add(v.seq)
+        if node not in on_head:
+            sites[OFF_HEAD_VALUE.name].add(v.seq)
+    for node_values in (
+        *(c.values for c in lin.commits),
+        *(x.values or () for x in lin.exits),
+    ):
+        names = [values[v].name for v in node_values]
+        sites[SEVERAL_VALUES.name] |= {
+            v for v in node_values if names.count(values[v].name) > 1
+        }
+    stops = {s.seq: s for s in log.stops}
+    for p in _pieces(parts, E.PExit):
+        if set(p.honored) != set(stops[p.seq].honored):
+            sites[EXIT_HONORED.name].add(p.seq)
+    for part in parts:
+        for p in part:
+            if not isinstance(p, E.PStop):
+                continue
+            if p.author is E.Author.FENCED:
+                sites[FENCED_EXIT.name].add(p.seq)
+            elif p.author is E.Author.THIRD:
+                if any(isinstance(q, E.PDied) for q in part):
+                    sites[THIRD_PARTY_RELEASE.name].add(p.seq)
+                elif any(
+                    isinstance(q, E.PTerminated) and q.launch is None for q in part
+                ):
+                    sites[THIRD_PARTY_REAP.name].add(p.seq)
+                else:
+                    sites[THIRD_PARTY_NOTE.name].add(p.seq)
+    for i, part in enumerate(parts[: len(d.ctx.recs)]):
+        seq = d.ctx.recs[i].seq
+        if any(isinstance(p, E.PDied) and p.source is E.Source.REAP for p in part):
+            sites[ATTRIBUTED_DEATH.name].add(seq)
+    ended = {x.node.claim for x in lin.exits} | {
+        p.claim for p in _pieces(parts, E.PDied)
+    }
+    for t in log.terminated:
+        named = [c.seq for c in log.claims if c.launch_id == t.launch_id]
+        if named and max(named) not in ended:
+            sites[UNATTRIBUTED_REAP.name].add(t.seq)
+    return {k: tuple(sorted(v)) for k, v in sites.items()}
+
+
+# ----- the step ---------------------------------------------------------------------
 
 
 def _names(body: object, claim: int) -> bool:
@@ -2548,12 +1885,15 @@ class V0_3_0_to_V0_4_0:
     FROM = "0.3.0"
     TO = "0.4.0"
     RENUMBERS: ClassVar[bool] = True
-    # Until the step is rebuilt on the engine (the plan's Task 22), it declares no
-    # facts, projections or divergences, and §7's fifteen ambiguities stay frozen,
-    # unencoded: the step writes what its passes write today.
-    FACTS: ClassVar[Facts[NoFacts]] = NO_FACTS
-    PROJECTIONS: ClassVar[tuple[Projection[Any, Any], ...]] = ()
-    DIVERGENCES: ClassVar[tuple[Divergence, ...]] = ()
+    FACTS: ClassVar[Facts[Configuration]] = FACTS
+    # in the order the decode asks them; end-time last, once the path is decided
+    PROJECTIONS: ClassVar[tuple[Projection[Any, Any], ...]] = (
+        END,
+        SPAN,
+        ORIGIN,
+        END_TIME,
+    )
+    DIVERGENCES: ClassVar[tuple[Divergence, ...]] = DIVERGENCES
 
     def is_live(self, rows: list[Row]) -> bool:
         """0.3.0's liveness, by name: the latest claim is live unless a
@@ -2584,14 +1924,50 @@ class V0_3_0_to_V0_4_0:
     def detect(
         self, rows: list[Row], *, assumptions: Assumptions, history: History
     ) -> Detected:
-        """No forks: the step declares no projections yet."""
-        return Detected({})
+        """The forks of End, Span and Origin, each with the facts whose statement
+        could settle it; and an end-time fork for each claim with a commit that no
+        record dates on any candidate."""
+        configuration = FACTS.of(assumptions)
+        _unread(parse(rows), configuration)
+        g = _candidates(rows, configuration, assumptions.limits, history)
+        keys = E.forked(g, cap=assumptions.limits.cap)
+        forks: dict[str, list[Fork]] = {p.name: [] for p in self.PROJECTIONS}
+        for k in sorted(keys, key=lambda k: (k.position, k.subject)):
+            forks[_BY_KEY[k.projection].name].append(
+                Fork(_site(g, k), E.settled_by(configuration, k))
+            )
+        dated = {
+            (p.claim, p.nth)
+            for es in g.live
+            for e in es
+            for p in e.pieces
+            if isinstance(p, E.PDate)
+        }
+        undated = sorted(
+            {
+                p.claim
+                for es in g.live
+                for e in es
+                for p in e.pieces
+                if isinstance(p, E.PCommit) and (p.claim, p.nth) not in dated
+            }
+        )
+        forks[END_TIME.name] = [Fork(c, ()) for c in undated]
+        return Detected({n: tuple(fs) for n, fs in forks.items()})
 
     def transform(
         self, rows: list[Row], *, resolutions: Resolutions, history: History
     ) -> Migrated:
-        """The passes, in order (``run_passes``), then the 0.4.0 rows, renumbered
-        gapless from 1. Pure and deterministic: every refusal raises before a
-        row is returned, so the runner's dry run refuses a run before it seals
-        it."""
-        return Migrated([write(o) for o in run_passes(rows).outs], {}, {})
+        """The candidates of the stated facts (the engine), each fork decided by its
+        projection's chooser in the decode's order, the decided path written as 0.4.0
+        records, renumbered gapless from 1. Pure and deterministic: every refusal
+        raises before a row is returned, so the runner's dry run refuses a run before
+        it seals it."""
+        a = resolutions.assumptions
+        configuration = FACTS.of(a)
+        log = parse(rows)
+        _unread(log, configuration)
+        g = _candidates(rows, configuration, a.limits, history)
+        d = _decide(g, resolutions)
+        out = _numbered(_layout(log, d), log)
+        return Migrated(out, d.readings, _diverged(log, d))

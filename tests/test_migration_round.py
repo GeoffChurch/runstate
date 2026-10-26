@@ -1,12 +1,14 @@
 """The migration round's corpus runner (scripts/migration_round.py; the plan's
-Task 11; commits-and-lineage.md §7, P1-P4 and "Also").
+Tasks 11 and 22; commits-and-lineage.md §7, the divergences and "Also").
 
-The runner is run over temporary roots holding Stage 2's golden logs as 0.3.0
-files, plus one log per P3 and P4 class the goldens do not hold, and each
-difference is checked against the class it was built for. A deliberately
-corrupted output reads unattributed, a symlinked duplicate is counted once, and
-the runner streams: one run in memory at a time, each run's line written before
-the next run is read."""
+The runner is run over temporary roots holding the golden logs as 0.3.0 files,
+under one configuration holding every golden's facts
+(``tests.test_migration_goldens:GOLDENS_CONFIGURATION``) and the goldens' choosers.
+Every golden's divergences fire as the goldens harness pins them, and every read
+the migration changes is explained by one: none is unattributed. A deliberately
+corrupted output reads unattributed, a fork no chooser decides leaves its run
+undecided, a symlinked duplicate is counted once, and the runner streams: one run
+in memory at a time, each run's line written before the next run is read."""
 
 import gc
 import importlib.util
@@ -26,22 +28,18 @@ pytest.importorskip("jsonschema")
 
 from runstate.channel.sqlite import _SCHEMA  # noqa: E402
 from runstate.migrations import MigrationError, Row  # noqa: E402
-from test_migration_v0_3_0_to_v0_4_0 import (  # noqa: E402
+from tests.migration_goldens import (  # noqa: E402
     BACKSTOP,
     DEAD,
-    BACKSTOP_AT_5,
-    BEATEN_AFTER,
     GOLDEN,
-    NO_END,
     _beat,
-    _crashed_in_step_1,
     _dated,
-    _release,
     _started,
     _stopped,
     _value,
     r,
 )
+from tests.test_migration_goldens import DIVERGED  # noqa: E402
 
 _SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "migration_round.py"
 
@@ -56,8 +54,6 @@ def _load():
 
 
 mr = _load()
-P3 = mr.P3Class
-P4 = mr.P4Class
 
 
 def _write(path: Path, rows) -> None:
@@ -83,238 +79,57 @@ def _outputs(out: Path):
 
 
 MAX_BYTES = 10**9
+# The goldens' configuration: their facts, their choosers, and the limits.
+CONFIG = [
+    "--assume",
+    "tests.test_migration_goldens:GOLDENS_CONFIGURATION",
+    "--resolve",
+    "span=fewest",
+    "--resolve",
+    "origin=newest",
+    "--resolve",
+    "end-time=lower",
+    "--resolve",
+    "record-claim=positional",
+    "--resolve",
+    "stop-honored=positional",
+    "--resolve",
+    "lease-bound=first-claim",
+    "--cap",
+    "3000",
+    "--budget",
+    "6000000",
+    "--run-on",
+    "2",
+]
 
 
-def _main(root, out, *, max_rows, max_bytes=MAX_BYTES):
-    """The runner's CLI, as Task 12 will call it."""
+def _main(root, out, *, max_rows, max_bytes=MAX_BYTES, config=CONFIG):
+    """The runner's CLI, as the corpus check calls it."""
     argv = [str(root), "--out", str(out), "--max-rows", str(max_rows)]
-    return mr.main(argv + ["--max-bytes", str(max_bytes)])
+    return mr.main(argv + ["--max-bytes", str(max_bytes), *config])
 
 
-def _run(tmp_path, logs, *, max_rows=10_000):
+def _run(tmp_path, logs, *, max_rows=10_000, config=CONFIG):
     """Each log as a 0.3.0 file under one root; the runner's outputs, by run."""
     root = tmp_path / "root"
     for rid, rows in logs.items():
         _write(root / "v0.3.0" / f"{rid}.db", rows)
     out = tmp_path / "out"
-    assert _main(root, out, max_rows=max_rows) == 0
+    assert _main(root, out, max_rows=max_rows, config=config) == 0
     return _outputs(out)
 
 
-def _cells(run):
-    """Each differing cell's classes, by (name, step)."""
-    return {
-        (c["name"], c["step"]): set(c["classes"]) for c in run["p3"]["differing_cells"]
-    }
+def _unattributed(run):
+    reads = run["reads"]
+    return (
+        reads["series"]["unattributed"],
+        reads["verdict"]["divergences"] == ["unattributed"],
+        reads["stops"]["divergences"] == ["unattributed"],
+    )
 
 
-# ----- one log per P3 class the goldens do not hold ---------------------------------
-
-# A beat 0 to 3 and was preempted; B resumed from A's step 1 and completed at 2.
-# The merge keeps A's step 3, which the head's lineage never reached.
-BEYOND = _dated(
-    [
-        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
-        r(2, "value", _value(0.9, 0, 2.0), name="loss"),
-        r(3, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
-        r(4, "value", _value(0.8, 1, 3.0), name="loss"),
-        r(5, "lifecycle.heartbeat", _beat(1, 0, 1, 3.0)),
-        r(6, "value", _value(0.7, 2, 4.0), name="loss"),
-        r(7, "lifecycle.heartbeat", _beat(2, 0, 1, 4.0)),
-        r(8, "value", _value(0.6, 3, 5.0), name="loss"),
-        r(9, "lifecycle.heartbeat", _beat(3, 0, 1, 5.0)),
-        r(10, "lifecycle.stopped", _stopped(False, None, 3, 1, [], 6.0)),
-        r(11, "lifecycle.started", _started("local://n1/12", 7.0)),
-        r(12, "value", _value(0.71, 2, 8.0), name="loss"),
-        r(13, "lifecycle.heartbeat", _beat(2, 0, 11, 8.0)),
-        r(14, "lifecycle.stopped", _stopped(True, None, 2, 11, [], 9.0)),
-    ]
-)
-
-# A wrote an eval at step 2; B resumed from A's step 1 and recomputed step 2
-# without one. The merge keeps A's eval at a step the lineage revisited.
-REVISITED = _dated(
-    [
-        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
-        r(2, "value", _value(0.9, 0, 2.0), name="loss"),
-        r(3, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
-        r(4, "value", _value(0.8, 1, 3.0), name="loss"),
-        r(5, "lifecycle.heartbeat", _beat(1, 0, 1, 3.0)),
-        r(6, "value", _value(0.7, 2, 4.0), name="loss"),
-        r(7, "value", _value(0.95, 2, 4.0), name="eval"),
-        r(8, "lifecycle.heartbeat", _beat(2, 0, 1, 4.0)),
-        r(9, "lifecycle.stopped", _stopped(False, None, 2, 1, [], 5.0)),
-        r(10, "lifecycle.started", _started("local://n1/12", 6.0)),
-        r(11, "value", _value(0.71, 2, 7.0), name="loss"),
-        r(12, "lifecycle.heartbeat", _beat(2, 0, 10, 7.0)),
-        r(13, "value", _value(0.6, 3, 8.0), name="loss"),
-        r(14, "lifecycle.heartbeat", _beat(3, 0, 10, 8.0)),
-        r(15, "lifecycle.stopped", _stopped(True, None, 3, 10, [], 9.0)),
-    ]
-)
-
-# One step's metric written twice: its commit holds both.
-SEVERAL = _dated(
-    [
-        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
-        r(2, "value", _value(0.9, 0, 2.0), name="loss"),
-        r(3, "value", _value(0.8, 0, 2.5), name="loss"),
-        r(4, "lifecycle.heartbeat", _beat(0, 0, 1, 3.0)),
-        r(5, "lifecycle.stopped", _stopped(True, None, 0, 1, [], 4.0)),
-    ]
-)
-
-LOADING_STATUS = {"phase": "LOADING"}
-RUNNING_STATUS = {"phase": "RUNNING"}
-
-# Two classes claim one cell: B resumed from A's step 1, wrote its loading status
-# at step 0, a leading value, and its running status at step 2. Its first commit
-# holds both, so the cell (status, 2) is a node holding several values, one of
-# them a leading value.
-SEVERAL_AND_LEADING = _dated(
-    [
-        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
-        r(2, "value", _value(LOADING_STATUS, 0, 1.5), name="status"),
-        r(3, "value", _value(0.9, 0, 2.0), name="loss"),
-        r(4, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
-        r(5, "value", _value(0.8, 1, 3.0), name="loss"),
-        r(6, "lifecycle.heartbeat", _beat(1, 0, 1, 3.0)),
-        r(7, "lifecycle.stopped", _stopped(False, None, 1, 1, [], 4.0)),
-        r(8, "lifecycle.started", _started("local://n1/12", 5.0)),
-        r(9, "value", _value(LOADING_STATUS, 0, 5.5), name="status"),
-        r(10, "value", _value(RUNNING_STATUS, 2, 6.0), name="status"),
-        r(11, "value", _value(0.7, 2, 6.0), name="loss"),
-        r(12, "lifecycle.heartbeat", _beat(2, 0, 8, 6.0)),
-        r(13, "lifecycle.stopped", _stopped(True, None, 2, 8, [], 7.0)),
-    ]
-)
-
-# A beat 0 and 1; B claimed; A, displaced, beat 2 after B's claim; B, loading A's
-# step-2 checkpoint, first beat 3. A's step 2 is no candidate (M1's candidacy
-# rule), so B's first commit is a parentless resume.
-PARENTLESS_BY_CANDIDACY = _dated(
-    [
-        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
-        r(2, "value", _value(0.9, 0, 2.0), name="loss"),
-        r(3, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
-        r(4, "lifecycle.heartbeat", _beat(1, 0, 1, 3.0)),
-        r(5, "lifecycle.started", _started("local://n2/22", 4.0)),
-        r(6, "lifecycle.heartbeat", _beat(2, 0, 1, 5.0)),  # A's
-        r(7, "value", _value(0.6, 3, 6.0), name="loss"),
-        r(8, "lifecycle.heartbeat", _beat(3, 0, 5, 6.0)),
-        r(9, "lifecycle.stopped", _stopped(True, None, 3, 5, [], 7.0)),
-    ]
-)
-
-# A trailing gap (a known limit): A beat 0 and 1, wrote step 3's value with no
-# step 2, and completed at step 3, so M5 synthesizes step 3 and nothing at 2; B
-# resumed from it at 4. Every count above the gap is one short.
-TRAILING_GAP = _dated(
-    [
-        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
-        r(2, "value", _value(0.9, 0, 2.0), name="loss"),
-        r(3, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
-        r(4, "value", _value(0.8, 1, 3.0), name="loss"),
-        r(5, "lifecycle.heartbeat", _beat(1, 0, 1, 3.0)),
-        r(6, "value", _value(0.6, 3, 4.0), name="loss"),
-        r(7, "lifecycle.stopped", _stopped(True, None, 3, 1, [], 5.0)),
-        r(8, "lifecycle.started", _started("local://n1/12", 6.0)),
-        r(9, "value", _value(0.5, 4, 7.0), name="loss"),
-        r(10, "lifecycle.heartbeat", _beat(4, 0, 8, 7.0)),
-        r(11, "lifecycle.stopped", _stopped(True, None, 4, 8, [], 8.0)),
-    ]
-)
-
-# A value before every claim: no claim's, so no lineage holds it. The ledger
-# rules that Task 14 names its P3 class if the corpus shows any; until then it
-# reads unattributed in P3, and is P2's named exception.
-BEFORE_EVERY_CLAIM = _dated(
-    [
-        r(1, "value", _value(0.9, 0, 1.0), name="loss"),
-        r(2, "lifecycle.started", _started("local://n1/11", 2.0)),
-        r(3, "lifecycle.heartbeat", _beat(0, 0, 2, 3.0)),
-        r(4, "lifecycle.stopped", _stopped(True, None, 0, 2, [], 4.0)),
-    ]
-)
-
-# ----- one log per P4 class the goldens do not hold ---------------------------------
-
-# The reclaim tool's malformed release alone (M10): 0.3.0's verdict raises on
-# it, a comparable value; 0.4.0 reads its death, preempted.
-MALFORMED_ALONE = _dated(
-    [
-        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
-        r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
-        r(3, "lifecycle.stopped", _release("reclaimed: slurm TIMEOUT", [], 1)),
-    ]
-)
-
-# The backstop naming no claim in a run nothing claimed (owner ruling c'): 0.3.0
-# read errored, 0.4.0 reads the terminated it becomes, killed by its signal.
-CLAIMLESS_BACKSTOP_UNCLAIMED = _dated(
-    [
-        r(
-            1,
-            "lifecycle.stopped",
-            _stopped(
-                False,
-                "subprocess exited -9 with no terminal record",
-                None,
-                None,
-                [],
-                1.0,
-            ),
-        ),
-    ]
-)
-
-# The goldens' cells, by hand: each golden not named here reads equal, cell by
-# cell.
-GOLDEN_CELLS = {
-    "loading": {("status", 2): {P3.LEADING}},
-    "errored": {("loss", 1): {P3.ERROR_EXIT}},
-    "resumed_past_a_loading_crash": {("status", 0): {P3.LOADING}},
-    "after_stopped": {("status", 0): {P3.M4}},
-    "above": {("loss", 3): {P3.ABOVE}},
-    "loading_retry_released": {("status", 0): {P3.LOADING}},
-    "loading_retry_unended": {("status", 0): {P3.LOADING}},
-    "loading_retry_at_its_resume_step": {("status", 2): {P3.LOADING}},
-    "beatless_full_step": {
-        ("loss", 0): {P3.PARENTLESS},
-        ("loss", 2): {P3.LOADING},
-        ("status", 2): {P3.LOADING},
-        ("loss", 3): {P3.PARENTLESS},
-    },
-    "displacement_parent": {("loss", 2): {P3.SEVERAL}},
-    "resumed_past_an_unrecorded_step": {
-        ("loss", 0): {P3.PARENTLESS},
-        ("loss", 1): {P3.PARENTLESS},
-        ("loss", 3): {P3.PARENTLESS},
-        ("loss", 4): {P3.PARENTLESS},
-    },
-    "doubly_displaced": {("loss", 3): {P3.PARENTLESS_BY_CANDIDACY}},
-    "after_an_attributed_death": {("loss", 1): {P3.M4}},
-    "reclaim_reported_later": {("loss", 2): {P3.UNREACHED_UNENDED}},
-    "reclaim_of_10_23": {("loss", 2): {P3.UNREACHED_UNENDED}},
-}
-
-# The goldens' verdicts that differ, each by the rule that changes it (Task 10's
-# P4 probe found these 13); every other golden's verdict is equal.
-GOLDEN_VERDICTS = {
-    "backstopped": {P4.RELEASE, P4.LATER_STOP},
-    "late_backstop": {P4.BACKSTOP_TERMINATED},
-    "later_error": {P4.LATER_STOP},
-    "later_default": {P4.LATER_STOP},
-    "later_release": {P4.LATER_STOP},
-    "later_error_honored": {P4.LATER_STOP},
-    "backstop_id_taken": {P4.BACKSTOP_TERMINATED},
-    "claimless": {P4.CLAIMLESS},
-    "claimless_error": {P4.CLAIMLESS},
-    "claimless_release": {P4.CLAIMLESS},
-    "wrapper": {P4.WRAPPER},
-    "another_host": {P4.WRAPPER},
-    "two_claims_one_launch": {P4.ATTRIBUTED_DEATH},
-}
+# ----- the goldens -------------------------------------------------------------------
 
 
 @pytest.fixture(scope="module")
@@ -326,41 +141,26 @@ def test_every_golden_is_measured_clean(goldens):
     runs, _ = goldens
     assert set(runs) == set(GOLDEN)
     for rid, x in runs.items():
-        assert x["status"] == "measured", rid
+        assert x["status"] == "measured", (rid, x["refusal"], x["crash"])
         assert (x["format"], x["address"]) == ("0.3.0", "v0.3.0"), rid
-        assert x["refusal"] is None and x["crash"] is None, rid
         assert x["schema_invalid"] == [], rid
         assert not any(x["also"].values()), (rid, x["also"])
-        assert x["p1"]["failures"] == {}, rid
-        assert x["p1"]["checked"] == x["p1"]["passed"], rid
-        assert x["p2"]["failures"] == {}, rid
-        assert x["p3"]["not_compared"] is None, rid
+        assert x["reads"]["series"]["not_compared"] is None, rid
 
 
 @pytest.mark.parametrize("rid", list(GOLDEN))
-def test_every_goldens_cells_are_attributed_to_their_class(goldens, rid):
+def test_each_goldens_divergences_fire_as_pinned(goldens, rid):
     runs, _ = goldens
-    assert _cells(runs[rid]) == GOLDEN_CELLS.get(rid, {})
-    assert runs[rid]["p3"]["unattributed"] == 0
+    want = {k: len(v) for k, v in DIVERGED[rid].items()}
+    assert runs[rid]["divergences"] == want
 
 
 @pytest.mark.parametrize("rid", list(GOLDEN))
-def test_every_goldens_verdict_and_stops(goldens, rid):
+def test_every_read_the_migration_changes_is_a_divergences(goldens, rid):
+    """The divergences are complete on the goldens: each series cell, verdict and
+    stop fold that differs is explained by one that fired."""
     runs, _ = goldens
-    p4 = runs[rid]["p4"]
-    assert p4["verdict"]["equal"] == (rid not in GOLDEN_VERDICTS)
-    assert set(p4["verdict"]["classes"]) == GOLDEN_VERDICTS.get(rid, set())
-    assert p4["stops"]["equal"] and p4["stops"]["classes"] == []
-
-
-def test_a_leading_value_moves_and_an_equal_value_from_another_record_is_equal(
-    goldens,
-):
-    """B's step-0 loading status goes to its first commit, at step 2; at step 0
-    the lineage holds A's, an equal value from another record."""
-    runs, _ = goldens
-    p3 = runs["loading"]["p3"]
-    assert p3["differing"] == 1 and p3["equal_other_record"] == 1
+    assert _unattributed(runs[rid]) == (0, False, False), runs[rid]["reads"]
 
 
 def test_the_summary_totals_the_runs(goldens):
@@ -368,366 +168,91 @@ def test_the_summary_totals_the_runs(goldens):
     assert summary["complete"] is True
     assert summary["runs"]["total"] == len(GOLDEN)
     assert summary["runs"]["status"] == {"measured": len(GOLDEN)}
-    by_class = {}
+    fired = {}
     for x in runs.values():
-        for c in x["p3"]["differing_cells"]:
-            for k in c["classes"]:
-                by_class[k] = by_class.get(k, 0) + 1
-    assert summary["p3"]["by_class"] == by_class
-    assert summary["p3"]["unattributed"] == 0
-    assert summary["p3"]["differing"] == sum(len(v) for v in GOLDEN_CELLS.values())
-    verdicts = {}
-    for classes in GOLDEN_VERDICTS.values():
-        for k in classes:
-            verdicts[k] = verdicts.get(k, 0) + 1
-    assert summary["p4"]["verdict"]["by_class"] == verdicts
-    assert summary["p4"]["verdict"]["differing"] == len(GOLDEN_VERDICTS)
-    assert summary["p4"]["stops"]["differing"] == 0
-    assert summary["schema"]["invalid_rows"] == 0
-
-
-# ----- each class, built once --------------------------------------------------------
-
-CLASS_LOGS = {
-    "beyond": (BEYOND, {("loss", 3): {P3.BEYOND}}),
-    "revisited": (REVISITED, {("eval", 2): {P3.REVISITED}}),
-    "several": (SEVERAL, {("loss", 0): {P3.SEVERAL}}),
-    "several_and_leading": (
-        SEVERAL_AND_LEADING,
-        {("status", 2): {P3.SEVERAL, P3.LEADING}},
-    ),
-    "parentless_by_candidacy": (
-        PARENTLESS_BY_CANDIDACY,
-        {
-            ("loss", 0): {P3.PARENTLESS_BY_CANDIDACY},
-            ("loss", 3): {P3.PARENTLESS_BY_CANDIDACY},
-        },
-    ),
-    "trailing_gap": (
-        TRAILING_GAP,
-        {
-            ("loss", 2): {P3.TRAILING_GAP},
-            ("loss", 3): {P3.TRAILING_GAP},
-            ("loss", 4): {P3.TRAILING_GAP},
-        },
-    ),
-    "released": (
-        _crashed_in_step_1(BACKSTOP_AT_5),
-        {("loss", 1): {P3.UNREACHED_UNENDED}},
-    ),
-    "unended": (_crashed_in_step_1(NO_END), {("loss", 1): {P3.UNREACHED_UNENDED}}),
-}
-
-
-@pytest.mark.parametrize("rid", list(CLASS_LOGS))
-def test_each_p3_class_is_attributed_to_it(tmp_path, rid):
-    rows, cells = CLASS_LOGS[rid]
-    runs, summary = _run(tmp_path, {rid: rows})
-    assert runs[rid]["status"] == "measured"
-    assert _cells(runs[rid]) == cells
-    assert runs[rid]["p3"]["unattributed"] == 0
-    assert runs[rid]["schema_invalid"] == []
-
-
-def test_a_cell_two_classes_claim_is_reported_as_both(tmp_path):
-    runs, summary = _run(tmp_path, {"both": SEVERAL_AND_LEADING})
-    assert summary["p3"]["by_class_set"] == {
-        "+".join(sorted([P3.LEADING, P3.SEVERAL])): 1
-    }
-    assert summary["p3"]["by_class"] == {P3.LEADING: 1, P3.SEVERAL: 1}
-
-
-def test_a_value_before_every_claim_has_no_p3_class_yet(tmp_path):
-    """Ruling (progress.md, Task 3): Task 14 names its P3 class if the corpus
-    shows any. Until then the cell is unattributed, with the reason the step
-    left it uncommitted, and P2 names it."""
-    runs, _ = _run(tmp_path, {"early": BEFORE_EVERY_CLAIM})
-    x = runs["early"]
-    assert _cells(x) == {("loss", 0): {P3.UNATTRIBUTED}}
-    (cell,) = x["p3"]["differing_cells"]
-    assert [u["seq"] for u in cell["unexplained"]] == [1]
-    assert "before every claim" in cell["unexplained"][0]["fate"]
-    assert x["p2"]["exceptions"] == {mr.P2Exception.BEFORE_EVERY_CLAIM: 1}
-
-
-P4_LOGS = {
-    "malformed_alone": (MALFORMED_ALONE, {P4.RELEASE}, "raised", ["preempted"]),
-    "claimless_backstop_unclaimed": (
-        CLAIMLESS_BACKSTOP_UNCLAIMED,
-        {P4.BACKSTOP_TERMINATED},
-        ["errored"],
-        ["killed"],
-    ),
-}
-
-
-@pytest.mark.parametrize("rid", list(P4_LOGS))
-def test_each_p4_class_is_attributed_to_it(tmp_path, rid):
-    rows, classes, old, new = P4_LOGS[rid]
-    runs, _ = _run(tmp_path, {rid: rows})
-    v = runs[rid]["p4"]["verdict"]
-    assert set(v["classes"]) == classes
-    assert (
-        (v["old"]["kind"] == "raised")
-        if old == "raised"
-        else v["old"]["outcomes"] == old
+        for k in x["divergences"]:
+            fired[k] = fired.get(k, 0) + 1
+    assert summary["divergences"] == fired
+    assert summary["runs_unaccepted"] == sum(
+        1 for x in runs.values() if x["unaccepted"]
     )
-    assert v["new"]["outcomes"] == new
+    assert summary["reads"]["series"]["unattributed"] == 0
+    assert summary["schema"]["invalid_rows"] == 0
+    assert summary["args"]["cap"] == 3000 and summary["args"]["run_on"] == 2
 
 
-def test_a_0_3_0_read_that_raises_is_a_comparable_value(tmp_path):
-    runs, _ = _run(tmp_path, {"m10": MALFORMED_ALONE})
-    old = runs["m10"]["p4"]["verdict"]["old"]
-    assert old["kind"] == "raised" and "lifecycle.stopped" in old["error"]
+# ----- what fails attribution, and what waits for a chooser ------------------------------
 
-
-# ----- what fails attribution -------------------------------------------------------
-
-# A worker's exit with one committed value and one honored stop.
-EXIT_WITH_A_VALUE = _dated(
-    [
-        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
-        r(2, "value", _value(0.9, 0, 2.0), name="loss"),
-        r(3, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
-        r(4, "control.stop", {}, rid="halt"),
-        r(5, "lifecycle.stopped", _stopped(False, None, 0, 1, ["halt"], 3.0)),
-    ]
-)
+# A worker's exit honouring a stop (a golden, so its facts are stated).
+EXIT = GOLDEN["exit"]
 
 
 def test_a_deliberately_unexplained_difference_reads_unattributed(
     tmp_path, monkeypatch
 ):
-    """The output loses the commit's value and the exit's honored stop, which
-    no rule explains: the passes say the value is committed, the rows say it is
-    not, and the stop is pending only after the migration."""
-    real = mr._rows_0_4_0
+    """The output loses the commits' values and the exit's honored stop, which no
+    divergence fired for: the series cells and the stop fold read unattributed."""
+    import runstate.migrations.v0_3_0_to_v0_4_0 as step
 
-    def corrupted(passes):
+    real = step.V0_3_0_to_V0_4_0.transform
+
+    def corrupted(self, rows, **given):
+        migrated = real(self, rows, **given)
         out = []
-        for x in real(passes):
+        for x in migrated.rows:
             body = json.loads(x.body)
             if x.topic in ("lifecycle.commit", "lifecycle.stopped"):
                 body["values"] = [] if body["values"] is not None else None
             if x.topic == "lifecycle.stopped":
                 body["honored"] = []
             out.append(x._replace(body=json.dumps(body)))
-        return out
+        return migrated._replace(rows=out)
 
-    monkeypatch.setattr(mr, "_rows_0_4_0", corrupted)
-    runs, summary = _run(tmp_path, {"exit": EXIT_WITH_A_VALUE})
-    x = runs["exit"]
-    assert _cells(x) == {("loss", 0): {P3.UNATTRIBUTED}}
-    assert x["p3"]["unattributed"] == 1
-    assert x["p2"]["failures"] == {mr.P2Failure.UNCOMMITTED_WITHOUT_A_REASON: 1}
-    assert x["p4"]["stops"]["classes"] == [P4.UNATTRIBUTED]
-    assert x["p4"]["stops"]["old"] == {} and x["p4"]["stops"]["new"] == {"halt": 4}
-    assert summary["p3"]["runs_with_unattributed"] == 1
-    assert summary["p4"]["stops"]["by_class"] == {P4.UNATTRIBUTED: 1}
-
-
-def test_a_value_moved_to_where_a_rule_would_put_it_still_reads_unattributed(
-    tmp_path, monkeypatch
-):
-    """The rows move A's step-0 status into B's first commit, where a leading
-    value of B's would go: the cell's shape fits LEADING, but the passes gave
-    the value to A's commit, so no rule explains it."""
-    real = mr._rows_0_4_0
-
-    def moved(passes):
-        rows = real(passes)
-        status = next(x.seq for x in rows if x.name == "status")  # A's, first
-        out = []
-        for x in rows:
-            body = json.loads(x.body)
-            if x.topic == "lifecycle.commit" and status in body["values"]:
-                body["values"].remove(status)
-            elif x.topic == "lifecycle.commit" and body["claim_seq"] != 1:
-                body["values"].insert(0, status)  # B's first commit
-            out.append(x._replace(body=json.dumps(body)))
-        return out
-
-    monkeypatch.setattr(mr, "_rows_0_4_0", moved)
-    runs, _ = _run(tmp_path, {"loading": GOLDEN["loading"]})
-    x = runs["loading"]
-    assert P3.UNATTRIBUTED in _cells(x)[("status", 2)]
-    assert x["p2"]["failures"] == {mr.P2Failure.ANOTHER_CLAIMS: 1}
-
-
-def test_a_value_moved_off_the_lineage_reads_unattributed_not_revisited(
-    tmp_path, monkeypatch
-):
-    """The rows move B's step-2 loss, on the head's lineage, into A's step-3
-    commit, off it: the cell's shape fits a step the lineage revisited, but the
-    passes gave the value to B's commit, so no rule explains it."""
-    real = mr._rows_0_4_0
-
-    def moved(passes):
-        rows = real(passes)
-        bodies = {x.seq: json.loads(x.body) for x in rows}
-        (late,) = [
-            x.seq for x in rows if x.name == "loss" and bodies[x.seq]["value"] == 0.71
-        ]
-        a_last = max(
-            x.seq
-            for x in rows
-            if x.topic == "lifecycle.commit" and bodies[x.seq]["claim_seq"] == 1
-        )
-        out = []
-        for x in rows:
-            body = bodies[x.seq]
-            if x.topic == "lifecycle.commit" and late in body["values"]:
-                body["values"].remove(late)
-            if x.seq == a_last:
-                body["values"].append(late)
-            out.append(x._replace(body=json.dumps(body)))
-        return out
-
-    monkeypatch.setattr(mr, "_rows_0_4_0", moved)
-    runs, _ = _run(tmp_path, {"beyond": BEYOND})
-    assert _cells(runs["beyond"])[("loss", 2)] == {P3.UNATTRIBUTED}
-
-
-def test_a_new_read_that_raises_is_recorded_and_the_also_check_names_it(
-    tmp_path, monkeypatch
-):
-    """The runner's detectors, tested on ground truth: this plants a step bug
-    that once shipped, the placeholder rule for lone stops, which read every
-    lone stop as its claim's exit. On a stop its claim beats after, the beat is
-    then a commit the exit's parent names: the head fold raises, P3 is not
-    compared, and the also check names the parent after its child."""
-    import runstate.migrations.v0_3_0_to_v0_4_0 as step
-
-    monkeypatch.setattr(
-        step, "_lone_stop_rule", lambda stop, *, beaten_after: step._Exit(stop)
-    )
-    runs, summary = _run(tmp_path, {"placeholder": BEATEN_AFTER})
-    x = runs["placeholder"]
-    assert x["status"] == "measured"
-    assert "MalformedRecordError" in x["p3"]["not_compared"]
-    assert x["also"][mr.Also.PARENT_AT_OR_AFTER] == 1
-    assert summary["p3"]["runs_not_compared"] == {"the new reads raise": 1}
-
-
-# ----- P1 and P2 ------------------------------------------------------------------------
-
-
-def test_p1_counts_a_parentless_resume_and_names_a_trailing_gap(tmp_path):
-    runs, summary = _run(
-        tmp_path,
-        {"gap": TRAILING_GAP, "unrecorded": GOLDEN["resumed_past_an_unrecorded_step"]},
-    )
-    gap = runs["gap"]["p1"]
-    assert (gap["checked"], gap["passed"]) == (3, 2)
-    assert gap["failures"] == {mr.P1Failure.TRAILING_GAP: 1}
-    assert [(f["seq"], f["step"], f["count"]) for f in gap["failing"]] == [(10, 4, 4)]
-    unrecorded = runs["unrecorded"]["p1"]
-    assert (unrecorded["checked"], unrecorded["passed"]) == (2, 2)
-    assert unrecorded["parentless"] == {P3.PARENTLESS: 2}
-    assert summary["p1"]["parentless"] == {P3.PARENTLESS: 2}
-
-
-def test_p2_names_every_exception_by_its_kind(goldens):
-    runs, summary = goldens
-    E = mr.P2Exception
-    assert runs["loading"]["p2"]["exceptions"] == {E.LEADING: 1}
-    assert runs["errored"]["p2"]["exceptions"] == {E.ERROR_EXIT: 1}
-    assert runs["above"]["p2"]["exceptions"] == {E.ABOVE_THE_LAST_STEP: 1}
-    assert runs["after_stopped"]["p2"]["exceptions"] == {E.AFTER_ITS_END: 1}
-    assert runs["after_an_attributed_death"]["p2"]["exceptions"] == {E.AFTER_ITS_END: 1}
-    assert runs["loading_retry_released"]["p2"]["exceptions"] == {E.LOADING: 1}
-    assert runs["skipped"]["p2"] | {"failing": []} == {
-        "checked": 6,
-        "at_its_step": 6,
-        "exceptions": {},
-        "failures": {},
-        "failing": [],
-    }
-    assert summary["p2"]["failures"] == {}
-
-
-def test_p2_names_a_released_claims_unreached_step(tmp_path):
-    runs, _ = _run(tmp_path, {"released": _crashed_in_step_1(BACKSTOP_AT_5)})
-    assert runs["released"]["p2"]["exceptions"] == {mr.P2Exception.UNREACHED_UNENDED: 1}
-
-
-# ----- the census hooks (Task 13, the write-up) -----------------------------------------
-
-
-def test_the_census_counts_lone_stops_by_signature(goldens):
-    runs, summary = goldens
-    # the backstop and the default body both name claim 1: neither is lone
-    assert runs["backstopped"]["census"]["lone_stops"] == []
-    (lone,) = runs["errored"]["census"]["lone_stops"]
-    assert lone == {
-        "seq": 5,
-        "claim_seq": 1,
-        "malformed": False,
-        "error": "CUDA out of memory",
-        "error_kind": "other",
-        "completed": False,
-        "final_step_null": False,
-        "honored_empty": True,
-        "t_minus_created_at": 0.0,
-        "beats_after": 0,
-        "values_after": 0,
-        "latest_claim": True,
-        "read_as": "exit",
-    }
-    (lone,) = runs["loading_retry_released"]["census"]["lone_stops"][1:2]
-    assert (lone["error_kind"], lone["read_as"]) == ("backstop", "release")
-    # the rule for lone stops: written later, beaten after, or the worker's own
-    (lone,) = runs["reclaim_reported_later"]["census"]["lone_stops"]
-    assert (lone["t_minus_created_at"], lone["read_as"]) == (-1500.0, "release")
-    assert "t=before" in mr.LoneStop(**lone).signature()
-    (lone,) = runs["beaten_after"]["census"]["lone_stops"]
-    assert (lone["beats_after"], lone["read_as"]) == (1, "release")
-    assert runs["beaten_after"]["census"]["beats_after_end"] == {"commit": 1}
-    (lone,) = runs["cooperative"]["census"]["lone_stops"]
-    assert (lone["honored_empty"], lone["read_as"]) == (False, "exit")
-    assert sum(summary["census"]["lone_stops"].values()) == sum(
-        len(x["census"]["lone_stops"]) for x in runs.values()
-    )
-
-
-def test_the_census_counts_the_known_limit_shapes(tmp_path):
-    rows = [
-        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
-        r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
-        r(3, "lifecycle.stopped", _stopped(False, BACKSTOP, 0, 1, ["ghost"], 3.0)),
-        r(4, "lifecycle.heartbeat", _beat(1, 0, 1, 4.0)),  # a beat after its end
-        r(5, "lifecycle.heartbeat", _beat(None, 0, 1, 5.0)),
-        r(6, "lifecycle.nak", {"reason": "malformed", "message": "?"}),
-        r(7, "value", _value(1.0, 0, 6.0), name="loss"),
+    monkeypatch.setattr(step.V0_3_0_to_V0_4_0, "transform", corrupted)
+    runs, summary = _run(tmp_path, {"values": GOLDEN["loading"], "stops": EXIT})
+    values, stops = runs["values"], runs["stops"]
+    assert values["status"] == stops["status"] == "measured"
+    assert values["reads"]["series"]["unattributed"] == 3  # loss@0, loss@1, loss@2
+    assert stops["reads"]["stops"]["divergences"] == ["unattributed"]
+    assert stops["reads"]["stops"]["old"] == [] and stops["reads"]["stops"]["new"] == [
+        "halt"
     ]
-    runs, summary = _run(
-        tmp_path,
-        {"limits": _dated(rows), "candidacy": PARENTLESS_BY_CANDIDACY},
-    )
-    c = runs["limits"]["census"]
-    assert c["beats_after_end"] == {"commit": 1, "beat": 1}
-    assert c["withdrawals_of_unborne_ids"] == 1
-    assert c["naks_without_request_id"] == 1
-    assert runs["candidacy"]["census"]["parentless_by_candidacy"] == 1
-    assert summary["census"]["parentless_by_candidacy"] == 1
+    assert summary["reads"]["series"]["runs_with_unattributed"] == 1
 
 
-def test_the_census_counts_whole_number_floats_and_null_names_in_refused_runs(
-    tmp_path,
-):
-    rows = _dated(
-        [
-            r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
-            r(2, "lifecycle.heartbeat", _beat(3.0, 0, 1, 2.0)),
-            r(3, "value", _value(1.0, 0, 3.0)),  # no name
-        ]
-    )
-    runs, summary = _run(tmp_path, {"floats": rows})
-    x = runs["floats"]
-    assert x["status"] == "refused"
-    assert x["census"]["whole_number_floats"] == {"lifecycle.heartbeat.step": 1}
-    assert x["census"]["null_name_values"] == 1
-    assert summary["census"]["whole_number_floats"] == {"lifecycle.heartbeat.step": 1}
+def test_a_fork_no_chooser_decides_leaves_its_run_undecided(tmp_path):
+    """The goldens' configuration without its span and origin choosers: a run
+    that forks there waits, its forks counted by projection, as `runstate
+    migrate`'s detection pass would hold it."""
+    config = [x for x in CONFIG if x not in ("span=fewest", "origin=newest")]
+    config = [
+        x
+        for k, x in enumerate(config)
+        if not (x == "--resolve" and config[k + 1].startswith("--"))
+    ]
+    runs, summary = _run(tmp_path, {"displaced": GOLDEN["displaced"]}, config=config)
+    x = runs["displaced"]
+    assert x["status"] == "undecided"
+    assert x["forks"] == {"0.3.0 -> 0.4.0": {"span": 1}}
+    assert summary["undecided"] == {"0.3.0 -> 0.4.0": {"span": 1}}
+
+
+def test_a_divergence_no_accept_names_is_measured_and_counted(goldens):
+    """`runstate migrate` would refuse those runs; the runner measures them."""
+    runs, summary = goldens
+    x = runs["backstopped"]
+    assert x["status"] == "measured"
+    assert sorted(x["unaccepted"]) == ["third-party-note", "third-party-release"]
+
+
+def test_a_bad_configuration_is_the_command_lines_error(tmp_path):
+    with pytest.raises(SystemExit):
+        _main(
+            tmp_path,
+            tmp_path / "out",
+            max_rows=1,
+            config=[*CONFIG, "--resolve", "span=nowhere"],
+        )
 
 
 # ----- refusals ----------------------------------------------------------------------------
@@ -781,51 +306,83 @@ def test_each_refusal_is_mapped_to_its_kind_once(tmp_path, rid):
 
 
 def _every_refusal():
-    """Each input the step's own tests refuse, and one of each refusal those
-    tables leave out."""
+    """Each input the step's own tests refuse at its boundary, and one of each
+    refusal those tables leave out, with the facts that bring it about."""
     import test_migration_v0_3_0_to_v0_4_0 as t
 
     cases = {}
     for table in ("UNREADABLE", "REFUSED", "HONORS_THE_EMPTY_ID", "SECOND_REAPS"):
-        cases |= {f"{table}:{k}": v for k, v in getattr(t, table).items()}
+        cases |= {
+            f"{table}:{k}": (v, t.REFERENCE) for k, v in getattr(t, table).items()
+        }
     claim = r(1, "lifecycle.started", _started("local://n1/11", 1.0))
+    launch = r(1, "launcher.launched", t._launched(DEAD, 0.5), rid="L1")
     cases |= {
-        "a_name_0_4_0_pins_null": [claim._replace(name="n")],
-        "a_beat_naming_no_claim": [r(1, "lifecycle.heartbeat", _beat(0, 0, 5, 1.0))],
-        "a_watermark_naming_nothing": [
-            claim,
-            r(2, "lifecycle.heartbeat", _beat(0, 9, 1, 2.0)),
-        ],
-        "a_watermark_naming_a_commit": t.WATERMARK_ON_ANOTHER_CLAIMS_COMMIT,
-        "a_watermark_on_a_dropped_stop": t._watermark_on(
-            _stopped(False, None, 0, 1, [], 4.0)
+        "a_name_0_4_0_pins_null": ([claim._replace(name="n")], t.REFERENCE),
+        "a_beat_naming_no_claim": (
+            [r(1, "lifecycle.heartbeat", _beat(0, 0, 5, 1.0))],
+            t.REFERENCE,
         ),
-        "a_whole_number_float": [
-            claim,
-            r(2, "lifecycle.heartbeat", _beat(3.0, 0, 1, 2.0)),
-        ],
+        "a_watermark_naming_nothing": (
+            [claim, r(2, "lifecycle.heartbeat", _beat(0, 9, 1, 2.0))],
+            t.REFERENCE,
+        ),
+        "a_watermark_naming_a_commit": (
+            t.WATERMARK_ON_ANOTHER_CLAIMS_COMMIT,
+            t.REFERENCE,
+        ),
+        "a_watermark_on_a_dropped_stop": (
+            t._watermark_on(_stopped(False, None, 0, 1, [], 4.0)),
+            t.NOTES,
+        ),
+        "a_whole_number_float": (
+            [claim, r(2, "lifecycle.heartbeat", _beat(3.0, 0, 1, 2.0))],
+            t.REFERENCE,
+        ),
+        "a_launch_two_launched_name": (
+            _dated(
+                [
+                    launch,
+                    launch._replace(seq=2),
+                    r(3, "lifecycle.started", _started(DEAD, 1.0), rid="L1"),
+                    r(4, "launcher.terminated", t.REAP, rid="L1"),
+                ]
+            ),
+            t.REFERENCE,
+        ),
+        "a_malformed_stopped_no_classifier_reads": (
+            GOLDEN["reclaimed"],
+            t.UNSTATED,
+        ),
+        "the_facts_admit_no_history": (
+            [claim, r(2, "lifecycle.heartbeat", _beat(5, 0, 1, 2.0))],
+            t.REFERENCE,
+        ),
+        "past_the_cap": ([claim], t.UNSTATED),
     }
     return cases
 
 
 def test_every_refusal_the_step_raises_maps_to_one_known_kind():
     """The one boundary that reads a refusal's message: every refusal the step's
-    tests know maps to exactly one pattern of the table, never to unknown, and
-    every pattern of the table is reached."""
-    from runstate.migrations.v0_3_0_to_v0_4_0 import run_passes
+    tests know maps to exactly one pattern of the table, never to unknown."""
+    import test_migration_v0_3_0_to_v0_4_0 as t
 
     table = mr._REFUSALS[mr.StepName.FROM_0_3_0]
     reached = set()
-    for case, rows in _every_refusal().items():
+    for case, (rows, configuration) in _every_refusal().items():
         with pytest.raises(MigrationError) as refused:
-            run_passes(rows)
+            t.migrated(rows, configuration, **t.CHOSEN)
         message = str(refused.value)
         matched = [i for i, (p, _) in enumerate(table) if re.search(p, message)]
-        assert len(matched) == 1, (case, message, matched)
-        reached |= set(matched)
+        assert matched, (case, message)
+        reached.add(matched[0])
         kind = mr.refusal_kind(mr.StepName.FROM_0_3_0, message)
         assert not kind.startswith("unknown") and "{" not in kind, (case, kind)
-    assert reached == set(range(len(table)))
+    budget = mr.refusal_kind(
+        mr.StepName.FROM_0_3_0, "more than 3 states summed over the layers by ..."
+    )
+    assert budget == "past the budget"
 
 
 def test_a_shipped_step_that_breaks_preservation_is_its_refusal(tmp_path, monkeypatch):
@@ -868,7 +425,7 @@ def test_a_corrupt_log_is_counted_never_raised(tmp_path):
     (root / "v0.3.0" / "a_rows.db").write_bytes(bytes(data))
     truncated = (root / "v0.3.0" / "b_schema.db").read_bytes()[: 4096 * 3]
     (root / "v0.3.0" / "b_schema.db").write_bytes(truncated)
-    _write(root / "v0.3.0" / "c_fine.db", EXIT_WITH_A_VALUE)
+    _write(root / "v0.3.0" / "c_fine.db", EXIT)
     out = tmp_path / "out"
     assert _main(root, out, max_rows=10000) == 0
     runs, summary = _outputs(out)
@@ -883,11 +440,11 @@ def test_a_corrupt_log_is_counted_never_raised(tmp_path):
 def test_an_unknown_refusal_is_its_own_kind_never_dropped(tmp_path, monkeypatch):
     import runstate.migrations.v0_3_0_to_v0_4_0 as step
 
-    def refuse(rows):
+    def refuse(self, rows, **given):
         raise MigrationError("the record at seq 7 is new to this table")
 
-    monkeypatch.setattr(step, "run_passes", refuse)
-    runs, summary = _run(tmp_path, {"new": EXIT_WITH_A_VALUE})
+    monkeypatch.setattr(step.V0_3_0_to_V0_4_0, "transform", refuse)
+    runs, summary = _run(tmp_path, {"new": EXIT})
     kind = "unknown: the record at seq N is new to this table"
     assert runs["new"]["refusal"]["kind"] == kind
     assert (
@@ -899,35 +456,18 @@ def test_an_unknown_refusal_is_its_own_kind_never_dropped(tmp_path, monkeypatch)
 def test_a_step_that_crashes_is_recorded_not_raised(tmp_path, monkeypatch):
     import runstate.migrations.v0_3_0_to_v0_4_0 as step
 
-    def crash(rows):
-        raise AssertionError("records after Input(seq=3) share a tie")
+    def crash(self, rows, **given):
+        raise AssertionError("records after seq 3 share a tie")
 
-    monkeypatch.setattr(step, "run_passes", crash)
-    runs, summary = _run(tmp_path, {"crash": EXIT_WITH_A_VALUE})
+    monkeypatch.setattr(step.V0_3_0_to_V0_4_0, "transform", crash)
+    runs, summary = _run(tmp_path, {"crash": EXIT})
     assert runs["crash"]["status"] == "crashed"
     assert runs["crash"]["crash"]["stage"] == "0.3.0 -> 0.4.0"
     assert summary["crashes"] == {
         "0.3.0 -> 0.4.0": {
-            "AssertionError in crash: records after Input(seq=N) share a tie": 1
+            "AssertionError in crash: records after seq N share a tie": 1
         }
     }
-
-
-def test_the_runner_writes_the_steps_own_rows():
-    """The runner runs the passes once and writes their records, as
-    ``transform`` does."""
-    from runstate.migrations.ambiguity import Limits, parse_choices, resolutions
-
-    ONE = Limits(cap=1, budget=1, run_on=0)
-    from runstate.migrations.v0_3_0_to_v0_4_0 import V0_3_0_to_V0_4_0, run_passes
-
-    step = V0_3_0_to_V0_4_0()
-    given = resolutions(
-        step, parse_choices([step], assume=[], resolve=[], accept=[], limits=ONE)
-    )
-    for rows in GOLDEN.values():
-        written = step.transform(rows, resolutions=given, history=()).rows
-        assert mr._rows_0_4_0(run_passes(rows)) == written
 
 
 # ----- the files ---------------------------------------------------------------------------
@@ -990,7 +530,7 @@ def test_the_format_is_read_from_the_address(tmp_path):
             )
         ],
     )
-    _write(root / "v0.3.0" / "new.db", EXIT_WITH_A_VALUE)
+    _write(root / "v0.3.0" / "new.db", EXIT)
     out = tmp_path / "out"
     assert _main(root, out, max_rows=100) == 0
     runs, summary = _outputs(out)
@@ -1000,7 +540,7 @@ def test_the_format_is_read_from_the_address(tmp_path):
         "beatfirst": ("v0.2.0", "0.2.0", "refused"),
         "new": ("v0.3.0", "0.3.0", "measured"),
     }
-    assert runs["legacy"]["p3"]["differing"] == 0
+    assert runs["legacy"]["reads"]["series"]["differing"] == 0
     assert runs["beatfirst"]["refusal"]["step"] == "0.2.0 -> 0.3.0"
     assert runs["beatfirst"]["refusal"]["kind"] == "a heartbeat before every claim"
     assert summary["runs"]["format"] == {"0.2.0": 3, "0.3.0": 1}
@@ -1009,7 +549,7 @@ def test_the_format_is_read_from_the_address(tmp_path):
 def test_a_symlinked_duplicate_is_counted_once(tmp_path):
     root = tmp_path / "root"
     target = root / "v0.3.0" / "exit.db"
-    _write(target, EXIT_WITH_A_VALUE)
+    _write(target, EXIT)
     (root / "home").mkdir()
     (root / "home" / "exit.db").symlink_to(target)  # a file symlink
     (root / "cell").symlink_to(root / "v0.3.0", target_is_directory=True)
@@ -1026,7 +566,7 @@ def test_a_symlinked_duplicate_is_counted_once(tmp_path):
 
 def test_files_that_are_not_logs_are_skipped_and_counted(tmp_path):
     root = tmp_path / "root"
-    _write(root / "v0.3.0" / "run.db", EXIT_WITH_A_VALUE)
+    _write(root / "v0.3.0" / "run.db", EXIT)
     _write(root / "v0.2.0" / "run.db", _v0_2_0())
     (root / "v0.2.0" / "run.db").chmod(0o444)  # sealed by the migration that moved it
     (root / "cell").mkdir()
@@ -1036,7 +576,7 @@ def test_files_that_are_not_logs_are_skipped_and_counted(tmp_path):
     conn.execute("CREATE TABLE things (x)")
     conn.commit()
     conn.close()
-    _write(root / "v0.4.0" / "future.db", EXIT_WITH_A_VALUE)
+    _write(root / "v0.4.0" / "future.db", EXIT)
     (root / "cell" / "gone.db").symlink_to(root / "nowhere.db")
     out = tmp_path / "out"
     assert _main(root, out, max_rows=100) == 0
@@ -1079,7 +619,7 @@ def test_an_unsealed_log_beside_a_newer_one_is_a_conflict(tmp_path):
 
 def test_the_runner_writes_nothing_under_a_root(tmp_path):
     root = tmp_path / "root"
-    _write(root / "v0.3.0" / "exit.db", EXIT_WITH_A_VALUE)
+    _write(root / "v0.3.0" / "exit.db", EXIT)
     with pytest.raises(SystemExit):
         _main(root, root / "out", max_rows=100)
     assert sorted(p.name for p in root.rglob("*")) == ["exit.db", "v0.3.0"]
@@ -1118,7 +658,7 @@ def test_the_runner_streams_one_run_at_a_time(tmp_path, monkeypatch):
 
 def test_max_rows_skips_a_run_without_loading_it(tmp_path, monkeypatch):
     root = tmp_path / "root"
-    _write(root / "v0.3.0" / "small.db", EXIT_WITH_A_VALUE)  # 5 rows
+    _write(root / "v0.3.0" / "small.db", EXIT)  # 5 rows
     _write(root / "v0.3.0" / "big.db", GOLDEN["displaced"])  # 12 rows
     read = []
     real = mr._read_rows
@@ -1128,7 +668,7 @@ def test_max_rows_skips_a_run_without_loading_it(tmp_path, monkeypatch):
     runs, summary = _outputs(out)
     assert read == ["small"]
     assert runs["big"]["status"] == "skipped_max_rows" and runs["big"]["rows"] == 12
-    assert runs["big"]["p3"] is None
+    assert runs["big"]["reads"] is None
     assert summary["runs"]["status"] == {"measured": 1, "skipped_max_rows": 1}
     assert summary["args"]["max_rows"] == 5
 
@@ -1151,6 +691,7 @@ def test_the_runner_runs_under_a_4gb_address_space_limit(tmp_path):
             "1000",
             "--max-bytes",
             str(MAX_BYTES),
+            *(shlex.quote(x) for x in CONFIG),
         ]
     )
     done = subprocess.run(
@@ -1193,15 +734,15 @@ def test_an_exit_with_no_parent_is_measured(tmp_path):
     runs, summary = _run(tmp_path, NULL_PARENT_EXITS)
     assert summary["runs"]["status"] == {"measured": 3}
     for rid, x in runs.items():
-        assert x["p3"]["not_compared"] is None, rid
-        assert x["p3"]["differing"] == 0 and x["p4"]["verdict"]["equal"], rid
+        assert x["reads"]["series"]["not_compared"] is None, rid
+        assert x["reads"]["verdict"]["equal"], rid
         assert not any(x["also"].values()) and x["schema_invalid"] == [], rid
 
 
 def test_a_failure_of_the_runners_own_measurement_is_recorded_and_the_run_goes_on(
     tmp_path, monkeypatch
 ):
-    real = mr.p2
+    real = mr.compare
     calls = []
 
     def broken(*args):
@@ -1210,8 +751,8 @@ def test_a_failure_of_the_runners_own_measurement_is_recorded_and_the_run_goes_o
             raise KeyError(99)
         return real(*args)
 
-    monkeypatch.setattr(mr, "p2", broken)
-    runs, summary = _run(tmp_path, {"a": EXIT_WITH_A_VALUE, "b": EXIT_WITH_A_VALUE})
+    monkeypatch.setattr(mr, "compare", broken)
+    runs, summary = _run(tmp_path, {"a": EXIT, "b": EXIT})
     assert runs["a"]["status"] == "crashed"
     assert runs["a"]["crash"]["stage"] == "the runner's own measurement"
     assert runs["a"]["crash"]["kind"] == "KeyError in broken: N"
@@ -1222,54 +763,9 @@ def test_a_failure_of_the_runners_own_measurement_is_recorded_and_the_run_goes_o
     assert summary["complete"] is True
 
 
-def test_a_parentless_resume_with_a_candidate_reads_unattributed(tmp_path, monkeypatch):
-    """The reviewer's probe: M1 made to drop a valid candidate. The root's class
-    is tested against the candidates, not taken from M1, so nothing that rests
-    on that root is attributed, and neither P1 nor the census counts it."""
-    import runstate.migrations.v0_3_0_to_v0_4_0 as step
-
-    real = step._resume_from
-
-    def dropped(claims, beaten, i):
-        x = real(claims, beaten, i)
-        return step.Parentless() if isinstance(x, step.Resumed) else x
-
-    monkeypatch.setattr(step, "_resume_from", dropped)
-    runs, _ = _run(tmp_path, {"beyond": BEYOND})
-    x = runs["beyond"]
-    cells = _cells(x)
-    assert len(cells) == 4 and all(c == {P3.UNATTRIBUTED} for c in cells.values())
-    assert x["p1"]["parentless"] == {}
-    assert x["p1"]["failures"] == {mr.P1Failure.UNSOUND_CHAIN: 1}
-    assert x["census"]["parentless_by_candidacy"] == 0
-
-
-def test_p1_checks_a_commit_with_no_chain(tmp_path, monkeypatch):
-    """A commit whose parent follows it has no chain: a failure P1 counts among
-    the checked."""
-    real = mr._rows_0_4_0
-
-    def late_parent(passes):
-        rows = real(passes)
-        commits = [x.seq for x in rows if x.topic == "lifecycle.commit"]
-        out = []
-        for x in rows:
-            body = json.loads(x.body)
-            if x.seq == commits[1]:  # step 1's, now naming the last commit
-                body["parent"] = commits[-1]
-            out.append(x._replace(body=json.dumps(body)))
-        return out
-
-    monkeypatch.setattr(mr, "_rows_0_4_0", late_parent)
-    runs, _ = _run(tmp_path, {"skipped": GOLDEN["skipped"]})
-    p1 = runs["skipped"]["p1"]
-    assert p1["failures"] == {mr.P1Failure.NO_CHAIN: 3}  # steps 1, 3 and 5
-    assert (p1["checked"], p1["passed"]) == (4, 1)
-
-
 def test_max_bytes_skips_a_file_without_opening_it(tmp_path, monkeypatch):
     root = tmp_path / "root"
-    _write(root / "v0.3.0" / "small.db", EXIT_WITH_A_VALUE)
+    _write(root / "v0.3.0" / "small.db", EXIT)
     padded = [r(1, "value", _value("x" * 20_000, 0, 1.0), name="blob")]
     _write(root / "v0.3.0" / "big.db", padded)
     small = (root / "v0.3.0" / "small.db").stat().st_size
@@ -1294,7 +790,7 @@ def test_a_run_too_big_to_read_is_a_crash_at_the_read(tmp_path, monkeypatch):
         return real(path)
 
     monkeypatch.setattr(mr, "_read_rows", read)
-    runs, _ = _run(tmp_path, {"a": EXIT_WITH_A_VALUE, "b": EXIT_WITH_A_VALUE})
+    runs, _ = _run(tmp_path, {"a": EXIT, "b": EXIT})
     assert runs["a"]["status"] == "crashed" and runs["a"]["crash"]["stage"] == "read"
     assert runs["a"]["crash"]["kind"] == "MemoryError in read: "
     assert runs["b"]["status"] == "measured"
@@ -1307,7 +803,7 @@ def test_the_summary_is_written_as_the_runner_goes_and_when_it_stops(
     stops: an abort loses no totals, and says it is incomplete."""
     root = tmp_path / "root"
     for rid in ("a", "b", "c"):
-        _write(root / "v0.3.0" / f"{rid}.db", EXIT_WITH_A_VALUE)
+        _write(root / "v0.3.0" / f"{rid}.db", EXIT)
     out = tmp_path / "out"
     monkeypatch.setattr(mr, "_SUMMARY_EVERY", 1)
     real = mr.measure
@@ -1362,15 +858,15 @@ def test_a_path_discovery_cannot_read_is_skipped_with_its_reason(tmp_path):
     not search, and a directory it may not list: each an unreadable path, with
     its errno, and the logs beside them are measured."""
     root = tmp_path / "root"
-    _write(root / "v0.3.0" / "aaa.db", EXIT_WITH_A_VALUE)
-    _write(root / "v0.3.0" / "zzz.db", EXIT_WITH_A_VALUE)
+    _write(root / "v0.3.0" / "aaa.db", EXIT)
+    _write(root / "v0.3.0" / "zzz.db", EXIT)
     locked = tmp_path / "locked"
-    _write(locked / "x.db", EXIT_WITH_A_VALUE)
+    _write(locked / "x.db", EXIT)
     (locked / "sub").mkdir()
     (root / "v0.3.0" / "mmm.db").symlink_to(locked / "x.db")
     (root / "cell").mkdir()
     (root / "cell" / "link").symlink_to(locked / "sub", target_is_directory=True)
-    _write(root / "shut" / "y.db", EXIT_WITH_A_VALUE)
+    _write(root / "shut" / "y.db", EXIT)
     out = tmp_path / "out"
     locked.chmod(0o000)
     (root / "shut").chmod(0o000)
@@ -1404,7 +900,7 @@ def test_a_run_whose_record_cannot_begin_never_aborts(tmp_path, monkeypatch):
         return real(path)
 
     monkeypatch.setattr(mr, "_unread_sidecars", refused)
-    logs = {rid: EXIT_WITH_A_VALUE for rid in ("a", "b", "c")}
+    logs = {rid: EXIT for rid in ("a", "b", "c")}
     runs, summary = _run(tmp_path, logs)
     assert {k: x["status"] for k, x in runs.items()} == {
         "a": "measured",

@@ -1,10 +1,19 @@
 #!/usr/bin/env python3
 """The migration round's corpus runner (docs/plans/2026-10-23-migration-round.md,
-Task 11): real logs through the shipped 0.2.0 -> 0.3.0 step and the new
-0.3.0 -> 0.4.0 step, with P1-P4 and "Also" of docs/specs/commits-and-lineage.md
-§7 measured on each, every difference attributed to a named rule.
+Tasks 11 and 22): real logs through the shipped 0.2.0 -> 0.3.0 step and the
+0.3.0 -> 0.4.0 step, under a consumer's configuration, with every read the
+migration changes attributed to a declared divergence.
 
-    scripts/migration_round.py ROOT... --out DIR --max-rows N --max-bytes B
+    scripts/migration_round.py ROOT... --out DIR --max-rows N --max-bytes B \\
+        --cap C --budget S --run-on K \\
+        [--assume MODULE:ATTR] [--resolve PROJECTION=CHOOSER] [--accept DIVERGENCE]
+
+THE CONFIGURATION is what ``runstate migrate`` takes (log-formats.md §6): the facts
+(``--assume``), the choosers (``--resolve``) and the acceptances (``--accept``),
+parsed once by the shared mechanism over both steps, and the limits, which change
+results and so are required here, at the edge, and recorded in the summary. A
+consumer's own configuration is its module of facts and classifier, named on the
+command line, with its choosers and acceptances.
 
 READ-ONLY. Every log is opened ``mode=ro&immutable=1``, and nothing is written
 under a ROOT: the runner refuses an ``--out`` at or under one. ``immutable=1``
@@ -34,68 +43,35 @@ run goes on: a directory, an entry or a file the OS or SQLite will not read is
 a skip, with what refused it, and an exception while measuring a run, a step's,
 a read's or the runner's own (``MemoryError`` included), is a crash on that
 run's line, by its stage, its type and the function it was raised in. A body
-that is not JSON is always a crash of the read, before any step reads it. ``summary.json`` is rewritten every
-``_SUMMARY_EVERY`` runs and once more however the runner stops, with
-``complete`` false unless it finished.
+that is not JSON is always a crash of the read, before any step reads it.
+``summary.json`` is rewritten every ``_SUMMARY_EVERY`` runs and once more however
+the runner stops, with ``complete`` false unless it finished.
 
-EACH RUN:
-1. Format 0.2.0 is brought to 0.3.0 by the shipped step, in memory, through
-   ``transform_checked``; a refusal is recorded. 0.3.0's ``is_live``, which
-   ``runstate migrate`` asks before it moves a run, is recorded as
+EACH RUN, as ``runstate migrate``'s detection pass takes it, in memory:
+1. Each step in turn finds its forks (``detect``) on its input. A projection that
+   forks with no ``--resolve`` leaves the run ``undecided``, its forks counted by
+   projection. Otherwise the step's transform runs (``transform_checked``), and
+   where each divergence fires is recorded, with the ones no ``--accept`` names:
+   ``runstate migrate`` would refuse those runs, the runner measures them. A
+   step's refusal is recorded by its kind (``refusal_kind``, the one boundary that
+   reads a step's messages). 0.3.0's ``is_live`` is recorded as
    ``live_by_0_3_0``, and refuses nothing here.
-2. The 0.3.0 -> 0.4.0 step runs once (``run_passes``), and its records are
-   written as ``transform`` writes them. A refusal is recorded by its kind
-   (``refusal_kind``, the one boundary that reads a step's messages), with the
-   census of the 0.3.0 rows; an exception that is not a refusal is recorded as a
-   crash of the step. The rest runs only on a run the step accepts.
-3. Every 0.4.0 row is validated against the 0.4.0 schemas, loaded from
-   ``protocol/`` here (ruling R1): the envelope's, and its convention's when 0.4.0
-   owns its topic.
-4. The 0.3.0 reads, ``value_series``, ``peek_terminal`` and
-   ``undischarged_stops``, run over a ``MemoryChannel`` of the 0.3.0 rows; the
-   0.4.0 reads, ``runstate.lineage``'s head at ``LatestClaimHead``, ``lineage``,
-   ``series`` per name, ``verdict`` and ``undischarged_stops``, over one of the
-   0.4.0 rows. A read that raises ``MalformedRecordError`` is a value, not a
-   crash: a 0.3.0 verdict that raises is compared as one (P4), and a 0.4.0 head,
-   lineage or series that raises leaves P3 uncompared, with the error and the
-   old read's cell count. Any other exception of a step or a read is recorded as
-   a crash of its stage, and so is a failure of the runner's own checks.
-5. P1-P4 and "Also" are checked, and the census hooks counted.
-
-THE PROPERTIES (§7, widened by the ledger's rulings, progress.md):
-- **P1** (``P1Result``): every 0.3.0 heartbeat with an integer step whose
-  commit's chain links back to old step 0 counts ``s + 1`` commits. A chain whose
-  root is a parentless resume is counted by its class, not checked; every other
-  real commit is checked, and fails as a trailing gap (``P1Failure``, the
-  step's known limit), an unsound chain, or no chain at all.
-- **P2** (``P2Result``): every value with a step is committed by its claim's
-  commit carrying that step, by the 0.4.0 rows, except by the kinds of
-  ``P2Exception``; anything else is a ``P2Failure``.
-- **P3** (``P3Result``): the 0.3.0 ``value_series`` against the 0.4.0 ``series``
-  of every name, cell by cell, the 0.4.0 cell of an element being its name and
-  ``count(Commits(), node) - 1`` at the node that commits it. A cell is equal
-  when the new read holds exactly one element there, equal in value to the old
-  read's; else it differs, and each of its parts is explained by a named rule
-  (``P3Class``): the old value's fate, which is why it is not the cell's only
-  element, and each other element's, which is why it is there. A cell is
-  reported with every class that explains a part, and ``unattributed`` when a
-  part has none.
-- **P4** (``P4Result``): the verdict's outcomes, 0.3.0's one outcome taken as a
-  one-element set, and the stop fold's ids, each difference attributed to the
-  ``P4Class`` rules that change it, or ``unattributed``. The stop fold's ids are
-  compared as sets (both folds keep an id's newest send); no rule changes them,
-  so a difference there is always unattributed.
-- **Also** (``Also``): no node names a value at or after it, no parent at or
-  after its child, no commit before the record its ``consumed_seq`` names, no
-  resume point at or after its claim, every seq-valued field names a record of
-  the kind it names (Review Focus 1), one exit per claim, and every row valid.
+2. Every 0.4.0 row is validated against the 0.4.0 schemas, loaded from
+   ``protocol/`` here (ruling R1), and "Also" is checked.
+3. THE READS. The 0.3.0 reads, ``value_series``, ``peek_terminal`` and
+   ``undischarged_stops``, over a ``MemoryChannel`` of the 0.3.0 rows; the 0.4.0
+   reads, ``runstate.lineage``'s ``series`` per name at ``LatestClaimHead``, its
+   ``verdict`` and ``undischarged_stops``, over one of the 0.4.0 rows. Each
+   difference is attributed to the divergences that fired there (``Reads``), or
+   ``unattributed``: an unattributed difference is a read-changing rule the step
+   does not declare. A read that raises ``MalformedRecordError`` is a value: a
+   0.3.0 verdict that raises is compared as one, and a 0.4.0 series that raises
+   leaves the series uncompared, with the error.
 
 OUTPUT. ``DIR/runs.jsonl``: one ``RunRecord`` per run, as JSON, written as each
 is measured. ``DIR/skipped.jsonl``: one ``{path, why, detail}`` per skipped
 file, ``detail`` naming SQLite's error where there is one.
-``DIR/summary.json``: the totals (``Totals``), every class counted once per
-cell, verdict or record it names, and each combination of classes a cell or a
-verdict carries counted under ``by_class_set``, the classes joined with ``+``.
+``DIR/summary.json``: the totals (``Totals``).
 """
 
 from __future__ import annotations
@@ -108,13 +84,12 @@ import re
 import sqlite3
 import sys
 import traceback
-from bisect import bisect_right
 from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, NamedTuple, assert_never
+from typing import Any, NamedTuple
 from urllib.request import pathname2url
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -124,52 +99,27 @@ from jsonschema import Draft202012Validator  # type: ignore[import-untyped]  # n
 from runstate import formats, observables  # noqa: E402
 from runstate import lineage as reads  # noqa: E402
 from runstate.channel import Envelope, MemoryChannel  # noqa: E402
-from runstate.migrations import MigrationError, Row, transform_checked  # noqa: E402
+from runstate.migrations import (  # noqa: E402
+    MigrationError,
+    Planned,
+    Row,
+    Step,
+    transform_checked,
+)
 from runstate.migrations import v0_3_0_to_v0_4_0 as step04  # noqa: E402
 from runstate.migrations.ambiguity import (  # noqa: E402
+    Choices,
+    History,
     Limits,
+    Migrated,
     parse_choices,
     resolutions,
 )
 from runstate.migrations.v0_2_0_to_v0_3_0 import V0_2_0_to_V0_3_0  # noqa: E402
-from runstate.migrations.v0_3_0_to_v0_4_0 import (  # noqa: E402
-    Commit,
-    CommitRef,
-    Dropped,
-    End,
-    Input,
-    Parentless,
-    Passes,
-    Place,
-    Real,
-    Reap,
-    ResumeFrom,
-    Synthetic,
-    Uncommitted,
-    _Exit,
-    _Release,
-    _REPORTED_LATER,
-)
 
-# The 0.2.0 -> 0.3.0 step under the readings it encoded before its projections were
-# declared. The runner measures what the step writes, so no divergence is a refusal
-# here: transform_checked reports where each fires and refuses none (Task 22 makes the
-# choosers the runner's configuration).
 _STEP_0_2_0 = V0_2_0_to_V0_3_0()
-_POSITIONAL = resolutions(
-    _STEP_0_2_0,
-    parse_choices(
-        [_STEP_0_2_0],
-        assume=[],
-        resolve=[
-            "record-claim=positional",
-            "stop-honored=positional",
-            "lease-bound=first-claim",
-        ],
-        accept=[],
-        limits=Limits(cap=1, budget=1, run_on=0),
-    ),
-)
+_STEP_0_3_0 = step04.V0_3_0_to_V0_4_0()
+_STEPS: tuple[Step, ...] = (_STEP_0_2_0, _STEP_0_3_0)
 
 _PROTOCOL = Path(__file__).resolve().parent.parent / "protocol"
 _COLUMNS = {"seq", "topic", "name", "request_id", "body", "created_at"}
@@ -181,6 +131,7 @@ _STOPPED = "lifecycle.stopped"
 _STARTED = "lifecycle.started"
 _HEARTBEAT = "lifecycle.heartbeat"
 _DIED = "supervisor.died"
+_REWIND = "lifecycle.rewind"
 _VALUE = "value"
 
 
@@ -215,6 +166,7 @@ class Status(StrEnum):
     SKIPPED_MAX_BYTES = "skipped_max_bytes"
     SKIPPED_MAX_ROWS = "skipped_max_rows"
     REFUSED = "refused"
+    UNDECIDED = "undecided"  # a projection forks that no --resolve decides
     CRASHED = "crashed"
 
 
@@ -231,109 +183,13 @@ class Stage(StrEnum):
     RUNNER = "the runner's own measurement"
 
 
-class P3Class(StrEnum):
-    """The named rules a differing P3 cell traces to (§7's P3 list, widened by
-    the ledger). Each is decided by a predicate below, on the run and the cell's
-    part it explains:
-
-    - ``BEYOND``, ``REVISITED`` (§7 P3): the old value is committed off the head's
-      lineage, at a step past every one the lineage reached, or at one it reached
-      on another branch (``_off_the_lineage``);
-    - ``SEVERAL`` (§7 P3, "nodes holding several values"): the cell holds
-      several elements, all one commit's (``p3``);
-    - ``LEADING`` (§7 M5's last sentence; P2's by-design exception): a value
-      below its claim's first real beat, committed by the claim's first commit,
-      so at that commit's step (``_shift``);
-    - ``PARENTLESS`` (§7 P3, M1) and ``PARENTLESS_BY_CANDIDACY`` (M1's candidacy
-      rule, PROVISIONAL ruling of Task 5): the cell's chain is rooted at a
-      parentless resume, so it counts too few, and with candidacy when an
-      earlier claim holds the step below but not as a candidate (``_root``);
-    - ``TRAILING_GAP`` (the step's known limit; ledger ruling on Task 5's
-      concern 3): M5 synthesized a trailing step above a gap of steps with no
-      values, so every count above it is short (``_chain``);
-    - ``LOADING`` (§7 P3 "loading cells"; PROVISIONAL ruling of Task 4), ``M4``,
-      ``ABOVE`` (§7 P3, "a displaced worker's values above its successor's exit";
-      the ledger adds a crashed iteration's), ``ERROR_EXIT`` (§7 P3, "error
-      exits") and ``UNREACHED_UNENDED`` (§7 M5: "a trailing step that no such
-      claim needs stays uncommitted"; the ledger's P2 list names it for claims a
-      third party released or nothing ended): the old value is left
-      uncommitted, for that reason (``_left_p3``). A value left before every claim
-      has no class: the ledger rules that Task 14 names it if the corpus shows
-      any (Task 3), so it reads unattributed."""
-
-    BEYOND = "beyond the head's lineage"
-    REVISITED = "a step the lineage revisited"
-    SEVERAL = "a node holding several values"
-    LEADING = "a leading value"
-    PARENTLESS = "a parentless resume"
-    PARENTLESS_BY_CANDIDACY = "a parentless resume by M1's candidacy rule"
-    TRAILING_GAP = "a trailing gap"
-    LOADING = "loading: a claim that beat no step"
-    M4 = "after its claim's end (M4)"
-    ABOVE = "above its exit's last step"
-    ERROR_EXIT = "an error exit's unreached trailing step"
-    UNREACHED_UNENDED = (
-        "an unreached trailing step of a claim a third party released or nothing ended"
-    )
-    UNATTRIBUTED = "unattributed"
-
-
-class P4Class(StrEnum):
-    """The named rules that change a verdict (§7's P4 list and the ledger's
-    rulings), each decided by a predicate below (``_P4_RULES``)."""
-
-    RELEASE = "a third party's release"
-    LATER_STOP = "a third party's later stop"
-    BACKSTOP_TERMINATED = "a backstop that ends no claim, now a terminated"
-    CLAIMLESS = "a stopped naming no claim"
-    ATTRIBUTED_DEATH = "an attributed death report"
-    WRAPPER = "a wrapper's terminated"
-    UNATTRIBUTED = "unattributed"
-
-
-class P1Failure(StrEnum):
-    TRAILING_GAP = "a trailing gap (a known limit)"
-    UNSOUND_CHAIN = (
-        "a chain no rule explains: its old steps do not rise by one, "
-        "or its root is no parentless resume"
-    )
-    NO_CHAIN = "a parent at or after its child"
-
-
-_PARENTLESS = frozenset({P3Class.PARENTLESS, P3Class.PARENTLESS_BY_CANDIDACY})
-
-
-class P2Exception(StrEnum):
-    """P2's exceptions (§7 P2, widened by the ledger: Task 4's write-up items and
-    the controller's list for this task). Each is a predicate on the value: its
-    commit, or why the passes left it (``_left_p2``)."""
-
-    LEADING = "a leading value"
-    ABOVE_THE_LAST_STEP = "above its exit's last step"
-    ERROR_EXIT = "an error exit's unreached trailing step"
-    UNREACHED_UNENDED = (
-        "an unreached trailing step of a claim a third party released or nothing ended"
-    )
-    AFTER_ITS_END = "after its claim's end (M4)"
-    BEFORE_EVERY_CLAIM = "before every claim"
-    LOADING = "loading: a claim that beat no step"
-
-
-class P2Failure(StrEnum):
-    COMMITTED_TWICE = "committed by two nodes"
-    BY_AN_EXIT = "committed by an exit"
-    ANOTHER_CLAIMS = "committed by another claim's commit"
-    ANOTHER_STEP = "committed at another step, not as a leading value"
-    UNCOMMITTED_WITHOUT_A_REASON = "uncommitted, and the passes give no reason"
-
-
 class Also(StrEnum):
     """§7's "Also", with Review Focus 1 and §2's one-exit rule."""
 
     LATER_VALUE = "a node names a value at or after it"
     PARENT_AT_OR_AFTER = "a parent at or after its child"
     CONSUMED_AT_OR_AFTER = "a commit at or before the record its consumed_seq names"
-    RESUME_AT_OR_AFTER = "a resume_from at or after its started"
+    RESUME_AT_OR_AFTER = "a resume_from at or after its started or rewind"
     CLAIM_AT_OR_AFTER = "a claim_seq at or after its record"
     WRONG_KIND = "a seq-valued field naming no record of the kind it names"
     TWO_EXITS = "a claim with a second exit"
@@ -358,62 +214,6 @@ class Crash:
 
 
 @dataclass(frozen=True)
-class LoneStop:
-    """A ``stopped`` that is the only one naming its claim, with its body's
-    signature (the plan's Task 13): the census reads who wrote it."""
-
-    seq: int
-    claim_seq: int
-    malformed: bool  # M10's {reason, honored, claim_seq}
-    error: str | None
-    error_kind: str  # none, backstop or other
-    completed: bool | None
-    final_step_null: bool | None
-    honored_empty: bool
-    t_minus_created_at: float | None
-    beats_after: int  # heartbeats naming its claim after it
-    values_after: int  # values pass 1 gives its claim after it
-    latest_claim: bool
-    read_as: str | None  # how the step classified it: exit or release
-
-    def signature(self) -> str:
-        """Its body's shape, with its ``t`` bucketed against its ``created_at``
-        by the step's own tolerance, ``_REPORTED_LATER`` seconds: a writer
-        stamps ``t`` just before the row lands, while the reclaim tool stamps
-        SLURM's end time, well before it, which the rule for lone stops reads as
-        a stop written after the time it reports. The exact difference is in the
-        record; the summary echoes the tolerance."""
-        if self.t_minus_created_at is None:
-            t = "none"
-        elif self.t_minus_created_at < -_REPORTED_LATER:
-            t = "before"
-        elif self.t_minus_created_at > _REPORTED_LATER:
-            t = "after"
-        else:
-            t = "near"
-        final = "-" if self.final_step_null is None else self.final_step_null
-        return (
-            f"malformed={self.malformed} error={self.error_kind} "
-            f"completed={self.completed} final_step_null={final} "
-            f"honored_empty={self.honored_empty} t={t} read_as={self.read_as}"
-        )
-
-
-@dataclass(frozen=True)
-class Census:
-    """The census hooks for Task 13 and the write-up. The last three need the
-    new step's passes, and are None when it refused."""
-
-    lone_stops: list[LoneStop]
-    whole_number_floats: dict[str, int]
-    naks_without_request_id: int
-    null_name_values: int
-    beats_after_end: dict[str, int] | None
-    withdrawals_of_unborne_ids: int | None
-    parentless_by_candidacy: int | None
-
-
-@dataclass(frozen=True)
 class InvalidRow:
     seq: int
     topic: str
@@ -421,73 +221,8 @@ class InvalidRow:
 
 
 @dataclass(frozen=True)
-class P1Failing:
-    seq: int  # the 0.3.0 heartbeat's
-    step: int
-    count: int | None
-    kind: str
-
-
-@dataclass(frozen=True)
-class P1Result:
-    checked: int  # real commits whose chain links back to old step 0
-    passed: int
-    failures: dict[str, int]
-    parentless: dict[str, int]  # real commits on a parentless chain, by its class
-    failing: list[P1Failing]
-
-
-@dataclass(frozen=True)
-class P2Failing:
-    seq: int  # the 0.3.0 value's
-    step: int
-    kind: str
-
-
-@dataclass(frozen=True)
-class P2Result:
-    checked: int
-    at_its_step: int
-    exceptions: dict[str, int]
-    failures: dict[str, int]
-    failing: list[P2Failing]
-
-
-@dataclass(frozen=True)
-class Unexplained:
-    seq: int  # the 0.3.0 value's
-    fate: str
-
-
-@dataclass(frozen=True)
-class Cell:
-    """A differing cell: its classes, the old read's value (its 0.3.0 seq), and
-    the new read's elements there (theirs), in lineage order."""
-
-    name: str
-    step: int
-    classes: list[str]
-    old: int | None
-    new: list[int]
-    unexplained: list[Unexplained]
-
-
-@dataclass(frozen=True)
-class P3Result:
-    not_compared: str | None  # why not: the 0.4.0 read's error
-    cells: int  # compared, or, when not, the old read's
-    equal: int
-    equal_other_record: int  # equal in value, from another record
-    differing: int
-    by_class: dict[str, int]
-    by_class_set: dict[str, int]
-    unattributed: int
-    differing_cells: list[Cell]
-
-
-@dataclass(frozen=True)
 class VerdictValue:
-    """A verdict as P4 compares it: none, a set of outcomes, or a raise."""
+    """A verdict as the reads compare it: none, a set of outcomes, or a raise."""
 
     kind: str  # none, outcomes, raised
     outcomes: list[str]
@@ -498,27 +233,52 @@ class VerdictValue:
 
 
 @dataclass(frozen=True)
-class P4Verdict:
+class Cell:
+    """A differing series cell: the divergences that explain it, else
+    ``unattributed``; the old read's value (its 0.3.0 seq) and the new read's
+    elements there (theirs)."""
+
+    name: str
+    step: int
+    divergences: list[str]
+    old: int | None
+    new: list[int]
+
+
+@dataclass(frozen=True)
+class SeriesResult:
+    not_compared: str | None  # why not: the 0.4.0 read's error
+    cells: int  # compared, or, when not, the old read's
+    equal: int
+    differing: int
+    by_divergence: dict[str, int]
+    unattributed: int
+    differing_cells: list[Cell]
+
+
+@dataclass(frozen=True)
+class VerdictResult:
     old: VerdictValue
     new: VerdictValue
     equal: bool
-    classes: list[str]
+    divergences: list[str]  # those explaining a difference, else unattributed
 
 
 @dataclass(frozen=True)
-class P4Stops:
-    """Each pending stop's id, and its 0.4.0 seq (an old stop's mapped)."""
+class StopsResult:
+    """The pending stops' ids, old and new."""
 
-    old: dict[str, int]
-    new: dict[str, int]
+    old: list[str]
+    new: list[str]
     equal: bool
-    classes: list[str]
+    divergences: list[str]
 
 
 @dataclass(frozen=True)
-class P4Result:
-    verdict: P4Verdict
-    stops: P4Stops
+class Reads:
+    series: SeriesResult
+    verdict: VerdictResult
+    stops: StopsResult
 
 
 @dataclass(frozen=True)
@@ -538,14 +298,16 @@ class RunRecord:
     live_by_0_3_0: bool | None = None
     refusal: Refusal | None = None
     crash: Crash | None = None
-    census: Census | None = None
+    # each step's forks of each projection, by step and projection; under
+    # ``undecided``, those of the projections no --resolve decides
+    forks: dict[str, dict[str, int]] = field(default_factory=dict)
+    # where each divergence fired, its count of sites, and those no --accept names
+    divergences: dict[str, int] = field(default_factory=dict)
+    unaccepted: list[str] = field(default_factory=list)
     rows_0_4_0: int | None = None
     schema_invalid: list[InvalidRow] = field(default_factory=list)
     also: dict[str, int] = field(default_factory=dict)
-    p1: P1Result | None = None
-    p2: P2Result | None = None
-    p3: P3Result | None = None
-    p4: P4Result | None = None
+    reads: Reads | None = None
 
 
 # ----- refusals and crashes, mapped once ---------------------------------------------
@@ -560,6 +322,8 @@ _REFUSALS: dict[StepName, tuple[tuple[str, str], ...]] = {
             "a heartbeat before every claim",
         ),
         (r"does not renumber, but", "a broken seq-and-topic preservation"),
+        (r"refused it:", "a chooser refused"),
+        (r"answered in another shape", "a chooser answered in another shape"),
     ),
     StepName.FROM_0_3_0: (
         (r"has an empty topic", "envelope: an empty topic"),
@@ -585,13 +349,27 @@ _REFUSALS: dict[StepName, tuple[tuple[str, str], ...]] = {
         (r"which is not a claim before it", "a record naming a claim not before it"),
         (r"which names no record before it", "a watermark naming no record before it"),
         (r"'s commit: a watermark is a read position", "a watermark naming a commit"),
-        (r"without exactly one there is no handle", "a launch not one launched names"),
+        (r"records name: its death report needs", "a launch several launched name"),
         (
-            r"a third party's that becomes only its withdrawals",
-            "a watermark on a dropped stop",
+            r"which leaves the log: renumbering",
+            "a name of a record that leaves the log",
         ),
+        (
+            r"only a consumer's classifier may read it",
+            "a malformed stopped no classifier reads",
+        ),
+        (
+            r"no history of the stated writers writes the log",
+            "the facts admit no history",
+        ),
+        (r"states summed over the layers", "past the budget"),
+        (r"more than \d+ states", "past the cap"),
+        (r"refused it:", "a chooser refused"),
+        (r"answered in another shape", "a chooser answered in another shape"),
     ),
 }
+
+
 _TOPIC = re.compile(r"^the (\S+) at seq \d+")
 
 
@@ -897,379 +675,25 @@ def _schema_errors(stack: Stack, e: Envelope) -> list[str]:
     return [str(err.message) for v in validators for err in v.iter_errors(record)]
 
 
-# ----- the passes' facts ------------------------------------------------------------------
+# ----- the reads, and what explains each difference -------------------------------------
 
-
-class EndKind(StrEnum):
-    """What ended a claim, as the step read it."""
-
-    EXIT = "the worker's exit"
-    ERROR_EXIT = "the worker's error exit"
-    RELEASE = "a third party's release"
-    ATTRIBUTED_DEATH = "an attributed death report"
-    NOTHING = "nothing"
-
-
-@dataclass(frozen=True)
-class Facts:
-    """What the passes decided for one run, by 0.3.0 seq unless named otherwise.
-    The measurements read the 0.4.0 rows; these say why."""
-
-    numbering: Mapping[int, int]  # each input record the output keeps -> its new seq
-    original: Mapping[int, int]  # the inverse
-    commit_at: Mapping[int, CommitRef]  # a commit's new seq -> its pass-3 identity
-    commits: Mapping[CommitRef, Commit]
-    committed: Mapping[int, CommitRef]  # a value -> the commit holding it
-    left: Mapping[int, Uncommitted]  # a value -> why no commit holds it
-    first: Mapping[int, int]  # a claim -> its first commit's old step
-    beats: Mapping[CommitRef, int]  # a commit -> the beat that decides candidacy
-    order: Mapping[int, int]  # a claim -> its index in claim order
-    resume: Mapping[int, ResumeFrom]
-    ends: Mapping[int, EndKind]
-
-    def earlier_at(self, claim: int, step: int) -> list[int]:
-        """The deciding beats of the commits at ``step`` of the claims before
-        ``claim``. A commit is a candidate for ``claim`` exactly when its
-        deciding beat precedes the claim's ``started`` (M1's candidacy rule): its
-        own heartbeat when real, else the real heartbeat before it in its claim
-        (``Synthetic.previous``), as the step's ``_beaten`` reads it. Asked only
-        of a claim M1 called parentless (``_parentless``)."""
-        i = self.order[claim]
-        return [
-            beat
-            for ref, beat in self.beats.items()
-            if ref.step == step and self.order[ref.claim] < i
-        ]
-
-
-def facts_of(passes: Passes) -> Facts:
-    numbering = {k.seq: n for k, n in passes.numbering.items() if isinstance(k, Input)}
-    commit_at: dict[int, CommitRef] = {}
-    commits: dict[CommitRef, Commit] = {}
-    committed: dict[int, CommitRef] = {}
-    first: dict[int, int] = {}
-    beats: dict[CommitRef, int] = {}
-    for c in passes.synthesis.claims:
-        claim = c.claim.started.seq
-        if c.commits:
-            first[claim] = c.commits[0].step
-        for k in c.commits:
-            ref = CommitRef(claim, k.step)
-            commits[ref] = k
-            match k.origin:
-                case Real(beat=beat) | Synthetic(previous=beat):
-                    beats[ref] = beat.seq
-                case _:
-                    assert_never(k.origin)
-            commit_at[passes.numbering[passes.placement.commits[ref]]] = ref
-            for v in k.values:
-                committed[v] = ref
-    ends: dict[int, EndKind] = {}
-    for claim, end in passes.classification.ends.items():
-        match end:
-            case _Exit(stop):
-                ends[claim] = EndKind.EXIT if stop.error is None else EndKind.ERROR_EXIT
-            case _Release():
-                ends[claim] = EndKind.RELEASE
-            case _:
-                assert_never(end)
-    for d in passes.reports.deaths.values():
-        ends[d.death.claim] = EndKind.ATTRIBUTED_DEATH
-    return Facts(
-        numbering=numbering,
-        original={n: s for s, n in numbering.items()},
-        commit_at=commit_at,
-        commits=commits,
-        committed=committed,
-        left={x.value.seq: x.why for x in passes.synthesis.uncommitted},
-        first=first,
-        beats=beats,
-        order={c.started.seq: i for i, c in enumerate(passes.attribution.claims)},
-        resume=passes.linkage.resume_from,
-        ends=ends,
-    )
-
-
-def _rows_0_4_0(passes: Passes) -> list[Row]:
-    """The 0.4.0 rows, as ``transform`` writes the passes' records."""
-    return [step04.write(o) for o in passes.outs]
-
-
-# ----- chains: the count, and what shifts it ----------------------------------------------
-
-
-class Chain(NamedTuple):
-    """A node's chain to its root: ``commits``, its ``Commits()``; ``step``, its old
-    step (an exit's is its parent's); ``root``, its root commit's old step;
-    ``classes``, the named rules that put its count below its old step + 1; and
-    ``sound``, whether its old steps rise by one but at trailing gaps."""
-
-    commits: int
-    step: int
-    root: int
-    classes: frozenset[P3Class]
-    sound: bool
-
-
-_TRAILING = (Place.BEFORE_A_CLEAN_EXIT, Place.RESUMED_FROM)
-
-# The empty lineage: no commit, so a count of 0, at step -1, the step before a
-# fresh chain's first. An exit with no parent (a claim that committed nothing
-# and resumed from nothing) is its only node.
-_EMPTY = Chain(commits=0, step=-1, root=0, classes=frozenset(), sound=True)
-
-
-def _parentless(ref: CommitRef, facts: Facts) -> P3Class | None:
-    """THE PARENTLESS RESUME (§7 M1; P3's "a parentless resume"): a claim's first
-    commit above old step 0 with no parent counts too few. Tested here, not
-    taken from M1's verdict:
-
-    - PARENTLESS when no earlier claim holds a commit at the step below;
-    - PARENTLESS_BY_CANDIDACY (M1's candidacy rule, PROVISIONAL ruling of Task
-      5) when earlier claims hold one, but every one is decided by a beat at or
-      after the claim's ``started``, so none is a candidate: a displaced
-      worker's checkpoint (the step's known limit);
-    - None when a candidate exists, or M1 did not call the claim parentless: no
-      rule explains the root, and what depends on it reads unattributed."""
-    if not isinstance(facts.resume[ref.claim], Parentless):
-        return None
-    beats = facts.earlier_at(ref.claim, ref.step - 1)
-    if not beats:
-        return P3Class.PARENTLESS
-    if all(beat >= ref.claim for beat in beats):  # the claim's seq is its started's
-        return P3Class.PARENTLESS_BY_CANDIDACY
-    return None
-
-
-def _root(ref: CommitRef, facts: Facts) -> frozenset[P3Class] | None:
-    """A chain's root commit: at old step 0, a fresh start, which shifts no
-    count; above it, a parentless resume (``_parentless``), or None when no rule
-    explains it."""
-    if ref.step == 0:
-        return frozenset()
-    cls = _parentless(ref, facts)
-    return None if cls is None else frozenset({cls})
-
-
-def _chain(up: Chain, ref: CommitRef, facts: Facts) -> Chain:
-    """THE TRAILING GAP (the step's known limit: "M5 synthesizes a trailing step
-    only where values say it was reached"): a commit more than one old step
-    above its parent is sound only as a trailing step M5 synthesized."""
-    gap = ref.step - up.step
-    origin = facts.commits[ref].origin
-    classes, sound = up.classes, up.sound
-    if gap > 1 and isinstance(origin, Synthetic) and origin.place in _TRAILING:
-        classes = classes | {P3Class.TRAILING_GAP}
-    elif gap != 1:
-        sound = False
-    return Chain(up.commits + 1, ref.step, up.root, classes, sound)
-
-
-def chains_of(env04: Sequence[Envelope], facts: Facts) -> dict[int, Chain]:
-    """Each node's chain, by its new seq, in one forward pass: a parent precedes
-    its child (§7 "Also"), and a node whose parent does not has none. A node with
-    no parent starts one: a commit its own, an exit the empty chain."""
-    out: dict[int, Chain] = {}
-    for e in env04:
-        if e.topic not in (_COMMIT, _STOPPED):
-            continue
-        parent = e.body.get("parent")
-        up = _EMPTY if parent is None else out.get(parent)
-        if e.topic == _STOPPED:
-            if up is not None:
-                out[e.seq] = up  # an exit adds no commit
-            continue
-        ref = facts.commit_at[e.seq]
-        if parent is None:
-            root = _root(ref, facts)
-            sound = root is not None
-            out[e.seq] = Chain(1, ref.step, ref.step, root or frozenset(), sound)
-        elif up is not None:
-            out[e.seq] = _chain(up, ref, facts)
-    return out
-
-
-# ----- P1 -------------------------------------------------------------------------------
-
-
-def p1(
-    env04: Sequence[Envelope], facts: Facts, chains: Mapping[int, Chain]
-) -> P1Result:
-    """§7 P1: each real commit linked back to old step 0 counts its step + 1.
-    Every real commit is in one bucket: parentless (a sound chain rooted above
-    old step 0, counted by its class), or checked, which is passed and failed."""
-    checked = passed = 0
-    failures: Counter[str] = Counter()
-    parentless: Counter[str] = Counter()
-    failing: list[P1Failing] = []
-    for e in env04:
-        if e.topic != _COMMIT:
-            continue
-        ref = facts.commit_at[e.seq]
-        origin = facts.commits[ref].origin
-        if isinstance(origin, Synthetic):
-            continue
-        chain = chains.get(e.seq)
-        if chain is not None and chain.root > 0 and chain.sound:
-            for c in chain.classes & _PARENTLESS:
-                parentless[c] += 1
-            continue
-        checked += 1
-        if chain is not None and chain.sound and chain.commits == ref.step + 1:
-            passed += 1
-            continue
-        if chain is None:
-            kind = P1Failure.NO_CHAIN
-        elif not chain.sound:
-            kind = P1Failure.UNSOUND_CHAIN
-        else:  # a sound chain from old step 0 miscounts only across a trailing gap
-            assert P3Class.TRAILING_GAP in chain.classes, f"{ref} miscounts"
-            kind = P1Failure.TRAILING_GAP
-        failures[kind] += 1
-        count = None if chain is None else chain.commits
-        failing.append(P1Failing(origin.beat.seq, ref.step, count, kind))
-    return P1Result(checked, passed, dict(failures), dict(parentless), failing)
-
-
-# ----- P2 -------------------------------------------------------------------------------
-
-
-def _positional_claims(env03: Sequence[Envelope]) -> dict[int, int]:
-    """Each value's claim by pass 1's positional rule: the latest ``started``
-    before it. A value before every claim has none."""
-    out: dict[int, int] = {}
-    claim: int | None = None
-    for e in env03:
-        if e.topic == _STARTED:
-            claim = e.seq
-        elif e.topic == _VALUE and claim is not None:
-            out[e.seq] = claim
-    return out
-
-
-def _holders(env04: Sequence[Envelope]) -> dict[int, list[int]]:
-    """Each committed value's new seq -> the nodes whose ``values`` name it."""
-    out: dict[int, list[int]] = {}
-    for e in env04:
-        if e.topic in (_COMMIT, _STOPPED) and isinstance(e.body.get("values"), list):
-            for v in e.body["values"]:
-                out.setdefault(v, []).append(e.seq)
-    return out
-
-
-def _unreached(end: EndKind) -> tuple[P2Exception, P3Class] | None:
-    """§7 M5: "a trailing step that no such claim needs stays uncommitted", by
-    what ended its claim. A clean exit vouches for its trailing steps, so none of
-    its is unreached."""
-    match end:
-        case EndKind.ERROR_EXIT:
-            return P2Exception.ERROR_EXIT, P3Class.ERROR_EXIT
-        case EndKind.RELEASE | EndKind.ATTRIBUTED_DEATH | EndKind.NOTHING:
-            return P2Exception.UNREACHED_UNENDED, P3Class.UNREACHED_UNENDED
-        case EndKind.EXIT:
-            return None
-        case _:
-            assert_never(end)
-
-
-def _left_p2(why: Uncommitted, end: EndKind) -> P2Exception | None:
-    """P2's exceptions for a value the passes left uncommitted: §7 P2's two
-    (above the exit's last step; an error exit's unreached trailing step), and the
-    ledger's (M4; before every claim; loading; an unreached trailing step of a
-    claim a third party released or nothing ended)."""
-    match why:
-        case Uncommitted.ABOVE_THE_LAST_STEP:
-            return P2Exception.ABOVE_THE_LAST_STEP
-        case Uncommitted.AFTER_ITS_END:
-            return P2Exception.AFTER_ITS_END
-        case Uncommitted.BEFORE_EVERY_CLAIM:
-            return P2Exception.BEFORE_EVERY_CLAIM
-        case Uncommitted.LOADING:
-            return P2Exception.LOADING
-        case Uncommitted.UNREACHED:
-            unreached = _unreached(end)
-            return None if unreached is None else unreached[0]
-        case Uncommitted.STEPLESS:
-            return None  # a value with a step is never stepless
-        case _:
-            assert_never(why)
-
-
-def _left_p3(why: Uncommitted, end: EndKind) -> P3Class | None:
-    """P3's classes for an old value the passes left uncommitted (``P3Class``). A
-    value before every claim has none yet (the ledger, Task 3)."""
-    match why:
-        case Uncommitted.ABOVE_THE_LAST_STEP:
-            return P3Class.ABOVE
-        case Uncommitted.AFTER_ITS_END:
-            return P3Class.M4
-        case Uncommitted.LOADING:
-            return P3Class.LOADING
-        case Uncommitted.UNREACHED:
-            unreached = _unreached(end)
-            return None if unreached is None else unreached[1]
-        case Uncommitted.BEFORE_EVERY_CLAIM | Uncommitted.STEPLESS:
-            return None
-        case _:
-            assert_never(why)
-
-
-def p2(
-    env03: Sequence[Envelope],
-    facts: Facts,
-    holders: Mapping[int, list[int]],
-) -> P2Result:
-    """§7 P2, read from the 0.4.0 rows: the commit naming each value with a step,
-    against its positional claim and its old step."""
-    claims = _positional_claims(env03)
-    checked = at_step = 0
-    exceptions: Counter[str] = Counter()
-    failures: Counter[str] = Counter()
-    failing: list[P2Failing] = []
-    for e in env03:
-        if e.topic != _VALUE or not observables.is_step(e.body.get("step")):
-            continue
-        s: int = e.body["step"]
-        checked += 1
-        claim = claims.get(e.seq)
-        nodes = holders.get(facts.numbering[e.seq], [])
-        exception: P2Exception | None = None
-        failure: P2Failure | None = None
-        if len(nodes) > 1:
-            failure = P2Failure.COMMITTED_TWICE
-        elif nodes:
-            ref = facts.commit_at.get(nodes[0])
-            if ref is None:
-                failure = P2Failure.BY_AN_EXIT
-            elif ref.claim != claim:
-                failure = P2Failure.ANOTHER_CLAIMS
-            elif ref.step == s:
-                at_step += 1
-                continue
-            elif s < ref.step == facts.first[ref.claim]:
-                exception = P2Exception.LEADING
-            else:
-                failure = P2Failure.ANOTHER_STEP
-        else:
-            why = facts.left.get(e.seq)
-            end = (
-                EndKind.NOTHING
-                if claim is None
-                else facts.ends.get(claim, EndKind.NOTHING)
-            )
-            exception = None if why is None else _left_p2(why, end)
-            if exception is None:
-                failure = P2Failure.UNCOMMITTED_WITHOUT_A_REASON
-        if exception is not None:
-            exceptions[exception] += 1
-        else:
-            assert failure is not None
-            failures[failure] += 1
-            failing.append(P2Failing(e.seq, s, failure))
-    return P2Result(checked, at_step, dict(exceptions), dict(failures), failing)
-
-
-# ----- P3 -------------------------------------------------------------------------------
+# The divergences that change each read (the step's DIVERGENCES, §7).
+_SERIES = (
+    step04.UNHELD_VALUE,
+    step04.RECOUNTED_VALUE,
+    step04.OFF_HEAD_VALUE,
+    step04.SEVERAL_VALUES,
+)
+_VERDICT = (
+    step04.THIRD_PARTY_RELEASE,
+    step04.THIRD_PARTY_NOTE,
+    step04.THIRD_PARTY_REAP,
+    step04.FENCED_EXIT,
+    step04.ATTRIBUTED_DEATH,
+    step04.UNATTRIBUTED_REAP,
+)
+_STOPS = (step04.EXIT_HONORED,)
+UNATTRIBUTED = "unattributed"
 
 
 def _canonical(value: Any) -> str:
@@ -1284,240 +708,55 @@ class Old(NamedTuple):
 
 
 class Element(NamedTuple):
-    """A new read's element: the value's 0.3.0 seq, its 0.4.0 seq, the node that
-    commits it, and its value."""
+    """A new read's element: the value's 0.3.0 seq and its value."""
 
     old: int
-    new: int
-    node: int
     value: Any
 
 
-class Part(NamedTuple):
-    """What explains one part of a differing cell: the classes, and whether
-    every component of the part is explained."""
+class OldReads(NamedTuple):
+    """The 0.3.0 reads: the series, the verdict and the pending stops."""
 
-    classes: frozenset[P3Class]
-    explained: bool
-    fate: str
-
-
-class Lineage(NamedTuple):
-    """The head's lineage, for the values off it: its commits' old steps, root
-    first; the old steps inside its trailing gaps; its root's class; and whether
-    its chain is sound."""
-
-    nodes: frozenset[int]
-    steps: tuple[int, ...]
-    gaps: frozenset[int]
-    root: frozenset[P3Class]
-    sound: bool
+    series: dict[str, dict[int, Any]]
+    verdict: VerdictValue
+    stops: list[Envelope]
 
 
-class Run(NamedTuple):
-    """One run's facts for P3."""
-
-    facts: Facts
-    chains: Mapping[int, Chain]
-    holders: Mapping[int, list[int]]
-    steps: Mapping[int, int]  # a value's 0.3.0 seq -> its old step
-    claims: Mapping[int, int]  # a value's 0.3.0 seq -> its positional claim
-    lineage: Lineage
-    on: Mapping[int, int]  # a value on the lineage, by its new seq -> its node
-
-
-def _lineage_of(
-    nodes: Sequence[int], facts: Facts, chains: Mapping[int, Chain]
-) -> Lineage:
-    commits = [n for n in nodes if n in facts.commit_at]
-    steps = tuple(facts.commit_at[n].step for n in commits)
-    gaps: set[int] = set()
-    for a, b in zip(steps, steps[1:]):
-        gaps.update(range(a + 1, b))
-    root = chains.get(commits[0]) if commits else None
-    head = chains.get(commits[-1]) if commits else None
-    return Lineage(
-        nodes=frozenset(nodes),
-        steps=steps,
-        gaps=frozenset(gaps),
-        root=frozenset() if root is None else root.classes,
-        sound=head is None or head.sound,
-    )
-
-
-def _shift(run: Run, old: int, step: int, node: int) -> Part:
-    """Why a value on the lineage sits at a count other than its old step:
-    LEADING when its commit is its own claim's first, above it (§7 M5's last
-    sentence), and the chain's classes when the count is below the commit's old
-    step (``_root``, ``_chain``)."""
-    ref = run.facts.commit_at[node]
-    chain = run.chains[node]
-    classes: set[P3Class] = set()
-    explained = True
-    if ref.step != step:
-        own = run.claims.get(old) == ref.claim  # pass 1 gave the value this claim
-        if own and step < ref.step == run.facts.first[ref.claim]:
-            classes.add(P3Class.LEADING)
-        else:
-            explained = False
-    if chain.commits - 1 != ref.step:
-        if chain.sound and chain.classes:
-            classes |= chain.classes
-        else:
-            explained = False
-    fate = f"on the lineage at {chain.commits - 1}, committed by {tuple(ref)}"
-    return Part(frozenset(classes), explained and bool(classes), fate)
-
-
-def _off_the_lineage(run: Run, step: int) -> frozenset[P3Class]:
-    """§7 P3, "cells beyond the head's lineage" and "steps the lineage
-    revisited": a value committed off the head's lineage at an old step past
-    every one the lineage reached is BEYOND it, and one at a step it reached on
-    its own branch was REVISITED. Below a parentless root the lineage holds no
-    step (``_root``), and in a trailing gap none (``_chain``)."""
-    lin = run.lineage
-    if not lin.sound:
-        return frozenset()
-    if not lin.steps or step > lin.steps[-1]:
-        return frozenset({P3Class.BEYOND})
-    if step in lin.steps:
-        return frozenset({P3Class.REVISITED})
-    if step < lin.steps[0]:
-        return lin.root
-    if step in lin.gaps:
-        return frozenset({P3Class.TRAILING_GAP})
-    return frozenset()
-
-
-def _agrees(run: Run, old: int, node: int) -> bool:
-    """The rows' committing node is a commit, the one the passes gave the
-    value."""
-    ref = run.facts.commit_at.get(node)
-    return ref is not None and run.facts.committed.get(old) == ref
-
-
-def _old_part(run: Run, o: Old, step: int) -> Part:
-    """Why the old read's value is not the new cell's only element: where it went,
-    by the 0.4.0 rows and the head's lineage, and the rule that put it there."""
-    new = run.facts.numbering[o.seq]
-    node = run.on.get(new)
-    if node is not None:
-        if not _agrees(run, o.seq, node):
-            return Part(frozenset(), False, "on the lineage, against the passes")
-        if run.chains[node].commits - 1 == step:
-            # §7 P3, "nodes holding several values": the cell differs, so others
-            # are there, and they are this commit's (``p3``)
-            return Part(frozenset({P3Class.SEVERAL}), True, "at its step, with others")
-        return _shift(run, o.seq, step, node)
-    nodes = run.holders.get(new, [])
-    if len(nodes) == 1:
-        if not _agrees(run, o.seq, nodes[0]):
-            return Part(frozenset(), False, "off the lineage, against the passes")
-        classes = _off_the_lineage(run, step)
-        ref = run.facts.commit_at[nodes[0]]
-        return Part(
-            classes, bool(classes), f"off the lineage, committed by {tuple(ref)}"
-        )
-    if nodes:
-        return Part(frozenset(), False, f"committed by {len(nodes)} nodes")
-    why = run.facts.left.get(o.seq)
-    if why is None:
-        return Part(
-            frozenset(), False, "uncommitted by the rows, committed by the passes"
-        )
-    claim = run.claims.get(o.seq)
-    end = (
-        EndKind.NOTHING if claim is None else run.facts.ends.get(claim, EndKind.NOTHING)
-    )
-    cls = _left_p3(why, end)
-    fate = f"uncommitted: {why.value} (its claim's end: {end.value})"
-    return Part(frozenset() if cls is None else frozenset({cls}), cls is not None, fate)
-
-
-def _new_part(run: Run, e: Element, step: int, o: Old | None, n: int) -> Part:
-    """Why a new element other than the old value is at the cell: the lineage's
-    own value at its old step, when the old read has a value there whose part
-    says why it is not alone; else moved here (``_shift``); and, beside other
-    elements, SEVERAL."""
-    if not _agrees(run, e.old, e.node):
-        return Part(frozenset(), False, "on the lineage, against the passes")
-    classes: set[P3Class] = set()
-    if run.steps[e.old] == step:
-        explained, fate = o is not None, "at its own step"
+def old_reads(ch03: MemoryChannel) -> OldReads:
+    """A verdict that raises ``MalformedRecordError`` is a value."""
+    try:
+        result = observables.peek_terminal(ch03)
+    except observables.MalformedRecordError as exc:
+        verdict = VerdictValue("raised", [], _raised(exc))
     else:
-        moved = _shift(run, e.old, run.steps[e.old], e.node)
-        classes |= moved.classes
-        explained, fate = moved.explained, moved.fate
-    if n > 1:
-        classes.add(P3Class.SEVERAL)  # §7 P3, "nodes holding several values"
-    return Part(frozenset(classes), explained, fate)
-
-
-def p3(
-    run: Run,
-    old_cells: Mapping[tuple[str, int], Old],
-    new_cells: Mapping[tuple[str, int], list[Element]],
-) -> P3Result:
-    """§7 P3, cell by cell, by attribution (the module docstring).
-
-    ONE CELL, ONE COMMIT. A lineage's commits each add one to its count, so the
-    elements at one cell that pass ``_agrees`` are one commit's: an exit shares
-    its parent's count, but an element an exit holds fails ``_agrees``. So a cell
-    holding several elements is a node holding several values (§7 P3)."""
-    equal = other_record = 0
-    by_class: Counter[str] = Counter()
-    by_set: Counter[str] = Counter()
-    unattributed = 0
-    differing: list[Cell] = []
-    keys = sorted(old_cells.keys() | new_cells.keys())
-    for name, step in keys:
-        o = old_cells.get((name, step))
-        elements = new_cells.get((name, step), [])
-        if (
-            o is not None
-            and len(elements) == 1
-            and _canonical(elements[0].value) == _canonical(o.value)
-        ):
-            equal += 1
-            other_record += elements[0].old != o.seq
-            continue
-        parts: list[tuple[int, Part]] = []
-        if o is not None:
-            parts.append((o.seq, _old_part(run, o, step)))
-        for e in elements:
-            if o is None or e.old != o.seq:
-                parts.append((e.old, _new_part(run, e, step, o, len(elements))))
-        classes: set[str] = set()
-        for _, p in parts:
-            classes |= p.classes
-        unexplained = [Unexplained(s, p.fate) for s, p in parts if not p.explained]
-        if unexplained or not classes:
-            classes.add(P3Class.UNATTRIBUTED)
-            unattributed += 1
-        for c in classes:
-            by_class[c] += 1
-        by_set["+".join(sorted(classes))] += 1
-        differing.append(
-            Cell(
-                name,
-                step,
-                sorted(classes),
-                None if o is None else o.seq,
-                [e.old for e in elements],
-                unexplained,
-            )
+        verdict = (
+            VerdictValue("none", [], None)
+            if result is None
+            else VerdictValue("outcomes", [str(result.outcome)], None)
         )
-    return P3Result(
-        not_compared=None,
-        cells=len(keys),
-        equal=equal,
-        equal_other_record=other_record,
-        differing=len(differing),
-        by_class=dict(by_class),
-        by_class_set=dict(by_set),
-        unattributed=unattributed,
-        differing_cells=differing,
+    return OldReads(
+        observables.value_series(ch03), verdict, observables.undischarged_stops(ch03)
     )
+
+
+class NewVerdict(NamedTuple):
+    verdict: VerdictValue
+    stops: list[int]
+
+
+def new_verdict(ch04: MemoryChannel) -> NewVerdict:
+    """A verdict that raises ``MalformedRecordError`` is a value."""
+    try:
+        result = reads.verdict(ch04)
+    except observables.MalformedRecordError as exc:
+        verdict = VerdictValue("raised", [], _raised(exc))
+    else:
+        verdict = (
+            VerdictValue("none", [], None)
+            if result is None
+            else VerdictValue("outcomes", sorted(str(o) for o in result.outcomes), None)
+        )
+    return NewVerdict(verdict, reads.undischarged_stops(ch04))
 
 
 def _old_cells(
@@ -1542,213 +781,121 @@ def _old_cells(
     return cells
 
 
-# ----- P4 -------------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class VerdictContext:
-    """What P4's rules read: the latest claim (0.3.0 seq), the record 0.3.0's
-    verdict rested on, and the passes."""
-
-    latest: int | None
-    record: Envelope | None
-    passes: Passes
-
-    def becomes(self) -> object | None:
-        """What the record 0.3.0's verdict rested on became, when it is a third
-        party's stop."""
-        if self.record is None or self.record.topic != _STOPPED:
-            return None
-        report = self.passes.reports.stops.get(self.record.seq)
-        return None if report is None else report.becomes
-
-
-def _release(x: VerdictContext) -> bool:
-    """§7, third-party stops: the first ``stopped`` naming the claim is a third
-    party's release (M10's body, the runner's backstop, or what the rule for
-    lone stops attributes), and becomes a ``supervisor.died``."""
-    if x.latest is None:
-        return False
-    return isinstance(x.passes.classification.ends.get(x.latest), _Release)
-
-
-def _later_stop(x: VerdictContext) -> bool:
-    """§7, the later-stop rule (Review Focus 4): a ``stopped`` after the first
-    naming the same claim is a third party's, a death only when its ``error`` is
-    set, otherwise only its withdrawals. 0.3.0's verdict read the newest. A
-    backstop's later stop is ruling c′'s, not this."""
-    later = {s.stop.seq for s in x.passes.classification.later}
-    return (
-        x.record is not None
-        and x.record.seq in later
-        and not isinstance(x.becomes(), Reap)
-    )
-
-
-def _backstop_terminated(x: VerdictContext) -> bool:
-    """Owner ruling c′: a backstop that ends no claim, later or claimless,
-    becomes a ``supervisor.terminated``. A claimed run's verdict no longer rests
-    on it; a never-claimed run's rests on the terminated, so a signal reads
-    killed where 0.3.0 read errored."""
-    if isinstance(x.becomes(), Reap):
-        return True
-    return x.latest is None and any(
-        isinstance(r.becomes, Reap) for r in x.passes.reports.stops.values()
-    )
-
-
-def _claimless(x: VerdictContext) -> bool:
-    """§7: a ``stopped`` naming no claim becomes only its withdrawals; a run
-    whose only terminal was one loses its verdict."""
-    claimless = {s.seq for s in x.passes.classification.claimless}
-    return (
-        x.latest is None
-        and x.record is not None
-        and x.record.seq in claimless
-        and isinstance(x.becomes(), Dropped)
-    )
-
-
-def _attributed_death(x: VerdictContext) -> bool:
-    """§7, attributed death reports: the claim 0.3.0 saw ended only by its
-    launch's ``terminated`` gets a ``died`` from it; an exit 0 reads lost where
-    0.3.0 read completed."""
-    return x.latest is not None and any(
-        d.death.claim == x.latest for d in x.passes.reports.deaths.values()
-    )
-
-
-def _wrapper(x: VerdictContext) -> bool:
-    """§7: a launch whose handle differs from its claim's, compared whole, gets
-    no death report (a wrapper's, or a pid on another host: the ledger), so the
-    run's verdict changes from the wrapper's exit to none."""
-    r = x.record
-    if x.latest is None or r is None or r.topic != "launcher.terminated":
-        return False
-    claim = next(c for c in x.passes.log.claims if c.seq == x.latest)
-    launched = [ln for ln in x.passes.log.launched if ln.launch_id == r.request_id]
-    return len(launched) == 1 and launched[0].handle != claim.handle
-
-
-_P4_RULES = (
-    (P4Class.RELEASE, _release),
-    (P4Class.LATER_STOP, _later_stop),
-    (P4Class.BACKSTOP_TERMINATED, _backstop_terminated),
-    (P4Class.CLAIMLESS, _claimless),
-    (P4Class.ATTRIBUTED_DEATH, _attributed_death),
-    (P4Class.WRAPPER, _wrapper),
-)
-
-
-class OldReads(NamedTuple):
-    """The 0.3.0 reads: the series, the verdict and the record it rests on (the
-    one ``peek_terminal`` reads, through the Watcher's own hook,
-    ``_verdict_record``), the pending stops, and the latest claim."""
-
-    series: dict[str, dict[int, Any]]
-    verdict: VerdictValue
-    record: Envelope | None
-    stops: list[Envelope]
-    latest: Envelope | None
-
-
-def old_reads(ch03: MemoryChannel) -> OldReads:
-    """A verdict that raises ``MalformedRecordError`` is a value (P4)."""
-    try:
-        record = observables._verdict_record(ch03)
-    except observables.MalformedRecordError:
-        record = None
-    try:
-        result = observables.peek_terminal(ch03)
-    except observables.MalformedRecordError as exc:
-        verdict = VerdictValue("raised", [], _raised(exc))
-    else:
-        verdict = (
-            VerdictValue("none", [], None)
-            if result is None
-            else VerdictValue("outcomes", [str(result.outcome)], None)
-        )
-    return OldReads(
-        observables.value_series(ch03),
-        verdict,
-        record,
-        observables.undischarged_stops(ch03),
-        observables.latest_episode(ch03),
-    )
-
-
-class NewVerdict(NamedTuple):
-    verdict: VerdictValue
-    stops: list[int]
-
-
-def new_verdict(ch04: MemoryChannel) -> NewVerdict:
-    """A verdict that raises ``MalformedRecordError`` is a value (P4)."""
-    try:
-        result = reads.verdict(ch04)
-    except observables.MalformedRecordError as exc:
-        verdict = VerdictValue("raised", [], _raised(exc))
-    else:
-        verdict = (
-            VerdictValue("none", [], None)
-            if result is None
-            else VerdictValue("outcomes", sorted(str(o) for o in result.outcomes), None)
-        )
-    return NewVerdict(verdict, reads.undischarged_stops(ch04))
-
-
-class NewSeries(NamedTuple):
-    """The 0.4.0 reads at ``LatestClaimHead``, the head resolved once: its
-    lineage, root first, and each name's series."""
-
-    head: reads.Head
-    nodes: list[int]
-    series: dict[str, list[reads.Element]]
-
-
-def new_series(ch04: MemoryChannel, names: set[str]) -> NewSeries:
+def _new_cells(
+    ch04: MemoryChannel, env03: Sequence[Envelope], env04: Sequence[Envelope]
+) -> dict[tuple[str, int], list[Element]]:
+    """The 0.4.0 series at ``LatestClaimHead``, each element at its cell,
+    ``(name, count(Commits(), node) - 1)``, by its 0.3.0 seq: the step writes
+    every value where it stood, in order, so the k-th value of each log is one
+    record."""
     head = reads.LatestClaimHead().resolve(ch04)
-    return NewSeries(
-        head,
-        reads.lineage(ch04, head=head),
-        {name: reads.series(ch04, name, head=head) for name in sorted(names)},
+    nodes = reads.lineage(ch04, head=head)
+    commits = {e.seq for e in env04 if e.topic == _COMMIT}
+    count: dict[int, int] = {}
+    running = 0
+    for n in nodes:
+        running += n in commits
+        count[n] = running
+    old_of = dict(
+        zip(
+            (e.seq for e in env04 if e.topic == _VALUE),
+            (e.seq for e in env03 if e.topic == _VALUE),
+            strict=True,
+        )
+    )
+    names = {e.name for e in env04 if e.topic == _VALUE and e.name is not None}
+    cells: dict[tuple[str, int], list[Element]] = {}
+    for name in sorted(names):
+        for el in reads.series(ch04, name, head=head):
+            cells.setdefault((name, count[el.node] - 1), []).append(
+                Element(old_of[el.seq], el.value)
+            )
+    return cells
+
+
+def series_result(
+    old: Mapping[tuple[str, int], Old],
+    new: Mapping[tuple[str, int], list[Element]],
+    fired: Mapping[str, tuple[int, ...]],
+) -> SeriesResult:
+    """Each cell either read: equal when the new read holds exactly one element
+    there, equal in value to the old read's. A differing cell is explained by the
+    series divergences whose sites hold the old value (it left the cell) or a new
+    element that is not it (it came in), else it is unattributed."""
+    sites = {d.name: set(fired[d.name]) for d in _SERIES}
+    equal = differing = unattributed = 0
+    by: Counter[str] = Counter()
+    cells: list[Cell] = []
+    for key in sorted(old.keys() | new.keys(), key=repr):
+        o, n = old.get(key), new.get(key, [])
+        if (
+            o is not None
+            and len(n) == 1
+            and _canonical(n[0].value) == _canonical(o.value)
+        ):
+            equal += 1
+            continue
+        differing += 1
+        why: set[str] = set()
+        inside = {e.old for e in n}
+        if o is not None and o.seq not in inside:
+            why |= {d for d in (x.name for x in _SERIES) if o.seq in sites[d]}
+        for e in n:
+            if o is None or e.old != o.seq:
+                why |= {d for d in (x.name for x in _SERIES) if e.old in sites[d]}
+        if len(n) > 1:
+            why |= {
+                step04.SEVERAL_VALUES.name
+                for e in n
+                if e.old in sites[step04.SEVERAL_VALUES.name]
+            }
+        found = sorted(why) or [UNATTRIBUTED]
+        by.update(found)
+        unattributed += not why
+        cells.append(
+            Cell(key[0], key[1], found, None if o is None else o.seq, sorted(inside))
+        )
+    return SeriesResult(
+        None,
+        len(old.keys() | new.keys()),
+        equal,
+        differing,
+        dict(by),
+        unattributed,
+        cells,
     )
 
 
-def p4(
+def _explained(
+    same: bool, fired: Mapping[str, tuple[int, ...]], which: Sequence[Any]
+) -> list[str]:
+    if same:
+        return []
+    return [d.name for d in which if fired[d.name]] or [UNATTRIBUTED]
+
+
+def compare(
     old: OldReads,
     new: NewVerdict,
+    series: SeriesResult,
     env04: Sequence[Envelope],
-    passes: Passes,
-    facts: Facts,
-) -> P4Result:
-    """§7 P4: the verdict's outcomes and the stop fold's ids. A differing verdict
-    takes every rule of ``_P4_RULES`` that holds, or ``unattributed``; no rule
-    changes the stop fold's ids. The ids are compared as sets; each is shown
-    with its 0.4.0 seq, since both folds keep the newest send of an id."""
+    fired: Mapping[str, tuple[int, ...]],
+) -> Reads:
+    """The verdict's outcomes (0.3.0's one taken as a one-element set) and the
+    pending stops' ids, each difference explained by the divergences that change
+    that read and fired in the run, else unattributed."""
     same = old.verdict.same(new.verdict)
-    classes: list[str] = []
-    if not same:
-        latest = None if old.latest is None else old.latest.seq
-        x = VerdictContext(latest, old.record, passes)
-        classes = [c for c, rule in _P4_RULES if rule(x)] or [P4Class.UNATTRIBUTED]
-    verdict = P4Verdict(old.verdict, new.verdict, same, classes)
-    by_seq = {e.seq: e for e in env04}
-    old_stops = {
-        e.request_id: facts.numbering[e.seq]
-        for e in old.stops
-        if e.request_id is not None
-    }
-    new_stops: dict[str, int] = {}
-    for seq in new.stops:
-        rid = by_seq[seq].request_id
-        assert rid is not None, f"the pending stop at {seq} has no id"
-        new_stops[rid] = seq
-    equal = old_stops.keys() == new_stops.keys()
-    stops = P4Stops(
-        old_stops, new_stops, equal, [] if equal else [P4Class.UNATTRIBUTED]
+    verdict = VerdictResult(
+        old.verdict, new.verdict, same, _explained(same, fired, _VERDICT)
     )
-    return P4Result(verdict, stops)
+    by_seq = {e.seq: e for e in env04}
+    old_ids = sorted(e.request_id for e in old.stops if e.request_id is not None)
+    new_ids = sorted(
+        rid for s in new.stops if (rid := by_seq[s].request_id) is not None
+    )
+    equal = old_ids == new_ids
+    stops = StopsResult(old_ids, new_ids, equal, _explained(equal, fired, _STOPS))
+    return Reads(series, verdict, stops)
 
 
 # ----- Also -----------------------------------------------------------------------------
@@ -1776,9 +923,9 @@ def also(env04: Sequence[Envelope]) -> Counter[Also]:
             out[after] += 1
 
     for e in env04:
-        if e.topic in (_COMMIT, _HEARTBEAT, _STOPPED, _DIED):
+        if e.topic in (_COMMIT, _HEARTBEAT, _STOPPED, _DIED, _REWIND):
             names(e, "claim_seq", (_STARTED,), Also.CLAIM_AT_OR_AFTER)
-        if e.topic == _STARTED:
+        if e.topic in (_STARTED, _REWIND):
             names(e, "resume_from", _NODES, Also.RESUME_AT_OR_AFTER)
         if e.topic in _NODES:
             names(e, "parent", _NODES, Also.PARENT_AT_OR_AFTER)
@@ -1798,138 +945,6 @@ def also(env04: Sequence[Envelope]) -> Counter[Also]:
     return out
 
 
-# ----- the census -----------------------------------------------------------------------
-
-# The fields 0.3.0 pins as integers, where a whole-number float (3.0) is valid
-# JSON Schema but refused by the step's strict read (progress.md, Task 8).
-_INTEGER_FIELDS = {
-    _HEARTBEAT: ("step", "consumed_seq", "claim_seq"),
-    _STOPPED: ("final_step", "claim_seq"),
-    _VALUE: ("step",),
-    "launcher.terminated": ("exit_code", "signal"),
-}
-
-
-def _read_as(end: End) -> str:
-    """How the step read a claim's end: the worker's exit, or a third party's
-    release."""
-    match end:
-        case _Exit():
-            return "exit"
-        case _Release():
-            return "release"
-        case _:
-            assert_never(end)
-
-
-def _after(seqs: Sequence[int], seq: int) -> int:
-    """How many of the ascending ``seqs`` are above ``seq``."""
-    return len(seqs) - bisect_right(seqs, seq)
-
-
-def census(
-    rows03: Sequence[Row],
-    env03: Sequence[Envelope],
-    passes: Passes | None,
-    facts: Facts | None,
-) -> Census:
-    """The census hooks (the controller's notes for this task): from the 0.3.0
-    rows, lone stops with their signature, whole-number floats, naks without a
-    request id and values without a name; from the passes, when the step ran,
-    the known-limit shapes: a beat after its claim's end, a withdrawal of an id
-    no stop bears, a parentless resume by candidacy."""
-    floats: Counter[str] = Counter()
-    naks = nameless = 0
-    stops: dict[int, list[int]] = {}  # a claim -> the stoppeds naming it
-    beats: dict[int, list[int]] = {}  # a claim -> its heartbeats, ascending
-    values: dict[int, list[int]] = {}  # a claim -> its values (pass 1), ascending
-    latest: int | None = None
-    for e in env03:
-        body: dict[str, Any] = e.body if isinstance(e.body, dict) else {}
-        for f in _INTEGER_FIELDS.get(e.topic, ()):
-            v = body.get(f)
-            if isinstance(v, float) and v.is_integer():
-                floats[f"{e.topic}.{f}"] += 1
-        claim = body.get("claim_seq")
-        named = (
-            claim if isinstance(claim, int) and not isinstance(claim, bool) else None
-        )
-        if e.topic == "lifecycle.nak" and e.request_id is None:
-            naks += 1
-        elif e.topic == _VALUE:
-            nameless += e.name is None
-            if latest is not None:
-                values.setdefault(latest, []).append(e.seq)
-        elif e.topic == _STARTED:
-            latest = e.seq
-        elif e.topic == _STOPPED and named is not None:
-            stops.setdefault(named, []).append(e.seq)
-        elif e.topic == _HEARTBEAT and named is not None:
-            beats.setdefault(named, []).append(e.seq)
-    created = {x.seq: x.created_at for x in rows03}
-    by_seq = {e.seq: e for e in env03}
-    ends = {} if passes is None else passes.classification.ends
-    lone: list[LoneStop] = []
-    for claim, seqs in sorted(stops.items()):
-        if len(seqs) != 1:
-            continue
-        (seq,) = seqs
-        body = by_seq[seq].body
-        malformed = "reason" in body and "completed" not in body
-        error = body.get("error") if isinstance(body.get("error"), str) else None
-        t = body.get("t")
-        lone.append(
-            LoneStop(
-                seq=seq,
-                claim_seq=claim,
-                malformed=malformed,
-                error=error,
-                error_kind=(
-                    "none"
-                    if error is None
-                    else "backstop" if step04._BACKSTOP.fullmatch(error) else "other"
-                ),
-                completed=None if malformed else body.get("completed"),
-                final_step_null=None if malformed else body.get("final_step") is None,
-                honored_empty=not body.get("honored"),
-                t_minus_created_at=(
-                    t - created[seq]
-                    if isinstance(t, int | float) and not isinstance(t, bool)
-                    else None
-                ),
-                beats_after=_after(beats.get(claim, []), seq),
-                values_after=_after(values.get(claim, []), seq),
-                latest_claim=claim == latest,
-                # a lone stop is the first naming its claim, so its end
-                read_as=None if passes is None else _read_as(ends[claim]),
-            )
-        )
-    if passes is None or facts is None:
-        return Census(lone, dict(floats), naks, nameless, None, None, None)
-    end_seq = {c: end.stop.seq for c, end in passes.classification.ends.items()}
-    for terminated, d in passes.reports.deaths.items():
-        end_seq[d.death.claim] = terminated
-    after: Counter[str] = Counter()
-    for b in passes.log.beats:
-        if b.seq > end_seq.get(b.claim_seq, b.seq):
-            after["commit" if b.step is not None else "beat"] += 1
-    borne = {r.request_id for r in passes.log.records if r.topic == "control.stop"}
-    unborne = sum(
-        1
-        for r in passes.reports.stops.values()
-        for i in r.stop.honored
-        if i not in borne
-    )
-    by_candidacy = 0
-    for claim, first in facts.first.items():
-        if first > 0:
-            cls = _parentless(CommitRef(claim, first), facts)
-            by_candidacy += cls is P3Class.PARENTLESS_BY_CANDIDACY
-    return Census(
-        lone, dict(floats), naks, nameless, dict(after), unborne, by_candidacy
-    )
-
-
 # ----- one run ------------------------------------------------------------------------------
 
 
@@ -1937,32 +952,6 @@ def _envelopes(rows: Sequence[Row]) -> list[Envelope]:
     return [
         Envelope(x.seq, x.topic, x.name, x.request_id, json.loads(x.body)) for x in rows
     ]
-
-
-def _new_cells(
-    new: NewSeries, ch04: MemoryChannel, facts: Facts, chains: Mapping[int, Chain]
-) -> tuple[dict[tuple[str, int], list[Element]], dict[int, int]]:
-    """Each element at its cell, ``(name, count(Commits(), node) - 1)``, and each
-    value on the lineage, by its new seq, with its node. The count is the
-    chains' (one forward pass, never a ``count`` per cell), checked against the
-    lineage's running count and against ``count`` once, at the head."""
-    running = 0
-    for node in new.nodes:
-        running += node in facts.commit_at
-        assert (
-            chains[node].commits == running
-        ), f"the count at {node} is not the lineage's"
-    assert reads.count(ch04, reads.Commits(), node=new.head.node) == running
-    cells: dict[tuple[str, int], list[Element]] = {}
-    on: dict[int, int] = {}
-    for name, elements in new.series.items():
-        for el in elements:
-            at = (name, chains[el.node].commits - 1)
-            cells.setdefault(at, []).append(
-                Element(facts.original[el.seq], el.seq, el.node, el.value)
-            )
-            on[el.seq] = el.node
-    return cells, on
 
 
 def _refused(
@@ -1990,7 +979,75 @@ def _base(found: Found) -> RunRecord:
     )
 
 
-def measure(found: Found, *, max_rows: int, max_bytes: int, stack: Stack) -> RunRecord:
+class Configuration(NamedTuple):
+    """What a consumer gives the runner, as ``runstate migrate`` takes it: the
+    choices, parsed once over both steps, and each step's plan built from them."""
+
+    choices: Choices
+    plans: Mapping[str, Planned]  # by the format a step leaves
+
+
+def configuration(choices: Choices) -> Configuration:
+    return Configuration(
+        choices,
+        {s.FROM: Planned(s, resolutions(s, choices), choices.accepted) for s in _STEPS},
+    )
+
+
+class _Undecided(Exception):
+    """A step's projection forks with no ``--resolve``: the run's later steps wait."""
+
+    def __init__(self, forks: dict[str, int]) -> None:
+        self.forks = forks
+
+
+_STAGE = {
+    _STEP_0_2_0.FROM: (StepName.FROM_0_2_0, Stage.FROM_0_2_0),
+    _STEP_0_3_0.FROM: (StepName.FROM_0_3_0, Stage.FROM_0_3_0),
+}
+
+
+def _run_step(
+    plan: Planned, rows: list[Row], history: History, base: RunRecord
+) -> tuple[Migrated, RunRecord]:
+    """One step as the detection pass runs it: its forks, then, every forking
+    projection resolved, its checked transform; where each divergence fires is
+    recorded, never refused."""
+    step = plan.step
+    detected = step.detect(
+        rows, assumptions=plan.resolutions.assumptions, history=history
+    )
+    label = f"{step.FROM} -> {step.TO}"
+    counts = {p: len(f) for p, f in detected.forks.items() if f}
+    forks = {**base.forks, label: counts}
+    open_ = {
+        p.name: counts[p.name]
+        for p in step.PROJECTIONS
+        if p.name in counts and plan.resolutions.choosers[p.name].spelling is None
+    }
+    if open_:
+        raise _Undecided(open_)
+    migrated = transform_checked(
+        step, rows, resolutions=plan.resolutions, history=history
+    )
+    fired = {d.name: len(migrated.divergences[d.name]) for d in step.DIVERGENCES}
+    unaccepted = [d.name for d in plan.diverged(migrated)]
+    return migrated, replace(
+        base,
+        forks=forks,
+        divergences={**base.divergences, **{k: v for k, v in fired.items() if v}},
+        unaccepted=[*base.unaccepted, *unaccepted],
+    )
+
+
+def measure(
+    found: Found,
+    *,
+    max_rows: int,
+    max_bytes: int,
+    stack: Stack,
+    config: Configuration,
+) -> RunRecord:
     """One run, read, migrated, read again and measured; it holds this run only.
     A step's or a read's exception is recorded as a crash of its stage; ``main``
     records any other as the runner's."""
@@ -2003,55 +1060,59 @@ def measure(found: Found, *, max_rows: int, max_bytes: int, stack: Stack) -> Run
         if base.rows is not None and base.rows > max_rows:
             return replace(base, status=Status.SKIPPED_MAX_ROWS)
         rows = _read_rows(found.path)
-        env = _envelopes(rows)
+        _envelopes(rows)
     except (OSError, sqlite3.Error, MemoryError, ValueError) as exc:
         # a file it may not read, a corrupt log, too big a one, a body not JSON
         return _crashed(base, Stage.READ, exc)
-    rows03, env03 = rows, env
-    if found.format == V0_2_0_to_V0_3_0.FROM:
+    history: History = ()
+    fmt = found.format
+    rows03 = rows
+    migrated04: Migrated | None = None
+    while fmt != _STEP_0_3_0.TO:
+        plan = config.plans[fmt]
+        name, stage = _STAGE[fmt]
+        if fmt == _STEP_0_3_0.FROM:
+            rows03 = rows
+            try:
+                base = replace(base, live_by_0_3_0=_STEP_0_3_0.is_live(rows))
+            except MigrationError:
+                pass  # a claim with no handle: is_live cannot tell
+            except Exception as exc:
+                return _crashed(base, Stage.OLD_READS, exc)
         try:
-            rows03 = transform_checked(
-                _STEP_0_2_0, rows, resolutions=_POSITIONAL, history=()
-            ).rows
+            migrated, base = _run_step(plan, rows, history, base)
+        except _Undecided as u:
+            label = f"{plan.step.FROM} -> {plan.step.TO}"
+            return replace(base, status=Status.UNDECIDED, forks={label: u.forks})
         except MigrationError as exc:
-            return _refused(base, StepName.FROM_0_2_0, exc)
+            return _refused(base, name, exc)
         except Exception as exc:
-            return _crashed(base, Stage.FROM_0_2_0, exc)
-        env03 = _envelopes(rows03)  # the step's own bodies, each JSON
-    del rows, env
-    try:
-        base = replace(base, live_by_0_3_0=step04.V0_3_0_to_V0_4_0().is_live(rows03))
-    except MigrationError:
-        pass  # a claim with no handle: is_live cannot tell
-    except Exception as exc:
-        return _crashed(base, Stage.OLD_READS, exc)
-    try:
-        passes = step04.run_passes(rows03)
-        rows04 = _rows_0_4_0(passes)
-    except MigrationError as exc:
-        census03 = census(rows03, env03, None, None)
-        return _refused(base, StepName.FROM_0_3_0, exc, census=census03)
-    except Exception as exc:
-        return _crashed(base, Stage.FROM_0_3_0, exc)
-    env04 = _envelopes(rows04)
-    del rows04
+            return _crashed(base, stage, exc)
+        history = (*history, plan.entry(base.run_id, migrated))
+        rows = migrated.rows
+        migrated04 = migrated if fmt == _STEP_0_3_0.FROM else None
+        fmt = plan.step.TO
+    assert migrated04 is not None
+    del rows
+    env03 = _envelopes(rows03)
+    env04 = _envelopes(migrated04.rows)
     ch03 = MemoryChannel(log=env03)
     ch04 = MemoryChannel(log=env04)
-    names = {e.name for e in env04 if e.topic == _VALUE and e.name is not None}
     try:
         old = old_reads(ch03)
+        old_cells = _old_cells(env03, old.series)
     except Exception as exc:
         return _crashed(base, Stage.OLD_READS, exc)
     try:
         verdict = new_verdict(ch04)
-        series: NewSeries | str
         try:
-            series = new_series(ch04, names)
+            new_cells = _new_cells(ch04, env03, env04)
         except observables.MalformedRecordError as exc:
-            series = _raised(exc)
+            series = SeriesResult(_raised(exc), len(old_cells), 0, 0, {}, 0, [])
+        else:
+            series = series_result(old_cells, new_cells, migrated04.divergences)
     except Exception as exc:
         return _crashed(base, Stage.NEW_READS, exc)
-
     invalid = [
         InvalidRow(e.seq, e.topic, errors)
         for e in env04
@@ -2059,38 +1120,12 @@ def measure(found: Found, *, max_rows: int, max_bytes: int, stack: Stack) -> Run
     ]
     checks = also(env04)
     checks[Also.SCHEMA] += len(invalid)
-    facts = facts_of(passes)
-    chains = chains_of(env04, facts)
-    holders = _holders(env04)
-    old_cells = _old_cells(env03, old.series)
-    if isinstance(series, str):
-        result3 = P3Result(series, len(old_cells), 0, 0, 0, {}, {}, 0, [])
-    else:
-        new_cells, on = _new_cells(series, ch04, facts, chains)
-        run = Run(
-            facts=facts,
-            chains=chains,
-            holders=holders,
-            steps={
-                e.seq: e.body["step"]
-                for e in env03
-                if e.topic == _VALUE and observables.is_step(e.body.get("step"))
-            },
-            claims=_positional_claims(env03),
-            lineage=_lineage_of(series.nodes, facts, chains),
-            on=on,
-        )
-        result3 = p3(run, old_cells, new_cells)
     return replace(
         base,
-        census=census(rows03, env03, passes, facts),
         rows_0_4_0=len(env04),
         schema_invalid=invalid,
         also={k: checks[k] for k in Also},
-        p1=p1(env04, facts, chains),
-        p2=p2(env03, facts, holders),
-        p3=result3,
-        p4=p4(old, verdict, env04, passes, facts),
+        reads=compare(old, verdict, series, env04, migrated04.divergences),
     )
 
 
@@ -2100,109 +1135,53 @@ NOT_COMPARED = "the new reads raise"
 
 
 @dataclass
-class P1Totals:
-    checked: int = 0
-    passed: int = 0
-    failures: Counter[str] = field(default_factory=Counter)
-    parentless: Counter[str] = field(default_factory=Counter)
-
-    def add(self, x: P1Result) -> None:
-        self.checked += x.checked
-        self.passed += x.passed
-        self.failures.update(x.failures)
-        self.parentless.update(x.parentless)
-
-
-@dataclass
-class P2Totals:
-    checked: int = 0
-    at_its_step: int = 0
-    exceptions: Counter[str] = field(default_factory=Counter)
-    failures: Counter[str] = field(default_factory=Counter)
-
-    def add(self, x: P2Result) -> None:
-        self.checked += x.checked
-        self.at_its_step += x.at_its_step
-        self.exceptions.update(x.exceptions)
-        self.failures.update(x.failures)
-
-
-@dataclass
-class P3Totals:
+class SeriesTotals:
     runs_compared: int = 0
     runs_not_compared: Counter[str] = field(default_factory=Counter)
-    cells_not_compared: int = 0  # the old read's cells in those runs
     cells: int = 0
     equal: int = 0
-    equal_other_record: int = 0
     differing: int = 0
-    by_class: Counter[str] = field(default_factory=Counter)
-    by_class_set: Counter[str] = field(default_factory=Counter)
+    by_divergence: Counter[str] = field(default_factory=Counter)
     unattributed: int = 0
     runs_with_unattributed: int = 0
 
-    def add(self, x: P3Result) -> None:
+    def add(self, x: SeriesResult) -> None:
         if x.not_compared is not None:
             self.runs_not_compared[NOT_COMPARED] += 1
-            self.cells_not_compared += x.cells
             return
         self.runs_compared += 1
         self.cells += x.cells
         self.equal += x.equal
-        self.equal_other_record += x.equal_other_record
         self.differing += x.differing
-        self.by_class.update(x.by_class)
-        self.by_class_set.update(x.by_class_set)
+        self.by_divergence.update(x.by_divergence)
         self.unattributed += x.unattributed
         self.runs_with_unattributed += x.unattributed > 0
 
 
 @dataclass
-class P4Part:
+class ReadPart:
     equal: int = 0
     differing: int = 0
-    by_class: Counter[str] = field(default_factory=Counter)
-    by_class_set: Counter[str] = field(default_factory=Counter)
+    by_divergence: Counter[str] = field(default_factory=Counter)
 
-    def add(self, equal: bool, classes: list[str]) -> None:
+    def add(self, equal: bool, divergences: list[str]) -> None:
         self.equal += equal
         self.differing += not equal
-        self.by_class.update(classes)
-        if classes:
-            self.by_class_set["+".join(sorted(classes))] += 1
+        self.by_divergence.update(divergences)
 
 
 @dataclass
-class P4Totals:
+class ReadsTotals:
     runs_compared: int = 0
-    verdict: P4Part = field(default_factory=P4Part)
-    stops: P4Part = field(default_factory=P4Part)
+    series: SeriesTotals = field(default_factory=SeriesTotals)
+    verdict: ReadPart = field(default_factory=ReadPart)
+    stops: ReadPart = field(default_factory=ReadPart)
 
-    def add(self, x: P4Result) -> None:
+    def add(self, x: Reads) -> None:
         self.runs_compared += 1
-        self.verdict.add(x.verdict.equal, x.verdict.classes)
-        self.stops.add(x.stops.equal, x.stops.classes)
-
-
-@dataclass
-class CensusTotals:
-    t_vs_created_at_tolerance_s: float = _REPORTED_LATER
-    lone_stops: Counter[str] = field(default_factory=Counter)  # by signature
-    whole_number_floats: Counter[str] = field(default_factory=Counter)
-    naks_without_request_id: int = 0
-    null_name_values: int = 0
-    beats_after_end: Counter[str] = field(default_factory=Counter)
-    withdrawals_of_unborne_ids: int = 0
-    parentless_by_candidacy: int = 0
-
-    def add(self, x: Census) -> None:
-        self.lone_stops.update(s.signature() for s in x.lone_stops)
-        self.whole_number_floats.update(x.whole_number_floats)
-        self.naks_without_request_id += x.naks_without_request_id
-        self.null_name_values += x.null_name_values
-        self.beats_after_end.update(x.beats_after_end or {})
-        self.withdrawals_of_unborne_ids += x.withdrawals_of_unborne_ids or 0
-        self.parentless_by_candidacy += x.parentless_by_candidacy or 0
+        self.series.add(x.series)
+        self.verdict.add(x.verdict.equal, x.verdict.divergences)
+        self.stops.add(x.stops.equal, x.stops.divergences)
 
 
 @dataclass
@@ -2229,6 +1208,12 @@ class Args:
     out: str
     max_rows: int
     max_bytes: int
+    assume: list[str]
+    resolve: list[str]
+    accept: list[str]
+    cap: int
+    budget: int
+    run_on: int
 
 
 @dataclass
@@ -2242,13 +1227,15 @@ class Totals:
     runs: RunTotals = field(default_factory=RunTotals)
     refusals: dict[str, Counter[str]] = field(default_factory=dict)  # by step
     crashes: dict[str, Counter[str]] = field(default_factory=dict)  # by stage
+    # undecided runs, by step and projection; forks of every run, likewise
+    undecided: dict[str, Counter[str]] = field(default_factory=dict)
+    forks: dict[str, Counter[str]] = field(default_factory=dict)
+    # runs each divergence fired in, and the runs no --accept would let migrate
+    divergences: Counter[str] = field(default_factory=Counter)
+    runs_unaccepted: int = 0
     schema: SchemaTotals = field(default_factory=SchemaTotals)
     also: Counter[str] = field(default_factory=Counter)
-    p1: P1Totals = field(default_factory=P1Totals)
-    p2: P2Totals = field(default_factory=P2Totals)
-    p3: P3Totals = field(default_factory=P3Totals)
-    p4: P4Totals = field(default_factory=P4Totals)
-    census: CensusTotals = field(default_factory=CensusTotals)
+    reads: ReadsTotals = field(default_factory=ReadsTotals)
 
     def add(self, x: RunRecord) -> None:
         self.runs.total += 1
@@ -2263,19 +1250,16 @@ class Totals:
             self.refusals.setdefault(x.refusal.step, Counter())[x.refusal.kind] += 1
         if x.crash is not None:
             self.crashes.setdefault(x.crash.stage, Counter())[x.crash.kind] += 1
+        into = self.undecided if x.status == Status.UNDECIDED else self.forks
+        for label, counts in x.forks.items():
+            into.setdefault(label, Counter()).update(counts)
+        self.divergences.update(x.divergences.keys())
+        self.runs_unaccepted += bool(x.unaccepted)
         self.schema.invalid_rows += len(x.schema_invalid)
         self.schema.runs_with_invalid_rows += bool(x.schema_invalid)
         self.also.update({k: v for k, v in x.also.items() if v})
-        if x.census is not None:
-            self.census.add(x.census)
-        if x.p1 is not None:
-            self.p1.add(x.p1)
-        if x.p2 is not None:
-            self.p2.add(x.p2)
-        if x.p3 is not None:
-            self.p3.add(x.p3)
-        if x.p4 is not None:
-            self.p4.add(x.p4)
+        if x.reads is not None:
+            self.reads.add(x.reads)
 
 
 # ----- the edge -----------------------------------------------------------------------------
@@ -2301,8 +1285,9 @@ _SUMMARY_EVERY = 100
 
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Measure P1-P4 of the 0.3.0 -> 0.4.0 migration over real logs, "
-        "read-only (docs/specs/commits-and-lineage.md §7)."
+        description="Measure the 0.3.0 -> 0.4.0 migration over real logs, read-only, "
+        "under a consumer's facts, choosers and acceptances "
+        "(docs/specs/commits-and-lineage.md §7; log-formats.md §6)."
     )
     p.add_argument("roots", nargs="+", type=Path, metavar="ROOT")
     p.add_argument("--out", required=True, type=Path, help="the output directory")
@@ -2318,6 +1303,18 @@ def _parser() -> argparse.ArgumentParser:
         type=int,
         help="skip, and count, a log file larger than this, without reading its rows",
     )
+    for flag, metavar, what in (
+        ("--assume", "MODULE:ATTR", "facts a step's writers satisfy"),
+        ("--resolve", "PROJECTION=CHOOSER", "a chooser for one projection"),
+        ("--accept", "DIVERGENCE", "a divergence the consumer accepts"),
+    ):
+        p.add_argument(flag, action="append", default=[], metavar=metavar, help=what)
+    for flag, what in (
+        ("--cap", "the states a step may hold at once on one run"),
+        ("--budget", "the states a step may hold on one run summed over its layers"),
+        ("--run-on", "labels past the log's steps an unpinned run is followed"),
+    ):
+        p.add_argument(flag, required=True, type=int, help=what)
     return p
 
 
@@ -2346,10 +1343,33 @@ def main(argv: list[str] | None = None) -> int:
     for root in roots:
         if out == root or root in out.parents:
             parser.error(f"--out {out} is under ROOT {root}, where nothing is written")
+    try:
+        config = configuration(
+            parse_choices(
+                _STEPS,
+                assume=args.assume,
+                resolve=args.resolve,
+                accept=args.accept,
+                limits=Limits(cap=args.cap, budget=args.budget, run_on=args.run_on),
+            )
+        )
+    except MigrationError as exc:
+        parser.error(str(exc))
     out.mkdir(parents=True, exist_ok=True)
     stack = load_stack()
     totals = Totals(
-        Args([str(r) for r in roots], str(out), args.max_rows, args.max_bytes)
+        Args(
+            [str(r) for r in roots],
+            str(out),
+            args.max_rows,
+            args.max_bytes,
+            args.assume,
+            args.resolve,
+            args.accept,
+            args.cap,
+            args.budget,
+            args.run_on,
+        )
     )
     try:
         with (
@@ -2369,6 +1389,7 @@ def main(argv: list[str] | None = None) -> int:
                         max_rows=args.max_rows,
                         max_bytes=args.max_bytes,
                         stack=stack,
+                        config=config,
                     )
                 except Exception as exc:
                     record = _runner_crashed(item, exc)

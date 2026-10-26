@@ -34,7 +34,7 @@ from typing import Any, NamedTuple
 import pytest
 
 import tests.migration_sim.enumerate as enumeration
-import tests.test_migration_v0_3_0_to_v0_4_0 as goldens
+import tests.migration_goldens as goldens
 from runstate.channel import Channel, create_channel
 from runstate.migrations import Row
 from runstate.worker import Worker

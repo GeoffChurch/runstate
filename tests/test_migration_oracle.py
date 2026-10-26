@@ -4,7 +4,8 @@ conforming 0.3.0 writers.
 The two encodings of §7's target are independent: the step's engine
 (``runstate.migrations.v0_3_0_to_v0_4_0_engine``) never imports ``tests/migration_sim``,
 and the simulator never imports the step. This module, and the mutation test that runs
-it (``tests/migration_mutation.py``), are the only ones that import both.
+it (``tests/migration_mutation.py``), and the goldens harness
+(``tests/test_migration_goldens.py``) are the only ones that import both.
 Where they disagree, the prose decides which is wrong (commits-and-lineage.md §7, "The
 referee").
 
@@ -49,6 +50,7 @@ from typing import Any, NamedTuple
 
 import pytest
 
+import runstate.migrations.v0_3_0_to_v0_4_0 as STEP
 import runstate.migrations.v0_3_0_to_v0_4_0_engine as E
 import runstate.migrations.v0_3_0_to_v0_4_0_facts as V
 import tests.migration_derive as D
@@ -445,6 +447,79 @@ def test_narrowing_only_removes_candidates() -> None:
                 decided += 1
                 assert all(c in wide for c in own), (name, fact, cls)
     assert undecided * 20 < decided, (decided, undecided)
+
+
+# ----- E2's cost, pinned: the step's exit-honored sites are the truth's costs -----------
+
+
+def _step_resolutions(h: H.History) -> Any:
+    from runstate.migrations.ambiguity import REFUSE, Assumptions, Chosen, Limits
+    from runstate.migrations.ambiguity import Resolutions as R
+
+    limits = Limits(cap=CAP, budget=BUDGET, run_on=RUN_ON)
+    choosers = {
+        "end": Chosen(None, REFUSE.chooser),
+        "span": Chosen("fewest", STEP.FEWEST.chooser),
+        "origin": Chosen("newest", STEP.NEWEST.chooser),
+        "end-time": Chosen("lower", STEP.END_TIME.generic[0].chooser),
+    }
+    cfg = D.configuration([observed(h)])
+    return R(Assumptions(cfg, "derived", limits), choosers)
+
+
+def _born_history(h: H.History) -> Any:
+    from runstate.migrations.ambiguity import Entry, Limits
+
+    if h.born is H.Born.V0_3_0:
+        return ()
+    return (
+        Entry(
+            run_id="h",
+            from_format="0.2.0",
+            to_format="0.3.0",
+            runstate="test",
+            step_source="sha256:0",
+            at=0.0,
+            limits=Limits(cap=CAP, budget=BUDGET, run_on=RUN_ON),
+            assumed=None,
+            facts=None,
+            resolved={},
+            readings={},
+            accepted={},
+        ),
+    )
+
+
+def costs_pinned(h: H.History) -> None:
+    """Where the engine reads one lineage, the truth: the exits where the step's
+    ``exit-honored`` divergence fires are exactly the exits of the truth's stated
+    costs (``Truth.costs``, §7's E2), named by their 0.3.0 seq."""
+    if not parsed(h):
+        return
+    g = run([h])
+    if E.forked(g, cap=PATHS):
+        return  # the decode picks a reading: the truth's costs may be another's
+    rows = list(rendered(h).rows)
+    exits = {
+        p.claim: p.seq for part in E.written(g) for p in part if isinstance(p, E.PExit)
+    }
+    want = sorted({exits[c.exit.claim_seq] for c in truth(h).costs})
+    migrated = STEP.V0_3_0_to_V0_4_0().transform(
+        rows, resolutions=_step_resolutions(h), history=_born_history(h)
+    )
+    assert list(migrated.divergences["exit-honored"]) == want
+
+
+@pytest.mark.parametrize("name", list(S.NAMED))
+def test_named_e2_costs_are_the_steps_exit_honored_sites(name: str) -> None:
+    costs_pinned(S.NAMED[name])
+
+
+@pytest.mark.oracle
+@pytest.mark.parametrize("family", list(FAMILIES))
+def test_family_e2_costs_are_the_steps_exit_honored_sites(family: str) -> None:
+    for h in FAMILIES[family]():
+        costs_pinned(h)
 
 
 # ----- 5: the candidate set is order-free, and the decode follows its rule ------------

@@ -1571,7 +1571,7 @@ def test_the_stop_fold_reads_nothing_above_its_w(w, expected):
 
 
 def _golden(rid):
-    from test_migration_v0_3_0_to_v0_4_0 import OUTPUT
+    from tests.lineage_logs import OUTPUT
 
     ch = MemoryChannel()
     for seq, topic, name, request_id, body in OUTPUT[rid]:
@@ -1580,7 +1580,7 @@ def _golden(rid):
 
 
 def _golden_ids():
-    from test_migration_v0_3_0_to_v0_4_0 import OUTPUT
+    from tests.lineage_logs import OUTPUT
 
     return list(OUTPUT)
 
@@ -1641,7 +1641,7 @@ def test_the_loading_crash_golden_reads_past_the_torn_retry():
 
 
 def _golden_rows(rid):
-    from test_migration_v0_3_0_to_v0_4_0 import OUTPUT
+    from tests.lineage_logs import OUTPUT
 
     return [
         (seq, Rec(topic, body, name, request_id))
@@ -1653,7 +1653,7 @@ def _golden_verdicts():
     """Every golden's verdict, by hand from its rows: the newest claim's
     readable exit, else the death reports naming it; none of them leaves an
     unclaimed run with a ``terminated``."""
-    from test_migration_v0_3_0_to_v0_4_0 import BACKSTOP, MIGRATED, SACCT
+    from tests.lineage_logs import BACKSTOP, MIGRATED, SACCT
 
     def backstopped(seq, claim, t):
         return by_deaths(claim, {E}, [DeathReport(seq, E, BACKSTOP, t)])
