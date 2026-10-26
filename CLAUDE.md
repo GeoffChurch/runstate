@@ -250,6 +250,10 @@ jobs; bump its pin; onboard any legacy logs (`<root>/<rid>.db`) exactly as the `
 message instructs, which leaves a tombstone at each old address so a stale writer fails loudly; then
 `runstate migrate <root>`
 (add `--backend postgres` for a DSN), which moves format-0.2.0 logs to the current format, 0.3.0.
+It first runs a detection pass that writes nothing, and refuses the whole invocation, printing one summary
+per question, until each projection that forks has a `--resolve <projection>=<chooser>` and each divergence
+that fires an `--accept <divergence>`; a consumer's facts about its writers go in `--assume <module:attr>`
+(`docs/specs/log-formats.md` §6, "Ambiguity"). A consumer keeps its own set of these choices.
 Until then every open raises rather than reading a log of another format.
 `pythonpath = ["."]` in `pyproject.toml` makes the tests import this checkout whatever env runs
 them. The pre-commit hook prefers `./.conda/bin/python` when it exists.

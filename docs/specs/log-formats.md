@@ -137,7 +137,7 @@ would without it, before `runstate migrate` and after; tests pin both backends.
 ```
 runstate migrate <root> [<rid> ...] [--to V] [--backend sqlite|postgres]
                  [--assume <module:attr> ...] [--resolve <projection>=<chooser> ...]
-                 [--accept <divergence> ...] [--cap N]
+                 [--accept <divergence> ...] [--cap N] [--budget N] [--run-on N]
 ```
 
 `<root>` is a directory for SQLite and a DSN for Postgres. With no run ids, every run under the root is
@@ -239,12 +239,12 @@ acceptances. Otherwise a migrated log's records would mean different things depe
   read of the input log (the owner, 2026-10-25). Corrections count. It is not an ambiguity: no two
   histories differ, so the site principle stays clean. Every rule that changes a read is one; a rule that
   changes no read is not, as `commits-and-lineage.md` §7's E1 is not, since no fold parses `evidence`.
-- A step's **resolutions** are its whole configuration: its facts (stated, else unstated), the cap, and
+- A step's **resolutions** are its whole configuration: its facts (stated, else unstated), the limits, and
   exactly one chooser for each projection it declares.
 - The **choices** are what the user gave across a chain: the `--assume`s, the `--resolve`s by projection
-  name, possibly fewer than its steps declare, the `--accept`s and the cap. The detection pass runs on the
-  choices, and builds each step's resolutions from them once every projection of that step that forks has
-  a chooser.
+  name, possibly fewer than its steps declare, the `--accept`s and the limits (cap, budget and run-on). The
+  detection pass runs on the choices, and builds each step's resolutions from them once every projection of
+  that step that forks has a chooser.
 
 **The principle: ambiguity is judged against any conforming writer of the input format, under that format's
 conventions.** A question is settled where the input format's conventions pin the meaning of the records it
@@ -318,7 +318,8 @@ manifest's readings mean:
 - the 0.3.0 → 0.4.0 step's engine (`v0_3_0_to_v0_4_0_engine.py`'s `decode`) asks per fork: its subjects
   from the last claim back to the first, then the run; for each subject its End, then its Span, then its
   Origin; within a projection, position by position in log order. After each answer only the candidates
-  through it are kept, and the next fork is read off what remains. The last claim goes first because its
+  through it are kept, and the next fork is read off what remains. Its `end-time` forks are asked last, on
+  the decided lineage, commit by commit. The last claim goes first because its
   records are the ones a resumed worker and every current read rest on; the claims before it are read in
   the light of what it was.
 
@@ -407,8 +408,15 @@ fires nowhere is allowed, so a consumer can keep one set of choices for every ro
   engine keeps every layer's edges for its backward pass, so its memory is the cap times the records, about
   420 bytes a state: 664f8795, the widest real log measured, holds 2,344 states a layer over 4,017 records
   in 1.8 GB. 3,000 clears that layer by a quarter, and refuses b02eb431 under facts too wide to follow at
-  its seq 81 in 6 s and 105 MB, where 20,000 exhausted 4 GB. A log holding a layer near the cap over many
-  more records can still exceed a machine's memory; `--cap` lowers it.
+  its seq 81 in 6 s and 105 MB, where 20,000 exhausted 4 GB.
+- **`--budget N`** bounds the states a step may hold on one run summed over every layer, which its memory
+  follows, refusing the run past it, naming the record; the cap alone does not, since a log holding a layer
+  near the cap over many more records would exceed a machine's memory (about 16 GB at 3,000 over 13,000).
+  The command line's value is 6,000,000 states, about 2.5 GB: it clears 664f8795's 4.3 million by two fifths.
+- **`--run-on N`** is how many labels past the log's highest step a run of passes that no record pins is
+  followed, per claim: the 0.3.0 → 0.4.0 engine's horizon, past which such a run is cut. It decides how many
+  silent passes a reading may hold, so it is set at the edge and recorded too. The command line's value is
+  2, the oracle's, whose histories run on by at most one pass.
 
 **Carrying on past refusals.** Once the detection pass is satisfied, `migrate` migrates every run it can.
 A run refused by a chooser, by `refuse`, or by a step's own refusal is left untouched, and the other runs go
@@ -425,7 +433,7 @@ untouched: the manifest belongs to the root, outside every format's address.
   check 4 does not read it as a legacy log.
 - **One entry per run per step:** the run id; the step's `FROM` and `TO`; the code that ran it, as the
   runstate version with the commit its install records (a git pin's), and the SHA-256 of the step module's
-  source, since a pin's version string (`0.3.0.dev0`) names no code; when; the cap; the facts, as `--assume`
+  source, since a pin's version string (`0.3.0.dev0`) names no code; when; the limits; the facts, as `--assume`
   spelled them (null when unstated) and as the step renders them, the classifier's identity included; each
   projection's chooser as it was given, a built-in's name or `module:attr`, or null where none was given, as
   for a projection that forked in no run; each fork's seq with the reading it was given; and each
@@ -552,9 +560,13 @@ On SQLite and Postgres (Memory has no addresses):
     from this invocation and from the manifest; a proven site reads the same under every chooser, and a
     reading the log excludes is refused, a `record-claim` reading naming a claim proven dead among them;
   - a divergence halts the pass until it is accepted, and is reported once per name; each of the 0.2.0 →
-    0.3.0 step's divergences fires exactly where a read it names answers differently, checked against
-    master's reads on the golden logs under four sets of readings, and a `record-claim` reading that changes
-    the verdict fires `reattributed-record`, not the positional leak's `stale-beat`;
+    0.3.0 step's divergences fires in exactly the runs where a read it names answers differently, at the
+    records whose read differs (`reattributed-record` at every fork read otherwise than by position),
+    checked against master's reads on the golden logs under four sets of readings, and a `record-claim`
+    reading that changes the verdict fires `reattributed-record`, not the positional leak's `stale-beat`;
+  - each of the 0.3.0 → 0.4.0 step's divergences fires where its rule applies, and every read the
+    migration changes on the goldens and on the corpus is attributed to one that fired; its `exit-honored`
+    fires at exactly the exits of the simulator's stated costs (`commits-and-lineage.md` §7);
   - the manifest holds one entry per migrated run per step, written in the sealing transaction on Postgres,
     and on SQLite before the publish, the latest per step read back; none for a refused run; a root holding
     it opens as it did without it.

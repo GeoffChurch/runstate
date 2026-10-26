@@ -25,6 +25,14 @@ today. An item leaves this list by being done, or by being shown moot.
   offline time only. The alternative, sealing first and restoring the write bit on refusal, was considered and
   declined. It would remove the residual window, but only by adding a restore path that can itself fail.
 
+- **`--refuse <divergence>`** (the migration round's Task 21 re-review, 2026-10-26). A divergence that fires
+  halts the detection pass until it is accepted, and `refuse` is its only alternative, which refuses the whole
+  invocation: to migrate a root while leaving one divergence's runs behind, a user names the other runs. A
+  `--refuse <divergence>`, mirroring `--resolve <projection>=refuse`, would migrate the rest and leave those
+  runs unmigrated, each refusal naming it. Cheap, but a flag the owner's ruling did not ask for. **Trigger:** a
+  consumer that must migrate a root while leaving one divergence's runs behind, and whose run list is too long
+  to name the rest.
+
 ## Tests that would pin more
 
 - No re-seal test, and no Postgres test that a concurrent insert blocks on the seal's lock. The transaction contract
