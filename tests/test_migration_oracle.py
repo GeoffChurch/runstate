@@ -28,6 +28,11 @@ properties:
 
 A log the step's own parse refuses (M9: an in-claim rewind) is outside the engine's
 domain: its refusal names the record, which property 3 accepts.
+
+**Two speeds.** The families' tests are marked ``oracle``: the pre-commit hook and CI's
+default job deselect them, and CI's ``oracle`` job runs them when the step, its engine
+or facts, the simulator or this oracle changes, and on demand. The named histories, the
+named pairs and the direct checks run everywhere, in seconds.
 """
 
 from __future__ import annotations
@@ -353,6 +358,7 @@ def test_named_histories_under_their_own_facts(name: str) -> None:
     own(S.NAMED[name])
 
 
+@pytest.mark.oracle
 @pytest.mark.parametrize("family", list(FAMILIES))
 def test_families_under_their_own_facts(family: str) -> None:
     for h in FAMILIES[family]():
@@ -400,6 +406,7 @@ def test_named_pairs_are_forks() -> None:
         assert silent(one, other) == [], (pair.one, pair.other)
 
 
+@pytest.mark.oracle
 @pytest.mark.parametrize("family", list(FAMILIES))
 def test_family_logs_two_truths_write_are_forks(family: str) -> None:
     for hs in by_log(FAMILIES[family]()).values():
@@ -543,6 +550,7 @@ def test_named_pairs_decode_by_the_rule() -> None:
         ordered([S.NAMED[pair.one], S.NAMED[pair.other]])
 
 
+@pytest.mark.oracle
 @pytest.mark.parametrize("family", list(FAMILIES))
 def test_family_decodes_follow_the_rule(family: str) -> None:
     for hs in by_log(FAMILIES[family]()).values():

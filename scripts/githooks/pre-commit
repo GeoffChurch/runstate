@@ -1,6 +1,6 @@
 #!/bin/sh
-# The full CI gate set, locally, before every commit: ~9.4s, almost all of it
-# pytest.
+# The CI default job's gate set, locally, before every commit: ~70 s, almost all
+# of it pytest.
 #
 # These exist because the formatter gate is the one that gets skipped: it is
 # easy to run the checks, then add code, then commit without re-running them.
@@ -9,13 +9,17 @@
 # WEAKER than CI in one respect: without RUNSTATE_TEST_PG_DSN the ~215 Postgres
 # tests skip here and CI runs them, so a green hook does not imply a green CI.
 #
+# The migration oracle's families (`-m oracle`, about ten minutes) are deselected,
+# as in CI's default job; CI's oracle job runs them when the 0.3.0 -> 0.4.0 step or
+# its simulator changes. Run `pytest -m oracle tests/` before committing to either.
+#
 # Bypass with `git commit --no-verify`.
 . "$(git rev-parse --show-toplevel)/scripts/githooks/_common.sh"
 echo "pre-commit:"
 rc=0
 run_gate "black"  black  --check runstate/ tests/ || rc=1
 run_gate "mypy"   mypy   --strict runstate        || rc=1
-run_gate "pytest" pytest tests/ -q                || rc=1
+run_gate "pytest" pytest tests/ -q -m "not oracle" || rc=1
 [ -n "$RUNSTATE_TEST_PG_DSN" ] || echo "  note  postgres suite skipped locally; CI runs it"
 [ $rc -eq 0 ] || echo "  (fix, or re-run with --no-verify)"
 exit $rc

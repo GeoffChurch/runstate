@@ -257,7 +257,8 @@ them. The pre-commit hook prefers `./.conda/bin/python` when it exists.
 ```bash
 conda activate ./.conda             # the dev env: editable install + test + postgres extras
 conda create -p ./.conda python=3.12 && ./.conda/bin/pip install -e .[test,postgres]  # (re)create it
-pytest tests/                       # run all tests (~1270, ~10-15s; +Postgres if a DSN is set)
+pytest tests/ -m "not oracle"       # what the hook runs (~3,900, ~65 s; +Postgres if a DSN is set)
+pytest tests/ -m oracle             # the migration oracle's families (below)
 pytest tests/test_channel.py -v     # one module
 pytest tests/test_schema.py -v      # emitted messages conform to the schema stack
 
@@ -280,13 +281,23 @@ The socket directory **must be a short path** -- the sun_path limit is 107 bytes
 path blows it (`Unix-domain socket path ... is too long`). 1,014 passed / 260 skipped without the DSN
 and 1,273 passed / 1 skipped with it (2026-10-03); 1,274 collected in all.
 
-The pre-commit hook runs the whole CI gate set -- `black --check`,
-`mypy --strict`, `pytest` -- in ~9.4 s, almost all of it the suite. It exists
+The pre-commit hook runs CI's default gate set -- `black --check`,
+`mypy --strict`, `pytest` -- in ~70 s, almost all of it the suite. It exists
 because the formatter gate is the one that gets skipped: run the checks, add
 code, commit, and CI goes red on a branch that looked green. `--no-verify`
 bypasses it. It is a *weaker* gate than CI in one respect: without
 `RUNSTATE_TEST_PG_DSN` the ~260 Postgres tests skip locally and CI runs them, so
 green here does not imply green there.
+
+**The migration oracle is deselected too** (`-m "not oracle"`, the hook and CI's
+default job alike). `tests/test_migration_oracle.py` runs the 0.3.0 -> 0.4.0 step's
+engine against the simulator (`tests/migration_sim/`); its exhaustive families,
+marked `oracle`, take about ten minutes, and the step is frozen once it ships. Its
+named histories, named pairs and direct checks stay in the default run, in
+about 20 s. CI's `oracle` job runs the families when the step, its engine or facts
+module, the simulator or the oracle changes, and on demand (`workflow_dispatch`).
+Before committing to any of those, run `pytest -m oracle tests/` and
+`python -m tests.migration_mutation` (every mutant must be caught).
 
 The Channel conformance tests and the substrate-level convention tests are
 parametrized over the backends (`memory` + `sqlite` always, and `postgres` when

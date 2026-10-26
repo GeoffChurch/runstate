@@ -4,6 +4,7 @@ on:
   push:
     branches: [master]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   # The full suite, including the Postgres backend tier, against a real server.
@@ -37,12 +38,49 @@ jobs:
       # SERIAL on purpose: the shared `log` table + the session-end connection-leak
       # check are xdist-unsafe (cross-worker backends would cross-contaminate the
       # baseline count). Per-test uuid run_ids isolate the data; the process must not.
+      # The migration oracle's families are the oracle job's (below).
       - name: pytest (serial)
-        run: pytest tests/
+        run: pytest tests/ -m "not oracle"
       - name: mypy --strict
         run: mypy
       - name: black --check
         run: black --check runstate/ tests/
+
+  # The migration oracle (`-m oracle`): the 0.3.0 -> 0.4.0 step's engine against the
+  # simulator's exhaustive families, about ten minutes. The step is frozen once it
+  # ships, so the job runs only when the step, its engine or facts, the simulator or
+  # the oracle changes, and on demand (Actions -> tests -> Run workflow). The default
+  # job runs the oracle's named histories either way.
+  oracle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: does the step, the simulator or the oracle change?
+        id: changed
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          paths='^(runstate/migrations/v0_3_0_to_v0_4_0(_engine|_facts)?\.py|tests/migration_sim/|tests/test_migration_sim\.py|tests/migration_derive\.py|tests/migration_mutation\.py|tests/test_migration_oracle\.py)'
+          # on demand, or with no base to compare (a new branch): run
+          if [ "$EVENT" = workflow_dispatch ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo run=true >> "$GITHUB_OUTPUT"
+          elif git diff --name-only "$BASE" HEAD | grep -qE "$paths"; then
+            echo run=true >> "$GITHUB_OUTPUT"
+          else
+            echo run=false >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.changed.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - if: steps.changed.outputs.run == 'true'
+        run: pip install -e .[test]
+      - if: steps.changed.outputs.run == 'true'
+        name: pytest -m oracle
+        run: pytest tests/test_migration_oracle.py -m oracle
 
   # `import runstate` must work WITHOUT the optional psycopg extra. The assertions live in
   # tests/test_psycopg_free.py so they are ordinary, tool-visible test code (inlined here

@@ -78,6 +78,7 @@ testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
     "tier(name): the concurrency contention tier a test needs (in_process | cross_process | cross_host); the conc_backend fixture skips backends below it",
+    "oracle: the migration oracle's exhaustive families (tests/test_migration_oracle.py), minutes long; the hook and CI's default job deselect them, CI's oracle job runs them when the 0.3.0 -> 0.4.0 step or its simulator changes",
 ]
 
 [tool.mypy]
