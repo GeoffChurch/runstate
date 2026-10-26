@@ -194,8 +194,10 @@ class FinalStep(Enum):
     """A writer fact: what a worker's own ``stopped`` writes as ``final_step``."""
 
     YIELDED = "yielded"  # the last iteration it began (the reference Worker's)
-    FINISHED = "finished"  # the last iteration it finished (mycooc's writers)
+    FINISHED = "finished"  # the last iteration it finished
     TICKED = "ticked"  # the last step it beat (a manual-tick worker)
+    COUNTER = "counter"  # its own counter: the last iteration it finished, else
+    # what its clock read before its first iteration (mycooc's main.py:1131, :333)
 
 
 class Drain(Enum):
@@ -322,14 +324,28 @@ class Begin:
     step: int
 
 
+class Stamp(Enum):
+    """A writer fact: what a value is to its writer, which its record's step
+    alone does not say."""
+
+    METRIC = "metric"  # at its clock, and the node of the iteration it is in holds it
+    REGISTER = "register"  # at its clock, and no node holds it (mycooc's ``status``:
+    # "A *register*, not a metric series", runstate_emit.py:57-65@bb6f9e8c)
+    STEPLESS = "stepless"  # with a null step: a register (§7, M3)
+
+
 @dataclass(frozen=True)
 class Emit:
-    """The worker writes a ``value`` named ``name``, at its clock, or with a null
-    step when ``stepless`` (a register)."""
+    """The worker writes a ``value`` named ``name``, stamped ``stamp``."""
 
     claim: int
     name: str
-    stepless: bool
+    stamp: Stamp
+
+    @property
+    def stepless(self) -> bool:
+        """Its record's step is null."""
+        return self.stamp is Stamp.STEPLESS
 
 
 @dataclass(frozen=True)
@@ -509,9 +525,21 @@ RECORDS = (
 """The events that write a record."""
 
 
+class Born(Enum):
+    """The format the log was born in, which decides who filled the names a 0.3.0
+    record carries."""
+
+    V0_3_0 = "0.3.0"  # each record as its writer filled it
+    V0_2_0 = "0.2.0"  # migrated by the 0.2.0 -> 0.3.0 step, which filled every
+    # ``stopped``'s ``honored`` and every heartbeat's and ``stopped``'s ``claim_seq``
+    # positionally (reference-by-name.md §6): the earlier step's recorded choice,
+    # not a writer's
+
+
 @dataclass(frozen=True)
 class History:
     events: tuple[Event, ...]
+    born: Born
 
 
 class NotConforming(Exception):
@@ -603,6 +631,8 @@ class _Worker:
     process: Process
     cut_save: CutSave
     clock: int  # the step a labelled value or a beat stamps
+    idle: int  # what its clock read before its first iteration
+    state_step: int  # the step of the state it holds between iterations
     floor: int  # the lowest label its next iteration may take
     position: NodeRef | None  # where its native counterpart stands
     state: NodeRef | None  # the node a save of its state between passes names
@@ -810,7 +840,15 @@ def _claim(st: _State, i: int, ev: Claim) -> Derived:
     clock = step if ev.clock is Clock.LOADED else 0
     st.workers.append(
         _Worker(
-            ev.claim, ev.process, ev.cut_save, clock, floor, position=node, state=node
+            ev.claim,
+            ev.process,
+            ev.cut_save,
+            clock,
+            idle=clock,
+            state_step=step,
+            floor=floor,
+            position=node,
+            state=node,
         )
     )
     return Derived(None, None, None, cut)
@@ -873,7 +911,7 @@ def _cut(st: _State, i: int, w: _Worker) -> CutCommit | None:
         return None
     node = CommitOf(w.claim, w.commits)
     w.commits += 1
-    w.position = node
+    w.position, w.state_step = node, w.clock
     st.node_steps[node] = w.clock
     if save is not None:
         save.node = node
@@ -961,6 +999,7 @@ def _step(st: _State, i: int, ev: WorkerEvent, w: _Worker) -> Derived:
         if w.phase is not Phase.ITERATING:
             raise NotConforming("no pass is open")
         w.phase, w.floor, w.finished = Phase.BETWEEN, w.clock + 1, w.clock
+        w.state_step = w.clock
         _dated(st, w, i, ev.ended)
         if w.released:
             # fenced: its pass was cut at the fence, which resolved its save
@@ -985,11 +1024,14 @@ def _step(st: _State, i: int, ev: WorkerEvent, w: _Worker) -> Derived:
                 if w.exit_kind is Kind.EXTENDABLE and not w.released
                 else None
             )
-            _save(st, i, ExitSave(w.claim), w.clock, exit_node)
+            _save(st, i, ExitSave(w.claim), w.state_step, exit_node)
         elif w.phase is Phase.ITERATING:
             _save(st, i, SaveOf(w.claim, w.clock), w.clock, None)  # partial state
         else:
-            _save(st, i, SaveOf(w.claim, w.clock), w.clock, w.state)
+            # the state it holds, whatever its clock reads (Clock.ZERO before
+            # its first iteration reads 0 over a loaded state)
+            ref = SaveOf(w.claim, w.state_step)
+            _save(st, i, ref, w.state_step, w.state)
         return _NOTHING
     if isinstance(ev, Rewind):
         if w.phase is not Phase.BETWEEN:
@@ -999,7 +1041,7 @@ def _step(st: _State, i: int, ev: WorkerEvent, w: _Worker) -> Derived:
         else:
             loaded = _resolve(st, ev.target, i)
             w.clock, w.floor, target = loaded.step, loaded.step + 1, loaded.node
-        w.state, w.tick_due = target, False
+        w.state, w.state_step, w.tick_due = target, w.clock, False
         st.rewinds[i] = target
         if not w.released:
             w.position = target
@@ -1016,6 +1058,8 @@ def _step(st: _State, i: int, ev: WorkerEvent, w: _Worker) -> Derived:
                 "only a clean exit inside an open iteration discards it"
             )
         final = _final_step(w, ev.final_step)
+        if inside and ev.error is None and not ev.discards and cut is None:
+            w.state_step = w.clock  # it keeps the open iteration's state
         w.phase, w.exited = Phase.EXITED, True
         if w.released:
             return Derived(None, None, final, cut)
@@ -1052,6 +1096,8 @@ def _final_step(w: _Worker, convention: FinalStep) -> int | None:
         return w.finished
     if convention is FinalStep.TICKED:
         return w.ticked
+    if convention is FinalStep.COUNTER:
+        return w.idle if w.finished is None else w.finished
     assert_never(convention)
 
 

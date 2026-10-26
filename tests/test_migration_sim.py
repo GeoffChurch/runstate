@@ -58,10 +58,13 @@ from tests.migration_sim.enumerate import (
     KILL,
     LOADING,
     MID_SAVES,
+    POSITIONAL,
     PREEMPTED,
     RELEASED_LIVE,
     RESUMES,
+    SAVE_POINTS,
     STOPS_AND_REAPS,
+    THIRD_PARTY_ACTS,
     THIRD_PARTIES,
     UNANSWERED_STOPS,
     WITHDRAWALS,
@@ -71,14 +74,17 @@ from tests.migration_sim.enumerate import (
     Origins,
     Space,
     StopSlot,
+    Strays,
     Successor,
     histories,
+    rewinds,
     slot,
 )
 from tests.migration_sim.history import (
     Beacon,
     Beat,
     Begin,
+    Born,
     Claim,
     Clock,
     Drain,
@@ -113,6 +119,7 @@ from tests.migration_sim.history import (
     Rewind,
     Save,
     SaveOf,
+    Stamp,
     StopRequest,
     Stray,
     ThirdPartyFinal,
@@ -121,12 +128,14 @@ from tests.migration_sim.history import (
     Via,
     Watermark,
     conforms,
+    loadable,
     loads_newest,
     walk,
 )
 from tests.migration_sim.render import Rendered, records, render
 from tests.migration_sim.truth import (
     Case,
+    Residue,
     Commit,
     Source,
     CommitId,
@@ -171,6 +180,9 @@ FAMILIES = {
     "stops-and-reaps": Family(2, 1, 1, STOPS_AND_REAPS),
     "unanswered-stops": Family(2, 1, 1, UNANSWERED_STOPS),
     "withdrawals": Family(1, 2, 1, WITHDRAWALS),
+    "save-points": Family(2, 1, 0, SAVE_POINTS),
+    "third-party-acts": Family(2, 1, 0, THIRD_PARTY_ACTS),
+    "positional": Family(2, 1, 1, POSITIONAL),
 }
 BOUND = 2000
 
@@ -356,7 +368,7 @@ def _h(*parts: Event | list[Event]) -> History:
     events: list[Event] = []
     for part in parts:
         events += part if isinstance(part, list) else [part]
-    return History(tuple(events))
+    return History(tuple(events), Born.V0_3_0)
 
 
 def _claim(claim: int, origin: Origin) -> Claim:
@@ -412,7 +424,7 @@ def _released(claim: int, outcome: Outcome) -> ThirdPartyStop:
 
 
 def _emits(claim: int, names: tuple[str, ...]) -> list[Event]:
-    return [Emit(claim, name, stepless=False) for name in names]
+    return [Emit(claim, name, Stamp.METRIC) for name in names]
 
 
 def _open(claim: int, step: int, *names: str) -> list[Event]:
@@ -470,7 +482,8 @@ WORKER = Space(
     clocks=(Clock.LOADED,),
     folds=(Fold.AT_CLAIM,),
     cut_saves=(CutSave.LANDED,),
-    strays=(False,),
+    strays=(Strays.NONE,),
+    pre_saves=(False,),
     strides=(1,),
     shapes=(SAVES,),
     mid_claim=(None,),
@@ -483,6 +496,7 @@ WORKER = Space(
     before_run=(None,),
     launches=(LaunchShape.NONE,),
     stop_slots=(StopSlot.BEFORE_CLAIM,),
+    born=(Born.V0_3_0,),
 )
 
 
@@ -665,7 +679,7 @@ VALUE_CLAIM_DISPLACED = _h(
     _VC_FIRST,
     _released(0, Outcome.LOST),
     _claim(1, _VC_RESUMES),
-    Emit(0, VALUE, stepless=False),
+    Emit(0, VALUE, Stamp.METRIC),
     _killed(0),
     iteration(1, Step(2, BEATS), cut=Cut.DONE),
     _completes(1),
@@ -681,7 +695,7 @@ VALUE_CLAIM_TEARDOWN = _h(
     _VC_FIRST,
     _exit(0, completed=False, error=None, final=YIELDED),
     _claim(1, _VC_RESUMES),
-    Emit(0, VALUE, stepless=False),
+    Emit(0, VALUE, Stamp.METRIC),
     Halt(0, Exited(0)),
     iteration(1, Step(2, BEATS), cut=Cut.DONE),
     _completes(1),
@@ -696,7 +710,7 @@ VALUE_CLAIM_DEAD_UNNAMED = _h(
 VALUE_CLAIM_TAKEN_OVER = _h(
     _VC_FIRST,
     _takeover(1, _VC_RESUMES),
-    Emit(0, VALUE, stepless=False),
+    Emit(0, VALUE, Stamp.METRIC),
     _killed(0),
     iteration(1, Step(2, BEATS), cut=Cut.DONE),
     _completes(1),
@@ -724,7 +738,7 @@ POST_BEAT_LABEL = _h(
 POST_BEAT_EXIT_HOLDS = _h(
     _claim(0, Fresh()),
     run(0, range(3), BEATS),
-    Emit(0, VALUE, stepless=False),
+    Emit(0, VALUE, Stamp.METRIC),
     _preempted(0),
 )
 
@@ -734,7 +748,7 @@ _LV_BASE = [_claim(0, Fresh()), *run(0, range(5), SAVES), _killed(0)]
 LEADING_LOADING = _h(
     _LV_BASE,
     _claim(1, FromSave(SaveOf(0, 4))),
-    Emit(1, VALUE, stepless=False),
+    Emit(1, VALUE, Stamp.METRIC),
     run(1, [5], BEATS),
     _completes(1),
 )
@@ -758,7 +772,7 @@ def _bc_last(origin: SaveOf) -> list[Event]:
 BEATLESS_LOADING = _h(
     _BC_BASE,
     _claim(1, FromSave(SaveOf(0, 3))),
-    Emit(1, VALUE, stepless=False),
+    Emit(1, VALUE, Stamp.METRIC),
     _killed(1),
     _bc_last(SaveOf(0, 3)),
 )
@@ -1108,13 +1122,16 @@ DISPLACED_SAVED_AFTER = _h(
 )
 
 
-# A worker saved after its own preempted exit (mycooc's order before b5262327);
-# the next claim loaded that save, the exit node, or the last commit's.
+# A synthetic writer saved after its own preempted exit; the next claim loaded
+# that save, the exit node, or the last commit's. It is §6's rule (D3), not a
+# mycooc order: every W1 revision force-saves its resume checkpoint before its
+# stop (task-19-report.md, P-a), and its post-exit save phase writes outputs no
+# resume loads.
 def _post_exit_save(origin: SaveOf | ExitSave) -> History:
     return _h(
         _claim(0, Fresh()),
         run(0, range(3), SAVES),
-        Emit(0, VALUE, stepless=False),
+        Emit(0, VALUE, Stamp.METRIC),
         _exit(0, completed=False, error=None, final=YIELDED),
         Save(0),
         Halt(0, Exited(0)),
@@ -1124,8 +1141,8 @@ def _post_exit_save(origin: SaveOf | ExitSave) -> History:
     )
 
 
-POST_EXIT_SAVE = _post_exit_save(ExitSave(0))
-POST_EXIT_COMMIT = _post_exit_save(SaveOf(0, 2))
+SYNTHETIC_POST_EXIT_SAVE = _post_exit_save(ExitSave(0))
+SYNTHETIC_POST_EXIT_COMMIT = _post_exit_save(SaveOf(0, 2))
 
 # ----- 4. the named histories: §7's goldens ------------------------------------------
 #
@@ -1210,9 +1227,9 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _after(0, 1),
             _preempted(0),
             _claim(1, FromSave(SaveOf(0, 1))),
-            Emit(1, STATUS, stepless=True),
+            Emit(1, STATUS, Stamp.STEPLESS),
             Beacon(1, CONTROL),
-            Emit(1, STATUS, stepless=True),
+            Emit(1, STATUS, Stamp.STEPLESS),
             Beacon(1, CONTROL),
             _preempted(1),
             _claim(2, FromSave(SaveOf(0, 1))),
@@ -1340,7 +1357,7 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
         goldens.LOADING,
         _h(
             _claim(0, Fresh()),
-            Emit(0, STATUS, stepless=False),
+            Emit(0, STATUS, Stamp.METRIC),
             _after(0, 0, LOSS),
             _after(0, 1, LOSS),
             _preempted(0),
@@ -1354,7 +1371,7 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
                 Fold.AT_CLAIM,
                 CutSave.LANDED,
             ),
-            Emit(1, STATUS, stepless=False),
+            Emit(1, STATUS, Stamp.METRIC),
             _after(1, 2, LOSS),
             _completes(1),
         ),
@@ -1378,8 +1395,8 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _claim(0, Fresh()),
             _after(0, 0, LOSS),
             _after(0, 1, LOSS),
-            Emit(0, "final_eval", stepless=False),
-            Emit(0, "reason", stepless=True),
+            Emit(0, "final_eval", Stamp.METRIC),
+            Emit(0, "reason", Stamp.STEPLESS),
             _completes(0),
         ),
     ),
@@ -1428,7 +1445,7 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
                 Fold.AT_CLAIM,
                 CutSave.LANDED,
             ),
-            Emit(1, STATUS, stepless=False),
+            Emit(1, STATUS, Stamp.METRIC),
             _exit(1, completed=False, error="OSError", final=YIELDED),
             Halt(1, Exited(1)),
             _claim(2, FromSave(SaveOf(0, 2))),
@@ -1461,7 +1478,7 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _exit(0, completed=False, error="boom", final=YIELDED),
             Halt(0, Exited(1)),
             _claim(1, FromSave(SaveOf(0, 0))),
-            Emit(1, STATUS, stepless=False),
+            Emit(1, STATUS, Stamp.METRIC),
             Halt(1, Exited(1)),
             ThirdPartyStop(1, Release(_ERR, Via.HELPER), BACKSTOP, NULL, Honors.NONE),
             _claim(2, FromSave(SaveOf(0, 0))),
@@ -1477,7 +1494,7 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _exit(0, completed=False, error="boom", final=YIELDED),
             Halt(0, Exited(1)),
             _claim(1, FromSave(SaveOf(0, 0))),
-            Emit(1, STATUS, stepless=False),
+            Emit(1, STATUS, Stamp.METRIC),
             _killed(1),
             UserRecord("user.note"),
             _claim(2, FromSave(SaveOf(0, 0))),
@@ -1495,7 +1512,7 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _exit(0, completed=False, error="CUDA out of memory", final=YIELDED),
             Halt(0, Exited(1)),
             _claim(1, FromSave(SaveOf(0, 2))),
-            Emit(1, STATUS, stepless=False),
+            Emit(1, STATUS, Stamp.METRIC),
             Halt(1, Exited(1)),
             ThirdPartyStop(1, Release(_ERR, Via.HELPER), BACKSTOP, NULL, Honors.NONE),
             _claim(2, FromSave(SaveOf(0, 2))),
@@ -1527,8 +1544,8 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _claim(0, Fresh()),
             _after(0, 0, LOSS),
             _exit(0, completed=True, error=None, final=YIELDED),
-            Emit(0, STATUS, stepless=False),
-            Emit(0, "reason", stepless=True),
+            Emit(0, STATUS, Stamp.METRIC),
+            Emit(0, "reason", Stamp.STEPLESS),
             Halt(0, Exited(0)),
         ),
     ),
@@ -1582,9 +1599,9 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
             _after(0, 0, LOSS),
             StopRequest("timeout"),
             _after(0, 1, LOSS),
-            Emit(0, "completion_reason", stepless=True),
+            Emit(0, "completion_reason", Stamp.STEPLESS),
             _exit(0, completed=False, error=None, final=YIELDED),
-            Emit(0, STATUS, stepless=True),
+            Emit(0, STATUS, Stamp.STEPLESS),
             Halt(0, Exited(0)),
         ),
     ),
@@ -1867,7 +1884,7 @@ def _cleared(fold: Fold) -> History:
         Begin(0, 0),
         Beat(0, CONTROL),
         StopRequest("x0"),
-        Emit(0, VALUE, stepless=False),
+        Emit(0, VALUE, Stamp.METRIC),
         Finish(0, True, Undated.OWN_LAST),
         ThirdPartyStop(0, Report(None), None, NULL, Honors.UNDISCHARGED),
         _first(0, 1, VALUE),
@@ -1949,7 +1966,7 @@ REREVIEW_J = _h(
     _killed(0),
     _claim(1, FromSave(SaveOf(0, 0))),
     Begin(1, 1),
-    Emit(1, VALUE, stepless=False),
+    Emit(1, VALUE, Stamp.METRIC),
     Finish(1, True, Undated.OWN_LAST),
     Exit(1, False, None, YIELDED, Drain.TICKS, discards=False),
     Halt(1, Exited(0)),
@@ -2066,7 +2083,7 @@ def _mycooc_pass(
 ) -> list[Event]:
     events: list[Event] = [Begin(claim, step)]
     if step:
-        events.append(Emit(claim, STATUS, stepless=False))
+        events.append(Emit(claim, STATUS, Stamp.REGISTER))
     events.append(PassSave(claim, landed=True, cut_end=Undated.OWN_LAST))
     if ticks:
         events.append(Beat(claim, CONTROL))
@@ -2087,10 +2104,10 @@ def _d78_real(cut_save: CutSave) -> History:
             cut_save,
         )
 
-    loading = [Emit(0, STATUS, stepless=False)] * 4
+    loading = [Emit(0, STATUS, Stamp.REGISTER)] * 4
     first: list[Event] = [
         claim(0, 3944963, Fresh(), "53375:0", Clock.LOADED),
-        Emit(0, "config", stepless=True),
+        Emit(0, "config", Stamp.STEPLESS),
         *loading,
         *_mycooc_pass(0, 0, _LATER_CLAIMS, ticks=True),
     ]
@@ -2101,14 +2118,14 @@ def _d78_real(cut_save: CutSave) -> History:
     def later(c: int, pid: int, launch: str, step: int) -> list[Event]:
         return [
             claim(c, pid, FromSave(SaveOf(c - 1, step - 1)), launch, Clock.ZERO),
-            *[Emit(c, STATUS, stepless=False)] * 4,
+            *[Emit(c, STATUS, Stamp.REGISTER)] * 4,
             *_mycooc_pass(c, step, _LATER_CLAIMS, ticks=False),
-            Emit(c, STATUS, stepless=False),  # saving results
+            Emit(c, STATUS, Stamp.REGISTER),  # saving results
         ]
 
     return _h(
         first,
-        Emit(0, STATUS, stepless=False),  # saving results
+        Emit(0, STATUS, Stamp.REGISTER),  # saving results
         _killed(0),
         ThirdPartyStop(
             0, Release(Outcome.PREEMPTED, Via.HELPER), None, NULL, Honors.NONE
@@ -2122,9 +2139,9 @@ def _d78_real(cut_save: CutSave) -> History:
         ),
         Halt(1, Exited(1)),
         later(2, 3956995, "53451:0", 183),
-        Emit(2, "completion_reason", stepless=True),
+        Emit(2, "completion_reason", Stamp.STEPLESS),
         _exit(2, completed=True, error=None, final=FinalStep.FINISHED),
-        Emit(2, STATUS, stepless=False),  # done
+        Emit(2, STATUS, Stamp.REGISTER),  # done
         Halt(2, Exited(0)),
     )
 
@@ -2183,25 +2200,27 @@ D78_DIGEST = "821ec37b0f6667ec6347f0a1ecd143c043abb53ca3f78696120a1ca288b13cb6"
 ``log`` table read ``mode=ro&immutable=1``, in seq order, a step read from a
 ``value`` or a heartbeat. 4,243 records."""
 
-# A writer whose version changes mid-root (Review Focus 9; task-13 forensics,
-# W1): before b5262327 mycooc's main wrote its stopped, then its save phase
-# (``status: saving``, the save); after it, the save phase, then its stopped.
+# A synthetic writer whose version changes mid-root (Review Focus 9), on
+# mycooc's pass shape: its old version writes its stopped, then a save phase
+# (``status: saving``, the save); its new one the save phase, then its stopped.
 # Claim 0 ran the old version, and its save names its extendable exit; claim 1
-# the new, and its save names its last commit (§6, "Save").
-VERSION_CHANGE = _h(
+# the new, and its save names its last commit (§6, "Save"). No mycooc version
+# is the old one: every W1 revision force-saves its resume checkpoint before its
+# stop (task-19-report.md, P-a), so this is §6's rule, D3, on a writer of ours.
+SYNTHETIC_VERSION_CHANGE = _h(
     _claim(0, Fresh()),
     run(0, [0, 1, 2], MYCOOC),
     _exit(0, completed=False, error=None, final=FinalStep.FINISHED),
-    Emit(0, STATUS, stepless=False),  # saving
+    Emit(0, STATUS, Stamp.REGISTER),  # saving
     Save(0),
-    Emit(0, STATUS, stepless=False),  # done
+    Emit(0, STATUS, Stamp.REGISTER),  # done
     Halt(0, Exited(0)),
     _claim(1, FromSave(ExitSave(0))),
     run(1, [3, 4, 5], MYCOOC),
-    Emit(1, STATUS, stepless=False),  # saving
+    Emit(1, STATUS, Stamp.REGISTER),  # saving
     Save(1),
     _exit(1, completed=False, error=None, final=FinalStep.FINISHED),
-    Emit(1, STATUS, stepless=False),  # done
+    Emit(1, STATUS, Stamp.REGISTER),  # done
     Halt(1, Exited(0)),
     _claim(2, FromSave(SaveOf(1, 5))),
     run(2, [6], MYCOOC),
@@ -2305,8 +2324,8 @@ NAMED = {
     "THIRD_PLACE_MOVES_PAST": THIRD_PLACE_MOVES_PAST,
     "displaced, saved before the release": DISPLACED_SAVED_FIRST,
     "displaced, finished after the release": DISPLACED_SAVED_AFTER,
-    "post-exit save": POST_EXIT_SAVE,
-    "post-exit save, the commit's": POST_EXIT_COMMIT,
+    "a synthetic writer's post-exit save": SYNTHETIC_POST_EXIT_SAVE,
+    "a synthetic writer's post-exit save, the commit's": SYNTHETIC_POST_EXIT_COMMIT,
     "drained at the tick": DRAINED_AT_THE_TICK,
     "cleared after the end": CLEARED_AFTER_THE_END,
     "release order": RELEASE_ORDER,
@@ -2321,7 +2340,7 @@ NAMED = {
     "a save that never landed, landed": UNLANDED_LANDED,
     "valueless-gap H1, ended late": GAP_ITERATION_LATE,
     "d78b72f1 in mycooc's order": D78_REAL,
-    "a writer version that changes mid-root": VERSION_CHANGE,
+    "a synthetic writer whose version changes mid-root": SYNTHETIC_VERSION_CHANGE,
     "SLOT": SLOT,
     "SLOT, the older save": SLOT_OLDER,
     "cleared after the end, taken in at the claim": CLEARED_TAKEN_IN,
@@ -2378,7 +2397,10 @@ AMBIGUOUS = [
     Shared(
         "displaced, saved before the release", "displaced, finished after the release"
     ),
-    Shared("post-exit save", "post-exit save, the commit's"),
+    Shared(
+        "a synthetic writer's post-exit save",
+        "a synthetic writer's post-exit save, the commit's",
+    ),
     Shared("MIDSAVE, landed", "MIDSAVE, closed"),
     Shared("a save that never landed, save-start", "a save that never landed, landed"),
     Shared("valueless-gap H1", "valueless-gap H1, ended late"),
@@ -2629,7 +2651,7 @@ def _cleared_after_drain(tick_first: bool, ticks_after: bool, honors: Drain) -> 
         ),
         opening,
         StopRequest("x0"),
-        Emit(0, VALUE, stepless=False),
+        Emit(0, VALUE, Stamp.METRIC),
         Finish(0, True, TICKED if ticks_after else Undated.OWN_LAST),
         ThirdPartyStop(0, Report(None), None, NULL, Honors.UNDISCHARGED),
         closing,
@@ -2893,8 +2915,9 @@ def test_disagreements_with_section_7() -> None:
     """§2's truths that §7's rules cannot give (the task report)."""
     # D2: the successor resumed from a commit whose beat follows its claim
     assert "c1 starts from c0@2" in describe(DISPLACED_SAVED_FIRST)
-    # D3: the successor resumed from an extendable exit, its post-loop value included
-    assert describe(POST_EXIT_SAVE)[4:7] == [
+    # D3, §6's rule on a synthetic writer: the successor resumed from an
+    # extendable exit, its post-loop value included
+    assert describe(SYNTHETIC_POST_EXIT_SAVE)[4:7] == [
         "c0:exit extendable <- c0@2 [v@2]",
         "c1 starts from c0:exit",
         "c1@3 <- c0:exit [v@3]",
@@ -3220,7 +3243,7 @@ def test_the_writer_fact_cut_save() -> None:
     and the save naming it; under ``closed`` the save names no node, and the
     next claim starts from none (task-17-convention-table.md, cut-save)."""
     assert describe(MIDSAVE_LANDED)[3:6] == [
-        "c0@2 <- c0@1 [v@2, v@2]",
+        "c0@2 <- c0@1 [v@2]",
         "c0 died lost",
         "c1 starts from c0@2",
     ]
@@ -3229,7 +3252,7 @@ def test_the_writer_fact_cut_save() -> None:
     assert not any(line.startswith("c0@2") for line in closed)
     # a save that never landed finishes its iteration only under save-start, on
     # a branch no claim resumes from
-    assert "c0@2 <- c0@1 [v@2]" in describe(UNLANDED_SAVE_START)
+    assert "c0@2 <- c0@1 []" in describe(UNLANDED_SAVE_START)  # its status a register
     assert not any(line.startswith("c0@2") for line in describe(UNLANDED_LANDED))
 
 
@@ -3240,9 +3263,9 @@ def test_an_exit_that_cuts_the_pass_after_its_save() -> None:
     after it would (§6, "Save"; A17); one that discards it names nothing. Under
     ``landed`` and ``save-start`` the cut commits the iteration first."""
     assert describe(_midsave_exit(CutSave.CLOSED, discards=False))[3:6] == [
-        "c0:exit extendable <- c0@1 [v@2, v@2]",
+        "c0:exit extendable <- c0@1 [v@2]",
         "c1 starts from c0:exit",
-        "c1@3 <- c0:exit [v@3, v@3]",
+        "c1@3 <- c0:exit [v@3]",
     ]
     assert describe(_midsave_exit(CutSave.CLOSED, discards=True))[3:5] == [
         "c0:exit torn <- c0@1 null",
@@ -3250,7 +3273,7 @@ def test_an_exit_that_cuts_the_pass_after_its_save() -> None:
     ]
     for cut_save in (CutSave.LANDED, CutSave.SAVE_START):
         assert describe(_midsave_exit(cut_save, discards=False))[3:6] == [
-            "c0@2 <- c0@1 [v@2, v@2]",
+            "c0@2 <- c0@1 [v@2]",
             "c0:exit extendable <- c0@2 []",
             "c1 starts from c0@2",
         ]
@@ -3348,16 +3371,19 @@ def test_d78b72f1_in_mycoocs_record_order() -> None:
     for line in ("c1 starts from c0@181", "c2 starts from c1@182"):
         assert line in lines
     assert any(line.startswith("c0@181 <- c0@180 [") for line in lines)
+    # status is a register by mycooc's word: no node holds one (F3)
+    assert not any("status@" in line for line in lines)
 
 
 _STEPPED = ("value", "lifecycle.heartbeat")
 
 
-def test_a_writer_version_that_changes_mid_root() -> None:
-    """Claim 0's old version saved after its exit, so claim 1 resumes from that
-    extendable exit; claim 1's new version saved before its exit, so claim 2
-    resumes from its last commit (§6, "Save"; Review Focus 9)."""
-    lines = describe(VERSION_CHANGE)
+def test_a_synthetic_writer_version_that_changes_mid_root() -> None:
+    """A synthetic writer, not mycooc's: claim 0's old version saved after its
+    exit, so claim 1 resumes from that extendable exit; claim 1's new version
+    saved before its exit, so claim 2 resumes from its last commit (§6, "Save";
+    Review Focus 9)."""
+    lines = describe(SYNTHETIC_VERSION_CHANGE)
     assert "c1 starts from c0:exit" in lines
     assert "c2 starts from c1@5" in lines
 
@@ -3414,7 +3440,7 @@ def test_a_rewind_restates_the_position() -> None:
     h = _h(
         _claim(0, Fresh()),
         run(0, range(3), SAVES),
-        Emit(0, VALUE, stepless=False),
+        Emit(0, VALUE, Stamp.METRIC),
         Rewind(0, SaveOf(0, 0)),
         run(0, [1], SAVES),
         _completes(0),
@@ -3433,7 +3459,7 @@ def test_stepless_records_are_liveness_and_registers() -> None:
     a register, never committed (§7, M3)."""
     h = _h(
         _claim(0, Fresh()),
-        Emit(0, "status", stepless=True),
+        Emit(0, "status", Stamp.STEPLESS),
         Beacon(0, CONTROL),
         run(0, [0], SAVES),
         _completes(0),
@@ -3530,7 +3556,7 @@ def test_the_model_refuses_what_no_conforming_writer_does(
     events: list[Event], rule: str
 ) -> None:
     with pytest.raises(NotConforming, match=rule):
-        walk(History(tuple(events)))
+        walk(History(tuple(events), Born.V0_3_0))
 
 
 def test_a_fenced_workers_save_of_an_earlier_node_lands() -> None:
@@ -3591,3 +3617,219 @@ def test_a_fenced_workers_later_save_names_no_node() -> None:
     outside = describe(_h(taken, _claim(2, FromOutside(1)), _killed(2)))
     assert "c2 starts from root" in loaded
     assert loaded == outside
+
+
+# ----- the Task 19 gaps ----------------------------------------------------------------
+
+
+def _resumed_zero(c: int, origin: Origin) -> Claim:
+    """Claim ``c``, loading ``origin``, whose clock reads 0 before its first
+    iteration (mycooc's counter)."""
+    return Claim(
+        c,
+        own_process(c),
+        Gate.FREE,
+        origin,
+        None,
+        Clock.ZERO,
+        Fold.AT_CLAIM,
+        CutSave.LANDED,
+    )
+
+
+def test_a_save_records_its_states_step_not_its_clock() -> None:
+    """F4: under ``Clock.ZERO`` a save before any iteration is of the loaded
+    state, at its step, whatever the clock reads. So a later claim that loads it
+    labels above that step, and the review's reproduction, labelled 1 over a
+    loaded state at 2, is refused; an exit's save is of the same state."""
+    first: list[Event] = [_claim(0, Fresh()), *run(0, [0, 1, 2], SAVES), _killed(0)]
+    saved: list[Event] = [_resumed_zero(1, FromSave(SaveOf(0, 2))), Save(1), _killed(1)]
+    assert loadable(_h(first, saved).events)[SaveOf(1, 2)] == 2
+    with pytest.raises(NotConforming, match="below the clock's floor 3"):
+        walk(_h(first, saved, _claim(2, FromSave(SaveOf(1, 2))), Begin(2, 1)))
+    good = _h(
+        first,
+        saved,
+        _claim(2, FromSave(SaveOf(1, 2))),
+        run(2, [3], SAVES),
+        _completes(2),
+    )
+    assert "c2 starts from c0@2" in describe(good)
+    exited: list[Event] = [
+        _resumed_zero(1, FromSave(SaveOf(0, 2))),
+        _exit(1, completed=False, error=None, final=YIELDED),
+        Save(1),
+        Halt(1, Exited(0)),
+    ]
+    assert loadable(_h(first, exited).events)[ExitSave(1)] == 2
+
+
+def test_the_counter_convention() -> None:
+    """F1: mycooc's ``final_step`` is its counter, the last iteration it
+    finished, else what its clock read before its first: 0 for a resumed claim
+    under ``Clock.ZERO`` that finished none, where ``finished`` writes null."""
+
+    def final(convention: FinalStep, *passes: Event) -> Any:
+        h = _h(
+            _claim(0, Fresh()),
+            run(0, [0, 1], SAVES),
+            _killed(0),
+            _resumed_zero(1, FromSave(SaveOf(0, 1))),
+            *passes,
+            Exit(1, False, None, convention, Drain.EXIT, discards=False),
+            Halt(1, Exited(0)),
+        )
+        return json.loads(render(h).rows[-1].body)["final_step"]
+
+    assert final(FinalStep.COUNTER) == 0
+    assert final(FinalStep.FINISHED) is None
+    assert final(FinalStep.COUNTER, *run(1, [2], SAVES)) == 2
+
+
+def test_a_stepped_register_is_held_by_no_node() -> None:
+    """F3: a value with a step that its writer keeps outside every lineage
+    (mycooc's ``status``) is a register: it renders at its clock, and no node
+    holds it, where a metric at the same step is committed."""
+    h = _h(
+        _claim(0, Fresh()),
+        Begin(0, 0),
+        Emit(0, STATUS, Stamp.REGISTER),
+        Emit(0, VALUE, Stamp.METRIC),
+        Finish(0, True, Undated.OWN_LAST),
+        _completes(0),
+    )
+    assert [json.loads(r.body)["step"] for r in render(h).rows[1:3]] == [0, 0]
+    assert describe(h)[1] == "c0@0 <- root [v@0]"
+
+
+def test_a_log_born_in_0_2_0_carries_positional_names() -> None:
+    """Ruling 4: the 0.2.0 -> 0.3.0 step filled every ``stopped``'s ``honored``
+    with the stops since the previous ``stopped``, and every heartbeat's and
+    ``stopped``'s ``claim_seq`` with the latest claim before it. A worker
+    displaced by a takeover then beats and stops naming its successor's claim.
+    The truth is the history's: its records are no node (§4's fence)."""
+    taken = _h(
+        _claim(0, Fresh()),
+        run(0, [0], SAVES),
+        StopRequest("x0"),
+        _takeover(1, FromSave(SaveOf(0, 0))),
+        run(0, [1], SAVES),
+        _preempted(0),
+        run(1, [1], SAVES),
+        _preempted(1),
+    )
+    born = replace(taken, born=Born.V0_2_0)
+    bodies = {r.seq: json.loads(r.body) for r in render(born).rows}
+    claim1, displaced_beat, displaced_stop = 5, 7, 8
+    assert bodies[displaced_beat]["claim_seq"] == claim1
+    assert bodies[displaced_stop]["claim_seq"] == claim1
+    assert bodies[displaced_stop]["honored"] == ["x0"]
+    assert (
+        render(taken).rows[displaced_beat - 1].body
+        != render(born).rows[displaced_beat - 1].body
+    )
+    assert describe(born)[:3] == describe(taken)[:3]
+
+
+def test_a_positional_list_can_differ_outside_e2s_stated_cost() -> None:
+    """A gap in the referee, reported: in a log born in 0.2.0, a note's
+    positional ``honored`` lists a stop the worker's tick had already taken in,
+    so the exit's positional list omits it; the native exit honours it, held at
+    a heartbeat (§4). §7's four stated cases are of writers' lists, and this
+    difference is the earlier step's choice, so the truth raises ``Residue``."""
+    h = _h(
+        _claim(0, Fresh()),
+        StopRequest("x0"),
+        run(0, [0], SAVES),
+        ThirdPartyStop(0, Report(None), "note", PROGRESS, Honors.NONE),
+        _preempted(0),
+    )
+    assert truth(h).costs == ()  # the writer's own list names x0
+    with pytest.raises(Residue, match="honours 'x0'"):
+        truth(replace(h, born=Born.V0_2_0))
+
+
+def _phases(h: History) -> Iterator[tuple[Event, str]]:
+    """Each worker event with its claim's phase before it: loading, iterating,
+    between or exited."""
+    phase: dict[int, str] = {}
+    for ev in h.events:
+        if isinstance(ev, Claim):
+            phase[ev.claim] = "loading"
+            continue
+        if isinstance(ev, (Begin, Emit, Beat, Beacon, PassSave, Finish, Save, Exit)):
+            yield ev, phase[ev.claim]
+            if isinstance(ev, Begin):
+                phase[ev.claim] = "iterating"
+            elif isinstance(ev, Finish):
+                phase[ev.claim] = "between"
+            elif isinstance(ev, Exit):
+                phase[ev.claim] = "exited"
+
+
+def test_the_blind_spots_are_reached() -> None:
+    """Task 19's blind spots, each reached by a family: saves before the first
+    iteration, between iterations and of partial state; a claimless note and
+    reap; a reap reported on a live claim; a counter ``final_step``; stepped
+    registers; a label that skips; a takeover of a halted worker; and rewinds."""
+    found: set[str] = set()
+    for name in ("save-points", "third-party-acts"):
+        for h in _histories(FAMILIES[name]):
+            live: set[int] = set()
+            halted: set[int] = set()
+            for ev in h.events:
+                if isinstance(ev, Claim):
+                    live.add(ev.claim)
+                    if ev.gate is Gate.TAKEOVER and ev.claim - 1 in halted:
+                        found.add("takeover=dead")
+                elif isinstance(ev, Halt):
+                    live.discard(ev.claim)
+                    halted.add(ev.claim)
+                elif isinstance(ev, ThirdPartyStop) and isinstance(ev.intent, Report):
+                    if ev.names is None:
+                        found.add(
+                            "unnamed " + ("note" if ev.intent.reap is None else "reap")
+                        )
+                    elif ev.intent.reap is not None and ev.names in live:
+                        found.add("live reap")
+            for ev, phase in _phases(h):
+                if isinstance(ev, Save):
+                    found.add(f"save {phase}")
+                elif isinstance(ev, Emit) and ev.stamp is Stamp.REGISTER:
+                    found.add("stepped register")
+                elif isinstance(ev, Exit) and ev.final_step is FinalStep.COUNTER:
+                    found.add("counter")
+                elif isinstance(ev, Begin) and ev.step == 1 and phase == "loading":
+                    origin = next(
+                        e.origin
+                        for e in h.events
+                        if isinstance(e, Claim) and e.claim == ev.claim
+                    )
+                    found |= {"skip"} if isinstance(origin, Fresh) else set()
+    assert found >= {
+        "save loading",
+        "save between",
+        "save iterating",
+        "unnamed note",
+        "unnamed reap",
+        "live reap",
+        "counter",
+        "stepped register",
+        "skip",
+        "takeover=dead",
+    }, found
+
+
+def test_rewinds_are_reached_and_no_record_shows_one() -> None:
+    """``Rewind`` in enumeration: a worker reloads the root or a save between
+    iterations. A rewind to its newest save writes the log no rewind writes, so
+    the rewind is a fork no record decides."""
+    hs = list(rewinds(passes=3))
+    assert len(hs) < BOUND and len(set(hs)) == len(hs)
+    assert any(isinstance(ev, Rewind) for h in hs for ev in h.events)
+    lineages: dict[tuple[Row, ...], set[Any]] = defaultdict(set)
+    for h in hs:
+        t = truth(h)
+        assert violations(t) == ()
+        lineages[render(h).rows].add(t.lineage)
+    assert any(len(ls) > 1 for ls in lineages.values())

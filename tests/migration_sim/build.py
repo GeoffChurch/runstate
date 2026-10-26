@@ -27,6 +27,7 @@ from .history import (
     Process,
     ProcessEnd,
     Save,
+    Stamp,
     TICKED,
     Undated,
     Watermark,
@@ -36,8 +37,10 @@ VALUE = "v"
 """The one name a builder gives every labelled value. No 0.3.0 rule reads a
 value's name, so a model that let names differ would only hide shared logs."""
 
-RECORD = "status"
-"""The stepless register a save's record writes (mycooc's ``status: saving``)."""
+STATUS = "status"
+"""mycooc's ``status`` register: written at a pass's label before its save
+(``Saving.IN_PASS``), held by no node, or stepless as a save's record
+(``Saving.RECORDED``, mycooc's ``status: saving``)."""
 
 HOST = "sim"
 
@@ -62,8 +65,10 @@ class Saving(Enum):
     NONE = "none"
     IN_BODY = "in-body"  # its pass's last act, durable as the pass closes
     RECORDED = "recorded"  # its pass's last act, after a stepless record of it
-    IN_PASS = "in-pass"  # mycooc's order: a value, the save of its completed
-    # state, its tick (with Tick.AFTER_SAVE), its values, then its close
+    IN_PASS = "in-pass"  # mycooc's order: its status register, the save of its
+    # completed state, its tick (with Tick.AFTER_SAVE), its values, then its close
+    PARTIAL = "partial"  # a save of its partial state inside its pass, after its
+    # value, which names no node (mycooc's bootstrap save under init_iters > 0)
     AFTER_TICK = "after-tick"  # after the iteration's tick
 
 
@@ -118,7 +123,13 @@ class Stops:
     teardown: bool
 
 
-Ending: TypeAlias = Dies | Stops
+@dataclass(frozen=True)
+class Abandons:
+    """The worker ends with no ``stopped`` of its own, and its process runs on: a
+    worker abandoned in its live process, which only a takeover's gate passes."""
+
+
+Ending: TypeAlias = Dies | Stops | Abandons
 
 
 def opening(claim: int, it: Step) -> list[Event]:
@@ -137,11 +148,13 @@ def iteration(claim: int, it: Step, *, cut: Cut) -> list[Event]:
     shape = it.shape
     events = opening(claim, it)
     if shape.valued:
-        events.append(Emit(claim, VALUE, stepless=False))
+        events.append(Emit(claim, VALUE, Stamp.METRIC))
     if cut is Cut.MID_BODY:
         return events
+    if shape.save is Saving.PARTIAL:
+        events.append(Save(claim))
     if shape.save is Saving.RECORDED:
-        events.append(Emit(claim, RECORD, stepless=True))
+        events.append(Emit(claim, STATUS, Stamp.STEPLESS))
     if cut is Cut.MID_SAVE:
         return events
     ticked = shape.tick is Tick.AFTER_BODY and cut is Cut.DONE
@@ -153,10 +166,10 @@ def iteration(claim: int, it: Step, *, cut: Cut) -> list[Event]:
 
 
 def _in_pass(claim: int, it: Step, cut: Cut) -> list[Event]:
-    """mycooc's pass: a value (its ``status``), the save of its completed state,
+    """mycooc's pass: its ``status`` register, the save of its completed state,
     its tick, its values (metrics and ``stage``), then its close."""
     shape = it.shape
-    events = opening(claim, it) + [Emit(claim, VALUE, stepless=False)]
+    events = opening(claim, it) + [Emit(claim, STATUS, Stamp.REGISTER)]
     if cut is Cut.MID_BODY:
         return events
     if cut is Cut.MID_SAVE:
@@ -165,7 +178,7 @@ def _in_pass(claim: int, it: Step, cut: Cut) -> list[Event]:
     if shape.tick is Tick.AFTER_SAVE:
         events.append(Beat(claim, shape.watermark))
     if shape.valued:
-        events.append(Emit(claim, VALUE, stepless=False))
+        events.append(Emit(claim, VALUE, Stamp.METRIC))
     if cut is Cut.AFTER_SAVE:
         return events
     closing = shape.tick is Tick.AFTER_BODY and cut is Cut.DONE
@@ -182,7 +195,7 @@ def _after_close(claim: int, shape: Shape) -> list[Event]:
     if shape.save is Saving.AFTER_TICK:
         events.append(Save(claim))
     if shape.trailing:
-        events.append(Emit(claim, VALUE, stepless=False))
+        events.append(Emit(claim, VALUE, Stamp.METRIC))
     return events
 
 
@@ -191,13 +204,15 @@ def rest(claim: int, it: Step, *, cut: Cut) -> list[Event]:
     return iteration(claim, it, cut=Cut.DONE)[len(iteration(claim, it, cut=cut)) :]
 
 
-def halt_of(end: Ending) -> ProcessEnd:
+def halt_of(end: Ending) -> ProcessEnd | None:
     """How the worker's process ends: a worker that wrote its own ``stopped``
-    exits 0, or 1 after an error."""
+    exits 0, or 1 after an error; an abandoned one's runs on (None)."""
     if isinstance(end, Dies):
         return end.how
     if isinstance(end, Stops):
         return Exited(0 if end.error is None else 1)
+    if isinstance(end, Abandons):
+        return None
     assert_never(end)
 
 
@@ -219,7 +234,7 @@ def ending(claim: int, end: Ending) -> list[Event]:
         if end.saves:
             events.append(Save(claim))
         if end.teardown:
-            events.append(Emit(claim, VALUE, stepless=False))
+            events.append(Emit(claim, VALUE, Stamp.METRIC))
     return events + [Halt(claim, halt_of(end))]
 
 

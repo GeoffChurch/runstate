@@ -21,6 +21,12 @@ history's writers fill them:
 - **a third party's ``honored``**, under ``Honors.UNDISCHARGED``, is every stop
   no ``stopped`` has named yet (``undischarged_stops``, as mycooc's
   clear-staged-stop path reads it);
+- **a log born in format 0.2.0** (``Born.V0_2_0``) carries the names the 0.2.0
+  -> 0.3.0 step filled positionally, not its writers' (reference-by-name.md §6):
+  every ``stopped``'s ``honored`` is every stop since the previous ``stopped``,
+  blind to author and body, and every heartbeat's and ``stopped``'s
+  ``claim_seq`` is the latest claim before it (none for a ``stopped`` before
+  any claim);
 - **a value's payload** is ``"<name>@<step>"``, or ``"<name>"`` when stepless; a
   user record's body is ``{}``;
 - **a handle** is its process's, ``local://<host>/<pid>``.
@@ -36,6 +42,7 @@ from runstate.migrations import Row
 from .history import (
     Beacon,
     Beat,
+    Born,
     Claim,
     Drain,
     Emit,
@@ -87,6 +94,9 @@ def render(history: History) -> Rendered:
     taken: dict[int, set[str]] = {}  # claim -> the stops it took in
     stops: dict[str, int] = {}  # stop id -> its seq
     named: set[str] = set()  # every id a stopped has named so far
+    since: list[str] = []  # the stops since the newest stopped
+    latest: int | None = None  # the newest started's seq
+    positional = history.born is Born.V0_2_0
     control = 0  # the newest control record's seq
     progress: int | None = None  # the newest integer beat's step
 
@@ -126,6 +136,7 @@ def render(history: History) -> Rendered:
                 request_id=ev.launch,
             )
             claim_seqs[ev.claim] = seq
+            latest = seq
             folds[ev.claim] = ev.fold
             spent_at_claim[ev.claim] = frozenset(named)
             considered[ev.claim], taken[ev.claim] = set(), set()
@@ -143,7 +154,7 @@ def render(history: History) -> Rendered:
                 {
                     "step": label,
                     "consumed_seq": watermark,
-                    "claim_seq": claim_seqs[ev.claim],
+                    "claim_seq": latest if positional else claim_seqs[ev.claim],
                     "t": 0.0,
                 },
                 name=None,
@@ -154,29 +165,36 @@ def render(history: History) -> Rendered:
         elif isinstance(ev, Exit):
             if ev.honors is Drain.EXIT:
                 drain(ev.claim)
-            ids = tuple(sorted(taken[ev.claim]))
+            ids = tuple(sorted(since if positional else taken[ev.claim]))
             seq = append(
                 "lifecycle.stopped",
                 _stopped(
                     ev.completed,
                     ev.error,
                     w.derived[i].final_step,
-                    claim_seqs[ev.claim],
+                    latest if positional else claim_seqs[ev.claim],
                     ids,
                 ),
                 name=None,
                 request_id=None,
             )
             named.update(ids)
+            since = []
         elif isinstance(ev, StopRequest):
             seq = append("control.stop", {}, name=None, request_id=ev.request_id)
             stops[ev.request_id] = seq
+            since.append(ev.request_id)
             control = seq
         elif isinstance(ev, ThirdPartyStop):
-            if ev.honors is Honors.UNDISCHARGED:
+            if positional:
+                ids = tuple(sorted(since))
+            elif ev.honors is Honors.UNDISCHARGED:
                 ids = tuple(sorted(set(stops) - named))
             final = progress if ev.final_step is ThirdPartyFinal.PROGRESS else None
-            names = None if ev.names is None else claim_seqs[ev.names]
+            if positional:
+                names = latest
+            else:
+                names = None if ev.names is None else claim_seqs[ev.names]
             seq = append(
                 "lifecycle.stopped",
                 _stopped(False, ev.error, final, names, ids),
@@ -184,6 +202,7 @@ def render(history: History) -> Rendered:
                 request_id=None,
             )
             named.update(ids)
+            since = []
         elif isinstance(ev, Launched):
             seq = append(
                 "launcher.launched",

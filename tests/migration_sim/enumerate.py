@@ -48,6 +48,7 @@ from typing import NamedTuple, TypeAlias, assert_never
 
 from .build import (
     VALUE,
+    Abandons,
     Cut,
     Dies,
     Ending,
@@ -64,6 +65,7 @@ from .build import (
     rest,
 )
 from .history import (
+    Born,
     Claim,
     Clock,
     CutSave,
@@ -92,7 +94,10 @@ from .history import (
     Reaped,
     Release,
     Report,
+    Rewind,
+    Save,
     SaveRef,
+    Stamp,
     StopRequest,
     Stray,
     ThirdPartyFinal,
@@ -124,11 +129,28 @@ class LaunchShape(Enum):
     WRAPPED = "wrapped"  # a wrapper process launched it, reaped with exit 0
 
 
+class Strays(Enum):
+    """A value a writer that holds no claim writes, just before a claim's
+    ``started``: a process before it claims, a claim-race loser, or another
+    program (mycooc's orchestrator writes ``completion_reason``)."""
+
+    NONE = "none"
+    STEPPED = "stepped"  # at a step just below the claim's floor
+    STEPLESS = "stepless"  # with a null step
+
+
 class Successor(Enum):
     """Where the next claim runs, after this one's worker exits."""
 
     OWN_PROCESS = "own-process"
     SAME_PROCESS = "same-process"  # this one's: two Workers run in turn by one process
+
+
+class Naming(Enum):
+    """Whether a third party's ``stopped`` names the claim the space places it at."""
+
+    CLAIM = "claim"
+    NONE = "none"  # a claimless note or reap (mycooc's W4: 72 in the store copy)
 
 
 @dataclass(frozen=True)
@@ -139,6 +161,7 @@ class ThirdParty:
     error: str | None
     final_step: ThirdPartyFinal
     honors: Honors
+    naming: Naming
 
 
 @dataclass(frozen=True)
@@ -195,7 +218,9 @@ class Space:
     clocks: tuple[Clock, ...]  # read only by a loading value of a resumed claim
     folds: tuple[Fold, ...]  # read only where stops are placed
     cut_saves: tuple[CutSave, ...]  # read only by a claim whose pass saves inside it
-    strays: tuple[bool, ...]  # a value a process writes before it claims
+    strays: tuple[Strays, ...]
+    pre_saves: tuple[bool, ...]  # a save of the loaded state before the first
+    # iteration (save-at=before-loop)
     strides: tuple[int, ...]
     shapes: tuple[Shape, ...]
     mid_claim: tuple[ThirdParty | None, ...]
@@ -208,6 +233,7 @@ class Space:
     before_run: tuple[ThirdParty | None, ...]
     launches: tuple[LaunchShape, ...]
     stop_slots: tuple[StopSlot, ...]
+    born: tuple[Born, ...]  # the format each log was born in
 
 
 @dataclass(frozen=True)
@@ -254,10 +280,11 @@ def histories(
         entry = _Entry(own_process(0), Gate.FREE, [])
         for items in _claims(0, claims, steps, space, start, entry):
             for events in _with_stops(items, stops, space.stop_slots):
-                history = History(tuple(events))
-                if history not in seen and conforms(history):
-                    seen.add(history)
-                    yield history
+                for born in space.born:
+                    history = History(tuple(events), born)
+                    if history not in seen and conforms(history):
+                        seen.add(history)
+                        yield history
 
 
 def _claims(
@@ -281,8 +308,10 @@ def _claims(
         launch_id = None if launch is LaunchShape.NONE else f"L{c}"
         for clock in _clocks(origin, loading, space.clocks):
             for its in _iterations(origin, saved, steps, space):
-                for cut_save, stray in itertools.product(
-                    _cut_saves(its.steps, space.cut_saves), space.strays
+                for cut_save, stray, pre_save in itertools.product(
+                    _cut_saves(its.steps, space.cut_saves),
+                    space.strays,
+                    space.pre_saves,
                 ):
                     facts = _Facts(clock, fold, cut_save)
                     stray_step = max(_floor(origin, saved) - 1, 0)
@@ -296,6 +325,7 @@ def _claims(
                         loading,
                         stray,
                         stray_step,
+                        pre_save,
                     )
                     yield from _ends_of(
                         c,
@@ -363,7 +393,10 @@ def _ends_of(
                         c + 1, claims, steps, space, items + shared, into
                     )
                 else:
-                    into = _Entry(own_process(c + 1), Gate.FREE, [])
+                    # an abandoned worker's claim is held and its process lives:
+                    # only a takeover's gate passes it (takeover=dead)
+                    gate = Gate.TAKEOVER if isinstance(end, Abandons) else Gate.FREE
+                    into = _Entry(own_process(c + 1), gate, [])
                     yield from _claims(c + 1, claims, steps, space, items + after, into)
     if last:
         return
@@ -388,18 +421,23 @@ def _claim_items(
     origin: Origin,
     facts: _Facts,
     loading: bool,
-    stray: bool,
+    stray: Strays,
     stray_step: int,
+    pre_save: bool,
 ) -> list[_Item]:
     """Claim ``c``'s start: its launch, a stray value its process writes before
-    it claims, its claim, the previous claim's displaced tail, and its loading
-    value."""
+    it claims, its claim, the previous claim's displaced tail, its loading value,
+    and a save of the state it loaded."""
     items: list[_Item] = [_Slot(StopSlot.BEFORE_CLAIM)]
     if launch_id is not None:
         launched = own_process(c) if launch is not LaunchShape.WRAPPED else _wrapper(c)
         items.append(Launched(launch_id, launched))
-    if stray:
+    if stray is Strays.STEPPED:
         items.append(Stray(VALUE, stray_step))
+    elif stray is Strays.STEPLESS:
+        items.append(Stray(VALUE, None))
+    elif stray is not Strays.NONE:
+        assert_never(stray)
     items.append(
         Claim(
             c,
@@ -414,7 +452,9 @@ def _claim_items(
     )
     items += entry.tail
     if loading:
-        items.append(Emit(c, VALUE, stepless=False))
+        items.append(Emit(c, VALUE, Stamp.METRIC))
+    if pre_save:
+        items.append(Save(c))
     return items
 
 
@@ -447,7 +487,7 @@ def _body(c: int, its: _Run) -> list[_Item]:
 def _tail(
     c: int, its: _Run, origin: Origin, saved: dict[SaveRef, int], tail: Tail
 ) -> list[Event]:
-    events: list[Event] = [Emit(c, VALUE, stepless=False)] if tail.value else []
+    events: list[Event] = [Emit(c, VALUE, Stamp.METRIC)] if tail.value else []
     if its.steps:
         if tail.completes:
             events += rest(c, its.steps[-1], cut=its.cut)
@@ -480,7 +520,8 @@ def _reap(launch: LaunchShape, launch_id: str | None, end: Ending) -> list[Event
         return []
     if launch is LaunchShape.WRAPPED:
         return [Reaped(launch_id, Exited(0))]
-    return [Reaped(launch_id, halt_of(end))]
+    how = halt_of(end)
+    return [] if how is None else [Reaped(launch_id, how)]
 
 
 def _origins(
@@ -569,7 +610,9 @@ def _cuts(its: list[Step], cuts: tuple[Cut, ...]) -> list[Cut]:
     ]
 
 
-def _third_party(names: int | None, third: ThirdParty) -> ThirdPartyStop:
+def _third_party(at: int | None, third: ThirdParty) -> ThirdPartyStop:
+    """``third``, placed at claim ``at`` (none before the run)."""
+    names = at if third.naming is Naming.CLAIM else None
     return ThirdPartyStop(
         names, third.intent, third.error, third.final_step, third.honors
     )
@@ -643,9 +686,15 @@ DISCARDS = Stops(
 )
 
 _RELEASE = ThirdParty(
-    Release(Outcome.LOST, Via.HELPER), None, ThirdPartyFinal.NULL, Honors.NONE
+    Release(Outcome.LOST, Via.HELPER),
+    None,
+    ThirdPartyFinal.NULL,
+    Honors.NONE,
+    Naming.CLAIM,
 )
-_NOTE = ThirdParty(Report(None), "note", ThirdPartyFinal.PROGRESS, Honors.NONE)
+_NOTE = ThirdParty(
+    Report(None), "note", ThirdPartyFinal.PROGRESS, Honors.NONE, Naming.CLAIM
+)
 
 
 def _space(
@@ -664,7 +713,8 @@ def _space(
         clocks=(Clock.LOADED,),
         folds=(Fold.AT_CLAIM,),
         cut_saves=(CutSave.LANDED,),
-        strays=(False,),
+        strays=(Strays.NONE,),
+        pre_saves=(False,),
         strides=(1,),
         shapes=shapes,
         mid_claim=(None,),
@@ -677,6 +727,7 @@ def _space(
         before_run=(None,),
         launches=(LaunchShape.NONE,),
         stop_slots=(),
+        born=(Born.V0_3_0,),
     )
 
 
@@ -764,7 +815,8 @@ MID_SAVES = Space(
     clocks=(Clock.LOADED,),
     folds=(Fold.AT_CLAIM,),
     cut_saves=(CutSave.LANDED, CutSave.CLOSED, CutSave.SAVE_START),
-    strays=(False,),
+    strays=(Strays.NONE,),
+    pre_saves=(False,),
     strides=(1,),
     shapes=(MYCOOC,),
     mid_claim=(None,),
@@ -780,6 +832,7 @@ MID_SAVES = Space(
     before_run=(None,),
     launches=(LaunchShape.NONE,),
     stop_slots=(),
+    born=(Born.V0_3_0,),
 )
 """Two claims in mycooc's pass order, each loading the newest save, whose pass
 is cut before its save, during it, after it landed (the fact ``cut_save``
@@ -794,7 +847,8 @@ RESUMES = Space(
     clocks=(Clock.LOADED,),
     folds=(Fold.AT_CLAIM,),
     cut_saves=(CutSave.LANDED,),
-    strays=(False,),
+    strays=(Strays.NONE,),
+    pre_saves=(False,),
     strides=(1,),
     shapes=(SAVES, UNLOGGED),
     mid_claim=(None,),
@@ -807,6 +861,7 @@ RESUMES = Space(
     before_run=(None,),
     launches=(LaunchShape.NONE,),
     stop_slots=(),
+    born=(Born.V0_3_0,),
 )
 """Two claims, each killed after closing and saving its last pass, before its
 tick: what the second loaded (nothing, each save, or a checkpoint from
@@ -830,7 +885,8 @@ THIRD_PARTIES = Space(
     clocks=(Clock.LOADED,),
     folds=(Fold.AT_CLAIM,),
     cut_saves=(CutSave.LANDED,),
-    strays=(False,),
+    strays=(Strays.NONE,),
+    pre_saves=(False,),
     strides=(1,),
     shapes=(SAVES,),
     mid_claim=(None,),
@@ -851,20 +907,29 @@ THIRD_PARTIES = Space(
             "NODE_FAIL",
             ThirdPartyFinal.NULL,
             Honors.NONE,
+            Naming.CLAIM,
         ),
         _NOTE,
-        ThirdParty(Report(Killed(15)), None, ThirdPartyFinal.PROGRESS, Honors.NONE),
+        ThirdParty(
+            Report(Killed(15)),
+            None,
+            ThirdPartyFinal.PROGRESS,
+            Honors.NONE,
+            Naming.CLAIM,
+        ),
     ),
     successors=(Successor.OWN_PROCESS,),
     displaced=(),
     before_run=(None,),
     launches=(LaunchShape.NONE,),
     stop_slots=(),
+    born=(Born.V0_3_0,),
 )
 """Third parties' stops after a claim's end (a release through the helper or
 written directly, a note, a non-claimant's reap); a worker that saves after its
-own exit and writes a teardown value. Run with ``claims=2, steps=1,
-stops=0``."""
+own exit and writes a teardown value, a synthetic writer (no mycooc version
+saves its resume state after its exit: task-19-report.md, P-a). Run with
+``claims=2, steps=1, stops=0``."""
 
 RELEASED_LIVE = Space(
     origins=(Origins.FRESH,),
@@ -872,7 +937,8 @@ RELEASED_LIVE = Space(
     clocks=(Clock.LOADED,),
     folds=(Fold.AT_CLAIM,),
     cut_saves=(CutSave.LANDED,),
-    strays=(False,),
+    strays=(Strays.NONE,),
+    pre_saves=(False,),
     strides=(1,),
     shapes=(
         SAVES,
@@ -894,6 +960,7 @@ RELEASED_LIVE = Space(
     before_run=(None,),
     launches=(LaunchShape.NONE,),
     stop_slots=(),
+    born=(Born.V0_3_0,),
 )
 """One claim that a third party's stop names while its worker lives, in its last
 iteration, before it begins or before its pass: a release (mistaken, which
@@ -907,7 +974,8 @@ DISPLACEMENT = Space(
     clocks=(Clock.LOADED,),
     folds=(Fold.AT_CLAIM,),
     cut_saves=(CutSave.LANDED,),
-    strays=(False,),
+    strays=(Strays.NONE,),
+    pre_saves=(False,),
     strides=(1,),
     shapes=(SAVES,),
     mid_claim=(None,),
@@ -928,6 +996,7 @@ DISPLACEMENT = Space(
     before_run=(None,),
     launches=(LaunchShape.NONE,),
     stop_slots=(),
+    born=(Born.V0_3_0,),
 )
 """A worker displaced while it lives, by a takeover, a release, or a note and a
 takeover, that then writes a value, or finishes its iteration and beats, or
@@ -941,7 +1010,8 @@ DISPLACED_SAVES = Space(
     clocks=(Clock.LOADED,),
     folds=(Fold.AT_CLAIM,),
     cut_saves=(CutSave.LANDED,),
-    strays=(False, True),
+    strays=(Strays.NONE, Strays.STEPPED, Strays.STEPLESS),
+    pre_saves=(False,),
     strides=(1,),
     shapes=(SAVES,),
     mid_claim=(None,),
@@ -958,10 +1028,12 @@ DISPLACED_SAVES = Space(
     before_run=(None,),
     launches=(LaunchShape.NONE,),
     stop_slots=(),
+    born=(Born.V0_3_0,),
 )
 """Three claims that each load the newest save, or any save, where a displaced
 worker keeps writing and saving after its successor claimed: a save that names
-no node (§4's fence), which a later claim may load; and stray values a process
+no node (§4's fence), which a later claim may load; and stray values, with a
+step or none, a process
 writes before it claims. Run with ``claims=3, steps=1, stops=0``."""
 
 STOPS_AND_REAPS = Space(
@@ -970,7 +1042,8 @@ STOPS_AND_REAPS = Space(
     clocks=(Clock.LOADED,),
     folds=(Fold.AT_CLAIM,),
     cut_saves=(CutSave.LANDED,),
-    strays=(False,),
+    strays=(Strays.NONE,),
+    pre_saves=(False,),
     strides=(1,),
     shapes=(SAVES,),
     mid_claim=(None,),
@@ -979,13 +1052,20 @@ STOPS_AND_REAPS = Space(
     endings=(KILL, PREEMPTED),
     third_parties=(
         None,
-        ThirdParty(Report(None), None, ThirdPartyFinal.NULL, Honors.UNDISCHARGED),
+        ThirdParty(
+            Report(None),
+            None,
+            ThirdPartyFinal.NULL,
+            Honors.UNDISCHARGED,
+            Naming.CLAIM,
+        ),
     ),
     successors=(Successor.OWN_PROCESS,),
     displaced=(),
     before_run=(None,),
     launches=(LaunchShape.NONE, LaunchShape.REAPED, LaunchShape.WRAPPED),
     stop_slots=(StopSlot.AFTER_CLAIM,),
+    born=(Born.V0_3_0,),
 )
 """Stop requests, the stops that clear them, and launches reaped or not, around
 two claims. Run with ``claims=2, steps=1, stops=1``."""
@@ -1015,7 +1095,8 @@ WITHDRAWALS = Space(
     clocks=(Clock.LOADED,),
     folds=(Fold.AT_CLAIM, Fold.AT_DRAIN),
     cut_saves=(CutSave.LANDED,),
-    strays=(False,),
+    strays=(Strays.NONE,),
+    pre_saves=(False,),
     strides=(1,),
     shapes=(
         SAVES,
@@ -1029,7 +1110,13 @@ WITHDRAWALS = Space(
     ),
     mid_claim=(
         None,
-        ThirdParty(Report(None), None, ThirdPartyFinal.NULL, Honors.UNDISCHARGED),
+        ThirdParty(
+            Report(None),
+            None,
+            ThirdPartyFinal.NULL,
+            Honors.UNDISCHARGED,
+            Naming.CLAIM,
+        ),
     ),
     mid_positions=(MidPosition.BEFORE_BODY, MidPosition.BEFORE_ITERATION),
     cuts=(Cut.DONE,),
@@ -1040,6 +1127,7 @@ WITHDRAWALS = Space(
     before_run=(None,),
     launches=(LaunchShape.NONE,),
     stop_slots=(StopSlot.IN_PASS, StopSlot.MID_CLAIM),
+    born=(Born.V0_3_0,),
 )
 """One claim, a stop inside its first pass or before its last iteration, and a
 third party that clears it in that iteration, before it begins or after a
@@ -1051,6 +1139,140 @@ second stated cost, CLEARED_AFTER_THE_END), or none that an at-claim writer
 took in after the answer (the third). Where the stop lands against an
 iteration end no record dates, the commit's drain reads it or not: the
 end-place fork. Run with ``claims=1, steps=2, stops=1``."""
+
+
+COUNTED = Stops(
+    False, None, FinalStep.COUNTER, Drain.EXIT, False, saves=False, teardown=False
+)
+"""A preempted exit whose ``final_step`` is its own counter (mycooc's W1)."""
+
+SAVE_POINTS = Space(
+    origins=(Origins.NEWEST,),
+    loading=(True,),
+    clocks=(Clock.LOADED, Clock.ZERO),
+    folds=(Fold.AT_CLAIM,),
+    cut_saves=(CutSave.LANDED,),
+    strays=(Strays.NONE,),
+    pre_saves=(False, True),
+    strides=(1, 2),
+    shapes=(
+        _shape(
+            True,
+            Tick.AFTER_BODY,
+            Saving.AFTER_TICK,
+            trailing=False,
+            ended=Undated.OWN_LAST,
+        ),
+        _shape(
+            True,
+            Tick.AFTER_BODY,
+            Saving.PARTIAL,
+            trailing=False,
+            ended=Undated.OWN_LAST,
+        ),
+    ),
+    mid_claim=(None,),
+    mid_positions=(MidPosition.BEFORE_BODY,),
+    cuts=(Cut.MID_BODY, Cut.DONE),
+    endings=(KILL, COUNTED),
+    third_parties=(None,),
+    successors=(Successor.OWN_PROCESS,),
+    displaced=(),
+    before_run=(None,),
+    launches=(LaunchShape.NONE,),
+    stop_slots=(),
+    born=(Born.V0_3_0,),
+)
+"""Two claims, each loading the newest save, with a loading value at a clock
+that reads the loaded step or 0, that save: before their first iteration (the
+state they loaded, ``save-at=before-loop``), after an iteration's tick
+(``between``), or of an iteration's partial state (``partial``, which names no
+node); and that end killed, or by an exit whose ``final_step`` is its counter
+(``final-step=counter``); their labels step by one or skip (``stride=skip``).
+Run with ``claims=2, steps=1, stops=0``."""
+
+_UNNAMED_NOTE = ThirdParty(
+    Report(None), None, ThirdPartyFinal.NULL, Honors.UNDISCHARGED, Naming.NONE
+)
+_UNNAMED_REAP = ThirdParty(
+    Report(Killed(15)), None, ThirdPartyFinal.PROGRESS, Honors.NONE, Naming.NONE
+)
+
+THIRD_PARTY_ACTS = Space(
+    origins=(Origins.NEWEST,),
+    loading=(False,),
+    clocks=(Clock.LOADED,),
+    folds=(Fold.AT_CLAIM,),
+    cut_saves=(CutSave.LANDED,),
+    strays=(Strays.NONE,),
+    pre_saves=(False,),
+    strides=(1,),
+    shapes=(
+        MYCOOC,
+        _shape(
+            True, Tick.AFTER_SAVE, Saving.IN_PASS, trailing=False, ended=Undated.NEXT
+        ),
+    ),
+    mid_claim=(
+        None,
+        ThirdParty(
+            Report(Killed(15)),
+            None,
+            ThirdPartyFinal.PROGRESS,
+            Honors.NONE,
+            Naming.CLAIM,
+        ),
+    ),
+    mid_positions=(MidPosition.BEFORE_BODY,),
+    cuts=(Cut.DONE,),
+    endings=(KILL, PREEMPTED, Abandons()),
+    third_parties=(None, _UNNAMED_REAP),
+    successors=(Successor.OWN_PROCESS,),
+    displaced=(),
+    before_run=(None, _UNNAMED_NOTE),
+    launches=(LaunchShape.NONE,),
+    stop_slots=(),
+    born=(Born.V0_3_0,),
+)
+"""Two claims in mycooc's pass order, its ``status`` a stepped register, each
+pass ending with its claim's newest record or just before the log's next (the
+end-time fork), and third parties' acts: a reap
+reported on the live claim (``acts`` (live, reap)), a claimless note before the
+run and a claimless reap after a claim's end (``unnamed``); and a worker
+abandoned in its live process, which the next claim's gate takes over
+(``takeover=dead``). Run with ``claims=2, steps=1, stops=0``."""
+
+POSITIONAL = Space(
+    origins=(Origins.FRESH, Origins.SAVED),
+    loading=(False,),
+    clocks=(Clock.LOADED,),
+    folds=(Fold.AT_CLAIM,),
+    cut_saves=(CutSave.LANDED,),
+    strays=(Strays.NONE,),
+    pre_saves=(False,),
+    strides=(1,),
+    shapes=(SAVES,),
+    mid_claim=(None,),
+    mid_positions=(MidPosition.BEFORE_BODY,),
+    cuts=(Cut.MID_BODY, Cut.BEFORE_TICK),
+    endings=(KILL, PREEMPTED),
+    third_parties=(None, _RELEASE),
+    successors=(Successor.OWN_PROCESS,),
+    displaced=tuple(
+        Displaced(by, Tail(value=False, completes=True, steps=(), end=PREEMPTED))
+        for by in (Takeover(), Release(Outcome.LOST, Via.HELPER))
+    ),
+    before_run=(None,),
+    launches=(LaunchShape.NONE,),
+    stop_slots=(StopSlot.MID_CLAIM, StopSlot.AFTER_CLAIM),
+    born=(Born.V0_2_0,),
+)
+"""Logs born in format 0.2.0, whose ``honored`` lists and heartbeat and
+``stopped`` ``claim_seq`` the 0.2.0 -> 0.3.0 step filled positionally: two
+claims, a stop, a release after a claim's end, and a worker displaced by a
+takeover or a release that finishes its iteration and exits after its
+successor's claim, so its records name that claim. Run with ``claims=2,
+steps=1, stops=1``."""
 
 
 # ----- SLOT: what each claim loaded, under a constraint across claims ----------------------
@@ -1091,7 +1313,7 @@ def slot(*, beats: int, run_on: int) -> Iterator[History]:
                     third += iteration(2, Step(r3 + 1, STEPS), cut=Cut.DONE)
                     third += iteration(2, Step(r3 + 2, STEPS), cut=Cut.DONE)
                     third += ending(2, COMPLETES)
-                    history = History(tuple(first + second + third))
+                    history = History(tuple(first + second + third), Born.V0_3_0)
                     if conforms(history):
                         yield history
 
@@ -1116,3 +1338,44 @@ def _slot_claim(c: int, origin: Origin) -> Claim:
 def _resumes(events: list[Event]) -> list[tuple[int, Origin]]:
     """Each save that exists after ``events``, with its saved state's step."""
     return [(step, FromSave(save)) for save, step in loadable(tuple(events)).items()]
+
+
+# ----- REWINDS: a worker that reloads a save between its iterations ------------------------
+
+
+def rewinds(*, passes: int) -> Iterator[History]:
+    """A worker that reloads state between iterations (``Rewind``), which writes no
+    record:
+
+    - C1 runs ``passes`` iterations, saving any subset of them, then rewinds to
+      the root or to any save it made, or does not, runs the next iteration above
+      that state, saving it, and is killed or exits. A rewind to its newest save
+      at its last iteration writes the log that no rewind writes: the rewind is
+      an event no record shows;
+    - C2 loads any save that exists at its claim, runs one iteration, and
+      completes.
+
+    mycooc's code can revert its state inside a pass (training.py:1099-1110,
+    :1377-1381@bb6f9e8c), which the model does not express; the store copy never
+    shows it."""
+    for kept in itertools.product((False, True), repeat=passes):
+        first: list[Event] = [_slot_claim(0, Fresh())]
+        for s, keep in enumerate(kept):
+            first += iteration(0, Step(s, SAVES if keep else STEPS), cut=Cut.DONE)
+        targets: list[tuple[int, list[Event]]] = [(passes - 1, [])]
+        targets.append((-1, [Rewind(0, None)]))
+        targets += [
+            (step, [Rewind(0, save)]) for save, step in loadable(tuple(first)).items()
+        ]
+        for step, rewind in targets:
+            for end in (KILL, PREEMPTED):
+                rewound = first + rewind
+                rewound += iteration(0, Step(step + 1, SAVES), cut=Cut.DONE)
+                rewound += ending(0, end)
+                for r2, c2 in _resumes(rewound):
+                    second: list[Event] = [_slot_claim(1, c2)]
+                    second += iteration(1, Step(r2 + 1, STEPS), cut=Cut.DONE)
+                    second += ending(1, COMPLETES)
+                    history = History(tuple(rewound + second), Born.V0_3_0)
+                    if conforms(history):
+                        yield history

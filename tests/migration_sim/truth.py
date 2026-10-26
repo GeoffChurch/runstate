@@ -21,8 +21,9 @@ follows from the history so:
   - **``values``** are the seqs of the claim's labelled values written since its
     last position change (§2, "A value belongs to the node whose ``values``
     names its seq"), in writing order. A value is never pending once its worker
-    has written its own ``stopped`` or been fenced, and stepless values are
-    registers (§7, M3);
+    has written its own ``stopped`` or been fenced, and no node holds a register:
+    a stepless value (§7, M3), or a stepped one its writer keeps outside every
+    lineage (``Stamp.REGISTER``, the classifier's ``register``);
   - **``t``** is when the iteration ended (§3, lifecycle-v0.6: a commit's ``t``):
     its own tick's ``t`` where one dates it, else what the history's ``Undated``
     says, the claim's newest record before the commit or the log's next record
@@ -125,6 +126,7 @@ from .history import (
     ProcessEnd,
     Reaped,
     Release,
+    Stamp,
     Report,
     Rewind,
     StopRequest,
@@ -443,7 +445,7 @@ def truth(history: History) -> Truth:
             placed.append(Placed(Start(seq, position[ev.claim]), At(seq)))
         elif isinstance(ev, Emit):
             assert seq is not None
-            if not (fenced or ev.stepless or ev.claim in exited):
+            if not (fenced or ev.stamp is not Stamp.METRIC or ev.claim in exited):
                 pending[ev.claim].append(seq)
         elif isinstance(ev, (Beat, Beacon)):
             assert seq is not None
