@@ -924,7 +924,8 @@ record for, and each is the least-distorting way to do so.
     its claim's exit node (it is a third party's, or a fenced worker's own) and the id is not already
     withdrawn. The withdrawal stands just after that `stopped`, its answer, and carries that `stopped`'s `t`.
   - No stop moves.
-  - The native drains read whatever lies before them: at each commit, at each logged tick, and at the exit.
+  - The native drains read whatever lies before them: at each commit, at each logged tick, a stepless
+    heartbeat included, and at the exit.
   - Each exit's `honored` follows from those reads by 0.4.0's own rules (§4): every stop pending at the
     exit, and every stop held at a node or heartbeat of the claim.
 
@@ -934,20 +935,31 @@ record for, and each is the least-distorting way to do so.
     exit's `honored` is 0.4.0's consequence of them, not a separate fact to preserve.
   - It needs no fork and no choice per consumer, so every consumer's migrated log reads alike.
 
-  *Its cost,* which the owner accepted (2026-10-25). In two cases a migrated exit honours a stop that the
-  0.3.0 exit did not list, so the stop counts as discharged there rather than pending:
-  - a writer whose exits list only the stops it read at its ticks. Its native exit drains every stop
-    before it;
-  - a tick-first loop where a stop is cleared between an iteration's end and the next tick. §4's commit
-    drain reads the stop at the iteration's end, before the clearing.
+  *Its cost,* which the owner accepted (2026-10-25). The native reads can make a migrated exit's `honored`
+  differ from its 0.3.0 list in four cases. Each is named here as the simulator's `Truth.costs` labels it:
+  1. **`TICKS_EXIT`: a ticks-only exit honours a stop it did not list.** A writer whose exits list only the
+     stops it read at its ticks omits a stop logged after its last tick. Its native exit drains every stop
+     before it, and honours that one. A stop 0.3.0 left pending is spent there.
+  2. **`CLEARED_AFTER_DRAIN`: an exit honours a stop cleared after a commit read it.** A stop is cleared
+     between a commit's native drain, which reads it at the iteration's end (§4), and the worker's next 0.3.0
+     read, which skips it. That next read may be its next tick, in either loop order, or its exit. A
+     tick-first loop does this when the stop lands inside the body and is cleared before the next tick.
+     Where the next read is the exit, it most likely falls at a run's last iteration. The native exit honours
+     the stop, which was cleared either way, so only that exit's list differs.
+  3. **`ANSWERED_AFTER_CLAIM`: an exit omits a stop answered after its claim.** An `at-claim` writer, whose
+     fold applies only the answers made before its claim, took in a stop that another party answered after
+     its claim. The withdrawal at the answer precedes its native drain (golden `LATER_COMPLETED`). The stop
+     is spent either way.
+  4. **`DISCHARGED_EARLIER`: a later exit omits a stop an earlier one discharged.** A later claim already in
+     the log, whose 0.3.0 exit honoured a stop, gets a migrated exit that omits it, because an earlier
+     migrated exit already discharged it under case 1.
 
-  The stop fold then lists the stop as spent. It changes behaviour only if the migrated run is resumed: the
-  next claim no longer honours the stop.
-
-  In a third case a migrated exit omits a stop the 0.3.0 exit listed. An `at-claim` writer, whose fold
-  applies only the answers made before its claim, took in a stop that another party answered after its
-  claim. The withdrawal at the answer then precedes the worker's native drain (golden `LATER_COMPLETED`).
-  The stop is spent either way, so only that exit's `honored` differs.
+  *What the cost changes:*
+  - The recorded `honored` lists differ at once, in every case.
+  - So does the stop fold (`undischarged_stops`), where case 1 spends a stop that 0.3.0 left pending, or left
+    for a later claim to honour.
+  - Running behaviour changes only if the migrated run is resumed: its next claim no longer finds that stop
+    pending.
 
 For each ambiguity below, the built-in nearest the rule the step encoded before, in
 `v0_3_0_to_v0_4_0_resolutions.py`, is marked "today's reading", with where that rule differs from it.
