@@ -37,6 +37,19 @@ its record and silent events decide (``Piece``); a lineage is one complete path'
 pieces. The coupling between claims flows only through the state: the pass is linear in
 records times states, never a search across claims.
 
+**Narrowing.** A stated fact, and a classifier answer, only remove candidates. Each rule
+reads a statement as the classes it allows and offers an edge for each, as it does each
+answer the classifier gives; an empty ``loading`` allows no clock read before the first
+pass (``_idles``). The lookaheads read them too, and each keeps more of a world where
+more may follow (``newest_ahead``, ``older_loads``, ``blind``). So wider facts admit a
+superset of lineages: two histories' truths, each a candidate under its own facts, are
+both candidates under the facts true of both, which the oracle's first property rests
+on. One statement is read otherwise: an empty ``fold`` lets either fold stand
+(``_folds``), since its element occurs only where the two folds write different logs,
+and an encoding decides no output. A fact's whole domain contains every statement of
+it, so a relaxation narrower than the whole that admits a history shows the whole one
+does (``blame``).
+
 **The encodings** (§7, "Encodings") decide no output under E2, but a log can contradict
 them, so the engine checks them: a worker's ``watermark`` at each heartbeat, its
 ``honored`` and ``fold`` at its own stopped, where that list is its word (a log born in
@@ -48,6 +61,7 @@ from __future__ import annotations
 import bisect
 import itertools
 import json
+import math
 from collections import defaultdict
 from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -1562,7 +1576,8 @@ def _placed(
     from the worker's fixed record to record ``i`` fall in, and each one's native drain
     read there (E2): what a stop or a spend before it gives it. The last close stays
     datable only by the worker's own tick at ``i``: no act of its own came between,
-    though other writers' records may have. The worker is fixed at ``i`` after."""
+    though other writers' records may have. The worker is fixed at ``i`` after. More
+    placements than the cap are refused before any is made."""
     x = run.w
     new = [
         k
@@ -1579,6 +1594,9 @@ def _placed(
         and x.dating == last.nth
         and x.claim == last.claim
     )
+    if new and math.comb(len(spans) + len(new) - 1, len(new)) > ctx.cap:
+        seq = ctx.recs[i].seq if i < len(ctx.recs) else ctx.recs[-1].seq + 1
+        raise _too_many(ctx, seq, "in placing one worker's silent run before")
     for choice in itertools.combinations_with_replacement(range(len(spans)), len(new)):
         pieces = list(run.pieces)
         y = x
@@ -3238,6 +3256,50 @@ def _relaxed(configuration: Configuration, names: Sequence[Named]) -> Configurat
     return out
 
 
+def _owner(n: WorkerFact | ThirdFact) -> type[WorkerFacts | ThirdPartyFacts]:
+    return WorkerFacts if isinstance(n, WorkerFact) else ThirdPartyFacts
+
+
+def _statements(
+    configuration: Configuration, n: WorkerFact | ThirdFact
+) -> list[frozenset[Any]]:
+    """What each version states of fact ``n``."""
+    versions: Iterable[WorkerFacts | ThirdPartyFacts] = (
+        configuration.workers.values()
+        if isinstance(n, WorkerFact)
+        else configuration.third_parties.values()
+    )
+    return [getattr(f, n.value) for f in versions]
+
+
+def _unstated(configuration: Configuration, n: WorkerFact | ThirdFact) -> list[Any]:
+    """The classes of fact ``n`` some version does not state, in a fixed order."""
+    statements = _statements(configuration, n)
+    return sorted(
+        (c for c in domain(_owner(n), n.value) if any(c not in s for s in statements)),
+        key=repr,
+    )
+
+
+def _added(
+    configuration: Configuration, n: WorkerFact | ThirdFact, c: Any
+) -> Configuration:
+    """The configuration with class ``c`` added to fact ``n`` in every version."""
+    if isinstance(n, WorkerFact):
+        return configuration._replace(
+            workers={
+                k: replace(f, **{n.value: getattr(f, n.value) | {c}})
+                for k, f in configuration.workers.items()
+            }
+        )
+    return configuration._replace(
+        third_parties={
+            k: replace(f, **{n.value: getattr(f, n.value) | {c}})
+            for k, f in configuration.third_parties.items()
+        }
+    )
+
+
 def _stated(configuration: Configuration) -> list[Named]:
     """The facts some version states short of their whole domain, then every
     classifier answer."""
@@ -3283,28 +3345,36 @@ def blame(
     alone, to its whole domain, admits a history; where none alone does, the smallest
     pairs whose joint relaxation does. A relaxation with more than ``cap`` states to
     follow at once is neither: it is reported as undecided, with the cap, and while a
-    single one is undecided no pair is tried."""
+    single one is undecided no pair is tried.
 
-    def admitted(names: tuple[Named, ...]) -> bool | None:
+    A fact's whole domain can be too wide to follow where one class added is not (a
+    load from outside, at every step): there each class is added alone, in every
+    version, and one that admits a history proves the whole relaxation does, since a
+    stated fact only removes candidates (``Narrowing``)."""
+
+    def admitted(relaxed: Configuration) -> bool | None:
         try:
-            g = candidates(
-                rows,
-                _relaxed(configuration, names),
-                born=born,
-                cap=cap,
-                run_on=run_on,
-            )
+            g = candidates(rows, relaxed, born=born, cap=cap, run_on=run_on)
         except Refused:
             return None
         return admits(g)
 
+    def single(n: Named) -> bool | None:
+        whole = admitted(_relaxed(configuration, (n,)))
+        if whole is not None or isinstance(n, Classified):
+            return whole
+        for c in _unstated(configuration, n):
+            if admitted(_added(configuration, n, c)):
+                return True
+        return None
+
     stated = _stated(configuration)
-    found: dict[tuple[Named, ...], bool | None] = {(n,): admitted((n,)) for n in stated}
+    found: dict[tuple[Named, ...], bool | None] = {(n,): single(n) for n in stated}
     # pairs only where every single is known to admit nothing: an undecided single
     # might admit one alone
     if all(ok is False for ok in found.values()):
         pairs = [(a, b) for k, a in enumerate(stated) for b in stated[k + 1 :]]
-        found = {names: admitted(names) for names in pairs}
+        found = {names: admitted(_relaxed(configuration, names)) for names in pairs}
     return Blame(
         tuple(n for n, ok in found.items() if ok),
         tuple(n for n, ok in found.items() if ok is None),

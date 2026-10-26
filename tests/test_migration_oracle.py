@@ -562,44 +562,103 @@ def _narrowed(
     return cfg._replace(workers=workers)
 
 
+class FalseFact(NamedTuple):
+    """A fact narrowed in one named history: in each claim, without each class it
+    declares in turn."""
+
+    history: str
+    fact: E.WorkerFact
+
+
 # A refusal's names cost a relaxed pass per stated fact, each as long as the log. The
-# named histories longer than this, d78b72f1's three (370 to 4,243 records), state
-# false no fact and class that a shorter one does not (measured 2026-10-26: 41 in all).
-FALSE_FACT_RECORDS = 200
+# sample: for each fact and class whose narrowing refuses in some named history, the
+# shortest such history, narrowing that fact (measured 2026-10-26: 47 pairs, over 2,437
+# refusing narrowings in 143 histories). Two load pairs are named only where a class
+# added alone decides what the whole domain cannot follow at BLAME_CAP. A new fact or
+# class re-measures it.
+FALSE_FACT_SAMPLE = (
+    FalseFact("an exit in its first pass, nothing after", E.WorkerFact.DISCARDS),
+    FalseFact("an exit in its first pass, nothing after", E.WorkerFact.FINAL_STEP),
+    FalseFact("an exit in its first pass, nothing after", E.WorkerFact.HONORED),
+    FalseFact("an exit in its first pass, nothing after", E.WorkerFact.LOAD),
+    FalseFact("an exit in its first pass, nothing after", E.WorkerFact.LOOP_END),
+    FalseFact("an exit in its first pass, nothing after", E.WorkerFact.STRIDE),
+    FalseFact("an exit in its first pass, nothing after", E.WorkerFact.VALUES),
+    FalseFact("an exit in its first pass, a register after", E.WorkerFact.VALUES),
+    FalseFact("a save before the tick, the close undated", E.WorkerFact.BEAT_POS),
+    FalseFact("a save before the tick, the close undated", E.WorkerFact.CLOSING),
+    FalseFact("a save before the tick, the close undated", E.WorkerFact.FINAL_STEP),
+    FalseFact("a save before the tick, the close undated", E.WorkerFact.LEAVE_SAVE),
+    FalseFact("a save before the tick, the close undated", E.WorkerFact.LOOP_END),
+    FalseFact("a save before the tick, the close undated", E.WorkerFact.SAVE_AT),
+    FalseFact("a save before the tick, the close undated", E.WorkerFact.WATERMARK),
+    FalseFact("no save before the tick, the close dated", E.WorkerFact.LEAVE_SAVE),
+    FalseFact("beat-ends-iteration H1", E.WorkerFact.BEAT_COV),
+    FalseFact("beat-ends-iteration H1", E.WorkerFact.CLOSING),
+    FalseFact("beat-ends-iteration H1", E.WorkerFact.MARKER),
+    FalseFact("beat-ends-iteration H1", E.WorkerFact.SAVE_AT),
+    FalseFact("beat-ends-iteration H1", E.WorkerFact.SAVE_COV),
+    FalseFact("beat-ends-iteration H2", E.WorkerFact.BEAT_POS),
+    FalseFact("valueless-gap H1", E.WorkerFact.BEAT_COV),
+    FalseFact("valueless-gap H2", E.WorkerFact.STRIDE),
+    FalseFact("progress before a beat", E.WorkerFact.LOAD),
+    FalseFact("golden ERRORED", E.WorkerFact.ERROR_FINAL_STEP),
+    FalseFact("golden LATER_ERROR_HONORED", E.WorkerFact.HONORED),
+    FalseFact("post-beat-values H2", E.WorkerFact.VALUES),
+    FalseFact(
+        "golden LOADING_RETRY_BESIDE_A_DISPLACED_WORKER", E.WorkerFact.ERROR_FINAL_STEP
+    ),
+    FalseFact("golden LOADING_RETRY_BESIDE_A_DISPLACED_WORKER", E.WorkerFact.TAKEOVER),
+    FalseFact("golden TWO_CLAIMS_ONE_LAUNCH", E.WorkerFact.TAKEOVER),
+    FalseFact(
+        "golden RESUMED_FROM_A_STEP_COMMITTED_AFTER_THE_CLAIM", E.WorkerFact.LOAD
+    ),
+    FalseFact("golden TRAILING", E.WorkerFact.WATERMARK),
+    FalseFact("golden AFTER_AN_ATTRIBUTED_DEATH", E.WorkerFact.STRAYS),
+    FalseFact("final-step H2, discarded", E.WorkerFact.DISCARDS),
+    FalseFact("golden DOUBLY_DISPLACED", E.WorkerFact.LOAD),
+    FalseFact("golden RESUMED_PAST_A_PREEMPTED_EXIT", E.WorkerFact.WATERMARK),
+    FalseFact("golden LOADING_RETRY_RELEASED", E.WorkerFact.LOADING),
+    FalseFact("golden LOADING_RETRY_RELEASED", E.WorkerFact.VALUES),
+    FalseFact("resume-claim H3, newer", E.WorkerFact.LOAD),
+    FalseFact("golden LOADING", E.WorkerFact.LOADING),
+    FalseFact("a save that never landed, save-start", E.WorkerFact.BEAT_POS),
+    FalseFact("a save that never landed, save-start", E.WorkerFact.SAVE_AT),
+    FalseFact("MIDSAVE, landed", E.WorkerFact.CUT_SAVE),
+    FalseFact("MIDSAVE, closed", E.WorkerFact.CUT_SAVE),
+    FalseFact("MIDSAVE, save-start", E.WorkerFact.CUT_SAVE),
+    FalseFact("SLOT", E.WorkerFact.SAVE_COV),
+)
 
 
 @pytest.mark.parametrize(
-    "name",
-    [n for n, h in S.NAMED.items() if len(render(h).rows) <= FALSE_FACT_RECORDS],
+    "case",
+    FALSE_FACT_SAMPLE,
+    ids=[f"{c.history}: {c.fact.value}" for c in FALSE_FACT_SAMPLE],
 )
-def test_a_false_fact_refuses_naming_it(name: str) -> None:
-    """Each fact a claim's elements exercise, stated without the class one element
-    declares: where the log then admits no history, the refusal names that fact."""
-    h = S.NAMED[name]
-    if not parsed(h):
-        return
+def test_a_false_fact_refuses_naming_it(case: FalseFact) -> None:
+    """A fact a claim's elements exercise, stated without the class one element
+    declares: where the log then admits no history, the refusal proves that fact, its
+    relaxation admitting one."""
+    h = S.NAMED[case.history]
+    assert parsed(h)
     ob = D.observe(h)
     cfg = D.configuration([ob])
     rows = list(render(h).rows)
+    refused = 0
     for seq, facts in ob.claims.items():
+        if not facts.get(case.fact.value):  # no element of it in this claim
+            continue
         version = f"claim@{seq}"
-        for fact, elements in facts.items():
-            if not elements:
-                continue
-            named = E.WorkerFact(fact)
-            declared = getattr(cfg.workers[version], fact)
-            for cls in sorted(declared, key=repr):
-                false = _narrowed(cfg, version, fact, declared - {cls})
-                g = E.candidates(rows, false, born=D.born(h), cap=CAP, run_on=RUN_ON)
-                if not E.admits(g):
-                    b = E.blame(
-                        rows, false, born=D.born(h), cap=BLAME_CAP, run_on=RUN_ON
-                    )
-                    assert any(named in n for n in b.names + b.undecided), (
-                        fact,
-                        cls,
-                        b,
-                    )
+        declared = getattr(cfg.workers[version], case.fact.value)
+        for cls in sorted(declared, key=repr):
+            false = _narrowed(cfg, version, case.fact.value, declared - {cls})
+            g = E.candidates(rows, false, born=D.born(h), cap=CAP, run_on=RUN_ON)
+            if not E.admits(g):
+                refused += 1
+                b = E.blame(rows, false, born=D.born(h), cap=BLAME_CAP, run_on=RUN_ON)
+                assert any(case.fact in n for n in b.names), (cls, b)
+    assert refused, "the sample's narrowing admits a history"
 
 
 # ----- 3, directly: a stated fact the log contradicts refuses (Important 2) --------
