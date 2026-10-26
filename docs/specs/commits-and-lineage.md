@@ -1087,8 +1087,8 @@ loop treats as done. A **tick** is a heartbeat with a step. A **save** is of sta
   `design-v0.2.md` §6). A readable exit can contradict it.
 - **`honored`:** which stops an own `stopped` lists:
   - every stop the worker took in, its exit draining too (`exit`), or only those its ticks drained (`ticks`);
-  - every stop since the previous `stopped` (`positional`): the 0.2.0 → 0.3.0 step's
-    `stop-honored=positional`, which wrote every `honored` of a log it migrated (`reference-by-name.md` §6).
+  - every stop since the previous `stopped` (`positional`): how the 0.2.0 → 0.3.0 step fills every `honored`
+    of a log it migrates under its reading `stop-honored=positional` (`reference-by-name.md` §6).
 - **`watermark`:** what a heartbeat's `consumed_seq` holds: the newest control record before it (`control`),
   the newest since its claim, else 0 (`claimed`), or the newest record of any topic before it (`tail`).
 
