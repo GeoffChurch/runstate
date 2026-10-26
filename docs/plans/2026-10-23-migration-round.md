@@ -683,7 +683,7 @@ Its report is `task-16-sim-report.md`. It records:
 a search across claims and the scale run fails. Then stop, and put the measurement to the owner. Both judges
 named this as the one fact that would change the ranking.
 
-### Task 21: The shared mechanism, revised for facts and choosers
+### Task 21: The shared mechanism, revised for facts, choosers and divergences
 
 **Files:**
 - Modify `docs/specs/log-formats.md` §6, "Ambiguity".
@@ -695,7 +695,16 @@ named this as the one fact that would change the ranking.
   - **A step declares** its facts, as closed types per writer version with the classifier Protocol, and its
     projections, each with its chooser Protocol and built-in choosers. `refuse` is always one of them.
   - **Detection** reports forks per projection, each with the fact that would settle it.
-  - **The manifest** records the facts, the classifier and the choices.
+  - **Divergences** (owner, 2026-10-25). A divergence is a rule under which a read of the migrated log answers
+    differently from the same read of the input log. Corrections count. It is not an ambiguity: no two
+    histories differ, so the site principle stays clean.
+    - A step declares its divergences as a closed set.
+    - Detection finds each one where its rule fires, and reports it by name: the reads it changes and how,
+      how many runs, and example sites.
+    - A run with an occurring divergence is refused until the user accepts it by name (`--accept <name>`).
+      `refuse` is the only alternative.
+    - Every read-changing rule is one. A rule that changes no read is not, as E1 is not.
+  - **The manifest** records the facts, the classifier, the choices and the acceptances.
   - **What stays approved:**
     - a detection pass that writes nothing;
     - no default guess, and no accept-all;
@@ -703,9 +712,9 @@ named this as the one fact that would change the ranking.
     - a whole custom step as the escape hatch;
     - the precedent for every later step.
 - [ ] **Step 2: Express the 0.2.0 → 0.3.0 step's three ambiguities in it** (`reference-by-name.md` §6). That
-  step has no facts and three projections.
-- [ ] **Step 3: Implement `ambiguity.py`, the CLI's `--assume` and `--resolve`, and `migrate()`'s required
-  keyword-only argument.**
+  step has no facts and three projections. Declare any divergences it has.
+- [ ] **Step 3: Implement `ambiguity.py`, the CLI's `--assume`, `--resolve` and `--accept`, and `migrate()`'s
+  required keyword-only argument.**
 - [ ] **Step 4: Tests, then commit and push.**
 
 ### Task 22: The step on the engine, and §7 from it
@@ -721,14 +730,20 @@ named this as the one fact that would change the ranking.
 - [ ] **Step 2: Restate each golden as (log, facts, choices) → output.**
   - The three malformed-body goldens follow the malformed-record rule.
   - Fix the stale comments on `LATER_DEFAULT`, `BEATEN_AFTER` and `TWO_CLAIMS_ONE_LAUNCH`.
-- [ ] **Step 3: Rewrite §7 from the engine:** the target, the facts, the projections, the choosers, the
-  encoding rules and the refusals. The fifteen ambiguities' clause text goes. The figures wait for Task 23.
-- [ ] **Step 4: Commit and push.**
+- [ ] **Step 3: Declare the step's divergences.** Each read-changing rule the corpus runner names as a class of
+  P1–P4 differences is one, and so is E2's `honored` difference, with its four cost cases. Its sites are pinned
+  against the simulator's `Truth.costs`.
+- [ ] **Step 4: Rewrite §7 from the engine:**
+  - the target, the facts, the projections and the choosers;
+  - the encoding rules, the divergences and the refusals.
+
+  The fifteen ambiguities' clause text goes. The figures wait for Task 23.
+- [ ] **Step 5: Commit and push.**
 
 ### Task 23: The corpus, re-run on a frozen snapshot
 
 - [ ] **Step 1: Run the baseline and the new step against Task 20's snapshot,** the store copy and
   translation, with Task 19's configuration.
-  - Report P1–P4, forks per projection, and refusals with what they name.
+  - Report P1–P4, forks per projection, refusals with what they name, and sites per divergence.
   - Measure the store top-up's 17 channels.
 - [ ] **Step 2: Hand over** to Stage 5's Task 14 remainder, then Task 15.
