@@ -18,6 +18,7 @@ import sys
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from functools import partial
 from typing import Any
 
@@ -49,6 +50,7 @@ def _mutations() -> dict[str, Patch]:
         E._ahead_of,
         E.reading,
     )
+    settled, merged, placed, read = E._settled, E._merged, E._placed, E._read
     return {
         # a cut pass: no save begun; finished by its save; a landed save that did not
         # finish it
@@ -169,16 +171,43 @@ def _mutations() -> dict[str, Patch]:
             "_ahead_of": lambda ctx, i, world, rec: (
                 x
                 for x in ahead(ctx, i, world, rec)
-                if not x[1] or any(isinstance(p, E.PCommit) for p in x[1])
+                if any(w.claim == rec.claim for w in x[0].workers)
+                or not any(w.claim == rec.claim for w in world.workers)
             )
         },
-        "third: a commit before the withdrawal": {
-            "_ahead_of": lambda ctx, i, world, rec: (
+        # a commit's place and its drain (E2; critique P4)
+        "drain: a commit's": {"_commit_drain": lambda ctx, world, w, gaps: w},
+        "place: the last interval only": {
+            "_placed": lambda ctx, i, world, w, run, *, tick: (
                 x
-                for x in ahead(ctx, i, world, rec)
-                if not any(isinstance(p, E.PCommit) for p in x[1])
+                for x in placed(ctx, i, world, w, run, tick=tick)
+                if all(
+                    p.gaps.last == ctx.recs[i - 1].seq
+                    for p in x.pieces
+                    if isinstance(p, E.PCommit) and p not in run.pieces
+                )
             )
         },
+        "save: between, before the tick": {"_between_save": lambda f, x: None},
+        # the width reducers
+        "settled: blind everywhere": {
+            "_settled": lambda ctx, i, world: settled(
+                replace(ctx, blind=tuple(True for _ in ctx.blind)), i, world
+            )
+        },
+        "settled: no claim asked about": {
+            "_settled": lambda ctx, i, world: settled(
+                replace(ctx, asked=tuple(frozenset() for _ in ctx.asked)), i, world
+            )
+        },
+        "settled: no load ahead": {
+            "_settled": lambda ctx, i, world: settled(
+                replace(ctx, newest_ahead=tuple(False for _ in ctx.newest_ahead)),
+                i,
+                world,
+            )
+        },
+        "merged: across pieces": {"_merged": _merged_across(merged)},
         "gate: a live takeover": {"_gate": _no_live_takeover()},
         "owing: halts after its act": {
             "_acted": lambda ctx, i, world, w: (
@@ -224,13 +253,27 @@ def _mutations() -> dict[str, Patch]:
         "reading: origin": {
             "reading": lambda ctx, s, ps: reading(ctx, s, ps)._replace(origin=None)
         },
+        "read: an exit": {
+            "_read": lambda ctx, p: None if isinstance(p, E.PExit) else read(ctx, p)
+        },
     }
 
 
 def _no_older(f: Any) -> Any:
-    from dataclasses import replace
-
     return replace(f, load=f.load - {Load.OLDER})
+
+
+def _merged_across(merged: Callable[..., Any]) -> Callable[..., Any]:
+    """``_merged`` that also merges successors whose pieces differ, keeping the first
+    one's: it drops what a record decides."""
+
+    def narrowed(steps: Any) -> Any:
+        out: dict[Any, Any] = {}
+        for world, pieces in merged(steps):
+            out.setdefault(world, (world, pieces))
+        return list(out.values())
+
+    return narrowed
 
 
 def _no_live_takeover() -> Callable[..., Iterator[Any]]:
@@ -283,7 +326,8 @@ def checks() -> Iterator[tuple[str, Callable[[], None]]]:
         one, other = S.NAMED[pair.one], S.NAMED[pair.other]
         yield f"pair {pair.one} | {pair.other}", partial(_no_silence, one, other)
     yield "the decode's order (P6)", O.test_the_decode_reads_the_last_claim_first
-    yield "a tick dates its close", O.test_a_tick_at_once_after_its_close_dates_the_commit
+    dating = O.test_a_tick_at_once_after_its_close_dates_the_commit
+    yield "a tick dates its close", dating
     for fam, make in O.FAMILIES.items():
         yield f"family {fam}", partial(_family_own, make)
     for fam, make in O.FAMILIES.items():
@@ -307,16 +351,22 @@ def _family_pairs(make: Callable[[], Iterator[Any]]) -> None:
                 assert O.silent(one, other) == []
 
 
+class Broken(Exception):
+    """A check crashed under the mutation: the patch, not the oracle, failed."""
+
+
 def caught(patch: Patch) -> str | None:
-    """The first check that fails under the mutation, or None."""
+    """The first check that fails under the mutation, or None. Only an assertion of the
+    oracle, or a run the engine refuses under true facts, counts: any other exception is
+    a broken patch, and raises."""
     with applied(patch):
         for name, check in checks():
             try:
                 check()
-            except (
-                Exception
-            ) as exc:  # an assertion, a refusal, a crash: each is the oracle failing
+            except (AssertionError, E.Refused) as exc:
                 return f"{name}: {type(exc).__name__}"
+            except Exception as exc:
+                raise Broken(f"{name}: {type(exc).__name__}: {exc}") from exc
     return None
 
 
@@ -324,13 +374,20 @@ def main(argv: list[str]) -> int:
     mutations = _mutations()
     chosen = argv or list(mutations)
     survivors = []
+    broken = []
     for name in chosen:
         t0 = time.time()
-        found = caught(mutations[name])
+        try:
+            found = caught(mutations[name])
+        except Broken as exc:
+            broken.append(name)
+            print(f"{name}: BROKEN {exc}", flush=True)
+            continue
         print(f"{name}: {found or 'SURVIVED'} ({time.time() - t0:.0f}s)", flush=True)
         if found is None:
             survivors.append(name)
     print(f"survivors: {survivors}")
+    print(f"broken: {broken}")
     return 0
 
 

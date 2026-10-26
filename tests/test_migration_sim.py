@@ -92,6 +92,7 @@ from tests.migration_sim.history import (
     Emit,
     CutSave,
     TICKED,
+    Ticked,
     Undated,
     Event,
     Exit,
@@ -2270,7 +2271,102 @@ SLOT_OLDER = _h(
 )
 
 
+# The Task 20 review's probes (task-20-review.md, Critical 1 and 2).
+#
+# A silent close among two stops that a third party's note then withdraws: the
+# native commit drains what is posted before it and not yet withdrawn, so the exit
+# honours nothing, a, or both, by where the close stood (§7, E2). One log.
+def _closed_among_stops(at: int) -> History:
+    stops: list[Event] = [StopRequest("a"), StopRequest("b")]
+    stops.insert(at, Finish(0, False, Undated.OWN_LAST))
+    return _h(
+        Claim(
+            0,
+            own_process(0),
+            Gate.FREE,
+            Fresh(),
+            None,
+            Clock.LOADED,
+            Fold.AT_CLAIM,
+            CutSave.CLOSED,
+        ),
+        _open(0, 0, "loss"),
+        stops,
+        ThirdPartyStop(0, Report(None), None, NULL, Honors.UNDISCHARGED),
+        Exit(0, False, None, FinalStep.FINISHED, Drain.EXIT, discards=False),
+        Halt(0, Exited(0)),
+    )
+
+
+# A displaced worker's silent close before, or after, the fenced worker's own
+# stopped that withdraws the stop it would drain: claim 0 is released while live and
+# writes on, fenced; claim 1's commit takes a in only if it stands before claim 0's
+# stopped withdraws it. One log.
+def _closed_beside_a_fence(first: bool) -> History:
+    close: list[Event] = [Finish(1, False, Undated.OWN_LAST)]
+    fenced: list[Event] = [
+        Exit(0, False, None, YIELDED, Drain.EXIT, discards=False),
+        Halt(0, Exited(0)),
+    ]
+    return _h(
+        Claim(
+            0,
+            own_process(0),
+            Gate.FREE,
+            Fresh(),
+            None,
+            Clock.LOADED,
+            Fold.AT_CLAIM,
+            CutSave.CLOSED,
+        ),
+        _open(0, 0, "loss"),
+        _released(0, Outcome.LOST),
+        Claim(
+            1,
+            own_process(1),
+            Gate.FREE,
+            Fresh(),
+            None,
+            Clock.LOADED,
+            Fold.AT_CLAIM,
+            CutSave.CLOSED,
+        ),
+        _open(1, 0, "loss"),
+        StopRequest("a"),
+        (close + fenced) if first else (fenced + close),
+        Exit(1, False, None, FinalStep.FINISHED, Drain.EXIT, discards=False),
+        Halt(1, Exited(0)),
+    )
+
+
+# A save between a pass's close and its worker's tick: the tick no longer follows the
+# close at once, so it dates nothing (§7, "The end-time fork"). Without the save it
+# does, and the log is the same.
+def _saved_before_the_tick(ended: Undated | Ticked) -> History:
+    save: list[Event] = [] if isinstance(ended, Ticked) else [Save(0)]
+    return _h(
+        _claim(0, Fresh()),
+        _open(0, 0, "loss"),
+        Finish(0, False, ended),
+        save,
+        Beat(0, CONTROL),
+        _completes(0),
+    )
+
+
 NAMED = {
+    "a silent close before two stops a note withdraws": _closed_among_stops(0),
+    "a silent close between two stops a note withdraws": _closed_among_stops(1),
+    "a silent close after two stops a note withdraws": _closed_among_stops(2),
+    "a displaced worker's close before a fenced stopped": _closed_beside_a_fence(True),
+    "a displaced worker's close after a fenced stopped": _closed_beside_a_fence(False),
+    "a save before the tick, the close undated": _saved_before_the_tick(
+        Undated.OWN_LAST
+    ),
+    "a save before the tick, the close ended at the tick": _saved_before_the_tick(
+        Undated.NEXT
+    ),
+    "no save before the tick, the close dated": _saved_before_the_tick(TICKED),
     "stop-author H1": STOP_AUTHOR_EXIT,
     "stop-author H2": STOP_AUTHOR_THIRD_PARTY,
     "third-party-stop H1": TPS_CLEARS_STAGED,
@@ -2368,6 +2464,26 @@ class Shared(NamedTuple):
 
 
 AMBIGUOUS = [
+    Shared(
+        "a silent close before two stops a note withdraws",
+        "a silent close between two stops a note withdraws",
+    ),
+    Shared(
+        "a silent close between two stops a note withdraws",
+        "a silent close after two stops a note withdraws",
+    ),
+    Shared(
+        "a displaced worker's close before a fenced stopped",
+        "a displaced worker's close after a fenced stopped",
+    ),
+    Shared(
+        "a save before the tick, the close undated",
+        "a save before the tick, the close ended at the tick",
+    ),
+    Shared(
+        "a save before the tick, the close undated",
+        "no save before the tick, the close dated",
+    ),
     Shared("stop-author H1", "stop-author H2"),
     Shared(
         "third-party-stop H1, a note after the exit",

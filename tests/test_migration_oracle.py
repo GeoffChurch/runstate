@@ -14,13 +14,16 @@ check. Over every family the simulator enumerates and every named history, five
 properties:
 
 1. **No silent answer:** where two histories write one log and differ in truth, the
-   engine reports a fork in the projection where they differ, under the facts true of
-   both.
-2. **Every truth reachable:** under a history's own facts, its truth is a candidate.
+   engine, under the facts true of both, keeps both truths, and reports a fork in each
+   projection where they differ.
+2. **Every truth reachable:** under a history's own facts, its truth is a candidate:
+   its readings (Span's placements included, ``Truth.places``) and its end times.
 3. **Every output defined:** no crash, and every refusal names a fact or a record.
 4. **No unique wrong answer** under true facts.
-5. **An order-free candidate set,** with the decode following its stated rule: last
-   claim first, re-pruning after each choice.
+5. **An order-free candidate set,** with the decode following its stated rule: the
+   engine's forks, read off one layer of its graph each, are the explicit list's; and
+   its decode, fork by fork from the last claim back, gives what the rule gives over
+   the list.
 
 A log the step's own parse refuses (M9: an in-claim rewind) is outside the engine's
 domain: its refusal names the record, which property 3 accepts.
@@ -56,6 +59,9 @@ PATHS = 4000
 # states in one layer for a refusal's relaxed runs: each relaxes a fact to its whole
 # domain, and too many to follow counts as admitted, so a smaller cap only names more
 BLAME_CAP = 300
+# labels past the log's highest step that a run of passes no record pins is followed to,
+# a claim: the oracle's histories run on by at most one pass
+RUN_ON = 2
 
 # ----- the two encodings' names, read alike -------------------------------------------
 
@@ -88,6 +94,7 @@ def want(h: H.History) -> Want:
     named = {r.seq: _claim_seq(r) for r in rows if r.topic == "lifecycle.stopped"}
     claims = [r.seq for r in rows if r.topic == "lifecycle.started"]
     L = t.lineage
+    placed = _placements(t, rows)
     out: dict[int, E.Reading] = {}
     for c in [*claims, E.RUN]:
         start = next((s for s in L.starts if s.claim_seq == c), None)
@@ -111,7 +118,7 @@ def want(h: H.History) -> Want:
         )
         commits = sorted(
             (
-                (x.node.nth, _node(x.parent), x.values)
+                (x.node.nth, _node(x.parent), x.values, placed[x.node])
                 for x in L.commits
                 if x.node.claim_seq == c
             ),
@@ -134,6 +141,22 @@ def want(h: H.History) -> Want:
         )
     times = {E.CommitId(x.node.claim_seq, x.node.nth): x.t for x in L.commits}
     return Want(out, times)
+
+
+_BOUNDARIES = ("lifecycle.started", "control.stop", "lifecycle.stopped")
+
+
+def _placements(t: T.Truth, rows: Sequence[Row]) -> dict[T.CommitId, int]:
+    """Each commit's placement as the engine's Span reads it: the seq of the latest
+    boundary (a started, a control.stop or a stopped) at or before the record it
+    stands just after (``Truth.places``)."""
+    bounds = [r.seq for r in rows if r.topic in _BOUNDARIES]
+    out: dict[T.CommitId, int] = {}
+    for p in t.places:
+        if isinstance(p.record, T.Commit):
+            assert isinstance(p.place, T.After)  # a commit is a record the step adds
+            out[p.record.node] = max(b for b in bounds if b <= p.place.seq)
+    return out
 
 
 def _claim_seq(r: Row) -> int | None:
@@ -167,7 +190,7 @@ def run(histories: Sequence[H.History]) -> E.Graph:
     every one of them."""
     rows = list(render(histories[0]).rows)
     cfg = D.configuration([D.observe(h) for h in histories])
-    return E.candidates(rows, cfg, born=D.born(histories[0]), cap=CAP)
+    return E.candidates(rows, cfg, born=D.born(histories[0]), cap=CAP, run_on=RUN_ON)
 
 
 def parsed(h: H.History) -> bool:
@@ -190,7 +213,8 @@ def _fits(ctx: E.Context, p: E.Piece, w: Want) -> bool:
         return r.origin == p.resume
     if isinstance(p, E.PCommit):
         return any(
-            nth == p.nth and parent == p.parent for nth, parent, _ in r.span.commits
+            (nth, parent, after) == (p.nth, p.parent, p.gaps.after)
+            for nth, parent, _, after in r.span.commits
         )
     if isinstance(p, E.PExit):
         x = r.span.exit
@@ -228,28 +252,17 @@ def reachable(g: E.Graph, w: Want, *, cap: int) -> bool:
     return any(matches(g.ctx, ps, w) for ps in found)
 
 
-class Report(NamedTuple):
-    """What the engine says of a log: each subject's readings, and each commit's end
-    times over every path."""
-
-    readings: dict[int, set[E.Reading]]
-    times: dict[E.CommitId, set[float]] | None  # None: too many paths to list
-
-
-def report(g: E.Graph) -> Report:
-    found = {s: set(E.readings(g, s, cap=PATHS)) for s in E.subjects(g)}
-    times: dict[E.CommitId, set[float]] | None = defaultdict(set)
+def times_over(g: E.Graph) -> dict[E.CommitId, set[float]] | None:
+    """Each commit's end times over every complete path; None where the paths are too
+    many to list."""
+    out: dict[E.CommitId, set[float]] = defaultdict(set)
     try:
         for ps in E.chains(g, cap=PATHS):
             for c, ts in E.times(g.ctx, ps).items():
-                times[c] |= ts  # type: ignore[index]
+                out[c] |= ts
     except E.TooMany:
-        times = None
-    return Report(found, None if times is None else dict(times))
-
-
-def unique(r: Report) -> bool:
-    return all(len(rs) == 1 for rs in r.readings.values())
+        return None
+    return dict(out)
 
 
 # ----- the histories ------------------------------------------------------------------
@@ -297,11 +310,11 @@ def own(h: H.History) -> None:
     ), f"refused at record {g.stopped_at} under the history's own facts"
     w = want(h)
     assert reachable(g, w, cap=PATHS), "the history's truth is no candidate"
-    r = report(g)
-    if unique(r):
-        assert {s: next(iter(rs)) for s, rs in r.readings.items()} == w.readings
-        if r.times is not None:
-            for c, ts in r.times.items():
+    if not E.questions(g):  # one answer: it must be the truth, its end times too
+        assert readings_of(g.ctx, E.witness(g)) == w.readings
+        times = times_over(g)
+        if times is not None:
+            for c, ts in times.items():
                 if len(ts) == 1:
                     assert w.times[c] in ts
 
@@ -320,31 +333,30 @@ def test_families_under_their_own_facts(family: str) -> None:
 # ----- 1: no silent answer ------------------------------------------------------------
 
 
-PROJECTIONS: tuple[tuple[str, Callable[[E.Reading], object]], ...] = (
-    ("origin", lambda r: r.origin),
-    ("end", lambda r: r.end),
-    ("span", lambda r: r.span),
+PROJECTIONS: tuple[tuple[E.Projection, Callable[[E.Reading], object]], ...] = (
+    (E.Projection.ORIGIN, lambda r: r.origin),
+    (E.Projection.END, lambda r: r.end),
+    (E.Projection.SPAN, lambda r: r.span),
 )
 
 
 def silent(one: H.History, other: H.History) -> list[str]:
-    """Where the engine, under the facts true of both, reports no fork where two
-    histories' truths differ: each such subject and projection, or end time."""
+    """Where the engine, under the facts true of both, leaves either truth out, or
+    reports no fork in a projection where the two differ. A truth's end times are part
+    of its being a candidate (``matches``)."""
     g = run([one, other])
     assert E.admits(g), "refused under the facts true of both"
     a, b = want(one), want(other)
-    r = report(g)
-    found: list[str] = []
+    found = [
+        f"the {name} truth is no candidate"
+        for name, w in (("first", a), ("second", b))
+        if not reachable(g, w, cap=PATHS)
+    ]
+    forked = {(q.subject, q.projection) for q in E.questions(g)}
     for s, ra in a.readings.items():
-        rb = b.readings[s]
-        for part, of in PROJECTIONS:
-            va, vb = of(ra), of(rb)
-            if va != vb and not {va, vb} <= {of(x) for x in r.readings[s]}:
-                found.append(f"claim {s} {part}")
-    if a.readings == b.readings and r.times is not None:
-        for c, t in a.times.items():
-            if t != b.times[c] and not {t, b.times[c]} <= r.times[c]:
-                found.append(f"{c} end time")
+        for projection, of in PROJECTIONS:
+            if of(ra) != of(b.readings[s]) and (s, projection) not in forked:
+                found.append(f"claim {s} {projection.value}")
     return found
 
 
@@ -375,51 +387,100 @@ def candidates_listed(g: E.Graph) -> list[dict[int, E.Reading]]:
     return list(seen.values())
 
 
-def first(subject: int, found: Sequence[E.Reading]) -> E.Reading:
-    return min(found, key=repr)
+def first(q: E.Question) -> E.Answer:
+    return q.answers[0]
 
 
-def last(subject: int, found: Sequence[E.Reading]) -> E.Reading:
-    return max(found, key=repr)
+def last(q: E.Question) -> E.Answer:
+    return q.answers[-1]
+
+
+Path = tuple[tuple[E.Piece, ...], ...]
+
+
+def _at(ctx: E.Context, path: Path, s: int, pr: E.Projection, k: int) -> Any:
+    return E._reads(ctx, E.Edge(0, 0, path[k]), s, pr)
+
+
+def last_first(ctx: E.Context) -> list[int]:
+    """The decode's order of subjects: the claims, last first, then the run."""
+    claims = sorted(r.seq for r in ctx.recs if r.topic is E.Topic.STARTED)
+    return [*reversed(claims), E.RUN]
+
+
+def listed_questions(
+    ctx: E.Context, listed: Sequence[Path], order: Sequence[int]
+) -> list[E.Question]:
+    """The forks of an explicit list of paths, subject by subject in ``order``: what the
+    engine's ``questions`` must find, read off the list instead of the graph. Their
+    witnesses are any listed path that reads each answer."""
+    out: list[E.Question] = []
+    for s in order:
+        for pr in E.Projection:
+            for k in range(len(listed[0])):
+                by: dict[Any, Path] = {}
+                for path in listed:
+                    by.setdefault(_at(ctx, path, s, pr, k), path)
+                if len(by) > 1:
+                    answers = tuple(
+                        E.Answer(v, tuple(p for part in path for p in part))
+                        for v, path in sorted(by.items(), key=lambda kv: repr(kv[0]))
+                    )
+                    out.append(E.Question(s, pr, k, answers))
+    return out
 
 
 def decoded_by_list(
-    listed: list[dict[int, E.Reading]], subjects: Sequence[int], pick: E.Chooser
+    ctx: E.Context, listed: Sequence[Path], pick: E.Chooser, order: Sequence[int]
 ) -> dict[int, E.Reading]:
-    """The decode's rule applied to the explicit list: last claim first, keeping the
-    candidates each choice leaves."""
-    left = listed
-    for s in subjects:
-        found = sorted({c[s] for c in left}, key=repr)
-        if len(found) > 1:
-            choice = pick(s, found)
-            assert choice is not None
-            left = [c for c in left if c[s] == choice]
-    assert len({tuple(sorted(c.items())) for c in left}) == 1
-    return left[0]
+    """The decode's rule applied to the explicit list, subject by subject in ``order``:
+    each fork read off the paths the earlier choices left."""
+    left = list(listed)
+    while True:
+        forks = listed_questions(ctx, left, order)
+        if not forks:
+            break
+        q = forks[0]
+        choice = pick(q)
+        assert choice is not None
+        left = [
+            path
+            for path in left
+            if _at(ctx, path, q.subject, q.projection, q.layer) == choice.value
+        ]
+    readings = {
+        tuple(sorted(readings_of(ctx, [p for part in path for p in part]).items()))
+        for path in left
+    }
+    assert len(readings) == 1
+    return dict(next(iter(readings)))
 
 
 def ordered(h: H.History | Sequence[H.History]) -> None:
+    """Property 5: the engine's forks are the explicit list's, each read off one layer;
+    and its decode, fork by fork, gives what the rule gives over the list."""
     hs = [h] if isinstance(h, H.History) else list(h)
     if not parsed(hs[0]):
         return
     g = run(hs)
     try:
-        listed = candidates_listed(g)
+        listed = E.paths(g, cap=PATHS)
     except E.TooMany:
-        return  # too many to list: the engine's own sets stand alone
-    # order-free: each subject's readings, as the engine computes them per claim, are
-    # the listed candidates'
-    for s in E.subjects(g):
-        assert set(E.readings(g, s, cap=PATHS)) == {c[s] for c in listed}
-    # the decode: last claim first, re-pruning after each choice, as the stated rule
-    # over the list
+        return  # too many to list: the engine's own forks stand alone
+    found = [
+        (q.subject, q.projection, q.layer, tuple(a.value for a in q.answers))
+        for q in E.questions(g)
+    ]
+    want_ = [
+        (q.subject, q.projection, q.layer, tuple(a.value for a in q.answers))
+        for q in listed_questions(g.ctx, listed, last_first(g.ctx))
+    ]
+    assert found == want_
     for pick in (first, last):
-        d = E.decode(g, pick, cap=PATHS)
-        got = candidates_listed(d)
-        assert len(got) == 1
-        assert got[0] in listed
-        assert got[0] == decoded_by_list(listed, E.subjects(g), pick)
+        d = E.decode(g, pick)
+        assert E.questions(d) == []
+        got = readings_of(g.ctx, E.witness(d))
+        assert got == decoded_by_list(g.ctx, listed, pick, last_first(g.ctx))
 
 
 @pytest.mark.parametrize("name", list(S.NAMED))
@@ -478,9 +539,11 @@ def test_a_false_fact_refuses_naming_it(name: str) -> None:
             declared = getattr(cfg.workers[version], fact)
             for cls in sorted(declared, key=repr):
                 false = _narrowed(cfg, version, fact, declared - {cls})
-                g = E.candidates(rows, false, born=D.born(h), cap=CAP)
+                g = E.candidates(rows, false, born=D.born(h), cap=CAP, run_on=RUN_ON)
                 if not E.admits(g):
-                    named = E.blame(rows, false, born=D.born(h), cap=BLAME_CAP)
+                    named = E.blame(
+                        rows, false, born=D.born(h), cap=BLAME_CAP, run_on=RUN_ON
+                    )
                     assert any(fact in n.split(" + ") for n in named), (
                         fact,
                         cls,
@@ -510,25 +573,30 @@ def test_the_decode_reads_the_last_claim_first() -> None:
         for k, f in cfg.workers.items()
     }
     g = E.candidates(
-        list(render(h).rows), cfg._replace(workers=loose), born=D.born(h), cap=CAP
+        list(render(h).rows),
+        cfg._replace(workers=loose),
+        born=D.born(h),
+        cap=CAP,
+        run_on=RUN_ON,
     )
-    listed = candidates_listed(g)
-    assert len(listed) == 3
+    assert len(candidates_listed(g)) == 3
 
-    def holder(r: E.Reading) -> int:
-        return r.origin.claim if r.origin is not None else 0
+    def holder(a: E.Answer) -> int:
+        """The oldest claim whose node the answer resumes from or continues."""
+        nodes = [r.resume for r in a.value if isinstance(r, E.Resumes)]
+        nodes += [r.parent for r in a.value if isinstance(r, E.PCommit)]
+        return min((n.claim for n in nodes if n is not None), default=0)
 
-    def oldest_then_least(subject: int, found: Sequence[E.Reading]) -> E.Reading:
-        if len({r.origin for r in found}) > 1:
-            return min(found, key=holder)
-        return min(found, key=lambda r: len(r.span.commits))
+    def oldest_then_least(q: E.Question) -> E.Answer:
+        if len({holder(a) for a in q.answers}) > 1:
+            return min(q.answers, key=holder)
+        return min(q.answers, key=lambda a: len(a.value))
 
-    got = candidates_listed(E.decode(g, oldest_then_least, cap=PATHS))
-    assert len(got) == 1
-    a, c = got[0][1], got[0][12]
+    got = readings_of(g.ctx, E.witness(E.decode(g, oldest_then_least)))
+    a, c = got[1], got[12]
     assert c.origin == E.CommitId(1, 2) and len(a.span.commits) == 3
     forward = decoded_by_list(
-        listed, sorted(s for s in E.subjects(g) if s), oldest_then_least
+        g.ctx, E.paths(g, cap=PATHS), oldest_then_least, [1, 8, 12, E.RUN]
     )
     assert forward[12].origin == E.CommitId(8, 0) and len(forward[1].span.commits) == 2
 
@@ -541,5 +609,4 @@ def test_a_tick_at_once_after_its_close_dates_the_commit() -> None:
     each such time as a fork between the record before the close and the tick, which
     holds the truth."""
     h = S.NAMED["golden RESUMED_BESIDE_A_REAL_BEAT"]
-    r = report(run([h]))
-    assert r.times == {c: {t} for c, t in want(h).times.items()}
+    assert times_over(run([h])) == {c: {t} for c, t in want(h).times.items()}
