@@ -100,9 +100,13 @@ Stage 6 adds five:
    if its iteration finished before the takeover. Task 20.
 8. **A stated fact the log contradicts refuses, naming the fact,** and never yields a quiet single answer.
    Task 20.
-9. **Facts follow the writer's version.** In a root whose writer changed mid-corpus (mycooc's W1, before and
-   after `b5262327`), the earlier claims keep the exit node as their resume point (D3). Task 20, with a named
-   history.
+9. **Facts follow the writer's version.** In a root whose writer changes mid-root, the earlier claims keep their
+   own version's facts. Take a synthetic writer whose earlier version saves its resume state after its exit and
+   whose later version saves before: the earlier claims resume from the exit node (D3), and the later from their
+   last commit. Task 20, with a named history.
+   - This is not mycooc's. Its resume checkpoint is force-saved before its stop in every W1 revision, as
+     Task 19 found and the controller verified.
+   - mycooc's versions differ in other facts. Its four W1 revisions and its run flags give 64 worker versions.
 10. **Detection still points somewhere.** Under the generic model every claim may have run on unlogged, so
     the detection pass reports per projection, naming the fact that would settle each fork, never a bare
     list of sites. Task 21.
