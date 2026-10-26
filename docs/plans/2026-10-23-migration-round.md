@@ -106,7 +106,8 @@ Stage 6 adds five:
    last commit. Task 20, with a named history.
    - This is not mycooc's. Its resume checkpoint is force-saved before its stop in every W1 revision, as
      Task 19 found and the controller verified.
-   - mycooc's versions differ in other facts. Its four W1 revisions and its run flags give 64 worker versions.
+   - mycooc's versions differ in other facts. Its four W1 revisions and five run flags give 128 worker
+     versions, of which 4 occur in the store copy.
 10. **Detection still points somewhere.** Under the generic model every claim may have run on unlogged, so
     the detection pass reports per projection, naming the fact that would settle each fork, never a bare
     list of sites. Task 21.
