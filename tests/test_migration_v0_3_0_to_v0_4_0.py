@@ -47,7 +47,7 @@ from runstate.migrations.v0_3_0_to_v0_4_0 import (
     DatedBy,
     EndedAt,
     EndTime,
-    Undated,
+    Unlogged,
     V0_3_0_to_V0_4_0,
     _Malformed,
     _Stopped,
@@ -100,10 +100,28 @@ class _Reference:
         return frozenset({V.ValueRole(V.Role.PASS, False)})
 
 
+CHECKPOINTED = dataclasses.replace(
+    STEP.reference(closing=frozenset({V.Closing.OTHER})).workers["reference"],
+    loading=frozenset({V.Loading.LOADED}),
+    values=frozenset({V.Phase.PASS}),
+    loop_end=frozenset({V.LoopEnd.AFTER_CLOSE}),
+    discards=frozenset({V.Discards.KEEPS}),
+    cut_save=frozenset({V.CutSave.CLOSED}),
+    save_at=frozenset({V.SaveAt.IN_PASS, V.SaveAt.AT_CLOSE}),
+    save_cov=frozenset({V.Saved.SAVED}),
+    leave_save=frozenset({V.Saved.SAVED}),
+    load=frozenset({V.Load.FRESH, V.Load.NEWEST}),
+    strays=frozenset(),
+)
+"""The shipped preset's facts, narrowed as a consumer of the reference Worker would on
+its own word: no pass ends at a value, values only inside a pass, the loop left after a
+close, each pass's completed state saved inside it or at its close, the newest save or
+nothing loaded, and no other writer's values."""
+
 REFERENCE = V.Configuration(
     {
         "ref": dataclasses.replace(
-            STEP.REFERENCE.workers["reference"],
+            CHECKPOINTED,
             final_step=frozenset(V.FinalStep),
             error_final_step=frozenset({V.FinalStep.TICKED}),
             watermark=frozenset(V.Watermark),
@@ -112,9 +130,9 @@ REFERENCE = V.Configuration(
     {"tp": UNSTATED.third_parties["any"]},
     _Reference(),
 )
-"""The shipped preset (``STEP.REFERENCE``) widened for these tests' hand-written logs:
-any ``final_step`` at an exit, the last tick at an error, any watermark, and any third
-party; narrow enough that a small log follows at the cap."""
+"""``CHECKPOINTED`` widened for these tests' hand-written logs: any ``final_step`` at an
+exit, the last tick at an error, any watermark, and any third party; narrow enough that
+a small log follows at the cap."""
 
 
 def under(configuration, **choosers):
@@ -1043,24 +1061,33 @@ def test_newest_continues_the_newest_node_and_no_node_is_oldest():
 
 
 def test_the_end_time_choosers_and_the_answers_shape():
+    """``lower`` and ``upper`` order every answer by time, then by place: a tick at its
+    own ``t`` in its own place, a place at its lower bound (``lower``) or at the next
+    record's ``t`` (``upper``)."""
     lower, upper = (b.chooser for b in END_TIME.generic)
     ticks = (E.Tick(6, 6.0), E.Tick(8, 8.0))
-    both = EndTime(1, 0, ticks, Undated(2.0, (3.0, 4.0)))
-    assert lower.choose(both) == EndedAt(2.0) and upper.choose(both) == DatedBy(8)
-    undated = EndTime(1, 0, (), Undated(2.0, (3.0, 4.0)))
-    assert lower.choose(undated) == EndedAt(2.0)
-    assert upper.choose(undated) == EndedAt(3.0)
-    last = EndTime(1, 0, (), Undated(2.0, ()))  # after the log's last record
-    assert upper.choose(last) == EndedAt(2.0)
-    dated = EndTime(1, 0, ticks, None)
+    places = (Unlogged(3, 2.0, 3.5), Unlogged(4, 2.0, 4.0))
+    both = EndTime(E.CommitId(1, 0), ticks, places)
+    assert lower.choose(both) == EndedAt(3, 2.0)  # a tie on time: the earlier place
+    assert upper.choose(both) == DatedBy(8)
+    undated = EndTime(E.CommitId(1, 0), (), places)
+    assert upper.choose(undated) == EndedAt(4, 4.0)
+    last = EndTime(
+        E.CommitId(1, 0), (), (Unlogged(9, 2.0, None),)
+    )  # after the log's last record
+    assert upper.choose(last) == EndedAt(9, 2.0)
+    dated = EndTime(E.CommitId(1, 0), ticks, ())
     assert lower.choose(dated) == DatedBy(6) and upper.choose(dated) == DatedBy(8)
-    assert END_TIME.check(both, EndedAt(5)) == EndedAt(5.0)
+    tied = EndTime(E.CommitId(1, 0), (E.Tick(5, 4.0),), (Unlogged(4, 3.0, 4.0),))
+    assert upper.choose(tied) == DatedBy(5)  # a tie on time: the later place
+    assert END_TIME.check(both, EndedAt(4, 5)) == EndedAt(4, 5.0)
     assert END_TIME.check(both, DatedBy(6)) == DatedBy(6)
     for q, bad in (
-        (both, EndedAt(1.0)),
-        (both, EndedAt("3")),
+        (both, EndedAt(3, 1.0)),
+        (both, EndedAt(3, "3")),
+        (both, EndedAt(5, 3.0)),
         (both, DatedBy(7)),
-        (dated, EndedAt(9.0)),
+        (dated, EndedAt(3, 9.0)),
         (both, 5.0),
     ):
         with pytest.raises(ValueError):
@@ -1186,10 +1213,48 @@ def test_a_run_on_cut_at_the_horizon_refuses_naming_the_claim_and_the_facts(run_
     )
     with pytest.raises(
         MigrationError,
-        match=r"a candidate of claims 1, 4 runs on, or loads from outside, to the horizon "
-        rf"\({run_on} labels .* \(marker, beat-cov, stride\), or raise --run-on",
+        match=r"a candidate of claims? [0-9, ]+ closes a pass at the horizon, its loop "
+        rf"free to continue \({run_on} labels .*: marker, closing, beat-cov$",
     ):
         step.transform(_a_claim_then_another(), resolutions=res, history=())
+
+
+class _Closes(_Reference):
+    """``_Reference``, its stepped values each its pass's last act."""
+
+    def value(self, seq):
+        return frozenset({V.ValueRole(V.Role.CLOSING, False)})
+
+
+@pytest.mark.parametrize(
+    "narrowed",
+    [
+        {"marker": frozenset({V.Marker.RECORDED})},
+        {"closing": frozenset({V.Closing.AT_VALUE})},
+        {"beat_cov": frozenset({V.Covered.BEATEN})},
+    ],
+    ids=["marker", "closing", "beat-cov"],
+)
+def test_each_fact_the_horizon_refusal_names_clears_it(narrowed):
+    """Each fact the refusal names, stated narrowly, rules out a silent run long enough
+    to reach the horizon, and the same log migrates."""
+    w = REFERENCE.workers["ref"]
+    unbounded = dataclasses.replace(
+        w,
+        load=frozenset(V.Load) - {V.Load.OUTSIDE},
+        marker=frozenset(V.Marker),
+        beat_cov=frozenset(V.Covered),
+        closing=frozenset(V.Closing),
+    )
+    cleared = REFERENCE._replace(
+        workers={"ref": dataclasses.replace(unbounded, **narrowed)}
+    )
+    if "closing" in narrowed:  # a pass then closes only at a value that closes it
+        cleared = cleared._replace(classifier=_Closes())
+    m = step.transform(
+        _a_claim_then_another(), resolutions=under(cleared, **CHOSEN), history=()
+    )
+    assert m.rows[0].topic == "lifecycle.started"
 
 
 def test_no_stated_facts_names_the_facts_to_state_and_the_preset():
@@ -1203,32 +1268,69 @@ def test_no_stated_facts_names_the_facts_to_state_and_the_preset():
     assert "under no stated facts (no --assume)" in message
     assert "load, " in message and "stride" in message and "marker" in message
     assert '§7, "The writer facts"' in message
-    assert "--assume runstate.migrations.v0_3_0_to_v0_4_0:REFERENCE" in message
+    assert "runstate.migrations.v0_3_0_to_v0_4_0.reference(closing=...)" in message
 
 
-def test_the_reference_preset_is_named_on_the_command_line_and_migrates_its_log():
-    """A consumer names the preset, giving its word that its worker is the reference
-    Worker: the reference Worker's exit honouring its stop migrates under it."""
+PRESET = STEP.reference(closing=frozenset(V.Closing))
+"""A consumer's own call of the preset, as its ``--assume`` names it: these tests'
+bodies end a pass at a value, or after another writer's record."""
+
+PRESET_CHECKPOINTED = V.Configuration(
+    {"reference": dataclasses.replace(CHECKPOINTED, closing=frozenset(V.Closing))},
+    {},
+    STEP.Reference(),
+)
+"""The preset narrowed by a consumer's word on its checkpoints (``CHECKPOINTED``)."""
+
+
+def test_a_consumer_names_its_own_call_of_the_preset_and_migrates_its_log():
+    """A consumer's ``--assume`` names its own call of ``reference``, giving its word
+    that its worker is the reference Worker: the reference Worker's exit honouring its
+    stop migrates under it, and the manifest records the classifier."""
     choices = parse_choices(
         [step],
-        assume=["runstate.migrations.v0_3_0_to_v0_4_0:REFERENCE"],
+        assume=["tests.test_migration_v0_3_0_to_v0_4_0:PRESET"],
         resolve=["span=fewest", "origin=newest", "end-time=lower"],
         accept=[],
         limits=LIMITS,
     )
     res = resolutions(step, choices)
-    assert res.assumptions.facts is STEP.REFERENCE
+    assert res.assumptions.facts.workers == PRESET.workers
     out = step.transform(EXIT, resolutions=res, history=())
-    assert [x.topic for x in out.rows] == [
-        "lifecycle.started",
-        "lifecycle.commit",
-        "control.stop",
-        "lifecycle.stopped",
-    ]
-    assert json.loads(out.rows[3].body)["honored"] == ["halt"]
-    assert FACTS.describe(STEP.REFERENCE)["classifier"] == (
+    topics = [x.topic for x in out.rows]
+    assert topics[0] == "lifecycle.started" and topics[-1] == "lifecycle.stopped"
+    assert topics.count("lifecycle.commit") == 1 and "control.stop" in topics
+    assert json.loads(out.rows[-1].body)["honored"] == ["halt"]
+    assert FACTS.describe(PRESET)["classifier"] == (
         "runstate.migrations.v0_3_0_to_v0_4_0:Reference"
     )
+
+
+def test_the_preset_states_only_what_the_worker_fixes():
+    """``closing`` is the caller's, required and keyword-only; every fact of the
+    consumer's own code is left whole."""
+    with pytest.raises(TypeError):
+        STEP.reference()  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        STEP.reference(frozenset(V.Closing))  # type: ignore[misc]
+    w = PRESET.workers["reference"]
+    for unstated in (
+        "loading",
+        "marker",
+        "loop_end",
+        "discards",
+        "cut_save",
+        "save_at",
+        "save_cov",
+        "leave_save",
+        "load",
+        "strays",
+    ):
+        assert getattr(w, unstated) == E.domain(V.WorkerFacts, unstated), unstated
+    assert w.values == {V.Phase.PASS, V.Phase.BETWEEN}
+    assert STEP.reference(closing=frozenset({V.Closing.OTHER})).workers[
+        "reference"
+    ].closing == {V.Closing.OTHER}
 
 
 def _the_reference_workers_log(kind):
@@ -1270,7 +1372,7 @@ def test_the_reference_workers_own_logs_migrate_under_the_preset(kind):
     the pass an error cut, which no lineage holds."""
     choices = parse_choices(
         [step],
-        assume=["runstate.migrations.v0_3_0_to_v0_4_0:REFERENCE"],
+        assume=["tests.test_migration_v0_3_0_to_v0_4_0:PRESET_CHECKPOINTED"],
         resolve=["span=fewest", "origin=newest", "end-time=lower"],
         accept=[],
         limits=LIMITS,
@@ -1284,3 +1386,321 @@ def test_the_reference_workers_own_logs_migrate_under_the_preset(kind):
     assert [x.topic for x in out.rows].count("lifecycle.started") == (
         2 if kind == "resume" else 1
     )
+
+
+# ----- where an undated commit stands is part of its end-time reading (fix round 2) ----
+
+
+FIX1 = V.Configuration({"reference": CHECKPOINTED}, {}, STEP.Reference())
+"""The reference preset as fix round 1 shipped it: the reference Worker with its
+consumer's checkpoints (``CHECKPOINTED``)."""
+
+
+def _a_beacon_between_two_places():
+    """The re-review's five records: pass 0 dated by its tick (seq 3); pass 1, which the
+    exit's ``final_step`` begins, closes silently before the beacon at seq 4 or after
+    it. The beacon is the worker's own record, which no other reading reads."""
+    return [
+        r(1, "lifecycle.started", _started("local://n/1", 1.0), t=1.0),
+        r(2, "value", _value(1.0, 0, 2.0), name="loss", t=2.0),
+        r(3, "lifecycle.heartbeat", _beat(0, 0, 1, 3.0), t=3.0),
+        r(4, "lifecycle.heartbeat", _beat(None, 0, 1, 4.0), t=4.0),
+        r(5, "lifecycle.stopped", _stopped(False, None, 1, 1, [], 5.0), t=5.0),
+    ]
+
+
+class _Asked:
+    """An end-time chooser that keeps each question it is asked and answers as a
+    built-in does."""
+
+    def __init__(self, builtin):
+        self.builtin, self.asked = builtin, []
+
+    def choose(self, question):
+        self.asked.append(question)
+        return self.builtin.chooser.choose(question)
+
+
+def test_each_place_an_undated_commit_may_stand_is_its_own_answer():
+    """Where the undated commit stands sets its lower bound, so each place is an
+    answer, and the paths an answer keeps all write it there: ``lower`` writes it after
+    the tick at its bound, ``upper`` after the beacon at the next record's ``t``."""
+    rows = _a_beacon_between_two_places()
+    found = step.detect(
+        rows, assumptions=under(FIX1, **CHOSEN).assumptions, history=()
+    ).forks
+    assert {p: [f.seq for f in fs] for p, fs in found.items() if fs} == {
+        "end-time": [1]
+    }
+    out = {}
+    for builtin in END_TIME.generic:
+        asked = _Asked(builtin)
+        m = step.transform(
+            rows,
+            resolutions=under(FIX1, **{**CHOSEN, "end_time": Chosen("x", asked)}),
+            history=(),
+        )
+        assert asked.asked == [
+            EndTime(
+                E.CommitId(1, 1), (), (Unlogged(3, 3.0, 4.0), Unlogged(4, 4.0, 5.0))
+            )
+        ]
+        out[builtin.name] = [(x.topic, json.loads(x.body)["t"]) for x in m.rows[2:]]
+        assert m.readings["end-time"] == {
+            1: {
+                "1": (
+                    {"is": "EndedAt", "after": 3, "t": 3.0}
+                    if builtin.name == "lower"
+                    else {"is": "EndedAt", "after": 4, "t": 5.0}
+                )
+            }
+        }
+    assert out["lower"] == [
+        ("lifecycle.commit", 3.0),
+        ("lifecycle.commit", 3.0),
+        ("lifecycle.heartbeat", 4.0),
+        ("lifecycle.stopped", 5.0),
+    ]
+    assert out["upper"] == [
+        ("lifecycle.commit", 3.0),
+        ("lifecycle.heartbeat", 4.0),
+        ("lifecycle.commit", 5.0),
+        ("lifecycle.stopped", 5.0),
+    ]
+
+
+def test_a_consumers_end_time_at_a_place_is_written_there():
+    """A consumer's ``EndedAt`` after the beacon at a time between the two bounds is
+    written after the beacon, never before it: the answer, not an order, places it."""
+
+    class Late:
+        def choose(self, question):
+            return EndedAt(4, 4.5)
+
+    m = step.transform(
+        _a_beacon_between_two_places(),
+        resolutions=under(FIX1, **{**CHOSEN, "end_time": Chosen("x", Late())}),
+        history=(),
+    )
+    assert [(x.topic, json.loads(x.body)["t"]) for x in m.rows[3:5]] == [
+        ("lifecycle.heartbeat", 4.0),
+        ("lifecycle.commit", 4.5),
+    ]
+    with pytest.raises(MigrationError, match="precedes the lower bound 4.0 there"):
+
+        class Early:
+            def choose(self, question):
+                return EndedAt(4, 3.5)
+
+        step.transform(
+            _a_beacon_between_two_places(),
+            resolutions=under(FIX1, **{**CHOSEN, "end_time": Chosen("x", Early())}),
+            history=(),
+        )
+
+
+class _Both:
+    """A classifier that answers every value both a register and a metric, in any
+    phase: which one a teardown value was, no reading reads."""
+
+    def read(self, log):
+        return self
+
+    def started(self, seq):
+        return frozenset({"ref"})
+
+    def stopped(self, seq):
+        return frozenset({V.OwnStop()})
+
+    def value(self, seq):
+        return frozenset(
+            V.ValueRole(role, register)
+            for role in (V.Role.PASS, V.Role.TEARDOWN)
+            for register in (False, True)
+        )
+
+
+def test_a_value_the_classifier_answers_both_fires_both_divergences():
+    """A stepped value after its claim's exit is unheld whichever the classifier's
+    answer was, and the paths left keep both: register-value and unheld-value both
+    fire there, since neither reading is the step's to pick."""
+    both = REFERENCE._replace(
+        workers={
+            "ref": dataclasses.replace(
+                REFERENCE.workers["ref"],
+                values=frozenset({V.Phase.PASS, V.Phase.TEARDOWN}),
+            )
+        },
+        third_parties={},
+        classifier=_Both(),
+    )
+    rows = _dated(
+        [
+            r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+            r(2, "value", _value(0.5, 0, 2.0), name="loss"),
+            r(3, "lifecycle.heartbeat", _beat(0, 0, 1, 3.0)),
+            r(4, "lifecycle.stopped", _stopped(True, None, 0, 1, [], 4.0)),
+            r(5, "value", _value(0.25, 0, 5.0), name="status"),
+        ]
+    )
+    m = migrated(rows, both, **CHOSEN)
+    fired = {d: seqs for d, seqs in m.divergences.items() if seqs}
+    assert 5 in fired["register-value"] and 5 in fired["unheld-value"]
+
+
+def test_the_step_drops_the_last_runs_candidates_before_building_the_next():
+    """The step keeps one run's candidates, for its detect and transform; the next
+    run's build starts with none held, so the budget bounds memory."""
+    held = []
+    real = E.candidates
+
+    def watched(*args, **kwargs):
+        held.append(mine._last)
+        return real(*args, **kwargs)
+
+    mine = STEP.V0_3_0_to_V0_4_0()
+    res = under(FIX1, **CHOSEN)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(E, "candidates", watched)
+        for rows in (EXIT, _a_beacon_between_two_places()):
+            mine.detect(rows, assumptions=res.assumptions, history=())
+            mine.transform(rows, resolutions=res, history=())
+    assert held == [None, None]
+
+
+BORN_020 = Entry(
+    run_id="r",
+    from_format="0.2.0",
+    to_format="0.3.0",
+    runstate="x",
+    step_source="sha256:0",
+    at=0.0,
+    limits=LIMITS,
+    assumed=None,
+    facts=None,
+    resolved={},
+    readings={},
+    accepted={},
+)
+
+
+class _NotTheLatest:
+    """A Span chooser that reads a heartbeat whose writer is open as the earlier
+    worker's, and answers every other fork as ``fewest``."""
+
+    def choose(self, question):
+        for a in question.answers:
+            if question.key.subject == 3 and a.value == ():
+                if any(
+                    isinstance(p, E.PBeat) for b in question.answers for p in b.value
+                ):
+                    return a
+        return FEWEST.chooser.choose(question)
+
+
+def test_who_wrote_a_heartbeat_in_a_log_born_in_0_2_0_is_spans_reading():
+    """0.4.0 writes a heartbeat's writer as its ``claim_seq``, which ``await_consumed``
+    and the Watcher read; in a log born in 0.2.0 any live worker may have written it.
+    With claim 1's worker alive past claim 3's takeover, the beacon at seq 4 is either
+    one's: a Span fork for each claim, which ``fewest`` reads as the newest worker's and
+    a consumer's chooser may read otherwise."""
+    rows = _dated(
+        [
+            r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+            r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
+            r(3, "lifecycle.started", _started("local://n1/12", 3.0)),
+            r(4, "lifecycle.heartbeat", _beat(None, 0, 3, 4.0)),
+            r(5, "lifecycle.heartbeat", _beat(0, 0, 3, 5.0)),
+        ]
+    )
+    live = REFERENCE._replace(
+        workers={
+            "ref": dataclasses.replace(
+                REFERENCE.workers["ref"], takeover=frozenset(V.Takeover)
+            )
+        },
+        third_parties={},
+    )
+    found = step.detect(
+        rows, assumptions=under(live, **CHOSEN).assumptions, history=(BORN_020,)
+    ).forks
+    assert [f.seq for f in found["span"]].count(4) == 2  # claim 3's and claim 1's
+
+    def beacon(**choosers):
+        m = step.transform(
+            rows, resolutions=under(live, **choosers), history=(BORN_020,)
+        )
+        (b,) = [x for x in m.rows if x.topic == "lifecycle.heartbeat"][:1]
+        return json.loads(b.body)["claim_seq"], m.rows
+
+    named, out = beacon(**CHOSEN)
+    assert named == [x.seq for x in out if x.topic == "lifecycle.started"][1]
+    named, out = beacon(**{**CHOSEN, "span": Chosen("x", _NotTheLatest())})
+    assert named == [x.seq for x in out if x.topic == "lifecycle.started"][0]
+
+
+class _FirstAnswer:
+    """A Span chooser that takes each fork's first answer: one commit and one rewind
+    after pass 0 here."""
+
+    def choose(self, question):
+        return question.answers[0]
+
+
+def test_a_rewinds_place_and_time_are_its_end_time_reading():
+    """A rewind is placed as an undated commit is, and no tick dates one: where it
+    stands and when are the end-time reading's. Here pass 1 closes, and a rewind to the
+    newest save follows it, before the beacon at seq 3 or after it: under ``lower`` the
+    rewind is offered both places and written before the beacon at its bound; under
+    ``upper`` the commit is written after the beacon, and the rewind with it, at the
+    next record's ``t``."""
+    rows = [
+        r(1, "lifecycle.started", _started("local://n/1", 1.0), t=1.0),
+        r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0), t=2.0),
+        r(3, "lifecycle.heartbeat", _beat(None, 0, 1, 3.0), t=3.0),
+        r(4, "lifecycle.stopped", _stopped(False, "boom", 1, 1, [], 4.0), t=4.0),
+    ]
+    rewinding = FIX1._replace(
+        workers={
+            "reference": dataclasses.replace(
+                CHECKPOINTED, rewinds=frozenset({V.Rewinds.NEWEST})
+            )
+        }
+    )
+    found = step.detect(
+        rows, assumptions=under(rewinding, **CHOSEN).assumptions, history=()
+    ).forks
+    assert {f.seq for f in found["end-time"]} == {1}
+    out, offered = {}, {}
+    for builtin in END_TIME.generic:
+        asked = _Asked(builtin)
+        m = step.transform(
+            rows,
+            resolutions=under(
+                rewinding,
+                **{
+                    **CHOSEN,
+                    "span": Chosen("first", _FirstAnswer()),
+                    "end_time": Chosen("x", asked),
+                },
+            ),
+            history=(),
+        )
+        (reload,) = [q for q in asked.asked if isinstance(q.act, E.RewindId)]
+        assert reload.ticks == ()
+        offered[builtin.name] = [u.after for u in reload.unlogged]
+        out[builtin.name] = [(x.topic, json.loads(x.body)["t"]) for x in m.rows[2:]]
+        assert "rewind 2" in m.readings["end-time"][1]
+    assert offered == {"lower": [2, 3], "upper": [3]}
+    assert out["lower"] == [
+        ("lifecycle.commit", 2.0),
+        ("lifecycle.rewind", 2.0),
+        ("lifecycle.heartbeat", 3.0),
+        ("lifecycle.stopped", 4.0),
+    ]
+    assert out["upper"] == [
+        ("lifecycle.heartbeat", 3.0),
+        ("lifecycle.commit", 4.0),
+        ("lifecycle.rewind", 4.0),
+        ("lifecycle.stopped", 4.0),
+    ]

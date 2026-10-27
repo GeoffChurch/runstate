@@ -1137,3 +1137,20 @@ def test_postgres_writes_the_manifest_entry_in_the_sealing_transaction(
     (entry,) = PostgresStore(pg_toy).history("r1")
     assert (entry.from_format, entry.resolved) == ("8.0.0", {"a": "yes"})
     assert entry.readings == {"a": {1: "yes"}}
+
+
+def _migrated(n):
+    return Migrated([Row(k, "value", "x", None, "{}", 0.0) for k in range(n)], {}, {})
+
+
+def test_a_full_memo_takes_no_more_and_keeps_what_it_took(monkeypatch):
+    """The detection pass fills the memo in run order and the migrate pass reads it in
+    the same order: once full it takes no more, so the runs it took first still reuse
+    their transforms."""
+    monkeypatch.setattr(Memo, "ROWS", 5)
+    memo = Memo()
+    memo.put("a", _migrated(3))
+    memo.put("b", _migrated(3))  # past the bound: not taken
+    memo.put("c", _migrated(2))
+    assert memo.get("a") is not None and memo.get("c") is not None
+    assert memo.get("b") is None

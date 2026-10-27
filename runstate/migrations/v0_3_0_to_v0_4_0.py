@@ -129,7 +129,12 @@ whole-number float such as 3.0, which 0.3.0's schemas accept. It refuses:
   alone admits one, else the pairs, and those undecided past the cap (§7, "What
   refuses");
 - **past a limit:** more states in one layer than the cap, or summed over the
-  layers than the budget, named by the record;
+  layers than the budget, named by the record; under no stated facts, the refusal
+  names the facts that widen the pass, and the reference preset (``reference``);
+- **a run-on cut at the horizon:** a candidate closes a pass at the horizon that
+  its loop may continue past, so how many commits a longer run made is open; the
+  refusal names the claims and the facts that can clear it (``marker``,
+  ``closing``, ``beat-cov``);
 - **a chooser's refusal,** or an answer of another shape, naming the projection
   and the chooser (``Projection.ask``);
 - **a name of a record that leaves the log:** a heartbeat's ``consumed_seq``
@@ -143,12 +148,13 @@ whole-number float such as 3.0, which 0.3.0's schemas accept. It refuses:
 - The unstated facts let a log run on, rewind and load at every step to the
   horizon, so all but the smallest logs exceed the cap under them: a consumer
   states its writers' facts.
-- The end-time fork is detected per claim, on the commits no record dates on any
-  candidate; a commit dated on some candidates and not on the decided one asks the
-  end-time chooser without having been reported.
-- ``written`` picks among the paths left after the decode, which read alike, by
-  the ``repr`` of their pieces; two edges with the same pieces to different states
-  are told apart by their state's number, which hash order can change.
+- End-time detection reports every commit not dated by one tick on every
+  candidate, before the other forks are decided: an over-approximation of what
+  the decode asks, which it asks only on the paths the earlier answers left.
+- ``written`` picks among the paths left after the whole decode by the ``repr`` of
+  their pieces, then by state number, which the pass keeps free of hash order. The
+  paths left differ only in what writes no byte: which writer wrote a record whose
+  output names no writer, and where in its interval a commit's gaps run.
 - A divergence fires where its rule applies; the reads it names may still answer
   alike there (``third-party-release`` on a claim no verdict reads).
 """
@@ -924,8 +930,9 @@ FACTS: Facts[Configuration] = Facts(Configuration, UNSTATED, _describe)
 
 class _ReferenceReader:
     """The reference preset's reader: every claim the reference Worker's, every
-    ``stopped`` its own, a value with a step a pass's metric and one without a
-    register."""
+    ``stopped`` its own; a value with a step a metric of a pass, closing it or not, or
+    one written after the loop; and one without a register there, since ``emit`` writes
+    none."""
 
     def __init__(self, log: Sequence[Row]) -> None:
         self._stepless = frozenset(
@@ -941,7 +948,11 @@ class _ReferenceReader:
         return frozenset({OwnStop()})
 
     def value(self, seq: int) -> frozenset[ValueRole]:
-        return frozenset({ValueRole(Role.PASS, seq in self._stepless)})
+        if seq in self._stepless:
+            return frozenset(ValueRole(r, True) for r in (Role.PASS, Role.BETWEEN))
+        return frozenset(
+            ValueRole(r, False) for r in (Role.PASS, Role.CLOSING, Role.BETWEEN)
+        )
 
 
 class Reference:
@@ -953,48 +964,64 @@ class Reference:
 
 _REFERENCE = "reference"
 
-REFERENCE = Configuration(
-    {
-        _REFERENCE: WorkerFacts(
-            stride=frozenset({V.Stride.NEXT}),
-            loading=frozenset({V.Loading.LOADED}),
-            values=frozenset({V.Phase.PASS}),
-            beat_pos=frozenset({V.BeatPos.AFTER_CLOSE}),
-            beat_cov=frozenset({V.Covered.BEATEN}),
-            marker=frozenset(V.Marker),
-            closing=frozenset({V.Closing.OTHER}),
-            loop_end=frozenset({V.LoopEnd.AFTER_CLOSE}),
-            discards=frozenset({V.Discards.KEEPS}),
-            final_step=frozenset({V.FinalStep.YIELDED}),
-            error_final_step=frozenset({V.FinalStep.YIELDED}),
-            cut_save=frozenset({V.CutSave.CLOSED}),
-            save_at=frozenset({V.SaveAt.IN_PASS, V.SaveAt.AT_CLOSE}),
-            save_cov=frozenset({V.Saved.SAVED}),
-            leave_save=frozenset({V.Saved.SAVED}),
-            load=frozenset({V.Load.FRESH, V.Load.NEWEST}),
-            rewinds=frozenset(),
-            takeover=frozenset({V.Takeover.DEAD}),
-            strays=frozenset(),
-            fold=frozenset({V.Fold.AT_CLAIM}),
-            honored=frozenset({V.Honored.EXIT}),
-            watermark=frozenset({V.Watermark.CONTROL}),
-        )
-    },
-    {},
-    Reference(),
-)
-"""A preset a consumer may name, ``--assume runstate.migrations.v0_3_0_to_v0_4_0:
-REFERENCE``, giving its word that its writers are these (§7, "The writer facts"): the
-reference Worker's ``steps()`` loop (each pass ticked after its close, values written
-inside a pass, the last pass begun as any exit's ``final_step``, every stop it took
-in honoured, the newest control record its drain read as its watermark), its consumer saving each pass's completed state inside it or at its close
-and loading the newest save or nothing; and no third party, every ``stopped`` the
-worker's own.
 
-It is the word of the code as it stands, so it can be false of a run: a control
-record landing between a drain and its heartbeat breaks ``watermark``, a consumer
-resuming from an older save breaks ``load``. A false word is not silent: no history
-writes the log, and the refusal names the fact to relax."""
+def reference(*, closing: frozenset[V.Closing]) -> Configuration:
+    """A statement a consumer may start from (§7, "The writer facts"): every claim's
+    worker runstate's reference ``Worker`` driven by ``steps()``, and no third party,
+    every ``stopped`` the worker's own. A consumer names its own call of it,
+    ``--assume mine:FACTS`` with ``FACTS = reference(closing=...)``, giving its word.
+
+    It states only what ``worker.py`` fixes: each pass labelled one past the last
+    (``step += 1``) and ticked after its body, the loop continuing only past a tick;
+    no value with a step before the first pass (``emit`` raises) or after the exit (it
+    writes nothing); the last pass begun as any exit's ``final_step`` (``_last_step``,
+    set before the ``yield``); every stop it took in honoured, its fold at the claim,
+    the newest control record its drain read as its watermark; no rewind; a takeover
+    only of a halted worker (the gate, ``live_episode``).
+
+    What the consumer's own code decides is not stated here. ``closing``, whether a
+    pass's body ends with a value, is required, since it decides whether a tick dates
+    a commit. The rest is left whole: whether a value is written after the loop
+    (``values``), how the loop is left (``loop-end``), and every fact of the
+    consumer's checkpoints (``discards``, ``cut-save``, ``save-at``, ``save-cov``,
+    ``leave-save``, ``load``), and other writers' values (``strays``). A consumer that
+    knows them narrows them, ``dataclasses.replace`` on the worker's facts, as all but
+    the smallest logs need.
+
+    It can be false of a run: a control record landing between a drain and its
+    heartbeat breaks ``watermark``, an explicit ``final_step`` breaks ``final-step``.
+    A false word is not silent: no history writes the log, and the refusal names the
+    fact to relax."""
+    return Configuration(
+        {
+            _REFERENCE: WorkerFacts(
+                stride=frozenset({V.Stride.NEXT}),
+                loading=domain(WorkerFacts, "loading"),
+                values=frozenset({V.Phase.PASS, V.Phase.BETWEEN}),
+                beat_pos=frozenset({V.BeatPos.AFTER_CLOSE}),
+                beat_cov=frozenset({V.Covered.BEATEN}),
+                marker=domain(WorkerFacts, "marker"),
+                closing=closing,
+                loop_end=domain(WorkerFacts, "loop_end"),
+                discards=domain(WorkerFacts, "discards"),
+                final_step=frozenset({V.FinalStep.YIELDED}),
+                error_final_step=frozenset({V.FinalStep.YIELDED}),
+                cut_save=domain(WorkerFacts, "cut_save"),
+                save_at=domain(WorkerFacts, "save_at"),
+                save_cov=domain(WorkerFacts, "save_cov"),
+                leave_save=domain(WorkerFacts, "leave_save"),
+                load=domain(WorkerFacts, "load"),
+                rewinds=frozenset(),
+                takeover=frozenset({V.Takeover.DEAD}),
+                strays=domain(WorkerFacts, "strays"),
+                fold=frozenset({V.Fold.AT_CLAIM}),
+                honored=frozenset({V.Honored.EXIT}),
+                watermark=frozenset({V.Watermark.CONTROL}),
+            )
+        },
+        {},
+        Reference(),
+    )
 
 
 # ----- the projections, and their built-in choosers ----------------------------------
@@ -1023,6 +1050,10 @@ def _commits(a: E.Answer) -> int:
 
 def _holds(a: E.Answer) -> int:
     return sum(isinstance(p, E.PHold) for p in a.value)
+
+
+def _beats(a: E.Answer) -> int:
+    return sum(isinstance(p, E.PBeat) for p in a.value)
 
 
 def _parents(a: E.Answer) -> tuple[tuple[int, int, int], ...]:
@@ -1064,15 +1095,15 @@ def _builtin(name: str, key: Callable[[E.Answer], Any], description: str) -> Bui
 
 FEWEST = _builtin(
     "fewest",
-    lambda a: (_commits(a), _holds(a), _newest(a)),
+    lambda a: (_commits(a), _holds(a), _newest(a), -_beats(a)),
     "the fewest iterations finished, then the fewest values held, then the newest "
-    "nodes continued",
+    "nodes continued, then the most heartbeats written",
 )
 MOST = _builtin(
     "most",
-    lambda a: (-_commits(a), -_holds(a), _newest(a)),
+    lambda a: (-_commits(a), -_holds(a), _newest(a), -_beats(a)),
     "the most iterations finished, then the most values held, then the newest nodes "
-    "continued",
+    "continued, then the most heartbeats written",
 )
 NEWEST = _builtin(
     "newest",
@@ -1090,8 +1121,9 @@ END = Projection[E.Question, E.Answer](
 SPAN = Projection[E.Question, E.Answer](
     name="span",
     definition="what a claim did: its finished iterations, where each stands and what "
-    "it holds, its rewinds, and its exit",
-    readings="the claim's commits (parent, values, placement), rewinds and exit node",
+    "it holds, its rewinds, its exit, and the heartbeats its worker wrote",
+    readings="the claim's commits (parent, values, placement), rewinds, exit node and "
+    "the heartbeats its worker wrote",
     generic=(FEWEST, MOST),
     check=_answer,
 )
@@ -1104,25 +1136,28 @@ ORIGIN = Projection[E.Question, E.Answer](
 )
 
 
-class Undated(NamedTuple):
-    """The undated reading's bounds: the newest ``t`` among the commit's claim's own
-    records at or before where it stands (``low``), and the ``t`` of the record after
-    each gap it may stand in, earliest first (``highs``)."""
+class Unlogged(NamedTuple):
+    """One place a commit may stand where no tick dates it: just after the record at
+    seq ``after``; its end at or after ``low``, the newest ``t`` among its claim's own
+    records at or before it there; ``next`` the ``t`` of the record after that one, None
+    after the log's last."""
 
+    after: int
     low: float
-    highs: tuple[float, ...]
+    next: float | None
 
 
 class EndTime(NamedTuple):
-    """When an iteration ended (§7, "The end-time fork"): the commit, by its claim's
-    seq and its index in the claim; the ticks that may date it, a heartbeat that follows
-    its pass's close at once; and, where the log also allows no tick to date it, the
-    bounds of a time the chooser gives (``undated``, else None)."""
+    """When and where a silent act ended (§7, "The end-time fork"): a commit, by its
+    claim's seq and its index in the claim (``E.CommitId``), or a rewind, by its claim's
+    seq and the epoch it closed (``E.RewindId``); the ticks that may date it, a
+    heartbeat that follows its pass's close at once (a commit's only); and each place it
+    may stand where no tick dates it, in log order. A question offers a tick or a place,
+    or several."""
 
-    claim: int
-    nth: int
+    act: E.CommitId | E.RewindId
     ticks: tuple[E.Tick, ...]
-    undated: Undated | None
+    unlogged: tuple[Unlogged, ...]
 
 
 class DatedBy(NamedTuple):
@@ -1133,72 +1168,87 @@ class DatedBy(NamedTuple):
 
 
 class EndedAt(NamedTuple):
-    """The reading: no tick dates the commit, which ended at ``t``."""
+    """The reading: no tick dates the commit or the rewind, which stands just after the
+    record at seq ``after`` and ended at ``t``."""
 
+    after: int
     t: float
 
 
 EndTimeReading = DatedBy | EndedAt
 
 
+def _offered(
+    question: EndTime, *, late: bool
+) -> list[tuple[float, int, EndTimeReading]]:
+    """Every answer a built-in may give, each by its time and its place: a tick at its
+    own ``t`` in its own place, and a place undated at its lower bound (``late``: at
+    the next record's ``t``, its lower bound after the log's last)."""
+    out: list[tuple[float, int, EndTimeReading]] = [
+        (t.t, t.seq, DatedBy(t.seq)) for t in question.ticks
+    ]
+    for u in question.unlogged:
+        t = u.next if late and u.next is not None else u.low
+        out.append((t, u.after, EndedAt(u.after, t)))
+    return out
+
+
 class _Lower:
-    """``lower``: the earliest end the log allows: undated, at its lower bound, where
-    that is offered, else the earliest tick."""
+    """``lower``: the earliest end the log allows, by time, then by place: a tick at
+    its ``t``, or a place at its lower bound."""
 
     def choose(self, question: EndTime) -> EndTimeReading:
-        if question.undated is not None:
-            return EndedAt(question.undated.low)
-        return DatedBy(question.ticks[0].seq)
+        return min(_offered(question, late=False), key=lambda x: (x[0], x[1]))[2]
 
 
 class _Upper:
-    """``upper``: the latest end the log allows: the latest tick, where one is offered,
-    else undated, at the ``t`` of the next record after it (its lower bound after the
+    """``upper``: the latest end the log allows, by time, then by place: a tick at its
+    ``t``, or a place at the ``t`` of the next record after it (its lower bound after the
     log's last record)."""
 
     def choose(self, question: EndTime) -> EndTimeReading:
-        if question.ticks:
-            return DatedBy(question.ticks[-1].seq)
-        assert question.undated is not None  # a question offers one or the other
-        u = question.undated
-        return EndedAt(u.highs[0] if u.highs else u.low)
+        return max(_offered(question, late=True), key=lambda x: (x[0], x[1]))[2]
 
 
 def _end_time(question: EndTime, answer: object) -> EndTimeReading:
-    """A tick the question offers, or, where it offers the undated reading, a time at
-    or after its lower bound: a commit is written after the values it holds (§3)."""
+    """A tick the question offers, or a place it offers with a time at or after that
+    place's lower bound: a commit is written after the values it holds (§3)."""
     if isinstance(answer, DatedBy):
         if answer.seq not in {t.seq for t in question.ticks}:
             raise ValueError(f"no tick at seq {answer.seq} may date it")
         return answer
     if isinstance(answer, EndedAt):
-        if question.undated is None:
-            raise ValueError("a tick dates it on every candidate")
+        at = {u.after: u for u in question.unlogged}.get(answer.after)
+        if at is None:
+            raise ValueError(f"it may stand after no record at seq {answer.after}")
         t = answer.t
         if isinstance(t, bool) or not isinstance(t, (int, float)):
             raise ValueError(f"{t!r} is no time")
-        if t < question.undated.low:
-            raise ValueError(f"{t} precedes the lower bound {question.undated.low}")
-        return EndedAt(float(t))
+        if t < at.low:
+            raise ValueError(f"{t} precedes the lower bound {at.low} there")
+        return EndedAt(answer.after, float(t))
     raise ValueError(f"{answer!r} is neither DatedBy nor EndedAt")
 
 
 END_TIME = Projection[EndTime, EndTimeReading](
     name="end-time",
-    definition="when an iteration ended: at a tick that may date it, or at a time no "
-    "record dates",
-    readings="DatedBy(seq), a tick the log offers; or EndedAt(t), at or after the newest "
-    "of its claim's own records before it",
+    definition="when and where a silent act ended, an iteration (a commit) or a "
+    "reload (a rewind): at a tick that may date it, or undated, at a place and a time "
+    "no record dates",
+    readings="DatedBy(seq), a tick the log offers; or EndedAt(after, t), a place the log "
+    "offers and a time at or after the newest of its claim's own records there",
     generic=(
         Builtin(
             "lower",
             _Lower(),
-            "the earliest end: undated at its lower bound, else the earliest tick",
+            "the earliest end by time, then by place: a tick at its t, or a place at "
+            "its lower bound",
         ),
         Builtin(
             "upper",
             _Upper(),
-            "the latest end: the latest tick, else the t of the next record after it",
+            "the latest end by time, then by place: a tick at its t, or a place at the "
+            "t of the next record after it",
         ),
     ),
     check=_end_time,
@@ -1341,8 +1391,11 @@ def _digest(rows: Sequence[Row]) -> str:
     return hashlib.sha256(repr(tuple(rows)).encode()).hexdigest()
 
 
-_SILENT = ("marker", "beat-cov", "stride")
-"""The facts that bound how many passes a worker may run that no record shows."""
+_SILENT = ("marker", "closing", "beat-cov")
+"""The facts each of which, stated narrowly enough, clears a run-on cut at the horizon:
+no pass closes silently (``marker``), none closes but at a value (``closing``), no loop
+continues past an unticked pass (``beat-cov``). Raising --run-on clears none: a run the
+facts let continue past a silent close reaches any horizon."""
 
 
 def _candidates(
@@ -1371,8 +1424,8 @@ def _candidates(
             "leaves this log's writers too much to follow. State its writers' facts "
             '(commits-and-lineage.md §7, "The writer facts"); those that widen the '
             f"pass are {', '.join(widening)}. A consumer whose worker is runstate's "
-            "reference Worker may name that preset: --assume "
-            "runstate.migrations.v0_3_0_to_v0_4_0:REFERENCE"
+            "reference Worker may start from its preset, "
+            "runstate.migrations.v0_3_0_to_v0_4_0.reference(closing=...)"
         ) from exc
     if E.admits(g):
         cut = sorted(E.reaching(g))
@@ -1381,11 +1434,11 @@ def _candidates(
                 map(str, cut)
             )
             raise MigrationError(
-                f"a candidate of {claims} runs on, or loads from "
-                f"outside, to the horizon ({limits.run_on} labels a claim past the "
-                "log's steps, --run-on): a longer run that no record pins was cut "
-                "there, so how far it ran is open. State the facts that bound silent "
-                f"passes ({', '.join(_SILENT)}), or raise --run-on"
+                f"a candidate of {claims} closes a pass at the horizon, its loop free "
+                f"to continue ({limits.run_on} labels a claim past the log's steps, "
+                "--run-on): the commits of a longer run that no record pins were cut "
+                "there, so how many it made is open. State a fact that rules out a "
+                f"silent run that long: {', '.join(_SILENT)}"
             )
         return g
     at = (
@@ -1430,6 +1483,7 @@ _RECORDED = (
     E.PHold,
     E.PRewind,
     E.PExit,
+    E.PBeat,
     E.CommitId,
     E.ExitId,
     E.Gaps,
@@ -1459,13 +1513,19 @@ def _jsonable(x: object) -> Json:
 
 
 class _Decided(NamedTuple):
-    """One run as the choosers read it: the path the step writes, and each fork's
-    reading by projection and site (by subject where several share a site)."""
+    """One run as the choosers read it: the paths every fork's answer leaves, the one
+    the step writes, and each fork's reading by projection and site (by subject where
+    several share a site)."""
 
-    ctx: E.Context
+    graph: E.Graph
     parts: tuple[tuple[E.Piece, ...], ...]
     lineage: E.Lineage
     readings: Mapping[str, Mapping[int, Json]]
+    rewinds: Mapping[E.RewindId, float]  # each rewind's time, its end-time reading's
+
+    @property
+    def ctx(self) -> E.Context:
+        return self.graph.ctx
 
 
 def _decide(g: E.Graph, resolutions: Resolutions) -> _Decided:
@@ -1485,45 +1545,70 @@ def _decide(g: E.Graph, resolutions: Resolutions) -> _Decided:
         return a
 
     g = E.decode(g, route, cap=resolutions.assumptions.limits.cap)
-    ended: dict[E.CommitId, float] = {}
+    ended: dict[E.CommitId, EndedAt] = {}
     datings = E.datings(g)
     for c in sorted(datings, key=lambda c: (-c.claim, c.nth)):
         d = datings[c]
         if not d.undated and len(d.ticks) == 1:
             continue  # the log dates it: a proven site
-        bounds = None
-        if d.undated:
-            at = E.place(g.ctx, _flat(E.written(E.undated(g, c))), c)
-            bounds = Undated(at.low, at.highs)
-        answer = END_TIME.ask(resolutions, EndTime(c.claim, c.nth, d.ticks, bounds))
-        readings[END_TIME.name].setdefault(c.claim, {})[str(c.nth)] = _jsonable(answer)
+        bare = E.undated(g, c) if d.ticks and d.undated else g
+        offered = _unlogged(g.ctx, E.places(bare, c)) if d.undated else ()
+        answer = END_TIME.ask(resolutions, EndTime(c, d.ticks, offered))
+        readings[END_TIME.name].setdefault(c.claim, {})[_act(c)] = _jsonable(answer)
         if isinstance(answer, DatedBy):
             (tick,) = [t for t in d.ticks if t.seq == answer.seq]
-            narrowed = E.dated_by(g, c, tick)
+            g = E.dated_by(g, c, tick)
         else:
-            ended[c] = answer.t
-            narrowed = E.undated(g, c) if d.ticks else g
-        if narrowed is not g:
-            g = narrowed
-            datings = E.datings(g)
+            ended[c] = answer
+            g = E.ended_at(bare, c, answer.after, answer.t)
+        datings = E.datings(g)
+    rewound: dict[E.RewindId, EndedAt] = {}
+    for x in sorted(E.reloads(g), key=lambda x: (-x.claim, x.epoch)):
+        q = EndTime(x, (), _unlogged(g.ctx, E.places(g, x)))
+        reload = END_TIME.ask(resolutions, q)
+        readings[END_TIME.name].setdefault(x.claim, {})[_act(x)] = _jsonable(reload)
+        assert isinstance(reload, EndedAt)  # no tick is offered (``_end_time``)
+        rewound[x] = reload
+        g = E.ended_at(g, x, reload.after, reload.t)
     parts = E.written(g)
 
     def when(c: E.CommitId, low: float, highs: tuple[float, ...]) -> float:
-        t = ended[c]  # every commit the written path leaves undated was asked
-        if t < low:
-            raise MigrationError(
-                f"the end-time reading {t} of claim {c.claim}'s commit {c.nth} precedes "
-                f"its lower bound {low} where it is written"
-            )
-        return t
+        # Every commit the written path leaves undated was asked, and the paths kept
+        # are those on which it stands where its answer says, with its lower bound at
+        # or before the answer's time (``E.ended_at``); later answers only narrow
+        # them. So the bound holds on the path written.
+        assert low <= ended[c].t
+        return ended[c].t
 
     lineage = E.lineage(g.ctx, _flat(parts), when=when)
     return _Decided(
-        g.ctx,
+        g,
         parts,
         lineage,
         {p: {s: dict(v) for s, v in by.items()} for p, by in readings.items()},
+        {x: a.t for x, a in rewound.items()},
     )
+
+
+def _act(x: E.CommitId | E.RewindId) -> str:
+    """An end-time reading's key within its claim: a commit's index, or a rewind's
+    ``rewind <epoch>``."""
+    return str(x.nth) if isinstance(x, E.CommitId) else f"rewind {x.epoch}"
+
+
+def _unlogged(ctx: E.Context, found: frozenset[E.Place]) -> tuple[Unlogged, ...]:
+    """The places a commit may stand undated, each once, at the least lower bound any
+    path has there, in log order."""
+    least: dict[int, float] = {}
+    for p in found:
+        least[p.after] = min(least.get(p.after, p.low), p.low)
+    out: list[Unlogged] = []
+    for after in sorted(least):
+        k = ctx.by_seq[after] + 1
+        out.append(
+            Unlogged(after, least[after], ctx.recs[k].t if k < len(ctx.recs) else None)
+        )
+    return tuple(out)
 
 
 def _flat(parts: Sequence[Sequence[E.Piece]]) -> list[E.Piece]:
@@ -1668,7 +1753,9 @@ def _layout(log: _Log, d: _Decided) -> list[_Out]:
         at, _ = low(c.node.claim, gaps[c.node])
         after[at].append(((c.node.claim, c.node.nth, 1), _commit(c, _NEWEST_CONTROL)))
     for p in _pieces(parts, E.PRewind):
-        at, t = low(p.claim, p.gaps)
+        at, bound = low(p.claim, p.gaps)
+        t = d.rewinds[E.RewindId(p.claim, p.epoch)]
+        assert bound <= t  # the paths kept have it here, its bound at or before t
         rw = _Out(
             _Written.REWIND,
             None,
@@ -2077,16 +2164,24 @@ def _diverged(log: _Log, d: _Decided) -> dict[str, tuple[int, ...]]:
         n: sum(isinstance(m, E.CommitId) for m in _chain(n, parents)) for n in parents
     }
     on_head = set(_chain(_head(lin), parents))
-    # each value's writer's answer on the written path: a register or not
-    registers = {p.seq: p.register for p in _pieces(parts, E.PValue)}
+    # each value's writer's answers on the paths every answer left, a register or not:
+    # Span reads holds, not the flag, so where the classifier answers both, both stay
+    registers: dict[int, set[bool]] = defaultdict(set)
+    for es in d.graph.live:
+        for e in es:
+            for p in e.pieces:
+                if isinstance(p, E.PValue):
+                    registers[p.seq].add(p.register)
     values = {v.seq: v for v in log.values}
     for v in log.values:
         if v.step is None:
             continue
         node = held.get(v.seq)
         if node is None:
-            unheld = REGISTER_VALUE if registers[v.seq] else UNHELD_VALUE
-            sites[unheld.name].add(v.seq)
+            if True in registers[v.seq]:
+                sites[REGISTER_VALUE.name].add(v.seq)
+            if False in registers[v.seq]:
+                sites[UNHELD_VALUE.name].add(v.seq)
             continue
         if count[node] - 1 != v.step:
             sites[RECOUNTED_VALUE.name].add(v.seq)
@@ -2177,6 +2272,9 @@ class V0_3_0_to_V0_4_0:
         built = _Built(_digest(rows), configuration, limits, _born(history))
         if self._last is not None and self._last[0].same(built):
             return self._last[1]
+        # the previous run's graph goes before this one is built: memory holds one
+        # graph at a time, which the budget bounds
+        self._last = None
         g = _candidates(rows, configuration, limits, built.born)
         self._last = (built, g)
         return g
@@ -2211,9 +2309,9 @@ class V0_3_0_to_V0_4_0:
         self, rows: list[Row], *, assumptions: Assumptions, history: History
     ) -> Detected:
         """The forks of End, Span and Origin, each with the facts whose statement
-        could settle it; and an end-time fork for each commit that some candidate
-        holds and no tick dates on every one, or that several ticks may date, at its
-        claim's seq."""
+        could settle it; and an end-time fork, at its claim's seq, for each commit that
+        some candidate holds and no tick dates on every one, or that several ticks may
+        date, and for each rewind, which no record dates."""
         configuration = FACTS.of(assumptions)
         _unread(parse(rows), configuration)
         g = self._candidates(rows, configuration, assumptions.limits, history)
@@ -2228,7 +2326,7 @@ class V0_3_0_to_V0_4_0:
             Fork(c.claim, dates)
             for c, d in sorted(E.datings(g).items())
             if d.undated or len(d.ticks) > 1
-        ]
+        ] + [Fork(x.claim, ()) for x in sorted(E.reloads(g))]
         return Detected({n: tuple(fs) for n, fs in forks.items()})
 
     def transform(

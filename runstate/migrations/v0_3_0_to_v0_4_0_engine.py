@@ -185,8 +185,8 @@ _TOPICS = {t.value: t for t in Topic}
 
 
 def read(rows: Sequence[Row]) -> tuple[Rec, ...]:
-    """The rows as records. The step's parse has accepted them (M9, and every body as
-    0.3.0 pins it), so a body's keys are there to read."""
+    """The rows as records. The step's parse has accepted them (every body as 0.3.0
+    pins it, and nothing 0.4.0 cannot hold), so a body's keys are there to read."""
     out: list[Rec] = []
     for r in rows:
         body: dict[str, Any] = json.loads(r.body)
@@ -241,6 +241,19 @@ class CommitId(NamedTuple):
 
     claim: int
     nth: int
+
+
+class RewindId(NamedTuple):
+    """A claim's rewind, by the epoch it closed (``PRewind.epoch``): one commit or one
+    rewind closes each epoch of a claim, so it names one rewind on every path."""
+
+    claim: int
+    epoch: int
+
+
+Silent: TypeAlias = CommitId | RewindId
+"""A record the step writes where no record of the log stands: a commit or a rewind,
+each placed by its gaps (``Gaps``)."""
 
 
 class ExitId(NamedTuple):
@@ -445,8 +458,17 @@ class PRunEnd(NamedTuple):
 
 
 class PHorizon(NamedTuple):
-    """A run of passes, or a load from outside, that reached the horizon: a longer one,
-    which no record pins, was cut there (``Context.horizon``)."""
+    """A pass closed at the horizon that its loop may continue past: the commits a
+    longer run makes, which no record pins, were cut there (``Context.horizon``).
+
+    It marks only a cut a reading could read. Span reads a claim's commits, so a run
+    whose next pass only the horizon forbade is cut where it reads. A pass begun at the
+    horizon and cut before its close makes no commit, and no piece carries a label
+    (``PCommit``), so cutting a run there changes nothing read. A load reads its step
+    into the worker's clock, which Origin does not read (``Resumes``); a later record
+    that reads the clock (a step, a ``final_step``, a save a later claim loads) bounds
+    it by that record's own label, below the horizon, so a load at the horizon is on no
+    complete path where its step is read."""
 
     claim: int
 
@@ -733,8 +755,9 @@ class Context:
     workers: tuple[WorkerFacts, ...]  # distinct statements
     # claim seq -> the statements its versions make
     versions: Mapping[int, tuple[int, ...]]
-    stops: Mapping[int, frozenset[StopAnswer]]
-    roles: Mapping[int, frozenset[ValueRole]]
+    # each stopped's answers and each value's roles, in a fixed order (``context``)
+    stops: Mapping[int, tuple[StopAnswer, ...]]
+    roles: Mapping[int, tuple[ValueRole, ...]]
     third: Mapping[Hashable, ThirdPartyFacts]
     posted: tuple[tuple[int, str], ...]  # (seq, id) of each control.stop
     launched: Mapping[str, str]  # launch id -> its process's handle
@@ -766,8 +789,8 @@ class Context:
     # it (``Names.progress``)
     progress_before: tuple[int | None, ...]
     # the highest label a run-on is followed to: past every step the log names, by
-    # ``run_on`` a claim and once more. A run of passes no record pins, or a load from
-    # outside, that reaches it carries ``PHorizon``: a longer one was cut there, so the
+    # ``run_on`` a claim and once more. A pass closed there that its loop may continue
+    # past carries ``PHorizon``: the commits of a longer run were cut there, so the
     # step refuses the run (``reaching``)
     horizon: int
     by_seq: Mapping[int, int]
@@ -793,41 +816,64 @@ def context(
     to."""
     recs = read(rows)
     reader: LogReader = configuration.classifier.read(rows)
-    statements: list[WorkerFacts] = []
-    index: dict[WorkerFacts, int] = {}
-    versions: dict[int, tuple[int, ...]] = {}
-    stops: dict[int, frozenset[StopAnswer]] = {}
-    roles: dict[int, frozenset[ValueRole]] = {}
+    # The classifier's answers are sets of the consumer's keys, whose hash and repr are
+    # the consumer's: each is put in the configuration's declared order here, once, so
+    # that no later loop, state number or witness depends on either.
+    declared = {v: k for k, v in enumerate(configuration.workers)}
+    writers = {w: k for k, w in enumerate(configuration.third_parties)}
+    named: dict[int, list[Hashable]] = {}
+    stops: dict[int, tuple[StopAnswer, ...]] = {}
+    roles: dict[int, tuple[ValueRole, ...]] = {}
     for r in recs:
         if r.topic is Topic.STARTED:
-            found: set[int] = set()
-            for v in reader.started(r.seq):
-                if v not in configuration.workers:
+            vs = list(reader.started(r.seq))
+            for v in vs:
+                if v not in declared:
                     raise Unknown(
                         f"the classifier names worker version {v!r} for the claim at "
                         f"seq {r.seq}, which the configuration states no facts for"
                     )
-                f = configuration.workers[v]
-                if f not in index:
-                    index[f] = len(statements)
-                    statements.append(f)
-                found.add(index[f])
-            versions[r.seq] = tuple(sorted(found))
+            named[r.seq] = sorted(vs, key=declared.__getitem__)
         elif r.topic is Topic.STOPPED:
-            answers = reader.stopped(r.seq)
+            answers = list(reader.stopped(r.seq))
             for a in answers:
-                if (
-                    isinstance(a, ThirdStop)
-                    and a.writer not in configuration.third_parties
-                ):
+                if isinstance(a, ThirdStop) and a.writer not in writers:
                     raise Unknown(
                         f"the classifier names third-party writer {a.writer!r} for the "
                         f"stopped at seq {r.seq}, which the configuration states no "
                         "facts for"
                     )
-            stops[r.seq] = answers
+            stops[r.seq] = tuple(
+                sorted(
+                    answers,
+                    key=lambda a: (
+                        (-1, "")
+                        if isinstance(a, OwnStop)
+                        else (writers[a.writer], repr(a.act))
+                    ),
+                )
+            )
         elif r.topic is Topic.VALUE:
-            roles[r.seq] = reader.value(r.seq)
+            roles[r.seq] = tuple(
+                sorted(
+                    reader.value(r.seq),
+                    key=lambda x: (_ROLE_ORDER.index(x.role), x.register),
+                )
+            )
+    # the statements the log's claims make, numbered in the declared order of the first
+    # version making each
+    statements: list[WorkerFacts] = []
+    index: dict[WorkerFacts, int] = {}
+    used = {v for vs in named.values() for v in vs}
+    for v in configuration.workers:
+        f = configuration.workers[v]
+        if v in used and f not in index:
+            index[f] = len(statements)
+            statements.append(f)
+    versions = {
+        c: tuple(sorted({index[configuration.workers[v]] for v in vs}))
+        for c, vs in named.items()
+    }
     launched: dict[str, str] = {}
     for r in recs:
         if (
@@ -1234,7 +1280,14 @@ def _silent(
         for s2, o2 in _offer(
             ctx, i, slot, older, ([done] if done else []) + list(_offers(ctx, y))
         ):
-            visit(y, s2, o2, pieces + new, rewound)
+            # a pass closed at the horizon that its loop may continue past: the next
+            # pass, and so the commits that follow, only the horizon forbade
+            cut: tuple[Piece, ...] = (
+                (PHorizon(x.claim),)
+                if x.clock == bound == ctx.horizon and _continued(f, s2, y) is not None
+                else ()
+            )
+            visit(y, s2, o2, pieces + new + cut, rewound)
 
     def begin(
         x: Wk,
@@ -1266,9 +1319,8 @@ def _silent(
             closed=None,
             saving=False,
         )
-        cut = (PHorizon(x.claim),) if label == bound == ctx.horizon else ()
         for s2, o2 in _offer(ctx, i, slot, older, _offers(ctx, y)):
-            visit(y, s2, o2, pieces + cut, rewound)
+            visit(y, s2, o2, pieces, rewound)
 
     def rewind(
         x: Wk,
@@ -1394,9 +1446,11 @@ T = TypeVar("T")
 
 
 def _each(xs: Iterable[T]) -> list[T]:
-    """``xs`` in a fixed order, their ``repr``'s: every set the pass's successors come
-    from is iterated so, so the states' numbering, the paths ``written`` takes and the
-    witnesses a chooser reads depend on no hash order."""
+    """``xs`` in a fixed order, their ``repr``'s: every set of the engine's own values
+    the pass's successors come from is iterated so, so the states' numbering, the paths
+    ``written`` takes and the witnesses a chooser reads depend on no hash order. Only
+    the engine's own values: their ``repr`` is a function of their fields. A consumer's
+    keys are put in the configuration's declared order instead, once (``context``)."""
     return sorted(xs, key=repr)
 
 
@@ -1699,7 +1753,7 @@ def _value(ctx: Context, i: int, world: World, rec: Rec) -> Iterator[Step]:
                     yield nw, run.pieces + pieces
 
 
-def _stray(ctx: Context, world: World, rec: Rec, roles: frozenset[ValueRole]) -> bool:
+def _stray(ctx: Context, world: World, rec: Rec, roles: Sequence[ValueRole]) -> bool:
     """Whether a writer holding no claim may have written the value: the classifier
     allows it, and the latest claim's version's ``strays`` its step or none (no element
     before any claim)."""
@@ -1708,6 +1762,8 @@ def _stray(ctx: Context, world: World, rec: Rec, roles: frozenset[ValueRole]) ->
     cls = Stray.STEPLESS if rec.step is None else Stray.STEPPED
     return world.version is None or cls in ctx.workers[world.version].strays
 
+
+_ROLE_ORDER = list(Role)
 
 _ROLE_STAGE = {
     Role.LOADING: Stage.LOADING,
@@ -1725,7 +1781,7 @@ _STAGE_PHASE = {
 
 
 def _emit(
-    ctx: Context, w: Wk, rec: Rec, roles: frozenset[ValueRole]
+    ctx: Context, w: Wk, rec: Rec, roles: Sequence[ValueRole]
 ) -> Iterator[tuple[Wk, tuple[Piece, ...]]]:
     """Worker ``w`` writes the value ``rec`` now: at its clock (its loading clock before
     its first pass), in its phase, pending for its next node where the classifier says
@@ -2065,7 +2121,7 @@ def _released(
 
 
 def _stopped(ctx: Context, i: int, world: World, rec: Rec) -> Iterator[Step]:
-    for answer in _each(ctx.stops[rec.seq]):
+    for answer in ctx.stops[rec.seq]:
         if isinstance(answer, OwnStop):
             if not rec.malformed:  # no worker writes a body 0.3.0 does not define
                 yield from _own_stop(ctx, i, world, rec)
@@ -2262,15 +2318,9 @@ def _load(
                 # every live worker may save after the claim: its offers join the
                 # checkpoint again
                 offered = [h for x in nworld.workers for h in _offers(ctx, x)]
-                cut = (
-                    (PHorizon(c),)
-                    if ld.origin is Origin.OUTSIDE and ld.step == ctx.horizon
-                    else ()
-                )
                 for s2, o2 in _offer(ctx, i, nworld.slot, nworld.older, offered):
                     yield nworld._replace(slot=s2, older=o2), pieces + (
                         PStart(c, ld.origin, ld.step, ld.node),
-                        *cut,
                     )
 
 
@@ -2870,7 +2920,15 @@ class Resumes(NamedTuple):
 
 
 Read: TypeAlias = (
-    Resumes | PDied | PWithdrawal | PTerminated | PCommit | PHold | PRewind | PExit
+    Resumes
+    | PDied
+    | PWithdrawal
+    | PTerminated
+    | PCommit
+    | PHold
+    | PRewind
+    | PExit
+    | PBeat
 )
 
 
@@ -2887,9 +2945,13 @@ class Key(NamedTuple):
 
 def _read(ctx: Context, p: Piece, layer: int) -> tuple[Key, Read] | None:
     """What a ``Reading`` reads of one piece at layer ``layer``: where it is asked, and
-    the piece cut to what is read. None for a piece no reading reads: who wrote a value
-    or a beat, a stopped's author, a fence, a run's end, a commit's date (end times
-    stand apart)."""
+    the piece cut to what is read. None for a piece no reading reads: who wrote a value,
+    a stopped's author, a fence, a run's end, a commit's date (end times stand apart).
+
+    Who wrote a heartbeat is Span's: 0.4.0 writes it as its ``claim_seq``, which the
+    folds read (``await_consumed`` takes a claim's watermarks from its heartbeats, the
+    Watcher seeds a claim's staleness from them). A log born in 0.3.0 names it; in one
+    born in 0.2.0 any live worker may have written it (``InferredNames``)."""
     if isinstance(p, PStart):
         return Key(p.claim, Projection.ORIGIN, layer), Resumes(p.claim, p.resume)
     if isinstance(p, (PDied, PWithdrawal, PTerminated)):
@@ -2901,7 +2963,9 @@ def _read(ctx: Context, p: Piece, layer: int) -> tuple[Key, Read] | None:
         return key, p._replace(gaps=at)
     if isinstance(p, (PHold, PExit)):
         return Key(p.claim, Projection.SPAN, layer), p
-    if isinstance(p, (PValue, PBeat, PStop, PFence, PRunEnd, PDate, PHorizon)):
+    if isinstance(p, PBeat):
+        return Key(p.writer, Projection.SPAN, layer), p
+    if isinstance(p, (PValue, PStop, PFence, PRunEnd, PDate, PHorizon)):
         return None
     assert_never(p)
 
@@ -2966,10 +3030,11 @@ def witness(g: Graph) -> tuple[Piece, ...]:
 def written(g: Graph) -> tuple[tuple[Piece, ...], ...]:
     """The path the step writes once every fork is decided, the end-time fork's
     included: one complete path, as its edge's pieces at each layer, the last the log's
-    end. Paths that remain differ only where no reading reads (where in its interval a
-    commit stands, who wrote a record no reading reads); each layer takes the edge whose
-    pieces come first by ``repr``, then the first state in the pass's own numbering,
-    which ``_each`` keeps free of hash order."""
+    end. The paths that remain write the same records: they differ only where no byte
+    is written (which writer wrote a record whose output names none, how far a
+    commit's gaps run past where it stands). Each layer takes the edge whose pieces
+    come first by ``repr``, then the first state in the pass's own numbering, which
+    the pass keeps free of hash order (``_each``, ``context``)."""
     assert admits(g)
     out: list[tuple[Piece, ...]] = []
     state = 0
@@ -2983,8 +3048,8 @@ def written(g: Graph) -> tuple[tuple[Piece, ...], ...]:
 
 
 def reaching(g: Graph) -> frozenset[int]:
-    """The claims some candidate runs on, or loads from outside, to the horizon: there a
-    longer one, which no record pins, was cut."""
+    """The claims some candidate closes a pass of at the horizon, its loop free to
+    continue: the commits of a longer run, which no record pins, were cut there."""
     return frozenset(
         p.claim
         for es in g.live
@@ -3084,22 +3149,155 @@ def undated(g: Graph, commit: CommitId) -> Graph:
 
 
 class Place(NamedTuple):
-    """Where an undated commit stands, the record it follows (``after``), and its end
-    time's bounds (``bounds``)."""
+    """Where an undated commit stands on a path: just after the record at seq
+    ``after``, the latest of its interval's first record and its claim's own last
+    record before it; and its end's lower bound there, the ``t`` of that own record
+    (``low``)."""
 
     after: int
     low: float
-    highs: tuple[float, ...]
 
 
-def place(ctx: Context, pieces: Sequence[Piece], commit: CommitId) -> Place:
-    """An undated commit's place on one path: just after the latest of its interval's
-    first record and its claim's own last record before it, with its bounds."""
-    (p,) = [x for x in pieces if isinstance(x, PCommit) and (x.claim, x.nth) == commit]
-    own = _own(pieces)[commit.claim]
-    last = max(s for s in own if s <= p.gaps.last)
-    low, highs = bounds(ctx, own, p.gaps)
-    return Place(max(p.gaps.first, last), low, highs)
+class _Track(NamedTuple):
+    """What a path's prefix shows of where an undated commit stands: its gaps once its
+    piece has passed (``UNPLACED`` before), and, per ``last`` its gaps may have
+    (``checkpoints``), the seq of its claim's own latest record at or before that one
+    so far (-1 for none)."""
+
+    gaps: Gaps
+    marks: tuple[int, ...]
+
+
+def _names(p: Piece, x: Silent) -> bool:
+    """Whether ``p`` is the piece of the commit or the rewind ``x``."""
+    if isinstance(x, CommitId):
+        return isinstance(p, PCommit) and p.claim == x.claim and p.nth == x.nth
+    return isinstance(p, PRewind) and p.claim == x.claim and p.epoch == x.epoch
+
+
+def reloads(g: Graph) -> frozenset[RewindId]:
+    """Every rewind some path left holds."""
+    return frozenset(
+        RewindId(p.claim, p.epoch)
+        for es in g.live
+        for e in es
+        for p in e.pieces
+        if isinstance(p, PRewind)
+    )
+
+
+def _own_seq(p: Piece, claim: int) -> int | None:
+    """The seq of the record piece ``p`` makes ``claim``'s own (``_own``), if it does."""
+    if isinstance(p, PStart):
+        return p.claim if p.claim == claim else None
+    if isinstance(p, (PValue, PBeat)):
+        return p.seq if p.writer == claim else None
+    if isinstance(p, PStop):
+        return p.seq if p.claim == claim and p.author is not Author.THIRD else None
+    return None
+
+
+class _Placing:
+    """One commit's or rewind's place, followed along the paths: a record's own pieces
+    stand at its layer, so once a path is past the piece and past the layer of the
+    latest ``last`` any of its gaps have, its place is settled."""
+
+    def __init__(self, g: Graph, silent: Silent) -> None:
+        self.ctx = g.ctx
+        self.silent = silent
+        self.checkpoints = tuple(
+            sorted(
+                {
+                    p.gaps.last
+                    for es in g.live
+                    for e in es
+                    for p in e.pieces
+                    if isinstance(p, (PCommit, PRewind)) and _names(p, silent)
+                }
+            )
+        )
+        self.settles = g.ctx.by_seq[self.checkpoints[-1]]
+        self.start = _Track(UNPLACED, (-1,) * len(self.checkpoints))
+
+    def advance(self, track: _Track, k: int, e: Edge) -> _Track | Place:
+        """The track after edge ``e`` of layer ``k``, or the place once settled."""
+        gaps, marks = track.gaps, list(track.marks)
+        for p in e.pieces:
+            s = _own_seq(p, self.silent.claim)
+            if s is not None:
+                assert s == self.ctx.recs[k].seq  # a record's own pieces, at its layer
+                for j, last in enumerate(self.checkpoints):
+                    if marks[j] < s <= last:
+                        marks[j] = s
+            elif isinstance(p, (PCommit, PRewind)) and _names(p, self.silent):
+                gaps = p.gaps
+        if gaps == UNPLACED or k < self.settles:
+            return _Track(gaps, tuple(marks))
+        m = marks[self.checkpoints.index(gaps.last)]
+        return Place(max(gaps.first, m), self.ctx.recs[self.ctx.by_seq[m]].t)
+
+
+def places(g: Graph, silent: Silent) -> frozenset[Place]:
+    """Every place the commit or rewind ``silent`` stands on some path left, each with
+    its lower bound: a forward pass carrying, per state, the tracks reaching it. A track
+    settled at a state is a place some complete path has, since every live edge is on
+    one."""
+    placing = _Placing(g, silent)
+    found: set[Place] = set()
+    at: dict[int, set[_Track]] = {0: {placing.start}}
+    for k, es in enumerate(g.live):
+        nxt: dict[int, set[_Track]] = defaultdict(set)
+        for e in es:
+            for track in at.get(e.src, ()):
+                y = placing.advance(track, k, e)
+                if isinstance(y, Place):
+                    found.add(y)
+                else:
+                    nxt[e.dst].add(y)
+        at = nxt
+        if not at:
+            break
+    return frozenset(found)
+
+
+def ended_at(g: Graph, silent: Silent, after: int, t: float) -> Graph:
+    """The paths on which the commit or rewind ``silent`` stands just after the record
+    at seq ``after``, with its lower bound at or before ``t``. Until a path's place is
+    settled its state is split by its track, a function of the path, so each path is
+    kept once; it is whole again after."""
+    placing = _Placing(g, silent)
+    split: dict[tuple[int, int, _Track], int] = {}
+    # below every id the graph has, which an earlier split may have made negative
+    floor = min((min(e.src, e.dst) for es in g.live for e in es), default=0)
+
+    def sid(k: int, state: int, track: _Track) -> int:
+        """A split state's id in layer ``k``, apart from every whole one's."""
+        return split.setdefault((k, state, track), min(floor, 0) - 1 - len(split))
+
+    live: list[tuple[Edge, ...]] = []
+    at: dict[int, set[_Track]] = {0: {placing.start}}
+    whole: set[int] = set()
+    for k, es in enumerate(g.live):
+        kept: list[Edge] = []
+        nxt: dict[int, set[_Track]] = defaultdict(set)
+        then: set[int] = set()
+        for e in es:
+            if e.src in whole:
+                kept.append(e)
+                then.add(e.dst)
+            for track in sorted(at.get(e.src, ())):
+                y = placing.advance(track, k, e)
+                src = e.src if k == 0 else sid(k, e.src, track)
+                if isinstance(y, Place):
+                    if y.after == after and y.low <= t:
+                        kept.append(Edge(src, e.dst, e.pieces))
+                        then.add(e.dst)
+                elif k + 1 < len(g.live):
+                    kept.append(Edge(src, sid(k + 1, e.dst, y), e.pieces))
+                    nxt[e.dst].add(y)
+        live.append(tuple(dict.fromkeys(kept)))
+        at, whole = nxt, then
+    return replace(g, live=_alive(live))
 
 
 def _windows(g: Graph) -> dict[Key, tuple[int, int]]:
@@ -3154,7 +3352,7 @@ def _restrict(
         nxt: dict[int, set[tuple[Read, ...]]] = defaultdict(set)
         for e in g.live[k]:
             mine = _mine(g.ctx, e, k, key)
-            for prefix in at.get(e.src, ()):
+            for prefix in _each(at.get(e.src, ())):
                 reached = prefix + mine
                 if reached != value[: len(reached)]:
                     continue

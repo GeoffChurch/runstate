@@ -15,7 +15,6 @@ import hashlib
 import inspect
 import json
 import time
-from collections import OrderedDict
 from importlib import metadata
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, Protocol
@@ -171,12 +170,20 @@ class Memo:
     """The checked transforms a plan has run, by what each read (the rows, and the
     earlier steps' word in the run's history), so a run's detection pass, its dry run
     and its transform after the seal transform it once, as long as no record landed
-    between. Bounded by the rows it holds, oldest first out; it changes no result."""
+    between. It holds outputs only, never a step's candidates, and changes no result.
 
-    ROWS = 2_000_000  # the output rows held at once: about a run's worth per 1,000
+    Bounded by the rows it holds: once full it takes no more, and evicts none. The
+    detection pass fills it in run order and the migrate pass reads it in the same
+    order, so evicting the oldest would evict the next run to migrate, every time; a
+    full memo instead still serves the runs it took first."""
+
+    # The output rows held at once, outside the step's budget: a Row and its fields
+    # take about 350 bytes on the goldens, more with a longer body, so about 0.35 to
+    # 0.5 GB in all. It changes no result, only how many runs reuse their transform.
+    ROWS = 1_000_000
 
     def __init__(self) -> None:
-        self._by: OrderedDict[str, Migrated] = OrderedDict()
+        self._by: dict[str, Migrated] = {}
         self._rows = 0
 
     @staticmethod
@@ -199,17 +206,13 @@ class Memo:
         return hashlib.sha256(repr((tuple(rows), word)).encode()).hexdigest()
 
     def get(self, key: str) -> Migrated | None:
-        found = self._by.get(key)
-        if found is not None:
-            self._by.move_to_end(key)
-        return found
+        return self._by.get(key)
 
     def put(self, key: str, migrated: Migrated) -> None:
+        if self._rows + len(migrated.rows) > self.ROWS:
+            return  # full: the runs it took first stay served
         self._by[key] = migrated
         self._rows += len(migrated.rows)
-        while self._rows > self.ROWS and len(self._by) > 1:
-            _, old = self._by.popitem(last=False)
-            self._rows -= len(old.rows)
 
 
 class Planned(NamedTuple):

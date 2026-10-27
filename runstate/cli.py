@@ -34,10 +34,10 @@ CAP = 3000
 BUDGET = 6_000_000
 
 # How many labels past the log's highest step a run of passes that no record pins is
-# followed, per claim (the 0.3.0 -> 0.4.0 engine's horizon). A run-on past it is cut
-# there, so it decides how many silent passes a reading may hold. 2 follows the oracle,
-# whose histories run on by at most one pass; a writer whose silent runs are longer
-# raises it.
+# followed, per claim (the 0.3.0 -> 0.4.0 engine's horizon). A limit, never a reading:
+# a candidate that closes a pass at the horizon with its loop free to continue refuses
+# the run, since how many passes it ran is then open. 2 follows the oracle, whose
+# histories run on by at most one pass.
 RUN_ON = 2
 
 

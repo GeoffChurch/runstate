@@ -1096,7 +1096,7 @@ def test_whether_a_tick_dates_a_commit_is_the_end_time_projections():
         assert m.readings["end-time"] == {
             3: {
                 "0": (
-                    {"is": "EndedAt", "t": 5.0}
+                    {"is": "EndedAt", "after": 5, "t": 5.0}
                     if name == "lower"
                     else {"is": "DatedBy", "seq": 6}
                 )
@@ -1106,11 +1106,43 @@ def test_whether_a_tick_dates_a_commit_is_the_end_time_projections():
     assert out["upper"] == [("lifecycle.commit", 6.0)]
 
 
+class _TwoVersionsRead:
+    """Every claim answered as two worker versions, keyed by strings, whose hash the
+    seed changes (as mycooc's classifier answers several); every stopped the worker's
+    own; a stepped value a pass's, a stepless one a register."""
+
+    def __init__(self, log: Sequence[Row]) -> None:
+        self._stepless = {
+            x.seq
+            for x in log
+            if x.topic == "value" and json.loads(x.body)["step"] is None
+        }
+
+    def started(self, seq: int) -> frozenset[str]:
+        return frozenset({"version-a", "version-b"})
+
+    def stopped(self, seq: int) -> frozenset[V.StopAnswer]:
+        return frozenset({V.OwnStop()})
+
+    def value(self, seq: int) -> frozenset[V.ValueRole]:
+        return frozenset({V.ValueRole(V.Role.PASS, seq in self._stepless)})
+
+
+class TwoVersions:
+    def read(self, log: Sequence[Row]) -> _TwoVersionsRead:
+        return _TwoVersionsRead(log)
+
+
 _SEEDED = """
-import hashlib, json, sys
+import dataclasses, hashlib, json, sys
 sys.path.insert(0, {root!r})
+import runstate.migrations.v0_3_0_to_v0_4_0 as STEP
+import runstate.migrations.v0_3_0_to_v0_4_0_engine as E
+import runstate.migrations.v0_3_0_to_v0_4_0_facts as V
 import tests.test_migration_goldens as T
 import tests.test_migration_oracle as O
+import tests.test_migration_v0_3_0_to_v0_4_0 as S
+from runstate.migrations import MigrationError
 d = hashlib.sha256()
 for rid in T.G.GOLDEN:
     m = T.migrated(rid)
@@ -1119,15 +1151,33 @@ for rows, hs in list(O.by_log(O.FAMILIES["positional"]()).items())[:60]:
     if O.parsed(hs[0]):
         g = O.run(hs)
         d.update(repr([[(e.src, e.dst, e.pieces) for e in es] for es in g.live]).encode())
+a = S.CHECKPOINTED
+b = dataclasses.replace(a, final_step=frozenset(V.FinalStep),
+                        error_final_step=frozenset(V.FinalStep),
+                        watermark=frozenset(V.Watermark))
+two = V.Configuration({{"version-a": a, "version-b": b}}, {{}}, O.TwoVersions())
+for rid, rows in T.G.GOLDEN.items():
+    try:
+        g = E.candidates(list(rows), two, born=V.Born030(), cap=3000,
+                         budget=6_000_000, run_on=2)
+        if not E.admits(g):
+            continue
+        m = S.migrated(list(rows), two, **S.CHOSEN)
+    except MigrationError:
+        continue
+    d.update(repr([[(e.src, e.dst, e.pieces) for e in es] for es in g.live]).encode())
+    d.update(repr((m.rows, sorted(m.readings.items()))).encode())
 print(d.hexdigest())
 """
 
 
 def test_the_step_writes_the_same_bytes_whatever_the_hash_seed():
-    """Every set the pass's successors come from is iterated in a fixed order, so the
-    states' numbering, the path written and the witnesses do not depend on
-    ``PYTHONHASHSEED``: the goldens' outputs and 60 ``positional`` graphs, under two
-    seeds, in two processes."""
+    """Every set the pass's successors come from is iterated in a fixed order, and a
+    classifier's answers in the configuration's declared order, so the states'
+    numbering, the path written and the witnesses do not depend on ``PYTHONHASHSEED``:
+    the goldens' outputs, 60 ``positional`` graphs, and the goldens under a classifier
+    answering two string-keyed versions per claim (whose graphs numbered their states
+    by hash order before fix round 2), under two seeds, in two processes."""
     import os
     import subprocess
     import sys
@@ -1146,3 +1196,125 @@ def test_the_step_writes_the_same_bytes_whatever_the_hash_seed():
         assert done.returncode == 0, done.stderr
         digests.append(done.stdout.strip())
     assert digests[0] == digests[1]
+
+
+# ----- the horizon refuses only where its cut could change a reading (fix round 2) ----
+
+
+class _AnyEnd:
+    """An End chooser for a check of the refusals, not of the readings: the first
+    answer."""
+
+    def choose(self, q: E.Question) -> E.Answer:
+        return q.answers[0]
+
+
+def _true_resolutions(hs: Sequence[H.History]) -> Any:
+    """The step's resolutions under the facts true of every history writing a log."""
+    from runstate.migrations.ambiguity import Assumptions, Chosen, Limits
+    from runstate.migrations.ambiguity import Resolutions as R
+
+    choosers = {
+        "end": Chosen("first", _AnyEnd()),
+        "span": Chosen("fewest", STEP.FEWEST.chooser),
+        "origin": Chosen("newest", STEP.NEWEST.chooser),
+        "end-time": Chosen("lower", STEP.END_TIME.generic[0].chooser),
+    }
+    cfg = D.configuration([observed(h) for h in hs])
+    return R(Assumptions(cfg, "derived", Limits(CAP, BUDGET, RUN_ON)), choosers)
+
+
+@pytest.mark.oracle
+@pytest.mark.parametrize("family", list(FAMILIES))
+def test_family_runs_are_never_refused_at_the_horizon_under_true_facts(
+    family: str,
+) -> None:
+    """The step's own refusals, not the engine's: under the facts true of every
+    history writing a log, no candidate closes a pass at the horizon with its loop free
+    to continue, since no history runs on that far. A run the step refuses there is a
+    cut nothing reads, refused (fix round 1 refused one ``rewinds`` log so)."""
+    step = STEP.V0_3_0_to_V0_4_0()
+    for rows, hs in by_log(FAMILIES[family]()).items():
+        if not parsed(hs[0]):
+            continue
+        try:
+            step.transform(
+                list(rows),
+                resolutions=_true_resolutions(hs),
+                history=_born_history(hs[0]),
+            )
+        except MigrationError as exc:
+            assert "horizon" not in str(exc), rows
+
+
+def _the_rewinds_log() -> tuple[tuple[Row, ...], list[H.History]]:
+    """The ``rewinds`` log fix round 1 refused at the horizon: 13 records, 40
+    histories, a second claim at seq 10 that its stopped names. A pass begun at the
+    horizon and cut there made no commit."""
+    for rows, hs in by_log(FAMILIES["rewinds"]()).items():
+        if (
+            len(rows) == 13
+            and len(hs) == 40
+            and rows[9].topic == "lifecycle.started"
+            and json.loads(rows[12].body).get("claim_seq") == 10
+        ):
+            return rows, hs
+    raise AssertionError("the rewinds log is gone from its family")
+
+
+def test_a_cut_nothing_reads_does_not_refuse() -> None:
+    """Two runs fix round 1 refused at the horizon, each of which writes, as it did at
+    bfa5c6c, byte for byte (checked at the time): a pass begun at the horizon and cut
+    there, under ``stride`` {next, skip}; and a claim that loads from outside and dies
+    before its first pass, whose loaded step nothing reads."""
+    rows, hs = _the_rewinds_log()
+    m = STEP.V0_3_0_to_V0_4_0().transform(
+        list(rows), resolutions=_true_resolutions(hs), history=_born_history(hs[0])
+    )
+    assert not any(m.divergences.values())
+    assert [x.topic for x in m.rows] == [
+        "lifecycle.started",
+        *["value", "lifecycle.commit", "lifecycle.heartbeat"] * 4,
+        "supervisor.died",
+        "lifecycle.started",
+        "value",
+        "lifecycle.commit",
+        "lifecycle.stopped",
+    ]
+    from tests.test_migration_v0_3_0_to_v0_4_0 import REFERENCE, under
+    from tests.migration_goldens import DEAD, _beat, _dated, _started, _stopped, r
+
+    w = REFERENCE.workers["ref"]
+    outside = REFERENCE._replace(
+        workers={"ref": replace(w, load=w.load | {V.Load.OUTSIDE})}
+    )
+    loaded = _dated(
+        [
+            r(1, "lifecycle.started", _started(DEAD, 1.0)),
+            r(2, "lifecycle.started", _started("local://n1/12", 2.0)),
+            r(3, "lifecycle.heartbeat", _beat(0, 0, 2, 3.0)),
+            r(4, "lifecycle.stopped", _stopped(True, None, 0, 2, [], 4.0)),
+        ]
+    )
+    from runstate.migrations.ambiguity import Chosen
+
+    choosers = {
+        "end": Chosen("first", _AnyEnd()),
+        "span": Chosen("fewest", STEP.FEWEST.chooser),
+        "origin": Chosen("newest", STEP.NEWEST.chooser),
+        "end_time": Chosen("lower", STEP.END_TIME.generic[0].chooser),
+    }
+    for run_on in (0, 2, 8):
+        res = under(outside, **choosers)
+        res = res._replace(
+            assumptions=res.assumptions._replace(
+                limits=res.assumptions.limits._replace(run_on=run_on)
+            )
+        )
+        m = STEP.V0_3_0_to_V0_4_0().transform(loaded, resolutions=res, history=())
+        assert [x.topic for x in m.rows] == [
+            "lifecycle.started",
+            "supervisor.died",
+            "lifecycle.started",
+            "lifecycle.commit",
+        ]
