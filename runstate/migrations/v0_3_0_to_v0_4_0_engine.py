@@ -10,8 +10,9 @@ in ``tests/migration_sim``, which is the second encoding the oracle checks it ag
 version, its classifier, and the earlier step's readings, the set of conforming 0.4.0
 lineages that record a 0.3.0 history writing those rows and meeting every statement and
 every classifier answer (§7, "The target"; "The writer facts"). An empty set refuses the
-run. A set of one is the answer. Several are forks, reported per claim in three
-projections (End, Span, Origin) and decided by choosers, from the last claim back.
+run. A set of one is the answer. Several are forks, reported per claim in four
+projections (End, Span, Origin, and Writer, who wrote a heartbeat) and decided by
+choosers, from the last claim back.
 
 **How: a forward-backward pass over the log, one layer per record.** A state is the
 world between two records:
@@ -2904,12 +2905,14 @@ def _alive(live: Sequence[Sequence[Edge]]) -> tuple[tuple[Edge, ...], ...]:
 
 
 class Projection(Enum):
-    """The approved architecture's three projections, in the decode's order for each
-    subject."""
+    """The projections the decode reads, in its order for each subject: the approved
+    architecture's three, then who wrote a heartbeat (``Writer``), which only a log
+    born in 0.2.0 leaves open and which no other reading depends on."""
 
     END = "end"
     SPAN = "span"
     ORIGIN = "origin"
+    WRITER = "writer"
 
 
 class Resumes(NamedTuple):
@@ -2948,10 +2951,11 @@ def _read(ctx: Context, p: Piece, layer: int) -> tuple[Key, Read] | None:
     the piece cut to what is read. None for a piece no reading reads: who wrote a value,
     a stopped's author, a fence, a run's end, a commit's date (end times stand apart).
 
-    Who wrote a heartbeat is Span's: 0.4.0 writes it as its ``claim_seq``, which the
-    folds read (``await_consumed`` takes a claim's watermarks from its heartbeats, the
-    Watcher seeds a claim's staleness from them). A log born in 0.3.0 names it; in one
-    born in 0.2.0 any live worker may have written it (``InferredNames``)."""
+    Who wrote a heartbeat is the Writer projection's: 0.4.0 writes it as its
+    ``claim_seq``, which the folds read (``await_consumed`` takes a claim's watermarks
+    from its heartbeats, the Watcher seeds a claim's staleness from them). A log born
+    in 0.3.0 names it; in one born in 0.2.0 any live worker may have written it
+    (``InferredNames``)."""
     if isinstance(p, PStart):
         return Key(p.claim, Projection.ORIGIN, layer), Resumes(p.claim, p.resume)
     if isinstance(p, (PDied, PWithdrawal, PTerminated)):
@@ -2964,7 +2968,7 @@ def _read(ctx: Context, p: Piece, layer: int) -> tuple[Key, Read] | None:
     if isinstance(p, (PHold, PExit)):
         return Key(p.claim, Projection.SPAN, layer), p
     if isinstance(p, PBeat):
-        return Key(p.writer, Projection.SPAN, layer), p
+        return Key(p.writer, Projection.WRITER, layer), p
     if isinstance(p, (PValue, PStop, PFence, PRunEnd, PDate, PHorizon)):
         return None
     assert_never(p)
@@ -3402,7 +3406,7 @@ def _question(
 
 def _order(g: Graph, windows: Mapping[Key, tuple[int, int]]) -> list[Key]:
     """The keys in the decode's order: subjects last claim first, then the run; for
-    each, End, Span, Origin; positions in log order."""
+    each, End, Span, Origin, Writer; positions in log order."""
     rank = {s: k for k, s in enumerate(subjects(g))}
     projections = list(Projection)
     return sorted(
@@ -3573,6 +3577,17 @@ FEEDS: Mapping[Projection, frozenset[WorkerFact | ThirdFact]] = {
         WorkerFact.STRAYS,
     },
     Projection.ORIGIN: _CROSS | {WorkerFact.LOADING},
+    # which workers live at a heartbeat (a takeover's survivor, a loop left early),
+    # and whose clock a tick's step matches
+    Projection.WRITER: frozenset(
+        {
+            WorkerFact.TAKEOVER,
+            WorkerFact.LOOP_END,
+            WorkerFact.STRIDE,
+            WorkerFact.BEAT_POS,
+            WorkerFact.BEAT_COV,
+        }
+    ),
 }
 """The facts whose value can decide each projection: §7's "feeds" column, every fact
 feeding the cross-claim state included, since a later claim reads it. An

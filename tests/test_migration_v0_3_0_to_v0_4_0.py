@@ -44,6 +44,7 @@ from runstate.migrations.v0_3_0_to_v0_4_0 import (
     NEWEST,
     SPAN,
     UNSTATED,
+    WRITER_NEWEST,
     DatedBy,
     EndedAt,
     EndTime,
@@ -100,9 +101,9 @@ class _Reference:
         return frozenset({V.ValueRole(V.Role.PASS, False)})
 
 
-CHECKPOINTED = dataclasses.replace(
-    STEP.reference(closing=frozenset({V.Closing.OTHER})).workers["reference"],
-    loading=frozenset({V.Loading.LOADED}),
+CONSUMER = dict(
+    closing=frozenset({V.Closing.OTHER}),
+    marker=V.every(V.Marker),
     values=frozenset({V.Phase.PASS}),
     loop_end=frozenset({V.LoopEnd.AFTER_CLOSE}),
     discards=frozenset({V.Discards.KEEPS}),
@@ -113,15 +114,19 @@ CHECKPOINTED = dataclasses.replace(
     load=frozenset({V.Load.FRESH, V.Load.NEWEST}),
     strays=frozenset(),
 )
-"""The shipped preset's facts, narrowed as a consumer of the reference Worker would on
-its own word: no pass ends at a value, values only inside a pass, the loop left after a
-close, each pass's completed state saved inside it or at its close, the newest save or
-nothing loaded, and no other writer's values."""
+"""A consumer's word on its own code, as a consumer of the reference Worker would give
+it: no pass ends at a value, values only inside a pass, the loop left after a close,
+each pass's completed state saved inside it or at its close, the newest save or nothing
+loaded, and no other writer's values; whether a silent pass wrote a value, unknown."""
+
+CHECKPOINTED = STEP.reference(**CONSUMER).workers["reference"]
+"""The reference preset under ``CONSUMER``."""
 
 REFERENCE = V.Configuration(
     {
         "ref": dataclasses.replace(
             CHECKPOINTED,
+            loading=frozenset({V.Loading.LOADED}),
             final_step=frozenset(V.FinalStep),
             error_final_step=frozenset({V.FinalStep.TICKED}),
             watermark=frozenset(V.Watermark),
@@ -130,9 +135,10 @@ REFERENCE = V.Configuration(
     {"tp": UNSTATED.third_parties["any"]},
     _Reference(),
 )
-"""``CHECKPOINTED`` widened for these tests' hand-written logs: any ``final_step`` at an
-exit, the last tick at an error, any watermark, and any third party; narrow enough that
-a small log follows at the cap."""
+"""``CHECKPOINTED`` widened for these tests' hand-written logs: a clock before the first
+pass that reads the loaded step, any ``final_step`` at an exit, the last tick at an
+error, any watermark, and any third party; narrow enough that a small log follows at
+the cap."""
 
 
 def under(configuration, **choosers):
@@ -1268,19 +1274,31 @@ def test_no_stated_facts_names_the_facts_to_state_and_the_preset():
     assert "under no stated facts (no --assume)" in message
     assert "load, " in message and "stride" in message and "marker" in message
     assert '§7, "The writer facts"' in message
-    assert "runstate.migrations.v0_3_0_to_v0_4_0.reference(closing=...)" in message
+    assert "runstate.migrations.v0_3_0_to_v0_4_0.reference(...)" in message
 
 
-PRESET = STEP.reference(closing=frozenset(V.Closing))
-"""A consumer's own call of the preset, as its ``--assume`` names it: these tests'
-bodies end a pass at a value, or after another writer's record."""
-
-PRESET_CHECKPOINTED = V.Configuration(
-    {"reference": dataclasses.replace(CHECKPOINTED, closing=frozenset(V.Closing))},
-    {},
-    STEP.Reference(),
+UNKNOWN = dict(
+    closing=V.every(V.Closing),
+    marker=V.every(V.Marker),
+    values=frozenset({V.Phase.PASS, V.Phase.BETWEEN}),
+    loop_end=V.every(V.LoopEnd),
+    discards=V.every(V.Discards),
+    cut_save=V.every(V.CutSave),
+    save_at=V.every(V.SaveAt),
+    save_cov=V.every(V.Saved),
+    leave_save=V.every(V.Saved),
+    load=V.every(V.Load),
+    strays=V.every(V.Stray),
 )
-"""The preset narrowed by a consumer's word on its checkpoints (``CHECKPOINTED``)."""
+"""A consumer that knows nothing of its own code passes each fact's whole domain,
+explicitly (``values`` within what the Worker allows)."""
+
+PRESET = STEP.reference(**UNKNOWN)
+"""A consumer's own call of the preset, as its ``--assume`` names it."""
+
+PRESET_CHECKPOINTED = STEP.reference(**{**CONSUMER, "closing": V.every(V.Closing)})
+"""The preset under a consumer's word on its own code (``CONSUMER``), its bodies ending
+a pass at a value or after another writer's record."""
 
 
 def test_a_consumer_names_its_own_call_of_the_preset_and_migrates_its_log():
@@ -1306,31 +1324,37 @@ def test_a_consumer_names_its_own_call_of_the_preset_and_migrates_its_log():
     )
 
 
-def test_the_preset_states_only_what_the_worker_fixes():
-    """``closing`` is the caller's, required and keyword-only; every fact of the
-    consumer's own code is left whole."""
+@pytest.mark.parametrize("missing", list(UNKNOWN))
+def test_the_preset_requires_every_fact_the_consumers_code_decides(missing):
+    """Each fact the consumer's own code decides is a required keyword-only argument:
+    none is left wide unasked."""
     with pytest.raises(TypeError):
-        STEP.reference()  # type: ignore[call-arg]
+        STEP.reference(**{k: v for k, v in UNKNOWN.items() if k != missing})
+
+
+def test_the_preset_states_what_the_worker_fixes():
+    """The preset takes no positional argument and no value phase the Worker cannot
+    write in, and states the rest from ``worker.py``."""
     with pytest.raises(TypeError):
-        STEP.reference(frozenset(V.Closing))  # type: ignore[misc]
+        STEP.reference(*UNKNOWN.values())  # type: ignore[misc]
+    with pytest.raises(ValueError, match="writes no value with a step in"):
+        STEP.reference(**{**UNKNOWN, "values": V.every(V.Phase)})
     w = PRESET.workers["reference"]
-    for unstated in (
-        "loading",
-        "marker",
-        "loop_end",
-        "discards",
-        "cut_save",
-        "save_at",
-        "save_cov",
-        "leave_save",
-        "load",
-        "strays",
-    ):
-        assert getattr(w, unstated) == E.domain(V.WorkerFacts, unstated), unstated
-    assert w.values == {V.Phase.PASS, V.Phase.BETWEEN}
-    assert STEP.reference(closing=frozenset({V.Closing.OTHER})).workers[
-        "reference"
-    ].closing == {V.Closing.OTHER}
+    assert (w.stride, w.beat_pos, w.beat_cov) == (
+        {V.Stride.NEXT},
+        {V.BeatPos.AFTER_CLOSE},
+        {V.Covered.BEATEN},
+    )
+    assert w.loading == frozenset() and w.rewinds == frozenset()
+    assert w.final_step == w.error_final_step == {V.FinalStep.YIELDED}
+    assert (w.takeover, w.fold, w.honored, w.watermark) == (
+        {V.Takeover.DEAD},
+        {V.Fold.AT_CLAIM},
+        {V.Honored.EXIT},
+        {V.Watermark.CONTROL},
+    )
+    for k, v in UNKNOWN.items():
+        assert getattr(w, k) == v, k
 
 
 def _the_reference_workers_log(kind):
@@ -1568,6 +1592,9 @@ def test_the_step_drops_the_last_runs_candidates_before_building_the_next():
     assert held == [None, None]
 
 
+WRITES = {**CHOSEN, "writer": Chosen("newest", WRITER_NEWEST.chooser)}
+"""The test choosers, the heartbeat writer read as the newest live worker's."""
+
 BORN_020 = Entry(
     run_id="r",
     from_format="0.2.0",
@@ -1585,25 +1612,23 @@ BORN_020 = Entry(
 
 
 class _NotTheLatest:
-    """A Span chooser that reads a heartbeat whose writer is open as the earlier
-    worker's, and answers every other fork as ``fewest``."""
+    """A Writer chooser that reads a heartbeat whose writer is open as the earlier
+    worker's: claim 3 did not write it."""
 
     def choose(self, question):
-        for a in question.answers:
-            if question.key.subject == 3 and a.value == ():
-                if any(
-                    isinstance(p, E.PBeat) for b in question.answers for p in b.value
-                ):
-                    return a
-        return FEWEST.chooser.choose(question)
+        if question.key.subject == 3:
+            (a,) = [a for a in question.answers if a.value == ()]
+            return a
+        return WRITER_NEWEST.chooser.choose(question)
 
 
-def test_who_wrote_a_heartbeat_in_a_log_born_in_0_2_0_is_spans_reading():
+def test_who_wrote_a_heartbeat_in_a_log_born_in_0_2_0_is_the_writer_projection():
     """0.4.0 writes a heartbeat's writer as its ``claim_seq``, which ``await_consumed``
     and the Watcher read; in a log born in 0.2.0 any live worker may have written it.
     With claim 1's worker alive past claim 3's takeover, the beacon at seq 4 is either
-    one's: a Span fork for each claim, which ``fewest`` reads as the newest worker's and
-    a consumer's chooser may read otherwise."""
+    one's: a Writer fork for each claim, naming ``takeover`` as the fact that settles
+    it, which ``newest`` reads as the newest worker's and a consumer's chooser may read
+    otherwise. Span reads no heartbeat, and its built-ins never see one."""
     rows = _dated(
         [
             r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
@@ -1622,9 +1647,22 @@ def test_who_wrote_a_heartbeat_in_a_log_born_in_0_2_0_is_spans_reading():
         third_parties={},
     )
     found = step.detect(
-        rows, assumptions=under(live, **CHOSEN).assumptions, history=(BORN_020,)
+        rows, assumptions=under(live, **WRITES).assumptions, history=(BORN_020,)
     ).forks
-    assert [f.seq for f in found["span"]].count(4) == 2  # claim 3's and claim 1's
+    assert [f.seq for f in found["writer"]] == [4, 4]  # claim 3's and claim 1's
+    assert all("takeover" in f.settled_by for f in found["writer"])
+    assert not any(
+        isinstance(p, E.PBeat)
+        for q in E.questions(
+            E.candidates(
+                rows, live, born=V.Born020(), cap=3000, budget=6_000_000, run_on=2
+            ),
+            cap=3000,
+        )
+        if q.key.projection is not E.Projection.WRITER
+        for a in q.answers
+        for p in a.value
+    )
 
     def beacon(**choosers):
         m = step.transform(
@@ -1633,10 +1671,12 @@ def test_who_wrote_a_heartbeat_in_a_log_born_in_0_2_0_is_spans_reading():
         (b,) = [x for x in m.rows if x.topic == "lifecycle.heartbeat"][:1]
         return json.loads(b.body)["claim_seq"], m.rows
 
-    named, out = beacon(**CHOSEN)
+    named, out = beacon(**WRITES)
     assert named == [x.seq for x in out if x.topic == "lifecycle.started"][1]
-    named, out = beacon(**{**CHOSEN, "span": Chosen("x", _NotTheLatest())})
+    named, out = beacon(**{**WRITES, "writer": Chosen("x", _NotTheLatest())})
     assert named == [x.seq for x in out if x.topic == "lifecycle.started"][0]
+    with pytest.raises(MigrationError, match="writer"):
+        beacon(**CHOSEN)  # no --resolve decides writer
 
 
 class _FirstAnswer:

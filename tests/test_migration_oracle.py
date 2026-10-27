@@ -461,6 +461,7 @@ def _step_resolutions(h: H.History) -> Any:
         "end": Chosen(None, REFUSE.chooser),
         "span": Chosen("fewest", STEP.FEWEST.chooser),
         "origin": Chosen("newest", STEP.NEWEST.chooser),
+        "writer": Chosen(None, REFUSE.chooser),
         "end-time": Chosen("lower", STEP.END_TIME.generic[0].chooser),
     }
     cfg = D.configuration([observed(h)])
@@ -1088,6 +1089,7 @@ def test_whether_a_tick_dates_a_commit_is_the_end_time_projections():
                 "end": Chosen(None, REFUSE.chooser),
                 "span": Chosen("fewest", STEP.FEWEST.chooser),
                 "origin": Chosen("newest", STEP.NEWEST.chooser),
+                "writer": Chosen(None, REFUSE.chooser),
                 "end-time": Chosen(name, STEP.END_TIME.generic[chooser].chooser),
             },
         )
@@ -1218,6 +1220,7 @@ def _true_resolutions(hs: Sequence[H.History]) -> Any:
         "end": Chosen("first", _AnyEnd()),
         "span": Chosen("fewest", STEP.FEWEST.chooser),
         "origin": Chosen("newest", STEP.NEWEST.chooser),
+        "writer": Chosen("newest", STEP.WRITER_NEWEST.chooser),
         "end-time": Chosen("lower", STEP.END_TIME.generic[0].chooser),
     }
     cfg = D.configuration([observed(h) for h in hs])
@@ -1302,6 +1305,7 @@ def test_a_cut_nothing_reads_does_not_refuse() -> None:
         "end": Chosen("first", _AnyEnd()),
         "span": Chosen("fewest", STEP.FEWEST.chooser),
         "origin": Chosen("newest", STEP.NEWEST.chooser),
+        "writer": Chosen("newest", STEP.WRITER_NEWEST.chooser),
         "end_time": Chosen("lower", STEP.END_TIME.generic[0].chooser),
     }
     for run_on in (0, 2, 8):

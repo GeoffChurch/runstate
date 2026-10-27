@@ -10,8 +10,8 @@ mycooc's reclaim tool meant it, as only a consumer's classifier may
 (log-formats.md §6). Under no stated facts the step refuses them.
 
 **The choices** are the same for every golden (``CHOICES``): ``span=fewest``,
-``origin=newest``, ``end-time=lower``, and ``end`` left to ``refuse``, which no golden
-forks.
+``origin=newest``, ``end-time=lower``, and ``end`` and ``writer`` left to ``refuse``,
+which no golden forks.
 
 With the oracle and the mutation test, this module imports both the step and the
 simulator: it is a harness module, never one the step or the simulator imports.
@@ -52,6 +52,7 @@ CHOICES = {
     "end": Chosen(None, REFUSE.chooser),
     "span": Chosen("fewest", FEWEST.chooser),
     "origin": Chosen("newest", NEWEST.chooser),
+    "writer": Chosen(None, REFUSE.chooser),
     "end-time": Chosen("lower", END_TIME.generic[0].chooser),
 }
 

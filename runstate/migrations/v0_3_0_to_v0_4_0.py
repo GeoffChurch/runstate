@@ -17,11 +17,12 @@ A run goes through four parts, in this order:
    statement of none is the whole domain of every fact (``UNSTATED``). In a log born
    in format 0.2.0, which the root's manifest records (``_born``), the names the
    earlier step filled are its inference, never their writer's word.
-3. **The decode** (``_decide``): each fork of a subject's End, Span or Origin,
-   asked of the chooser its projection was given, in the decode's stated order
-   (subjects from the last claim back to the first, then the run; for each, End,
-   Span, Origin; positions in log order), the candidates through each answer kept;
-   then the end-time fork of each commit no record dates (``END_TIME``). A
+3. **The decode** (``_decide``): each fork of a subject's End, Span, Origin or
+   Writer, asked of the chooser its projection was given, in the decode's stated
+   order (subjects from the last claim back to the first, then the run; for each,
+   End, Span, Origin, Writer; positions in log order), the candidates through each
+   answer kept; then the end-time fork of each commit and rewind no record dates
+   (``END_TIME``). A
    projection no ``--resolve`` decides refuses at its first fork.
 4. **The writing** (``_layout``, ``_numbered``): the decided lineage written as
    0.4.0 records under runstate's encoding rules, the same for every consumer
@@ -965,55 +966,79 @@ class Reference:
 _REFERENCE = "reference"
 
 
-def reference(*, closing: frozenset[V.Closing]) -> Configuration:
-    """A statement a consumer may start from (§7, "The writer facts"): every claim's
-    worker runstate's reference ``Worker`` driven by ``steps()``, and no third party,
-    every ``stopped`` the worker's own. A consumer names its own call of it,
-    ``--assume mine:FACTS`` with ``FACTS = reference(closing=...)``, giving its word.
+_WORKER_VALUES = frozenset({V.Phase.PASS, V.Phase.BETWEEN})
+"""Where the reference Worker can write a value with a step: inside a pass, or after
+its loop and before its exit. ``emit`` raises before the first pass and writes nothing
+after the exit."""
 
-    It states only what ``worker.py`` fixes: each pass labelled one past the last
-    (``step += 1``) and ticked after its body, the loop continuing only past a tick;
-    no value with a step before the first pass (``emit`` raises) or after the exit (it
-    writes nothing); the last pass begun as any exit's ``final_step`` (``_last_step``,
-    set before the ``yield``); every stop it took in honoured, its fold at the claim,
-    the newest control record its drain read as its watermark; no rewind; a takeover
-    only of a halted worker (the gate, ``live_episode``).
 
-    What the consumer's own code decides is not stated here. ``closing``, whether a
-    pass's body ends with a value, is required, since it decides whether a tick dates
-    a commit. The rest is left whole: whether a value is written after the loop
-    (``values``), how the loop is left (``loop-end``), and every fact of the
-    consumer's checkpoints (``discards``, ``cut-save``, ``save-at``, ``save-cov``,
-    ``leave-save``, ``load``), and other writers' values (``strays``). A consumer that
-    knows them narrows them, ``dataclasses.replace`` on the worker's facts, as all but
-    the smallest logs need.
+def reference(
+    *,
+    closing: frozenset[V.Closing],
+    marker: frozenset[V.Marker],
+    values: frozenset[V.Phase],
+    loop_end: frozenset[V.LoopEnd],
+    discards: frozenset[V.Discards],
+    cut_save: frozenset[V.CutSave],
+    save_at: frozenset[V.SaveAt],
+    save_cov: frozenset[V.Saved],
+    leave_save: frozenset[V.Saved],
+    load: frozenset[V.Load],
+    strays: frozenset[V.Stray],
+) -> Configuration:
+    """A statement a consumer may build (§7, "The writer facts"): every claim's worker
+    runstate's reference ``Worker`` driven by ``steps()``, and no third party, every
+    ``stopped`` the worker's own. A consumer names its own call of it, ``--assume
+    mine:FACTS`` with ``FACTS = reference(...)``, giving its word.
+
+    It states what ``worker.py`` fixes: each pass labelled one past the last
+    (``step += 1``) and ticked after its body, the loop continuing only past a tick; no
+    value with a step before the first pass (``emit`` raises), so no clock before it is
+    ever read (``loading`` empty), and none after the exit (it writes nothing); the last
+    pass begun as any exit's ``final_step`` (``_last_step``, set before the ``yield``);
+    every stop it took in honoured, its fold at the claim, the newest control record its
+    drain read as its watermark; no rewind; a takeover only of a halted worker (the
+    gate, ``live_episode``).
+
+    Every fact the consumer's own code decides is a required argument, none left wide
+    unasked: how a pass's body ends (``closing``) and whether a pass that closes
+    silently wrote a value (``marker``); where its values are written, within what the
+    Worker allows (``values``, inside a pass or after the loop); how its loop is left
+    (``loop_end``); its checkpoints (``discards``, ``cut_save``, ``save_at``,
+    ``save_cov``, ``leave_save``, ``load``); and other writers' values (``strays``). A
+    consumer that does not know one passes its whole domain, ``every(...)``.
 
     It can be false of a run: a control record landing between a drain and its
     heartbeat breaks ``watermark``, an explicit ``final_step`` breaks ``final-step``.
     A false word is not silent: no history writes the log, and the refusal names the
     fact to relax."""
+    if not values <= _WORKER_VALUES:
+        raise ValueError(
+            f"the reference Worker writes no value with a step in "
+            f"{sorted(p.value for p in values - _WORKER_VALUES)}"
+        )
     return Configuration(
         {
             _REFERENCE: WorkerFacts(
                 stride=frozenset({V.Stride.NEXT}),
-                loading=domain(WorkerFacts, "loading"),
-                values=frozenset({V.Phase.PASS, V.Phase.BETWEEN}),
+                loading=frozenset(),
+                values=values,
                 beat_pos=frozenset({V.BeatPos.AFTER_CLOSE}),
                 beat_cov=frozenset({V.Covered.BEATEN}),
-                marker=domain(WorkerFacts, "marker"),
+                marker=marker,
                 closing=closing,
-                loop_end=domain(WorkerFacts, "loop_end"),
-                discards=domain(WorkerFacts, "discards"),
+                loop_end=loop_end,
+                discards=discards,
                 final_step=frozenset({V.FinalStep.YIELDED}),
                 error_final_step=frozenset({V.FinalStep.YIELDED}),
-                cut_save=domain(WorkerFacts, "cut_save"),
-                save_at=domain(WorkerFacts, "save_at"),
-                save_cov=domain(WorkerFacts, "save_cov"),
-                leave_save=domain(WorkerFacts, "leave_save"),
-                load=domain(WorkerFacts, "load"),
+                cut_save=cut_save,
+                save_at=save_at,
+                save_cov=save_cov,
+                leave_save=leave_save,
+                load=load,
                 rewinds=frozenset(),
                 takeover=frozenset({V.Takeover.DEAD}),
-                strays=domain(WorkerFacts, "strays"),
+                strays=strays,
                 fold=frozenset({V.Fold.AT_CLAIM}),
                 honored=frozenset({V.Honored.EXIT}),
                 watermark=frozenset({V.Watermark.CONTROL}),
@@ -1053,6 +1078,7 @@ def _holds(a: E.Answer) -> int:
 
 
 def _beats(a: E.Answer) -> int:
+    """How many heartbeats an answer has its subject's worker write."""
     return sum(isinstance(p, E.PBeat) for p in a.value)
 
 
@@ -1095,15 +1121,15 @@ def _builtin(name: str, key: Callable[[E.Answer], Any], description: str) -> Bui
 
 FEWEST = _builtin(
     "fewest",
-    lambda a: (_commits(a), _holds(a), _newest(a), -_beats(a)),
+    lambda a: (_commits(a), _holds(a), _newest(a)),
     "the fewest iterations finished, then the fewest values held, then the newest "
-    "nodes continued, then the most heartbeats written",
+    "nodes continued",
 )
 MOST = _builtin(
     "most",
-    lambda a: (-_commits(a), -_holds(a), _newest(a), -_beats(a)),
+    lambda a: (-_commits(a), -_holds(a), _newest(a)),
     "the most iterations finished, then the most values held, then the newest nodes "
-    "continued, then the most heartbeats written",
+    "continued",
 )
 NEWEST = _builtin(
     "newest",
@@ -1121,9 +1147,8 @@ END = Projection[E.Question, E.Answer](
 SPAN = Projection[E.Question, E.Answer](
     name="span",
     definition="what a claim did: its finished iterations, where each stands and what "
-    "it holds, its rewinds, its exit, and the heartbeats its worker wrote",
-    readings="the claim's commits (parent, values, placement), rewinds, exit node and "
-    "the heartbeats its worker wrote",
+    "it holds, its rewinds, and its exit",
+    readings="the claim's commits (parent, values, placement), rewinds and exit node",
     generic=(FEWEST, MOST),
     check=_answer,
 )
@@ -1254,10 +1279,26 @@ END_TIME = Projection[EndTime, EndTimeReading](
     check=_end_time,
 )
 
+WRITER_NEWEST = _builtin(
+    "newest",
+    lambda a: -_beats(a),
+    "the newest live worker wrote it: the decode asks the last claim first, so the "
+    "answer in which the claim asked wrote it",
+)
+WRITER = Projection[E.Question, E.Answer](
+    name="writer",
+    definition="who wrote a heartbeat, in a log born in 0.2.0, where any live worker "
+    "may have: 0.4.0 writes it as the heartbeat's claim_seq",
+    readings="the heartbeats the claim's worker wrote",
+    generic=(WRITER_NEWEST,),
+    check=_answer,
+)
+
 _BY_KEY: Mapping[E.Projection, Projection[E.Question, E.Answer]] = {
     E.Projection.END: END,
     E.Projection.SPAN: SPAN,
     E.Projection.ORIGIN: ORIGIN,
+    E.Projection.WRITER: WRITER,
 }
 
 
@@ -1424,8 +1465,9 @@ def _candidates(
             "leaves this log's writers too much to follow. State its writers' facts "
             '(commits-and-lineage.md §7, "The writer facts"); those that widen the '
             f"pass are {', '.join(widening)}. A consumer whose worker is runstate's "
-            "reference Worker may start from its preset, "
-            "runstate.migrations.v0_3_0_to_v0_4_0.reference(closing=...)"
+            "reference Worker may build its statement with "
+            "runstate.migrations.v0_3_0_to_v0_4_0.reference(...), which takes "
+            "the facts its own code decides"
         ) from exc
     if E.admits(g):
         cut = sorted(E.reaching(g))
@@ -1533,7 +1575,7 @@ def _decide(g: E.Graph, resolutions: Resolutions) -> _Decided:
     then the end-time fork, commit by commit, subjects from the last claim back: which
     tick dates it, if any, else when it ended."""
     readings: dict[str, dict[int, dict[str, Json]]] = {
-        p.name: {} for p in (END, SPAN, ORIGIN, END_TIME)
+        p.name: {} for p in (END, SPAN, ORIGIN, WRITER, END_TIME)
     }
 
     def route(q: E.Question) -> E.Answer:
@@ -2253,6 +2295,7 @@ class V0_3_0_to_V0_4_0:
         END,
         SPAN,
         ORIGIN,
+        WRITER,
         END_TIME,
     )
     DIVERGENCES: ClassVar[tuple[Divergence, ...]] = DIVERGENCES
@@ -2308,7 +2351,7 @@ class V0_3_0_to_V0_4_0:
     def detect(
         self, rows: list[Row], *, assumptions: Assumptions, history: History
     ) -> Detected:
-        """The forks of End, Span and Origin, each with the facts whose statement
+        """The forks of End, Span, Origin and Writer, each with the facts whose statement
         could settle it; and an end-time fork, at its claim's seq, for each commit that
         some candidate holds and no tick dates on every one, or that several ticks may
         date, and for each rewind, which no record dates."""
