@@ -120,6 +120,22 @@ def _run(tmp_path, logs, *, max_rows=10_000, config=CONFIG):
     return _outputs(out)
 
 
+class Shared:
+    """A list the runner's per-run child processes append to: a file, one item a
+    line, since each run is measured in its own process."""
+
+    def __init__(self, path):
+        self.path = path
+        path.write_text("")
+
+    def append(self, item):
+        with self.path.open("a") as f:
+            f.write(f"{item}\n")
+
+    def items(self):
+        return self.path.read_text().splitlines()
+
+
 def _unattributed(run):
     reads = run["reads"]
     return (
@@ -146,6 +162,8 @@ def test_every_golden_is_measured_clean(goldens):
         assert x["schema_invalid"] == [], rid
         assert not any(x["also"].values()), (rid, x["also"])
         assert x["reads"]["series"]["not_compared"] is None, rid
+        assert x["lineage_check"] == {"raised": [], "last_disagrees": []}, rid
+        assert x["census"] is not None, rid
 
 
 @pytest.mark.parametrize("rid", list(GOLDEN))
@@ -629,44 +647,60 @@ def test_the_runner_writes_nothing_under_a_root(tmp_path):
 
 
 def test_the_runner_streams_one_run_at_a_time(tmp_path, monkeypatch):
-    """No run's rows outlive it, and each run's line is written before the next
-    run is read."""
+    """Each run is read in its own child process, so no run's rows ever reach the
+    runner's own process, and each run's line is written before the next run is
+    read."""
     root = tmp_path / "root"
     logs = {k: GOLDEN[k] for k in ("displaced", "loading", "skipped", "late_reap")}
     for rid, rows in logs.items():
         _write(root / "v0.3.0" / f"{rid}.db", rows)
     out = tmp_path / "out"
+    reads = tmp_path / "reads"
     real = mr._read_rows
-    alive: list[weakref.ref] = []
-
-    class Rows(list):
-        pass
+    parent = os.getpid()
 
     def tracked(path):
-        gc.collect()
-        assert all(ref() is None for ref in alive), "an earlier run's rows outlive it"
-        written = (out / "runs.jsonl").read_text().splitlines()
-        assert len(written) == len(alive), "an earlier run's line is not written"
-        rows = Rows(real(path))
-        alive.append(weakref.ref(rows))
-        return rows
+        written = len((out / "runs.jsonl").read_text().splitlines())
+        with reads.open("a") as f:
+            f.write(f"{os.getpid() != parent} {written}\n")
+        return real(path)
 
     monkeypatch.setattr(mr, "_read_rows", tracked)
     assert _main(root, out, max_rows=100) == 0
-    assert len(alive) == len(logs)
+    assert reads.read_text().splitlines() == [f"True {k}" for k in range(len(logs))]
+
+
+def test_each_run_is_timed_and_its_peak_rss_recorded(goldens):
+    runs, _ = goldens
+    for record in runs.values():
+        assert record["seconds"] > 0
+        assert record["peak_rss_kb"] > 0
+
+
+def test_a_child_the_os_kills_is_its_runs_crash(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    _write(root / "v0.3.0" / "killed.db", GOLDEN["displaced"])
+    out = tmp_path / "out"
+    monkeypatch.setattr(mr, "_read_rows", lambda path: os.kill(os.getpid(), 9))
+    assert _main(root, out, max_rows=100) == 0
+    (line,) = (out / "runs.jsonl").read_text().splitlines()
+    record = json.loads(line)
+    assert record["status"] == "crashed"
+    assert record["crash"]["stage"] == "the runner's own measurement"
+    assert record["crash"]["kind"] == "the child killed by signal 9"
 
 
 def test_max_rows_skips_a_run_without_loading_it(tmp_path, monkeypatch):
     root = tmp_path / "root"
     _write(root / "v0.3.0" / "small.db", EXIT)  # 5 rows
     _write(root / "v0.3.0" / "big.db", GOLDEN["displaced"])  # 12 rows
-    read = []
+    read = Shared(tmp_path / "read")
     real = mr._read_rows
     monkeypatch.setattr(mr, "_read_rows", lambda p: read.append(p.stem) or real(p))
     out = tmp_path / "out"
     assert _main(root, out, max_rows=5) == 0
     runs, summary = _outputs(out)
-    assert read == ["small"]
+    assert read.items() == ["small"]
     assert runs["big"]["status"] == "skipped_max_rows" and runs["big"]["rows"] == 12
     assert runs["big"]["reads"] is None
     assert summary["runs"]["status"] == {"measured": 1, "skipped_max_rows": 1}
@@ -743,11 +777,11 @@ def test_a_failure_of_the_runners_own_measurement_is_recorded_and_the_run_goes_o
     tmp_path, monkeypatch
 ):
     real = mr.compare
-    calls = []
+    calls = Shared(tmp_path / "calls")
 
     def broken(*args):
         calls.append(1)
-        if len(calls) == 1:
+        if len(calls.items()) == 1:
             raise KeyError(99)
         return real(*args)
 
@@ -770,13 +804,13 @@ def test_max_bytes_skips_a_file_without_opening_it(tmp_path, monkeypatch):
     _write(root / "v0.3.0" / "big.db", padded)
     small = (root / "v0.3.0" / "small.db").stat().st_size
     assert (root / "v0.3.0" / "big.db").stat().st_size > small
-    counted = []
+    counted = Shared(tmp_path / "counted")
     real = mr._count_rows
     monkeypatch.setattr(mr, "_count_rows", lambda p: counted.append(p.stem) or real(p))
     out = tmp_path / "out"
     assert _main(root, out, max_rows=100, max_bytes=small) == 0
     runs, summary = _outputs(out)
-    assert counted == ["small"]
+    assert counted.items() == ["small"]
     assert runs["big"]["status"] == "skipped_max_bytes" and runs["big"]["rows"] is None
     assert summary["args"]["max_bytes"] == small
 
@@ -807,7 +841,7 @@ def test_the_summary_is_written_as_the_runner_goes_and_when_it_stops(
     out = tmp_path / "out"
     monkeypatch.setattr(mr, "_SUMMARY_EVERY", 1)
     real = mr.measure
-    measured = []
+    measured = Shared(tmp_path / "measured")
 
     def stop_at_c(found, **kw):
         if found.path.stem == "c":
@@ -821,7 +855,7 @@ def test_the_summary_is_written_as_the_runner_goes_and_when_it_stops(
     with pytest.raises(KeyboardInterrupt):
         _main(root, out, max_rows=100)
     summary = json.loads((out / "summary.json").read_text())
-    assert measured == ["a", "b"]
+    assert measured.items() == ["a", "b"]
     assert summary["runs"]["total"] == 2 and summary["complete"] is False
 
 

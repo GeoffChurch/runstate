@@ -68,6 +68,19 @@ EACH RUN, as ``runstate migrate``'s detection pass takes it, in memory:
    0.3.0 verdict that raises is compared as one, and a 0.4.0 series that raises
    leaves the series uncompared, with the error.
 
+4. P1's reads (``LineageCheck``): ``runstate.lineage``'s ``lineage``, ``count``,
+   ``prefix_len`` and ``last_element`` over the 0.4.0 log, each of which must
+   hold (not raise), the last element agreeing with the series' last.
+5. THE CENSUS (``Census``), from the candidates the 0.3.0 step's ``detect`` built
+   (the step keeps them for its transform): each commit's end-time fork, split by
+   what is open, a tick or undated (dating) and the places an undated end may
+   stand (place); the rewinds; and every resumed claim whose first tick is at the
+   step of the save some candidate says it loaded, with its writer versions.
+
+ISOLATION. Each run is measured in a child process (``os.fork``), sequentially:
+its wall time and peak RSS (``wait4``'s ``ru_maxrss``) are the run's, and a child
+the OS kills is that run's crash. A run's record crosses back pickled.
+
 OUTPUT. ``DIR/runs.jsonl``: one ``RunRecord`` per run, as JSON, written as each
 is measured. ``DIR/skipped.jsonl``: one ``{path, why, detail}`` per skipped
 file, ``detail`` naming SQLite's error where there is one.
@@ -80,12 +93,14 @@ import argparse
 import errno
 import json
 import os
+import pickle
 import re
 import sqlite3
 import sys
+import time
 import traceback
 from collections import Counter
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import StrEnum
 from pathlib import Path
@@ -108,6 +123,7 @@ from runstate.migrations import (  # noqa: E402
     transform_checked,
 )
 from runstate.migrations import v0_3_0_to_v0_4_0 as step04  # noqa: E402
+from runstate.migrations import v0_3_0_to_v0_4_0_engine as engine  # noqa: E402
 from runstate.migrations.ambiguity import (  # noqa: E402
     Choices,
     History,
@@ -283,6 +299,40 @@ class Reads:
 
 
 @dataclass(frozen=True)
+class LineageCheck:
+    """P1's reads over the 0.4.0 log: each that raised, by read and error, and each
+    name whose ``last_element`` is not its series' last."""
+
+    raised: list[str]
+    last_disagrees: list[str]
+
+
+@dataclass(frozen=True)
+class Resumed:
+    """A resumed claim whose first tick is at the step of a save some candidate
+    loads: the claim's seq, the step, and the writer versions its classifier names."""
+
+    claim: int
+    step: int
+    versions: list[str]
+
+
+@dataclass(frozen=True)
+class Census:
+    """What the 0.3.0 step's candidates leave open, before any chooser: commits by how
+    their end is open (``dating``: a tick or undated, or several ticks; ``undated``:
+    no tick, so its time is a chooser's; ``places``: an undated end that may stand at
+    more than one place), the rewinds, and the resumes at the loaded step."""
+
+    commits: int
+    dating: int
+    undated: int
+    places: int
+    rewinds: int
+    resumed: list[Resumed]
+
+
+@dataclass(frozen=True)
 class RunRecord:
     """One line of runs.jsonl."""
 
@@ -309,6 +359,10 @@ class RunRecord:
     schema_invalid: list[InvalidRow] = field(default_factory=list)
     also: dict[str, int] = field(default_factory=dict)
     reads: Reads | None = None
+    lineage_check: LineageCheck | None = None
+    census: Census | None = None
+    seconds: float | None = None  # the child's wall time
+    peak_rss_kb: int | None = None  # the child's peak resident set (ru_maxrss)
 
 
 # ----- refusals and crashes, mapped once ---------------------------------------------
@@ -366,6 +420,7 @@ _REFUSALS: dict[StepName, tuple[tuple[str, str], ...]] = {
             r"no history of the stated writers writes the log",
             "the facts admit no history",
         ),
+        (r"closes a pass at the horizon, its loop free", "the horizon"),
         (r"states summed over the layers", "past the budget"),
         (r"more than \d+ states", "past the cap"),
         (r"refused it:", "a chooser refused"),
@@ -1047,6 +1102,8 @@ def _run_step(
         rows, assumptions=plan.resolutions.assumptions, history=history
     )
     label = f"{step.FROM} -> {step.TO}"
+    if step is _STEP_0_3_0:
+        base = replace(base, census=census(rows, plan))
     counts = {p: len(f) for p, f in detected.forks.items() if f}
     forks = {**base.forks, label: counts}
     open_ = {
@@ -1067,6 +1124,78 @@ def _run_step(
         divergences={**base.divergences, **{k: v for k, v in fired.items() if v}},
         unaccepted=[*base.unaccepted, *unaccepted],
     )
+
+
+def _first_ticks(rows: Sequence[Row]) -> dict[int, int]:
+    """Each claim's first tick: the step of the first heartbeat with an integer step
+    after its ``started`` and before the next one."""
+    out: dict[int, int] = {}
+    claim: int | None = None
+    for r in rows:
+        if r.topic == _STARTED:
+            claim = r.seq
+        elif r.topic == _HEARTBEAT and claim is not None and claim not in out:
+            step = json.loads(r.body).get("step")
+            if observables.is_step(step):
+                out[claim] = step
+    return out
+
+
+def census(rows: list[Row], plan: Planned) -> Census:
+    """The census of the candidates ``detect`` just built and the step keeps for its
+    transform (``_last``): a measurement of the step's own graph, read, never changed.
+    """
+    kept = _STEP_0_3_0._last
+    assert kept is not None, "detect keeps the candidates it built"
+    g = kept[1]
+    datings = engine.datings(g)
+    places = sum(
+        1 for c, d in datings.items() if d.undated and len(engine.places(g, c)) > 1
+    )
+    loaded = {
+        (p.claim, p.step)
+        for es in g.live
+        for e in es
+        for p in e.pieces
+        if isinstance(p, engine.PStart) and p.step is not None
+    }
+    ticks = _first_ticks(rows)
+    hits = sorted((claim, step) for claim, step in loaded if ticks.get(claim) == step)
+    reader = step04.FACTS.of(plan.resolutions.assumptions).classifier.read(rows)
+    return Census(
+        commits=len(datings),
+        dating=sum(1 for d in datings.values() if len(d.ticks) + d.undated > 1),
+        undated=sum(1 for d in datings.values() if d.undated and not d.ticks),
+        places=places,
+        rewinds=len(engine.reloads(g)),
+        resumed=[
+            Resumed(c, k, sorted(repr(v) for v in reader.started(c))) for c, k in hits
+        ],
+    )
+
+
+def lineage_check(ch04: MemoryChannel, env04: Sequence[Envelope]) -> LineageCheck:
+    """P1's reads: each must hold over the migrated log."""
+    raised: list[str] = []
+    disagree: list[str] = []
+    try:
+        head = reads.LatestClaimHead().resolve(ch04)
+        reads.lineage(ch04, head=head)
+        reads.count(ch04, reads.Commits(), node=None)
+    except Exception as exc:
+        return LineageCheck([f"lineage: {_raised(exc)}"], [])
+    names = sorted({e.name for e in env04 if e.topic == _VALUE and e.name is not None})
+    for name in names:
+        try:
+            reads.prefix_len(ch04, name, head=head)
+            series = reads.series(ch04, name, head=head)
+            last = reads.last_element(ch04, name, head=head)
+        except Exception as exc:
+            raised.append(f"{name}: {_raised(exc)}"[:300])
+            continue
+        if (last is None) != (not series) or (last is not None and last != series[-1]):
+            disagree.append(name)
+    return LineageCheck(raised, disagree)
 
 
 def measure(
@@ -1151,6 +1280,7 @@ def measure(
     checks[Also.SCHEMA] += len(invalid)
     return replace(
         base,
+        lineage_check=lineage_check(ch04, env04),
         rows_0_4_0=len(env04),
         schema_invalid=invalid,
         also={k: checks[k] for k in Also},
@@ -1265,6 +1395,13 @@ class Totals:
     schema: SchemaTotals = field(default_factory=SchemaTotals)
     also: Counter[str] = field(default_factory=Counter)
     reads: ReadsTotals = field(default_factory=ReadsTotals)
+    # P1's reads: runs where one raised, or a last element disagreed
+    lineage_raised: int = 0
+    lineage_disagrees: int = 0
+    # the census, summed over the runs that reached the 0.3.0 step's detect
+    census: Counter[str] = field(default_factory=Counter)
+    seconds: float = 0.0
+    peak_rss_kb: int = 0
 
     def add(self, x: RunRecord) -> None:
         self.runs.total += 1
@@ -1289,6 +1426,22 @@ class Totals:
         self.also.update({k: v for k, v in x.also.items() if v})
         if x.reads is not None:
             self.reads.add(x.reads)
+        if x.lineage_check is not None:
+            self.lineage_raised += bool(x.lineage_check.raised)
+            self.lineage_disagrees += bool(x.lineage_check.last_disagrees)
+        if x.census is not None:
+            c = x.census
+            self.census.update(
+                commits=c.commits,
+                dating=c.dating,
+                undated=c.undated,
+                places=c.places,
+                rewinds=c.rewinds,
+                resumed_at_loaded=len(c.resumed),
+                runs_resumed_at_loaded=bool(c.resumed),
+            )
+        self.seconds += x.seconds or 0.0
+        self.peak_rss_kb = max(self.peak_rss_kb, x.peak_rss_kb or 0)
 
 
 # ----- the edge -----------------------------------------------------------------------------
@@ -1361,6 +1514,56 @@ def _runner_crashed(found: Found, exc: Exception) -> RunRecord:
     return replace(base, status=Status.CRASHED, crash=_crash(Stage.RUNNER, exc))
 
 
+# The exit status of a child interrupted while it measured: the runner aborts.
+_INTERRUPTED = 130
+
+
+def isolated(found: Found, measure_one: Callable[[], RunRecord]) -> RunRecord:
+    """``measure_one()`` in a child process: the run's record, with the child's wall
+    time and peak RSS. A child the OS kills, or one that sends no record, is the run's
+    crash, by its signal or exit status."""
+    r, w = os.pipe()
+    t0 = time.perf_counter()
+    pid = os.fork()
+    if pid == 0:  # the child: measure, send the record, and leave at once
+        os.close(r)
+        try:
+            try:
+                sent = measure_one()
+            except Exception as exc:
+                sent = _runner_crashed(found, exc)
+            data = pickle.dumps(sent)
+        except KeyboardInterrupt:  # the runner's abort, which the parent re-raises
+            os._exit(_INTERRUPTED)
+        except BaseException:  # MemoryError pickling the record
+            data = b""
+        with os.fdopen(w, "wb") as out:
+            out.write(data)
+        os._exit(0)
+    os.close(w)
+    with os.fdopen(r, "rb") as inp:
+        data = inp.read()
+    _, status, usage = os.wait4(pid, 0)
+    seconds = time.perf_counter() - t0
+    if not data and os.WIFEXITED(status) and os.WEXITSTATUS(status) == _INTERRUPTED:
+        raise KeyboardInterrupt
+    record: RunRecord
+    if data:
+        record = pickle.loads(data)
+    else:
+        why = (
+            f"killed by signal {os.WTERMSIG(status)}"
+            if os.WIFSIGNALED(status)
+            else f"exited {os.waitstatus_to_exitcode(status)} with no record"
+        )
+        record = replace(
+            _base(found),
+            status=Status.CRASHED,
+            crash=Crash(Stage.RUNNER.value, f"the child {why}", why),
+        )
+    return replace(record, seconds=round(seconds, 4), peak_rss_kb=usage.ru_maxrss)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
@@ -1412,16 +1615,17 @@ def main(argv: list[str] | None = None) -> int:
                     skipped.write(json.dumps(line | {"detail": item.detail}) + "\n")
                     skipped.flush()
                     continue
-                try:
-                    record = measure(
-                        item,
+                found = item
+                record = isolated(
+                    found,
+                    lambda: measure(
+                        found,
                         max_rows=args.max_rows,
                         max_bytes=args.max_bytes,
                         stack=stack,
                         config=config,
-                    )
-                except Exception as exc:
-                    record = _runner_crashed(item, exc)
+                    ),
+                )
                 runs.write(json.dumps(jsonable(record)) + "\n")
                 runs.flush()
                 totals.add(record)
