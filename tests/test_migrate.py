@@ -156,14 +156,19 @@ def test_a_live_run_is_refused_and_untouched(toy, monkeypatch, tmp_path):
 
 def test_a_refusal_by_the_step_comes_before_the_seal(toy, monkeypatch, tmp_path):
     """Ruling 12: the step's transform is dry-run on the pre-seal rows, so a
-    deterministic refusal leaves the run untouched and writable, and a re-run
-    refuses it the same way instead of finding it sealed."""
+    deterministic failure leaves the run untouched and writable, and a re-run
+    fails it the same way instead of finding it sealed."""
     old = _seed(tmp_path, "8.0.0", "r1")
     before = old.read_bytes()
     for _ in range(2):
         monkeypatch.setattr(migrations, "STEPS", (Tag("8.0.0", "8.1.0", boom_at=0),))
-        with pytest.raises(RuntimeError, match="boom"):
-            migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0", choices=NONE)
+        outcome = migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0", choices=NONE)
+        (failed,) = outcome.errored
+        assert not outcome.moved and not outcome.refused
+        assert isinstance(failed.error, RuntimeError) and not failed.sealed
+        assert failed.message == (
+            "run 'r1': RuntimeError: boom (its 8.0.0 log is left unmigrated)"
+        )
         assert os.stat(old).st_mode & 0o200  # not sealed
         assert old.read_bytes() == before
         assert not DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1").exists()
@@ -190,8 +195,11 @@ def test_a_failure_after_the_seal_leaves_it_sealed_and_a_retry_completes(
 
     monkeypatch.setattr(stores, "_read_sqlite", landing)
     monkeypatch.setattr(migrations, "STEPS", (Tag("8.0.0", "8.1.0", boom_at=1),))
-    with pytest.raises(RuntimeError, match="boom"):
-        migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0", choices=NONE)
+    (failed,) = migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0", choices=NONE).errored
+    assert failed.sealed and failed.message == (
+        "run 'r1': RuntimeError: boom (its 8.0.0 log is sealed and not copied; a "
+        "re-run completes it)"
+    )
     monkeypatch.setattr(stores, "_read_sqlite", real)
     target = DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1")
     assert not target.exists()
@@ -215,8 +223,8 @@ def test_a_write_path_failure_leaves_no_log_at_the_address(toy, monkeypatch, tmp
         raise OSError("disk gone")
 
     monkeypatch.setattr(stores.os, "replace", boom)
-    with pytest.raises(OSError, match="disk gone"):
-        migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0", choices=NONE)
+    (failed,) = migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0", choices=NONE).errored
+    assert failed.sealed and "OSError: disk gone" in failed.message
     assert not target.exists()  # readers open the final address only
     assert os.stat(old).st_mode & 0o222 == 0
     monkeypatch.setattr(stores.os, "replace", real)
@@ -411,10 +419,38 @@ def test_postgres_migrate_copies_seals_and_preserves_seq(pg_toy):
 
 
 def test_postgres_failure_rolls_back_completely(pg_toy, monkeypatch):
+    """A failure in the detection pass, and one inside the sealing transaction (the
+    transform of rows that changed after the dry run): each fails its run alone, and
+    the transaction rolls the seal back, so the run is reported unsealed."""
     monkeypatch.setattr(migrations, "STEPS", (Tag("8.0.0", "8.1.0", boom_at=0),))
-    with pytest.raises(RuntimeError, match="boom"):
-        migrate(PostgresStore(pg_toy), ["r1"], to="8.1.0", choices=NONE)
+    (failed,) = migrate(PostgresStore(pg_toy), ["r1"], to="8.1.0", choices=NONE).errored
+    assert (
+        failed.message
+        == "run 'r1': RuntimeError: boom (its 8.0.0 log is left unmigrated)"
+    )
     assert _pg_one(pg_toy, "SELECT count(*) FROM runstate_v8_0_0.log") == [(3,)]
+    assert _pg_one(pg_toy, "SELECT to_regclass('runstate_v8_0_0.sealed_runs')") == [
+        (None,)
+    ]
+    # the transform inside the transaction, after the seal: the detection pass read
+    # rows that differ (a row the table does not hold), so the memo serves nothing and
+    # the second transform call is the one that raises
+    from runstate.migrations import stores
+
+    real = stores.PostgresStore.rows
+    extra = Row(99, "value", "x", None, "{}", 0.0)
+    monkeypatch.setattr(
+        stores.PostgresStore, "rows", lambda s, v, r: [*real(s, v, r), extra]
+    )
+    monkeypatch.setattr(migrations, "STEPS", (Tag("8.0.0", "8.1.0", boom_at=1),))
+    outcome = migrate(PostgresStore(pg_toy), ["r1"], to="8.1.0", choices=NONE)
+    assert not outcome.moved
+    (failed,) = outcome.errored
+    assert not failed.sealed  # the transaction rolled the seal back with the rest
+    assert _pg_one(pg_toy, "SELECT count(*) FROM runstate_v8_0_0.log") == [(3,)]
+    assert _pg_one(pg_toy, "SELECT to_regclass('runstate_v8_0_0.sealed_runs')") == [
+        (None,)
+    ]
     assert _pg_one(pg_toy, "SELECT to_regclass('runstate_v8_0_0.sealed_runs')") == [
         (None,)
     ]
@@ -998,10 +1034,10 @@ def test_the_entry_is_written_before_the_publish_and_the_latest_is_read(
         raise OSError("crashed before the publish")
 
     monkeypatch.setattr(stores.os, "replace", crash)
-    with pytest.raises(OSError):
-        migrate(
-            SqliteStore(tmp_path), None, to="8.1.0", choices=_choose(resolve=["a=yes"])
-        )
+    (failed,) = migrate(
+        SqliteStore(tmp_path), None, to="8.1.0", choices=_choose(resolve=["a=yes"])
+    ).errored
+    assert failed.sealed and isinstance(failed.error, OSError)
     assert not target.exists()
     assert [e["readings"] for e in _manifest(tmp_path)] == [{"a": {"2": "yes"}}]
     monkeypatch.setattr(stores.os, "replace", real)
@@ -1156,34 +1192,67 @@ def test_a_full_memo_takes_no_more_and_keeps_what_it_took(monkeypatch):
     assert memo.get("b") is None
 
 
-def test_an_unexpected_error_in_one_run_stays_an_error_and_names_the_run(
-    toy, monkeypatch, tmp_path
-):
-    """A bug in a step is no refusal: it ends the invocation as the error it is, with
-    the run it was reading named on it, in the detection pass and after the seal
-    alike."""
-    _seed(tmp_path, "8.0.0", "r1")
-    monkeypatch.setattr(migrations, "STEPS", (Tag("8.0.0", "8.1.0", boom_at=0),))
-    with pytest.raises(RuntimeError, match="boom") as detected:
-        migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0", choices=NONE)
-    assert detected.value.__notes__ == ["while reading run 'r1' in the detection pass"]
-    from runstate.migrations import stores
-
-    real = stores._read_sqlite
-    reads = []
-
-    def landing(path):
-        rows = real(path)
-        reads.append(path)
-        if len(reads) == 3:  # the read after the seal: a record has landed
-            rows = [*rows, rows[-1]._replace(seq=rows[-1].seq + 1)]
-        return rows
-
-    monkeypatch.setattr(stores, "_read_sqlite", landing)
+def test_an_unexpected_error_fails_its_run_alone(toy, monkeypatch, tmp_path):
+    """A bug in a step is no refusal, and it ends no invocation: the run it failed is
+    reported with the error and left as the error found it (unmigrated here, before
+    any seal), and the other runs go on. The second run's detection transform raises:
+    the first and third are moved."""
+    _three(tmp_path)
     monkeypatch.setattr(migrations, "STEPS", (Tag("8.0.0", "8.1.0", boom_at=1),))
-    with pytest.raises(RuntimeError, match="boom") as migrating:
-        migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0", choices=NONE)
-    assert migrating.value.__notes__ == ["while migrating run 'r1'"]
+    outcome = migrate(SqliteStore(tmp_path), None, to="8.1.0", choices=NONE)
+    assert outcome.moved == ("r1", "r3") and not outcome.refused
+    (failed,) = outcome.errored
+    assert isinstance(failed.error, RuntimeError) and failed.at == "8.0.0"
+    assert failed.message == (
+        "run 'r2': RuntimeError: boom (its 8.0.0 log is left unmigrated)"
+    )
+    old = DirectoryLayout("8.0.0").sqlite_path(tmp_path, "r2")
+    assert os.stat(old).st_mode & 0o200  # not sealed
+    assert not DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r2").exists()
+    for rid in ("r1", "r3"):
+        assert DirectoryLayout("8.1.0").sqlite_path(tmp_path, rid).exists()
+
+
+def test_an_unexpected_error_in_the_detection_pass_stays_in_the_report(
+    forking, monkeypatch, tmp_path
+):
+    """Where other runs leave questions, the run a bug failed is reported beside them in
+    the same round, and nothing is migrated."""
+    _three(tmp_path)
+    step = migrations.STEPS[0]
+    detect = step.detect
+
+    def failing(rows, *, assumptions, history):
+        if len(rows) == 1:  # r3's one row
+            raise RuntimeError("boom")
+        return detect(rows, assumptions=assumptions, history=history)
+
+    monkeypatch.setattr(step, "detect", failing)
+    with pytest.raises(Undecided) as exc:
+        migrate(SqliteStore(tmp_path), None, to="8.2.0", choices=_choose())
+    text = str(exc.value)
+    assert "--resolve a=<built-in" in text
+    why = "run 'r3': RuntimeError: boom (its 8.0.0 log is left unmigrated)"
+    assert text.endswith(f"failed on an unexpected error, a bug in a step:\n  {why}")
+    assert exc.value.report.errored == {"r3": why}
+    _untouched(tmp_path)
+
+
+def test_the_cli_reports_a_failed_run_with_its_traceback(
+    toy, monkeypatch, tmp_path, capsys
+):
+    from runstate.cli import main
+
+    _three(tmp_path)
+    monkeypatch.setattr(migrations, "STEPS", (Tag("8.0.0", "8.1.0", boom_at=1),))
+    assert main(["migrate", str(tmp_path), "--to", "8.1.0"]) == 1
+    out, err = capsys.readouterr()
+    assert out.split() == ["r1", "r3"]
+    assert (
+        "error: run 'r2': RuntimeError: boom (its 8.0.0 log is left unmigrated)" in err
+    )
+    assert "Traceback (most recent call last)" in err
+    assert 'raise RuntimeError("boom")' in err
 
 
 def test_one_memo_serves_every_step_of_an_invocation(toy, monkeypatch, tmp_path):

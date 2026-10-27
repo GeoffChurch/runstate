@@ -6,11 +6,12 @@ allow, one at a time. A history is built claim by claim, in claim order:
 1. **the claim**: its launch shape; a stray value its process writes before it
    claims (``space.strays``); what it loaded (nothing, every save the claims
    before it made, the newest of them, as ``load=newest`` has it, or a
-   checkpoint from outside at step 0 or at any saved step); whether it first
-   writes a value at its clock, and what its clock reads then; and its writer's
-   facts ``fold`` and ``cut_save`` (``space.folds``, read only where stops are
-   placed; ``space.cut_saves``, read only by a claim whose pass saves inside
-   it);
+   checkpoint from outside at step 0 or at any saved step), and where it
+   resumes against a saved state's step (``space.resumes``, read only by a
+   claim that loads one); whether it first writes a value at its clock, and
+   what its clock reads then; and its writer's facts ``fold`` and ``cut_save``
+   (``space.folds``, read only where stops are placed; ``space.cut_saves``,
+   read only by a claim whose pass saves inside it);
 2. **its iterations**: 0 to ``steps`` of them, each one of ``space.shapes``,
    labelled from the origin's floor upward by one of ``space.strides`` each,
    with one of ``space.mid_claim`` (a third party's ``stopped`` naming the live
@@ -99,6 +100,7 @@ from .history import (
     Reaped,
     Release,
     Report,
+    Resume,
     Rewind,
     Save,
     SaveRef,
@@ -232,6 +234,7 @@ class Space:
     """The options enumeration ranges over; each field lists the ones tried."""
 
     origins: tuple[Origins, ...]
+    resumes: tuple[Resume, ...]  # read only by a claim that loads a saved state
     loading: tuple[bool, ...]
     clocks: tuple[Clock, ...]  # read only by a loading value of a resumed claim
     folds: tuple[Fold, ...]  # read only where stops are placed
@@ -324,15 +327,17 @@ def _claims(
         space.launches, _origins(saved, newest, space.origins), space.loading, folds
     ):
         launch_id = None if launch is LaunchShape.NONE else f"L{c}"
-        for clock in _clocks(origin, loading, space.clocks):
-            for its in _iterations(origin, saved, steps, space):
+        for clock, resume in itertools.product(
+            _clocks(origin, loading, space.clocks), _resumes_of(origin, space.resumes)
+        ):
+            for its in _iterations(origin, resume, saved, steps, space):
                 for cut_save, stray, pre_save in itertools.product(
                     _cut_saves(its.steps, space.cut_saves),
                     space.strays,
                     space.pre_saves,
                 ):
-                    facts = _Facts(clock, fold, cut_save)
-                    stray_step = max(_floor(origin, saved) - 1, 0)
+                    facts = _Facts(clock, fold, cut_save, resume)
+                    stray_step = max(_floor(origin, resume, saved) - 1, 0)
                     claimed = _claim_items(
                         c,
                         entry,
@@ -354,7 +359,7 @@ def _claims(
                         entry,
                         claimed,
                         its,
-                        _Origin(origin, saved),
+                        _Origin(origin, resume, saved),
                         _Launch(launch, launch_id),
                         last,
                     )
@@ -364,10 +369,12 @@ class _Facts(NamedTuple):
     clock: Clock
     fold: Fold
     cut_save: CutSave
+    resume: Resume
 
 
 class _Origin(NamedTuple):
     origin: Origin
+    resume: Resume
     saved: dict[SaveRef, int]
 
 
@@ -425,7 +432,7 @@ def _ends_of(
             displaced.append(
                 ThirdPartyStop(c, d.by, None, ThirdPartyFinal.PROGRESS, Honors.NONE)
             )
-        tail = _tail(c, its, origin.origin, origin.saved, d.tail)
+        tail = _tail(c, its, origin, d.tail)
         tail += _reap(launch.shape, launch.id, d.tail.end)
         into = _Entry(own_process(c + 1), gate, tail)
         yield from _claims(c + 1, claims, steps, space, items + displaced, into)
@@ -466,6 +473,7 @@ def _claim_items(
             facts.clock,
             facts.fold,
             facts.cut_save,
+            facts.resume,
         )
     )
     items += entry.tail
@@ -502,16 +510,14 @@ def _body(c: int, its: _Run) -> list[_Item]:
     return items
 
 
-def _tail(
-    c: int, its: _Run, origin: Origin, saved: dict[SaveRef, int], tail: Tail
-) -> list[Event]:
+def _tail(c: int, its: _Run, origin: _Origin, tail: Tail) -> list[Event]:
     events: list[Event] = [Emit(c, VALUE, Stamp.METRIC)] if tail.value else []
     if its.steps:
         if tail.completes:
             events += rest(c, its.steps[-1], cut=its.cut)
         label = its.steps[-1].step + 1
     else:
-        label = _floor(origin, saved)
+        label = _floor(origin.origin, origin.resume, origin.saved)
     for k, shape in enumerate(tail.steps):
         events += iteration(c, Step(label + k, shape), cut=Cut.DONE)
     return events + ending(c, tail.end)
@@ -570,12 +576,19 @@ def _clocks(
     return clocks[:1]
 
 
+def _resumes_of(origin: Origin, resumes: tuple[Resume, ...]) -> tuple[Resume, ...]:
+    """The resumes that differ: only a claim that loads a saved state reads one."""
+    if isinstance(origin, Fresh):
+        return resumes[:1]
+    return resumes
+
+
 def _iterations(
-    origin: Origin, saved: dict[SaveRef, int], steps: int, space: Space
+    origin: Origin, resume: Resume, saved: dict[SaveRef, int], steps: int, space: Space
 ) -> Iterator[_Run]:
     """Each run of 0 to ``steps`` iterations from the origin's floor, with each
     third party before its last and each cut its last can take."""
-    floor = _floor(origin, saved)
+    floor = _floor(origin, resume, saved)
     for n in range(steps + 1):
         for shapes in itertools.product(space.shapes, repeat=n):
             for strides in itertools.product(space.strides, repeat=n):
@@ -597,14 +610,18 @@ def _positions(
     return positions[:1]
 
 
-def _floor(origin: Origin, saved: dict[SaveRef, int]) -> int:
+def _floor(origin: Origin, resume: Resume, saved: dict[SaveRef, int]) -> int:
+    """The lowest label the claim's first iteration may take: 0 when fresh, else the
+    loaded state's step or the one after it (``resume``)."""
     if isinstance(origin, Fresh):
         return 0
     if isinstance(origin, FromOutside):
-        return origin.step + 1
-    if isinstance(origin, FromSave):
-        return saved[origin.save] + 1
-    assert_never(origin)
+        step = origin.step
+    elif isinstance(origin, FromSave):
+        step = saved[origin.save]
+    else:
+        assert_never(origin)
+    return step + 1 if resume is Resume.AFTER else step
 
 
 def _cut_saves(its: list[Step], cut_saves: tuple[CutSave, ...]) -> tuple[CutSave, ...]:
@@ -746,6 +763,7 @@ def _space(
         strays=(Strays.NONE,),
         pre_saves=(False,),
         strides=(1,),
+        resumes=(Resume.AFTER,),
         shapes=shapes,
         mid_claim=(None,),
         mid_positions=(MidPosition.BEFORE_BODY,),
@@ -848,6 +866,7 @@ MID_SAVES = Space(
     strays=(Strays.NONE,),
     pre_saves=(False,),
     strides=(1,),
+    resumes=(Resume.AFTER,),
     shapes=(MYCOOC,),
     mid_claim=(None,),
     mid_positions=(MidPosition.BEFORE_BODY,),
@@ -880,6 +899,7 @@ RESUMES = Space(
     strays=(Strays.NONE,),
     pre_saves=(False,),
     strides=(1,),
+    resumes=(Resume.AFTER,),
     shapes=(SAVES, UNLOGGED),
     mid_claim=(None,),
     mid_positions=(MidPosition.BEFORE_BODY,),
@@ -897,6 +917,38 @@ RESUMES = Space(
 tick: what the second loaded (nothing, each save, or a checkpoint from
 outside), with loading values and unlogged iterations (a resume gap, a
 run-on). Run with ``claims=2, steps=2, stops=0``."""
+
+RERUNS = Space(
+    origins=(Origins.FRESH, Origins.SAVED),
+    resumes=(Resume.AFTER, Resume.AT),
+    loading=(False, True),
+    clocks=(Clock.LOADED,),
+    folds=(Fold.AT_CLAIM,),
+    cut_saves=(CutSave.LANDED,),
+    strays=(Strays.NONE,),
+    pre_saves=(False,),
+    strides=(1,),
+    shapes=(SAVES,),
+    mid_claim=(None,),
+    mid_positions=(MidPosition.BEFORE_BODY,),
+    cuts=(Cut.MID_BODY, Cut.DONE),
+    endings=(KILL, COMPLETES),
+    third_parties=(None,),
+    successors=(Successor.OWN_PROCESS,),
+    displaced=(),
+    before_run=(None,),
+    launches=(LaunchShape.NONE,),
+    stop_slots=(),
+    born=(Born.V0_3_0,),
+)
+"""Two claims of the reference driver, each pass emitting and saving. The second
+loads nothing or any save the first made, and resumes at the step after the
+saved pass or at it, running the saved pass again (``resume``), with a loading
+value or none; each is killed mid-pass or after a pass, or completes. A first
+pass labelled ``k`` after a load fits both readings two saves apart (pass
+``k - 1``'s save resumed after, pass ``k``'s resumed at), so those logs are
+shared and the origin forks between the saves. Run with ``claims=2, steps=2,
+stops=0``."""
 
 LOADING = replace(
     RESUMES,
@@ -918,6 +970,7 @@ THIRD_PARTIES = Space(
     strays=(Strays.NONE,),
     pre_saves=(False,),
     strides=(1,),
+    resumes=(Resume.AFTER,),
     shapes=(SAVES,),
     mid_claim=(None,),
     mid_positions=(MidPosition.BEFORE_BODY,),
@@ -970,6 +1023,7 @@ RELEASED_LIVE = Space(
     strays=(Strays.NONE,),
     pre_saves=(False,),
     strides=(1,),
+    resumes=(Resume.AFTER,),
     shapes=(
         SAVES,
         _shape(
@@ -1015,6 +1069,7 @@ DISPLACEMENT = Space(
     strays=(Strays.NONE,),
     pre_saves=(False,),
     strides=(1,),
+    resumes=(Resume.AFTER,),
     shapes=(SAVES,),
     mid_claim=(None,),
     mid_positions=(MidPosition.BEFORE_BODY,),
@@ -1051,6 +1106,7 @@ DISPLACED_SAVES = Space(
     strays=(Strays.NONE, Strays.STEPPED, Strays.STEPLESS),
     pre_saves=(False,),
     strides=(1,),
+    resumes=(Resume.AFTER,),
     shapes=(SAVES,),
     mid_claim=(None,),
     mid_positions=(MidPosition.BEFORE_BODY,),
@@ -1083,6 +1139,7 @@ STOPS_AND_REAPS = Space(
     strays=(Strays.NONE,),
     pre_saves=(False,),
     strides=(1,),
+    resumes=(Resume.AFTER,),
     shapes=(SAVES,),
     mid_claim=(None,),
     mid_positions=(MidPosition.BEFORE_BODY,),
@@ -1136,6 +1193,7 @@ WITHDRAWALS = Space(
     strays=(Strays.NONE,),
     pre_saves=(False,),
     strides=(1,),
+    resumes=(Resume.AFTER,),
     shapes=(
         SAVES,
         _shape(
@@ -1186,6 +1244,7 @@ COUNTED = Stops(
 
 SAVE_POINTS = Space(
     origins=(Origins.NEWEST,),
+    resumes=(Resume.AFTER,),
     loading=(True,),
     clocks=(Clock.LOADED, Clock.ZERO),
     folds=(Fold.AT_CLAIM,),
@@ -1245,6 +1304,7 @@ THIRD_PARTY_ACTS = Space(
     strays=(Strays.NONE,),
     pre_saves=(False,),
     strides=(1,),
+    resumes=(Resume.AFTER,),
     shapes=(
         MYCOOC,
         _shape(
@@ -1289,6 +1349,7 @@ POSITIONAL = Space(
     strays=(Strays.NONE,),
     pre_saves=(False,),
     strides=(1,),
+    resumes=(Resume.AFTER,),
     shapes=(
         _shape(
             True,
@@ -1344,13 +1405,13 @@ def slot(*, beats: int, run_on: int) -> Iterator[History]:
     ``beats=4``: C1 saved 0 and 1, C2 resumed from 1, beat 2 and ran on to 3, and
     C3 resumed from C2's 3."""
     for kept in itertools.product((False, True), repeat=beats):
-        first: list[Event] = [_slot_claim(0, Fresh())]
+        first: list[Event] = [_slot_claim(0, Fresh(), Resume.AFTER)]
         for s, keep in enumerate(kept):
             first += iteration(0, Step(s, SAVES if keep else STEPS), cut=Cut.DONE)
         first.append(Halt(0, Killed(9)))
         for r2, c2 in _resumes(first):
             for keep2, n in itertools.product((False, True), range(run_on + 1)):
-                second: list[Event] = [_slot_claim(1, c2)]
+                second: list[Event] = [_slot_claim(1, c2, Resume.AFTER)]
                 shape2 = SAVES if keep2 else STEPS
                 second += iteration(1, Step(r2 + 1, shape2), cut=Cut.DONE)
                 for k in range(n):
@@ -1358,7 +1419,7 @@ def slot(*, beats: int, run_on: int) -> Iterator[History]:
                     second += iteration(1, Step(r2 + 2 + k, shape), cut=Cut.DONE)
                 second.append(Halt(1, Killed(9)))
                 for r3, c3 in _resumes(first + second):
-                    third: list[Event] = [_slot_claim(2, c3)]
+                    third: list[Event] = [_slot_claim(2, c3, Resume.AFTER)]
                     third += iteration(2, Step(r3 + 1, STEPS), cut=Cut.DONE)
                     third += iteration(2, Step(r3 + 2, STEPS), cut=Cut.DONE)
                     third += ending(2, COMPLETES)
@@ -1371,7 +1432,7 @@ _QUIET = _shape(False, Tick.NONE, Saving.NONE, trailing=False, ended=Undated.OWN
 """An iteration that writes nothing and saves nothing: a run-on's inner step."""
 
 
-def _slot_claim(c: int, origin: Origin) -> Claim:
+def _slot_claim(c: int, origin: Origin, resume: Resume) -> Claim:
     return Claim(
         c,
         own_process(c),
@@ -1381,6 +1442,7 @@ def _slot_claim(c: int, origin: Origin) -> Claim:
         Clock.LOADED,
         Fold.AT_CLAIM,
         CutSave.LANDED,
+        resume,
     )
 
 
@@ -1406,22 +1468,22 @@ def rewinds(*, passes: int) -> Iterator[History]:
       shows only in what the iteration's commit continues. After a rewind to a
       save it may save the reloaded state before that iteration, which then
       saves or not: the reloaded state is then the newest save;
-    - C2 loads any save that exists at its claim, runs one iteration, and
-      completes.
+    - C2 loads any save that exists at its claim, runs one iteration, the one after
+      the saved state or the saved one again (``resume``), and completes.
 
     mycooc's code can revert its state inside a pass (training.py:1099-1110,
     :1377-1381@bb6f9e8c), which the model does not express; the store copy never
     shows it."""
     for kept in itertools.product((False, True), repeat=passes):
-        first: list[Event] = [_slot_claim(0, Fresh())]
+        first: list[Event] = [_slot_claim(0, Fresh(), Resume.AFTER)]
         for s, keep in enumerate(kept):
             first += iteration(0, Step(s, SAVES if keep else STEPS), cut=Cut.DONE)
         # the step rewound to, the events, and whether the next iteration may not save
         targets: list[tuple[int, list[Event], bool]] = [(passes - 1, [], False)]
-        targets.append((-1, [Rewind(0, None)], False))
+        targets.append((-1, [Rewind(0, None, Resume.AFTER)], False))
         for save, step in loadable(tuple(first)).items():
-            targets.append((step, [Rewind(0, save)], False))
-            targets.append((step, [Rewind(0, save), Save(0)], True))
+            targets.append((step, [Rewind(0, save, Resume.AFTER)], False))
+            targets.append((step, [Rewind(0, save, Resume.AFTER), Save(0)], True))
         ends: tuple[Ending, ...] = (KILL, PREEMPTED)
         for (step, rewind, resaved), end in itertools.product(targets, ends):
             for label, saves in itertools.product(
@@ -1430,9 +1492,10 @@ def rewinds(*, passes: int) -> Iterator[History]:
                 rewound = first + rewind
                 rewound += iteration(0, Step(label, saves), cut=Cut.DONE)
                 rewound += ending(0, end)
-                for r2, c2 in _resumes(rewound):
-                    second: list[Event] = [_slot_claim(1, c2)]
-                    second += iteration(1, Step(r2 + 1, STEPS), cut=Cut.DONE)
+                for (r2, c2), resume in itertools.product(_resumes(rewound), Resume):
+                    second: list[Event] = [_slot_claim(1, c2, resume)]
+                    at = r2 + 1 if resume is Resume.AFTER else r2
+                    second += iteration(1, Step(at, STEPS), cut=Cut.DONE)
                     second += ending(1, COMPLETES)
                     history = History(tuple(rewound + second), Born.V0_3_0)
                     if conforms(history):
@@ -1480,7 +1543,7 @@ def ended_stops() -> Iterator[History]:
             continue
         if released and isinstance(first_end, Stops):
             continue  # the release of an exited claim is third-party-stop's own family
-        events: list[Event] = [_slot_claim(0, Fresh())]
+        events: list[Event] = [_slot_claim(0, Fresh(), Resume.AFTER)]
         events += iteration(0, Step(0, SAVES), cut=Cut.DONE)
         if stop:
             events.append(StopRequest("x0"))
@@ -1505,7 +1568,7 @@ def ended_stops() -> Iterator[History]:
         if place == "released":
             events.append(later)
         for origin in _resumes(events) or [(-1, Fresh())]:
-            tail: list[Event] = [_slot_claim(1, origin[1])]
+            tail: list[Event] = [_slot_claim(1, origin[1], Resume.AFTER)]
             if place == "claimed":
                 tail.append(later)
             tail += iteration(1, Step(origin[0] + 1, SAVES), cut=Cut.DONE)
@@ -1599,6 +1662,7 @@ def _placed_claim(c: int, fold: Fold) -> Claim:
         Clock.LOADED,
         fold,
         CutSave.CLOSED,
+        Resume.AFTER,
     )
 
 
@@ -1621,7 +1685,7 @@ def dated_closes() -> Iterator[History]:
     )
     ends: tuple[Ended, ...] = (TICKED, Undated.OWN_LAST, Undated.NEXT)
     for passes, ended, between in itertools.product((1, 2), ends, betweens):
-        events: list[Event] = [_slot_claim(0, Fresh())]
+        events: list[Event] = [_slot_claim(0, Fresh(), Resume.AFTER)]
         events += [Begin(0, 0), Emit(0, VALUE, Stamp.METRIC), Finish(0, False, ended)]
         events += [*between, Beat(0, Watermark.CONTROL)]
         if passes == 2:
@@ -1654,7 +1718,7 @@ def dead_takeovers() -> Iterator[History]:
         (True, False),
         lasts,
     ):
-        first: list[Event] = [_slot_claim(0, Fresh())]
+        first: list[Event] = [_slot_claim(0, Fresh(), Resume.AFTER)]
         for s, keep in enumerate(kept):
             first += iteration(0, Step(s, SAVES if keep else STEPS), cut=Cut.DONE)
         if halted:
@@ -1670,6 +1734,7 @@ def dead_takeovers() -> Iterator[History]:
                     Clock.LOADED,
                     Fold.AT_CLAIM,
                     CutSave.LANDED,
+                    Resume.AFTER,
                 )
             ]
             second += iteration(1, Step(step + 1, STEPS), cut=Cut.DONE)

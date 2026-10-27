@@ -35,6 +35,11 @@ class Store(Protocol):
         """Migrate one run by one step, and record it in the root's manifest."""
         ...
 
+    def sealed(self, version: str, run_id: str) -> bool:
+        """Whether the run's log at format ``version`` is sealed: what a failed
+        ``migrate_one`` left, read after the fact."""
+        ...
+
 
 # The root's manifest (log-formats.md §6): outside every format's address, so no
 # opening check reads it as a format or a legacy log.
@@ -99,6 +104,10 @@ class SqliteStore:
 
     def history(self, run_id: str) -> History:
         return latest(self._manifest().get(run_id, ()))
+
+    def sealed(self, version: str, run_id: str) -> bool:
+        path = formats.FORMATS[version].sqlite_path(self._root, run_id)
+        return not os.stat(path).st_mode & 0o222
 
     def _manifest(self) -> dict[str, list[Entry]]:
         if self._entries is None:
@@ -222,6 +231,28 @@ class PostgresStore:
 
         with psycopg.connect(self._dsn) as conn:
             return _pg_history(conn, run_id)
+
+    def sealed(self, version: str, run_id: str) -> bool:
+        """Whether the run is in the format's ``sealed_runs``. A failed
+        ``migrate_one`` rolls its seal back with the rest, so after one this is false
+        unless an earlier invocation sealed the run."""
+        import psycopg
+        from psycopg import sql
+
+        schema = formats.FORMATS[version].pg_schema()
+        with psycopg.connect(self._dsn) as conn:
+            reg = conn.execute(
+                "SELECT to_regclass(%s)", [f"{schema}.sealed_runs"]
+            ).fetchone()
+            if reg is None or reg[0] is None:
+                return False
+            found = conn.execute(
+                sql.SQL("SELECT 1 FROM {}.sealed_runs WHERE run_id = %s").format(
+                    sql.Identifier(schema)
+                ),
+                [run_id],
+            ).fetchone()
+            return found is not None
 
     def migrate_one(self, planned: Planned, run_id: str) -> None:
         """Seal, read, refuse or transform, write the new log and insert the run's

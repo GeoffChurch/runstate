@@ -128,6 +128,7 @@ from .v0_3_0_to_v0_4_0_facts import (
     Phase,
     Reap,
     Release,
+    Resume,
     Rewinds,
     Role,
     SaveAt,
@@ -467,14 +468,15 @@ class PHorizon(NamedTuple):
     commits a run makes. A commit past the horizon needs a pass begun past it, and a
     pass begins at its worker's floor or above: a floor past the horizon comes from a
     close at the horizon, which this piece marks where the loop may continue, or from a
-    load or a rewind of a state at the horizon, which admits no pass and whose step
-    nothing reads (below). A pass begun at the horizon itself and cut before its close
-    makes at most one commit, at the horizon, where ``cut-save`` says its save finished
-    it, a commit the bound admits; the passes it forbids all follow a marked close. A
-    load reads its step into the worker's clock, which Origin does not read
-    (``Resumes``); a later record that reads the clock (a step, a ``final_step``, a save
-    a later claim loads) bounds it by that record's own label, below the horizon, so a
-    load at the horizon is on no complete path where its step is read."""
+    load or a rewind of a state at the horizon resumed ``after`` it, which admits no
+    pass and whose step nothing reads (below); one resumed ``at`` it sets the floor at
+    the horizon. A pass begun at the horizon itself and cut before its close makes at
+    most one commit, at the horizon, where ``cut-save`` says its save finished it, a
+    commit the bound admits; the passes it forbids all follow a marked close. A load
+    reads its step into the worker's clock, which Origin does not read (``Resumes``); a
+    later record that reads the clock (a step, a ``final_step``, a save a later claim
+    loads) bounds it by that record's own label, below the horizon, so a load at the
+    horizon is on no complete path where its step is read."""
 
     claim: int
 
@@ -1313,6 +1315,9 @@ def _silent(
         y = x._replace(
             stage=Stage.ITERATING,
             clock=label,
+            # the floor is read only before a pass (``_labels``): set here, two workers
+            # that resumed at different floors and begin one pass are one state
+            floor=label + 1,
             tick_due=True,
             begun=label,
             valued=False,
@@ -1339,14 +1344,6 @@ def _silent(
         """Between passes it reloads a state and drops what it wrote since its last
         position (§4, ``rewind``)."""
         at = 0 if step is None else step
-        y = x._replace(
-            clock=at,
-            floor=0 if step is None else at + 1,
-            held=at,
-            state=node,
-            tick_due=False,
-            dating=None,
-        )
         new: tuple[Piece, ...] = ()
         if not x.released:
             new = (
@@ -1358,9 +1355,19 @@ def _silent(
                     gaps=UNPLACED,
                 ),
             )
-            y = y._replace(position=node, epoch=x.epoch + 1)
-        for s2, o2 in _offer(ctx, i, slot, older, _offers(ctx, y)):
-            visit(y, s2, o2, pieces + new, True)
+        for floor in _floors(f, step):
+            y = x._replace(
+                clock=at,
+                floor=floor,
+                held=at,
+                state=node,
+                tick_due=False,
+                dating=None,
+            )
+            if not x.released:
+                y = y._replace(position=node, epoch=x.epoch + 1)
+            for s2, o2 in _offer(ctx, i, slot, older, _offers(ctx, y)):
+                visit(y, s2, o2, pieces + new, True)
 
     def end(
         x: Wk,
@@ -1414,12 +1421,24 @@ def _save_act(f: WorkerFacts, x: Wk) -> Wk | None:
 
 
 def _labels(f: WorkerFacts, x: Wk, bound: int) -> list[int]:
-    """The labels a pass may begin at (``stride``): the step after the state the worker
-    continues from, or above."""
+    """The labels a pass may begin at (``stride``): the worker's floor, or above."""
     return [
         label
         for label in range(x.floor, bound + 1)
         if (Stride.NEXT if label == x.floor else Stride.SKIP) in f.stride
+    ]
+
+
+def _floors(f: WorkerFacts, step: int | None) -> list[int]:
+    """The floors a load or a rewind of a state at ``step`` may set (``resume``): the
+    step after it, where the saved pass stands, or the step itself, where the saved pass
+    runs again. One floor, 0, for the root or nothing loaded, which saves no pass."""
+    if step is None:
+        return [0]
+    return [
+        floor
+        for floor, cls in ((step + 1, Resume.AFTER), (step, Resume.AT))
+        if cls in f.resume
     ]
 
 
@@ -2271,21 +2290,23 @@ def _idles(f: WorkerFacts, loaded: int) -> list[int | None]:
 def _load(
     ctx: Context, i: int, world: World, rec: Rec, pieces: tuple[Piece, ...]
 ) -> Iterator[Step]:
-    """The new claim's worker: its version, what it loaded, and its clock before its
-    first pass (§7, ``loading``)."""
+    """The new claim's worker: its version, what it loaded, where it resumes (§7,
+    ``resume``), and its clock before its first pass (§7, ``loading``)."""
     c = rec.seq
     for k, fold in ((k, x) for k in ctx.versions[c] for x in _folds(ctx, k)):
         f = ctx.workers[k]
         for ld in _loads(ctx, f, world):
             loaded = 0 if ld.step is None else ld.step
-            for idle in _idles(f, loaded):
+            for floor, idle in itertools.product(
+                _floors(f, ld.step), _idles(f, loaded)
+            ):
                 w = Wk(
                     claim=c,
                     facts=k,
                     handle=_handle(rec),
                     stage=Stage.LOADING,
                     clock=loaded if idle is None else idle,
-                    floor=0 if ld.step is None else loaded + 1,
+                    floor=floor,
                     idle=idle,
                     held=loaded,
                     state=ld.node,
@@ -3288,7 +3309,11 @@ def ended_at(g: Graph, silent: Silent, after: int, t: float) -> Graph:
     and it stands just after the record at seq ``after``, with its lower bound at or
     before ``t``. Until a path's place is settled its state is split by its track, a
     function of the path, so each path is kept once; it is whole again after. It builds
-    one list of edges beside ``g``'s and narrows that in place, never a third."""
+    one list of edges beside ``g``'s and narrows that in place, never a third, and it
+    makes an edge anew only where its source or its target is split: a state that one
+    kind of path reaches (one track, or settled paths alone) keeps its id and its edges,
+    so the layers before the claim's own records, where every path's track is the
+    start, and every layer where the paths agree, share ``g``'s edges."""
     placing = _Placing(g, silent)
     split: dict[tuple[int, int, _Track], int] = {}
     # below every id the graph has, which an earlier split may have made negative
@@ -3298,29 +3323,57 @@ def ended_at(g: Graph, silent: Silent, after: int, t: float) -> Graph:
         """A split state's id in layer ``k``, apart from every whole one's."""
         return split.setdefault((k, state, track), min(floor, 0) - 1 - len(split))
 
+    def ident(
+        k: int,
+        state: int,
+        track: _Track | None,
+        open_: Mapping[int, set[_Track]],
+        settled: set[int],
+    ) -> int:
+        """The id of ``state`` in layer ``k`` on a path with ``track`` (None: a settled
+        path): its own where one kind of path reaches it, else the track's split one.
+        A settled path keeps the state's own id."""
+        kinds = len(open_.get(state, ())) + (state in settled)
+        if track is None or kinds == 1:
+            return state
+        return sid(k, state, track)
+
+    def edge(e: Edge, src: int, dst: int) -> Edge:
+        return e if (src, dst) == (e.src, e.dst) else Edge(src, dst, e.pieces)
+
     live: list[Sequence[Edge]] = []
-    at: dict[int, set[_Track]] = {0: {placing.start}}
-    whole: set[int] = set()
+    at: dict[int, set[_Track]] = {0: {placing.start}}  # the open tracks per state
+    whole: set[int] = set()  # the states a settled, accepted path reaches
     for k, es in enumerate(g.live):
-        kept: list[Edge] = []
+        undated = [e for e in es if not _dates(e, silent)]
+        last = k + 1 == len(g.live)
+        # first what reaches the next layer, so that each state's kinds are known
+        # before its id is used; then the edges
         nxt: dict[int, set[_Track]] = defaultdict(set)
-        then: set[int] = set()
-        for e in es:
-            if _dates(e, silent):
-                continue
-            if e.src in whole:
-                kept.append(e)
-                then.add(e.dst)
+        then: set[int] = {e.dst for e in undated if e.src in whole}
+        moves: list[list[tuple[_Track, _Track | Place]]] = []
+        for e in undated:
+            mv: list[tuple[_Track, _Track | Place]] = []
             for track in sorted(at.get(e.src, ())):
                 y = placing.advance(track, k, e)
-                src = e.src if k == 0 else sid(k, e.src, track)
+                mv.append((track, y))
                 if isinstance(y, Place):
                     if y.after == after and y.low <= t:
-                        kept.append(Edge(src, e.dst, e.pieces))
                         then.add(e.dst)
-                elif k + 1 < len(g.live):
-                    kept.append(Edge(src, sid(k + 1, e.dst, y), e.pieces))
+                elif not last:
                     nxt[e.dst].add(y)
+            moves.append(mv)
+        kept: list[Edge] = []
+        for e, mv in zip(undated, moves):
+            if e.src in whole:
+                kept.append(edge(e, e.src, ident(k + 1, e.dst, None, nxt, then)))
+            for track, y in mv:
+                src = ident(k, e.src, track, at, whole)
+                if isinstance(y, Place):
+                    if y.after == after and y.low <= t:
+                        kept.append(edge(e, src, ident(k + 1, e.dst, None, nxt, then)))
+                elif not last:
+                    kept.append(edge(e, src, ident(k + 1, e.dst, y, nxt, then)))
         live.append(tuple(dict.fromkeys(kept)))
         at, whole = nxt, then
     return replace(g, live=_alive(live))
@@ -3363,31 +3416,59 @@ def _restrict(
 ) -> Graph:
     """The graph of the complete paths that read ``value`` at ``key``. Inside the key's
     window a state is split by what the path read there so far, a prefix of ``value``;
-    it is whole again after."""
+    it is whole again after. An edge is made anew only where its source or its target
+    is split: a state that one prefix alone reaches keeps its id and its edges, so a
+    window the paths agree through (a claim's whole interval, for a Span key read at
+    every commit of it) shares ``g``'s edges rather than copying them."""
     lo, hi = window
     split: dict[tuple[int, int, tuple[Read, ...]], int] = {}
+    # below every id the window's layers hold, which an earlier split may have made
+    # negative: a state kept whole keeps its id beside the split ones
+    floor = min(
+        (min(e.src, e.dst) for k in range(lo, hi + 1) for e in g.live[k]), default=0
+    )
 
     def sid(k: int, state: int, prefix: tuple[Read, ...]) -> int:
         """A split state's id in layer ``k``, apart from every whole one's."""
-        return split.setdefault((k, state, prefix), -1 - len(split))
+        return split.setdefault((k, state, prefix), min(floor, 0) - 1 - len(split))
+
+    def ident(
+        k: int,
+        state: int,
+        prefix: tuple[Read, ...],
+        reaching: Mapping[int, set[tuple[Read, ...]]],
+    ) -> int:
+        """The id of ``state`` in layer ``k`` on a path that read ``prefix`` so far:
+        its own where one prefix alone reaches it, else the prefix's split one."""
+        return state if len(reaching.get(state, ())) == 1 else sid(k, state, prefix)
 
     live: list[Sequence[Edge]] = list(g.live)
     at: dict[int, set[tuple[Read, ...]]] = {e.src: {()} for e in g.live[lo]}
     for k in range(lo, hi + 1):
-        kept: list[Edge] = []
+        # first what reaches the next layer, so that each state's prefixes are known
+        # before its id is used; then the edges
         nxt: dict[int, set[tuple[Read, ...]]] = defaultdict(set)
+        moves: list[tuple[Edge, list[tuple[tuple[Read, ...], tuple[Read, ...]]]]] = []
         for e in g.live[k]:
             mine = _mine(g.ctx, e, k, key)
+            mv: list[tuple[tuple[Read, ...], tuple[Read, ...]]] = []
             for prefix in _each(at.get(e.src, ())):
                 reached = prefix + mine
                 if reached != value[: len(reached)]:
                     continue
                 if k == hi and reached != value:
                     continue
-                src = e.src if k == lo else sid(k, e.src, prefix)
-                dst = e.dst if k == hi else sid(k + 1, e.dst, reached)
-                kept.append(Edge(src, dst, e.pieces))
+                mv.append((prefix, reached))
                 nxt[e.dst].add(reached)
+            moves.append((e, mv))
+        kept: list[Edge] = []
+        for e, mv in moves:
+            for prefix, reached in mv:
+                src = ident(k, e.src, prefix, at)
+                dst = e.dst if k == hi else ident(k + 1, e.dst, reached, nxt)
+                kept.append(
+                    e if (src, dst) == (e.src, e.dst) else Edge(src, dst, e.pieces)
+                )
         live[k] = tuple(dict.fromkeys(kept))
         at = nxt
     return replace(g, live=_alive(live))
@@ -3536,6 +3617,7 @@ class WorkerFact(Enum):
     LEAVE_SAVE = "leave_save"
     LOAD = "load"
     REWINDS = "rewinds"
+    RESUME = "resume"
     TAKEOVER = "takeover"
     STRAYS = "strays"
     FOLD = "fold"
@@ -3571,6 +3653,7 @@ _CROSS: frozenset[WorkerFact | ThirdFact] = frozenset(
         WorkerFact.LEAVE_SAVE,
         WorkerFact.LOAD,
         WorkerFact.REWINDS,
+        WorkerFact.RESUME,
         WorkerFact.TAKEOVER,
         ThirdFact.ACTS,
     }

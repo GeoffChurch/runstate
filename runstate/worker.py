@@ -170,7 +170,12 @@ class Worker:
         ``start`` is keyword-only (default 0). Pass ``start=k`` to resume a run
         from checkpoint step ``k`` — steps are then emitted as ``k, k+1, …``
         (run-absolute), and ``lifecycle.stopped`` records the correct
-        ``final_step``.
+        ``final_step``. What a checkpoint labelled ``k`` holds is the caller's
+        convention, and so is where ``start=k`` resumes against it: a save of
+        step ``k``'s completed state resumed at ``k`` runs step ``k`` again,
+        where one resumed at ``k + 1`` continues it. The log cannot tell the
+        two apart, so a migration of such a run asks (the 0.3.0 -> 0.4.0 step's
+        ``resume`` fact, commits-and-lineage.md §7).
         """
         if self._lost:
             return

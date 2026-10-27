@@ -61,6 +61,7 @@ from tests.migration_sim.enumerate import (
     POSITIONAL,
     PREEMPTED,
     RELEASED_LIVE,
+    RERUNS,
     RESUMES,
     SAVE_POINTS,
     STOPS_AND_REAPS,
@@ -121,6 +122,7 @@ from tests.migration_sim.history import (
     Reaped,
     Release,
     Report,
+    Resume,
     Rewind,
     Save,
     SaveOf,
@@ -177,6 +179,7 @@ FAMILIES = {
     "end-times": Family(1, 2, 0, END_TIMES),
     "mid-saves": Family(2, 1, 0, MID_SAVES),
     "resumes": Family(2, 2, 0, RESUMES),
+    "reruns": Family(2, 2, 0, RERUNS),
     "loading": Family(2, 1, 0, LOADING),
     "third-parties": Family(2, 1, 0, THIRD_PARTIES),
     "released-live": Family(1, 2, 0, RELEASED_LIVE),
@@ -382,7 +385,8 @@ def _h(*parts: Event | list[Event]) -> History:
     return History(tuple(events), Born.V0_3_0)
 
 
-def _claim(claim: int, origin: Origin) -> Claim:
+def _resuming(claim: int, origin: Origin, resume: Resume) -> Claim:
+    """Claim ``claim``, loading ``origin`` and resuming ``resume`` against it."""
     return Claim(
         claim,
         own_process(claim),
@@ -392,7 +396,12 @@ def _claim(claim: int, origin: Origin) -> Claim:
         Clock.LOADED,
         Fold.AT_CLAIM,
         CutSave.LANDED,
+        resume,
     )
+
+
+def _claim(claim: int, origin: Origin) -> Claim:
+    return _resuming(claim, origin, Resume.AFTER)
 
 
 def _takeover(claim: int, origin: Origin) -> Claim:
@@ -405,6 +414,7 @@ def _takeover(claim: int, origin: Origin) -> Claim:
         Clock.LOADED,
         Fold.AT_CLAIM,
         CutSave.LANDED,
+        Resume.AFTER,
     )
 
 
@@ -496,6 +506,7 @@ WORKER = Space(
     strays=(Strays.NONE,),
     pre_saves=(False,),
     strides=(1,),
+    resumes=(Resume.AFTER,),
     shapes=(SAVES,),
     mid_claim=(None,),
     mid_positions=(MidPosition.BEFORE_BODY,),
@@ -924,6 +935,34 @@ OFFSET_EARLIER_RAN = _h(
 OFFSET_EARLIER_SKIPPED = _h(
     _ALTERNATE, _claim(1, FromSave(SaveOf(0, 2))), run(1, [4], SAVES), _completes(1)
 )
+# resume-offset H3/H4: C1 saved every step and C2's first pass is 3: it loaded 2, an
+# older save, and resumed after it (H3); or it loaded 3, the newest, and ran the saved
+# pass again (H4, ``resume`` at: ``steps(start=3)`` after loading "checkpoint step 3",
+# as worker.py's docstring has it). One log; ``resume_from`` c0@2 or c0@3.
+OFFSET_AFTER_OLDER = _h(
+    _EVERY, _claim(1, FromSave(SaveOf(0, 2))), run(1, [3], SAVES), _completes(1)
+)
+OFFSET_AGAIN = _h(
+    _EVERY,
+    _resuming(1, FromSave(SaveOf(0, 3)), Resume.AT),
+    run(1, [3], SAVES),
+    _completes(1),
+)
+
+# rewind-offset: C1 ran 0-2, saving each, then wrote a value at 1 and was killed. A
+# tick at 1 would be an in-claim rewind M9 refuses, so the pass at 1 never ticks: it
+# rewound to 0 and ran the next pass (H1), or to 1 and ran the saved pass again (H2,
+# ``resume`` at). One log; the rewind's target c0@0 or c0@1.
+_RERUN = Shape(
+    True, Tick.NONE, CONTROL, Saving.NONE, trailing=False, ended=Undated.OWN_LAST
+)
+_REWOUND = [_claim(0, Fresh()), *run(0, range(3), SAVES)]
+REWOUND_AFTER = _h(
+    _REWOUND, Rewind(0, SaveOf(0, 0), Resume.AFTER), run(0, [1], _RERUN), _killed(0)
+)
+REWOUND_AGAIN = _h(
+    _REWOUND, Rewind(0, SaveOf(0, 1), Resume.AT), run(0, [1], _RERUN), _killed(0)
+)
 
 # resume-claim: H1/H2 both earlier claims beat 3; H3 two run-ons to 5; H4 a
 # run-on to 5 beside a source of 5.
@@ -1043,6 +1082,7 @@ def _after_reap(finished: bool) -> History:
             Clock.LOADED,
             Fold.AT_CLAIM,
             CutSave.LANDED,
+            Resume.AFTER,
         ),
         run(0, range(3), SAVES),
         (_finished if finished else _open)(0, 3, VALUE),
@@ -1180,6 +1220,7 @@ def _launched(
         Clock.LOADED,
         Fold.AT_CLAIM,
         CutSave.LANDED,
+        Resume.AFTER,
     )
 
 
@@ -1381,6 +1422,7 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
                 Clock.ZERO,
                 Fold.AT_CLAIM,
                 CutSave.LANDED,
+                Resume.AFTER,
             ),
             Emit(1, STATUS, Stamp.METRIC),
             _after(1, 2, LOSS),
@@ -1455,6 +1497,7 @@ GOLDENS: dict[str, tuple[list[Row], History]] = {
                 Clock.ZERO,
                 Fold.AT_CLAIM,
                 CutSave.LANDED,
+                Resume.AFTER,
             ),
             Emit(1, STATUS, Stamp.METRIC),
             _exit(1, completed=False, error="OSError", final=YIELDED),
@@ -1891,6 +1934,7 @@ def _cleared(fold: Fold) -> History:
             Clock.LOADED,
             fold,
             CutSave.LANDED,
+            Resume.AFTER,
         ),
         Begin(0, 0),
         Beat(0, CONTROL),
@@ -2040,6 +2084,7 @@ def _midsave(cut_save: CutSave, landed: bool) -> History:
         Clock.LOADED,
         Fold.AT_CLAIM,
         cut_save,
+        Resume.AFTER,
     )
     loaded = SaveOf(0, 2) if landed else SaveOf(0, 1)
     return _h(
@@ -2065,6 +2110,7 @@ def _midsave_exit(cut_save: CutSave, discards: bool) -> History:
         Clock.LOADED,
         Fold.AT_CLAIM,
         cut_save,
+        Resume.AFTER,
     )
     return _h(
         first,
@@ -2151,6 +2197,7 @@ def _d78_real(cut_save: CutSave) -> History:
             clock,
             Fold.AT_CLAIM,
             cut_save,
+            Resume.AFTER,
         )
 
     loading = [Emit(0, STATUS, Stamp.REGISTER)] * 4
@@ -2330,6 +2377,7 @@ def _closed_among_stops(at: int) -> History:
             Clock.LOADED,
             Fold.AT_CLAIM,
             CutSave.CLOSED,
+            Resume.AFTER,
         ),
         _open(0, 0, "loss"),
         stops,
@@ -2359,6 +2407,7 @@ def _closed_beside_a_fence(first: bool) -> History:
             Clock.LOADED,
             Fold.AT_CLAIM,
             CutSave.CLOSED,
+            Resume.AFTER,
         ),
         _open(0, 0, "loss"),
         _released(0, Outcome.LOST),
@@ -2371,6 +2420,7 @@ def _closed_beside_a_fence(first: bool) -> History:
             Clock.LOADED,
             Fold.AT_CLAIM,
             CutSave.CLOSED,
+            Resume.AFTER,
         ),
         _open(1, 0, "loss"),
         StopRequest("a"),
@@ -2410,6 +2460,7 @@ def _exits_in_its_first_pass(after: list[Event]) -> History:
             Clock.LOADED,
             Fold.AT_CLAIM,
             CutSave.CLOSED,
+            Resume.AFTER,
         ),
         _open(0, 0, "loss"),
         Exit(0, False, None, FinalStep.FINISHED, Drain.EXIT, discards=False),
@@ -2477,6 +2528,10 @@ NAMED = {
     "resume-offset H1": OFFSET_PREVIOUS,
     "resume-offset H2, ran": OFFSET_EARLIER_RAN,
     "resume-offset H2, skipped": OFFSET_EARLIER_SKIPPED,
+    "resume-offset H3": OFFSET_AFTER_OLDER,
+    "resume-offset H4": OFFSET_AGAIN,
+    "rewind-offset H1": REWOUND_AFTER,
+    "rewind-offset H2": REWOUND_AGAIN,
     "resume-claim H1": CLAIM_NEWER,
     "resume-claim H2": CLAIM_OLDER,
     "resume-claim H3, newer": CLAIM_RUN_ON_NEWER,
@@ -2574,6 +2629,8 @@ AMBIGUOUS = [
     Shared("beatless-claim H1", "beatless-claim H2"),
     Shared("d78b72f1", "d78b72f1, 181 unfinished"),
     Shared("valueless-gap H1", "valueless-gap H2"),
+    Shared("resume-offset H3", "resume-offset H4"),
+    Shared("rewind-offset H1", "rewind-offset H2"),
     Shared("final-step H1", "final-step H2"),
     Shared("final-step H2", "final-step H2, discarded"),
     Shared("final-step H1, tick raised", "final-step H2, body raised"),
@@ -2846,6 +2903,7 @@ def _cleared_after_drain(tick_first: bool, ticks_after: bool, honors: Drain) -> 
             Clock.LOADED,
             Fold.AT_DRAIN,
             CutSave.LANDED,
+            Resume.AFTER,
         ),
         opening,
         StopRequest("x0"),
@@ -3640,7 +3698,7 @@ def test_a_rewind_restates_the_position() -> None:
         _claim(0, Fresh()),
         run(0, range(3), SAVES),
         Emit(0, VALUE, Stamp.METRIC),
-        Rewind(0, SaveOf(0, 0)),
+        Rewind(0, SaveOf(0, 0), Resume.AFTER),
         run(0, [1], SAVES),
         _completes(0),
     )
@@ -3724,6 +3782,7 @@ def test_stepless_records_are_liveness_and_registers() -> None:
                     Clock.LOADED,
                     Fold.AT_CLAIM,
                     CutSave.LANDED,
+                    Resume.AFTER,
                 ),
             ],
             "has ended",
@@ -3740,6 +3799,7 @@ def test_stepless_records_are_liveness_and_registers() -> None:
                     Clock.LOADED,
                     Fold.AT_CLAIM,
                     CutSave.LANDED,
+                    Resume.AFTER,
                 ),
                 Reaped("L", Exited(0)),
             ],
@@ -3833,6 +3893,7 @@ def _resumed_zero(c: int, origin: Origin) -> Claim:
         Clock.ZERO,
         Fold.AT_CLAIM,
         CutSave.LANDED,
+        Resume.AFTER,
     )
 
 

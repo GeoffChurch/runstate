@@ -307,12 +307,36 @@ class RunRefused(NamedTuple):
     message: str  # names the run: "run '<rid>': ..."
 
 
+class RunErrored(NamedTuple):
+    """A run an unexpected error failed, a bug in a step rather than a refusal: the
+    error, the format its log stood at, and whether that log had been sealed when it
+    failed, so that it is sealed and not copied (a re-run completes it, log-formats.md
+    §6), or left unmigrated as it was."""
+
+    run_id: str
+    error: Exception
+    at: str  # the format of the log the failing step read
+    sealed: bool
+
+    @property
+    def message(self) -> str:
+        """Names the run, the error and the log's state: "run '<rid>': ..."."""
+        state = (
+            f"its {self.at} log is sealed and not copied; a re-run completes it"
+            if self.sealed
+            else f"its {self.at} log is left unmigrated"
+        )
+        error = f"{type(self.error).__name__}: {self.error}"
+        return f"run {self.run_id!r}: {error} ({state})"
+
+
 class Outcome(NamedTuple):
-    """What ``migrate`` did: the runs it moved, and every refusal, each naming its
-    run."""
+    """What ``migrate`` did: the runs it moved, every refusal, and every run an
+    unexpected error failed, each naming its run."""
 
     moved: tuple[str, ...]
     refused: tuple[RunRefused, ...]
+    errored: tuple[RunErrored, ...]
 
 
 def _detect(
@@ -368,11 +392,13 @@ def migrate(
 
     First the detection pass: every run's chain in memory, changing no log's content.
     It refuses the whole invocation (``Undecided``, with one summary per projection
-    and per divergence, and the runs already refused) unless every projection that
-    forks in some run has a ``--resolve`` and every divergence that fires has an
-    ``--accept``. Then each run is migrated; a run refused by a step, a chooser or
-    ``refuse`` is left untouched, and the others go on. Any other error on a run is a
-    bug, which stays one: it ends the invocation as it is, naming the run."""
+    and per divergence, and the runs already refused or failed) unless every
+    projection that forks in some run has a ``--resolve`` and every divergence that
+    fires has an ``--accept``. Then each run is migrated; a run refused by a step, a
+    chooser or ``refuse`` is left untouched, and the others go on. Any other error on a
+    run is a bug in a step, and fails that run alone (``RunErrored``): the run is left
+    as the error found it, unmigrated, or sealed and not copied where the error came
+    after its seal, and the invocation goes on to the other runs and reports it."""
     check_names(STEPS)
     memo = Memo()
     plans = {
@@ -384,33 +410,38 @@ def migrate(
     }
     report = empty_report()
     refused: dict[str, str] = {}
+    errored: dict[str, RunErrored] = {}
     for rid, fmt in todo.items():
         try:
             _detect(store, plans, choices, rid, fmt, to, report)
         except MigrationError as exc:
             refused[rid] = f"run {rid!r}: {exc}"
-        except Exception as exc:
-            exc.add_note(f"while reading run {rid!r} in the detection pass")
-            raise
+        except Exception as exc:  # the detection pass writes nothing: unsealed
+            errored[rid] = RunErrored(rid, exc, fmt, sealed=False)
     if report.open():
         report.refused.update(refused)
+        report.errored.update({rid: e.message for rid, e in errored.items()})
         raise Undecided(report)
     moved: list[str] = []
     for rid, fmt in todo.items():
-        if rid in refused:
+        if rid in refused or rid in errored:
             continue
-        try:
-            for step in chain(fmt, to):
+        for step in chain(fmt, to):
+            try:
                 store.migrate_one(plans[step.FROM], rid)
-        except MigrationError as exc:
-            refused[rid] = f"run {rid!r}: {exc}"
-        except Exception as exc:
-            exc.add_note(f"while migrating run {rid!r}")
-            raise
+            except MigrationError as exc:
+                refused[rid] = f"run {rid!r}: {exc}"
+                break
+            except Exception as exc:
+                sealed = store.sealed(step.FROM, rid)
+                errored[rid] = RunErrored(rid, exc, step.FROM, sealed)
+                break
         else:
             moved.append(rid)
     return Outcome(
-        tuple(moved), tuple(RunRefused(r, why) for r, why in sorted(refused.items()))
+        tuple(moved),
+        tuple(RunRefused(r, why) for r, why in sorted(refused.items())),
+        tuple(e for _, e in sorted(errored.items())),
     )
 
 

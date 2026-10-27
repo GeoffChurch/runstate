@@ -17,7 +17,8 @@ claim or of the record its writer wrote:
   the gate's verdict (``Claim.gate``: the latest claim had ended or its process
   had, or the gate judged a live worker dead: a takeover); what it loaded
   (``Claim.origin``: a save of this log's claims, by ``SaveRef``, a checkpoint
-  from outside, or nothing); and three writer facts: what its clock reads
+  from outside, or nothing); and four writer facts: where its load resumes
+  against the saved state's step (``Claim.resume``), what its clock reads
   before its first iteration (``Claim.clock``), when it applies an answer
   another party wrote after its claim (``Claim.fold``), and whether a pass cut
   after its save landed finished (``Claim.cut_save``);
@@ -27,7 +28,8 @@ claim or of the record its writer wrote:
   its pass, ``Finish.saved`` as its pass's last act, ``Save`` outside it), its
   close (``Finish``) and when that came (``Ended``: dated by its tick, or one of
   the end-time fork's bounds, ``Undated``), when the commit a cut of its pass
-  makes came (``PassSave.cut_end``), and whether it rewinds;
+  makes came (``PassSave.cut_end``), and whether it rewinds, and where it
+  resumes after (``Rewind.resume``);
 - **how a claim ends**: the worker ends (``Halt``) anywhere in its program, its
   process with it or not, with or without its own ``stopped`` before (``Exit``);
   a third party's ``stopped`` names it (``ThirdPartyStop``); a later claim takes
@@ -39,7 +41,8 @@ halt (no beat, iteration or second ``stopped`` after it); ``completed`` is the
 worker's alone and carries no error; the claim gate (a claim starts once the
 latest has ended or its worker is judged dead, which a takeover's verdict may
 judge wrongly); the step clock; and run-absolute steps (a resumed claim's labels
-continue above the state it loaded). Where a native exit's ``honored`` would
+continue from the state it loaded, at its step or above as its ``resume`` says).
+Where a native exit's ``honored`` would
 differ from its 0.3.0 list outside §7's stated costs, the truth raises
 ``truth.Residue``.
 
@@ -124,6 +127,20 @@ class Clock(Enum):
     ZERO = "zero"  # 0 whatever it loaded: a counter that starts at 0 (mycooc's)
 
 
+class Resume(Enum):
+    """A writer fact: where the worker's next iteration resumes after it loads a saved
+    state, by its claim's load or a rewind, against the saved state's step. The
+    consumer's checkpoint code fixes it: what the step it labels a save with means, and
+    which step it hands its loop."""
+
+    AFTER = "after"  # the step after the save's: the saved iteration stands (a save
+    # labelled with the iteration done and resumed at the label plus one, or labelled
+    # with the next iteration and resumed at the label)
+    AT = "at"  # the save's own step: the saved iteration runs again (a save labelled
+    # with the iteration done, resumed at the label: ``Worker.steps(start=k)`` after
+    # loading "checkpoint step k", as worker.py's docstring has it)
+
+
 class Fold(Enum):
     """A writer fact: when a worker applies an answer (a ``stopped``'s
     ``honored``) that another party wrote after its claim."""
@@ -151,7 +168,8 @@ class Fresh:
 @dataclass(frozen=True)
 class FromSave:
     """The claim loaded ``save``, which exists when it claims. Its first
-    iteration is labelled above the saved state's step."""
+    iteration is labelled at or above the saved state's step, as the claim's
+    ``resume`` says."""
 
     save: SaveRef
 
@@ -304,7 +322,8 @@ Intent: TypeAlias = Release | Report
 class Claim:
     """The claim's worker writes ``lifecycle.started`` from ``process``,
     re-emitting ``launch``, past the gate's ``gate`` verdict, having loaded
-    ``origin``; ``clock``, ``fold`` and ``cut_save`` are its writer's facts."""
+    ``origin``; ``clock``, ``fold``, ``cut_save`` and ``resume`` (where its
+    load resumes, read only for a saved state) are its writer's facts."""
 
     claim: int
     process: Process
@@ -314,6 +333,7 @@ class Claim:
     clock: Clock
     fold: Fold
     cut_save: CutSave
+    resume: Resume
 
 
 @dataclass(frozen=True)
@@ -403,10 +423,13 @@ class Save:
 @dataclass(frozen=True)
 class Rewind:
     """Between iterations, the worker reloads ``target`` (the root when None):
-    its pending values are dropped and its clock reads the saved state's step."""
+    its pending values are dropped and its clock reads the saved state's step.
+    ``resume`` is where its next iteration resumes against that step, read only
+    for a save."""
 
     claim: int
     target: SaveRef | None
+    resume: Resume
 
 
 @dataclass(frozen=True)
@@ -855,10 +878,11 @@ def _claim(st: _State, i: int, ev: Claim) -> Derived:
     elif isinstance(origin, FromOutside):
         if origin.step < 0:
             raise NotConforming("a step is never negative")
-        step, node, floor = origin.step, None, origin.step + 1
+        step, node, floor = origin.step, None, _floor(origin.step, ev.resume)
     elif isinstance(origin, FromSave):
         save = _resolve(st, origin.save, i)
-        step, node, floor, loaded = save.step, save.node, save.step + 1, save.made_at
+        step, node, loaded = save.step, save.node, save.made_at
+        floor = _floor(save.step, ev.resume)
     else:
         assert_never(origin)
     st.loads.append(Load(ev.claim, loaded, newest))
@@ -878,6 +902,17 @@ def _claim(st: _State, i: int, ev: Claim) -> Derived:
         )
     )
     return Derived(None, None, None, cut)
+
+
+def _floor(step: int, resume: Resume) -> int:
+    """The lowest label the next iteration may take after a load or a rewind of a
+    saved state at ``step``: the step after it, or the step itself, where the writer
+    runs the saved iteration again."""
+    if resume is Resume.AFTER:
+        return step + 1
+    if resume is Resume.AT:
+        return step
+    assert_never(resume)
 
 
 def _gate(st: _State, i: int, gate: Gate) -> CutCommit | None:
@@ -990,7 +1025,7 @@ def _step(st: _State, i: int, ev: WorkerEvent, w: _Worker) -> Derived:
             raise NotConforming("a pass begins only after the last one closed")
         if ev.step < w.floor:
             # run-absolute steps: labels rise within a claim, and a resumed claim's
-            # continue above the step it loaded
+            # continue from the state it loaded, at its step or above (``resume``)
             raise NotConforming(f"label {ev.step} below the clock's floor {w.floor}")
         w.phase, w.clock, w.tick_due, w.begun = Phase.ITERATING, ev.step, True, ev.step
         w.pass_save, w.pass_save_index = None, None
@@ -1066,7 +1101,8 @@ def _step(st: _State, i: int, ev: WorkerEvent, w: _Worker) -> Derived:
             w.clock, w.floor, target = 0, 0, None
         else:
             loaded = _resolve(st, ev.target, i)
-            w.clock, w.floor, target = loaded.step, loaded.step + 1, loaded.node
+            w.clock, target = loaded.step, loaded.node
+            w.floor = _floor(loaded.step, ev.resume)
         w.state, w.state_step, w.tick_due = target, w.clock, False
         st.rewinds[i] = target
         if not w.released:

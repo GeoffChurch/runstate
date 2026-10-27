@@ -512,13 +512,15 @@ class Report:
     """What the detection pass found that needs the user's word: the forks of each
     projection no ``--resolve`` decides, the sites of each divergence no ``--accept``
     accepts, and the later steps undecided until they are. ``refused`` keeps the runs
-    already refused whatever is chosen (a live run, a step's own refusal), so the user
-    meets them in the same round."""
+    already refused whatever is chosen (a live run, a step's own refusal), and
+    ``errored`` the runs an unexpected error failed, so the user meets them in the
+    same round."""
 
     forks: dict[tuple[str, Projection[Any, Any]], list[tuple[str, Fork]]]
     undecided: dict[str, set[str]]  # a later step's label -> its runs
     diverged: dict[tuple[str, Divergence], list[Site]]
     refused: dict[str, str]  # run id -> its refusal, naming the run
+    errored: dict[str, str]  # run id -> its error, naming the run
 
     def open(self) -> bool:
         """Whether a question is left for the user."""
@@ -548,7 +550,7 @@ class Report:
 
 
 def empty_report() -> Report:
-    return Report({}, {}, {}, {})
+    return Report({}, {}, {}, {}, {})
 
 
 def _sites(sites: Sequence[Site]) -> str:
@@ -602,6 +604,13 @@ def render(report: Report) -> str:
             "\n".join(
                 ["refused whatever is chosen:"]
                 + [f"  {why}" for _, why in sorted(report.refused.items())]
+            )
+        )
+    if report.errored:
+        out.append(
+            "\n".join(
+                ["failed on an unexpected error, a bug in a step:"]
+                + [f"  {why}" for _, why in sorted(report.errored.items())]
             )
         )
     return "\n\n".join(out)

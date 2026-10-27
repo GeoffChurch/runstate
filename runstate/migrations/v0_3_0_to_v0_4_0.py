@@ -988,6 +988,7 @@ def reference(
     save_cov: frozenset[V.Saved],
     leave_save: frozenset[V.Saved],
     load: frozenset[V.Load],
+    resume: frozenset[V.Resume],
     strays: frozenset[V.Stray],
 ) -> Configuration:
     """A statement a consumer may build (§7, "The writer facts"): every claim's worker
@@ -1003,15 +1004,25 @@ def reference(
     of a halted worker (the gate, ``live_episode``).
 
     Every fact the consumer's own code decides is a required argument, none left wide
-    unasked. A claim's first pass is labelled by the consumer's ``steps(start=...)``:
-    ``stride`` is ``next`` where it resumes at the loaded step plus one and starts fresh
-    at 0, ``skip`` where it starts above either (the fact has one class per pass, so a
-    consumer whose first pass skips states both, and the engine then admits a skip at
-    any pass). What its clock reads before its first pass (``loading``) matters where
-    its code writes a record before the first pass: ``emit`` raises there, but its own
-    message sends caller-clocked points to ``channel.send``, as a resumed claim logging
-    the score of the checkpoint it loaded at that checkpoint's step. Where its values
-    are written (``values``: the Worker itself writes only inside a pass, and a
+    unasked. A claim's first pass is labelled by the consumer's ``steps(start=...)``,
+    whose ``start`` its checkpoint code reads: ``resume`` says where that is against the
+    save it loaded, and ``stride`` whether the pass is at the floor so set. The Worker's
+    own docs say to resume "from checkpoint step k" with ``start=k``, and what a save
+    labelled ``k`` holds is the consumer's: pass ``k``'s result, so that ``start=k``
+    runs pass ``k`` again (``resume`` ``at``, and ``resume_from`` names pass ``k``'s
+    commit), or the state before pass ``k``, pass ``k - 1``'s result, so that
+    ``start=k`` continues it (``after``, and ``resume_from`` names pass ``k - 1``'s
+    commit); a consumer that saves pass ``k``'s result as ``k`` and resumes at ``k +
+    1`` also resumes ``after``. The two write one log, so a consumer stating both has an
+    Origin fork at each resumed claim, which detection reports and the origin chooser
+    decides. ``stride`` is ``next`` where the first pass is at the floor (the resume
+    point, or 0 when fresh), ``skip`` where it is above (the fact has one class per
+    pass, so a consumer whose first pass skips states both, and the engine then admits a
+    skip at any pass). What its clock reads before its first pass (``loading``) matters
+    where its code writes a record before the first pass: ``emit`` raises there, but its
+    own message sends caller-clocked points to ``channel.send``, as a resumed claim
+    logging the score of the checkpoint it loaded at that checkpoint's step. Where its
+    values are written (``values``: the Worker itself writes only inside a pass, and a
     subscription's samples are refused at the boundary, so any other phase is such a
     raw send); how a pass's body ends (``closing``) and whether a pass that closes
     silently wrote a value (``marker``); how its loop is left (``loop_end``); its
@@ -1022,12 +1033,7 @@ def reference(
     It can be false of a run: a control record landing between a drain and its
     heartbeat breaks ``watermark``, an explicit ``final_step`` breaks ``final-step``.
     A false word is not silent: no history writes the log, and the refusal names the
-    fact to relax. One resume the vocabulary has no class for: a first pass at the
-    loaded step itself (``steps(start=k)`` after loading a save of pass ``k``), since
-    the writer model labels a resumed claim's passes above the step it loaded
-    (``Stride``); such a run has no history under a ``load`` without ``outside``, and
-    under ``outside`` reads as a load of a checkpoint no claim saved, at the step
-    before."""
+    fact to relax."""
     return Configuration(
         {
             _REFERENCE: WorkerFacts(
@@ -1048,6 +1054,7 @@ def reference(
                 leave_save=leave_save,
                 load=load,
                 rewinds=frozenset(),
+                resume=resume,
                 takeover=frozenset({V.Takeover.DEAD}),
                 strays=strays,
                 fold=frozenset({V.Fold.AT_CLAIM}),
@@ -1526,8 +1533,26 @@ def _candidates(
     )
 
 
-def _site(g: E.Graph, key: E.Key) -> int:
-    return g.ctx.recs[key.position].seq
+def _site(ctx: E.Context, key: E.Key) -> int:
+    return ctx.recs[key.position].seq
+
+
+class _Candidates:
+    """A run's candidates, handed to the decode once. ``take`` gives the graph and
+    forgets it, so that while the decode narrows, the built graph is held by the
+    decode's own name alone and goes when its first answer's narrowing replaces it:
+    the decode then holds the graph and the one its answer leaves, never the built one
+    beside them. ``ctx`` stays, for the readings' sites."""
+
+    def __init__(self, g: E.Graph) -> None:
+        self.ctx = g.ctx
+        self._graph: E.Graph | None = g
+
+    def take(self) -> E.Graph:
+        g = self._graph
+        assert g is not None, "the candidates were taken already"
+        self._graph = None
+        return g
 
 
 _RECORDED = (
@@ -1584,13 +1609,16 @@ class _Decided(NamedTuple):
         return self.graph.ctx
 
 
-def _decide(g: E.Graph, resolutions: Resolutions) -> _Decided:
+def _decide(candidates: _Candidates, resolutions: Resolutions) -> _Decided:
     """The decode (§7, the decode order), each fork routed to its projection's chooser;
     then the end-time forks, subjects from the last claim back: commit by commit, which
     tick dates it, if any, else at which of the places it may stand undated it ended,
     and when; then rewind by rewind, each a place and a time. Each answer narrows the
-    graph in place of the last: the decode holds the graph and the one its answer
-    leaves, never more."""
+    graph in place of the last. The candidates are taken from their holder as the
+    decode is called, so no name here holds the built graph while the decode narrows
+    it: the decode holds the graph and the one its answer leaves, and a chooser's
+    witness one more for as long as it reads it (``E.Answer.witness``)."""
+    ctx = candidates.ctx
     readings: dict[str, dict[int, dict[str, Json]]] = {
         p.name: {} for p in (END, SPAN, ORIGIN, WRITER, END_TIME)
     }
@@ -1598,12 +1626,12 @@ def _decide(g: E.Graph, resolutions: Resolutions) -> _Decided:
     def route(q: E.Question) -> E.Answer:
         p = _BY_KEY[q.key.projection]
         a = p.ask(resolutions, q)
-        readings[p.name].setdefault(_site(g, q.key), {})[str(q.key.subject)] = (
+        readings[p.name].setdefault(_site(ctx, q.key), {})[str(q.key.subject)] = (
             _jsonable(a.value)
         )
         return a
 
-    g = E.decode(g, route, cap=resolutions.assumptions.limits.cap)
+    g = E.decode(candidates.take(), route, cap=resolutions.assumptions.limits.cap)
     ended: dict[E.CommitId, EndedAt] = {}
     datings = E.datings(g)
     for c in sorted(datings, key=lambda c: (-c.claim, c.nth)):
@@ -2352,14 +2380,15 @@ class V0_3_0_to_V0_4_0:
         configuration: Configuration,
         limits: Limits,
         history: History,
-    ) -> E.Graph:
+    ) -> _Candidates:
         """The candidates for a transform, which narrows them answer by answer: the
-        step lets go of them, so that the decode holds the graph and the one its answer
-        leaves and nothing else holds a third. A transform of the same run again (the
-        runner's memo full) builds them again, which changes no result."""
+        step lets go of them, and hands them over in a holder the decode takes them
+        from, so that the decode holds the graph and the one its answer leaves and
+        nothing else holds a third. A transform of the same run again (the runner's
+        memo full) builds them again, which changes no result."""
         g = self._candidates(rows, configuration, limits, history)
         self._last = None
-        return g
+        return _Candidates(g)
 
     def is_live(self, rows: list[Row]) -> bool:
         """0.3.0's liveness, by name: the latest claim is live unless a
@@ -2401,7 +2430,9 @@ class V0_3_0_to_V0_4_0:
         forks: dict[str, list[Fork]] = {p.name: [] for p in self.PROJECTIONS}
         for k in sorted(keys, key=lambda k: (k.position, k.subject)):
             forks[_BY_KEY[k.projection].name].append(
-                Fork(_site(g, k), E.settled_by(configuration, E.FEEDS[k.projection]))
+                Fork(
+                    _site(g.ctx, k), E.settled_by(configuration, E.FEEDS[k.projection])
+                )
             )
         dates = E.settled_by(configuration, E.DATES)
         forks[END_TIME.name] = [

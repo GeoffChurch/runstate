@@ -78,6 +78,17 @@ def _mutations() -> dict[str, Patch]:
                 b for b in _l(f, x, bound) if b == x.floor
             ]
         },
+        # where a load or a rewind of a saved state resumes: after it, or at it
+        "resume: after": {
+            "_floors": lambda f, step, _f=E._floors: [
+                x for x in _f(f, step) if step is None or x != step + 1
+            ]
+        },
+        "resume: at": {
+            "_floors": lambda f, step, _f=E._floors: [
+                x for x in _f(f, step) if step is None or x != step
+            ]
+        },
         "continue: unsaved": {
             "_covered": lambda stated, slot, x: (
                 covered(stated, slot, x)

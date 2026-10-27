@@ -305,6 +305,9 @@ def families() -> dict[str, Callable[[], Iterator[H.History]]]:
         "positional": partial(S._histories, S.FAMILIES["positional"]),
         "rewinds": lambda: enumeration.rewinds(passes=3),
         "ended-stops": enumeration.ended_stops,
+        # a resumed claim's first pass at the saved pass's step, the saved pass run
+        # again (``resume`` at), beside the same log read as an older save resumed after
+        "reruns": partial(S._histories, S.FAMILIES["reruns"]),
     }
 
 
@@ -791,7 +794,15 @@ _P = H.Process("sim", 1000)
 
 def _claim0(fold: H.Fold) -> H.Claim:
     return H.Claim(
-        0, _P, H.Gate.FREE, H.Fresh(), None, H.Clock.LOADED, fold, H.CutSave.CLOSED
+        0,
+        _P,
+        H.Gate.FREE,
+        H.Fresh(),
+        None,
+        H.Clock.LOADED,
+        fold,
+        H.CutSave.CLOSED,
+        H.Resume.AFTER,
     )
 
 

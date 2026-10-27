@@ -100,6 +100,12 @@ def _loaded_step(
     return H.loadable(events[:i])[ref]
 
 
+def _floor(step: int, resume: H.Resume) -> int:
+    """The lowest label the next pass may take after a load or a rewind of a saved
+    state at ``step`` (``resume``): the step after it, or the step itself."""
+    return step + 1 if resume is H.Resume.AFTER else step
+
+
 def _by_value(declared: Enum, values: dict[Any, Any]) -> Element:
     """An encoding's element: every convention that writes the value the declared one
     writes."""
@@ -195,7 +201,7 @@ def observe(h: H.History) -> Observation:
             phase[c] = "loading"
             loaded[c] = _loaded_step(events, i, ev.origin)
             ls = loaded[c]
-            floor[c] = 0 if ls is None else ls + 1
+            floor[c] = 0 if ls is None else _floor(ls, ev.resume)
             acts_in_pass[c], valued[c], ticked_in[c], beaten[c], saved[c] = (
                 0,
                 False,
@@ -222,6 +228,8 @@ def observe(h: H.History) -> Observation:
                 o["load"].append(
                     one(V.Load.NEWEST if load.loaded == load.newest else V.Load.OLDER)
                 )
+            if ls is not None:  # a saved state loaded: where its first pass resumes
+                o["resume"].append(one(V.Resume(ev.resume.value)))
             continue
         if isinstance(ev, H.StopRequest):
             assert seq is not None
@@ -411,7 +419,7 @@ def observe(h: H.History) -> Observation:
                 saved[c] = True
         elif isinstance(ev, H.Rewind):
             step = _loaded_step(events, i, ev.target)
-            floor[c] = 0 if step is None else step + 1
+            floor[c] = 0 if step is None else _floor(step, ev.resume)
             if ev.target is None:
                 o["rewinds"].append(one(V.Rewinds.ROOT))
             else:
@@ -419,6 +427,7 @@ def observe(h: H.History) -> Observation:
                 o["rewinds"].append(
                     one(V.Rewinds.NEWEST if ev.target == newest else V.Rewinds.OLDER)
                 )
+                o["resume"].append(one(V.Resume(ev.resume.value)))
         elif isinstance(ev, H.Exit):
             assert seq is not None
             stops_by[seq] = V.OwnStop()

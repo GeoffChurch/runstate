@@ -114,14 +114,16 @@ CONSUMER = dict(
     save_cov=frozenset({V.Saved.SAVED}),
     leave_save=frozenset({V.Saved.SAVED}),
     load=frozenset({V.Load.FRESH, V.Load.NEWEST}),
+    resume=frozenset({V.Resume.AFTER}),
     strays=frozenset(),
 )
 """A consumer's word on its own code, as a consumer of the reference Worker would give
-it: every claim resumed at the loaded step plus one (``steps(start=k + 1)``) or started
-at 0, no record written before the first pass, no pass ends at a value, values only
-inside a pass, the loop left after a close, each pass's completed state saved inside it
-or at its close, the newest save or nothing loaded, and no other writer's values;
-whether a silent pass wrote a value, unknown."""
+it: every claim resumed at the loaded step plus one (``steps(start=k + 1)`` after
+loading pass ``k``'s save, ``resume`` ``after``) or started at 0, no record written
+before the first pass, no pass ends at a value, values only inside a pass, the loop left
+after a close, each pass's completed state saved inside it or at its close, the newest
+save or nothing loaded, and no other writer's values; whether a silent pass wrote a
+value, unknown."""
 
 CHECKPOINTED = STEP.reference(**CONSUMER).workers["reference"]
 """The reference preset under ``CONSUMER``."""
@@ -1299,6 +1301,7 @@ UNKNOWN = dict(
     save_cov=V.every(V.Saved),
     leave_save=V.every(V.Saved),
     load=V.every(V.Load),
+    resume=V.every(V.Resume),
     strays=V.every(V.Stray),
 )
 """A consumer that knows nothing of its own code passes each fact's whole domain,
@@ -1846,6 +1849,70 @@ def test_a_resumed_claims_first_pass_label_is_the_consumers_stride():
         step.transform(rows, resolutions=_preset(), history=())
     m = step.transform(rows, resolutions=_preset(stride=V.every(V.Stride)), history=())
     assert [x.topic for x in m.rows].count("lifecycle.commit") == 5
+
+
+def _resume_from(m, claim_seq):
+    """The ``resume_from`` of the claim at ``claim_seq``, and the record it names."""
+    start = next(x for x in m.rows if x.seq == claim_seq)
+    named = json.loads(start.body)["resume_from"]
+    node = next(x for x in m.rows if x.seq == named)
+    return named, node.topic, json.loads(node.body)["claim_seq"]
+
+
+def test_a_resume_at_the_loaded_step_is_the_consumers_resume():
+    """The Worker's docs resume "from checkpoint step k" with ``steps(start=k)``, and
+    what a save labelled ``k`` holds is the consumer's checkpoint code: pass ``k``'s
+    result, which ``start=k`` then runs again (``resume`` ``at``), or the state before
+    pass ``k`` (``after``). A real Worker log, three passes then a claim loading pass
+    2's save and resuming at 2, migrates under each reading alone with that reading's
+    ``resume_from``: pass 2's commit under ``at``, pass 1's under ``after``, which must
+    then have loaded the older save. Under both the claim's origin forks, which
+    detection reports with ``resume`` among the facts that settle it. Under the
+    consumer's word that it resumes after the save it loaded, the newest, the log has
+    no history, and the refusal names ``resume``."""
+    rows = _a_resumed_workers_log(2)
+    assert [json.loads(x.body)["step"] for x in rows if x.topic == "value"] == [
+        *range(3),
+        2,
+        3,
+    ]
+    both = frozenset(V.Resume)
+    older = frozenset({V.Load.FRESH, V.Load.NEWEST, V.Load.OLDER})
+    with pytest.raises(MigrationError, match=r"^no history .*relaxing .*resume"):
+        step.transform(rows, resolutions=_preset(), history=())
+    # at: the newest save, pass 2's result (its tick at seq 7 is its commit), run again
+    at = _preset(resume=frozenset({V.Resume.AT}))
+    assert not any(
+        step.detect(rows, assumptions=at.assumptions, history=()).forks.values()
+    )
+    m = step.transform(rows, resolutions=at, history=())
+    assert _resume_from(m, 9) == (7, "lifecycle.commit", 1)
+    assert {d: s for d, s in m.divergences.items() if s} == {
+        "recounted-value": (10, 12)
+    }
+    # after: pass 1's save, an older one, continued at 2
+    after = _preset(load=older)
+    assert not any(
+        step.detect(rows, assumptions=after.assumptions, history=()).forks.values()
+    )
+    m = step.transform(rows, resolutions=after, history=())
+    assert _resume_from(m, 9) == (5, "lifecycle.commit", 1)
+    assert {d: s for d, s in m.divergences.items() if s} == {"off-head-value": (6,)}
+    # both, with both saves loadable: the origin forks between them
+    res = _preset(resume=both, load=older)
+    forks = step.detect(rows, assumptions=res.assumptions, history=()).forks
+    (origin,) = forks["origin"]
+    assert origin.seq == 9 and "resume" in origin.settled_by
+    assert [f.seq for f in forks["span"]] == [9]
+    assert not forks["end"] and not forks["writer"] and not forks["end-time"]
+    m = step.transform(rows, resolutions=res, history=())  # origin=newest: pass 2's
+    assert _resume_from(m, 9) == (7, "lifecycle.commit", 1)
+    # both, the newest save alone loadable: one history, pass 2's save run again
+    res = _preset(resume=both)
+    assert not any(
+        step.detect(rows, assumptions=res.assumptions, history=()).forks.values()
+    )
+    assert _resume_from(step.transform(rows, resolutions=res, history=()), 9)[0] == 7
 
 
 class _Picks:

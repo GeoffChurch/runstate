@@ -42,12 +42,33 @@ from . import Row
 
 
 class Stride(Enum):
-    """Element: each pass. Its label against the step the worker continues from."""
+    """Element: each pass. Its label against the worker's floor: 0 when fresh, the last
+    pass's step plus one, or the step a load or a rewind resumes at (``resume``)."""
 
-    # the step after the state it continues from: 0 fresh, loaded + 1, last + 1,
-    # rewound + 1
-    NEXT = "next"
+    NEXT = "next"  # the floor
     SKIP = "skip"  # above it
+
+
+class Resume(Enum):
+    """Element: each load of a saved state: a claim's (``load``: ``newest``, ``older``
+    or ``outside``) or a rewind's (``rewinds``: ``newest`` or ``older``). Where the
+    worker's next pass resumes against the saved state's step, which the consumer's
+    checkpoint code fixes: what the step it labels a save with means, and which step it
+    hands its loop.
+
+    A save holds a pass's completed state, its step that pass's. A worker that labels
+    the save with the pass it completed and resumes at the label plus one, or labels it
+    with the next pass to run and resumes at the label, resumes ``after``: its next pass
+    is the step after the save's. One that labels the save with the pass it completed
+    and resumes at the label, as ``Worker.steps(start=k)`` after loading "checkpoint
+    step k" does, runs the saved pass again: it resumes ``at``. The two write one 0.3.0
+    log, a resumed claim whose first pass is labelled ``k``, and name different
+    ``resume_from`` commits: pass ``k - 1``'s under ``after``, pass ``k``'s under
+    ``at``. So which it is is content, the consumer's word; stated both, the claim's
+    origin forks between the two saves, and a chooser decides."""
+
+    AFTER = "after"  # the step after the save's: the saved pass stands
+    AT = "at"  # the save's own step: the saved pass runs again
 
 
 class Loading(Enum):
@@ -241,6 +262,7 @@ class WorkerFacts:
     leave_save: frozenset[Saved]
     load: frozenset[Load]
     rewinds: frozenset[Rewinds]
+    resume: frozenset[Resume]
     takeover: frozenset[Takeover]
     strays: frozenset[Stray]
     fold: frozenset[Fold]
