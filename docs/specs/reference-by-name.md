@@ -351,9 +351,10 @@ the positional output already differs (`stale-beat`, `naked-stop`, `ended-lease`
 of readings, against master's reads and runstate's: each divergence fires in exactly the runs where its read
 answers differently, and nothing else differs. Each fires at the records whose read differs, except
 `reattributed-record`, whose sites are every fork read otherwise than by position, once any read differs: a
-read can change only through several reattributions jointly, so no single fork is its site. Under the positional `record-claim`, `peek_terminal` and
-`live_episode` answer alike; under a consumer's reading they may not, and `reattributed-record` says so (a
-test reads the verdict of a displaced worker's exit go from `preempted` to none).
+read can change only through several reattributions jointly, so no single fork is its site. Under the
+positional `record-claim`, `peek_terminal` and `live_episode` answer alike; under a consumer's reading they
+may not, and `reattributed-record` says so (a test reads the verdict of a displaced worker's exit go from
+`preempted` to none).
 
 **Known limits:**
 - Under `record-claim`'s `positional`, a historical misattribution is copied faithfully, not corrected:
