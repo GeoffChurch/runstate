@@ -1335,6 +1335,17 @@ def test_family_end_times_read_as_the_listed_paths(family: str) -> None:
         end_times_listed(h)
 
 
+def test_a_value_either_worker_wrote_opens_where_the_close_stands() -> None:
+    """The end-time window reaches back to the first record whose writer is open
+    (``_Placing``): C1's close stands just after seq 5 or just after seq 6, the two
+    values either live worker may have written. A window that ignored them would place
+    it after C1's started (seq 4) alone; one that began a layer late, after seq 4 or
+    seq 6."""
+    h = S.NAMED["a value either live worker wrote, before an undated close"]
+    ends = E.end_times(run([h]))
+    assert ends.places(E.CommitId(4, 0)) == {E.Place(5, 5.0), E.Place(6, 6.0)}
+
+
 # ----- the horizon refuses only where its cut could change a reading (fix round 2) ----
 
 

@@ -54,6 +54,7 @@ def _mutations() -> dict[str, Patch]:
         E.reading,
     )
     settled, merged, placed, read = E._settled, E._merged, E._placed, E._read
+    first = E._first
     return {
         # a cut pass: no save begun; finished by its save; a landed save that did not
         # finish it
@@ -285,6 +286,20 @@ def _mutations() -> dict[str, Patch]:
                 None if isinstance(p, E.PExit) else read(ctx, p, k)
             )
         },
+        # the end-time stage's window (``_Placing``): where it starts
+        "end-time: the window ignores mixed own records": {
+            "_first": lambda acts, mixed, settles: acts[0]
+        },
+        "end-time: the window's mixed start one layer late": {
+            "_first": lambda acts, mixed, settles: (
+                min(acts[0], mixed[0] + 1) if mixed and mixed[0] <= settles else acts[0]
+            )
+        },
+        "end-time: the window one layer late for its act": {
+            "_first": lambda acts, mixed, settles: first(
+                (acts[0] + 1, *acts[1:]), mixed, settles
+            )
+        },
     }
 
 
@@ -378,6 +393,8 @@ def checks() -> Iterator[tuple[str, Callable[[], None]]]:
     yield "the decode's order (P6)", O.test_the_decode_reads_the_last_claim_first
     dating = O.test_a_tick_at_once_after_its_close_dates_the_commit
     yield "a tick dates its close", dating
+    for name, h in S.NAMED.items():
+        yield f"end times {name}", partial(O.end_times_listed, h)
     for fam, make in O.FAMILIES.items():
         yield f"family {fam}", partial(_family_own, make)
 

@@ -738,6 +738,28 @@ VALUE_CLAIM_TAKEN_OVER = _h(
     _completes(1),
 )
 
+# The end-time window's widening (Task 23a fix 1): a live takeover, then a value at
+# step 1 either live worker may have written, before the successor's undated close.
+# C1 writes its pass's value (seq 5); the displaced C0, still live, runs its pass 1 and
+# writes its value (seq 6) and its tick (seq 7); then C1's pass closes with no tick of
+# its own. Under the history's own facts seq 5 and seq 6 are each C1's on some
+# candidates and C0's on others, so the record C1's commit stands after is open: just
+# after seq 5 or just after seq 6. The record that decides it is the first one whose
+# writer is open, before the commit's own layer, so an end-time window that ignores
+# such records places the commit after C1's started (seq 4), and one that starts a
+# layer after the first of them misses the place after seq 5.
+VALUE_EITHER_WORKER_WROTE = _h(
+    _claim(0, Fresh()),
+    run(0, [0], SAVES),
+    _takeover(1, FromSave(SaveOf(0, 0))),
+    Begin(1, 1),
+    Emit(1, VALUE, Stamp.METRIC),
+    iteration(0, Step(1, SAVES), cut=Cut.DONE),
+    Finish(1, False, Undated.OWN_LAST),
+    _completes(1),
+    _killed(0),
+)
+
 # beat-ends-iteration: H1 steps() killed in step 3's body; H2 a tick-first loop
 # killed in step 2's body.
 BEAT_ENDS = _h(_claim(0, Fresh()), run(0, range(3), BEATS), Begin(0, 3), _killed(0))
@@ -2502,6 +2524,9 @@ NAMED = {
     "value-claim H2, a teardown value": VALUE_CLAIM_TEARDOWN,
     "value-claim, a dead claim no stopped named": VALUE_CLAIM_DEAD_UNNAMED,
     "value-claim, a takeover": VALUE_CLAIM_TAKEN_OVER,
+    "a value either live worker wrote, before an undated close": (
+        VALUE_EITHER_WORKER_WROTE
+    ),
     "beat-ends-iteration H1": BEAT_ENDS,
     "beat-ends-iteration H2": BEAT_STARTS,
     "post-beat-values H1": POST_BEAT_LABEL,

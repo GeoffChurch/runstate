@@ -3255,6 +3255,13 @@ def _index(g: Graph) -> _Index:
     )
 
 
+def _first(acts: tuple[int, ...], mixed: tuple[int, ...], settles: int) -> int:
+    """A placing window's first layer (``_Placing``): the act's first layer, or the
+    claim's first ``mixed`` layer where that is earlier and at or before ``settles``.
+    A mixed layer after ``settles`` moves no mark."""
+    return min(acts[0], mixed[0]) if mixed and mixed[0] <= settles else acts[0]
+
+
 class _Placing:
     """One commit's or rewind's place, followed along the paths: a record's own pieces
     stand at its layer, so once a path is past the piece and past the layer of the
@@ -3294,12 +3301,12 @@ class _Placing:
             )
         )
         self.settles = ctx.by_seq[self.checkpoints[-1]]
+        # a claim no layer leaves open has no mixed layer; every claim holding an act
+        # has a sure one, its started's (its ``PStart`` on every edge)
         mixed = index.mixed.get(silent.claim, ())
-        self.first = (
-            min(acts[0], mixed[0]) if mixed and mixed[0] <= self.settles else acts[0]
-        )
+        self.first = _first(acts, mixed, self.settles)
         self.last = max(acts[-1], self.settles)
-        sure = index.sure.get(silent.claim, ())
+        sure = index.sure[silent.claim]
         marks: list[int] = []
         for checkpoint in self.checkpoints:
             # the claim's own records before ``first``, at or before the checkpoint
