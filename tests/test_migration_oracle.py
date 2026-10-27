@@ -29,7 +29,7 @@ five properties:
    its decode, fork by fork from the last claim back, gives what the rule gives over
    the list.
 
-A log the step's own parse refuses (M9: an in-claim rewind) is outside the engine's
+A log the step's own parse refuses (an in-claim rewind) is outside the engine's
 domain: its refusal names the record, which property 3 accepts.
 
 **Two speeds.** The families' tests are marked ``oracle``: the pre-commit hook and CI's
@@ -221,7 +221,7 @@ def run(histories: Sequence[H.History]) -> E.Graph:
 
 
 def parsed(h: H.History) -> bool:
-    """Whether the step's parse reads the log: what it refuses (M9) never reaches the
+    """Whether the step's parse reads the log: what it refuses never reaches the
     engine."""
     try:
         parse(list(rendered(h).rows))
@@ -333,7 +333,7 @@ def own(h: H.History) -> None:
     """Under the history's own facts: no crash and no refusal (3); its truth a candidate
     (2); and where the engine reads one lineage, that lineage is the truth (4)."""
     if not parsed(h):
-        return  # the step's parse refuses it, naming the record (M9)
+        return  # the step's parse refuses it, naming the record
     g = run([h])
     assert E.admits(
         g
@@ -1037,3 +1037,112 @@ def test_a_tick_at_once_after_its_close_dates_the_commit() -> None:
     holds the truth."""
     h = S.NAMED["golden RESUMED_BESIDE_A_REAL_BEAT"]
     assert times_over(run([h])) == {c: {t} for c, t in want(h).times.items()}
+
+
+# ----- whether a tick dates a commit is a reading (the Task 22 review's Critical 1) ------
+
+
+def _six_records() -> tuple[tuple[Row, ...], list[H.History]]:
+    """The review's six-record ``save-points`` log, which four histories write: two
+    claims, the second's three step-0 values, then its tick at step 0."""
+    for rows, hs in by_log(FAMILIES["save-points"]()).items():
+        if [r.topic for r in rows] == [
+            "lifecycle.started",
+            "value",
+            "lifecycle.started",
+            "value",
+            "value",
+            "lifecycle.heartbeat",
+        ] and json.loads(rows[5].body) == {
+            "step": 0,
+            "consumed_seq": 0,
+            "claim_seq": 3,
+            "t": 6.0,
+        }:
+            return rows, hs
+    raise AssertionError("the six-record log is gone from save-points")
+
+
+def test_whether_a_tick_dates_a_commit_is_the_end_time_projections():
+    """The tick may date claim 3's commit, or the commit may have ended before it,
+    undated: detection reports the end-time fork, and each chooser writes its own log
+    (``lower`` the commit before the tick, which stays a heartbeat; ``upper`` the
+    commit in the tick's place)."""
+    from runstate.migrations.ambiguity import REFUSE, Assumptions, Chosen, Limits
+    from runstate.migrations.ambiguity import Resolutions as R
+
+    rows, hs = _six_records()
+    cfg = D.configuration([observed(h) for h in hs])
+    step = STEP.V0_3_0_to_V0_4_0()
+    limits = Limits(cap=CAP, budget=BUDGET, run_on=RUN_ON)
+    found = step.detect(
+        list(rows), assumptions=Assumptions(cfg, "x", limits), history=()
+    )
+    assert [f.seq for f in found.forks["end-time"]] == [3]
+    assert not any(found.forks[p] for p in ("end", "span", "origin"))
+    out = {}
+    for name, chooser in (("lower", 0), ("upper", 1)):
+        res = R(
+            Assumptions(cfg, "x", limits),
+            {
+                "end": Chosen(None, REFUSE.chooser),
+                "span": Chosen("fewest", STEP.FEWEST.chooser),
+                "origin": Chosen("newest", STEP.NEWEST.chooser),
+                "end-time": Chosen(name, STEP.END_TIME.generic[chooser].chooser),
+            },
+        )
+        m = step.transform(list(rows), resolutions=res, history=())
+        out[name] = [(x.topic, json.loads(x.body).get("t")) for x in m.rows[6:]]
+        assert m.readings["end-time"] == {
+            3: {
+                "0": (
+                    {"is": "EndedAt", "t": 5.0}
+                    if name == "lower"
+                    else {"is": "DatedBy", "seq": 6}
+                )
+            }
+        }
+    assert out["lower"] == [("lifecycle.commit", 5.0), ("lifecycle.heartbeat", 6.0)]
+    assert out["upper"] == [("lifecycle.commit", 6.0)]
+
+
+_SEEDED = """
+import hashlib, json, sys
+sys.path.insert(0, {root!r})
+import tests.test_migration_goldens as T
+import tests.test_migration_oracle as O
+d = hashlib.sha256()
+for rid in T.G.GOLDEN:
+    m = T.migrated(rid)
+    d.update(repr((m.rows, sorted(m.readings.items()), sorted(m.divergences.items()))).encode())
+for rows, hs in list(O.by_log(O.FAMILIES["positional"]()).items())[:60]:
+    if O.parsed(hs[0]):
+        g = O.run(hs)
+        d.update(repr([[(e.src, e.dst, e.pieces) for e in es] for es in g.live]).encode())
+print(d.hexdigest())
+"""
+
+
+def test_the_step_writes_the_same_bytes_whatever_the_hash_seed():
+    """Every set the pass's successors come from is iterated in a fixed order, so the
+    states' numbering, the path written and the witnesses do not depend on
+    ``PYTHONHASHSEED``: the goldens' outputs and 60 ``positional`` graphs, under two
+    seeds, in two processes."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = str(Path(__file__).resolve().parent.parent)
+    digests = []
+    for seed in ("1", "2"):
+        done = subprocess.run(
+            [sys.executable, "-c", _SEEDED.format(root=root)],
+            capture_output=True,
+            text=True,
+            timeout=600,
+            env={**os.environ, "PYTHONHASHSEED": seed},
+        )
+        assert done.returncode == 0, done.stderr
+        digests.append(done.stdout.strip())
+    assert digests[0] == digests[1]

@@ -11,7 +11,7 @@ import pytest
 from runstate import formats, migrations
 from runstate.channel.sqlite import SqliteChannel
 from runstate.formats import DirectoryLayout
-from runstate.migrations import MigrationError, Planned, Row, chain, migrate
+from runstate.migrations import Memo, MigrationError, Planned, Row, chain, migrate
 from runstate.migrations.ambiguity import (
     Limits,
     NO_FACTS,
@@ -39,8 +39,9 @@ NONE = parse_choices([], assume=[], resolve=[], accept=[], limits=ONE)
 class Tag:
     """A toy step: stamps {"tag": TO} into every body. ``boom_at`` is the
     0-based ``transform`` call that raises. Call 0 is the detection pass's dry
-    run; on sqlite, call 1 is the dry run before the seal and call 2 the
-    transform after it; postgres makes one more, inside its transaction."""
+    run; the dry run before the seal and the transform after it reuse it while
+    the rows they read are the same (``Memo``), so a later call is the transform of
+    rows that changed."""
 
     RENUMBERS = False
     FACTS = NO_FACTS
@@ -71,7 +72,7 @@ class Tag:
 
 
 def _planned(step):
-    return Planned(step, resolutions(step, NONE), frozenset())
+    return Planned(step, resolutions(step, NONE), frozenset(), Memo())
 
 
 @pytest.fixture
@@ -171,10 +172,27 @@ def test_a_refusal_by_the_step_comes_before_the_seal(toy, monkeypatch, tmp_path)
 def test_a_failure_after_the_seal_leaves_it_sealed_and_a_retry_completes(
     toy, monkeypatch, tmp_path
 ):
+    """A record that lands after the dry run read the run is read after the seal: the
+    transform runs again on what changed, and its failure there leaves the run sealed.
+    """
+    from runstate.migrations import stores
+
     old = _seed(tmp_path, "8.0.0", "r1")
-    monkeypatch.setattr(migrations, "STEPS", (Tag("8.0.0", "8.1.0", boom_at=2),))
+    real = stores._read_sqlite
+    reads = []
+
+    def landing(path):
+        rows = real(path)
+        reads.append(path)
+        if len(reads) == 3:  # the read after the seal: a record has landed
+            rows = [*rows, rows[-1]._replace(seq=rows[-1].seq + 1)]
+        return rows
+
+    monkeypatch.setattr(stores, "_read_sqlite", landing)
+    monkeypatch.setattr(migrations, "STEPS", (Tag("8.0.0", "8.1.0", boom_at=1),))
     with pytest.raises(RuntimeError, match="boom"):
         migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0", choices=NONE)
+    monkeypatch.setattr(stores, "_read_sqlite", real)
     target = DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1")
     assert not target.exists()
     assert os.stat(old).st_mode & 0o222 == 0  # sealed, per §6
@@ -1020,6 +1038,18 @@ def test_a_choosers_failure_refuses_its_runs_and_the_others_migrate(
 def test_a_class_is_no_chooser(forking):
     with pytest.raises(MigrationError, match="Asked is a class; name an instance"):
         _choose(resolve=["a=tests.migration_consumer:Asked"])
+
+
+def test_a_run_is_transformed_once_while_its_rows_stand(toy, monkeypatch, tmp_path):
+    """The detection pass's transform, the dry run before the seal and the transform
+    after it read the same rows: the step runs once."""
+    _seed(tmp_path, "8.0.0", "r1")
+    step = Tag("8.0.0", "8.1.0")
+    monkeypatch.setattr(migrations, "STEPS", (step,))
+    assert migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0", choices=NONE).moved == (
+        "r1",
+    )
+    assert step._calls == 1
 
 
 def test_a_step_without_facts_takes_none():

@@ -265,19 +265,19 @@ REFUSED = {
             r(2, "lifecycle.heartbeat", _beat(1, 0, 1, 2.0)),
             r(3, "lifecycle.heartbeat", _beat(1, 0, 1, 3.0)),
         ],
-        "M9: an in-claim rewind",
+        "an in-claim rewind",
     ),
     "null_name": (
         [r(1, "value", _value(1.0, 0, 1.0))],
-        "M9: a value with no name",
+        "a value with no name",
     ),
     "subscription": (
         [r(1, "control.subscribe", {"schedule": {}}, rid="s")],
-        "M9: a subscription's record",
+        "a subscription's record",
     ),
     "step_atom": (
         [r(1, "control.stop", {"from": {"step": 3}}, rid="h")],
-        "M9: a stop holding a step atom",
+        "a stop holding a step atom",
     ),
     "unreadable": (
         [r(1, "lifecycle.started", {"handle": "local://n1/11"})],
@@ -932,3 +932,13 @@ def test_a_body_that_is_not_json_is_a_crash_of_the_read(tmp_path):
         "in_0_2_0": ("crashed", "read"),
     }
     assert runs["after_claim"]["crash"]["kind"].startswith("JSONDecodeError")
+
+
+def test_a_verdict_difference_is_explained_only_by_a_site_in_the_latest_episode():
+    """The verdict reads the latest claim's episode: a verdict divergence that fired
+    in an earlier claim does not explain a difference in it."""
+    fired = {d.name: () for d in mr._VERDICT}
+    fired["attributed-death"] = (5,)
+    assert mr._explained(False, fired, mr._VERDICT, since=4) == ["attributed-death"]
+    assert mr._explained(False, fired, mr._VERDICT, since=6) == [mr.UNATTRIBUTED]
+    assert mr._explained(True, fired, mr._VERDICT, since=6) == []

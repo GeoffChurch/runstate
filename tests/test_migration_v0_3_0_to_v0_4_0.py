@@ -9,6 +9,7 @@ simulator history."""
 
 import dataclasses
 import functools
+import contextlib
 import itertools
 import json
 import os
@@ -43,12 +44,16 @@ from runstate.migrations.v0_3_0_to_v0_4_0 import (
     NEWEST,
     SPAN,
     UNSTATED,
+    DatedBy,
+    EndedAt,
     EndTime,
+    Undated,
     V0_3_0_to_V0_4_0,
     _Malformed,
     _Stopped,
     parse,
 )
+import runstate.migrations.v0_3_0_to_v0_4_0 as STEP
 import runstate.migrations.v0_3_0_to_v0_4_0_facts as V
 from tests.migration_goldens import (
     BACKSTOP,
@@ -97,36 +102,19 @@ class _Reference:
 
 REFERENCE = V.Configuration(
     {
-        "ref": V.WorkerFacts(
-            stride=frozenset({V.Stride.NEXT}),
-            loading=frozenset({V.Loading.LOADED}),
-            values=frozenset({V.Phase.PASS}),
-            beat_pos=frozenset({V.BeatPos.AFTER_CLOSE}),
-            beat_cov=frozenset({V.Covered.BEATEN}),
-            marker=frozenset(V.Marker),
-            closing=frozenset({V.Closing.OTHER}),
-            loop_end=frozenset({V.LoopEnd.AFTER_CLOSE}),
-            discards=frozenset({V.Discards.KEEPS}),
+        "ref": dataclasses.replace(
+            STEP.REFERENCE.workers["reference"],
             final_step=frozenset(V.FinalStep),
             error_final_step=frozenset({V.FinalStep.TICKED}),
-            cut_save=frozenset({V.CutSave.CLOSED}),
-            save_at=frozenset({V.SaveAt.IN_PASS, V.SaveAt.AT_CLOSE}),
-            save_cov=frozenset({V.Saved.SAVED}),
-            leave_save=frozenset({V.Saved.SAVED}),
-            load=frozenset({V.Load.FRESH, V.Load.NEWEST}),
-            rewinds=frozenset(),
-            takeover=frozenset({V.Takeover.DEAD}),
-            strays=frozenset(),
-            fold=frozenset({V.Fold.AT_CLAIM}),
-            honored=frozenset({V.Honored.EXIT}),
             watermark=frozenset(V.Watermark),
         )
     },
     {"tp": UNSTATED.third_parties["any"]},
     _Reference(),
 )
-"""The reference Worker's ``steps()`` with a save at each close, and any third
-party: narrow enough that a small log follows at the cap."""
+"""The shipped preset (``STEP.REFERENCE``) widened for these tests' hand-written logs:
+any ``final_step`` at an exit, the last tick at an error, any watermark, and any third
+party; narrow enough that a small log follows at the cap."""
 
 
 def under(configuration, **choosers):
@@ -260,16 +248,16 @@ def test_a_record_the_step_reads_must_be_0_3_0s(topic, body):
         ("lifecycle.stopped", {"reason": "x"}),
         ("value", {"value": 1.0}),
         ("lifecycle.heartbeat", _beat(0, 0, 9, 1.0)),  # names no claim
-        ("value", _value(0.5, 0, 1.0)),  # M9: a null name
-        ("control.subscribe", {}, "s"),  # M9: a subscription
-        ("lifecycle.bound", {"claim_seq": 1}, "s"),  # M9: a subscription's binding
-        ("control.stop", {"from": {"step": 3}}, "h"),  # M9: a step atom
+        ("value", _value(0.5, 0, 1.0)),  # a null name
+        ("control.subscribe", {}, "s"),  # a subscription
+        ("lifecycle.bound", {"claim_seq": 1}, "s"),  # a subscription's binding
+        ("control.stop", {"from": {"step": 3}}, "h"),  # a step atom
         ("launcher.terminated", {"reason": "exited"}, "L1"),  # not launcher-v0.4's
     ],
 )
 def test_a_refusal_names_the_first_record_the_step_cannot_read(first):
     """In seq order, whatever the topics: a malformed claim after it does not
-    pre-empt it, and M9 refuses at the boundary too."""
+    pre-empt it, and the boundary refuses it too."""
     rows = [
         r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
         r(2, *first),
@@ -391,7 +379,7 @@ def test_a_watermark_naming_a_heartbeat_with_a_step_is_refused(rows, beat, named
 
 @pytest.mark.parametrize("steps", [[0, 0], [0, 2, 1]], ids=["repeat", "below"])
 def test_an_in_claim_rewind_is_refused_by_seq(steps):
-    """M9: two heartbeats of one step in one claim, or a step below an earlier
+    """Two heartbeats of one step in one claim, or a step below an earlier
     one of the claim's: an in-claim rewind, which 0.3.0 did not record."""
     rows = [r(1, "lifecycle.started", _started("local://n1/11", 1.0))] + [
         r(2 + i, "lifecycle.heartbeat", _beat(s, 0, 1, 2.0 + i))
@@ -705,12 +693,12 @@ LAUNCHED_CLAIM = r(2, "lifecycle.started", _started(DEAD, 1.0), rid="L1")
 REAP = _terminated("exited", 1, None, 4.0)
 
 REFUSED = {
-    # M9: any subscription, with its samples, its binding and its unsubscribe
+    # what 0.4.0 cannot hold: any subscription, with its samples, its binding and its unsubscribe
     "subscribe": [CLAIM, r(2, "control.subscribe", {}, rid="s", name="loss")],
     "sample": [CLAIM, r(2, "value", _value(0.5, 0, 1.0), rid="s", name="loss")],
     "bound": [CLAIM, r(2, "lifecycle.bound", {"claim_seq": 1}, rid="s")],
     "unsubscribe": [CLAIM, r(2, "control.unsubscribe", {}, rid="s")],
-    # M9: a stop whose from holds a step atom, at any depth
+    # a stop whose from holds a step atom, at any depth
     "step_atom": [CLAIM, r(2, "control.stop", {"from": {"step": 3}}, rid="h")],
     "nested_step_atom": [
         CLAIM,
@@ -721,13 +709,13 @@ REFUSED = {
             rid="h",
         ),
     ],
-    # M9: two heartbeats of one step in one claim
+    # two heartbeats of one step in one claim
     "rewind": [
         CLAIM,
         r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
         r(3, "lifecycle.heartbeat", _beat(0, 0, 1, 3.0)),
     ],
-    # M9: a null name, which value-v0.3 cannot hold
+    # a null name, which value-v0.3 cannot hold
     "nameless": [CLAIM, r(2, "value", _value(0.5, 0, 1.0))],
     # The boundary: an empty name, which envelope-v0.2 forbids
     "empty_name": [CLAIM, r(2, "value", _value(0.5, 0, 1.0), name="")],
@@ -891,6 +879,7 @@ def test_the_step_imports_no_record_semantics():
         (1, None, "MigrationError"),
         (1, None, "Row"),
         (1, None, "v0_3_0_to_v0_4_0_engine"),
+        (1, None, "v0_3_0_to_v0_4_0_facts"),
         (2, "vocabulary.handle", "resolve"),
     }
     assert {level for level, module, _ in internal if module in own} == {1}
@@ -1055,11 +1044,25 @@ def test_newest_continues_the_newest_node_and_no_node_is_oldest():
 
 def test_the_end_time_choosers_and_the_answers_shape():
     lower, upper = (b.chooser for b in END_TIME.generic)
-    q = EndTime(1, 0, 2.0, (3.0, 4.0))
-    assert lower.choose(q) == 2.0 and upper.choose(q) == 3.0
-    assert upper.choose(EndTime(1, 0, 2.0, ())) == 2.0  # after the log's last record
-    assert END_TIME.check(q, 5) == 5.0
-    for bad in (1.0, "3", True):
+    ticks = (E.Tick(6, 6.0), E.Tick(8, 8.0))
+    both = EndTime(1, 0, ticks, Undated(2.0, (3.0, 4.0)))
+    assert lower.choose(both) == EndedAt(2.0) and upper.choose(both) == DatedBy(8)
+    undated = EndTime(1, 0, (), Undated(2.0, (3.0, 4.0)))
+    assert lower.choose(undated) == EndedAt(2.0)
+    assert upper.choose(undated) == EndedAt(3.0)
+    last = EndTime(1, 0, (), Undated(2.0, ()))  # after the log's last record
+    assert upper.choose(last) == EndedAt(2.0)
+    dated = EndTime(1, 0, ticks, None)
+    assert lower.choose(dated) == DatedBy(6) and upper.choose(dated) == DatedBy(8)
+    assert END_TIME.check(both, EndedAt(5)) == EndedAt(5.0)
+    assert END_TIME.check(both, DatedBy(6)) == DatedBy(6)
+    for q, bad in (
+        (both, EndedAt(1.0)),
+        (both, EndedAt("3")),
+        (both, DatedBy(7)),
+        (dated, EndedAt(9.0)),
+        (both, 5.0),
+    ):
         with pytest.raises(ValueError):
             END_TIME.check(q, bad)
 
@@ -1147,3 +1150,137 @@ def test_a_run_past_the_budget_is_refused_naming_the_record():
     )
     with pytest.raises(MigrationError, match=r"more than 3 states summed .* seq \d"):
         step.transform(GOLDEN["exit"], resolutions=tight, history=())
+
+
+def _a_claim_then_another():
+    return _dated(
+        [
+            r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+            r(2, "value", _value(0.9, 0, 2.0), name="loss"),
+            r(3, "lifecycle.heartbeat", _beat(0, 0, 1, 3.0)),
+            r(4, "lifecycle.started", _started("local://n1/12", 4.0)),
+        ]
+    )
+
+
+@pytest.mark.parametrize("run_on", [0, 2, 4])
+def test_a_run_on_cut_at_the_horizon_refuses_naming_the_claim_and_the_facts(run_on):
+    """--run-on is a limit, never a reading: with ``beat-cov`` and ``marker``
+    unstated, each claim may run any number of silent passes no record shows, so a
+    candidate reaches the horizon however far it lies, and the run is refused."""
+    unbounded = REFERENCE._replace(
+        workers={
+            "ref": dataclasses.replace(
+                REFERENCE.workers["ref"],
+                load=frozenset(V.Load) - {V.Load.OUTSIDE},
+                marker=frozenset(V.Marker),
+                beat_cov=frozenset(V.Covered),
+            )
+        }
+    )
+    res = under(unbounded, **CHOSEN)
+    res = res._replace(
+        assumptions=res.assumptions._replace(
+            limits=Limits(cap=3000, budget=6_000_000, run_on=run_on)
+        )
+    )
+    with pytest.raises(
+        MigrationError,
+        match=r"a candidate of claims 1, 4 runs on, or loads from outside, to the horizon "
+        rf"\({run_on} labels .* \(marker, beat-cov, stride\), or raise --run-on",
+    ):
+        step.transform(_a_claim_then_another(), resolutions=res, history=())
+
+
+def test_no_stated_facts_names_the_facts_to_state_and_the_preset():
+    """Under no stated facts a small log already exceeds the cap: the refusal says so,
+    names the facts that widen the pass, and points at the reference preset."""
+    with pytest.raises(MigrationError) as refused:
+        step.detect(
+            GOLDEN["exit"], assumptions=resolutions(step, NONE).assumptions, history=()
+        )
+    message = str(refused.value)
+    assert "under no stated facts (no --assume)" in message
+    assert "load, " in message and "stride" in message and "marker" in message
+    assert '§7, "The writer facts"' in message
+    assert "--assume runstate.migrations.v0_3_0_to_v0_4_0:REFERENCE" in message
+
+
+def test_the_reference_preset_is_named_on_the_command_line_and_migrates_its_log():
+    """A consumer names the preset, giving its word that its worker is the reference
+    Worker: the reference Worker's exit honouring its stop migrates under it."""
+    choices = parse_choices(
+        [step],
+        assume=["runstate.migrations.v0_3_0_to_v0_4_0:REFERENCE"],
+        resolve=["span=fewest", "origin=newest", "end-time=lower"],
+        accept=[],
+        limits=LIMITS,
+    )
+    res = resolutions(step, choices)
+    assert res.assumptions.facts is STEP.REFERENCE
+    out = step.transform(EXIT, resolutions=res, history=())
+    assert [x.topic for x in out.rows] == [
+        "lifecycle.started",
+        "lifecycle.commit",
+        "control.stop",
+        "lifecycle.stopped",
+    ]
+    assert json.loads(out.rows[3].body)["honored"] == ["halt"]
+    assert FACTS.describe(STEP.REFERENCE)["classifier"] == (
+        "runstate.migrations.v0_3_0_to_v0_4_0:Reference"
+    )
+
+
+def _the_reference_workers_log(kind):
+    """A log the reference Worker writes: four passes ``done`` (completed), ``plain``
+    (preempted), ``stop`` (honouring a stop at pass 1) or ``error`` (raising in pass
+    2); ``resume``, four passes then a second claim resuming at step 4."""
+    from runstate.channel import MemoryChannel
+    from runstate.worker import Worker
+
+    clock = itertools.count(1.0)
+    ch = MemoryChannel()
+
+    def passes(start, total):
+        with Worker(ch, now=lambda: next(clock)) as w:
+            w.set("lr", 0.1)
+            for s in w.steps(total, start=start):
+                w.emit("loss", 1.0 / (s + 1))
+                if kind == "stop" and s == 1:
+                    ch.send({}, topic="control.stop", request_id="halt")
+                if kind == "error" and s == 2:
+                    raise RuntimeError("boom")
+            if kind == "done":
+                w.stopped(completed=True)
+
+    with contextlib.suppress(RuntimeError):
+        passes(0, 4)
+    if kind == "resume":
+        passes(4, 6)
+    return [
+        Row(e.seq, e.topic, e.name, e.request_id, json.dumps(e.body), float(e.seq))
+        for e in ch.read(after=0)
+    ]
+
+
+@pytest.mark.parametrize("kind", ["done", "plain", "stop", "error", "resume"])
+def test_the_reference_workers_own_logs_migrate_under_the_preset(kind):
+    """The preset's word is the reference Worker's code: every log it writes is
+    written by some history the preset states, and nothing diverges but the value of
+    the pass an error cut, which no lineage holds."""
+    choices = parse_choices(
+        [step],
+        assume=["runstate.migrations.v0_3_0_to_v0_4_0:REFERENCE"],
+        resolve=["span=fewest", "origin=newest", "end-time=lower"],
+        accept=[],
+        limits=LIMITS,
+    )
+    res = resolutions(step, choices)
+    rows = _the_reference_workers_log(kind)
+    step.detect(rows, assumptions=res.assumptions, history=())
+    out = step.transform(rows, resolutions=res, history=())
+    fired = {d: seqs for d, seqs in out.divergences.items() if seqs}
+    assert fired == ({"unheld-value": (6,)} if kind == "error" else {})
+    assert [x.topic for x in out.rows].count("lifecycle.started") == (
+        2 if kind == "resume" else 1
+    )

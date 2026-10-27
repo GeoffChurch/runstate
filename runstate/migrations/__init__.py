@@ -15,6 +15,7 @@ import hashlib
 import inspect
 import json
 import time
+from collections import OrderedDict
 from importlib import metadata
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, Protocol
@@ -166,13 +167,70 @@ def chain(start: str, target: str) -> list[Step]:
     return out
 
 
+class Memo:
+    """The checked transforms a plan has run, by what each read (the rows, and the
+    earlier steps' word in the run's history), so a run's detection pass, its dry run
+    and its transform after the seal transform it once, as long as no record landed
+    between. Bounded by the rows it holds, oldest first out; it changes no result."""
+
+    ROWS = 2_000_000  # the output rows held at once: about a run's worth per 1,000
+
+    def __init__(self) -> None:
+        self._by: OrderedDict[str, Migrated] = OrderedDict()
+        self._rows = 0
+
+    @staticmethod
+    def key(rows: list[Row], history: History) -> str:
+        """What a transform reads: every row, and each earlier entry's word, not when
+        it was written nor by which code."""
+        word = [
+            (
+                e.from_format,
+                e.to_format,
+                e.limits,
+                e.assumed,
+                json.dumps(e.facts, sort_keys=True),
+                sorted(e.resolved.items(), key=repr),
+                sorted((p, sorted(r.items())) for p, r in e.readings.items()),
+                sorted(e.accepted.items()),
+            )
+            for e in history
+        ]
+        return hashlib.sha256(repr((tuple(rows), word)).encode()).hexdigest()
+
+    def get(self, key: str) -> Migrated | None:
+        found = self._by.get(key)
+        if found is not None:
+            self._by.move_to_end(key)
+        return found
+
+    def put(self, key: str, migrated: Migrated) -> None:
+        self._by[key] = migrated
+        self._rows += len(migrated.rows)
+        while self._rows > self.ROWS and len(self._by) > 1:
+            _, old = self._by.popitem(last=False)
+            self._rows -= len(old.rows)
+
+
 class Planned(NamedTuple):
     """One step as the user resolved it, built once, before any run is read: what the
-    store needs to migrate a run by it."""
+    store needs to migrate a run by it, and the transforms it has already run."""
 
     step: Step
     resolutions: Resolutions
     accepted: frozenset[Divergence]
+    memo: Memo
+
+    def migrated(self, rows: list[Row], history: History) -> Migrated:
+        """The checked transform of ``rows``, once per what it reads (``Memo``)."""
+        key = Memo.key(rows, history)
+        found = self.memo.get(key)
+        if found is None:
+            found = transform_checked(
+                self.step, rows, resolutions=self.resolutions, history=history
+            )
+            self.memo.put(key, found)
+        return found
 
     def diverged(self, migrated: Migrated) -> dict[Divergence, tuple[int, ...]]:
         """The divergences that fire on the run and that no ``--accept`` accepts."""
@@ -185,9 +243,7 @@ class Planned(NamedTuple):
     def run(self, rows: list[Row], history: History) -> Migrated:
         """The checked transform, refused where a divergence fires unaccepted: past
         the detection pass, only where records landed after it read the run."""
-        migrated = transform_checked(
-            self.step, rows, resolutions=self.resolutions, history=history
-        )
+        migrated = self.migrated(rows, history)
         diverged = self.diverged(migrated)
         if diverged:
             raise MigrationError(
@@ -286,9 +342,7 @@ def _detect(
         if open_:
             report.defer(steps[k + 1 :], run_id)
             return
-        migrated = transform_checked(
-            step, rows, resolutions=plan.resolutions, history=history
-        )
+        migrated = plan.migrated(rows, history)
         diverged = plan.diverged(migrated)
         for d, seqs in diverged.items():
             report.diverge(step, d, run_id, seqs)
@@ -313,7 +367,8 @@ def migrate(
     ``refuse`` is left untouched, and the others go on."""
     check_names(STEPS)
     plans = {
-        s.FROM: Planned(s, resolutions(s, choices), choices.accepted) for s in STEPS
+        s.FROM: Planned(s, resolutions(s, choices), choices.accepted, Memo())
+        for s in STEPS
     }
     todo = {
         rid: fmt for rid, fmt in sorted(store.formats_of(run_ids).items()) if fmt != to

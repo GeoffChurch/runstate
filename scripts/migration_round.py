@@ -100,6 +100,7 @@ from runstate import formats, observables  # noqa: E402
 from runstate import lineage as reads  # noqa: E402
 from runstate.channel import Envelope, MemoryChannel  # noqa: E402
 from runstate.migrations import (  # noqa: E402
+    Memo,
     MigrationError,
     Planned,
     Row,
@@ -334,11 +335,14 @@ _REFUSALS: dict[StepName, tuple[tuple[str, str], ...]] = {
         (r"is no topic format 0\.3\.0 defines under", "an undefined reserved topic"),
         (r"which format 0\.4\.0 pins null", "a field 0.4.0 pins null"),
         (r"does not read as", "an unreadable {topic}"),
-        (r"samples the subscription .*: M9 refuses it", "M9: a subscription's sample"),
-        (r"is a subscription's record: M9 refuses it", "M9: a subscription's record"),
-        (r"has no name, which value-v0\.3 requires", "M9: a value with no name"),
-        (r"holds a step atom", "M9: a stop holding a step atom"),
-        (r"an in-claim rewind \(M9\)", "M9: an in-claim rewind"),
+        (
+            r"samples the subscription .*: 0\.4\.0 cannot hold",
+            "a subscription's sample",
+        ),
+        (r"is a subscription's record: 0\.4\.0 cannot hold", "a subscription's record"),
+        (r"has no name, which value-v0\.3 requires", "a value with no name"),
+        (r"holds a step atom", "a stop holding a step atom"),
+        (r"an in-claim rewind", "an in-claim rewind"),
         (r"honors the empty id", "an empty honored id"),
         (r"has no request_id, which subscription-v0\.3", "a stop with no request id"),
         (
@@ -679,6 +683,7 @@ def _schema_errors(stack: Stack, e: Envelope) -> list[str]:
 
 # The divergences that change each read (the step's DIVERGENCES, §7).
 _SERIES = (
+    step04.REGISTER_VALUE,
     step04.UNHELD_VALUE,
     step04.RECOUNTED_VALUE,
     step04.OFF_HEAD_VALUE,
@@ -867,26 +872,40 @@ def series_result(
 
 
 def _explained(
-    same: bool, fired: Mapping[str, tuple[int, ...]], which: Sequence[Any]
+    same: bool,
+    fired: Mapping[str, tuple[int, ...]],
+    which: Sequence[Any],
+    *,
+    since: int,
 ) -> list[str]:
+    """The divergences of ``which`` that fired at a 0.3.0 seq at or after ``since``."""
     if same:
         return []
-    return [d.name for d in which if fired[d.name]] or [UNATTRIBUTED]
+    return [d.name for d in which if any(s >= since for s in fired[d.name])] or [
+        UNATTRIBUTED
+    ]
 
 
 def compare(
     old: OldReads,
     new: NewVerdict,
     series: SeriesResult,
+    env03: Sequence[Envelope],
     env04: Sequence[Envelope],
     fired: Mapping[str, tuple[int, ...]],
 ) -> Reads:
     """The verdict's outcomes (0.3.0's one taken as a one-element set) and the
     pending stops' ids, each difference explained by the divergences that change
-    that read and fired in the run, else unattributed."""
+    that read and fired where it reads, else unattributed. The verdict reads the
+    latest claim's episode, so only a site at or after its ``started`` explains it.
+    The stop fold reads the whole control plane, and a stop's answer may sit in any
+    claim, so any site in the run explains it."""
     same = old.verdict.same(new.verdict)
     verdict = VerdictResult(
-        old.verdict, new.verdict, same, _explained(same, fired, _VERDICT)
+        old.verdict,
+        new.verdict,
+        same,
+        _explained(same, fired, _VERDICT, since=_latest_claim(env03)),
     )
     by_seq = {e.seq: e for e in env04}
     old_ids = sorted(e.request_id for e in old.stops if e.request_id is not None)
@@ -894,8 +913,15 @@ def compare(
         rid for s in new.stops if (rid := by_seq[s].request_id) is not None
     )
     equal = old_ids == new_ids
-    stops = StopsResult(old_ids, new_ids, equal, _explained(equal, fired, _STOPS))
+    stops = StopsResult(
+        old_ids, new_ids, equal, _explained(equal, fired, _STOPS, since=0)
+    )
     return Reads(series, verdict, stops)
+
+
+def _latest_claim(env03: Sequence[Envelope]) -> int:
+    """The 0.3.0 seq of the log's latest ``started``, 0 for none."""
+    return max((e.seq for e in env03 if e.topic == "lifecycle.started"), default=0)
 
 
 # ----- Also -----------------------------------------------------------------------------
@@ -990,7 +1016,10 @@ class Configuration(NamedTuple):
 def configuration(choices: Choices) -> Configuration:
     return Configuration(
         choices,
-        {s.FROM: Planned(s, resolutions(s, choices), choices.accepted) for s in _STEPS},
+        {
+            s.FROM: Planned(s, resolutions(s, choices), choices.accepted, Memo())
+            for s in _STEPS
+        },
     )
 
 
@@ -1125,7 +1154,7 @@ def measure(
         rows_0_4_0=len(env04),
         schema_invalid=invalid,
         also={k: checks[k] for k in Also},
-        reads=compare(old, verdict, series, env04, migrated04.divergences),
+        reads=compare(old, verdict, series, env03, env04, migrated04.divergences),
     )
 
 

@@ -75,7 +75,7 @@ whole-number float such as 3.0, which 0.3.0's schemas accept. It refuses:
 - **a user's topic under ``supervisor.``,** valid 0.3.0, which left the
   prefix to users: 0.4.0 reserves it, and supervisor-v0.5 rejects any topic
   there but ``launched``, ``terminated`` and ``died``;
-- what M9 refuses:
+- what 0.4.0 cannot hold:
   - **a subscription's every record:** a ``control.subscribe``, a
     ``control.unsubscribe``, a ``lifecycle.bound``, which binds a lease to a
     claim, and a sample, a value bearing a ``request_id``. Refusing the
@@ -155,6 +155,7 @@ whole-number float such as 3.0, which 0.3.0's schemas accept. It refuses:
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections import defaultdict
 from collections.abc import Callable, Hashable, Mapping, Sequence
@@ -181,6 +182,7 @@ from .ambiguity import (
     Resolutions,
 )
 from .v0_3_0_to_v0_4_0_engine import domain
+from . import v0_3_0_to_v0_4_0_facts as V
 from .v0_3_0_to_v0_4_0_facts import (
     Born,
     Born020,
@@ -272,7 +274,7 @@ class _Beat:
 
 @dataclass(frozen=True)
 class _Value:
-    """A value (value-v0.2): its envelope ``name``, which M9 holds to a name
+    """A value (value-v0.2): its envelope ``name``, which the boundary holds to a name
     value-v0.3 can hold, and its body."""
 
     seq: int
@@ -466,8 +468,11 @@ def _beat(r: _Record) -> _Beat:
 
 
 def _refused(r: _Record, what: str) -> MigrationError:
-    """M9's refusal of a record: what 0.4.0 cannot hold, or holds otherwise."""
-    return MigrationError(f"the {r.topic} at seq {r.seq} {what}: M9 refuses it")
+    """A refusal of a record 0.4.0 cannot hold, or holds otherwise."""
+    return MigrationError(
+        f"the {r.topic} at seq {r.seq} {what}: 0.4.0 cannot hold it, so the step "
+        "refuses it"
+    )
 
 
 def _value(r: _Record) -> _Value:
@@ -549,7 +554,7 @@ def _atoms(condition: object) -> list[str] | None:
 
 def _trigger(r: _Record) -> None:
     """A stop as subscription-v0.3 pins it, a request id and at most a ``from``
-    Condition, which 0.4.0 keeps byte for byte. A step atom in it is M9's:
+    Condition, which 0.4.0 keeps byte for byte. A step atom in it is refused:
     subscription-v0.4 removed it."""
     if r.request_id is None:
         raise MigrationError(
@@ -616,7 +621,7 @@ class _Log:
     every nonzero ``consumed_seq`` names a record before its heartbeat, each
     claim's integer steps rise, and each launch has at most one
     ``terminated``. No record is a subscription's, and no stop holds a step
-    atom (M9)."""
+    atom."""
 
     records: tuple[_Record, ...]
     claims: tuple[_Started, ...]
@@ -756,21 +761,21 @@ class _Stepped(NamedTuple):
 
 
 def _not_a_rewind(seq: int, step: int, latest: _Stepped | None) -> None:
-    """M9: a claim's integer steps rise. A heartbeat at or below its claim's
+    """A claim's integer steps rise. A heartbeat at or below its claim's
     latest integer step is an in-claim rewind, which 0.4.0 records with a
     ``rewind`` and 0.3.0 did not record at all."""
     if latest is not None and step <= latest.step:
         raise MigrationError(
             f"the {_Topic.HEARTBEAT} at seq {seq} is at step {step}, at or below "
             f"step {latest.step} of its claim's heartbeat at seq {latest.seq}: "
-            "an in-claim rewind (M9), which this step refuses"
+            "an in-claim rewind: 0.4.0 cannot hold it, so the step refuses it"
         )
 
 
 def parse(rows: list[Row]) -> _Log:
     """One run's rows, in seq order, read as format 0.3.0 defines them. A
     refusal names the first record, by seq, that the step cannot read or that
-    M9 refuses."""
+    0.4.0 cannot hold."""
     records: list[_Record] = []
     claims: list[_Started] = []
     beats: list[_Beat] = []
@@ -917,6 +922,81 @@ def _describe(c: Configuration) -> Json:
 FACTS: Facts[Configuration] = Facts(Configuration, UNSTATED, _describe)
 
 
+class _ReferenceReader:
+    """The reference preset's reader: every claim the reference Worker's, every
+    ``stopped`` its own, a value with a step a pass's metric and one without a
+    register."""
+
+    def __init__(self, log: Sequence[Row]) -> None:
+        self._stepless = frozenset(
+            x.seq
+            for x in log
+            if x.topic == _Topic.VALUE and json.loads(x.body).get("step") is None
+        )
+
+    def started(self, seq: int) -> frozenset[Hashable]:
+        return frozenset({_REFERENCE})
+
+    def stopped(self, seq: int) -> frozenset[StopAnswer]:
+        return frozenset({OwnStop()})
+
+    def value(self, seq: int) -> frozenset[ValueRole]:
+        return frozenset({ValueRole(Role.PASS, seq in self._stepless)})
+
+
+class Reference:
+    """The reference preset's classifier."""
+
+    def read(self, log: Sequence[Row]) -> LogReader:
+        return _ReferenceReader(log)
+
+
+_REFERENCE = "reference"
+
+REFERENCE = Configuration(
+    {
+        _REFERENCE: WorkerFacts(
+            stride=frozenset({V.Stride.NEXT}),
+            loading=frozenset({V.Loading.LOADED}),
+            values=frozenset({V.Phase.PASS}),
+            beat_pos=frozenset({V.BeatPos.AFTER_CLOSE}),
+            beat_cov=frozenset({V.Covered.BEATEN}),
+            marker=frozenset(V.Marker),
+            closing=frozenset({V.Closing.OTHER}),
+            loop_end=frozenset({V.LoopEnd.AFTER_CLOSE}),
+            discards=frozenset({V.Discards.KEEPS}),
+            final_step=frozenset({V.FinalStep.YIELDED}),
+            error_final_step=frozenset({V.FinalStep.YIELDED}),
+            cut_save=frozenset({V.CutSave.CLOSED}),
+            save_at=frozenset({V.SaveAt.IN_PASS, V.SaveAt.AT_CLOSE}),
+            save_cov=frozenset({V.Saved.SAVED}),
+            leave_save=frozenset({V.Saved.SAVED}),
+            load=frozenset({V.Load.FRESH, V.Load.NEWEST}),
+            rewinds=frozenset(),
+            takeover=frozenset({V.Takeover.DEAD}),
+            strays=frozenset(),
+            fold=frozenset({V.Fold.AT_CLAIM}),
+            honored=frozenset({V.Honored.EXIT}),
+            watermark=frozenset({V.Watermark.CONTROL}),
+        )
+    },
+    {},
+    Reference(),
+)
+"""A preset a consumer may name, ``--assume runstate.migrations.v0_3_0_to_v0_4_0:
+REFERENCE``, giving its word that its writers are these (§7, "The writer facts"): the
+reference Worker's ``steps()`` loop (each pass ticked after its close, values written
+inside a pass, the last pass begun as any exit's ``final_step``, every stop it took
+in honoured, the newest control record its drain read as its watermark), its consumer saving each pass's completed state inside it or at its close
+and loading the newest save or nothing; and no third party, every ``stopped`` the
+worker's own.
+
+It is the word of the code as it stands, so it can be false of a run: a control
+record landing between a drain and its heartbeat breaks ``watermark``, a consumer
+resuming from an older save breaks ``load``. A false word is not silent: no history
+writes the log, and the refusal names the fact to relax."""
+
+
 # ----- the projections, and their built-in choosers ----------------------------------
 
 
@@ -1024,45 +1104,102 @@ ORIGIN = Projection[E.Question, E.Answer](
 )
 
 
-class EndTime(NamedTuple):
-    """An undated commit's end time (§7, "The end-time fork"): its lower bound, the
-    newest ``t`` among its claim's own records at or before it, and its upper bounds,
-    the ``t`` of the record after each gap it may stand in, earliest first."""
+class Undated(NamedTuple):
+    """The undated reading's bounds: the newest ``t`` among the commit's claim's own
+    records at or before where it stands (``low``), and the ``t`` of the record after
+    each gap it may stand in, earliest first (``highs``)."""
 
-    claim: int
-    nth: int
     low: float
     highs: tuple[float, ...]
 
 
+class EndTime(NamedTuple):
+    """When an iteration ended (§7, "The end-time fork"): the commit, by its claim's
+    seq and its index in the claim; the ticks that may date it, a heartbeat that follows
+    its pass's close at once; and, where the log also allows no tick to date it, the
+    bounds of a time the chooser gives (``undated``, else None)."""
+
+    claim: int
+    nth: int
+    ticks: tuple[E.Tick, ...]
+    undated: Undated | None
+
+
+class DatedBy(NamedTuple):
+    """The reading: the tick at ``seq`` dates the commit, which takes its place and
+    its ``t``."""
+
+    seq: int
+
+
+class EndedAt(NamedTuple):
+    """The reading: no tick dates the commit, which ended at ``t``."""
+
+    t: float
+
+
+EndTimeReading = DatedBy | EndedAt
+
+
 class _Lower:
-    def choose(self, question: EndTime) -> float:
-        return E.lower(E.CommitId(question.claim, question.nth), question.low, ())
+    """``lower``: the earliest end the log allows: undated, at its lower bound, where
+    that is offered, else the earliest tick."""
+
+    def choose(self, question: EndTime) -> EndTimeReading:
+        if question.undated is not None:
+            return EndedAt(question.undated.low)
+        return DatedBy(question.ticks[0].seq)
 
 
 class _Upper:
-    def choose(self, question: EndTime) -> float:
-        c = E.CommitId(question.claim, question.nth)
-        return E.upper(c, question.low, question.highs)
+    """``upper``: the latest end the log allows: the latest tick, where one is offered,
+    else undated, at the ``t`` of the next record after it (its lower bound after the
+    log's last record)."""
+
+    def choose(self, question: EndTime) -> EndTimeReading:
+        if question.ticks:
+            return DatedBy(question.ticks[-1].seq)
+        assert question.undated is not None  # a question offers one or the other
+        u = question.undated
+        return EndedAt(u.highs[0] if u.highs else u.low)
 
 
-def _end_time(question: EndTime, answer: object) -> float:
-    """An end time is a number at or after the lower bound: a commit is written after
-    the values it holds (§3)."""
-    if isinstance(answer, bool) or not isinstance(answer, (int, float)):
-        raise ValueError(f"{answer!r} is no time")
-    if answer < question.low:
-        raise ValueError(f"{answer} precedes the lower bound {question.low}")
-    return float(answer)
+def _end_time(question: EndTime, answer: object) -> EndTimeReading:
+    """A tick the question offers, or, where it offers the undated reading, a time at
+    or after its lower bound: a commit is written after the values it holds (§3)."""
+    if isinstance(answer, DatedBy):
+        if answer.seq not in {t.seq for t in question.ticks}:
+            raise ValueError(f"no tick at seq {answer.seq} may date it")
+        return answer
+    if isinstance(answer, EndedAt):
+        if question.undated is None:
+            raise ValueError("a tick dates it on every candidate")
+        t = answer.t
+        if isinstance(t, bool) or not isinstance(t, (int, float)):
+            raise ValueError(f"{t!r} is no time")
+        if t < question.undated.low:
+            raise ValueError(f"{t} precedes the lower bound {question.undated.low}")
+        return EndedAt(float(t))
+    raise ValueError(f"{answer!r} is neither DatedBy nor EndedAt")
 
 
-END_TIME = Projection[EndTime, float](
+END_TIME = Projection[EndTime, EndTimeReading](
     name="end-time",
-    definition="when an iteration ended that no record dates",
-    readings="a time at or after the newest of its claim's own records before it",
+    definition="when an iteration ended: at a tick that may date it, or at a time no "
+    "record dates",
+    readings="DatedBy(seq), a tick the log offers; or EndedAt(t), at or after the newest "
+    "of its claim's own records before it",
     generic=(
-        Builtin("lower", _Lower(), "the newest t of the claim's own records before it"),
-        Builtin("upper", _Upper(), "the t of the next record after it"),
+        Builtin(
+            "lower",
+            _Lower(),
+            "the earliest end: undated at its lower bound, else the earliest tick",
+        ),
+        Builtin(
+            "upper",
+            _Upper(),
+            "the latest end: the latest tick, else the t of the next record after it",
+        ),
     ),
     check=_end_time,
 )
@@ -1076,9 +1213,14 @@ _BY_KEY: Mapping[E.Projection, Projection[E.Question, E.Answer]] = {
 
 # ----- the divergences -----------------------------------------------------------------
 
+REGISTER_VALUE = Divergence(
+    "register-value",
+    "series: a value with a step the classifier answers a register (a stray's "
+    "included), which no node holds, leaves every lineage",
+)
 UNHELD_VALUE = Divergence(
     "unheld-value",
-    "series: a value with a step that no node holds (loading, a register, a stray, "
+    "series: a value with a step that no node holds though no register (loading, "
     "after its claim's end, of an iteration that never finished) leaves every lineage",
 )
 RECOUNTED_VALUE = Divergence(
@@ -1135,6 +1277,7 @@ UNATTRIBUTED_REAP = Divergence(
 )
 
 DIVERGENCES: tuple[Divergence, ...] = (
+    REGISTER_VALUE,
     UNHELD_VALUE,
     RECOUNTED_VALUE,
     OFF_HEAD_VALUE,
@@ -1177,21 +1320,73 @@ def _unread(log: _Log, configuration: Configuration) -> None:
             )
 
 
+class _Built(NamedTuple):
+    """What a run's candidates are a function of."""
+
+    rows: str  # the rows' digest
+    configuration: Configuration
+    limits: Limits
+    born: Born
+
+    def same(self, other: _Built) -> bool:
+        return (
+            self.rows == other.rows
+            and self.configuration is other.configuration
+            and self.limits == other.limits
+            and self.born == other.born
+        )
+
+
+def _digest(rows: Sequence[Row]) -> str:
+    return hashlib.sha256(repr(tuple(rows)).encode()).hexdigest()
+
+
+_SILENT = ("marker", "beat-cov", "stride")
+"""The facts that bound how many passes a worker may run that no record shows."""
+
+
 def _candidates(
-    rows: list[Row], configuration: Configuration, limits: Limits, history: History
+    rows: list[Row], configuration: Configuration, limits: Limits, born: Born
 ) -> E.Graph:
-    """The engine's candidates, or the run's refusal naming why: what blame proves
-    or leaves undecided, or the record past a limit."""
-    born = _born(history)
-    g = E.candidates(
-        rows,
-        configuration,
-        born=born,
-        cap=limits.cap,
-        budget=limits.budget,
-        run_on=limits.run_on,
-    )
+    """The engine's candidates, or the run's refusal naming why: past a limit (under no
+    stated facts, which facts to state); a candidate cut at the horizon (which facts
+    bound it); or no history at all (what blame proves or leaves undecided)."""
+    try:
+        g = E.candidates(
+            rows,
+            configuration,
+            born=born,
+            cap=limits.cap,
+            budget=limits.budget,
+            run_on=limits.run_on,
+        )
+    except E.Refused as exc:
+        if configuration is not UNSTATED:
+            raise
+        widening = sorted(
+            {n.value.replace("_", "-") for fs in E.FEEDS.values() for n in fs}
+        )
+        raise MigrationError(
+            f"{exc}, under no stated facts (no --assume): every fact's whole domain "
+            "leaves this log's writers too much to follow. State its writers' facts "
+            '(commits-and-lineage.md §7, "The writer facts"); those that widen the '
+            f"pass are {', '.join(widening)}. A consumer whose worker is runstate's "
+            "reference Worker may name that preset: --assume "
+            "runstate.migrations.v0_3_0_to_v0_4_0:REFERENCE"
+        ) from exc
     if E.admits(g):
+        cut = sorted(E.reaching(g))
+        if cut:
+            claims = ("claim " if len(cut) == 1 else "claims ") + ", ".join(
+                map(str, cut)
+            )
+            raise MigrationError(
+                f"a candidate of {claims} runs on, or loads from "
+                f"outside, to the horizon ({limits.run_on} labels a claim past the "
+                "log's steps, --run-on): a longer run that no record pins was cut "
+                "there, so how far it ran is open. State the facts that bound silent "
+                f"passes ({', '.join(_SILENT)}), or raise --run-on"
+            )
         return g
     at = (
         f"the record at seq {g.ctx.recs[g.stopped_at].seq}"
@@ -1226,19 +1421,40 @@ def _site(g: E.Graph, key: E.Key) -> int:
     return g.ctx.recs[key.position].seq
 
 
+_RECORDED = (
+    E.Resumes,
+    E.PDied,
+    E.PWithdrawal,
+    E.PTerminated,
+    E.PCommit,
+    E.PHold,
+    E.PRewind,
+    E.PExit,
+    E.CommitId,
+    E.ExitId,
+    E.Gaps,
+    Exited,
+    Killed,
+    DatedBy,
+    EndedAt,
+)
+"""The types a reading is made of, the engine's reads and the end-time answers: each
+recorded by its type's name and its fields."""
+
+
 def _jsonable(x: object) -> Json:
     """A reading as the manifest records it: each piece by its type and fields."""
-    if isinstance(x, tuple) and hasattr(x, "_fields"):
-        return {
-            "is": type(x).__name__,
-            **{f: _jsonable(getattr(x, f)) for f in x._fields},
-        }
+    if isinstance(x, _RECORDED):
+        fields_: dict[str, Json] = {"is": type(x).__name__}
+        for k, v in x._asdict().items():
+            fields_[k] = _jsonable(v)
+        return fields_
     if isinstance(x, tuple):
+        if type(x) is not tuple:
+            raise TypeError(f"a reading holds a {type(x).__name__}, no recorded type")
         return [_jsonable(v) for v in x]
     if isinstance(x, Enum):
         return cast(Json, x.value)
-    if is_dataclass(x):
-        return {"is": type(x).__name__}
     return cast(Json, x)
 
 
@@ -1253,8 +1469,9 @@ class _Decided(NamedTuple):
 
 
 def _decide(g: E.Graph, resolutions: Resolutions) -> _Decided:
-    """The decode (§7, the decode order), each fork routed to its projection's chooser,
-    then the end-time fork of every commit no record dates."""
+    """The decode (§7, the decode order), each fork routed to its projection's chooser;
+    then the end-time fork, commit by commit, subjects from the last claim back: which
+    tick dates it, if any, else when it ended."""
     readings: dict[str, dict[int, dict[str, Json]]] = {
         p.name: {} for p in (END, SPAN, ORIGIN, END_TIME)
     }
@@ -1267,21 +1484,50 @@ def _decide(g: E.Graph, resolutions: Resolutions) -> _Decided:
         )
         return a
 
-    decided = E.decode(g, route, cap=resolutions.assumptions.limits.cap)
-    parts = E.written(decided)
+    g = E.decode(g, route, cap=resolutions.assumptions.limits.cap)
+    ended: dict[E.CommitId, float] = {}
+    datings = E.datings(g)
+    for c in sorted(datings, key=lambda c: (-c.claim, c.nth)):
+        d = datings[c]
+        if not d.undated and len(d.ticks) == 1:
+            continue  # the log dates it: a proven site
+        bounds = None
+        if d.undated:
+            at = E.place(g.ctx, _flat(E.written(E.undated(g, c))), c)
+            bounds = Undated(at.low, at.highs)
+        answer = END_TIME.ask(resolutions, EndTime(c.claim, c.nth, d.ticks, bounds))
+        readings[END_TIME.name].setdefault(c.claim, {})[str(c.nth)] = _jsonable(answer)
+        if isinstance(answer, DatedBy):
+            (tick,) = [t for t in d.ticks if t.seq == answer.seq]
+            narrowed = E.dated_by(g, c, tick)
+        else:
+            ended[c] = answer.t
+            narrowed = E.undated(g, c) if d.ticks else g
+        if narrowed is not g:
+            g = narrowed
+            datings = E.datings(g)
+    parts = E.written(g)
 
     def when(c: E.CommitId, low: float, highs: tuple[float, ...]) -> float:
-        t = END_TIME.ask(resolutions, EndTime(c.claim, c.nth, low, highs))
-        readings[END_TIME.name].setdefault(c.claim, {})[str(c.nth)] = t
+        t = ended[c]  # every commit the written path leaves undated was asked
+        if t < low:
+            raise MigrationError(
+                f"the end-time reading {t} of claim {c.claim}'s commit {c.nth} precedes "
+                f"its lower bound {low} where it is written"
+            )
         return t
 
-    lineage = E.lineage(g.ctx, [p for part in parts for p in part], when=when)
+    lineage = E.lineage(g.ctx, _flat(parts), when=when)
     return _Decided(
         g.ctx,
         parts,
         lineage,
         {p: {s: dict(v) for s, v in by.items()} for p, by in readings.items()},
     )
+
+
+def _flat(parts: Sequence[Sequence[E.Piece]]) -> list[E.Piece]:
+    return [p for part in parts for p in part]
 
 
 # ----- the 0.4.0 records ------------------------------------------------------------
@@ -1322,18 +1568,40 @@ def _reaped(how: Exited | Killed) -> str:
             assert_never(how)
 
 
-class _Ref(NamedTuple):
-    """A seq-valued field before renumbering: an input record by its 0.3.0 seq, or a
-    node by its name."""
+class SeqRef(NamedTuple):
+    """A seq-valued field naming an input record, by its 0.3.0 seq."""
 
-    seq: int | None = None
-    node: E.Node | None = None
+    seq: int
+
+
+class NodeRef(NamedTuple):
+    """A seq-valued field naming a node of the decided lineage."""
+
+    node: E.Node
+
+
+@dataclass(frozen=True)
+class NewestControl:
+    """An undated commit's ``consumed_seq``: the newest control record before it, 0 for
+    none, since its native drain reads there."""
+
+
+_NEWEST_CONTROL = NewestControl()
+
+
+def _watermark(seq: int) -> SeqRef | int:
+    """A heartbeat's ``consumed_seq``: 0 names nothing, and stays 0."""
+    return 0 if seq == 0 else SeqRef(seq)
+
+
+def _node(node: E.Node | None) -> NodeRef | None:
+    return None if node is None else NodeRef(node)
 
 
 @dataclass(frozen=True)
 class _Out:
     """One output record before renumbering: its topic, envelope and body, whose
-    seq-valued fields are ``_Ref``s; the input record it stands for, if any; the node
+    seq-valued fields are ``SeqRef``s and ``NodeRef``s; the input record it stands for, if any; the node
     it is, if any; and its ``created_at``."""
 
     topic: str
@@ -1398,7 +1666,7 @@ def _layout(log: _Log, d: _Decided) -> list[_Out]:
         if (c.node.claim, c.node.nth) in dated:
             continue
         at, _ = low(c.node.claim, gaps[c.node])
-        after[at].append(((c.node.claim, c.node.nth, 1), _commit(c, None)))
+        after[at].append(((c.node.claim, c.node.nth, 1), _commit(c, _NEWEST_CONTROL)))
     for p in _pieces(parts, E.PRewind):
         at, t = low(p.claim, p.gaps)
         rw = _Out(
@@ -1406,8 +1674,8 @@ def _layout(log: _Log, d: _Decided) -> list[_Out]:
             None,
             None,
             {
-                "claim_seq": _Ref(seq=p.claim),
-                "resume_from": _Ref(node=p.target),
+                "claim_seq": SeqRef(p.claim),
+                "resume_from": _node(p.target),
                 "t": t,
             },
             None,
@@ -1442,7 +1710,7 @@ def _layout(log: _Log, d: _Decided) -> list[_Out]:
                         {
                             "handle": s.handle,
                             "t": s.t,
-                            "resume_from": _Ref(node=starts[s.seq]),
+                            "resume_from": _node(starts[s.seq]),
                             "sources": [],
                         },
                         None,
@@ -1456,7 +1724,7 @@ def _layout(log: _Log, d: _Decided) -> list[_Out]:
                 node = by_tick[r.seq]
                 mine.append(
                     replace(
-                        _commit(commits[node], _Ref(seq=b.consumed_seq)),
+                        _commit(commits[node], _watermark(b.consumed_seq)),
                         stands_for=r.seq,
                         created_at=r.created_at,
                     )
@@ -1470,8 +1738,8 @@ def _layout(log: _Log, d: _Decided) -> list[_Out]:
                         None,
                         None,
                         {
-                            "claim_seq": _Ref(seq=beat.writer),
-                            "consumed_seq": _Ref(seq=b.consumed_seq),
+                            "claim_seq": SeqRef(beat.writer),
+                            "consumed_seq": _watermark(b.consumed_seq),
                             "t": b.t,
                         },
                         None,
@@ -1566,7 +1834,7 @@ def _one_launched(log: _Log, reap: _Terminated) -> None:
         )
 
 
-def _commit(c: E.Commit, consumed: _Ref | None) -> _Out:
+def _commit(c: E.Commit, consumed: SeqRef | int | NewestControl) -> _Out:
     """A commit: dated, by its tick (whose watermark it keeps), or not, its ``t`` the
     end-time chooser's and its watermark the newest control record before it
     (``consumed`` None, filled where it is numbered)."""
@@ -1575,10 +1843,10 @@ def _commit(c: E.Commit, consumed: _Ref | None) -> _Out:
         None,
         None,
         {
-            "claim_seq": _Ref(seq=c.node.claim),
+            "claim_seq": SeqRef(c.node.claim),
             "consumed_seq": consumed,
-            "parent": _Ref(node=c.parent),
-            "values": [_Ref(seq=v) for v in c.values],
+            "parent": _node(c.parent),
+            "values": [SeqRef(v) for v in c.values],
             "fired": [],
             "expired": [],
             "t": c.t,
@@ -1596,7 +1864,7 @@ def _died(p: E.PDied, evidence: str, t: float) -> _Out:
         None,
         None,
         {
-            "claim_seq": _Ref(seq=p.claim),
+            "claim_seq": SeqRef(p.claim),
             "outcome": p.outcome.value,
             "evidence": evidence,
             "t": t,
@@ -1630,13 +1898,11 @@ def _stopped(
                     {
                         "completed": stop.completed,
                         "error": stop.error,
-                        "claim_seq": _Ref(seq=x.node.claim),
+                        "claim_seq": SeqRef(x.node.claim),
                         "honored": list(x.honored),
-                        "parent": _Ref(node=x.parent),
+                        "parent": _node(x.parent),
                         "values": (
-                            None
-                            if x.values is None
-                            else [_Ref(seq=v) for v in x.values]
+                            None if x.values is None else [SeqRef(v) for v in x.values]
                         ),
                         "fired": [],
                         "expired": [],
@@ -1694,7 +1960,7 @@ def _dumps(body: Mapping[str, Any]) -> str:
 
 
 def _numbered(outs: Sequence[_Out], log: _Log) -> list[Row]:
-    """THE RENUMBERING, once (M7): each record its 0.4.0 seq, gapless from 1, and every
+    """THE RENUMBERING, once: each record its 0.4.0 seq, gapless from 1, and every
     seq-valued field renamed to the record it named. A watermark of 0 stays 0; an
     undated commit's is the newest control record before it."""
     seqs: dict[int, int] = {}
@@ -1707,13 +1973,9 @@ def _numbered(outs: Sequence[_Out], log: _Log) -> list[Row]:
 
     records = {r.seq: r for r in log.records}
 
-    def ref(x: _Ref, o: _Out, field: str) -> int | None:
-        if x.node is not None:
+    def ref(x: SeqRef | NodeRef, o: _Out, field: str) -> int:
+        if isinstance(x, NodeRef):
             return nodes[x.node]
-        if x.seq is None:
-            return None
-        if x.seq == 0 and field == "consumed_seq":
-            return 0  # a watermark that names nothing
         if x.seq not in seqs:
             whose = (
                 f"the {records[o.stands_for].topic} at seq {o.stands_for}"
@@ -1731,12 +1993,14 @@ def _numbered(outs: Sequence[_Out], log: _Log) -> list[Row]:
         assert o.body is not None
         out: dict[str, Any] = {}
         for k, v in o.body.items():
-            if isinstance(v, _Ref):
+            if isinstance(v, (SeqRef, NodeRef)):
                 out[k] = ref(v, o, k)
-            elif isinstance(v, list):
-                out[k] = [ref(x, o, k) if isinstance(x, _Ref) else x for x in v]
-            elif v is None and k == "consumed_seq":
+            elif isinstance(v, NewestControl):
                 out[k] = control
+            elif isinstance(v, list):
+                out[k] = [
+                    ref(x, o, k) if isinstance(x, (SeqRef, NodeRef)) else x for x in v
+                ]
             else:
                 out[k] = v
         return out
@@ -1813,13 +2077,16 @@ def _diverged(log: _Log, d: _Decided) -> dict[str, tuple[int, ...]]:
         n: sum(isinstance(m, E.CommitId) for m in _chain(n, parents)) for n in parents
     }
     on_head = set(_chain(_head(lin), parents))
+    # each value's writer's answer on the written path: a register or not
+    registers = {p.seq: p.register for p in _pieces(parts, E.PValue)}
     values = {v.seq: v for v in log.values}
     for v in log.values:
         if v.step is None:
             continue
         node = held.get(v.seq)
         if node is None:
-            sites[UNHELD_VALUE.name].add(v.seq)
+            unheld = REGISTER_VALUE if registers[v.seq] else UNHELD_VALUE
+            sites[unheld.name].add(v.seq)
             continue
         if count[node] - 1 != v.step:
             sites[RECOUNTED_VALUE.name].add(v.seq)
@@ -1895,6 +2162,25 @@ class V0_3_0_to_V0_4_0:
     )
     DIVERGENCES: ClassVar[tuple[Divergence, ...]] = DIVERGENCES
 
+    def __init__(self) -> None:
+        # the last run's candidates, so detect and transform build them once; it
+        # changes no result
+        self._last: tuple[_Built, E.Graph] | None = None
+
+    def _candidates(
+        self,
+        rows: list[Row],
+        configuration: Configuration,
+        limits: Limits,
+        history: History,
+    ) -> E.Graph:
+        built = _Built(_digest(rows), configuration, limits, _born(history))
+        if self._last is not None and self._last[0].same(built):
+            return self._last[1]
+        g = _candidates(rows, configuration, limits, built.born)
+        self._last = (built, g)
+        return g
+
     def is_live(self, rows: list[Row]) -> bool:
         """0.3.0's liveness, by name: the latest claim is live unless a
         ``stopped`` after it names it by ``claim_seq``, whoever wrote it and
@@ -1925,34 +2211,24 @@ class V0_3_0_to_V0_4_0:
         self, rows: list[Row], *, assumptions: Assumptions, history: History
     ) -> Detected:
         """The forks of End, Span and Origin, each with the facts whose statement
-        could settle it; and an end-time fork for each claim with a commit that no
-        record dates on any candidate."""
+        could settle it; and an end-time fork for each commit that some candidate
+        holds and no tick dates on every one, or that several ticks may date, at its
+        claim's seq."""
         configuration = FACTS.of(assumptions)
         _unread(parse(rows), configuration)
-        g = _candidates(rows, configuration, assumptions.limits, history)
+        g = self._candidates(rows, configuration, assumptions.limits, history)
         keys = E.forked(g, cap=assumptions.limits.cap)
         forks: dict[str, list[Fork]] = {p.name: [] for p in self.PROJECTIONS}
         for k in sorted(keys, key=lambda k: (k.position, k.subject)):
             forks[_BY_KEY[k.projection].name].append(
-                Fork(_site(g, k), E.settled_by(configuration, k))
+                Fork(_site(g, k), E.settled_by(configuration, E.FEEDS[k.projection]))
             )
-        dated = {
-            (p.claim, p.nth)
-            for es in g.live
-            for e in es
-            for p in e.pieces
-            if isinstance(p, E.PDate)
-        }
-        undated = sorted(
-            {
-                p.claim
-                for es in g.live
-                for e in es
-                for p in e.pieces
-                if isinstance(p, E.PCommit) and (p.claim, p.nth) not in dated
-            }
-        )
-        forks[END_TIME.name] = [Fork(c, ()) for c in undated]
+        dates = E.settled_by(configuration, E.DATES)
+        forks[END_TIME.name] = [
+            Fork(c.claim, dates)
+            for c, d in sorted(E.datings(g).items())
+            if d.undated or len(d.ticks) > 1
+        ]
         return Detected({n: tuple(fs) for n, fs in forks.items()})
 
     def transform(
@@ -1967,7 +2243,7 @@ class V0_3_0_to_V0_4_0:
         configuration = FACTS.of(a)
         log = parse(rows)
         _unread(log, configuration)
-        g = _candidates(rows, configuration, a.limits, history)
+        g = self._candidates(rows, configuration, a.limits, history)
         d = _decide(g, resolutions)
         out = _numbered(_layout(log, d), log)
         return Migrated(out, d.readings, _diverged(log, d))
