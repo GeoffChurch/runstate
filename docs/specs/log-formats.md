@@ -258,9 +258,9 @@ against one consumer's writers, except as that consumer states facts about them:
 - a reading of a consumer's texts or shapes is that consumer's chooser or classifier, and its "preset" is
   its own set of `--assume`, `--resolve` and `--accept` choices, kept in the consumer;
 - a step may ship a **constructor of its facts** for a reference implementation's writers, as the 0.3.0 →
-  0.4.0 step ships `reference(*, closing)` for the reference `Worker` (`commits-and-lineage.md` §7, "The
-  writer facts"). It states only what that implementation's code fixes, and takes what the consumer's own
-  code decides as required arguments or leaves it unstated. It pins no convention: a consumer's `--assume`
+  0.4.0 step ships `reference(*, ...)` for the reference `Worker` (`commits-and-lineage.md` §7, "The writer
+  facts"). It states only what that implementation's code fixes, and takes every fact the consumer's own code
+  decides as a required argument, so none is left wide unasked. It pins no convention: a consumer's `--assume`
   names its own call of it, which is that consumer's word that its writers are those, recorded in the
   manifest as any statement is;
 - a malformed record that a step reads is refused unless a chooser for its projection reads it, and one of a
@@ -323,9 +323,9 @@ manifest's readings mean:
   all its forks;
 - the 0.3.0 → 0.4.0 step's engine (`v0_3_0_to_v0_4_0_engine.py`'s `decode`) asks per fork: its subjects
   from the last claim back to the first, then the run; for each subject its End, then its Span, then its
-  Origin; within a projection, position by position in log order. After each answer only the candidates
-  through it are kept, and the next fork is read off what remains. Its `end-time` forks are asked last, on
-  the decided lineage, commit by commit. The last claim goes first because its
+  Origin, then its Writer; within a projection, position by position in log order. After each answer only
+  the candidates through it are kept, and the next fork is read off what remains. Its `end-time` forks are
+  asked last, on the decided lineage, commit by commit, then rewind by rewind. The last claim goes first because its
   records are the ones a resumed worker and every current read rest on; the claims before it are read in
   the light of what it was.
 

@@ -980,21 +980,22 @@ names a 0.4.0 encoding, since how 0.4.0 writes a history down is runstate's (abo
 nothing states the whole domain of every fact, with a classifier that answers every record's whole domain;
 under it all but the smallest logs exceed the cap, so a consumer states its writers' facts, and the refusal
 says so, naming the facts that widen the pass.
-- **The reference preset** is a constructor a consumer may start from, `reference(*, closing)` in
-  `v0_3_0_to_v0_4_0.py`: a consumer's `--assume` names its own call of it (`FACTS = reference(closing=...)`
-  in its module), which is its word that every claim's worker is runstate's reference `Worker` driven by
-  `steps()`, and that no third party writes a `stopped`. It states only what `worker.py` fixes: each pass
-  labelled one past the last and ticked after its body, the loop continuing only past a tick; no value with a
-  step before the first pass or after the exit; any exit's `final_step` the last pass begun; every stop taken
-  in honoured, the fold at the claim, the newest control record its drain read as its watermark; no rewind;
-  a takeover only of a halted worker. What the consumer's own code decides it does not state. `closing`,
-  whether a pass's body ends with a value, is a required argument, since it decides whether a tick dates a
-  commit. The rest is left whole: whether a value is written after the loop (`values`), how the loop is left
-  (`loop-end`), every fact of the consumer's checkpoints (`discards`, `cut-save`, `save-at`, `save-cov`,
-  `leave-save`, `load`), and other writers' values (`strays`); a consumer narrows them on the facts the call
-  returns, as all but the smallest logs need. The preset can be false of a run, as a control record landing
-  between a drain and its heartbeat breaks `watermark`; a false word is not silent, since no history then
-  writes the log and the refusal names the fact to relax.
+- **The reference preset** is a constructor a consumer builds its statement with, `reference(*, ...)` in
+  `v0_3_0_to_v0_4_0.py`: a consumer's `--assume` names its own call of it (`FACTS = reference(...)` in its
+  module), which is its word that every claim's worker is runstate's reference `Worker` driven by `steps()`,
+  and that no third party writes a `stopped`. It states what `worker.py` fixes: each pass labelled one past
+  the last and ticked after its body, the loop continuing only past a tick; no value with a step before the
+  first pass, so no clock before it is ever read (`loading` empty), or after the exit; any exit's
+  `final_step` the last pass begun; every stop taken in honoured, the fold at the claim, the newest control
+  record its drain read as its watermark; no rewind; a takeover only of a halted worker. Every fact the
+  consumer's own code decides is a required keyword-only argument, and none is left wide unasked: how a
+  pass's body ends (`closing`), whether a pass that closes silently wrote a value (`marker`), where its values
+  are written within what the Worker allows (`values`, inside a pass or after the loop), how its loop is left
+  (`loop_end`), its checkpoints (`discards`, `cut_save`, `save_at`, `save_cov`, `leave_save`, `load`), and
+  other writers' values (`strays`). A consumer that does not know one passes its whole domain, `every(...)`,
+  explicitly. The preset can be false of a run, as a control record landing between a drain and its
+  heartbeat breaks `watermark`; a false word is not silent, since no history then writes the log and the
+  refusal names the fact to relax.
 - **A fact classifies** every element of one kind, a claim or one kind of act its writer makes, into one class
   of a closed domain. It is defined over what the writer does, never over a pattern in the log.
 - **A statement** is a subset of the domain: every such element of the writer's claims falls in it. It is true
@@ -1369,21 +1370,26 @@ run for what speaks for no claim. A fork's site is the record at which its readi
 | projection | what it reads | the generic built-ins |
 |---|---|---|
 | `end` | how a claim ended: its death reports (outcome and source), the withdrawals its stops make, and the run's process ends | `refuse` |
-| `span` | what a claim did: its commits (each its parent, the values it holds and the boundary it stands after), its rewinds, its exit node (kind, parent, values, `honored`), and the heartbeats its worker wrote | `fewest`, `most`, `refuse` |
+| `span` | what a claim did: its commits (each its parent, the values it holds and the boundary it stands after), its rewinds, and its exit node (kind, parent, values, `honored`) | `fewest`, `most`, `refuse` |
 | `origin` | where a claim's state came from: its `resume_from`, a node of the run or none | `newest`, `refuse` |
-| `end-time` | each commit not dated by one tick on every candidate: which tick dates it, or where it stands undated and when it ended ("The end-time fork") | `lower`, `upper`, `refuse` |
+| `writer` | the heartbeats a claim's worker wrote, in a log born in 0.2.0, where any live worker may have written one | `newest`, `refuse` |
+| `end-time` | each commit not dated by one tick on every candidate, and each rewind: which tick dates it, or where it stands undated and when it ended ("The end-time fork") | `lower`, `upper`, `refuse` |
 
 - **`fewest`** takes the answer that finishes the fewest iterations, then holds the fewest values, then
-  continues the newest nodes, then writes the most heartbeats; **`most`** the most iterations, then the most
-  values, then the newest nodes, then the most heartbeats. The decode asks the last claim first, so the last
-  key reads a heartbeat whose writer is open as the newest live worker's. Each refuses where answers tie,
-  since a built-in never picks among answers it cannot tell apart.
-- **Who wrote a heartbeat is Span's** because 0.4.0 writes it as the heartbeat's `claim_seq`, and folds read
-  that: `await_consumed` takes a claim's watermarks from its commits and heartbeats, and the Watcher seeds a
-  claim's staleness from its records, heartbeats among them (§5). A log born in 0.3.0 names the writer, so
-  the reading never forks there; in a log born in 0.2.0 any live worker may have written a heartbeat.
-- **`newest`** takes the answer that continues the newest node offered: a later claim's before an earlier
-  one's, within a claim a later commit's, its exit newest, and no node oldest. It refuses a tie.
+  continues the newest nodes; **`most`** the most iterations, then the most values, then the newest nodes.
+  Each refuses where answers tie, since a built-in never picks among answers it cannot tell apart.
+- **`newest`**, for `origin`, takes the answer that continues the newest node offered: a later claim's before
+  an earlier one's, within a claim a later commit's, its exit newest, and no node oldest. It refuses a tie.
+- **Who wrote a heartbeat is its own projection, `writer`,** because 0.4.0 writes it as the heartbeat's
+  `claim_seq`, and folds read that: `await_consumed` takes a claim's watermarks from its commits and
+  heartbeats, and the Watcher seeds a claim's staleness from its records, heartbeats among them (§5). It is a
+  different question from what a claim did, so Span's built-ins never weigh it. A log born in 0.3.0 names the
+  writer, so the projection never forks there; in a log born in 0.2.0 any live worker may have written a
+  heartbeat. A fork is read per claim at the heartbeat: did this claim's worker write it. Its facts are those
+  that decide which workers live at the heartbeat and whose clock a tick's step matches (`takeover`,
+  `loop-end`, `stride`, `beat-pos`, `beat-cov`).
+- **`newest`**, for `writer`, takes the answer in which the claim asked wrote the heartbeat. The decode asks
+  the last claim first, so it reads a heartbeat whose writer is open as the newest live worker's.
 - **A consumer's chooser** answers with one of the fork's own answers, each carrying a witness lineage. The
   question gives it the subject, the projection, the site and every answer.
 - **A fork names the facts that could settle it:** each fact that feeds its projection, or the cross-claim
@@ -1391,8 +1397,8 @@ run for what speaks for no claim. A fork's site is the record at which its readi
   over-approximation: stating one may leave the fork open.
 
 **The decode order is a rule** (`log-formats.md` §6): subjects from the last claim back to the first, then the
-run; for each subject its `end`, then its `span`, then its `origin`; within a projection, position by position
-in log order. After each answer only the candidates through it are kept, and the next fork is read off what
+run; for each subject its `end`, then its `span`, then its `origin`, then its `writer`, which no other reading
+depends on; within a projection, position by position in log order. After each answer only the candidates through it are kept, and the next fork is read off what
 remains. The end-time forks are asked last, on the decided lineage, commit by commit. The last claim goes
 first because its records are the ones a resumed worker and every current read rest on; the claims before it
 are read in the light of what it was. Candidates that remain after the whole decode write the same records:
@@ -1408,7 +1414,7 @@ where 0.3.0 put it (E2), and a record the step adds stands just after the record
 - **A heartbeat with an integer step that dates a commit,** the tick that follows its pass's close at once,
   becomes that commit, in its place, keeping its `t`, its claim and its `consumed_seq`. **Every other
   heartbeat** becomes a `lifecycle.heartbeat` without `step`, naming the claim of the worker the lineage says
-  wrote it (Span's reading).
+  wrote it (the `writer` reading).
 - **A commit no record dates,** and a rewind, stands just after the latest of the first record of the interval
   it stands in and its claim's own last record before it: the place its end-time reading names. Its `t` is
   its end-time reading's; a commit's `consumed_seq` is the newest control record before it, 0 for none, since
