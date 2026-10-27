@@ -988,9 +988,13 @@ says so, naming the facts that widen the pass.
   exit's `final_step` the last pass begun; every stop taken in honoured, the fold at the claim, the newest
   control record its drain read as its watermark; no rewind; a takeover only of a halted worker. Every fact
   the consumer's own code decides is a required keyword-only argument, and none is left wide unasked. A
-  claim's first pass is labelled by the consumer's `steps(start=…)`, so `stride` is its word: `next` where it
-  resumes at the loaded step plus one and starts fresh at 0, `skip` where it starts above either (the fact
-  has one class per pass, so a consumer whose first pass skips states both, and the engine then admits a skip
+  claim's first pass is labelled by the consumer's `steps(start=…)`, whose `start` its checkpoint code reads,
+  so two facts are its word: `resume`, where that is against the save it loaded (the Worker's docs resume
+  "from checkpoint step k" with `start=k`, and what a save labelled `k` holds is the consumer's: pass `k`'s
+  result, which `start=k` then runs again, `at`, or the state before pass `k`, which it continues, `after`;
+  stated both, each resumed claim's origin forks and the `origin` chooser decides), and `stride`, `next`
+  where the first pass is at the floor so set, or at 0 when fresh, `skip` where it is above (the fact has
+  one class per pass, so a consumer whose first pass skips states both, and the engine then admits a skip
   at any pass). What its clock reads before its first pass (`loading`) matters where its code writes a record
   before the first pass: `emit` raises there, but its own message sends caller-clocked points to
   `channel.send`, as a resumed claim logging the score of the checkpoint it loaded at that checkpoint's step;
@@ -1002,10 +1006,7 @@ says so, naming the facts that widen the pass.
   other writers' values (`strays`). A consumer that does not know one passes its whole domain, `every(...)`,
   explicitly. The preset can be false of a run, as a control record landing between a drain and its
   heartbeat breaks `watermark`; a false word is not silent, since no history then writes the log and the
-  refusal names the fact to relax. One resume the vocabulary has no class for: a first pass at the loaded
-  step itself (`steps(start=k)` after loading a save of pass `k`), since the writer model labels a resumed
-  claim's passes above the step it loaded (`stride`); such a run has no history under a `load` without
-  `outside`, and under `outside` reads as a load of a checkpoint no claim saved, at the step before.
+  refusal names the fact to relax.
 - **A fact classifies** every element of one kind, a claim or one kind of act its writer makes, into one class
   of a closed domain. It is defined over what the writer does, never over a pattern in the log.
 - **A statement** is a subset of the domain: every such element of the writer's claims falls in it. It is true
@@ -1062,6 +1063,7 @@ loop treats as done. A **tick** is a heartbeat with a step. A **save** is of sta
 | fact | one element per | classes | feeds |
 |---|---|---|---|
 | `stride` | pass | `next`, `skip` | Span; Origin; the cross-claim state |
+| `resume` | load of a saved state: a claim's (`load` `newest`, `older` or `outside`) or a rewind's (`rewinds` `newest` or `older`) | `after`, `at` | Span; Origin; the cross-claim state |
 | `loading` | claim whose clock before its first pass labels a value or fills a `counter` `final_step` | `loaded`, `zero` | Span; Origin |
 | `values` | value the worker writes with a step | `loading`, `pass`, `between`, `teardown` | Span; End |
 | `beat-pos` | tick | `opening`, `inside`, `after-close` | Span |
@@ -1084,9 +1086,20 @@ loop treats as done. A **tick** is a heartbeat with a step. A **save** is of sta
 | `honored` | own `stopped`, in a log born in 0.3.0 | `exit`, `ticks` | none: an encoding |
 | `watermark` | heartbeat | `control`, `claimed`, `tail` | none: an encoding |
 
-- **`stride`:** whether the worker labels a pass with the step after the state it continues from (`next`): 0
-  when fresh, the loaded state's step plus one, the last pass's plus one, or a rewound state's plus one.
-  Otherwise it labels it above that (`skip`).
+- **`stride`:** whether the worker labels a pass with its floor (`next`): 0 when fresh, the last pass's step plus
+  one, or the step a load or a rewind resumes at (`resume`). Otherwise it labels it above that (`skip`).
+- **`resume`:** where the worker's next pass resumes after it loads a saved state, by its claim's load or a
+  rewind, against the saved state's step: the step after it (`after`), the saved pass standing; or the step
+  itself (`at`), the saved pass run again. It is what the consumer's checkpoint code fixes: what the step it
+  labels a save with means, and which step it hands its loop. A save holds a pass's completed state, its step
+  that pass's. A worker that labels the save with the pass it completed and resumes at the label plus one, or
+  labels it with the next pass to run and resumes at the label, resumes `after`. One that labels the save with
+  the pass it completed and resumes at the label, as the reference Worker's documented `steps(start=k)` after
+  loading "checkpoint step k" does, resumes `at`. The two write one 0.3.0 log, a resumed claim whose first pass
+  is labelled `k`, and name different `resume_from` commits: pass `k - 1`'s under `after`, pass `k`'s under
+  `at`. Stated both, the claim's origin forks between the two saves, and the `origin` chooser decides. A
+  rewind resumed `at` runs the rewound pass again: with a tick, an in-claim rewind the boundary refuses; without
+  one, a value at a step the claim passed, which the rewind's target then tells apart (`rewinds`).
 - **`loading`:** what the worker's step clock reads before its first pass: the loaded state's step (`loaded`,
   0 when fresh), or 0 whatever it loaded (`zero`). That clock labels the values it writes before its first
   pass, and fills a `counter` `final_step` when no pass finished.
@@ -1166,8 +1179,12 @@ loop treats as done. A **tick** is a heartbeat with a step. A **save** is of sta
 fact's element is narrowed so that it speaks only where the others do not: `marker` above, and `via` below,
 which covers only a release of a claim whose worker had exited. `save-cov` and `leave-save` ask one question
 of different passes, and a writer can answer them differently: mycooc saves on a throttle, and always when it
-leaves its loop. No fact is derivable from the others: `counter` reads `loading`'s clock, but which convention
-a writer uses is its own.
+leaves its loop. `resume` and `stride` are two facts because they classify different acts, a load and a pass:
+`resume` says where a load sets the floor, `stride` whether a pass is at the floor. Where a first pass fits
+both readings of one load (pass `k`'s save resumed `after` with a `next` pass at `k + 1`, or `at` with a
+`skip` to `k + 1`), the two histories write one lineage, since the floor is read only before the pass and no
+piece carries a label, and the engine keeps one state for them. No fact is derivable from the others:
+`counter` reads `loading`'s clock, but which convention a writer uses is its own.
 
 **The third-party facts,** stated per third-party writer version, which the classifier names for each
 `stopped`:
@@ -1358,9 +1375,10 @@ fact's class (above), and where no stated fact settles it, a fork (below).
 
 Three limits bound the pass, each set where the command line is read and recorded with every migrated run
 (`log-formats.md` §6), since each can decide a result: the **cap**, the states one layer may hold; the
-**budget**, the states held summed over every layer, which the pass's memory follows (about 420 bytes a state,
-its edges included; the decode then narrows the built graph in place of itself, holding the graph and the one
-its answer leaves, and its peak stayed under the build's on every graph measured, `cli.py`); and the
+**budget**, the states held summed over every layer, which the pass's memory follows (about 420 bytes a state
+built, its edges included; the decode then narrows the graph in place of itself, holding it and the one its
+answer leaves and sharing every edge the answer keeps, and its peak is the pass's: about 1.2 times the build's
+on a long log, under it on a wide one, `cli.py` gives the measurements); and the
 **run-on**, how many labels past the log's highest step a run of passes that no record pins is followed, per
 claim. Each is a limit, never a reading. A run past the cap or the budget is
 refused, naming the record; under no stated facts the refusal names the facts that widen the pass and the
@@ -1372,12 +1390,12 @@ that can clear it: `marker` (no pass closes silently), `closing` (none closes bu
 so what the horizon can change is how many commits a run makes, and a commit past it needs a pass begun past
 it: a pass begins at its worker's floor or above, and a floor past the horizon comes from a close at the
 horizon, which is the marked case where the loop may continue, or from a load or a rewind of a state at the
-horizon, which admits no pass and whose step nothing reads. A pass begun at the horizon itself and cut before
-its close makes at most one commit, at the horizon, where `cut-save` says its save finished it, which the
-bound admits; the passes the horizon forbids all follow a marked close. A load sets the worker's clock, which
-Origin does not read; a later record that reads the clock (a step, a `final_step`, a save a later claim
-loads) bounds it by its own label, below the horizon, so a load at the horizon is on no candidate where its
-step is read.
+horizon resumed `after` it, which admits no pass and whose step nothing reads; one resumed `at` it sets the
+floor at the horizon. A pass begun at the horizon itself and cut before its close makes at most one commit,
+at the horizon, where `cut-save` says its save finished it, which the bound admits; the passes the horizon
+forbids all follow a marked close. A load sets the worker's clock, which Origin does not read; a later record
+that reads the clock (a step, a `final_step`, a save a later claim loads) bounds it by its own label, below
+the horizon, so a load at the horizon is on no candidate where its step is read.
 
 **Names an earlier step filled** are read by the log's birth, which the root's manifest records: an entry of
 the 0.2.0 → 0.3.0 step means the log was born in 0.2.0 (above), and no entry means born in 0.3.0. That holds

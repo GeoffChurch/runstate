@@ -109,7 +109,11 @@ started, reapable only via the launcher's liveness — which breaks fire-and-for
   bound), not a control message. `control.stop` stays for *early* stop.
 - **Resume + run-absolute step = a worker convention** (not a runstate mechanism):
   the relaunched worker reads its `run_id`-keyed checkpoint, restores at step `k`,
-  and continues `value.step` at `k, k+1, …`. runstate gives no directory.
+  and continues `value.step` at `k, k+1, …`. runstate gives no directory. Which
+  state a checkpoint labelled `k` holds, step `k`'s completed state (so that a
+  resume at `k` runs step `k` again) or the state before it, is the worker's
+  convention too; the log does not show it, so the 0.3.0 → 0.4.0 migration asks
+  (`commits-and-lineage.md` §7, the `resume` fact).
 - **`Worker.steps(start=k, total=N)`** affordance: run-absolute resume *with*
   correct lifecycle bookkeeping (`final_step` / commanded `stop_reason` — *the
   latter since removed by `completed-opt-in.md`; a commanded stop now reads as

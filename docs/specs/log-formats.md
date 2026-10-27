@@ -418,10 +418,12 @@ fires nowhere is allowed, so a consumer can keep one set of choices for every ro
 - **`--budget N`** bounds the states a step may hold on one run summed over every layer, which its memory
   follows, refusing the run past it, naming the record; the cap alone does not, since a log holding a layer
   near the cap over many more records would exceed a machine's memory (about 16 GB at 3,000 over 13,000).
-  The command line's value is 6,000,000 states, about 2.5 GB: it clears 664f8795's 4.3 million by two fifths.
-  The build is the peak: the decode that follows narrows the built graph in place of itself, holding the
-  graph and the one its answer leaves, and its working set fits in what the build freed (`cli.py` gives the
-  measurements).
+  The command line's value is 6,000,000 states, about 2.5 GB built: it clears 664f8795's 4.3 million by two
+  fifths. The pass's peak is the decode's on a long log: it narrows the built graph in place of itself,
+  holding the graph and the one its answer leaves, every edge the answer keeps shared between them, and its
+  own structures (the keys' windows, each layer's edge tuples) put its peak at about 1.2 times the build's on
+  a log of 2,000 records, about 3 GB at the budget; on a wide log the build's per-layer worlds are the peak
+  (`cli.py` gives the measurements).
 - **`--run-on N`** is how many labels past the log's highest step a run of passes that no record pins is
   followed, per claim: the 0.3.0 → 0.4.0 engine's horizon, past which such a run is cut. It decides how many
   silent passes a reading may hold, so it is set at the edge and recorded too. The command line's value is
@@ -432,6 +434,14 @@ A run refused by a chooser, by `refuse`, or by a step's own refusal is left unto
 on. (A divergence refuses a run here only where records landed after the pass read it.) `migrate()` returns
 the runs it moved and every refusal, each naming its run, and the command prints them and exits nonzero
 when any run was refused.
+
+**An unexpected error fails its run only.** Any other error a step raises on a run is a bug in the step, not
+a refusal, and it is reported as such, with the run and the error: in the detection pass, beside the
+questions and refusals of the same round (the pass writes nothing, so the run is left as it was); in the
+migration pass, as a run left unmigrated where the error came before its seal, or sealed and not copied where
+it came after (on SQLite, a re-run completes it, as any failure after the seal; on Postgres the transaction
+rolls the seal back). The invocation goes on to the other runs, keeps every refusal and report it has, and
+exits nonzero; the command prints each failed run's error with its traceback.
 
 **The manifest** records, for each root, what every migrated run was migrated under. The log formats are
 untouched: the manifest belongs to the root, outside every format's address.
@@ -551,6 +561,10 @@ On SQLite and Postgres (Memory has no addresses):
 - an old-style writer appending to a sealed log fails loudly;
 - chaining through test-only steps (`FROM`→`TO` edges, no-path and two-steps-from-one-format refusals);
 - a migration that fails midway leaves the run sealed and unmigrated, and a retry completes it;
+- an unexpected error in a step fails its run only: in the detection pass it is kept in the report beside
+  the questions, nothing migrated; in the migration pass the run is reported unmigrated or, after its seal,
+  sealed and not copied (rolled back on Postgres), the other runs are moved, and the command prints the
+  error with its traceback and exits nonzero;
 - refusing a run with a live episode;
 - the atomic publish: no reader ever sees a partial new log;
 - the ambiguity mechanism (§6, "Ambiguity"; `tests/test_migrate.py`, with toy steps that fork, take facts
