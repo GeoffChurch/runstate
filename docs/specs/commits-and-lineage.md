@@ -1297,6 +1297,21 @@ rewind).
   those on which it is undated, stands just after a, and has its lower bound at or before t. Every path kept
   then writes the commit where the answer places it, at a time its bound allows there, and a later answer
   only narrows them, so the step never writes a time below the bound of the path it writes.
+- **Its cost.** Each question is about one act of one claim, so the step reads it, and keeps the candidates
+  through its answer, over the act's window of records, never the whole log. The window runs from the first
+  record that holds the act or a tick dating it, or, if earlier, the first record at or before the act's
+  latest interval end that is the claim's own on some candidates and not on others; it ends at the last
+  record that holds the act or that interval end, whichever is later. An index of where each act and each
+  claim's own records stand is built once, off the candidates the other forks leave, and stays true of
+  every set an answer leaves, since an answer only removes candidates. The window gives what a pass over the
+  whole log gives. Before it, no candidate holds the act or a tick dating it, and each record that could be
+  the claim's own last record before the act is the claim's own on every candidate or on none: so every
+  candidate stands alike there, none is removed, and where the act's place may begin is known from the index
+  alone. After it, nothing more is decided: the act stands at no record there, and every candidate that holds
+  it has its place settled by the window's end, so those kept are those the window kept, followed until they
+  reach every record's states again. On a log of one long claim, whose acts each stand at a record or two,
+  the stage costs about one pass over the log, not one per commit. A claim whose own records are open early
+  (a heartbeat any of several live workers may have written) widens its acts' windows back to that record.
 - **The reading's key** is the claim's seq, then the commit's index in its claim from 0, or `rewind <e>` for
   the rewind that closed the claim's epoch e: `{"end-time": {"<claim seq>": {"<n>": {"is": "DatedBy", "seq":
   s} | {"is": "EndedAt", "after": a, "t": t}}}}`. The other
