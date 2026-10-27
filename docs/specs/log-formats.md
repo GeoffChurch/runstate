@@ -418,11 +418,11 @@ fires nowhere is allowed, so a consumer can keep one set of choices for every ro
 - **`--budget N`** bounds the states a step may hold on one run summed over every layer, which its memory
   follows, refusing the run past it, naming the record; the cap alone does not, since a log holding a layer
   near the cap over many more records would exceed a machine's memory (about 16 GB at 3,000 over 13,000).
-  The command line's value is 6,000,000 states, about 2.5 GB built: it clears 664f8795's 4.3 million by two
-  fifths. The pass's peak is the decode's on a long log: it narrows the built graph in place of itself,
+  The command line's value is 5,000,000 states, about 2.1 GB built: it clears 664f8795's 4.3 million by a
+  sixth. The pass's peak is the decode's on a long log: it narrows the built graph in place of itself,
   holding the graph and the one its answer leaves, every edge the answer keeps shared between them, and its
   own structures (the keys' windows, each layer's edge tuples) put its peak at about 1.2 times the build's on
-  a log of 2,000 records, about 3 GB at the budget; on a wide log the build's per-layer worlds are the peak
+  a log of 2,000 records, about 2.5 GB at the budget; on a wide log the build's per-layer worlds are the peak
   (`cli.py` gives the measurements).
 - **`--run-on N`** is how many labels past the log's highest step a run of passes that no record pins is
   followed, per claim: the 0.3.0 → 0.4.0 engine's horizon, past which such a run is cut. It decides how many

@@ -15,6 +15,7 @@ import hashlib
 import inspect
 import json
 import time
+import traceback
 from importlib import metadata
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, Protocol
@@ -311,7 +312,8 @@ class RunErrored(NamedTuple):
     """A run an unexpected error failed, a bug in a step rather than a refusal: the
     error, the format its log stood at, and whether that log had been sealed when it
     failed, so that it is sealed and not copied (a re-run completes it, log-formats.md
-    §6), or left unmigrated as it was."""
+    §6), or left unmigrated as it was. The error's frames are cleared when it is caught,
+    so a failed run holds none of its graph while the invocation goes on."""
 
     run_id: str
     error: Exception
@@ -417,6 +419,7 @@ def migrate(
         except MigrationError as exc:
             refused[rid] = f"run {rid!r}: {exc}"
         except Exception as exc:  # the detection pass writes nothing: unsealed
+            traceback.clear_frames(exc.__traceback__)
             errored[rid] = RunErrored(rid, exc, fmt, sealed=False)
     if report.open():
         report.refused.update(refused)
@@ -433,6 +436,7 @@ def migrate(
                 refused[rid] = f"run {rid!r}: {exc}"
                 break
             except Exception as exc:
+                traceback.clear_frames(exc.__traceback__)
                 sealed = store.sealed(step.FROM, rid)
                 errored[rid] = RunErrored(rid, exc, step.FROM, sealed)
                 break

@@ -1014,8 +1014,8 @@ def reference(
     ``start=k`` continues it (``after``, and ``resume_from`` names pass ``k - 1``'s
     commit); a consumer that saves pass ``k``'s result as ``k`` and resumes at ``k +
     1`` also resumes ``after``. The two write one log, so a consumer stating both has an
-    Origin fork at each resumed claim, which detection reports and the origin chooser
-    decides. ``stride`` is ``next`` where the first pass is at the floor (the resume
+    Origin fork at each resumed claim whose ``load`` admits both saves, which detection
+    reports and the origin chooser decides. ``stride`` is ``next`` where the first pass is at the floor (the resume
     point, or 0 when fresh), ``skip`` where it is above (the fact has one class per
     pass, so a consumer whose first pass skips states both, and the engine then admits a
     skip at any pass). What its clock reads before its first pass (``loading``) matters

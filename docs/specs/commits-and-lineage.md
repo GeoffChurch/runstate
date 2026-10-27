@@ -992,20 +992,20 @@ says so, naming the facts that widen the pass.
   so two facts are its word: `resume`, where that is against the save it loaded (the Worker's docs resume
   "from checkpoint step k" with `start=k`, and what a save labelled `k` holds is the consumer's: pass `k`'s
   result, which `start=k` then runs again, `at`, or the state before pass `k`, which it continues, `after`;
-  stated both, each resumed claim's origin forks and the `origin` chooser decides), and `stride`, `next`
-  where the first pass is at the floor so set, or at 0 when fresh, `skip` where it is above (the fact has
-  one class per pass, so a consumer whose first pass skips states both, and the engine then admits a skip
-  at any pass). What its clock reads before its first pass (`loading`) matters where its code writes a record
-  before the first pass: `emit` raises there, but its own message sends caller-clocked points to
-  `channel.send`, as a resumed claim logging the score of the checkpoint it loaded at that checkpoint's step;
-  so the preset takes `loading`, and `values` in every phase (the Worker itself writes only inside a pass,
-  and a subscription's samples are refused at the boundary, so any other phase is such a raw send), and its
-  classifier answers a value every worker role for the two to narrow. The rest: how a pass's body ends
-  (`closing`), whether a pass that closes silently wrote a value (`marker`), how its loop is left
-  (`loop_end`), its checkpoints (`discards`, `cut_save`, `save_at`, `save_cov`, `leave_save`, `load`), and
-  other writers' values (`strays`). A consumer that does not know one passes its whole domain, `every(...)`,
-  explicitly. The preset can be false of a run, as a control record landing between a drain and its
-  heartbeat breaks `watermark`; a false word is not silent, since no history then writes the log and the
+  stated both, a resumed claim whose `load` admits both saves forks at its origin and the `origin` chooser
+  decides), and `stride`, `next` where the first pass is at the floor so set, or at 0 when fresh, `skip` where
+  it is above (the fact has one class per pass, so a consumer whose first pass skips states both, and the
+  engine then admits a skip at any pass). What its clock reads before its first pass (`loading`) matters where
+  its code writes a record before the first pass: `emit` raises there, but its own message sends
+  caller-clocked points to `channel.send`, as a resumed claim logging the score of the checkpoint it loaded at
+  that checkpoint's step; so the preset takes `loading`, and `values` in every phase (the Worker itself writes
+  only inside a pass, and a subscription's samples are refused at the boundary, so any other phase is such a
+  raw send), and its classifier answers a value every worker role for the two to narrow. The rest: how a
+  pass's body ends (`closing`), whether a pass that closes silently wrote a value (`marker`), how its loop is
+  left (`loop_end`), its checkpoints (`discards`, `cut_save`, `save_at`, `save_cov`, `leave_save`, `load`),
+  and other writers' values (`strays`). A consumer that does not know one passes its whole domain,
+  `every(...)`, explicitly. The preset can be false of a run, as a control record landing between a drain and
+  its heartbeat breaks `watermark`; a false word is not silent, since no history then writes the log and the
   refusal names the fact to relax.
 - **A fact classifies** every element of one kind, a claim or one kind of act its writer makes, into one class
   of a closed domain. It is defined over what the writer does, never over a pattern in the log.

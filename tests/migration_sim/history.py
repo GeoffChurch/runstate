@@ -42,9 +42,8 @@ worker's alone and carries no error; the claim gate (a claim starts once the
 latest has ended or its worker is judged dead, which a takeover's verdict may
 judge wrongly); the step clock; and run-absolute steps (a resumed claim's labels
 continue from the state it loaded, at its step or above as its ``resume`` says).
-Where a native exit's ``honored`` would
-differ from its 0.3.0 list outside §7's stated costs, the truth raises
-``truth.Residue``.
+Where a native exit's ``honored`` would differ from its 0.3.0 list outside §7's
+stated costs, the truth raises ``truth.Residue``.
 
 A claim loads a save that exists when it claims. 0.3.0's own order is claim,
 then load (run-episodes.md §3); §6's order chooses first; the two read alike

@@ -30,9 +30,9 @@ CAP = 3000
 
 # The states a step may hold on one run summed over every layer, which memory follows:
 # the cap bounds one layer, so a long log can hold a near-cap layer for thousands of
-# records (about 16 GB at 3,000 over 13,000). 6,000,000 states is about 2.5 GB built,
-# clearing the most measured on the real corpora (664f8795's 4.3 million, 1.8 GB) by two
-# fifths. The pass's peak is the decode's on a long log: it narrows the built graph in
+# records (about 16 GB at 3,000 over 13,000). 5,000,000 states is about 2.1 GB built,
+# clearing the most measured on the real corpora (664f8795's 4.3 million, 1.8 GB) by a
+# sixth. The pass's peak is the decode's on a long log: it narrows the built graph in
 # place of itself, holding the graph and the one its answer leaves, every edge the
 # answer keeps shared between them, and its own structures (the keys' windows, each
 # layer's edge tuples) are a fixed share of the graph's. Measured by tracemalloc
@@ -41,8 +41,8 @@ CAP = 3000
 # decode shared edges); 3,984 records and 19,645 states, 32.0 against 27.5 MB (1.16). On
 # a wide log the build's per-layer worlds are the peak: 36 records and 5,534 states, a
 # layer of 1,354, 11.8 MB built against a 1.9 MB transform. So at the budget the peak is
-# about 3 GB.
-BUDGET = 6_000_000
+# about 2.5 GB.
+BUDGET = 5_000_000
 
 # How many labels past the log's highest step a run of passes that no record pins is
 # followed, per claim (the 0.3.0 -> 0.4.0 engine's horizon). A limit, never a reading:
