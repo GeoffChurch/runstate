@@ -257,10 +257,12 @@ against one consumer's writers, except as that consumer states facts about them:
   format's own vocabulary that is right for some conforming writer;
 - a reading of a consumer's texts or shapes is that consumer's chooser or classifier, and its "preset" is
   its own set of `--assume`, `--resolve` and `--accept` choices, kept in the consumer;
-- a step may ship a **named statement of its facts** for a reference implementation's writers, as the
-  0.3.0 → 0.4.0 step ships `REFERENCE` for the reference `Worker` (`commits-and-lineage.md` §7, "The writer
-  facts"). It pins no convention: it is one statement a consumer may name with `--assume`, and naming it is
-  that consumer's word that its writers are those, recorded in the manifest as any statement is;
+- a step may ship a **constructor of its facts** for a reference implementation's writers, as the 0.3.0 →
+  0.4.0 step ships `reference(*, closing)` for the reference `Worker` (`commits-and-lineage.md` §7, "The
+  writer facts"). It states only what that implementation's code fixes, and takes what the consumer's own
+  code decides as required arguments or leaves it unstated. It pins no convention: a consumer's `--assume`
+  names its own call of it, which is that consumer's word that its writers are those, recorded in the
+  manifest as any statement is;
 - a malformed record that a step reads is refused unless a chooser for its projection reads it, and one of a
   kind the step declares no projection for is refused outright.
 
@@ -441,8 +443,8 @@ untouched: the manifest belongs to the root, outside every format's address.
   spelled them (null when unstated) and as the step renders them, the classifier's identity included; each
   projection's chooser as it was given, a built-in's name or `module:attr`, or null where none was given, as
   for a projection that forked in no run; each fork's reading, keyed by its site's seq and then its subject
-(a step may key a projection whose forks have no site of their own otherwise, saying how: the 0.3.0 →
-0.4.0 step keys `end-time` by claim seq and then the commit's index, `commits-and-lineage.md` §7); and each
+  (a step may key a projection whose forks have no site of their own otherwise, saying how: the 0.3.0 →
+  0.4.0 step keys `end-time` by claim seq and then the commit's index, `commits-and-lineage.md` §7); and each
   divergence that fired, with its sites, every one accepted. Proven sites are not recorded.
 - **When it is written:** with the run's new log. On Postgres the entry is inserted in the sealing
   transaction. On SQLite it is appended before the rename that publishes the log, so a migrated run always

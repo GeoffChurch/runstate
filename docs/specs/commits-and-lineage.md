@@ -980,17 +980,21 @@ names a 0.4.0 encoding, since how 0.4.0 writes a history down is runstate's (abo
 nothing states the whole domain of every fact, with a classifier that answers every record's whole domain;
 under it all but the smallest logs exceed the cap, so a consumer states its writers' facts, and the refusal
 says so, naming the facts that widen the pass.
-- **The reference preset** is one statement a consumer may name: `--assume
-  runstate.migrations.v0_3_0_to_v0_4_0:REFERENCE`. Naming it is the consumer's word that every claim's worker
-  is runstate's reference `Worker` driven by `steps()`, that its own code saves each pass's completed state
-  inside the pass or at its close and loads the newest save or nothing, and that no third party writes a
-  `stopped`. The preset is the word of that code as it stands: each pass ticked after its close, values
-  written inside a pass and a register's before the first, any exit's `final_step` the last pass begun,
-  every stop taken in honoured, the newest control record its drain read as its watermark, a takeover only
-  of a halted worker. It can be false of a run, as a control record landing between a drain and its
-  heartbeat breaks `watermark`, and a resume from an older save breaks `load`; a false word is not silent,
-  since no history then writes the log and the refusal names the fact to relax. A consumer whose writers
-  differ states its own, and may start from the preset's fields.
+- **The reference preset** is a constructor a consumer may start from, `reference(*, closing)` in
+  `v0_3_0_to_v0_4_0.py`: a consumer's `--assume` names its own call of it (`FACTS = reference(closing=...)`
+  in its module), which is its word that every claim's worker is runstate's reference `Worker` driven by
+  `steps()`, and that no third party writes a `stopped`. It states only what `worker.py` fixes: each pass
+  labelled one past the last and ticked after its body, the loop continuing only past a tick; no value with a
+  step before the first pass or after the exit; any exit's `final_step` the last pass begun; every stop taken
+  in honoured, the fold at the claim, the newest control record its drain read as its watermark; no rewind;
+  a takeover only of a halted worker. What the consumer's own code decides it does not state. `closing`,
+  whether a pass's body ends with a value, is a required argument, since it decides whether a tick dates a
+  commit. The rest is left whole: whether a value is written after the loop (`values`), how the loop is left
+  (`loop-end`), every fact of the consumer's checkpoints (`discards`, `cut-save`, `save-at`, `save-cov`,
+  `leave-save`, `load`), and other writers' values (`strays`); a consumer narrows them on the facts the call
+  returns, as all but the smallest logs need. The preset can be false of a run, as a control record landing
+  between a drain and its heartbeat breaks `watermark`; a false word is not silent, since no history then
+  writes the log and the refusal names the fact to relax.
 - **A fact classifies** every element of one kind, a claim or one kind of act its writer makes, into one class
   of a closed domain. It is defined over what the writer does, never over a pattern in the log.
 - **A statement** is a subset of the domain: every such element of the writer's claims falls in it. It is true
@@ -1232,14 +1236,20 @@ class LogReader(Protocol):
   a wrong answer gives one wrong lineage, not a refusal. The manifest records those answers as the consumer's
   assertions.
 
-**The end-time fork** is its own projection, `end-time`, asked once the other forks are decided.
+**The end-time fork** is its own projection, `end-time`, asked once the other forks are decided. It reads when
+and where each silent act stands that no record dates: an iteration's end (a commit) and a reload (a
+rewind).
 - **The question.** A native commit's `t` is when its pass ended (§3). A 0.3.0 log dates that end only where a
   record stands at it, as a tick after the close does: the tick then becomes the commit (below). Whether a
-  tick dates a commit is therefore part of the reading, and so is where the commit stands, which follows from
-  it. The reading of a commit is one of:
+  tick dates a commit is therefore part of the reading. So is where an undated commit stands: just after the
+  latest of its interval's first record and its claim's own last record before it ("Records", below), which
+  sets its lower bound. Where a record of the claim's own that no other reading reads (a beacon, a register)
+  may fall on either side of a silent close, two candidates place the commit apart with different bounds,
+  and the place is content. The reading of a commit is one of:
   - **dated by the tick at seq s,** one of the ticks that dates it on some remaining candidate; or
-  - **ended at t,** where some remaining candidate leaves it undated: it stands at its unlogged end, and `t`
-    is the chooser's, at or after its lower bound.
+  - **ended at t, just after the record at seq a:** a place some remaining candidate leaves it undated at,
+    and `t` the chooser's, at or after that place's lower bound. A place is offered once, at the least lower
+    bound any candidate has there, with the `t` of the record after it.
 
   A commit the log dates on every remaining candidate, by one tick, is no fork. Every other commit a
   remaining candidate holds is one: one no tick dates (the step synthesizes it, it stands at an unlogged end,
@@ -1250,28 +1260,35 @@ class LogReader(Protocol):
   value, `closing`; how passes run that no record shows, `marker`; where a cut pass ends, `cut-save`), so a
   fork names those that some version states with more than one class. When a pass ended, where no record
   dates it, is an event, which no fact decides.
+- **A rewind** is placed as an undated commit is, and no tick dates one, so every rewind is a fork, answered
+  ended at t just after a place. Its place sets its bound, and where a record of the claim's own may fall
+  on either side of it, the place is content as a commit's is.
 - **The order.** The commits are asked from the last claim back to the first, and within a claim in the
-  order its worker made them. After each answer only the candidates through it are kept: dated by s keeps
-  those on which that tick dates the commit, ended at t those on which it is undated.
-- **The reading's key** is the claim's seq, then the commit's index in its claim from 0: `{"end-time":
-  {"<claim seq>": {"<n>": {"is": "DatedBy", "seq": s} | {"is": "EndedAt", "t": t}}}}`. The other projections
-  key a reading by its fork's site, the record at which it is read, then its subject. An end-time fork has no
-  site of its own before it is decided, since its answer places the commit; its claim and the commit's index
-  name it on every candidate.
-- **The generic choosers.**
-  - **`lower`:** ended at the newest `t` among the claim's own records at or before the commit, where a
-    candidate leaves it undated; else dated by the earliest tick offered. The bound is always defined, since
-    every commit follows its claim's `started`, and it meets §3's bound. `last_activity` then never moves past
-    a time the claim's own records hold, except to a copied value's `t`, which is true. `history`'s `from` and
-    `until` thresholds hold at the native node or a later one, never an earlier one.
-  - **`upper`:** dated by the latest tick offered, where any is; else ended at the `t` of the next record
-    after the commit where it is undated, its lower bound after the log's last record. That record may be
-    another writer's, hours later. A claim's last commit before a reclaim tool's `stopped` then takes that
-    `stopped`'s `t`, and `last_activity` reads a dead run as fresh until then: the hazard §5 keeps `died` out
-    of `last_activity` to avoid.
+  order its worker made them; then the rewinds, in the same order. After each answer only the candidates through it are kept: dated by s keeps
+  those on which that tick dates the commit; ended at t after a keeps those on which it is undated, stands
+  just after a, and has its lower bound at or before t. Every path kept then writes the commit where the
+  answer places it, at a time its bound allows there, and a later answer only narrows them, so the step
+  never writes a time below the bound of the path it writes.
+- **The reading's key** is the claim's seq, then the commit's index in its claim from 0, or `rewind <e>` for
+  the rewind that closed the claim's epoch e: `{"end-time": {"<claim seq>": {"<n>": {"is": "DatedBy", "seq":
+  s} | {"is": "EndedAt", "after": a, "t": t}}}}`. The other
+  projections key a reading by its fork's site, the record at which it is read, then its subject. An
+  end-time fork has no site of its own before it is decided, since its answer places the commit; its claim
+  and the commit's index name it on every candidate.
+- **The generic choosers** order every answer offered by its time, then by its place, and take one end: a
+  tick at its own `t`, in its own place; a place at a time each defines.
+  - **`lower`:** the earliest. A place counts at its lower bound, the newest `t` among the claim's own
+    records at or before the commit there. The bound is always defined, since every commit follows its
+    claim's `started`, and it meets §3's bound. `last_activity` then never moves past a time the claim's own
+    records hold, except to a copied value's `t`, which is true. `history`'s `from` and `until` thresholds
+    hold at the native node or a later one, never an earlier one.
+  - **`upper`:** the latest. A place counts at the `t` of the next record after it, its lower bound after
+    the log's last record. That record may be another writer's, hours later. A claim's last commit before a
+    reclaim tool's `stopped` then takes that `stopped`'s `t`, and `last_activity` reads a dead run as fresh
+    until then: the hazard §5 keeps `died` out of `last_activity` to avoid.
   - **A consumer's own chooser** may date the end from evidence off the log, such as checkpoint file times. It
-    answers one of the ticks offered, or, where a candidate leaves the commit undated, a time at or after the
-    lower bound, since a commit is written after the values it holds (§3).
+    answers one of the ticks offered, or one of the places with a time at or after its lower bound, since a
+    commit is written after the values it holds (§3).
 - **A closing value is an argument, not a fact.** A consumer whose passes close at once after their closing
   value (`closing`) has its reason to choose `lower`, but the choice stays a chooser's.
 
@@ -1332,9 +1349,15 @@ Three limits bound the pass, each set where the command line is read and recorde
 its edges included); and the **run-on**, how many labels past the log's highest step a run of passes that no
 record pins is followed, per claim. Each is a limit, never a reading. A run past the cap or the budget is
 refused, naming the record; under no stated facts the refusal names the facts that widen the pass and the
-reference preset ("The writer facts"). A candidate that runs on, or loads from outside, to the horizon refuses
-the run, naming its claim and the facts that bound passes no record shows (`marker`, `beat-cov`, `stride`):
-the pass cut a longer run there, so how far it ran is open, and a cut is no answer to that.
+reference preset ("The writer facts"). The horizon refuses a run only where its cut could change a reading: a
+candidate that closes a pass at the horizon with its loop free to continue past it, so that only the horizon
+forbade the next pass and the commits after it, which Span reads. The refusal names the claims and the facts
+that can clear it: `marker` (no pass closes silently), `closing` (none closes but at a value) and `beat-cov`
+(no loop continues past an unticked pass). Nothing else the horizon cuts is read. A pass begun at the horizon
+and cut before its close makes no commit, and no commit carries a label. A load sets the worker's clock,
+which Origin does not read; a later record that reads the clock (a step, a `final_step`, a save a later claim
+loads) bounds it by its own label, below the horizon, so a load at the horizon is on no candidate where its
+step is read.
 
 **Names an earlier step filled** are read by the log's birth, which the root's manifest records: an entry of
 the 0.2.0 → 0.3.0 step means the log was born in 0.2.0 (above), and no entry means born in 0.3.0. That holds
@@ -1346,13 +1369,19 @@ run for what speaks for no claim. A fork's site is the record at which its readi
 | projection | what it reads | the generic built-ins |
 |---|---|---|
 | `end` | how a claim ended: its death reports (outcome and source), the withdrawals its stops make, and the run's process ends | `refuse` |
-| `span` | what a claim did: its commits (each its parent, the values it holds and the boundary it stands after), its rewinds, and its exit node (kind, parent, values, `honored`) | `fewest`, `most`, `refuse` |
+| `span` | what a claim did: its commits (each its parent, the values it holds and the boundary it stands after), its rewinds, its exit node (kind, parent, values, `honored`), and the heartbeats its worker wrote | `fewest`, `most`, `refuse` |
 | `origin` | where a claim's state came from: its `resume_from`, a node of the run or none | `newest`, `refuse` |
-| `end-time` | each commit not dated by one tick on every candidate: which tick dates it, or that it ended undated, and when ("The end-time fork") | `lower`, `upper`, `refuse` |
+| `end-time` | each commit not dated by one tick on every candidate: which tick dates it, or where it stands undated and when it ended ("The end-time fork") | `lower`, `upper`, `refuse` |
 
 - **`fewest`** takes the answer that finishes the fewest iterations, then holds the fewest values, then
-  continues the newest nodes; **`most`** the most iterations, then the most values, then the newest nodes.
-  Each refuses where answers tie, since a built-in never picks among answers it cannot tell apart.
+  continues the newest nodes, then writes the most heartbeats; **`most`** the most iterations, then the most
+  values, then the newest nodes, then the most heartbeats. The decode asks the last claim first, so the last
+  key reads a heartbeat whose writer is open as the newest live worker's. Each refuses where answers tie,
+  since a built-in never picks among answers it cannot tell apart.
+- **Who wrote a heartbeat is Span's** because 0.4.0 writes it as the heartbeat's `claim_seq`, and folds read
+  that: `await_consumed` takes a claim's watermarks from its commits and heartbeats, and the Watcher seeds a
+  claim's staleness from its records, heartbeats among them (§5). A log born in 0.3.0 names the writer, so
+  the reading never forks there; in a log born in 0.2.0 any live worker may have written a heartbeat.
 - **`newest`** takes the answer that continues the newest node offered: a later claim's before an earlier
   one's, within a claim a later commit's, its exit newest, and no node oldest. It refuses a tie.
 - **A consumer's chooser** answers with one of the fork's own answers, each carrying a witness lineage. The
@@ -1366,10 +1395,12 @@ run; for each subject its `end`, then its `span`, then its `origin`; within a pr
 in log order. After each answer only the candidates through it are kept, and the next fork is read off what
 remains. The end-time forks are asked last, on the decided lineage, commit by commit. The last claim goes
 first because its records are the ones a resumed worker and every current read rest on; the claims before it
-are read in the light of what it was. Where candidates remain that read alike, which differ only where no
-reading reads (which writer wrote a record no reading reads), the step takes the first by a fixed order: the
-pass's states are numbered in an order that no hash decides, so the same log, facts and readings write the
-same bytes in every process.
+are read in the light of what it was. Candidates that remain after the whole decode write the same records:
+they differ only where no byte is written (which writer wrote a value, whose record names none; how far a
+commit's interval runs past where it stands). The step takes the first by a fixed order. The pass's states
+are numbered in an order no hash decides: the classifier's answers, sets of the consumer's keys, are put in
+the configuration's declared order once, and every set of the engine's own values is iterated sorted. So the
+same log, facts and readings write the same bytes in every process.
 
 **Records.** How the decided lineage is written down, the same for every consumer. Every input record stands
 where 0.3.0 put it (E2), and a record the step adds stands just after the record it follows:
@@ -1377,11 +1408,11 @@ where 0.3.0 put it (E2), and a record the step adds stands just after the record
 - **A heartbeat with an integer step that dates a commit,** the tick that follows its pass's close at once,
   becomes that commit, in its place, keeping its `t`, its claim and its `consumed_seq`. **Every other
   heartbeat** becomes a `lifecycle.heartbeat` without `step`, naming the claim of the worker the lineage says
-  wrote it.
+  wrote it (Span's reading).
 - **A commit no record dates,** and a rewind, stands just after the latest of the first record of the interval
-  it stands in and its claim's own last record before it. Its `t` is its end-time reading's, and a rewind's is
-  the newest `t` among its claim's own records before it; its `consumed_seq` is the newest control record
-  before it, 0 for none, since its native drain reads there.
+  it stands in and its claim's own last record before it: the place its end-time reading names. Its `t` is
+  its end-time reading's; a commit's `consumed_seq` is the newest control record before it, 0 for none, since
+  its native drain reads there.
 - **A commit** carries its claim, `parent`, the values it holds, `fired: []` and `expired: []`. **A rewind**
   carries its claim and the node it reloads as `resume_from`.
 - **A `stopped` read as its worker's exit** becomes the exit node: its `completed` and `error`, its claim, the
