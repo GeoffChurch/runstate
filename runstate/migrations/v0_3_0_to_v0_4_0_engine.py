@@ -3106,6 +3106,14 @@ def reaching(g: Graph) -> frozenset[int]:
 
 
 # ----- the end-time fork: a commit's dating, then an undated one's time ----------------
+#
+# The stage asks each commit and then each rewind in turn, and each answer narrows the
+# graph (``EndTimes``). A question is about one act of one claim, so each pass reads only
+# the layers where the paths can differ in that act: where its piece or a tick dating it
+# stands, and, back from there, where the claim's own records may differ between paths.
+# An index built once for the stage says where those are (``_Index``). So on a log of
+# one long claim, whose acts each stand in a layer or two, the stage costs about the
+# graph once, not the graph once per act.
 
 
 class Tick(NamedTuple):
@@ -3121,64 +3129,6 @@ class Dating(NamedTuple):
 
     ticks: tuple[Tick, ...]
     undated: bool
-
-
-def _forward(g: Graph) -> list[dict[int, int]]:
-    """Per layer, each state's count of paths to it from the start."""
-    fwd: list[dict[int, int]] = [{0: 1}]
-    for es in g.live:
-        nxt: dict[int, int] = defaultdict(int)
-        for e in es:
-            nxt[e.dst] += fwd[-1].get(e.src, 0)
-        fwd.append(nxt)
-    return fwd
-
-
-def datings(g: Graph) -> dict[CommitId, Dating]:
-    """Each commit's datings on the paths left, by counting paths: a path holds a commit
-    once and dates it at most once, so it is undated on some path exactly when fewer
-    paths date it than hold it."""
-    fwd = _forward(g)
-    bwd: list[dict[int, int]] = [{} for _ in g.live] + [{0: 1}]
-    for k in range(len(g.live) - 1, -1, -1):
-        for e in g.live[k]:
-            bwd[k][e.src] = bwd[k].get(e.src, 0) + bwd[k + 1].get(e.dst, 0)
-    held: dict[CommitId, int] = defaultdict(int)
-    dated: dict[CommitId, dict[Tick, int]] = defaultdict(lambda: defaultdict(int))
-    for k, es in enumerate(g.live):
-        for e in es:
-            n = fwd[k].get(e.src, 0) * bwd[k + 1].get(e.dst, 0)
-            if not n:
-                continue
-            for p in e.pieces:
-                if isinstance(p, PCommit):
-                    held[CommitId(p.claim, p.nth)] += n
-                elif isinstance(p, PDate):
-                    dated[CommitId(p.claim, p.nth)][Tick(p.seq, p.t)] += n
-    return {
-        c: Dating(tuple(sorted(dated[c])), sum(dated[c].values()) < n)
-        for c, n in held.items()
-    }
-
-
-def _keep(g: Graph, keep: Callable[[int, Edge], bool]) -> Graph:
-    live: list[Sequence[Edge]] = [
-        tuple(e for e in es if keep(k, e)) for k, es in enumerate(g.live)
-    ]
-    return replace(g, live=_alive(live))
-
-
-def dated_by(g: Graph, commit: CommitId, tick: Tick) -> Graph:
-    """The paths on which ``tick`` dates ``commit``."""
-    layer = g.ctx.by_seq[tick.seq]
-
-    def keep(k: int, e: Edge) -> bool:
-        return k != layer or any(
-            isinstance(p, PDate) and (p.claim, p.nth, p.seq) == (*commit, tick.seq)
-            for p in e.pieces
-        )
-
-    return _keep(g, keep)
 
 
 def _dates(e: Edge, silent: Silent) -> bool:
@@ -3227,39 +3177,135 @@ def reloads(g: Graph) -> frozenset[RewindId]:
     )
 
 
+def _whose(p: Piece) -> int | None:
+    """The claim whose own record piece ``p`` makes its record (``_own``), if any."""
+    if isinstance(p, PStart):
+        return p.claim
+    if isinstance(p, (PValue, PBeat)):
+        return p.writer
+    if isinstance(p, PStop):
+        return p.claim if p.author is not Author.THIRD else None
+    return None
+
+
 def _own_seq(p: Piece, claim: int) -> int | None:
     """The seq of the record piece ``p`` makes ``claim``'s own (``_own``), if it does."""
-    if isinstance(p, PStart):
-        return p.claim if p.claim == claim else None
-    if isinstance(p, (PValue, PBeat)):
-        return p.seq if p.writer == claim else None
-    if isinstance(p, PStop):
-        return p.seq if p.claim == claim and p.author is not Author.THIRD else None
-    return None
+    if _whose(p) != claim:
+        return None
+    assert isinstance(p, (PStart, PValue, PBeat, PStop))
+    return p.claim if isinstance(p, PStart) else p.seq
+
+
+class _Index(NamedTuple):
+    """Where a graph's silent acts and its claims' own records stand, by layer: for each
+    commit and each rewind, the layers whose edges hold its piece or a tick dating it
+    (``commits`` and ``rewinds``, each in the order the layers first hold them: apart,
+    since a commit's name and a rewind's are tuples of two ints that compare equal);
+    for each claim, the layers every edge of which holds a record of the claim's own
+    (``sure``), and those some edges of which hold one and some do not (``mixed``).
+
+    It stays true, read as bounds, of every graph an end-time answer leaves: an answer
+    only drops paths, so each layer of the graph it leaves holds edges carrying the
+    pieces of edges of the same layer before (``EndTimes``). Then an act's pieces stand
+    in no layer outside its ``layers``; a ``sure`` layer is still one; and a layer that
+    is neither ``sure`` nor ``mixed`` for a claim holds no record of its own on any
+    path. A ``mixed`` layer may have become either, which the passes below read as the
+    case that costs more, never as the one that costs less."""
+
+    commits: Mapping[CommitId, tuple[int, ...]]
+    rewinds: Mapping[RewindId, tuple[int, ...]]
+    sure: Mapping[int, tuple[int, ...]]
+    mixed: Mapping[int, tuple[int, ...]]
+
+    def layers(self, x: Silent) -> tuple[int, ...]:
+        """The layers whose edges hold the act ``x`` or a tick dating it."""
+        return self.commits[x] if isinstance(x, CommitId) else self.rewinds[x]
+
+
+def _index(g: Graph) -> _Index:
+    """The index of ``g``: one pass over its edges."""
+    commits: dict[CommitId, list[int]] = {}
+    rewinds: dict[RewindId, list[int]] = {}
+    sure: dict[int, list[int]] = defaultdict(list)
+    mixed: dict[int, list[int]] = defaultdict(list)
+    for k, es in enumerate(g.live):
+        owners: dict[int, int] = defaultdict(int)  # the edges holding a claim's own
+        for e in es:
+            mine: set[int] = set()
+            for p in e.pieces:
+                at: list[int] | None = None
+                if isinstance(p, (PCommit, PDate)):
+                    at = commits.setdefault(CommitId(p.claim, p.nth), [])
+                elif isinstance(p, PRewind):
+                    at = rewinds.setdefault(RewindId(p.claim, p.epoch), [])
+                if at is not None and (not at or at[-1] != k):
+                    at.append(k)
+                o = _whose(p)
+                if o is not None:
+                    mine.add(o)
+            for o in mine:
+                owners[o] += 1
+        for o, n in owners.items():
+            (sure if n == len(es) else mixed)[o].append(k)
+    return _Index(
+        {x: tuple(ks) for x, ks in commits.items()},
+        {x: tuple(ks) for x, ks in rewinds.items()},
+        {c: tuple(ks) for c, ks in sure.items()},
+        {c: tuple(ks) for c, ks in mixed.items()},
+    )
 
 
 class _Placing:
     """One commit's or rewind's place, followed along the paths: a record's own pieces
     stand at its layer, so once a path is past the piece and past the layer of the
-    latest ``last`` any of its gaps have, its place is settled."""
+    latest ``last`` any of its gaps have (``settles``), its place is settled.
 
-    def __init__(self, g: Graph, silent: Silent) -> None:
-        self.ctx = g.ctx
+    It is followed over its window, the layers ``first`` to ``last``, which gives what a
+    pass from the first layer to the end gives:
+    - **Before ``first``** every path's track is ``start``. No edge there holds the
+      act's piece or a tick dating it, so every track is unplaced and no path is left.
+      A track's marks move only at a claim's own record at or before a checkpoint, so
+      in a layer at or before ``settles``; and no such layer before ``first`` is
+      ``mixed``, so in each either every edge holds an own record or none does. Every
+      edge of a layer then moves every track alike, and the marks at ``first`` are
+      what the claim's ``sure`` layers before it make. One track reaches each state.
+    - **After ``last``** nothing settles. No piece of the act stands there, so a track
+      placed by then was placed at or before ``last``, and settled at that layer or at
+      ``settles``, both at or before ``last``: a track still open is unplaced, and
+      stays so to the end, where it is no place.
+    The bounds come from the index (``_Index``): ``first`` may be earlier than it need
+    be and ``last`` later, and a pass over more layers gives the same."""
+
+    def __init__(self, g: Graph, index: _Index, silent: Silent) -> None:
+        ctx = g.ctx
+        self.ctx = ctx
         self.silent = silent
+        acts = index.layers(silent)
         self.checkpoints = tuple(
             sorted(
                 {
                     p.gaps.last
-                    for es in g.live
-                    for e in es
+                    for k in acts
+                    for e in g.live[k]
                     if not _dates(e, silent)
                     for p in e.pieces
                     if isinstance(p, (PCommit, PRewind)) and _names(p, silent)
                 }
             )
         )
-        self.settles = g.ctx.by_seq[self.checkpoints[-1]]
-        self.start = _Track(UNPLACED, (-1,) * len(self.checkpoints))
+        self.settles = ctx.by_seq[self.checkpoints[-1]]
+        mixed = index.mixed.get(silent.claim, ())
+        self.first = (
+            min(acts[0], mixed[0]) if mixed and mixed[0] <= self.settles else acts[0]
+        )
+        self.last = max(acts[-1], self.settles)
+        sure = index.sure.get(silent.claim, ())
+        marks: list[int] = []
+        for checkpoint in self.checkpoints:
+            # the claim's own records before ``first``, at or before the checkpoint
+            n = bisect.bisect_left(sure, min(self.first, ctx.by_seq[checkpoint] + 1))
+            marks.append(ctx.recs[sure[n - 1]].seq if n else -1)
+        self.start = _Track(UNPLACED, tuple(marks))
 
     def advance(self, track: _Track, k: int, e: Edge) -> _Track | Place:
         """The track after edge ``e`` of layer ``k``, or the place once settled."""
@@ -3279,104 +3325,237 @@ class _Placing:
         return Place(max(gaps.first, m), self.ctx.recs[self.ctx.by_seq[m]].t)
 
 
-def places(g: Graph, silent: Silent) -> frozenset[Place]:
-    """Every place the commit or rewind ``silent`` stands undated on some path left,
-    each with its lower bound: a forward pass carrying, per state, the tracks reaching
-    it, which a path whose tick dates the commit leaves (``_dates``). A track settled at
-    a state is a place some complete path has, since every live edge is on one."""
-    placing = _Placing(g, silent)
-    found: set[Place] = set()
-    at: dict[int, set[_Track]] = {0: {placing.start}}
-    for k, es in enumerate(g.live):
-        nxt: dict[int, set[_Track]] = defaultdict(set)
-        for e in es:
-            if _dates(e, silent):
-                continue
-            for track in at.get(e.src, ()):
-                y = placing.advance(track, k, e)
-                if isinstance(y, Place):
-                    found.add(y)
-                else:
-                    nxt[e.dst].add(y)
-        at = nxt
-        if not at:
+def _alive_within(
+    live: list[Sequence[Edge]], lo: int, hi: int
+) -> tuple[tuple[Edge, ...], ...]:
+    """``_alive`` of ``live``, where every layer outside ``lo`` to ``hi`` is a layer of a
+    graph whose every edge is on a complete path, and layer ``lo``'s edges leave from
+    that graph's states (layer ``hi``'s may lead to states it lacks, which no edge leaves:
+    those are dropped). It filters ``live`` in place and gives what ``_alive`` gives,
+    over the layers that can change:
+    - forward from ``lo``: a layer after ``hi`` that keeps every edge leads to every
+      state the next layer leaves from, so each layer after it keeps every edge too;
+    - backward from the last layer changed: a layer before ``lo`` that keeps every edge
+      leads back from every state the layer before it leads to, so each layer before
+      it keeps every edge too.
+    Each pass stops at such a layer."""
+    reach = {e.src for e in live[lo]}
+    k = lo
+    while k < len(live):
+        kept = tuple(e for e in live[k] if e.src in reach)
+        if k > hi and len(kept) == len(live[k]):
             break
-    return frozenset(found)
+        live[k] = kept
+        reach = {e.dst for e in kept}
+        hi = max(hi, k)
+        k += 1
+    alive = {e.src for e in live[hi + 1]} if hi + 1 < len(live) else {0}
+    for k in range(hi, -1, -1):
+        kept = tuple(e for e in live[k] if e.dst in alive)
+        if k < lo and len(kept) == len(live[k]):
+            break
+        live[k] = kept
+        alive = {e.src for e in kept}
+    return tuple(tuple(es) for es in live)
 
 
-def ended_at(g: Graph, silent: Silent, after: int, t: float) -> Graph:
-    """The paths on which no tick dates the commit or rewind ``silent`` (``_dates``),
-    and it stands just after the record at seq ``after``, with its lower bound at or
-    before ``t``. Until a path's place is settled its state is split by its track, a
-    function of the path, so each path is kept once; it is whole again after. It builds
-    one list of edges beside ``g``'s and narrows that in place, never a third, and it
-    makes an edge anew only where its source or its target is split: a state that one
-    kind of path reaches (one track, or settled paths alone) keeps its id and its edges,
-    so the layers before the claim's own records, where every path's track is the
-    start, and every layer where the paths agree, share ``g``'s edges."""
-    placing = _Placing(g, silent)
-    split: dict[tuple[int, int, _Track], int] = {}
-    # below every id the graph has, which an earlier split may have made negative
-    floor = min((min(e.src, e.dst) for es in g.live for e in es), default=0)
+@dataclass(frozen=True)
+class EndTimes:
+    """The end-time stage's paths (§7, "The end-time fork"): the graph every other
+    fork's answer left, narrowed answer by answer, and the index of the graph it began
+    with (``end_times``), which stays true of every graph after it (``_Index``). Each
+    question reads, and each answer narrows, only the layers its act is about; the
+    graph an answer leaves is the one the full pass would leave, its states named
+    apart where it splits one (``ended_at``)."""
 
-    def sid(k: int, state: int, track: _Track) -> int:
-        """A split state's id in layer ``k``, apart from every whole one's."""
-        return split.setdefault((k, state, track), min(floor, 0) - 1 - len(split))
+    graph: Graph
+    index: _Index
 
-    def ident(
-        k: int,
-        state: int,
-        track: _Track | None,
-        open_: Mapping[int, set[_Track]],
-        settled: set[int],
-    ) -> int:
-        """The id of ``state`` in layer ``k`` on a path with ``track`` (None: a settled
-        path): its own where one kind of path reaches it, else the track's split one.
-        A settled path keeps the state's own id."""
-        kinds = len(open_.get(state, ())) + (state in settled)
-        if track is None or kinds == 1:
-            return state
-        return sid(k, state, track)
+    def dating(self, commit: CommitId) -> Dating | None:
+        """How the paths left date ``commit``, None where none holds it. A tick dates
+        the commit its own edge holds (``_beat``: the run that closed the commit is the
+        tick's), and a path holds a commit once and dates it at most once. So a path
+        holds it undated exactly where the edge holding it carries no tick dating it,
+        and some path runs through every edge (``_alive``): the commit is held, dated by
+        a tick or left undated on some path exactly where some edge of the layers its
+        index names is."""
+        ticks: set[Tick] = set()
+        held = undated = False
+        for k in self.index.commits[commit]:
+            for e in self.graph.live[k]:
+                holds = any(_names(p, commit) for p in e.pieces)
+                dates = {
+                    Tick(p.seq, p.t)
+                    for p in e.pieces
+                    if isinstance(p, PDate) and (p.claim, p.nth) == tuple(commit)
+                }
+                assert holds or not dates, "a tick dates the commit its edge holds"
+                held |= holds
+                undated |= holds and not dates
+                ticks |= dates
+        return Dating(tuple(sorted(ticks)), undated) if held else None
 
-    def edge(e: Edge, src: int, dst: int) -> Edge:
-        return e if (src, dst) == (e.src, e.dst) else Edge(src, dst, e.pieces)
+    def datings(self) -> dict[CommitId, Dating]:
+        """Each commit some path left holds, with how the paths date it."""
+        out: dict[CommitId, Dating] = {}
+        for x in self.index.commits:
+            d = self.dating(x)
+            if d is not None:
+                out[x] = d
+        return out
 
-    live: list[Sequence[Edge]] = []
-    at: dict[int, set[_Track]] = {0: {placing.start}}  # the open tracks per state
-    whole: set[int] = set()  # the states a settled, accepted path reaches
-    for k, es in enumerate(g.live):
-        undated = [e for e in es if not _dates(e, silent)]
-        last = k + 1 == len(g.live)
-        # first what reaches the next layer, so that each state's kinds are known
-        # before its id is used; then the edges
-        nxt: dict[int, set[_Track]] = defaultdict(set)
-        then: set[int] = {e.dst for e in undated if e.src in whole}
-        moves: list[list[tuple[_Track, _Track | Place]]] = []
-        for e in undated:
-            mv: list[tuple[_Track, _Track | Place]] = []
-            for track in sorted(at.get(e.src, ())):
-                y = placing.advance(track, k, e)
-                mv.append((track, y))
-                if isinstance(y, Place):
-                    if y.after == after and y.low <= t:
-                        then.add(e.dst)
-                elif not last:
-                    nxt[e.dst].add(y)
-            moves.append(mv)
-        kept: list[Edge] = []
-        for e, mv in zip(undated, moves):
-            if e.src in whole:
-                kept.append(edge(e, e.src, ident(k + 1, e.dst, None, nxt, then)))
-            for track, y in mv:
-                src = ident(k, e.src, track, at, whole)
-                if isinstance(y, Place):
-                    if y.after == after and y.low <= t:
-                        kept.append(edge(e, src, ident(k + 1, e.dst, None, nxt, then)))
-                elif not last:
-                    kept.append(edge(e, src, ident(k + 1, e.dst, y, nxt, then)))
-        live.append(tuple(dict.fromkeys(kept)))
-        at, whole = nxt, then
-    return replace(g, live=_alive(live))
+    def dated_by(self, commit: CommitId, tick: Tick) -> EndTimes:
+        """The paths on which ``tick`` dates ``commit``: its layer narrowed, and the
+        edges no complete path is left on dropped (``_alive_within``)."""
+        g = self.graph
+        layer = g.ctx.by_seq[tick.seq]
+        live: list[Sequence[Edge]] = list(g.live)
+        live[layer] = tuple(
+            e
+            for e in g.live[layer]
+            if any(
+                isinstance(p, PDate) and (p.claim, p.nth, p.seq) == (*commit, tick.seq)
+                for p in e.pieces
+            )
+        )
+        return replace(self, graph=replace(g, live=_alive_within(live, layer, layer)))
+
+    def places(self, silent: Silent) -> frozenset[Place]:
+        """Every place the commit or rewind ``silent`` stands undated on some path left,
+        each with its lower bound: a forward pass over its window (``_Placing``)
+        carrying, per state, the tracks reaching it, which a path whose tick dates the
+        commit leaves (``_dates``). A track settled at a state is a place some complete
+        path has, since every live edge is on one."""
+        g = self.graph
+        placing = _Placing(g, self.index, silent)
+        found: set[Place] = set()
+        at: dict[int, set[_Track]] = {
+            e.src: {placing.start} for e in g.live[placing.first]
+        }
+        for k in range(placing.first, placing.last + 1):
+            nxt: dict[int, set[_Track]] = defaultdict(set)
+            for e in g.live[k]:
+                if _dates(e, silent):
+                    continue
+                for track in at.get(e.src, ()):
+                    y = placing.advance(track, k, e)
+                    if isinstance(y, Place):
+                        found.add(y)
+                    else:
+                        nxt[e.dst].add(y)
+            at = nxt
+            if not at:
+                break
+        return frozenset(found)
+
+    def ended_at(self, silent: Silent, after: int, t: float) -> EndTimes:
+        """The paths on which no tick dates the commit or rewind ``silent``
+        (``_dates``), and it stands just after the record at seq ``after``, with its
+        lower bound at or before ``t``. Over its window (``_Placing``) a state is split
+        by the track of the path reaching it while that path's place is unsettled, a
+        function of the path, so each path is kept once; it is whole again after. An
+        edge is made anew only where its source or its target is split: a state one kind
+        of path reaches (one track, or settled paths alone) keeps its id and its edges.
+
+        Outside the window it changes only what the full pass changes, and the graph it
+        leaves is the full pass's:
+        - before the window one track reaches each state, so the full pass splits none
+          there and keeps every edge;
+        - after it a path is settled, its place taken or not, or open and unplaced, and
+          so left at the end: the full pass keeps the edges the taken paths reach, under
+          their own ids, and every edge it makes for an open path is on no complete path
+          (it ends at a split state or one no taken path reaches), which ``_alive``
+          drops. So past the window this keeps the edges the taken paths reach, until a
+          layer where they reach every edge, after which the graph is ``g``'s.
+        A split state's id is below every id the window's layers hold, as ``_restrict``
+        makes them. The full pass made each below every id the graph holds: the ids
+        differ by one offset, so within each layer they stand in the same order among
+        themselves and below every other id. What reads a graph reads its ids as names
+        and, choosing the path the step writes, their order within a layer
+        (``written``): neither tells the two apart."""
+        g = self.graph
+        placing = _Placing(g, self.index, silent)
+        lo, hi = placing.first, placing.last
+        split: dict[tuple[int, int, _Track], int] = {}
+        floor = min(
+            (min(e.src, e.dst) for k in range(lo, hi + 1) for e in g.live[k]),
+            default=0,
+        )
+
+        def sid(k: int, state: int, track: _Track) -> int:
+            """A split state's id in layer ``k``, apart from every whole one's."""
+            return split.setdefault((k, state, track), min(floor, 0) - 1 - len(split))
+
+        def ident(
+            k: int,
+            state: int,
+            track: _Track | None,
+            open_: Mapping[int, set[_Track]],
+            settled: set[int],
+        ) -> int:
+            """The id of ``state`` in layer ``k`` on a path with ``track`` (None: a
+            settled path): its own where one kind of path reaches it, else the track's
+            split one. A settled path keeps the state's own id."""
+            kinds = len(open_.get(state, ())) + (state in settled)
+            if track is None or kinds == 1:
+                return state
+            return sid(k, state, track)
+
+        def edge(e: Edge, src: int, dst: int) -> Edge:
+            return e if (src, dst) == (e.src, e.dst) else Edge(src, dst, e.pieces)
+
+        live: list[Sequence[Edge]] = list(g.live)
+        # the open tracks per state
+        at: dict[int, set[_Track]] = {e.src: {placing.start} for e in g.live[lo]}
+        whole: set[int] = set()  # the states a settled, accepted path reaches
+        for k in range(lo, hi + 1):
+            undated = [e for e in g.live[k] if not _dates(e, silent)]
+            last = k + 1 == len(g.live)
+            # first what reaches the next layer, so that each state's kinds are known
+            # before its id is used; then the edges
+            nxt: dict[int, set[_Track]] = defaultdict(set)
+            then: set[int] = {e.dst for e in undated if e.src in whole}
+            moves: list[list[tuple[_Track, _Track | Place]]] = []
+            for e in undated:
+                mv: list[tuple[_Track, _Track | Place]] = []
+                for track in sorted(at.get(e.src, ())):
+                    y = placing.advance(track, k, e)
+                    mv.append((track, y))
+                    if isinstance(y, Place):
+                        if y.after == after and y.low <= t:
+                            then.add(e.dst)
+                    elif not last:
+                        nxt[e.dst].add(y)
+                moves.append(mv)
+            kept: list[Edge] = []
+            for e, mv in zip(undated, moves):
+                if e.src in whole:
+                    kept.append(edge(e, e.src, ident(k + 1, e.dst, None, nxt, then)))
+                for track, y in mv:
+                    src = ident(k, e.src, track, at, whole)
+                    if isinstance(y, Place):
+                        if y.after == after and y.low <= t:
+                            kept.append(
+                                edge(e, src, ident(k + 1, e.dst, None, nxt, then))
+                            )
+                    elif not last:
+                        kept.append(edge(e, src, ident(k + 1, e.dst, y, nxt, then)))
+            live[k] = tuple(dict.fromkeys(kept))
+            at, whole = nxt, then
+        top = hi  # the last layer changed
+        for k in range(hi + 1, len(g.live)):
+            taken = tuple(e for e in g.live[k] if e.src in whole)
+            if len(taken) == len(g.live[k]):
+                break
+            live[k] = taken
+            whole = {e.dst for e in taken}
+            top = k
+        return replace(self, graph=replace(g, live=_alive_within(live, lo, top)))
+
+
+def end_times(g: Graph) -> EndTimes:
+    """The end-time stage over ``g``: its index built once (``_Index``)."""
+    return EndTimes(g, _index(g))
 
 
 def _windows(g: Graph) -> dict[Key, tuple[int, int]]:

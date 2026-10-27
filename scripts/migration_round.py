@@ -1148,10 +1148,9 @@ def census(rows: list[Row], plan: Planned) -> Census:
     kept = _STEP_0_3_0._last
     assert kept is not None, "detect keeps the candidates it built"
     g = kept[1]
-    datings = engine.datings(g)
-    places = sum(
-        1 for c, d in datings.items() if d.undated and len(engine.places(g, c)) > 1
-    )
+    ends = engine.end_times(g)
+    datings = ends.datings()
+    places = sum(1 for c, d in datings.items() if d.undated and len(ends.places(c)) > 1)
     loaded = {
         (p.claim, p.step)
         for es in g.live

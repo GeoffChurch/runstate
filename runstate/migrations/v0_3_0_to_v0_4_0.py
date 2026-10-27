@@ -1631,40 +1631,46 @@ def _decide(candidates: _Candidates, resolutions: Resolutions) -> _Decided:
         )
         return a
 
-    g = E.decode(candidates.take(), route, cap=resolutions.assumptions.limits.cap)
+    # the end-time stage: one index of the decided graph, kept by every graph an answer
+    # leaves, so that each question and each answer reads only its act's layers
+    ends = E.end_times(
+        E.decode(candidates.take(), route, cap=resolutions.assumptions.limits.cap)
+    )
     ended: dict[E.CommitId, EndedAt] = {}
-    datings = E.datings(g)
-    for c in sorted(datings, key=lambda c: (-c.claim, c.nth)):
-        d = datings[c]
+    for c in sorted(ends.datings(), key=lambda c: (-c.claim, c.nth)):
+        d = ends.dating(c)
+        # Span is decided, so every path left holds the commits Span read, and an
+        # answer keeps paths that hold them
+        assert d is not None
         if not d.undated and len(d.ticks) == 1:
             continue  # the log dates it: a proven site
         # the places are read off the paths that leave it undated, and an EndedAt
-        # answer keeps only those (``E.ended_at`` drops the dated ones itself)
-        offered = _unlogged(g.ctx, E.places(g, c)) if d.undated else ()
+        # answer keeps only those (``ended_at`` drops the dated ones itself)
+        offered = _unlogged(ctx, ends.places(c)) if d.undated else ()
         answer = END_TIME.ask(resolutions, EndTime(c, d.ticks, offered))
         readings[END_TIME.name].setdefault(c.claim, {})[_act(c)] = _jsonable(answer)
         if isinstance(answer, DatedBy):
             (tick,) = [t for t in d.ticks if t.seq == answer.seq]
-            g = E.dated_by(g, c, tick)
+            ends = ends.dated_by(c, tick)
         else:
             ended[c] = answer
-            g = E.ended_at(g, c, answer.after, answer.t)
-        datings = E.datings(g)
+            ends = ends.ended_at(c, answer.after, answer.t)
     rewound: dict[E.RewindId, EndedAt] = {}
-    for x in sorted(E.reloads(g), key=lambda x: (-x.claim, x.epoch)):
-        q = EndTime(x, (), _unlogged(g.ctx, E.places(g, x)))
+    for x in sorted(E.reloads(ends.graph), key=lambda x: (-x.claim, x.epoch)):
+        q = EndTime(x, (), _unlogged(ctx, ends.places(x)))
         reload = END_TIME.ask(resolutions, q)
         readings[END_TIME.name].setdefault(x.claim, {})[_act(x)] = _jsonable(reload)
         assert isinstance(reload, EndedAt)  # no tick is offered (``_end_time``)
         rewound[x] = reload
-        g = E.ended_at(g, x, reload.after, reload.t)
+        ends = ends.ended_at(x, reload.after, reload.t)
+    g = ends.graph
     parts = E.written(g)
 
     def when(c: E.CommitId, low: float, highs: tuple[float, ...]) -> float:
         # Every commit the written path leaves undated was asked, and the paths kept
         # are those on which it stands where its answer says, with its lower bound at
-        # or before the answer's time (``E.ended_at``); later answers only narrow
-        # them. So the bound holds on the path written.
+        # or before the answer's time (``E.EndTimes.ended_at``); later answers
+        # only narrow them. So the bound holds on the path written.
         assert low <= ended[c].t
         return ended[c].t
 
@@ -2437,7 +2443,7 @@ class V0_3_0_to_V0_4_0:
         dates = E.settled_by(configuration, E.DATES)
         forks[END_TIME.name] = [
             Fork(c.claim, dates)
-            for c, d in sorted(E.datings(g).items())
+            for c, d in sorted(E.end_times(g).datings().items())
             if d.undated or len(d.ticks) > 1
         ] + [Fork(x.claim, ()) for x in sorted(E.reloads(g))]
         return Detected({n: tuple(fs) for n, fs in forks.items()})

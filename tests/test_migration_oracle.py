@@ -1211,6 +1211,130 @@ def test_the_step_writes_the_same_bytes_whatever_the_hash_seed():
     assert digests[0] == digests[1]
 
 
+# ----- the end-time stage reads each act off its window (Task 23a) -----------------------
+
+ListedPath = tuple[E.Piece, ...]  # one complete path's pieces
+
+
+def _dates_on(ps: Sequence[E.Piece], x: E.Silent) -> set[E.Tick]:
+    """The ticks dating ``x`` on one path's pieces: none for a rewind."""
+    return {
+        E.Tick(p.seq, p.t)
+        for p in ps
+        if isinstance(x, E.CommitId)
+        and isinstance(p, E.PDate)
+        and (p.claim, p.nth) == tuple(x)
+    }
+
+
+def _place_on(ctx: E.Context, ps: Sequence[E.Piece], x: E.Silent) -> E.Place | None:
+    """Where ``x`` stands undated on one path, by §7's rule read off the whole path:
+    just after the latest of its interval's first record and its claim's own last
+    record before it; None where the path holds it dated or not at all."""
+    held = [p for p in ps if E._names(p, x)]
+    if not held or _dates_on(ps, x):
+        return None
+    (p,) = held
+    assert isinstance(p, (E.PCommit, E.PRewind))
+    m = max(s for s in E._own(ps)[x.claim] if s <= p.gaps.last)
+    return E.Place(max(p.gaps.first, m), ctx.recs[ctx.by_seq[m]].t)
+
+
+def _listed_paths(g: E.Graph) -> set[ListedPath]:
+    """Every complete path's pieces, each edge on a complete path: what ``_alive``
+    keeps, kept."""
+    assert E._alive(list(g.live)) == g.live
+    return set(E.chains(g, cap=PATHS))
+
+
+def _read_as_listed(
+    ctx: E.Context, ends: E.EndTimes, acts: Sequence[E.Silent], listed: set[ListedPath]
+) -> None:
+    """Every act's dating and places, read off the stage's windows, are what the listed
+    paths hold."""
+    for x in acts:
+        holding = [ps for ps in listed if any(E._names(p, x) for p in ps)]
+        places = {_place_on(ctx, ps, x) for ps in holding} - {None}
+        if isinstance(x, E.CommitId):
+            ticks: set[E.Tick] = set()
+            for ps in holding:
+                ticks |= _dates_on(ps, x)
+            want = E.Dating(tuple(sorted(ticks)), bool(places)) if holding else None
+            assert ends.dating(x) == want, x
+        if places:
+            assert ends.places(x) == places, x
+
+
+def end_times_listed(h: H.History) -> None:
+    """The end-time stage against the listed paths of the history's own candidates,
+    before any other fork is decided (more paths, so more places): each act read as the
+    paths read it, when the step reads it and again once every act is answered; each
+    answer it may be given (each tick, each place at each lower
+    bound a path has there) keeping exactly the paths it names; and the acts asked in
+    the step's order, the first answer each time, so that each later read and answer is
+    on a graph narrowed after the stage's index was built."""
+    if not parsed(h):
+        return
+    g = run([h])
+    if not E.admits(g):
+        return
+    try:
+        listed = _listed_paths(g)
+    except E.TooMany:
+        return
+    ctx = g.ctx
+    ends = E.end_times(g)
+    commits = sorted(ends.datings(), key=lambda c: (-c.claim, c.nth))
+    rewinds = sorted(E.reloads(g), key=lambda x: (-x.claim, x.epoch))
+    acts: list[E.Silent] = [*commits, *rewinds]
+    for x in acts:
+        _read_as_listed(ctx, ends, [x], listed)
+        if not any(any(E._names(p, x) for p in ps) for ps in listed):
+            continue
+        answers: list[tuple[E.EndTimes, set[ListedPath]]] = []
+        undated = True  # a rewind no tick dates
+        if isinstance(x, E.CommitId):
+            d = ends.dating(x)
+            assert d is not None
+            undated = d.undated
+            for tick in d.ticks:
+                answers.append(
+                    (
+                        ends.dated_by(x, tick),
+                        {ps for ps in listed if tick in _dates_on(ps, x)},
+                    )
+                )
+        for place in sorted(ends.places(x)) if undated else ():
+            answers.append(
+                (
+                    ends.ended_at(x, place.after, place.low),
+                    {
+                        ps
+                        for ps in listed
+                        if (y := _place_on(ctx, ps, x)) is not None
+                        and y.after == place.after
+                        and y.low <= place.low
+                    },
+                )
+            )
+        for narrowed, kept in answers:
+            assert _listed_paths(narrowed.graph) == kept, x
+        ends, listed = answers[0]
+    _read_as_listed(ctx, ends, acts, listed)
+
+
+@pytest.mark.parametrize("name", list(S.NAMED))
+def test_named_end_times_read_as_the_listed_paths(name: str) -> None:
+    end_times_listed(S.NAMED[name])
+
+
+@pytest.mark.oracle
+@pytest.mark.parametrize("family", list(FAMILIES))
+def test_family_end_times_read_as_the_listed_paths(family: str) -> None:
+    for h in FAMILIES[family]():
+        end_times_listed(h)
+
+
 # ----- the horizon refuses only where its cut could change a reading (fix round 2) ----
 
 
