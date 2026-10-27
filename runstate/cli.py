@@ -31,6 +31,13 @@ CAP = 3000
 # the cap bounds one layer, so a long log can hold a near-cap layer for thousands of
 # records (about 16 GB at 3,000 over 13,000). 6,000,000 states is about 2.5 GB, clearing
 # the most measured on the real corpora (664f8795's 4.3 million, 1.8 GB) by two fifths.
+# The peak is the build's: the decode narrows the built graph in place of itself,
+# holding the graph and the one its answer leaves, and its working set fits in what the
+# build's per-layer worlds freed. Measured by RSS in separate processes (2026-10-27, the
+# round's fix 4 report): 9,182 states, 66.7 MB built against 66.9 MB built and decoded;
+# 20,694 states, 102.5 against 102.2 MB. Only a graph a few states wide, which is small
+# in all, has a decode working set above its build's, by up to about 1.6 times the
+# graph's own size.
 BUDGET = 6_000_000
 
 # How many labels past the log's highest step a run of passes that no record pins is

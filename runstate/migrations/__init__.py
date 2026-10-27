@@ -167,15 +167,17 @@ def chain(start: str, target: str) -> list[Step]:
 
 
 class Memo:
-    """The checked transforms a plan has run, by what each read (the rows, and the
-    earlier steps' word in the run's history), so a run's detection pass, its dry run
-    and its transform after the seal transform it once, as long as no record landed
-    between. It holds outputs only, never a step's candidates, and changes no result.
+    """The checked transforms an invocation has run, by what each read (the step, the
+    rows, and the earlier steps' word in the run's history), so a run's detection pass,
+    its dry run and its transform after the seal transform it once, as long as no record
+    landed between. It holds outputs only, never a step's candidates, and changes no
+    result.
 
-    Bounded by the rows it holds: once full it takes no more, and evicts none. The
-    detection pass fills it in run order and the migrate pass reads it in the same
-    order, so evicting the oldest would evict the next run to migrate, every time; a
-    full memo instead still serves the runs it took first."""
+    One memo serves every step of the invocation, so its bound is the invocation's,
+    not one per step. Bounded by the rows it holds: once full it takes no more, and
+    evicts none. The detection pass fills it in run order and the migrate pass reads it
+    in the same order, so evicting the oldest would evict the next run to migrate,
+    every time; a full memo instead still serves the runs it took first."""
 
     # The output rows held at once, outside the step's budget: a Row and its fields
     # take about 350 bytes on the goldens, more with a longer body, so about 0.35 to
@@ -187,9 +189,10 @@ class Memo:
         self._rows = 0
 
     @staticmethod
-    def key(rows: list[Row], history: History) -> str:
-        """What a transform reads: every row, and each earlier entry's word, not when
-        it was written nor by which code."""
+    def key(step: Step, rows: list[Row], history: History) -> str:
+        """What a transform reads: the step (two steps may be handed the same rows under
+        the same history, a log that reads in both their formats), every row, and each
+        earlier entry's word, not when it was written nor by which code."""
         word = [
             (
                 e.from_format,
@@ -203,7 +206,8 @@ class Memo:
             )
             for e in history
         ]
-        return hashlib.sha256(repr((tuple(rows), word)).encode()).hexdigest()
+        read = ((step.FROM, step.TO), tuple(rows), word)
+        return hashlib.sha256(repr(read).encode()).hexdigest()
 
     def get(self, key: str) -> Migrated | None:
         return self._by.get(key)
@@ -226,7 +230,7 @@ class Planned(NamedTuple):
 
     def migrated(self, rows: list[Row], history: History) -> Migrated:
         """The checked transform of ``rows``, once per what it reads (``Memo``)."""
-        key = Memo.key(rows, history)
+        key = Memo.key(self.step, rows, history)
         found = self.memo.get(key)
         if found is None:
             found = transform_checked(
@@ -367,10 +371,12 @@ def migrate(
     and per divergence, and the runs already refused) unless every projection that
     forks in some run has a ``--resolve`` and every divergence that fires has an
     ``--accept``. Then each run is migrated; a run refused by a step, a chooser or
-    ``refuse`` is left untouched, and the others go on."""
+    ``refuse`` is left untouched, and the others go on. Any other error on a run is a
+    bug, which stays one: it ends the invocation as it is, naming the run."""
     check_names(STEPS)
+    memo = Memo()
     plans = {
-        s.FROM: Planned(s, resolutions(s, choices), choices.accepted, Memo())
+        s.FROM: Planned(s, resolutions(s, choices), choices.accepted, memo)
         for s in STEPS
     }
     todo = {
@@ -383,6 +389,9 @@ def migrate(
             _detect(store, plans, choices, rid, fmt, to, report)
         except MigrationError as exc:
             refused[rid] = f"run {rid!r}: {exc}"
+        except Exception as exc:
+            exc.add_note(f"while reading run {rid!r} in the detection pass")
+            raise
     if report.open():
         report.refused.update(refused)
         raise Undecided(report)
@@ -395,6 +404,9 @@ def migrate(
                 store.migrate_one(plans[step.FROM], rid)
         except MigrationError as exc:
             refused[rid] = f"run {rid!r}: {exc}"
+        except Exception as exc:
+            exc.add_note(f"while migrating run {rid!r}")
+            raise
         else:
             moved.append(rid)
     return Outcome(

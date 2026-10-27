@@ -1154,3 +1154,56 @@ def test_a_full_memo_takes_no_more_and_keeps_what_it_took(monkeypatch):
     memo.put("c", _migrated(2))
     assert memo.get("a") is not None and memo.get("c") is not None
     assert memo.get("b") is None
+
+
+def test_an_unexpected_error_in_one_run_stays_an_error_and_names_the_run(
+    toy, monkeypatch, tmp_path
+):
+    """A bug in a step is no refusal: it ends the invocation as the error it is, with
+    the run it was reading named on it, in the detection pass and after the seal
+    alike."""
+    _seed(tmp_path, "8.0.0", "r1")
+    monkeypatch.setattr(migrations, "STEPS", (Tag("8.0.0", "8.1.0", boom_at=0),))
+    with pytest.raises(RuntimeError, match="boom") as detected:
+        migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0", choices=NONE)
+    assert detected.value.__notes__ == ["while reading run 'r1' in the detection pass"]
+    from runstate.migrations import stores
+
+    real = stores._read_sqlite
+    reads = []
+
+    def landing(path):
+        rows = real(path)
+        reads.append(path)
+        if len(reads) == 3:  # the read after the seal: a record has landed
+            rows = [*rows, rows[-1]._replace(seq=rows[-1].seq + 1)]
+        return rows
+
+    monkeypatch.setattr(stores, "_read_sqlite", landing)
+    monkeypatch.setattr(migrations, "STEPS", (Tag("8.0.0", "8.1.0", boom_at=1),))
+    with pytest.raises(RuntimeError, match="boom") as migrating:
+        migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0", choices=NONE)
+    assert migrating.value.__notes__ == ["while migrating run 'r1'"]
+
+
+def test_one_memo_serves_every_step_of_an_invocation(toy, monkeypatch, tmp_path):
+    """The memo's bound is the invocation's: one memo, shared by every step's plan,
+    keyed by the step too, so two steps handed the same rows under the same history
+    never read each other's transform."""
+    made = []
+
+    class Counted(Memo):
+        def __init__(self):
+            super().__init__()
+            made.append(self)
+
+    monkeypatch.setattr(migrations, "Memo", Counted)
+    _seed(tmp_path, "8.0.0", "r1")
+    assert migrate(SqliteStore(tmp_path), ["r1"], to="8.2.0", choices=NONE).moved == (
+        "r1",
+    )
+    assert len(made) == 1
+    rows = [Row(1, "value", "x", None, "{}", 0.0)]
+    first, second = toy
+    assert Memo.key(first, rows, ()) != Memo.key(second, rows, ())
+    assert Memo.key(first, rows, ()) == Memo.key(first, list(rows), ())

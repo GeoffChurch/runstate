@@ -462,14 +462,19 @@ class PHorizon(NamedTuple):
     """A pass closed at the horizon that its loop may continue past: the commits a
     longer run makes, which no record pins, were cut there (``Context.horizon``).
 
-    It marks only a cut a reading could read. Span reads a claim's commits, so a run
-    whose next pass only the horizon forbade is cut where it reads. A pass begun at the
-    horizon and cut before its close makes no commit, and no piece carries a label
-    (``PCommit``), so cutting a run there changes nothing read. A load reads its step
-    into the worker's clock, which Origin does not read (``Resumes``); a later record
-    that reads the clock (a step, a ``final_step``, a save a later claim loads) bounds
-    it by that record's own label, below the horizon, so a load at the horizon is on no
-    complete path where its step is read."""
+    It marks only a cut a reading could read. Span reads a claim's commits, and no
+    piece carries a label (``PCommit``), so what the horizon can change is how many
+    commits a run makes. A commit past the horizon needs a pass begun past it, and a
+    pass begins at its worker's floor or above: a floor past the horizon comes from a
+    close at the horizon, which this piece marks where the loop may continue, or from a
+    load or a rewind of a state at the horizon, which admits no pass and whose step
+    nothing reads (below). A pass begun at the horizon itself and cut before its close
+    makes at most one commit, at the horizon, where ``cut-save`` says its save finished
+    it, a commit the bound admits; the passes it forbids all follow a marked close. A
+    load reads its step into the worker's clock, which Origin does not read
+    (``Resumes``); a later record that reads the clock (a step, a ``final_step``, a save
+    a later claim loads) bounds it by that record's own label, below the horizon, so a
+    load at the horizon is on no complete path where its step is read."""
 
     claim: int
 
@@ -2506,7 +2511,7 @@ def _too_many(ctx: Context, seq: int, where: str) -> Refused:
 def build(ctx: Context) -> Graph:
     """The forward pass, then the backward one."""
     layer: dict[World, int] = {START: 0}
-    edges: list[list[Edge]] = []
+    edges: list[Sequence[Edge]] = []
     widths = [1]
     held = 1  # the states summed over the layers so far
     for i in range(len(ctx.recs)):
@@ -2593,8 +2598,12 @@ class Start(NamedTuple):
 
 
 class RewindTo(NamedTuple):
+    """A rewind after ``commits`` commits of its claim, closing its ``epoch``: two
+    rewinds of one claim may follow the same count, and the epoch orders them."""
+
     claim: int
     commits: int
+    epoch: int
     target: Node | None
 
 
@@ -2709,17 +2718,27 @@ def lineage(ctx: Context, pieces: Iterable[Piece], *, when: EndChooser) -> Linea
         (Died(p.claim, p.outcome, p.source) for p in ps if isinstance(p, PDied)),
         key=lambda d: (d.claim, d.outcome.value, d.source.value),
     )
+    # each sorted by what names it on a path, never by a node it may lack: a rewind's
+    # target or a start's resume point may be None beside a node
     return Lineage(
-        tuple(sorted(Start(p.claim, p.resume) for p in ps if isinstance(p, PStart))),
-        tuple(sorted(commits)),
         tuple(
             sorted(
-                RewindTo(p.claim, p.commits, p.target)
-                for p in ps
-                if isinstance(p, PRewind)
+                (Start(p.claim, p.resume) for p in ps if isinstance(p, PStart)),
+                key=lambda s: s.claim,
             )
         ),
-        tuple(sorted(exits)),
+        tuple(sorted(commits, key=lambda c: c.node)),
+        tuple(
+            sorted(
+                (
+                    RewindTo(p.claim, p.commits, p.epoch, p.target)
+                    for p in ps
+                    if isinstance(p, PRewind)
+                ),
+                key=lambda x: (x.claim, x.commits, x.epoch),
+            )
+        ),
+        tuple(sorted(exits, key=lambda x: x.node)),
         tuple(deaths),
         tuple(p for p in ps if isinstance(p, PTerminated)),
         tuple(p for p in ps if isinstance(p, PWithdrawal)),
@@ -2887,21 +2906,21 @@ def subjects(g: Graph) -> list[int]:
     return claims + [RUN]
 
 
-def _alive(live: Sequence[Sequence[Edge]]) -> tuple[tuple[Edge, ...], ...]:
+def _alive(live: list[Sequence[Edge]]) -> tuple[tuple[Edge, ...], ...]:
     """The edges on some complete path: forward from the start, backward from the
-    end."""
+    end. It filters ``live`` in place, layer by layer, so that it holds one copy of the
+    edges beside the caller's, never two."""
     reach: set[int] = {0}
-    fwd: list[tuple[Edge, ...]] = []
-    for es in live:
+    for k, es in enumerate(live):
         kept = tuple(e for e in es if e.src in reach)
-        fwd.append(kept)
+        live[k] = kept
         reach = {e.dst for e in kept}
-    out: list[tuple[Edge, ...]] = [() for _ in fwd]
     alive: set[int] = {0}
-    for k in range(len(fwd) - 1, -1, -1):
-        out[k] = tuple(e for e in fwd[k] if e.dst in alive)
-        alive = {e.src for e in out[k]}
-    return tuple(out)
+    for k in range(len(live) - 1, -1, -1):
+        kept = tuple(e for e in live[k] if e.dst in alive)
+        live[k] = kept
+        alive = {e.src for e in kept}
+    return tuple(tuple(es) for es in live)
 
 
 class Projection(Enum):
@@ -3035,8 +3054,10 @@ def written(g: Graph) -> tuple[tuple[Piece, ...], ...]:
     """The path the step writes once every fork is decided, the end-time fork's
     included: one complete path, as its edge's pieces at each layer, the last the log's
     end. The paths that remain write the same records: they differ only where no byte
-    is written (which writer wrote a record whose output names none, how far a
-    commit's gaps run past where it stands). Each layer takes the edge whose pieces
+    is written (which writer wrote a value, whose record names none; who wrote a
+    ``stopped`` that becomes nothing, a fenced worker or a third party noting; how far
+    a commit's gaps run past where it stands), and the step reads a divergence off
+    every path left, never off this one alone. Each layer takes the edge whose pieces
     come first by ``repr``, then the first state in the pass's own numbering, which
     the pass keeps free of hash order (``_each``, ``context``)."""
     assert admits(g)
@@ -3120,12 +3141,10 @@ def datings(g: Graph) -> dict[CommitId, Dating]:
 
 
 def _keep(g: Graph, keep: Callable[[int, Edge], bool]) -> Graph:
-    return replace(
-        g,
-        live=_alive(
-            [tuple(e for e in es if keep(k, e)) for k, es in enumerate(g.live)]
-        ),
-    )
+    live: list[Sequence[Edge]] = [
+        tuple(e for e in es if keep(k, e)) for k, es in enumerate(g.live)
+    ]
+    return replace(g, live=_alive(live))
 
 
 def dated_by(g: Graph, commit: CommitId, tick: Tick) -> Graph:
@@ -3141,15 +3160,12 @@ def dated_by(g: Graph, commit: CommitId, tick: Tick) -> Graph:
     return _keep(g, keep)
 
 
-def undated(g: Graph, commit: CommitId) -> Graph:
-    """The paths on which no tick dates ``commit``."""
-
-    def keep(k: int, e: Edge) -> bool:
-        return not any(
-            isinstance(p, PDate) and (p.claim, p.nth) == tuple(commit) for p in e.pieces
-        )
-
-    return _keep(g, keep)
+def _dates(e: Edge, silent: Silent) -> bool:
+    """Whether the edge's tick dates the commit ``silent``: such a path leaves it no
+    place of its own (a rewind no tick dates)."""
+    return isinstance(silent, CommitId) and any(
+        isinstance(p, PDate) and (p.claim, p.nth) == tuple(silent) for p in e.pieces
+    )
 
 
 class Place(NamedTuple):
@@ -3215,6 +3231,7 @@ class _Placing:
                     p.gaps.last
                     for es in g.live
                     for e in es
+                    if not _dates(e, silent)
                     for p in e.pieces
                     if isinstance(p, (PCommit, PRewind)) and _names(p, silent)
                 }
@@ -3242,16 +3259,18 @@ class _Placing:
 
 
 def places(g: Graph, silent: Silent) -> frozenset[Place]:
-    """Every place the commit or rewind ``silent`` stands on some path left, each with
-    its lower bound: a forward pass carrying, per state, the tracks reaching it. A track
-    settled at a state is a place some complete path has, since every live edge is on
-    one."""
+    """Every place the commit or rewind ``silent`` stands undated on some path left,
+    each with its lower bound: a forward pass carrying, per state, the tracks reaching
+    it, which a path whose tick dates the commit leaves (``_dates``). A track settled at
+    a state is a place some complete path has, since every live edge is on one."""
     placing = _Placing(g, silent)
     found: set[Place] = set()
     at: dict[int, set[_Track]] = {0: {placing.start}}
     for k, es in enumerate(g.live):
         nxt: dict[int, set[_Track]] = defaultdict(set)
         for e in es:
+            if _dates(e, silent):
+                continue
             for track in at.get(e.src, ()):
                 y = placing.advance(track, k, e)
                 if isinstance(y, Place):
@@ -3265,10 +3284,11 @@ def places(g: Graph, silent: Silent) -> frozenset[Place]:
 
 
 def ended_at(g: Graph, silent: Silent, after: int, t: float) -> Graph:
-    """The paths on which the commit or rewind ``silent`` stands just after the record
-    at seq ``after``, with its lower bound at or before ``t``. Until a path's place is
-    settled its state is split by its track, a function of the path, so each path is
-    kept once; it is whole again after."""
+    """The paths on which no tick dates the commit or rewind ``silent`` (``_dates``),
+    and it stands just after the record at seq ``after``, with its lower bound at or
+    before ``t``. Until a path's place is settled its state is split by its track, a
+    function of the path, so each path is kept once; it is whole again after. It builds
+    one list of edges beside ``g``'s and narrows that in place, never a third."""
     placing = _Placing(g, silent)
     split: dict[tuple[int, int, _Track], int] = {}
     # below every id the graph has, which an earlier split may have made negative
@@ -3278,7 +3298,7 @@ def ended_at(g: Graph, silent: Silent, after: int, t: float) -> Graph:
         """A split state's id in layer ``k``, apart from every whole one's."""
         return split.setdefault((k, state, track), min(floor, 0) - 1 - len(split))
 
-    live: list[tuple[Edge, ...]] = []
+    live: list[Sequence[Edge]] = []
     at: dict[int, set[_Track]] = {0: {placing.start}}
     whole: set[int] = set()
     for k, es in enumerate(g.live):
@@ -3286,6 +3306,8 @@ def ended_at(g: Graph, silent: Silent, after: int, t: float) -> Graph:
         nxt: dict[int, set[_Track]] = defaultdict(set)
         then: set[int] = set()
         for e in es:
+            if _dates(e, silent):
+                continue
             if e.src in whole:
                 kept.append(e)
                 then.add(e.dst)
@@ -3349,7 +3371,7 @@ def _restrict(
         """A split state's id in layer ``k``, apart from every whole one's."""
         return split.setdefault((k, state, prefix), -1 - len(split))
 
-    live = list(g.live)
+    live: list[Sequence[Edge]] = list(g.live)
     at: dict[int, set[tuple[Read, ...]]] = {e.src: {()} for e in g.live[lo]}
     for k in range(lo, hi + 1):
         kept: list[Edge] = []
@@ -3452,11 +3474,11 @@ class Undecided(MigrationError):
 
 def decode(g: Graph, choose: Chooser, *, cap: int) -> Graph:
     """The decode's stated rule: from the last claim back to the first, then the run;
-    for each, its End, its Span, then its Origin; within a projection, position by
-    position in log order. Where the paths left read a subject's projection at a
-    position more than one way, the chooser picks one answer, and only the paths through
-    it are kept before the next fork is read. It follows the graph choice by choice: a
-    fork's answers are gathered over its own window, never whole paths."""
+    for each, its End, its Span, its Origin, then its Writer; within a projection,
+    position by position in log order. Where the paths left read a subject's projection
+    at a position more than one way, the chooser picks one answer, and only the paths
+    through it are kept before the next fork is read. It follows the graph choice by
+    choice: a fork's answers are gathered over its own window, never whole paths."""
     windows = _windows(g)
     for key in _order(g, windows):
         q = _question(g, key, windows[key], cap=cap)
@@ -3553,6 +3575,22 @@ _CROSS: frozenset[WorkerFact | ThirdFact] = frozenset(
         ThirdFact.ACTS,
     }
 )
+# What Span's pieces depend on: which workers live at each record and what each one's
+# clock reads, from the cross-claim state (a takeover's survivor, a load) and the
+# worker's own program (its passes, its values, its exit).
+_SPAN_FEEDS: frozenset[WorkerFact | ThirdFact] = _CROSS | {
+    WorkerFact.LOADING,
+    WorkerFact.VALUES,
+    WorkerFact.BEAT_POS,
+    WorkerFact.BEAT_COV,
+    WorkerFact.MARKER,
+    WorkerFact.CLOSING,
+    WorkerFact.LOOP_END,
+    WorkerFact.DISCARDS,
+    WorkerFact.FINAL_STEP,
+    WorkerFact.ERROR_FINAL_STEP,
+    WorkerFact.STRAYS,
+}
 FEEDS: Mapping[Projection, frozenset[WorkerFact | ThirdFact]] = {
     Projection.END: _CROSS
     | {
@@ -3562,32 +3600,13 @@ FEEDS: Mapping[Projection, frozenset[WorkerFact | ThirdFact]] = {
         ThirdFact.VIA,
         ThirdFact.OUTCOME,
     },
-    Projection.SPAN: _CROSS
-    | {
-        WorkerFact.LOADING,
-        WorkerFact.VALUES,
-        WorkerFact.BEAT_POS,
-        WorkerFact.BEAT_COV,
-        WorkerFact.MARKER,
-        WorkerFact.CLOSING,
-        WorkerFact.LOOP_END,
-        WorkerFact.DISCARDS,
-        WorkerFact.FINAL_STEP,
-        WorkerFact.ERROR_FINAL_STEP,
-        WorkerFact.STRAYS,
-    },
+    Projection.SPAN: _SPAN_FEEDS,
     Projection.ORIGIN: _CROSS | {WorkerFact.LOADING},
-    # which workers live at a heartbeat (a takeover's survivor, a loop left early),
-    # and whose clock a tick's step matches
-    Projection.WRITER: frozenset(
-        {
-            WorkerFact.TAKEOVER,
-            WorkerFact.LOOP_END,
-            WorkerFact.STRIDE,
-            WorkerFact.BEAT_POS,
-            WorkerFact.BEAT_COV,
-        }
-    ),
+    # who wrote a heartbeat is a live worker whose clock the tick's step matches (a
+    # beacon's any live worker) and whose watermark convention admits its consumed_seq
+    # (``_beat``): the liveness and the clock are what Span's pieces depend on, and the
+    # watermark is the one encoding that filters writers directly
+    Projection.WRITER: _SPAN_FEEDS | {WorkerFact.WATERMARK},
 }
 """The facts whose value can decide each projection: §7's "feeds" column, every fact
 feeding the cross-claim state included, since a later claim reads it. An

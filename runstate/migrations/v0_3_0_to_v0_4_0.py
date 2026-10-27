@@ -154,8 +154,12 @@ whole-number float such as 3.0, which 0.3.0's schemas accept. It refuses:
   the decode asks, which it asks only on the paths the earlier answers left.
 - ``written`` picks among the paths left after the whole decode by the ``repr`` of
   their pieces, then by state number, which the pass keeps free of hash order. The
-  paths left differ only in what writes no byte: which writer wrote a record whose
-  output names no writer, and where in its interval a commit's gaps run.
+  paths left differ only in what writes no byte: which writer wrote a value, whose
+  output names no writer; who wrote a ``stopped`` that becomes nothing, a fenced
+  worker's own or a third party's note; and where in its interval a commit's gaps run.
+  A divergence whose rule reads such a difference (``fenced-exit``,
+  ``third-party-note``, ``register-value``, ``unheld-value``) fires where any path
+  left has it, never by the path ``written`` picked.
 - A divergence fires where its rule applies; the reads it names may still answer
   alike there (``third-party-release`` on a claim no verdict reads).
 """
@@ -931,9 +935,12 @@ FACTS: Facts[Configuration] = Facts(Configuration, UNSTATED, _describe)
 
 class _ReferenceReader:
     """The reference preset's reader: every claim the reference Worker's, every
-    ``stopped`` its own; a value with a step a metric of a pass, closing it or not, or
-    one written after the loop; and one without a register there, since ``emit`` writes
-    none."""
+    ``stopped`` its own; a value the worker's, in any of its phases, since consumer code
+    around the Worker may ``channel.send`` one at any point of its program (``emit``
+    writes only inside a pass, and its own message sends caller-clocked points to the
+    raw channel): a value with a step is a metric, which a node holds, and one without a
+    register, as ``emit`` writes none. Which phases its stepped values fall in is the
+    consumer's word, ``values``, which narrows these answers."""
 
     def __init__(self, log: Sequence[Row]) -> None:
         self._stepless = frozenset(
@@ -949,11 +956,8 @@ class _ReferenceReader:
         return frozenset({OwnStop()})
 
     def value(self, seq: int) -> frozenset[ValueRole]:
-        if seq in self._stepless:
-            return frozenset(ValueRole(r, True) for r in (Role.PASS, Role.BETWEEN))
-        return frozenset(
-            ValueRole(r, False) for r in (Role.PASS, Role.CLOSING, Role.BETWEEN)
-        )
+        register = seq in self._stepless
+        return frozenset(ValueRole(r, register) for r in _WORKER_ROLES)
 
 
 class Reference:
@@ -965,15 +969,15 @@ class Reference:
 
 _REFERENCE = "reference"
 
-
-_WORKER_VALUES = frozenset({V.Phase.PASS, V.Phase.BETWEEN})
-"""Where the reference Worker can write a value with a step: inside a pass, or after
-its loop and before its exit. ``emit`` raises before the first pass and writes nothing
-after the exit."""
+_WORKER_ROLES = tuple(r for r in Role if r is not Role.STRAY)
+"""A value's roles as the worker's own, one per phase of its program (``closing`` a
+pass's last value), every one of which consumer code may write a value in."""
 
 
 def reference(
     *,
+    stride: frozenset[V.Stride],
+    loading: frozenset[V.Loading],
     closing: frozenset[V.Closing],
     marker: frozenset[V.Marker],
     values: frozenset[V.Phase],
@@ -991,37 +995,44 @@ def reference(
     ``stopped`` the worker's own. A consumer names its own call of it, ``--assume
     mine:FACTS`` with ``FACTS = reference(...)``, giving its word.
 
-    It states what ``worker.py`` fixes: each pass labelled one past the last
-    (``step += 1``) and ticked after its body, the loop continuing only past a tick; no
-    value with a step before the first pass (``emit`` raises), so no clock before it is
-    ever read (``loading`` empty), and none after the exit (it writes nothing); the last
-    pass begun as any exit's ``final_step`` (``_last_step``, set before the ``yield``);
-    every stop it took in honoured, its fold at the claim, the newest control record its
-    drain read as its watermark; no rewind; a takeover only of a halted worker (the
-    gate, ``live_episode``).
+    It states what ``worker.py`` fixes: each pass after the first labelled one past the
+    last (``step += 1``) and every pass ticked after its body, the loop continuing only
+    past a tick; the last pass begun as any exit's ``final_step`` (``_last_step``, set
+    before the ``yield``); every stop it took in honoured, its fold at the claim, the
+    newest control record its drain read as its watermark; no rewind; a takeover only
+    of a halted worker (the gate, ``live_episode``).
 
     Every fact the consumer's own code decides is a required argument, none left wide
-    unasked: how a pass's body ends (``closing``) and whether a pass that closes
-    silently wrote a value (``marker``); where its values are written, within what the
-    Worker allows (``values``, inside a pass or after the loop); how its loop is left
-    (``loop_end``); its checkpoints (``discards``, ``cut_save``, ``save_at``,
-    ``save_cov``, ``leave_save``, ``load``); and other writers' values (``strays``). A
-    consumer that does not know one passes its whole domain, ``every(...)``.
+    unasked. A claim's first pass is labelled by the consumer's ``steps(start=...)``:
+    ``stride`` is ``next`` where it resumes at the loaded step plus one and starts fresh
+    at 0, ``skip`` where it starts above either (the fact has one class per pass, so a
+    consumer whose first pass skips states both, and the engine then admits a skip at
+    any pass). What its clock reads before its first pass (``loading``) matters where
+    its code writes a record before the first pass: ``emit`` raises there, but its own
+    message sends caller-clocked points to ``channel.send``, as a resumed claim logging
+    the score of the checkpoint it loaded at that checkpoint's step. Where its values
+    are written (``values``: the Worker itself writes only inside a pass, and a
+    subscription's samples are refused at the boundary, so any other phase is such a
+    raw send); how a pass's body ends (``closing``) and whether a pass that closes
+    silently wrote a value (``marker``); how its loop is left (``loop_end``); its
+    checkpoints (``discards``, ``cut_save``, ``save_at``, ``save_cov``, ``leave_save``,
+    ``load``); and other writers' values (``strays``). A consumer that does not know
+    one passes its whole domain, ``every(...)``.
 
     It can be false of a run: a control record landing between a drain and its
     heartbeat breaks ``watermark``, an explicit ``final_step`` breaks ``final-step``.
     A false word is not silent: no history writes the log, and the refusal names the
-    fact to relax."""
-    if not values <= _WORKER_VALUES:
-        raise ValueError(
-            f"the reference Worker writes no value with a step in "
-            f"{sorted(p.value for p in values - _WORKER_VALUES)}"
-        )
+    fact to relax. One resume the vocabulary has no class for: a first pass at the
+    loaded step itself (``steps(start=k)`` after loading a save of pass ``k``), since
+    the writer model labels a resumed claim's passes above the step it loaded
+    (``Stride``); such a run has no history under a ``load`` without ``outside``, and
+    under ``outside`` reads as a load of a checkpoint no claim saved, at the step
+    before."""
     return Configuration(
         {
             _REFERENCE: WorkerFacts(
-                stride=frozenset({V.Stride.NEXT}),
-                loading=frozenset(),
+                stride=stride,
+                loading=loading,
                 values=values,
                 beat_pos=frozenset({V.BeatPos.AFTER_CLOSE}),
                 beat_cov=frozenset({V.Covered.BEATEN}),
@@ -1208,12 +1219,14 @@ def _offered(
 ) -> list[tuple[float, int, EndTimeReading]]:
     """Every answer a built-in may give, each by its time and its place: a tick at its
     own ``t`` in its own place, and a place undated at its lower bound (``late``: at
-    the next record's ``t``, its lower bound after the log's last)."""
+    the next record's ``t``, or its lower bound where that is later, as another writer's
+    clock may run behind, or after the log's last record). Each is an answer
+    ``_end_time`` accepts: never a time below its place's bound."""
     out: list[tuple[float, int, EndTimeReading]] = [
         (t.t, t.seq, DatedBy(t.seq)) for t in question.ticks
     ]
     for u in question.unlogged:
-        t = u.next if late and u.next is not None else u.low
+        t = max(u.low, u.next) if late and u.next is not None else u.low
         out.append((t, u.after, EndedAt(u.after, t)))
     return out
 
@@ -1228,8 +1241,9 @@ class _Lower:
 
 class _Upper:
     """``upper``: the latest end the log allows, by time, then by place: a tick at its
-    ``t``, or a place at the ``t`` of the next record after it (its lower bound after the
-    log's last record)."""
+    ``t``, or a place at the ``t`` of the next record after it, or at its lower bound
+    where that is later (the next record is another writer's, whose clock runs behind)
+    or after the log's last record."""
 
     def choose(self, question: EndTime) -> EndTimeReading:
         return max(_offered(question, late=True), key=lambda x: (x[0], x[1]))[2]
@@ -1273,7 +1287,7 @@ END_TIME = Projection[EndTime, EndTimeReading](
             "upper",
             _Upper(),
             "the latest end by time, then by place: a tick at its t, or a place at the "
-            "t of the next record after it",
+            "t of the next record after it, or at its lower bound where that is later",
         ),
     ),
     check=_end_time,
@@ -1572,8 +1586,11 @@ class _Decided(NamedTuple):
 
 def _decide(g: E.Graph, resolutions: Resolutions) -> _Decided:
     """The decode (§7, the decode order), each fork routed to its projection's chooser;
-    then the end-time fork, commit by commit, subjects from the last claim back: which
-    tick dates it, if any, else when it ended."""
+    then the end-time forks, subjects from the last claim back: commit by commit, which
+    tick dates it, if any, else at which of the places it may stand undated it ended,
+    and when; then rewind by rewind, each a place and a time. Each answer narrows the
+    graph in place of the last: the decode holds the graph and the one its answer
+    leaves, never more."""
     readings: dict[str, dict[int, dict[str, Json]]] = {
         p.name: {} for p in (END, SPAN, ORIGIN, WRITER, END_TIME)
     }
@@ -1593,8 +1610,9 @@ def _decide(g: E.Graph, resolutions: Resolutions) -> _Decided:
         d = datings[c]
         if not d.undated and len(d.ticks) == 1:
             continue  # the log dates it: a proven site
-        bare = E.undated(g, c) if d.ticks and d.undated else g
-        offered = _unlogged(g.ctx, E.places(bare, c)) if d.undated else ()
+        # the places are read off the paths that leave it undated, and an EndedAt
+        # answer keeps only those (``E.ended_at`` drops the dated ones itself)
+        offered = _unlogged(g.ctx, E.places(g, c)) if d.undated else ()
         answer = END_TIME.ask(resolutions, EndTime(c, d.ticks, offered))
         readings[END_TIME.name].setdefault(c.claim, {})[_act(c)] = _jsonable(answer)
         if isinstance(answer, DatedBy):
@@ -1602,7 +1620,7 @@ def _decide(g: E.Graph, resolutions: Resolutions) -> _Decided:
             g = E.dated_by(g, c, tick)
         else:
             ended[c] = answer
-            g = E.ended_at(bare, c, answer.after, answer.t)
+            g = E.ended_at(g, c, answer.after, answer.t)
         datings = E.datings(g)
     rewound: dict[E.RewindId, EndedAt] = {}
     for x in sorted(E.reloads(g), key=lambda x: (-x.claim, x.epoch)):
@@ -2241,21 +2259,27 @@ def _diverged(log: _Log, d: _Decided) -> dict[str, tuple[int, ...]]:
     for p in _pieces(parts, E.PExit):
         if set(p.honored) != set(stops[p.seq].honored):
             sites[EXIT_HONORED.name].add(p.seq)
-    for part in parts:
-        for p in part:
-            if not isinstance(p, E.PStop):
-                continue
-            if p.author is E.Author.FENCED:
-                sites[FENCED_EXIT.name].add(p.seq)
-            elif p.author is E.Author.THIRD:
-                if any(isinstance(q, E.PDied) for q in part):
-                    sites[THIRD_PARTY_RELEASE.name].add(p.seq)
-                elif any(
-                    isinstance(q, E.PTerminated) and q.launch is None for q in part
-                ):
-                    sites[THIRD_PARTY_REAP.name].add(p.seq)
-                else:
-                    sites[THIRD_PARTY_NOTE.name].add(p.seq)
+    # a stopped's author on the paths every answer left: no reading reads it where it
+    # writes nothing (a fenced worker's exit, a third party's note), so where the paths
+    # left read it both ways, both divergences fire; what a third party's records (a
+    # death report, a process's end) is End's, decided, so every path left agrees on it
+    for es in d.graph.live:
+        for e in es:
+            for p in e.pieces:
+                if not isinstance(p, E.PStop):
+                    continue
+                if p.author is E.Author.FENCED:
+                    sites[FENCED_EXIT.name].add(p.seq)
+                elif p.author is E.Author.THIRD:
+                    if any(isinstance(q, E.PDied) for q in e.pieces):
+                        sites[THIRD_PARTY_RELEASE.name].add(p.seq)
+                    elif any(
+                        isinstance(q, E.PTerminated) and q.launch is None
+                        for q in e.pieces
+                    ):
+                        sites[THIRD_PARTY_REAP.name].add(p.seq)
+                    else:
+                        sites[THIRD_PARTY_NOTE.name].add(p.seq)
     for i, part in enumerate(parts[: len(d.ctx.recs)]):
         seq = d.ctx.recs[i].seq
         if any(isinstance(p, E.PDied) and p.source is E.Source.REAP for p in part):
@@ -2301,8 +2325,8 @@ class V0_3_0_to_V0_4_0:
     DIVERGENCES: ClassVar[tuple[Divergence, ...]] = DIVERGENCES
 
     def __init__(self) -> None:
-        # the last run's candidates, so detect and transform build them once; it
-        # changes no result
+        # the last run's candidates, so detect and the transform that follows it build
+        # them once; it changes no result
         self._last: tuple[_Built, E.Graph] | None = None
 
     def _candidates(
@@ -2320,6 +2344,21 @@ class V0_3_0_to_V0_4_0:
         self._last = None
         g = _candidates(rows, configuration, limits, built.born)
         self._last = (built, g)
+        return g
+
+    def _taken(
+        self,
+        rows: list[Row],
+        configuration: Configuration,
+        limits: Limits,
+        history: History,
+    ) -> E.Graph:
+        """The candidates for a transform, which narrows them answer by answer: the
+        step lets go of them, so that the decode holds the graph and the one its answer
+        leaves and nothing else holds a third. A transform of the same run again (the
+        runner's memo full) builds them again, which changes no result."""
+        g = self._candidates(rows, configuration, limits, history)
+        self._last = None
         return g
 
     def is_live(self, rows: list[Row]) -> bool:
@@ -2384,7 +2423,6 @@ class V0_3_0_to_V0_4_0:
         configuration = FACTS.of(a)
         log = parse(rows)
         _unread(log, configuration)
-        g = self._candidates(rows, configuration, a.limits, history)
-        d = _decide(g, resolutions)
+        d = _decide(self._taken(rows, configuration, a.limits, history), resolutions)
         out = _numbered(_layout(log, d), log)
         return Migrated(out, d.readings, _diverged(log, d))
