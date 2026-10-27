@@ -1156,13 +1156,13 @@ def test_postgres_writes_the_manifest_entry_in_the_sealing_transaction(
         raise RuntimeError("after the manifest table, before the insert commits")
 
     monkeypatch.setattr(stores, "_pg_manifest", boom)
-    with pytest.raises(RuntimeError):
-        migrate(
-            PostgresStore(pg_toy),
-            ["r1"],
-            to="8.1.0",
-            choices=_choose(resolve=["a=yes"]),
-        )
+    (failed,) = migrate(
+        PostgresStore(pg_toy),
+        ["r1"],
+        to="8.1.0",
+        choices=_choose(resolve=["a=yes"]),
+    ).errored
+    assert isinstance(failed.error, RuntimeError) and not failed.sealed
     assert none_yet()
     assert _pg_one(pg_toy, "SELECT to_regclass('runstate_v8_1_0.log')") == [(None,)]
     monkeypatch.setattr(stores, "_pg_manifest", real)
