@@ -983,19 +983,29 @@ says so, naming the facts that widen the pass.
 - **The reference preset** is a constructor a consumer builds its statement with, `reference(*, ...)` in
   `v0_3_0_to_v0_4_0.py`: a consumer's `--assume` names its own call of it (`FACTS = reference(...)` in its
   module), which is its word that every claim's worker is runstate's reference `Worker` driven by `steps()`,
-  and that no third party writes a `stopped`. It states what `worker.py` fixes: each pass labelled one past
-  the last and ticked after its body, the loop continuing only past a tick; no value with a step before the
-  first pass, so no clock before it is ever read (`loading` empty), or after the exit; any exit's
-  `final_step` the last pass begun; every stop taken in honoured, the fold at the claim, the newest control
-  record its drain read as its watermark; no rewind; a takeover only of a halted worker. Every fact the
-  consumer's own code decides is a required keyword-only argument, and none is left wide unasked: how a
-  pass's body ends (`closing`), whether a pass that closes silently wrote a value (`marker`), where its values
-  are written within what the Worker allows (`values`, inside a pass or after the loop), how its loop is left
+  and that no third party writes a `stopped`. It states what `worker.py` fixes: each pass after the first
+  labelled one past the last and every pass ticked after its body, the loop continuing only past a tick; any
+  exit's `final_step` the last pass begun; every stop taken in honoured, the fold at the claim, the newest
+  control record its drain read as its watermark; no rewind; a takeover only of a halted worker. Every fact
+  the consumer's own code decides is a required keyword-only argument, and none is left wide unasked. A
+  claim's first pass is labelled by the consumer's `steps(start=…)`, so `stride` is its word: `next` where it
+  resumes at the loaded step plus one and starts fresh at 0, `skip` where it starts above either (the fact
+  has one class per pass, so a consumer whose first pass skips states both, and the engine then admits a skip
+  at any pass). What its clock reads before its first pass (`loading`) matters where its code writes a record
+  before the first pass: `emit` raises there, but its own message sends caller-clocked points to
+  `channel.send`, as a resumed claim logging the score of the checkpoint it loaded at that checkpoint's step;
+  so the preset takes `loading`, and `values` in every phase (the Worker itself writes only inside a pass,
+  and a subscription's samples are refused at the boundary, so any other phase is such a raw send), and its
+  classifier answers a value every worker role for the two to narrow. The rest: how a pass's body ends
+  (`closing`), whether a pass that closes silently wrote a value (`marker`), how its loop is left
   (`loop_end`), its checkpoints (`discards`, `cut_save`, `save_at`, `save_cov`, `leave_save`, `load`), and
   other writers' values (`strays`). A consumer that does not know one passes its whole domain, `every(...)`,
   explicitly. The preset can be false of a run, as a control record landing between a drain and its
   heartbeat breaks `watermark`; a false word is not silent, since no history then writes the log and the
-  refusal names the fact to relax.
+  refusal names the fact to relax. One resume the vocabulary has no class for: a first pass at the loaded
+  step itself (`steps(start=k)` after loading a save of pass `k`), since the writer model labels a resumed
+  claim's passes above the step it loaded (`stride`); such a run has no history under a `load` without
+  `outside`, and under `outside` reads as a load of a checkpoint no claim saved, at the step before.
 - **A fact classifies** every element of one kind, a claim or one kind of act its writer makes, into one class
   of a closed domain. It is defined over what the writer does, never over a pattern in the log.
 - **A statement** is a subset of the domain: every such element of the writer's claims falls in it. It is true
@@ -1265,11 +1275,11 @@ rewind).
   ended at t just after a place. Its place sets its bound, and where a record of the claim's own may fall
   on either side of it, the place is content as a commit's is.
 - **The order.** The commits are asked from the last claim back to the first, and within a claim in the
-  order its worker made them; then the rewinds, in the same order. After each answer only the candidates through it are kept: dated by s keeps
-  those on which that tick dates the commit; ended at t after a keeps those on which it is undated, stands
-  just after a, and has its lower bound at or before t. Every path kept then writes the commit where the
-  answer places it, at a time its bound allows there, and a later answer only narrows them, so the step
-  never writes a time below the bound of the path it writes.
+  order its worker made them; then the rewinds, in the same order. After each answer only the candidates
+  through it are kept: dated by s keeps those on which that tick dates the commit; ended at t after a keeps
+  those on which it is undated, stands just after a, and has its lower bound at or before t. Every path kept
+  then writes the commit where the answer places it, at a time its bound allows there, and a later answer
+  only narrows them, so the step never writes a time below the bound of the path it writes.
 - **The reading's key** is the claim's seq, then the commit's index in its claim from 0, or `rewind <e>` for
   the rewind that closed the claim's epoch e: `{"end-time": {"<claim seq>": {"<n>": {"is": "DatedBy", "seq":
   s} | {"is": "EndedAt", "after": a, "t": t}}}}`. The other
@@ -1283,10 +1293,12 @@ rewind).
     claim's `started`, and it meets §3's bound. `last_activity` then never moves past a time the claim's own
     records hold, except to a copied value's `t`, which is true. `history`'s `from` and `until` thresholds
     hold at the native node or a later one, never an earlier one.
-  - **`upper`:** the latest. A place counts at the `t` of the next record after it, its lower bound after
-    the log's last record. That record may be another writer's, hours later. A claim's last commit before a
-    reclaim tool's `stopped` then takes that `stopped`'s `t`, and `last_activity` reads a dead run as fresh
-    until then: the hazard §5 keeps `died` out of `last_activity` to avoid.
+  - **`upper`:** the latest. A place counts at the `t` of the next record after it, or at its lower bound
+    where that is later (the next record is another writer's, whose clock runs behind: `upper` never answers
+    below a bound, which the check would refuse) or after the log's last record. The next record may be
+    another writer's, hours later. A claim's last commit before a reclaim tool's `stopped` then takes that
+    `stopped`'s `t`, and `last_activity` reads a dead run as fresh until then: the hazard §5 keeps `died` out
+    of `last_activity` to avoid.
   - **A consumer's own chooser** may date the end from evidence off the log, such as checkpoint file times. It
     answers one of the ticks offered, or one of the places with a time at or after its lower bound, since a
     commit is written after the values it holds (§3).
@@ -1347,16 +1359,23 @@ fact's class (above), and where no stated fact settles it, a fork (below).
 Three limits bound the pass, each set where the command line is read and recorded with every migrated run
 (`log-formats.md` §6), since each can decide a result: the **cap**, the states one layer may hold; the
 **budget**, the states held summed over every layer, which the pass's memory follows (about 420 bytes a state,
-its edges included); and the **run-on**, how many labels past the log's highest step a run of passes that no
-record pins is followed, per claim. Each is a limit, never a reading. A run past the cap or the budget is
+its edges included; the decode then narrows the built graph in place of itself, holding the graph and the one
+its answer leaves, and its peak stayed under the build's on every graph measured, `cli.py`); and the
+**run-on**, how many labels past the log's highest step a run of passes that no record pins is followed, per
+claim. Each is a limit, never a reading. A run past the cap or the budget is
 refused, naming the record; under no stated facts the refusal names the facts that widen the pass and the
 reference preset ("The writer facts"). The horizon refuses a run only where its cut could change a reading: a
 candidate that closes a pass at the horizon with its loop free to continue past it, so that only the horizon
 forbade the next pass and the commits after it, which Span reads. The refusal names the claims and the facts
 that can clear it: `marker` (no pass closes silently), `closing` (none closes but at a value) and `beat-cov`
-(no loop continues past an unticked pass). Nothing else the horizon cuts is read. A pass begun at the horizon
-and cut before its close makes no commit, and no commit carries a label. A load sets the worker's clock,
-which Origin does not read; a later record that reads the clock (a step, a `final_step`, a save a later claim
+(no loop continues past an unticked pass). Nothing else the horizon cuts is read. No commit carries a label,
+so what the horizon can change is how many commits a run makes, and a commit past it needs a pass begun past
+it: a pass begins at its worker's floor or above, and a floor past the horizon comes from a close at the
+horizon, which is the marked case where the loop may continue, or from a load or a rewind of a state at the
+horizon, which admits no pass and whose step nothing reads. A pass begun at the horizon itself and cut before
+its close makes at most one commit, at the horizon, where `cut-save` says its save finished it, which the
+bound admits; the passes the horizon forbids all follow a marked close. A load sets the worker's clock, which
+Origin does not read; a later record that reads the clock (a step, a `final_step`, a save a later claim
 loads) bounds it by its own label, below the horizon, so a load at the horizon is on no candidate where its
 step is read.
 
@@ -1385,9 +1404,12 @@ run for what speaks for no claim. A fork's site is the record at which its readi
   heartbeats, and the Watcher seeds a claim's staleness from its records, heartbeats among them (§5). It is a
   different question from what a claim did, so Span's built-ins never weigh it. A log born in 0.3.0 names the
   writer, so the projection never forks there; in a log born in 0.2.0 any live worker may have written a
-  heartbeat. A fork is read per claim at the heartbeat: did this claim's worker write it. Its facts are those
-  that decide which workers live at the heartbeat and whose clock a tick's step matches (`takeover`,
-  `loop-end`, `stride`, `beat-pos`, `beat-cov`).
+  heartbeat. A fork is read per claim at the heartbeat: did this claim's worker write it. Its facts are
+  derived from what its pieces depend on, not listed by hand: a writer is a live worker whose clock the
+  tick's step matches and whose watermark convention admits its `consumed_seq`, and which workers live at a
+  record and what each one's clock reads is what Span's pieces depend on too, so the fork names Span's facts
+  (the cross-claim state included: a `load` settles whose clock could reach a step) and `watermark`, an
+  over-approximation.
 - **`newest`**, for `writer`, takes the answer in which the claim asked wrote the heartbeat. The decode asks
   the last claim first, so it reads a heartbeat whose writer is open as the newest live worker's.
 - **A consumer's chooser** answers with one of the fork's own answers, each carrying a witness lineage. The
@@ -1398,15 +1420,19 @@ run for what speaks for no claim. A fork's site is the record at which its readi
 
 **The decode order is a rule** (`log-formats.md` §6): subjects from the last claim back to the first, then the
 run; for each subject its `end`, then its `span`, then its `origin`, then its `writer`, which no other reading
-depends on; within a projection, position by position in log order. After each answer only the candidates through it are kept, and the next fork is read off what
-remains. The end-time forks are asked last, on the decided lineage, commit by commit. The last claim goes
-first because its records are the ones a resumed worker and every current read rest on; the claims before it
-are read in the light of what it was. Candidates that remain after the whole decode write the same records:
-they differ only where no byte is written (which writer wrote a value, whose record names none; how far a
-commit's interval runs past where it stands). The step takes the first by a fixed order. The pass's states
-are numbered in an order no hash decides: the classifier's answers, sets of the consumer's keys, are put in
-the configuration's declared order once, and every set of the engine's own values is iterated sorted. So the
-same log, facts and readings write the same bytes in every process.
+depends on; within a projection, position by position in log order. After each answer only the candidates
+through it are kept, and the next fork is read off what remains. The end-time forks are asked last, on the
+decided lineage, commit by commit, then rewind by rewind ("The end-time fork", the order). The last claim
+goes first because its records are the ones a resumed worker and every current read rest on; the claims
+before it are read in the light of what it was. Candidates that remain after the whole decode write the same
+records: they differ only where no byte is written (which writer wrote a value, whose record names none; who
+wrote a `stopped` that becomes nothing, a fenced worker or a third party noting; how far a commit's interval
+runs past where it stands). The step takes the first by a fixed order, and a divergence whose rule reads such
+a difference (`fenced-exit`, `third-party-note`, `register-value`, `unheld-value`) fires where any remaining
+candidate has it, never by the one taken. The pass's states are numbered in an order no hash decides: the
+classifier's answers, sets of the consumer's keys, are put in the configuration's declared order once, and
+every set of the engine's own values is iterated sorted. So the same log, facts and readings write the same
+bytes in every process.
 
 **Records.** How the decided lineage is written down, the same for every consumer. Every input record stands
 where 0.3.0 put it (E2), and a record the step adds stands just after the record it follows:

@@ -325,9 +325,9 @@ manifest's readings mean:
   from the last claim back to the first, then the run; for each subject its End, then its Span, then its
   Origin, then its Writer; within a projection, position by position in log order. After each answer only
   the candidates through it are kept, and the next fork is read off what remains. Its `end-time` forks are
-  asked last, on the decided lineage, commit by commit, then rewind by rewind. The last claim goes first because its
-  records are the ones a resumed worker and every current read rest on; the claims before it are read in
-  the light of what it was.
+  asked last, on the decided lineage, commit by commit, then rewind by rewind. The last claim goes first
+  because its records are the ones a resumed worker and every current read rest on; the claims before it
+  are read in the light of what it was.
 
 **The detection pass.** `runstate migrate` first runs every selected run's chain of steps in memory, sealing
 nothing and changing no log's content: step 2 above, for the whole root before any run is sealed. (On SQLite
@@ -419,6 +419,9 @@ fires nowhere is allowed, so a consumer can keep one set of choices for every ro
   follows, refusing the run past it, naming the record; the cap alone does not, since a log holding a layer
   near the cap over many more records would exceed a machine's memory (about 16 GB at 3,000 over 13,000).
   The command line's value is 6,000,000 states, about 2.5 GB: it clears 664f8795's 4.3 million by two fifths.
+  The build is the peak: the decode that follows narrows the built graph in place of itself, holding the
+  graph and the one its answer leaves, and its working set fits in what the build freed (`cli.py` gives the
+  measurements).
 - **`--run-on N`** is how many labels past the log's highest step a run of passes that no record pins is
   followed, per claim: the 0.3.0 → 0.4.0 engine's horizon, past which such a run is cut. It decides how many
   silent passes a reading may hold, so it is set at the edge and recorded too. The command line's value is
@@ -444,8 +447,9 @@ untouched: the manifest belongs to the root, outside every format's address.
   projection's chooser as it was given, a built-in's name or `module:attr`, or null where none was given, as
   for a projection that forked in no run; each fork's reading, keyed by its site's seq and then its subject
   (a step may key a projection whose forks have no site of their own otherwise, saying how: the 0.3.0 →
-  0.4.0 step keys `end-time` by claim seq and then the commit's index, `commits-and-lineage.md` §7); and each
-  divergence that fired, with its sites, every one accepted. Proven sites are not recorded.
+  0.4.0 step keys `end-time` by claim seq and then the commit's index, or `rewind <e>` for the rewind that
+  closed the claim's epoch `e`, `commits-and-lineage.md` §7); and each divergence that fired, with its
+  sites, every one accepted. Proven sites are not recorded.
 - **When it is written:** with the run's new log. On Postgres the entry is inserted in the sealing
   transaction. On SQLite it is appended before the rename that publishes the log, so a migrated run always
   has its entry. A crash between the two leaves an entry for an attempt that did not publish; a re-run
