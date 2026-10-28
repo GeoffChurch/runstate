@@ -172,7 +172,8 @@ migrated.
   run's output whenever the seal's re-read finds the rows it read before, memo or none. So a run the memo
   holds is transformed once, and a run past its bound (a root of more than about 120 large runs) twice: the
   detection pass's, and the dry run's again. On Postgres the seal comes first and there is no dry run, so it
-  is transformed twice past the bound too. None of it changes a result.
+  is likewise transformed once while the memo holds it and twice past the bound. Both stores read the run's
+  history before the seal, so the memo's key is the detection pass's. None of it changes a result.
 - **A refusal leaves the run untouched.** Every refusal is a `MigrationError` that names its run
   (`run '<rid>': …`), and `migrate` carries on past it to the other runs (below, "Carrying on past
   refusals"). The refused run stays writable and unmigrated, and a re-run refuses it the same way. One

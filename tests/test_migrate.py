@@ -479,6 +479,13 @@ def test_postgres_seals_before_it_reads(pg_toy, monkeypatch):
     assert sealed == ["r1"]
 
 
+def test_the_memo_serves_the_postgres_transform(pg_toy):
+    """The transform in the sealing transaction is the detection pass's: the history
+    is read before the seal, whose sealed_runs row would key it apart (Memo.key)."""
+    migrate(PostgresStore(pg_toy), ["r1"], to="8.1.0", choices=NONE)
+    assert migrations.STEPS[0]._calls == 1
+
+
 def test_postgres_copy_holds_every_committed_row(pg_toy):
     import psycopg
 

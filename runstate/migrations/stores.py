@@ -349,6 +349,10 @@ class PostgresStore:
         dst_name = formats.FORMATS[step.TO].pg_schema()
         dst = sql.Identifier(dst_name)
         with psycopg.connect(self._dsn) as conn, conn.transaction():
+            # The history before the seal, as the detection pass read it: the seal's
+            # own sealed_runs row is no trace of the run's past, and would key the
+            # transform apart from the detection pass's (Memo.key).
+            history = _pg_history(conn, run_id)
             # Seal first: its table lock keeps writers out, so the read sees every
             # committed row. A refusal, of a live run or by the step's transform,
             # raises and rolls the seal back.
@@ -365,7 +369,7 @@ class PostgresStore:
             ]
             if step.is_live(rows):
                 raise MigrationError("it has a live episode; stop it first")
-            migrated = planned.run(rows, _pg_history(conn, run_id))
+            migrated = planned.run(rows, history)
             from ..channel.postgres import (
                 _CREATE_INDEX,
                 _CREATE_NAME_INDEX,
