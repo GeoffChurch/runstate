@@ -1870,19 +1870,23 @@ mycooc's, since bookgen's 160 `.db` files and runstate-tui's hold none. The step
     version as a value. The plan went ahead without it. Its one wording finding, `resume_from: null` also
     covering state from outside the run, was fixed (`4ce721e`, `ffe373a`).
   - **E2's cost in five cases,** where the owner accepted two (above).
-- **Open for the final review,** each found by the measured migrate:
-  - **The shipped wiring is untested end to end.** Format 0.4.0's layout in `FORMATS`, its opening checks
-    (`log-formats.md` §4) and the step in `STEPS` are written with layer 2's last commit; the measurement
-    registered the step in process.
-  - **The manifest's size.** Every 0.3.0 → 0.4.0 entry repeats the whole description of the consumer's facts:
-    about 195 KB a run for mycooc, about 1 GB over its store. On SQLite, the backend measured, a single root's
-    manifest is read whole when `migrate` starts.
-  - **The memo bound.** Under one root, past about 120 of mycooc's runs (inferred, above), each run is
-    transformed twice more, so a single-root consumer pays about twice the per-home cost.
+- **The final whole-branch review (2026-10-28)** found 0 Critical, 2 Important and 10 Minor; one fix round
+  closed every finding (`8d1297b` to `fb885a9`), and its re-review's one new Minor was fixed (`fc813f8`). The
+  three items the measured migrate had left open for it:
+  - **The shipped wiring is untested end to end.** It stays so by design: format 0.4.0's layout in `FORMATS`,
+    its opening checks (`log-formats.md` §4) and the step in `STEPS` are written with layer 2's last commit;
+    the measurement registered the step in process. The review confirmed nothing claims the CLI reaches 0.4.0.
+  - **The manifest's size.** Every entry repeated the whole description of the consumer's facts, about 195 KB
+    a run for mycooc. An entry now cites the description by its digest, and the root holds it once
+    (`log-formats.md` §6): a mycooc entry went from 206,261 bytes to 23,658.
+  - **The memo bound.** Past it, under one root past about 120 of mycooc's runs, a run was transformed twice
+    more. The transform after the seal now takes the dry run's output, so it is transformed once more.
+  - **Birth (I1).** A log the manifest was silent about read as born in 0.3.0. Birth is now read from the
+    manifest or the store's traces of the log in 0.2.0, or else stated by the consumer, and refused unstated
+    (§7, "Names an earlier step filled").
 - **What runstate decided** is only how 0.4.0 writes the history down, the same for every consumer: E1 and E2,
   §7's "Records", the generic choosers, the refusals, and the limits set at the command line and recorded with
   each run (cap 3,000 states a layer, budget 5,000,000 summed, run-on 2).
 - **For ruling 12a.** Revision 2's migration is implemented and measured, and every read it changes on real
   logs is a declared divergence. Its live layer (§3–§6) is not implemented. The step registers, and
-  `LOG_FORMAT` moves to 0.4.0, with layer 2's last commit. The final whole-branch review comes before the
-  merges.
+  `LOG_FORMAT` moves to 0.4.0, with layer 2's last commit. The final whole-branch review is closed.
