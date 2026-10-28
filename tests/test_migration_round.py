@@ -251,7 +251,9 @@ def test_a_fork_no_chooser_decides_leaves_its_run_undecided(tmp_path):
     runs, summary = _run(tmp_path, {"displaced": GOLDEN["displaced"]}, config=config)
     x = runs["displaced"]
     assert x["status"] == "undecided"
-    assert x["forks"] == {"0.3.0 -> 0.4.0": {"span": 1}}
+    assert x["undecided_on"] == {"0.3.0 -> 0.4.0": {"span": 1}}
+    assert x["forks"]["0.3.0 -> 0.4.0"]["span"] == 1
+    assert x["census"] is not None, "an undecided run keeps the census of its step"
     assert summary["undecided"] == {"0.3.0 -> 0.4.0": {"span": 1}}
 
 
@@ -976,3 +978,18 @@ def test_a_verdict_difference_is_explained_only_by_a_site_in_the_latest_episode(
     assert mr._explained(False, fired, mr._VERDICT, since=4) == ["attributed-death"]
     assert mr._explained(False, fired, mr._VERDICT, since=6) == [mr.UNATTRIBUTED]
     assert mr._explained(True, fired, mr._VERDICT, since=6) == []
+
+
+def test_a_claims_first_pass_is_its_first_tick_or_its_first_nonzero_value():
+    """The census's first pass label: a claim's first heartbeat step, and for a
+    beatless claim its first stepped value past the step-0 loading statuses."""
+    rows = [
+        r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
+        r(2, "value", _value("LOADING", 0, 1.1), name="status"),
+        r(3, "value", _value(0.5, 1, 1.2), name="loss"),
+        r(4, "lifecycle.heartbeat", _beat(1, 0, 1, 1.3)),
+        r(5, "lifecycle.started", _started("local://n1/12", 2.0)),
+        r(6, "value", _value("LOADING", 0, 2.1), name="status"),
+        r(7, "value", _value(0.4, 2, 2.2), name="loss"),
+    ]
+    assert mr._first_ticks(rows) == {1: 1, 5: 2}

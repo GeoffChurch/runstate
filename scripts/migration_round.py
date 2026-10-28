@@ -349,9 +349,11 @@ class RunRecord:
     live_by_0_3_0: bool | None = None
     refusal: Refusal | None = None
     crash: Crash | None = None
-    # each step's forks of each projection, by step and projection; under
-    # ``undecided``, those of the projections no --resolve decides
+    # each step's forks of each projection, by step and projection, the forks of
+    # every step the run reached; ``undecided_on``: an undecided run's forks of the
+    # projections no --resolve decides, empty for any other run
     forks: dict[str, dict[str, int]] = field(default_factory=dict)
+    undecided_on: dict[str, dict[str, int]] = field(default_factory=dict)
     # where each divergence fired, its count of sites, and those no --accept names
     divergences: dict[str, int] = field(default_factory=dict)
     unaccepted: list[str] = field(default_factory=list)
@@ -1079,10 +1081,13 @@ def configuration(choices: Choices) -> Configuration:
 
 
 class _Undecided(Exception):
-    """A step's projection forks with no ``--resolve``: the run's later steps wait."""
+    """A step's projection forks with no ``--resolve``: the run's later steps wait.
+    ``record`` is the run's record so far, with every fork of the step, and its
+    census when the step is the 0.3.0 one."""
 
-    def __init__(self, forks: dict[str, int]) -> None:
+    def __init__(self, forks: dict[str, int], record: RunRecord) -> None:
         self.forks = forks
+        self.record = record
 
 
 _STAGE = {
@@ -1112,7 +1117,7 @@ def _run_step(
         if p.name in counts and plan.resolutions.choosers[p.name].spelling is None
     }
     if open_:
-        raise _Undecided(open_)
+        raise _Undecided(open_, replace(base, forks=forks))
     migrated = transform_checked(
         step, rows, resolutions=plan.resolutions, history=history
     )
@@ -1127,18 +1132,25 @@ def _run_step(
 
 
 def _first_ticks(rows: Sequence[Row]) -> dict[int, int]:
-    """Each claim's first tick: the step of the first heartbeat with an integer step
-    after its ``started`` and before the next one."""
-    out: dict[int, int] = {}
+    """Each claim's first pass label, as the census reads it: the step of its first
+    heartbeat with an integer step, or for a claim with none (a beatless claim), the
+    first nonzero integer step of its values, a step-0 value being a loading status
+    or a fresh claim's bootstrap. Between its ``started`` and the next one."""
+    ticks: dict[int, int] = {}
+    values: dict[int, int] = {}
     claim: int | None = None
     for r in rows:
         if r.topic == _STARTED:
             claim = r.seq
-        elif r.topic == _HEARTBEAT and claim is not None and claim not in out:
+        elif claim is not None and r.topic in (_HEARTBEAT, _VALUE):
             step = json.loads(r.body).get("step")
-            if observables.is_step(step):
-                out[claim] = step
-    return out
+            if not observables.is_step(step):
+                continue
+            if r.topic == _HEARTBEAT:
+                ticks.setdefault(claim, step)
+            elif step != 0:
+                values.setdefault(claim, step)
+    return values | ticks
 
 
 def census(rows: list[Row], plan: Planned) -> Census:
@@ -1240,7 +1252,9 @@ def measure(
             migrated, base = _run_step(plan, rows, history, base)
         except _Undecided as u:
             label = f"{plan.step.FROM} -> {plan.step.TO}"
-            return replace(base, status=Status.UNDECIDED, forks={label: u.forks})
+            return replace(
+                u.record, status=Status.UNDECIDED, undecided_on={label: u.forks}
+            )
         except MigrationError as exc:
             return _refused(base, name, exc)
         except Exception as exc:
@@ -1385,7 +1399,7 @@ class Totals:
     runs: RunTotals = field(default_factory=RunTotals)
     refusals: dict[str, Counter[str]] = field(default_factory=dict)  # by step
     crashes: dict[str, Counter[str]] = field(default_factory=dict)  # by stage
-    # undecided runs, by step and projection; forks of every run, likewise
+    # undecided runs' open forks, by step and projection; forks of every run, likewise
     undecided: dict[str, Counter[str]] = field(default_factory=dict)
     forks: dict[str, Counter[str]] = field(default_factory=dict)
     # runs each divergence fired in, and the runs no --accept would let migrate
@@ -1415,9 +1429,10 @@ class Totals:
             self.refusals.setdefault(x.refusal.step, Counter())[x.refusal.kind] += 1
         if x.crash is not None:
             self.crashes.setdefault(x.crash.stage, Counter())[x.crash.kind] += 1
-        into = self.undecided if x.status == Status.UNDECIDED else self.forks
         for label, counts in x.forks.items():
-            into.setdefault(label, Counter()).update(counts)
+            self.forks.setdefault(label, Counter()).update(counts)
+        for label, counts in x.undecided_on.items():
+            self.undecided.setdefault(label, Counter()).update(counts)
         self.divergences.update(x.divergences.keys())
         self.runs_unaccepted += bool(x.unaccepted)
         self.schema.invalid_rows += len(x.schema_invalid)
