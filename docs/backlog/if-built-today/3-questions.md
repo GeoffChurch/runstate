@@ -174,9 +174,6 @@ the residual's one affirmable reading.
 every value at every key — is settled only by vouching at every produced key, and a producer that
 cannot vouch leaves it open forever. A scheduler that relaunches on a non-empty residual then relaunches
 forever. So admission owes a rule for such questions, and the no-progress guard must hold against them.
-The same failure shape, a relaunch loop the guard did not stop, was measured when the `control.target`
-design was refuted ([`../../specs/control-target.md`](../../specs/control-target.md), R5: 373 spawns in 3 s); there the cause was a guard
-that could not fire on time targets.
 
 **That removes a mechanism rather than adding one.** A demand entirely covered by another has an **empty
 residual** and costs nothing, without anybody detecting that it was subsumed — so containment compaction
@@ -317,14 +314,12 @@ going away for free.
 | the **demand** — an `asked` record | yes, an ordinary post | the store; it gates a producer's rule |
 | the **subscription** — *"tell me when this changes"* | no, revocable | the reader's own rule plus routing: the rule is program, the routing is transport |
 
-Production is triggered by a demand matching a producer's rule. A subscription triggers nothing: it is a
-body literal that fires on arrival, seen from the transport's side, and it needs no object in the store —
-what a subscriber missed is still there when it returns, since nothing retracts. No `Open` sort and no
-`denote` are needed, so no reflection is bought. The shipped `control.subscribe` is what this replaces:
-three concerns in one record (a read, a route, a trigger), pairing answers to requests **by log position**
-— the positional answer fold — which [`README.md`](README.md) §"Two commitments" forbids. Its `request_id` survives only as a
-routing handle — who asked, so who is told — kept outside the question's identity, or identical questions
-stop being one record.
+Production is triggered by a demand matching a producer's rule. A subscription triggers nothing: it is a body
+literal that fires on arrival, seen from the transport's side, and it needs no object in the store — what a
+subscriber missed is still there when it returns, since nothing retracts. No `Open` sort and no `denote` are
+needed, so no reflection is bought. What this replaces is a subscription record that is three concerns at
+once: a read, a route and a trigger. A request id survives only as a routing handle — who asked, so who is
+told — kept outside the question's identity, or identical questions stop being one record.
 
 **It does not carry a dependency graph, and the logical layer needs none.** When a handler serving
 `g` posts an `asked` record for `p`, the store cannot tell that from an unrelated querier — symmetric

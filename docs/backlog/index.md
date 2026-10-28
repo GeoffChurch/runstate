@@ -165,15 +165,24 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
   1. reference by name on control and lifecycle records (order-independent folds; fixes #39, the
      cascade and the stale-beat leak; the startless run answered) — **IMPLEMENTED 2026-10-03** as log
      format 0.3.0 ([`../specs/reference-by-name.md`](../specs/reference-by-name.md));
-  2. names on values;
+  2. names on values: commits and lineage, log format 0.4.0 — **SPEC REVISION 2 under review**
+     (2026-10-14; [`../specs/commits-and-lineage.md`](../specs/commits-and-lineage.md));
   3. episode-keyed artefacts read through the log's vouching;
   4. time as a *trigger* for claims, which dissolves the cross-host wedge;
   5. fenced worker writes, possibly optional given 1.
 
   The target is that a wrong claim costs waste, never corruption. It supersedes episode-aim, below.
+- **Convergence with if-built-today** — [if-built-today-convergence](if-built-today-convergence.md).
+  LIVING (2026-10-04; renamed from "What carries over" and corrected 2026-10-14). A map in both directions.
+  - **Adopted in layers 1–2:** identity as data (under one sequencer), settledness, values keyed by node,
+    declared sources, the two viewpoints on a claim's end, and withdrawal as a positive record.
+  - **Next:** demand as `asked` facts.
+  - **Listed there:** runstate's non-monotone core, the coordination budget to record in `design-v0.2.md`;
+    and where layer 2 is stricter than if-built-today, or still differs from it.
 - **Demand on lazy streams** — [demand-streams](demand-streams.md). DIRECTION (2026-10-04).
   - **The idea:** one primitive, demand on a prefix of a lazy, memoized stream. It would subsume `ensure`,
-    `history`, subscriptions, lazy launch, leases, early stopping, and stopping as withdrawn demand.
+    `history`, subscriptions, lazy launch, leases and early stopping. A stop is not withdrawn demand
+    (corrected 2026-10-14).
   - **Also covered:** offered metrics, derived providers, and one log per run with many streams.
   - **First probe:** `run.stream(name)[:n]` as a read-side helper.
 - **Programmable subscriptions** — [programmable-subscriptions](programmable-subscriptions.md). DIRECTION
@@ -182,6 +191,14 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
     need no coordination (CALM).
   - **Detail:** a ladder of expressiveness, which points to definite clauses, and a split between programs
     that can be replayed and those that cannot.
+  - **Also here, from layer 2:** the classes of worker state at a change of position, and **dynamic
+    sources**: a worker-written declaration in force within its claim, and derived streams named by the
+    demand that creates them.
+- **Liveness promises** — [liveness-promise](liveness-promise.md). DIRECTION, form chosen (2026-10-05).
+  - **The idea:** each liveness record (`started`, commit, heartbeat) says within how many seconds the next
+    is due, so the dead-vs-busy threshold is declared by the worker, per phase, instead of guessed by each
+    observer.
+  - **Replaces** the Watcher's `heartbeat_timeout`, and the need for background beating threads.
 - **Authenticated and confidential records** — [authenticated-records](authenticated-records.md). DIRECTION
   (2026-10-04).
   - **The idea:** signed control and lifecycle records close the "honor system" gap.
@@ -197,7 +214,32 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
   - the lineage plane held, with no arbiter;
   - the observer plane, head choice and stops still speak for "the latest claim".
 
-  Its step record is a candidate shape for layer 2.
+  Its step record is a candidate shape for layer 2. Layer 6 of identity-in-records, and the home of
+  **minted node and claim ids** for a regime with no central store, where a seq is no longer a name
+  (revive when a log gains a second sequencer).
+- **Backlogged by the layer-2 review** — [review](../review-2026-10-04-commits-and-lineage.md) §9 C3 and
+  §12 item 0.12, each with its revival trigger:
+  - **Hash-reveal withdrawal.** A request carries a commitment, and its withdrawal reveals the secret, so
+    only the asker can withdraw it ([if-built-today](if-built-today/5-domain.md) §"Halting and
+    withdrawing"); for runstate it would reach stops through `control.withdraw`. Revive when a second
+    independent asker shares runs, or when authenticated-records is taken up.
+  - **Monotonic durations.** Staleness and lease expiry measured on a clock that cannot step
+    ([if-built-today](if-built-today/1-logic.md) §"Two layers, and what crosses between them"); the Watcher
+    measures them on `time.time` today and seeds from the records' `t`. Revive when a verdict is traced to
+    a clock step, or when the Watcher's seeding next changes.
+  - **Reclamation tiers** for abandoned branches and unvouched checkpoints, as eviction, never retraction
+    ([if-built-today](if-built-today/3-reclamation.md)). Revive when a GC must decide which checkpoints or
+    branches may go.
+  - **Dispute records** that name what they contest. The verdict keeps every death report's outcome, so a
+    disagreement is visible, but no record can say which report is wrong (review §12, item 14). Revive at
+    the first claim with disagreeing death reports, or with authenticated-records.
+  - **Identity kept in summaries:** cockpit cells keep run, node and stream, and latest-wins and argmax are
+    labelled as summaries that drop identity ([convergence](if-built-today-convergence.md)). Revive with
+    the first cross-run summary in the cockpit or a viz project.
+  - **A fingerprint guard for custom loops** that save outside the Worker's save policy. The recipe
+    fingerprints the state at each commit, in process, and a save compares the state it writes with the
+    fingerprint of the node it names, so nothing goes on the wire. Revive for a consumer whose saves cannot
+    move into the recipe; mycooc's can (training.py:1332, :1346, :1354 against :1369).
 - **Log formats and reference by name: follow-ups** — [log-formats-followups](log-formats-followups.md).
   LIVING (2026-10-03). What the shipping branch's final review left real but not merge-blocking: the
   uncached per-open listing, migration robustness (cycle guard, DDL without the lock, raw tracebacks),
@@ -226,7 +268,9 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
   3 seconds*, and *"not last writer sets the goal — the writer with the fastest poll loop wins"*). The
   concept is already named as R6's **durable ceiling**, the one empty cell in the control 2×2, and A7
   already assigned it a home. Design the **write path first**. Also why `claim-eviction.md` would not
-  have fixed #39.
+  have fixed #39. **A candidate write path (2026-10-14):** if-built-today's forbid, a positive record that
+  gates commits as well as claims and ends only by its poster's withdrawal. It answers objections 1–3;
+  the halt's scope and its authority rule stay open.
 - **`lifecycle.stopped` unbundling** — [lifecycle-stopped-unbundling](lifecycle-stopped-unbundling.md).
   The dying breath does five jobs and only ever all five. `claim-eviction.md` unbundles job 1
   (claim release); a second consumer wants job 4 (stop discharge) alone, which that design correctly
@@ -325,6 +369,13 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
   open (deferred in the spec): low-latency push (LISTEN/NOTIFY — issue #16), cross-host auto-relaunch
   (the rejected co-arbiter — see "Cross-host liveness for the claim gate" above), sharding,
   HA.
+- **log-tiering — DEFERRED** ([`log-tiering.md`](log-tiering.md)): a run's log in Postgres while it is worked
+  on and in a file once its latest claim has `ended`. mycooc tiers its own (move and re-import, where every
+  write must re-import first); runstate builds the general form, copy-not-move, when a second consumer wants a
+  tier.
+- **outage-as-pause — DEFERRED** ([`outage-as-pause.md`](outage-as-pause.md)): a worker whose Postgres session
+  drops waits for the server, ends its own old claim on session evidence, and claims afresh from its last
+  landed node, so an outage costs a pause, not a requeue. Decided with mycooc's 12b.
 - **channel-redis** — a Redis backend; an alternative to Postgres for cross-host scenarios
   (lighter daemon, weaker durability). Dominated by the shipped channel-postgres for the
   same use case; revisit only if the lighter-daemon tradeoff is specifically wanted.
@@ -411,6 +462,11 @@ reasoning, listed here so they're discoverable as work (cross-ref, not moved):
 
 ## Tactical
 
+- **`hold_episode` runs after the claim CAS** (`runstate/worker.py:144`), so a raise inside it, such as the
+  pooler self-check, leaves a claim on the log that no exit will ever end. Found by mycooc's 12b attack
+  ([review](../review-2026-10-04-commits-and-lineage.md) §12, item 15). Layer 2's session probe fixes it by
+  taking the lock before the connection's first write; until then, a claimant that raises there should end
+  its own claim.
 - **Windows support** — untested, unclaimed. The old rationale ("uses
   `fcntl.flock`") died with the v0.1 file backend — v0.2 holds no file locks
   (sqlite serializes internally; memory uses a threading lock). The actual
