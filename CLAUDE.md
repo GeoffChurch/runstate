@@ -60,7 +60,22 @@ The substrate + opt-in conventions + reference orchestration, in
   that copy a run's log to the next format and seal the old one, refusing a
   live run or a run the step refuses before sealing it. One module per step
   (`v0_2_0_to_v0_3_0.py`, the names the positional rule implied), each carrying
-  its own copy of the old format's semantics.
+  its own copy of the old format's semantics. `ambiguity.py` is what every step
+  shares for what a log leaves open (`log-formats.md` §6, "Ambiguity"): the
+  declarations (`Facts`, `Projection`, `Divergence`), the `Chooser` Protocol and
+  `refuse`, the command line's `Choices`, a run's `History` (its manifest entries
+  and the store's traces of it) and the manifest's `Entry`, and the detection
+  pass's report. `stores.py` holds the per-backend `Store` Strategy, the manifest
+  and its content-addressed facts statements. The 0.3.0 → 0.4.0 step
+  (`v0_3_0_to_v0_4_0.py`, with its candidate engine `..._engine.py` and its writer
+  facts `..._facts.py`; `commits-and-lineage.md` §7) is written and tested but
+  **not registered**: `STEPS` and `FORMATS` stop at 0.3.0 until layer 2's writer
+  ships 0.4.0, so it runs only in process (its tests, the corpus runner
+  `scripts/migration_round.py`).
+- **`lineage.py`** — PROVISIONAL: the pure 0.4.0 reads (the head, the lineage,
+  counts and series, the verdict and the stop fold; `commits-and-lineage.md` §2,
+  §5), which the corpus runner reads migrated logs with until the format flip
+  moves them into `vocabulary/` and `observables`.
 - **`vocabulary/`** — the L2 **convention vocabulary** (the typed terms another
   language reimplements to interop): `payloads.py` (frozen body dataclasses
   mirroring the schemas — `Value`/`Started`/`Heartbeat`/`Stopped`/`Nak`/
@@ -261,7 +276,7 @@ them. The pre-commit hook prefers `./.conda/bin/python` when it exists.
 ```bash
 conda activate ./.conda             # the dev env: editable install + test + postgres extras
 conda create -p ./.conda python=3.12 && ./.conda/bin/pip install -e .[test,postgres]  # (re)create it
-pytest tests/ -m "not oracle"       # what the hook runs (~3,900, ~65 s; +Postgres if a DSN is set)
+pytest tests/ -m "not oracle"       # what the hook runs (~3,540, ~90 s; +Postgres if a DSN is set)
 pytest tests/ -m oracle             # the migration oracle's families (below)
 pytest tests/test_channel.py -v     # one module
 pytest tests/test_schema.py -v      # emitted messages conform to the schema stack
@@ -269,7 +284,7 @@ pytest tests/test_schema.py -v      # emitted messages conform to the schema sta
 git config core.hooksPath scripts/githooks   # opt in to the local gates (per clone)
 ```
 
-**Run the Postgres suite locally.** Without a DSN, **~260 tests silently skip** -- every test of the
+**Run the Postgres suite locally.** Without a DSN, **~280 tests silently skip** -- every test of the
 CAS under real cross-process contention, the advisory-lock probe, and the shared-table paths. A
 throwaway server takes seconds (conda ships the binaries):
 
@@ -282,15 +297,15 @@ export RUNSTATE_TEST_PG_DSN="postgresql:///runstate_test?host=/tmp/rs-pgsock&por
 ```
 
 The socket directory **must be a short path** -- the sun_path limit is 107 bytes and a scratchpad
-path blows it (`Unix-domain socket path ... is too long`). 1,014 passed / 260 skipped without the DSN
-and 1,273 passed / 1 skipped with it (2026-10-03); 1,274 collected in all.
+path blows it (`Unix-domain socket path ... is too long`). 3,254 passed / 282 skipped without the DSN
+and 3,535 passed / 1 skipped with it, the oracle's 25 deselected (2026-10-28); 3,561 collected in all.
 
 The pre-commit hook runs CI's default gate set -- `black --check`,
-`mypy --strict`, `pytest` -- in ~70 s, almost all of it the suite. It exists
+`mypy --strict`, `pytest` -- in ~100 s, almost all of it the suite. It exists
 because the formatter gate is the one that gets skipped: run the checks, add
 code, commit, and CI goes red on a branch that looked green. `--no-verify`
 bypasses it. It is a *weaker* gate than CI in one respect: without
-`RUNSTATE_TEST_PG_DSN` the ~260 Postgres tests skip locally and CI runs them, so
+`RUNSTATE_TEST_PG_DSN` the ~280 Postgres tests skip locally and CI runs them, so
 green here does not imply green there.
 
 **The migration oracle is deselected too** (`-m "not oracle"`, the hook and CI's
@@ -346,8 +361,13 @@ add or change a convention body.
    - **the five opening checks** (§4), in order, in its `_locate` branch: a newer
      format present, the current address, an older format, the legacy address
      (only for a backend that held logs before versioned addresses), nothing;
-   - **a migration store** — a `Store` (`formats_of`, `migrate_one`) in
-     `runstate/migrations/stores.py`, and a `--backend` choice in `runstate/cli.py`;
+   - **a migration store** — a `Store` in `runstate/migrations/stores.py`
+     (`formats_of`, `rows`, `history`, `migrate_one`, `sealed`, `facts`), with a
+     manifest outside every format's address (`SQLITE_MANIFEST` and
+     `SQLITE_FACTS` beside the logs, or `PG_MANIFEST_SCHEMA`'s `manifest` and
+     `facts` tables) and its traces of a run in other formats (a sealed log, a
+     legacy tombstone, a `sealed_runs` row), and a `--backend` choice in
+     `runstate/cli.py`;
    - **a seal** (`runstate/migrations/seal.py`): a sealed log reads and refuses
      every write, and is taken before the copy reads its rows;
    - the tests §10 lists, for each.

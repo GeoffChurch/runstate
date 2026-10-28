@@ -430,18 +430,20 @@ fires nowhere is allowed, so a consumer can keep one set of choices for every ro
   record: the 0.3.0 → 0.4.0 engine's cap. It decides a refusal, so it is set at the edge, the command line,
   and recorded with each migrated run, never as a library default. The command line's value is 3,000. The
   engine keeps every layer's edges for its backward pass, so its memory is the cap times the records, about
-  420 bytes a state: 664f8795, the widest real log measured, holds 2,344 states a layer over 4,017 records
-  in 1.8 GB. 3,000 clears that layer by a quarter, and refuses b02eb431 under facts too wide to follow at
-  its seq 81 in 6 s and 105 MB, where 20,000 exhausted 4 GB.
+  400 bytes a state: 664f8795, the widest real log measured, holds 2,344 states a layer over 4,017 records,
+  4,347,785 in all, at a peak of 1,738 MB (re-measured after the begin-time floor of the plan's Task 22 fix
+  5, 2026-10-28, which merged none of its states). 3,000 clears that layer by a quarter, and, as measured
+  before that floor (Task 21), refuses b02eb431 under facts too wide to follow at its seq 81 in 6 s and 105
+  MB, where 20,000 exhausted 4 GB.
 - **`--budget N`** bounds the states a step may hold on one run summed over every layer, which its memory
   follows, refusing the run past it, naming the record; the cap alone does not, since a log holding a layer
-  near the cap over many more records would exceed a machine's memory (about 16 GB at 3,000 over 13,000).
-  The command line's value is 5,000,000 states, about 2.1 GB built: it clears 664f8795's 4.3 million by a
-  sixth. The pass's peak is the decode's on a long log: it narrows the built graph in place of itself,
-  holding the graph and the one its answer leaves, every edge the answer keeps shared between them, and its
-  own structures (the keys' windows, each layer's edge tuples) put its peak at about 1.2 times the build's on
-  a log of 2,000 records, about 2.5 GB at the budget; on a wide log the build's per-layer worlds are the peak
-  (`cli.py` gives the measurements).
+  near the cap over many more records would exceed a machine's memory (about 16 GB at 3,000 over 13,000). The
+  command line's value is 5,000,000 states, about 2.1 GB built: it clears 664f8795's 4.3 million by a sixth
+  (the same count after the floor). The pass's peak is the decode's on a long log: it narrows the built graph
+  in place of itself, holding the graph and the one its answer leaves, every edge the answer keeps shared
+  between them, and its own structures (the keys' windows, each layer's edge tuples) put its peak at about 1.2
+  times the build's on a log of 2,000 records, about 2.5 GB at the budget; on a wide log the build's per-layer
+  worlds are the peak (`cli.py` gives the measurements).
 - **`--run-on N`** is how many labels past the log's highest step a run of passes that no record pins is
   followed, per claim: the 0.3.0 → 0.4.0 engine's horizon, past which such a run is cut. It decides how many
   silent passes a reading may hold, so it is set at the edge and recorded too. The command line's value is
@@ -478,16 +480,16 @@ untouched: the manifest belongs to the root, outside every format's address.
   0.4.0 step keys `end-time` by claim seq and then the commit's index, or `rewind <e>` for the rewind that
   closed the claim's epoch `e`, `commits-and-lineage.md` §7); and each divergence that fired, with its
   sites, every one accepted. Proven sites are not recorded.
-- **The facts statement is content-addressed.** An entry's `facts` is `"sha256:<hex>"` of the step's
-  rendering of the stated facts, the classifier's identity included, as canonical JSON (sorted keys, no
-  spaces). The rendering is written once per root per digest, beside the manifest, since a consumer's whole
-  statement can be large and is the same for every run of an invocation (mycooc's 256 worker versions render
-  to 182,676 bytes, which every entry repeated before: a mycooc run's 0.3.0 → 0.4.0 entry measured 206,261
-  bytes so, and 23,658 citing the digest, the rest its readings and divergence sites): on SQLite a line `{"digest", "facts"}` of
-  `<root>/runstate-migrations-facts.jsonl`, appended only when the digest is absent; on Postgres a row of
-  `runstate_migrations.facts (digest PRIMARY KEY, facts)`, inserted in the sealing transaction with `ON
-  CONFLICT DO NOTHING`. It is written before the entry that cites it. A reader resolves a digest only when it
-  needs the facts (`Store.facts`), checking the rendering against it.
+- **The facts statement is content-addressed.** An entry's `facts` is `"sha256:<hex>"` of the step's rendering
+  of the stated facts, the classifier's identity included, as canonical JSON (sorted keys, no spaces). The
+  rendering is written once per root per digest, beside the manifest, since a consumer's whole statement can
+  be large and is the same for every run of an invocation (mycooc's 256 worker versions render to 182,676
+  bytes, which every entry repeated before: a mycooc run's 0.3.0 → 0.4.0 entry measured 206,261 bytes so, and
+  23,658 citing the digest, the rest its readings and divergence sites): on SQLite a line `{"digest",
+  "facts"}` of `<root>/runstate-migrations-facts.jsonl`, appended only when the digest is absent; on Postgres
+  a row of `runstate_migrations.facts (digest PRIMARY KEY, facts)`, inserted in the sealing transaction with
+  `ON CONFLICT DO NOTHING`. It is written before the entry that cites it. A reader resolves a digest only when
+  it needs the facts (`Store.facts`), checking the rendering against it.
 - **When it is written:** with the run's new log. On Postgres the entry is inserted in the sealing
   transaction. On SQLite it is appended before the rename that publishes the log, so a migrated run always
   has its entry. A crash between the two leaves an entry for an attempt that did not publish; a re-run
@@ -521,7 +523,7 @@ new entry is appended beside the old.
 **The precedent.** Every later step declares its facts, its projections and its divergences, each empty
 where it has none, so every step takes `resolutions` and the detection pass treats every chain alike. The
 first two steps declare theirs in [`reference-by-name.md`](reference-by-name.md) §6 (format 0.2.0 → 0.3.0:
-no facts, three projections, five divergences) and [`commits-and-lineage.md`](commits-and-lineage.md) §7
+no facts, three projections, six divergences) and [`commits-and-lineage.md`](commits-and-lineage.md) §7
 (format 0.3.0 → 0.4.0, rebuilt on its engine by the plan's Task 22). The mechanism's tests are in §10.
 
 ## 7. Onboarding legacy logs

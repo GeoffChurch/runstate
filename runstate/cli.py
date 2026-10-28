@@ -22,17 +22,20 @@ _DSN_SCHEMES = ("postgres://", "postgresql://")
 # record (the 0.3.0 -> 0.4.0 engine's cap). It decides a refusal, so it is set here,
 # at the edge, and recorded with each migrated run. Memory grows as the cap times the
 # records, since the engine keeps every layer's edges for its backward pass: about
-# 420 bytes a state (664f8795: 4.3 million states over 4,017 records, peak 1.8 GB).
+# 400 bytes a state (664f8795: 4,347,785 states over 4,017 records, peak 1,738 MB).
 # 3,000 clears the widest layer measured on the real corpora (2,344, 664f8795) by a
-# quarter, and refuses b02eb431 under facts too wide to follow at seq 81, in 6 s and
-# 105 MB, where 20,000 exhausted 4 GB (the round's Task 21 report).
+# quarter. Those three were re-measured after fix 5's begin-time floor (2026-10-28,
+# the final fix round, under the round's mycooc facts): the floor merged no state of
+# that log, and the peak was 1.8 GB before it. Measured before the floor (the round's
+# Task 21 report) and not since: 3,000 refuses b02eb431 under facts too wide to follow
+# at seq 81, in 6 s and 105 MB, where 20,000 exhausted 4 GB.
 CAP = 3000
 
 # The states a step may hold on one run summed over every layer, which memory follows:
 # the cap bounds one layer, so a long log can hold a near-cap layer for thousands of
 # records (about 16 GB at 3,000 over 13,000). 5,000,000 states is about 2.1 GB built,
-# clearing the most measured on the real corpora (664f8795's 4.3 million, 1.8 GB) by a
-# sixth. The pass's peak is the decode's on a long log: it narrows the built graph in
+# clearing the most measured on the real corpora (664f8795's 4.3 million, 1.7 GB, the
+# same after fix 5's floor) by a sixth. The pass's peak is the decode's on a long log: it narrows the built graph in
 # place of itself, holding the graph and the one its answer leaves, every edge the
 # answer keeps shared between them, and its own structures (the keys' windows, each
 # layer's edge tuples) are a fixed share of the graph's. Measured by tracemalloc

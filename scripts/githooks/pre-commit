@@ -1,12 +1,12 @@
 #!/bin/sh
-# The CI default job's gate set, locally, before every commit: ~70 s, almost all
+# The CI default job's gate set, locally, before every commit: ~100 s, almost all
 # of it pytest.
 #
 # These exist because the formatter gate is the one that gets skipped: it is
 # easy to run the checks, then add code, then commit without re-running them.
 # CI catches it, but a red CI on a green-looking branch costs a round trip.
 #
-# WEAKER than CI in one respect: without RUNSTATE_TEST_PG_DSN the ~215 Postgres
+# WEAKER than CI in one respect: without RUNSTATE_TEST_PG_DSN the ~280 Postgres
 # tests skip here and CI runs them, so a green hook does not imply a green CI.
 #
 # The migration oracle's families (`-m oracle`) are deselected, as in CI's default

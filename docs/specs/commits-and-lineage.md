@@ -1318,13 +1318,18 @@ rewind).
   or on none: so every candidate stands alike there, none is removed, and where the act's place may begin is
   known from the index alone. After it, nothing more is decided: the act stands at no record there, and every
   candidate that holds it has its place settled by the window's end, so those kept are those the window kept,
-  followed until they reach every record's states again. On a log of one long claim, whose acts each stand at
-  a record or two, the windows together cost about one pass over the log, not one per commit; each answer also
-  copies the list of the log's records once (a pointer each), so the stage holds a term in acts times records,
-  with a constant small enough not to show at mycooc's sizes (365 commits over 8,398 records). A claim whose
-  own records are open early (a value or a heartbeat several live workers may have written) widens its acts'
-  windows back to that record. The owner had the stage made linear before the step freezes (2026-10-27; review
-  §12, item 16): it had read the whole log for each commit's question.
+  followed until they reach every record's states again. On a log of one long claim whose own records are
+  settled (each the claim's own on every candidate or on none), whose acts each stand at a record or two, the
+  windows together cost about one pass over the log, not one per commit; each answer also copies the list of
+  the log's records once (a pointer each), so the stage holds a term in acts times records, with a constant
+  small enough not to show at mycooc's sizes (365 commits over 8,398 records). A claim whose own records are
+  open early (a value or a heartbeat several live workers may have written) widens each of its acts' windows
+  back to the first such record, however early: the stage then costs the claim's acts times the distance back,
+  at worst its acts times its length, as the whole-log read did. Neither corpus has such a claim, so the bound
+  is not tightened; it could start each window instead at the first open record after the claim's last record
+  before the act that is its own on every candidate, which sets every path's marks alike. The owner had the
+  stage made linear before the step freezes (2026-10-27; review §12, item 16): it had read the whole log for
+  each commit's question.
 - **The reading's key** is the claim's seq, then the commit's index in its claim from 0, or `rewind <e>` for
   the rewind that closed the claim's epoch e: `{"end-time": {"<claim seq>": {"<n>": {"is": "DatedBy", "seq":
   s} | {"is": "EndedAt", "after": a, "t": t}}}}`. The other
@@ -1403,27 +1408,27 @@ fact's class (above), and where no stated fact settles it, a fork (below).
 
 Three limits bound the pass, each set where the command line is read and recorded with every migrated run
 (`log-formats.md` §6), since each can decide a result: the **cap**, the states one layer may hold; the
-**budget**, the states held summed over every layer, which the pass's memory follows (about 420 bytes a state
-built, its edges included; the decode then narrows the graph in place of itself, holding it and the one its
-answer leaves and sharing every edge the answer keeps, and its peak is the pass's: about 1.2 times the build's
-on a long log, under it on a wide one, `cli.py` gives the measurements); and the
-**run-on**, how many labels past the log's highest step a run of passes that no record pins is followed, per
-claim. Each is a limit, never a reading. A run past the cap or the budget is
-refused, naming the record; under no stated facts the refusal names the facts that widen the pass and the
-reference preset ("The writer facts"). The horizon refuses a run only where its cut could change a reading: a
-candidate that closes a pass at the horizon with its loop free to continue past it, so that only the horizon
-forbade the next pass and the commits after it, which Span reads. The refusal names the claims and the facts
-that can clear it: `marker` (no pass closes silently), `closing` (none closes but at a value) and `beat-cov`
-(no loop continues past an unticked pass). Nothing else the horizon cuts is read. No commit carries a label,
-so what the horizon can change is how many commits a run makes, and a commit past it needs a pass begun past
-it: a pass begins at its worker's floor or above, and a floor past the horizon comes from a close at the
-horizon, which is the marked case where the loop may continue, or from a load or a rewind of a state at the
-horizon resumed `after` it, which admits no pass and whose step nothing reads; one resumed `at` it sets the
-floor at the horizon. A pass begun at the horizon itself and cut before its close makes at most one commit,
-at the horizon, where `cut-save` says its save finished it, which the bound admits; the passes the horizon
-forbids all follow a marked close. A load sets the worker's clock, which Origin does not read; a later record
-that reads the clock (a step, a `final_step`, a save a later claim loads) bounds it by its own label, below
-the horizon, so a load at the horizon is on no candidate where its step is read.
+**budget**, the states held summed over every layer, which the pass's memory follows (about 400 bytes a state
+built, its edges included, on 664f8795 re-measured after fix 5's floor; the decode then narrows the graph in
+place of itself, holding it and the one its answer leaves and sharing every edge the answer keeps, and its
+peak is the pass's: about 1.2 times the build's on a long log, under it on a wide one, `cli.py` gives the
+measurements); and the **run-on**, how many labels past the log's highest step a run of passes that no record
+pins is followed, per claim. Each is a limit, never a reading. A run past the cap or the budget is refused,
+naming the record; under no stated facts the refusal names the facts that widen the pass and the reference
+preset ("The writer facts"). The horizon refuses a run only where its cut could change a reading: a candidate
+that closes a pass at the horizon with its loop free to continue past it, so that only the horizon forbade the
+next pass and the commits after it, which Span reads. The refusal names the claims and the facts that can
+clear it: `marker` (no pass closes silently), `closing` (none closes but at a value) and `beat-cov` (no loop
+continues past an unticked pass). Nothing else the horizon cuts is read. No commit carries a label, so what
+the horizon can change is how many commits a run makes, and a commit past it needs a pass begun past it: a
+pass begins at its worker's floor or above, and a floor past the horizon comes from a close at the horizon,
+which is the marked case where the loop may continue, or from a load or a rewind of a state at the horizon
+resumed `after` it, which admits no pass and whose step nothing reads; one resumed `at` it sets the floor at
+the horizon. A pass begun at the horizon itself and cut before its close makes at most one commit, at the
+horizon, where `cut-save` says its save finished it, which the bound admits; the passes the horizon forbids
+all follow a marked close. A load sets the worker's clock, which Origin does not read; a later record that
+reads the clock (a step, a `final_step`, a save a later claim loads) bounds it by its own label, below the
+horizon, so a load at the horizon is on no candidate where its step is read.
 
 **Names an earlier step filled** are read by the log's birth (above), which is part of what happened, so it is
 never read from silence (the final review's I1, 2026-10-28). The step reads it from evidence, in this order:
