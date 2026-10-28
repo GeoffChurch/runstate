@@ -1601,7 +1601,7 @@ Recorded as each settled.
   reap, which §3 allows a custom producer's launcher, and it covers every SLURM launch. It writes a `stopped`
   naming the claim at 0.3.0, and `supervisor.died` through `report_death` after 3a.
 
-**Item 16: the migration implementation round (2026-10-23 to 2026-10-28; for ruling 12a).** Item 15's ruling
+**Item 16: the migration implementation round (2026-10-23 to 2026-10-28; approved at 12a).** Item 15's ruling
 12a waited on this round. It implemented §7 as the retained step `runstate/migrations/v0_3_0_to_v0_4_0.py`,
 with its engine and facts modules; the mechanism every step shares for what a log leaves open
 (`runstate/migrations/ambiguity.py`; `specs/log-formats.md` §6, "Ambiguity"); and the pure 0.4.0 reads
@@ -1863,13 +1863,13 @@ mycooc's, since bookgen's 160 `.db` files and runstate-tui's hold none. The step
      0.3.0, and `runstate migrate` refuses each until its claim ends. At least one is stranded rather than
      running: 664f8795's last claim, on ai06 since 2026-08-10, never ended, and a foreign handle reads live.
      mycooc releases such a claim (its reclaim tool, from `sacct`) before migrating it.
-- **For the owner to confirm at ruling 12a.** Each goes further than any owner ruling the ledger records.
+- **Confirmed by the owner at ruling 12a (2026-10-28).** Each went further than any earlier owner ruling.
   - **No writer tag on `started`.** The owner asked (2026-10-25) why a `started` should not name its writer
     now. The 0.4.0 audit found no writer habit that a 0.4.0 reader depends on and that 0.4.0 cannot record, so
     nothing needs a tag before ship, and it recommended against adding one: a consumer can already commit its
     version as a value. The plan went ahead without it. Its one wording finding, `resume_from: null` also
     covering state from outside the run, was fixed (`4ce721e`, `ffe373a`).
-  - **E2's cost in five cases,** where the owner accepted two (above).
+  - **E2's cost in five cases,** where the owner had accepted two (above). All five are accepted.
 - **The final whole-branch review (2026-10-28)** found 0 Critical, 2 Important and 10 Minor; one fix round
   closed every finding (`8d1297b` to `fb885a9`), and its re-review's one new Minor was fixed (`fc813f8`). The
   three items the measured migrate had left open for it:
@@ -1887,6 +1887,7 @@ mycooc's, since bookgen's 160 `.db` files and runstate-tui's hold none. The step
 - **What runstate decided** is only how 0.4.0 writes the history down, the same for every consumer: E1 and E2,
   §7's "Records", the generic choosers, the refusals, and the limits set at the command line and recorded with
   each run (cap 3,000 states a layer, budget 5,000,000 summed, run-on 2).
-- **For ruling 12a.** Revision 2's migration is implemented and measured, and every read it changes on real
-  logs is a declared divergence. Its live layer (§3–§6) is not implemented. The step registers, and
-  `LOG_FORMAT` moves to 0.4.0, with layer 2's last commit. The final whole-branch review is closed.
+- **Ruling 12a (the owner, 2026-10-28): revision 2 approved.** Its migration is implemented and measured, and
+  every read it changes on real logs is a declared divergence. Its live layer (§3–§6) is not implemented. The
+  step registers, and `LOG_FORMAT` moves to 0.4.0, with layer 2's last commit. With the final whole-branch
+  review closed, #59 merges and then this round's branch, each by merge commit.
