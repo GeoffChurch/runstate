@@ -1,9 +1,9 @@
 # Spec: commits and lineage — values committed to a lineage of nodes (log format 0.4.0)
 
-**Status:** DRAFT, revision 2, 2026-10-14; its drafting choices settled 2026-10-23 (review §12, item 14).
-Its migration (§7) and §5's pure reads are implemented, and the step was run over every runstate log the
-consumers hold (2026-10-28; review §12, item 16); it stays unregistered until layer 2's last commit. For the
-owner's review; the rest is not implemented.
+**Status:** APPROVED, revision 2, 2026-10-14; its drafting choices settled 2026-10-23 (review §12, item 14),
+and the owner approved it at ruling 12a (2026-10-28, review §12, item 16). Its migration (§7) and §5's pure
+reads are implemented, and the step was run over every runstate log the consumers hold; it stays unregistered
+until layer 2's last commit. The rest, the live layer (§3–§6), is not implemented yet.
 
 This is layer 2 of [`../backlog/identity-in-records.md`](../backlog/identity-in-records.md). It introduces
 **log format 0.4.0** under [`log-formats.md`](log-formats.md), and builds on

@@ -165,8 +165,9 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
   1. reference by name on control and lifecycle records (order-independent folds; fixes #39, the
      cascade and the stale-beat leak; the startless run answered) — **IMPLEMENTED 2026-10-03** as log
      format 0.3.0 ([`../specs/reference-by-name.md`](../specs/reference-by-name.md));
-  2. names on values: commits and lineage, log format 0.4.0 — **SPEC REVISION 2 under review**
-     (2026-10-14; [`../specs/commits-and-lineage.md`](../specs/commits-and-lineage.md));
+  2. names on values: commits and lineage, log format 0.4.0 — **SPEC REVISION 2 APPROVED** 2026-10-28
+     ([`../specs/commits-and-lineage.md`](../specs/commits-and-lineage.md)); its migration is implemented,
+     its live layer next;
   3. episode-keyed artefacts read through the log's vouching;
   4. time as a *trigger* for claims, which dissolves the cross-host wedge;
   5. fenced worker writes, possibly optional given 1.
