@@ -52,6 +52,7 @@ from .ambiguity import (  # noqa: E402
     Projection,
     Report,
     Resolutions,
+    Statement,
     Undecided,
     check_names,
     empty_report,
@@ -203,7 +204,7 @@ class Memo:
                 e.to_format,
                 e.limits,
                 e.assumed,
-                json.dumps(e.facts, sort_keys=True),
+                e.facts,
                 sorted(e.resolved.items(), key=repr),
                 sorted((p, sorted(r.items())) for p, r in e.readings.items()),
                 sorted(e.accepted.items()),
@@ -224,13 +225,17 @@ class Memo:
 
 
 class Planned(NamedTuple):
-    """One step as the user resolved it, built once, before any run is read: what the
-    store needs to migrate a run by it, and the transforms it has already run."""
+    """One step as the user resolved it, built once, before any run is read (``plan``):
+    what the store needs to migrate a run by it and record it in the manifest, and the
+    transforms it has already run."""
 
     step: Step
     resolutions: Resolutions
     accepted: frozenset[Divergence]
     memo: Memo
+    facts: Statement  # the stated facts as the manifest records them
+    runstate: str  # the installed runstate that runs it (``_runstate``)
+    source: str  # the digest of the step module's source (``_source``)
 
     def migrated(self, rows: list[Row], history: History) -> Migrated:
         """The checked transform of ``rows``, once per what it reads (``Memo``)."""
@@ -268,29 +273,52 @@ class Planned(NamedTuple):
 
     def entry(self, run_id: str, migrated: Migrated) -> Entry:
         a = self.resolutions.assumptions
-        facts = self.step.FACTS
         return Entry(
             run_id=run_id,
             from_format=self.step.FROM,
             to_format=self.step.TO,
-            runstate=_runstate(),
-            step_source=_source(type(self.step)),
+            runstate=self.runstate,
+            step_source=self.source,
             at=time.time(),
             limits=a.limits,
             assumed=a.given,
-            facts=facts.describe(facts.of(a)),
+            facts=self.facts.digest,
             resolved={n: c.spelling for n, c in self.resolutions.choosers.items()},
             readings=migrated.readings,
             accepted={d: seqs for d, seqs in migrated.divergences.items() if seqs},
         )
 
 
+def plan(step: Step, choices: Choices, memo: Memo) -> Planned:
+    """``step`` as ``choices`` resolve it, with what its manifest entries record that is
+    the same for every run: the stated facts' statement and the code that runs it. Built
+    before the detection pass, so a failure to name the code refuses the invocation
+    before any run is sealed."""
+    r = resolutions(step, choices)
+    return Planned(
+        step,
+        r,
+        choices.accepted,
+        memo,
+        Statement.of(step.FACTS.describe(step.FACTS.of(r.assumptions))),
+        _runstate(),
+        _source(type(step)),
+    )
+
+
 @functools.cache
 def _runstate() -> str:
     """The installed runstate's version, with the commit its install records: a git
     pin's ``direct_url.json`` names one, which the version string (a ``.dev0``) does
-    not. Read once, when the first entry is written, never at import."""
-    dist = metadata.distribution("runstate")
+    not. Read once, never at import. An uninstalled runstate names no version, so it
+    refuses: the manifest could not say which code migrated a run."""
+    try:
+        dist = metadata.distribution("runstate")
+    except metadata.PackageNotFoundError as exc:
+        raise MigrationError(
+            "runstate is not installed, so the manifest cannot name the code that "
+            "migrates (pip install it, or install this checkout with pip install -e)"
+        ) from exc
     direct = dist.read_text("direct_url.json")
     commit = json.loads(direct).get("vcs_info", {}).get("commit_id") if direct else None
     return dist.version if commit is None else f"{dist.version}+{commit}"
@@ -406,10 +434,8 @@ def migrate(
     after its seal, and the invocation goes on to the other runs and reports it."""
     check_names(STEPS)
     memo = Memo()
-    plans = {
-        s.FROM: Planned(s, resolutions(s, choices), choices.accepted, memo)
-        for s in STEPS
-    }
+    # each plan names the code that runs it, so a failure to refuses before any seal
+    plans = {s.FROM: plan(s, choices, memo) for s in STEPS}
     todo = {
         rid: fmt for rid, fmt in sorted(store.formats_of(run_ids).items()) if fmt != to
     }

@@ -1,5 +1,6 @@
 """log-formats.md §6 with test-only formats and steps."""
 
+import hashlib
 import json
 import os
 import re
@@ -11,7 +12,7 @@ import pytest
 from runstate import formats, migrations
 from runstate.channel.sqlite import SqliteChannel
 from runstate.formats import DirectoryLayout
-from runstate.migrations import Memo, MigrationError, Planned, Row, chain, migrate
+from runstate.migrations import Memo, MigrationError, Row, chain, migrate, plan
 from runstate.migrations.ambiguity import (
     Limits,
     NO_FACTS,
@@ -73,7 +74,7 @@ class Tag:
 
 
 def _planned(step):
-    return Planned(step, resolutions(step, NONE), frozenset(), Memo())
+    return plan(step, NONE, Memo())
 
 
 @pytest.fixture
@@ -910,7 +911,7 @@ def test_a_stated_fact_settles_the_forks_and_is_recorded(forking, tmp_path):
     assert outcome.moved == ("r1", "r2", "r3")
     entry = _manifest(tmp_path)[0]
     assert entry["assumed"] == "tests.migration_consumer:SETTLED"
-    assert entry["facts"] == {"settled": True}
+    assert SqliteStore(tmp_path).facts(entry["facts"]) == {"settled": True}
     assert entry["readings"] == {"a": {}}
 
 
@@ -1016,10 +1017,40 @@ def test_the_manifest_holds_one_entry_per_run_per_step(forking, tmp_path):
     (r1a,) = [e for e in entries if e["run_id"] == "r1" and e["from"] == "8.0.0"]
     assert (r1a["cap"], r1a["budget"], r1a["run_on"]) == (11, 12, 1)
     assert r1a["assumed"] is None
-    assert r1a["facts"] == {"settled": False}
+    assert SqliteStore(tmp_path).facts(r1a["facts"]) == {"settled": False}
     assert r1a["resolved"] == {"a": "yes"} and r1a["readings"] == {"a": {"2": "yes"}}
     assert r1a["runstate"] and r1a["at"] > 0
     assert re.fullmatch(r"sha256:[0-9a-f]{64}", r1a["step_source"])
+
+
+def test_the_facts_statement_is_written_once_per_root_and_cited_by_digest(
+    forking, tmp_path
+):
+    """Every entry cites the statement by the digest of its canonical rendering; the
+    root holds the rendering once however many runs and steps cite it, and a reader
+    resolves it, checked, only when it asks."""
+    _three(tmp_path)
+    migrate(
+        SqliteStore(tmp_path),
+        None,
+        to="8.2.0",
+        choices=_choose(assume=["tests.migration_consumer:SETTLED"], resolve=["b=no"]),
+    )
+    cited = {e["facts"] for e in _manifest(tmp_path)}
+    assert len(_manifest(tmp_path)) == 6 and len(cited) == 1
+    (digest,) = cited
+    text = json.dumps({"settled": True}, sort_keys=True, separators=(",", ":"))
+    assert digest == "sha256:" + hashlib.sha256(text.encode()).hexdigest()
+    lines = (tmp_path / "runstate-migrations-facts.jsonl").read_text().splitlines()
+    assert [json.loads(x) for x in lines] == [{"digest": digest, "facts": text}]
+    assert SqliteStore(tmp_path).facts(digest) == {"settled": True}
+    with pytest.raises(MigrationError, match="holds no facts statement"):
+        SqliteStore(tmp_path).facts("sha256:" + "0" * 64)
+    forged = json.dumps({"digest": "sha256:" + "1" * 64, "facts": text})
+    with (tmp_path / "runstate-migrations-facts.jsonl").open("a") as f:
+        f.write(forged + "\n")
+    with pytest.raises(MigrationError, match="does not hash to it"):
+        SqliteStore(tmp_path).facts("sha256:" + "1" * 64)
 
 
 def test_the_entry_is_written_before_the_publish_and_the_latest_is_read(
@@ -1176,6 +1207,12 @@ def test_postgres_writes_the_manifest_entry_in_the_sealing_transaction(
     (entry,) = PostgresStore(pg_toy).history("r1").entries
     assert (entry.from_format, entry.resolved) == ("8.0.0", {"a": "yes"})
     assert entry.readings == {"a": {1: "yes"}}
+    # the facts statement, cited by digest and written once in the same transaction
+    assert PostgresStore(pg_toy).facts(entry.facts) == {"settled": False}
+    held = "SELECT count(*) FROM runstate_migrations.facts WHERE digest = %s"
+    assert _pg_one(pg_toy, held.replace("%s", f"'{entry.facts}'")) == [(1,)]
+    with pytest.raises(MigrationError, match="holds no facts statement"):
+        PostgresStore(pg_toy).facts("sha256:" + "0" * 64)
 
 
 def _migrated(n):
@@ -1256,6 +1293,47 @@ def test_the_cli_reports_a_failed_run_with_its_traceback(
     )
     assert "Traceback (most recent call last)" in err
     assert 'raise RuntimeError("boom")' in err
+
+
+@pytest.mark.parametrize("rows", [Memo.ROWS, 0])
+def test_a_run_is_transformed_once_and_past_the_memo_s_bound_twice(
+    rows, monkeypatch, tmp_path
+):
+    """The detection pass transforms a run, and the memo serves its dry run and its
+    transform after the seal. Past the memo's bound the dry run transforms it again,
+    and the transform after the seal takes the dry run's output, the rows the seal's
+    re-read found being those it read: twice, never three times (final review M1)."""
+    step = Tag("8.0.0", "8.1.0")
+    for v in ["8.0.0", "8.1.0"]:
+        monkeypatch.setitem(formats.FORMATS, v, DirectoryLayout(v))
+    monkeypatch.setattr(migrations, "STEPS", (step,))
+    monkeypatch.setattr(Memo, "ROWS", rows)
+    for rid in ("r1", "r2", "r3"):
+        _seed(tmp_path, "8.0.0", rid)
+    out = migrate(SqliteStore(tmp_path), None, to="8.1.0", choices=NONE)
+    assert out.moved == ("r1", "r2", "r3")
+    assert step._calls == (3 if rows else 6)
+
+
+def test_the_code_that_migrates_is_named_before_any_run_is_sealed(
+    toy, monkeypatch, tmp_path
+):
+    """An uninstalled runstate names no version, so the invocation is refused, before
+    the detection pass and any seal (final review M2)."""
+    from importlib import metadata
+
+    def missing(name):
+        raise metadata.PackageNotFoundError(name)
+
+    migrations._runstate.cache_clear()
+    monkeypatch.setattr(migrations.metadata, "distribution", missing)
+    old = _seed(tmp_path, "8.0.0", "r1")
+    try:
+        with pytest.raises(MigrationError, match="runstate is not installed"):
+            migrate(SqliteStore(tmp_path), ["r1"], to="8.2.0", choices=NONE)
+    finally:
+        migrations._runstate.cache_clear()
+    assert os.stat(old).st_mode & stat.S_IWUSR  # not sealed
 
 
 def test_one_memo_serves_every_step_of_an_invocation(toy, monkeypatch, tmp_path):

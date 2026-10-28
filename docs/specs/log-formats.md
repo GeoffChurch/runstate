@@ -165,6 +165,14 @@ migrated.
   3. Seal the old log.
   4. Transform into the new format's address. On SQLite, write to a temporary file of its own in the target
      directory and rename it into place; on Postgres, use the sealing transaction.
+
+  **How often a run is transformed.** The detection pass transforms each run once, and an invocation keeps
+  the outputs (`Memo`) up to a bound of rows held at once (one million, about 0.35 to 0.5 GB), so that the
+  dry run and the transform after the seal reuse them. On SQLite the transform after the seal reuses the dry
+  run's output whenever the seal's re-read finds the rows it read before, memo or none. So a run the memo
+  holds is transformed once, and a run past its bound (a root of more than about 120 large runs) twice: the
+  detection pass's, and the dry run's again. On Postgres the seal comes first and there is no dry run, so it
+  is transformed twice past the bound too. None of it changes a result.
 - **A refusal leaves the run untouched.** Every refusal is a `MigrationError` that names its run
   (`run '<rid>': …`), and `migrate` carries on past it to the other runs (below, "Carrying on past
   refusals"). The refused run stays writable and unmigrated, and a re-run refuses it the same way. One
@@ -463,13 +471,23 @@ untouched: the manifest belongs to the root, outside every format's address.
 - **One entry per run per step:** the run id; the step's `FROM` and `TO`; the code that ran it, as the
   runstate version with the commit its install records (a git pin's), and the SHA-256 of the step module's
   source, since a pin's version string (`0.3.0.dev0`) names no code; when; the limits; the facts, as `--assume`
-  spelled them (null when unstated) and as the step renders them, the classifier's identity included; each
+  spelled them (null when unstated) and as the digest of the step's rendering of them (below); each
   projection's chooser as it was given, a built-in's name or `module:attr`, or null where none was given, as
   for a projection that forked in no run; each fork's reading, keyed by its site's seq and then its subject
   (a step may key a projection whose forks have no site of their own otherwise, saying how: the 0.3.0 →
   0.4.0 step keys `end-time` by claim seq and then the commit's index, or `rewind <e>` for the rewind that
   closed the claim's epoch `e`, `commits-and-lineage.md` §7); and each divergence that fired, with its
   sites, every one accepted. Proven sites are not recorded.
+- **The facts statement is content-addressed.** An entry's `facts` is `"sha256:<hex>"` of the step's
+  rendering of the stated facts, the classifier's identity included, as canonical JSON (sorted keys, no
+  spaces). The rendering is written once per root per digest, beside the manifest, since a consumer's whole
+  statement can be large and is the same for every run of an invocation (mycooc's 256 worker versions render
+  to 182,676 bytes, which every entry repeated before: a mycooc run's 0.3.0 → 0.4.0 entry measured 206,261
+  bytes so, and 23,658 citing the digest, the rest its readings and divergence sites): on SQLite a line `{"digest", "facts"}` of
+  `<root>/runstate-migrations-facts.jsonl`, appended only when the digest is absent; on Postgres a row of
+  `runstate_migrations.facts (digest PRIMARY KEY, facts)`, inserted in the sealing transaction with `ON
+  CONFLICT DO NOTHING`. It is written before the entry that cites it. A reader resolves a digest only when it
+  needs the facts (`Store.facts`), checking the rendering against it.
 - **When it is written:** with the run's new log. On Postgres the entry is inserted in the sealing
   transaction. On SQLite it is appended before the rename that publishes the log, so a migrated run always
   has its entry. A crash between the two leaves an entry for an attempt that did not publish; a re-run

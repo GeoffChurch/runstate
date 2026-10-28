@@ -120,6 +120,7 @@ from runstate.migrations import (  # noqa: E402
     Planned,
     Row,
     Step,
+    plan,
     transform_checked,
 )
 from runstate.migrations import v0_3_0_to_v0_4_0 as step04  # noqa: E402
@@ -130,7 +131,6 @@ from runstate.migrations.ambiguity import (  # noqa: E402
     Limits,
     Migrated,
     parse_choices,
-    resolutions,
 )
 from runstate.migrations.stores import sqlite_traces  # noqa: E402
 from runstate.migrations.v0_2_0_to_v0_3_0 import V0_2_0_to_V0_3_0  # noqa: E402
@@ -1079,10 +1079,7 @@ class Configuration(NamedTuple):
 def configuration(choices: Choices) -> Configuration:
     return Configuration(
         choices,
-        {
-            s.FROM: Planned(s, resolutions(s, choices), choices.accepted, Memo())
-            for s in _STEPS
-        },
+        {s.FROM: plan(s, choices, Memo()) for s in _STEPS},
     )
 
 

@@ -22,6 +22,7 @@ semantics.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -414,6 +415,27 @@ def _chooser(projection: Projection[Any, Any], spelling: str) -> Chosen:
 # ----- the manifest ----------------------------------------------------------------------
 
 
+class Statement(NamedTuple):
+    """A step's stated facts as the manifest records them: the step's rendering, as
+    canonical JSON (sorted keys, no spaces), and its digest, ``"sha256:<hex>"``. Each
+    entry cites the digest, and a root holds the rendering once per digest (log-formats.md
+    §6): a consumer's whole statement can be large, and every run of an invocation
+    states the same."""
+
+    digest: str
+    text: str
+
+    @classmethod
+    def of(cls, rendering: Json) -> Statement:
+        text = json.dumps(rendering, sort_keys=True, separators=(",", ":"))
+        return cls(digest(text), text)
+
+
+def digest(text: str) -> str:
+    """The content address of a rendering's canonical text."""
+    return "sha256:" + hashlib.sha256(text.encode()).hexdigest()
+
+
 @dataclass(frozen=True)
 class Entry:
     """What one run was migrated under by one step: one line of the root's manifest."""
@@ -428,7 +450,7 @@ class Entry:
     at: float
     limits: Limits
     assumed: str | None  # the --assume spelling; None when its facts were unstated
-    facts: Json  # the step's rendering of them
+    facts: str  # the digest of the step's rendering of them (``Statement``)
     resolved: Mapping[str, str | None]  # each projection's chooser as spelled, or None
     readings: Mapping[str, Mapping[int, Json]]  # each fork's reading
     accepted: Mapping[str, tuple[int, ...]]  # each divergence that fired, its seqs

@@ -26,6 +26,7 @@ pytest.importorskip("jsonschema")
 
 from runstate.channel.sqlite import _SCHEMA  # noqa: E402
 from runstate.migrations import MigrationError, Row  # noqa: E402
+from runstate.migrations.ambiguity import Statement  # noqa: E402
 from tests.migration_helpers import NO_HISTORY  # noqa: E402
 from tests.migration_goldens import (  # noqa: E402
     BACKSTOP,
@@ -1043,7 +1044,15 @@ def _census(rows, resolutions):
     0.3.0 step's detect, from the candidates the step holds."""
     rows = list(rows)
     mr._STEP_0_3_0.detect(rows, assumptions=resolutions.assumptions, history=NO_HISTORY)
-    plan = mr.Planned(mr._STEP_0_3_0, resolutions, frozenset(), mr.Memo())
+    plan = mr.Planned(
+        mr._STEP_0_3_0,
+        resolutions,
+        frozenset(),
+        mr.Memo(),
+        Statement.of(None),  # the census writes no entry
+        "test",
+        "sha256:0",
+    )
     return mr.census(rows, plan)
 
 

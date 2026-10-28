@@ -942,7 +942,8 @@ def test_the_cli_asks_for_each_fork_and_each_divergence(tmp_path, capsys):
     }
     assert stops["readings"]["stop-honored"] == {"5": [1], "12": [7, 8]}
     assert stops["accepted"] == {"naked-stop": [15]}
-    assert stops["facts"] is None and stops["assumed"] is None
+    assert stops["assumed"] is None
+    assert SqliteStore(tmp_path).facts(stops["facts"]) is None  # a step without facts
 
 
 # ----- what the step writes ----------------------------------------------------

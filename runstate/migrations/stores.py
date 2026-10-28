@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import uuid
@@ -15,7 +16,7 @@ if TYPE_CHECKING:
 from .. import formats
 from ..channel.sqlite import _SCHEMA
 from . import MigrationError, Planned, Row
-from .ambiguity import Entry, History, Trace, latest
+from .ambiguity import Entry, History, Json, Migrated, Trace, digest, latest
 from .seal import seal_postgres, seal_sqlite
 
 
@@ -41,11 +42,27 @@ class Store(Protocol):
         ``migrate_one`` left, read after the fact."""
         ...
 
+    def facts(self, cited: str) -> Json:
+        """The facts statement an entry's ``facts`` cites by its digest, read from the
+        root only when a reader needs it, and checked against the digest."""
+        ...
+
 
 # The root's manifest (log-formats.md §6): outside every format's address, so no
 # opening check reads it as a format or a legacy log.
 SQLITE_MANIFEST = "runstate-migrations.jsonl"
+SQLITE_FACTS = "runstate-migrations-facts.jsonl"  # one {digest, facts} line per digest
 PG_MANIFEST_SCHEMA = "runstate_migrations"
+
+
+def _checked(cited: str, text: str | None, where: str) -> Json:
+    """A statement's rendering, which must hash to the digest citing it."""
+    if text is None:
+        raise MigrationError(f"{where} holds no facts statement {cited}")
+    if digest(text) != cited:
+        raise MigrationError(f"{where}'s facts statement {cited} does not hash to it")
+    found: Json = json.loads(text)
+    return found
 
 
 def _read_sqlite(path: Path) -> list[Row]:
@@ -96,6 +113,9 @@ class SqliteStore:
         # the root's manifest by run id, read once, then kept with every entry this
         # store appends: the detection pass and each step ask it once per run
         self._entries: dict[str, list[Entry]] | None = None
+        # the digests of the statements the root holds, read once, then kept with every
+        # one this store appends
+        self._digests: set[str] | None = None
         if not self._root.is_dir():
             raise MigrationError(
                 f"{root} is not a directory, so it holds no sqlite logs. For a "
@@ -135,6 +155,28 @@ class SqliteStore:
     def sealed(self, version: str, run_id: str) -> bool:
         return _sealed(formats.FORMATS[version].sqlite_path(self._root, run_id))
 
+    def facts(self, cited: str) -> Json:
+        path = self._root / SQLITE_FACTS
+        text = None
+        if path.exists():
+            with path.open() as f:
+                for line in f:
+                    if line.strip() and json.loads(line)["digest"] == cited:
+                        text = json.loads(line)["facts"]
+                        break
+        return _checked(cited, text, str(path))
+
+    def _statements(self) -> set[str]:
+        if self._digests is None:
+            path = self._root / SQLITE_FACTS
+            self._digests = set()
+            if path.exists():
+                with path.open() as f:
+                    self._digests = {
+                        json.loads(line)["digest"] for line in f if line.strip()
+                    }
+        return self._digests
+
     def _manifest(self) -> dict[str, list[Entry]]:
         if self._entries is None:
             self._entries = {}
@@ -153,8 +195,12 @@ class SqliteStore:
         ``is_live``, and dry-run ``transform``, so a deterministic refusal leaves
         the run writable and a re-run refuses it the same way. Then seal (unless an
         earlier failed attempt already did); re-read, since the seal checkpoints any
-        WAL frames; transform; write the new log to a hidden temporary file; append
-        the run's entry to the root's manifest; and rename the log into place.
+        WAL frames; transform, which is the dry run's output when the re-read finds
+        the rows it read before (the transform is deterministic), so a run the memo
+        could not hold is not transformed again here; write the new log to a hidden
+        temporary file; append the facts statement the entry cites, if the root does
+        not hold it, then the run's entry, to the root's manifest; and rename the log
+        into place.
 
         The entry goes before the publish, so a migrated run always has one: a crash
         between the two leaves an entry for an attempt that did not publish, and a
@@ -168,14 +214,18 @@ class SqliteStore:
         src = formats.FORMATS[step.FROM].sqlite_path(self._root, run_id)
         dst = formats.FORMATS[step.TO].sqlite_path(self._root, run_id)
         history = self.history(run_id)
+        dry: tuple[list[Row], Migrated] | None = None
         if not _sealed(src):
             rows = _read_sqlite(src)
             if step.is_live(rows):
                 raise MigrationError("it has a live episode; stop it first")
             # the dry run: a refusal raises before the seal
-            planned.run(rows, history)
+            dry = (rows, planned.run(rows, history))
             seal_sqlite(src)
-        migrated = planned.run(_read_sqlite(src), history)
+        rows = _read_sqlite(src)
+        migrated = (
+            dry[1] if dry is not None and dry[0] == rows else planned.run(rows, history)
+        )
         out = migrated.rows
         entry = planned.entry(run_id, migrated)
         dst.parent.mkdir(exist_ok=True)
@@ -197,8 +247,15 @@ class SqliteStore:
                 conn.execute("COMMIT")
             finally:
                 conn.close()
-            # One write of one line, appended. Concurrent migrators of one root on
+            # One write of one line, appended, each. Concurrent migrators of one root on
             # NFS, where O_APPEND is not atomic, can interleave lines: a known limit.
+            # The statement goes first, so every entry's digest resolves; a crash
+            # between leaves a statement no entry cites, which is harmless.
+            if planned.facts.digest not in self._statements():
+                with (self._root / SQLITE_FACTS).open("a") as f:
+                    line = {"digest": planned.facts.digest, "facts": planned.facts.text}
+                    f.write(json.dumps(line, separators=(",", ":")) + "\n")
+                self._statements().add(planned.facts.digest)
             with (self._root / SQLITE_MANIFEST).open("a") as f:
                 f.write(entry.to_json() + "\n")
             self._manifest().setdefault(run_id, []).append(entry)
@@ -328,14 +385,41 @@ class PostgresStore:
             _pg_manifest(conn)
             conn.execute(
                 sql.SQL(
+                    "INSERT INTO {}.facts (digest, facts) VALUES (%s, %s)"
+                    " ON CONFLICT DO NOTHING"
+                ).format(sql.Identifier(PG_MANIFEST_SCHEMA)),
+                [planned.facts.digest, planned.facts.text],
+            )
+            conn.execute(
+                sql.SQL(
                     "INSERT INTO {}.manifest (run_id, entry) VALUES (%s, %s)"
                 ).format(sql.Identifier(PG_MANIFEST_SCHEMA)),
                 [run_id, planned.entry(run_id, migrated).to_json()],
             )
 
+    def facts(self, cited: str) -> Json:
+        import psycopg
+        from psycopg import sql
+
+        table = f"{PG_MANIFEST_SCHEMA}.facts"
+        with psycopg.connect(self._dsn) as conn:
+            (reg,) = conn.execute("SELECT to_regclass(%s)", [table]).fetchall()
+            found = (
+                None
+                if reg[0] is None
+                else conn.execute(
+                    sql.SQL("SELECT facts FROM {}.facts WHERE digest = %s").format(
+                        sql.Identifier(PG_MANIFEST_SCHEMA)
+                    ),
+                    [cited],
+                ).fetchone()
+            )
+        return _checked(cited, None if found is None else found[0], table)
+
 
 def _pg_manifest(conn: "psycopg.Connection[Any]") -> None:
-    """The root's manifest table, created on first use."""
+    """The root's manifest tables, created on first use: the entries, and the facts
+    statements they cite by digest."""
     from psycopg import sql
 
     schema = sql.Identifier(PG_MANIFEST_SCHEMA)
@@ -349,6 +433,12 @@ def _pg_manifest(conn: "psycopg.Connection[Any]") -> None:
     conn.execute(
         sql.SQL(
             "CREATE INDEX IF NOT EXISTS manifest_run_id ON {}.manifest (run_id)"
+        ).format(schema)
+    )
+    conn.execute(
+        sql.SQL(
+            "CREATE TABLE IF NOT EXISTS {}.facts (digest text PRIMARY KEY,"
+            " facts text NOT NULL)"
         ).format(schema)
     )
 
