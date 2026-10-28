@@ -2358,7 +2358,9 @@ def _reap(ctx: Context, i: int, world: World, rec: Rec) -> Iterator[Step]:
     has not (design-v0.2.md §8). A death report for the newest claim naming the launch,
     when that claim runs in its process and nothing else ended it (§3; E1)."""
     launch = rec.request_id
-    handle = ctx.launched.get(launch or "")
+    # the step's parse refuses a launcher record that names no launch
+    assert launch is not None
+    handle = ctx.launched.get(launch)
     how = rec.how
     assert how is not None
     if handle is not None and handle in ctx.reused[i + 1]:

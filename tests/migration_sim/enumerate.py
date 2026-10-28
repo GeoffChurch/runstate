@@ -1244,7 +1244,7 @@ COUNTED = Stops(
 
 SAVE_POINTS = Space(
     origins=(Origins.NEWEST,),
-    resumes=(Resume.AFTER,),
+    resumes=(Resume.AFTER, Resume.AT),
     loading=(True,),
     clocks=(Clock.LOADED, Clock.ZERO),
     folds=(Fold.AT_CLAIM,),
@@ -1285,8 +1285,10 @@ that reads the loaded step or 0, that save: before their first iteration (the
 state they loaded, ``save-at=before-loop``), after an iteration's tick
 (``between``), or of an iteration's partial state (``partial``, which names no
 node); and that end killed, or by an exit whose ``final_step`` is its counter
-(``final-step=counter``); their labels step by one or skip (``stride=skip``).
-Run with ``claims=2, steps=1, stops=0``."""
+(``final-step=counter``); their labels step by one or skip (``stride=skip``); the
+second resuming after the save's step or at it (``resume``), so the begin-time floor
+under ``at`` meets loading values at either clock, pre-saves, partial saves and a
+stride of 2 (the final review's M6). Run with ``claims=2, steps=1, stops=0``."""
 
 _UNNAMED_NOTE = ThirdParty(
     Report(None), None, ThirdPartyFinal.NULL, Honors.UNDISCHARGED, Naming.NONE

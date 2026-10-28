@@ -192,7 +192,7 @@ FAMILIES = {
     "third-party-acts": Family(2, 1, 0, THIRD_PARTY_ACTS),
     "positional": Family(2, 1, 1, POSITIONAL),
 }
-BOUND = 2000
+BOUND = 3000  # save-points, ranging over resume, holds 2,632
 
 
 @pytest.mark.parametrize("family", FAMILIES.values(), ids=list(FAMILIES))

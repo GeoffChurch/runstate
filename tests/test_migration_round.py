@@ -1086,7 +1086,9 @@ def test_the_census_splits_an_end_time_fork_into_its_dating_and_its_places():
     is dated by its tick (one dating, no fork); pass 1 closes silently, before the
     beacon or after it: undated, with no tick, at two places. The six-record log: claim
     1 never commits; claim 3's one commit is dated by its tick or ended before it,
-    undated: a dating fork, its undated end at one place."""
+    undated: a dating fork, its undated end at one place; and since some of the
+    histories writing it resume ``at`` the save's step, a candidate resumes claim 3 at
+    the loaded step 0."""
     import test_migration_oracle as o
     import test_migration_v0_3_0_to_v0_4_0 as t
     from runstate.migrations.ambiguity import REFUSE, Assumptions, Chosen, Resolutions
@@ -1110,7 +1112,12 @@ def test_the_census_splits_an_end_time_fork_into_its_dating_and_its_places():
         },
     )
     assert _census(rows, res) == mr.Census(
-        commits=1, dating=1, undated=0, places=0, rewinds=0, resumed=[]
+        commits=1,
+        dating=1,
+        undated=0,
+        places=0,
+        rewinds=0,
+        resumed=[mr.Resumed(claim=3, step=0, versions=["'claim@3'"])],
     )
 
 

@@ -660,9 +660,50 @@ def test_a_whole_number_float_is_refused_as_the_step_reads_integers_strictly():
     rows = [AT_1, r(2, "lifecycle.heartbeat", _beat(3.0, 0, 1, 2.0))]
     assert _invalid_under_0_3_0(rows) == []
     with pytest.raises(
-        MigrationError, match=r"heartbeat at seq 2 .*reads strictly.*3\.0"
+        MigrationError,
+        match=r"heartbeat at seq 2 .*its step is a number .*3\.0, a whole-number float",
     ):
         parse(rows)
+
+
+def test_an_unreadable_body_s_refusal_says_what_failed():
+    """The refusal names the keys a body lacks, those its schema does not define, and
+    each value of the wrong JSON type; it speaks of whole-number floats only where
+    one failed (the final review's M3: the store's pre-0.2.0 claims hold
+    ``attached_at`` and ``hostname``)."""
+    attached = {**_started(H, 1.0), "attached_at": 1.0, "hostname": "n1"}
+    cases = {
+        "unknown": (
+            [r(1, "lifecycle.started", attached)],
+            "it holds attached_at, hostname, which the schema does not define",
+        ),
+        "missing": (
+            [r(1, "lifecycle.started", {"handle": H})],
+            "it lacks t",
+        ),
+        "ill_typed": (
+            [AT_1, r(2, "lifecycle.heartbeat", _beat("3", 0, 1, 2.0))],
+            "its step is a string the schema does not admit there",
+        ),
+        "a_reap_s_reason": (
+            [
+                r(1, "launcher.launched", _launched(H, 0.5), rid="L1"),
+                r(
+                    2,
+                    "launcher.terminated",
+                    _terminated("exited", None, 9, 1.0),
+                    rid="L1",
+                ),
+            ],
+            "its reason is exited, which needs an exit code and no signal",
+        ),
+    }
+    for case, (rows, why) in cases.items():
+        with pytest.raises(MigrationError) as refused:
+            parse(rows)
+        message = str(refused.value)
+        assert why in message and "does not read as" in message, case
+        assert "float" not in message, case
 
 
 # A launch's second terminated: a process ends once, and a run nothing claimed

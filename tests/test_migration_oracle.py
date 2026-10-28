@@ -1056,8 +1056,9 @@ def test_a_tick_at_once_after_its_close_dates_the_commit() -> None:
 
 
 def _six_records() -> tuple[tuple[Row, ...], list[H.History]]:
-    """The review's six-record ``save-points`` log, which four histories write: two
-    claims, the second's three step-0 values, then its tick at step 0."""
+    """The review's six-record ``save-points`` log, which twelve histories write (four
+    whose second claim resumes after the save's step, eight at it): two claims, the
+    second's three step-0 values, then its tick at step 0."""
     for rows, hs in by_log(FAMILIES["save-points"]()).items():
         if [r.topic for r in rows] == [
             "lifecycle.started",

@@ -446,26 +446,76 @@ _NAK: dict[str, _Test] = {
 }
 
 
+def _json_type(v: object) -> str:
+    """A value's JSON type, as a refusal names it."""
+    match v:
+        case None:
+            return "null"
+        case bool():
+            return "a boolean"
+        case int():
+            return "an integer"
+        case float():
+            return "a number"
+        case str():
+            return "a string"
+        case list():
+            return "an array"
+        case _:
+            return "an object"
+
+
+def _misfit(body: _Body, shape: dict[str, _Test]) -> str | None:
+    """What keeps ``body`` from reading as ``shape``, or None when it does: the keys
+    it lacks, the keys the schema does not define, and each key whose value fails,
+    with the value's JSON type. A whole-number float is named as such, since the
+    schemas accept one where this step reads an integer strictly."""
+    why = []
+    missing = sorted(shape.keys() - body.keys())
+    if missing:
+        why.append("it lacks " + ", ".join(missing))
+    unknown = sorted(body.keys() - shape.keys())
+    if unknown:
+        why.append(
+            "it holds " + ", ".join(unknown) + ", which the schema does not define"
+        )
+    for k in sorted(shape.keys() & body.keys()):
+        v = body[k]
+        if not shape[k](v):
+            bad = f"its {k} is {_json_type(v)} the schema does not admit there"
+            if isinstance(v, float) and v.is_integer():
+                bad += (
+                    f" ({v!r}, a whole-number float: this step reads an integer only "
+                    "as a JSON integer)"
+                )
+            why.append(bad)
+    return "; ".join(why) or None
+
+
 def _fits(body: _Body, shape: dict[str, _Test]) -> bool:
-    return body.keys() == shape.keys() and all(
-        test(body[k]) for k, test in shape.items()
-    )
+    return _misfit(body, shape) is None
 
 
-def _unreadable(r: _Record, shape: str) -> MigrationError:
+def _unreadable(r: _Record, shape: str, why: str) -> MigrationError:
     """The step reads a body strictly: exactly the keys its schema pins, each
-    value of its JSON type. So an integer written as a whole-number float, such
-    as 3.0, which the schemas accept, is refused too."""
+    value of its JSON type, so an integer written as a whole-number float, such
+    as 3.0, which the schemas accept, is refused too. ``why`` says what failed."""
     return MigrationError(
-        f"the {r.topic} at seq {r.seq} does not read as {shape}, which this step "
-        "reads strictly, an integer only as a JSON integer and never as a float "
-        "such as 3.0, so it cannot read it"
+        f"the {r.topic} at seq {r.seq} does not read as {shape}: {why}, so this "
+        "step cannot read it"
     )
+
+
+def _unfit(r: _Record, shape: dict[str, _Test], name: str) -> MigrationError:
+    """The refusal of a body that does not read as ``shape``, saying why."""
+    why = _misfit(r.body, shape)
+    assert why is not None  # asked only of a body that does not fit
+    return _unreadable(r, name, why)
 
 
 def _started(r: _Record) -> _Started:
     if not _fits(r.body, _STARTED):
-        raise _unreadable(r, "format 0.3.0's (lifecycle-v0.5)")
+        raise _unfit(r, _STARTED, "format 0.3.0's (lifecycle-v0.5)")
     return _Started(
         r.seq, handle=r.body["handle"], t=r.body["t"], launch_id=r.request_id
     )
@@ -473,7 +523,7 @@ def _started(r: _Record) -> _Started:
 
 def _beat(r: _Record) -> _Beat:
     if not _fits(r.body, _HEARTBEAT):
-        raise _unreadable(r, "format 0.3.0's (lifecycle-v0.5)")
+        raise _unfit(r, _HEARTBEAT, "format 0.3.0's (lifecycle-v0.5)")
     b = r.body
     return _Beat(
         r.seq,
@@ -494,7 +544,7 @@ def _refused(r: _Record, what: str) -> MigrationError:
 
 def _value(r: _Record) -> _Value:
     if not _fits(r.body, _VALUE):
-        raise _unreadable(r, "format 0.3.0's (value-v0.2)")
+        raise _unfit(r, _VALUE, "format 0.3.0's (value-v0.2)")
     if r.request_id is not None:
         raise _refused(r, f"samples the subscription {r.request_id!r}")
     if r.name is None:  # an empty one the envelope refuses
@@ -538,10 +588,13 @@ def _stop(r: _Record) -> _Stop:
             claim_seq=b["claim_seq"],
             created_at=r.created_at,
         )
+    as_030 = _misfit(b, _STOPPED) or "it is completed and holds an error"
+    as_m10 = _misfit(b, _MALFORMED)
     raise _unreadable(
         r,
         "format 0.3.0's (lifecycle-v0.5), or the reclaim tool's malformed "
         "{reason, honored, claim_seq} (M10)",
+        f"as lifecycle-v0.5's, {as_030}; as M10's, {as_m10}",
     )
 
 
@@ -579,8 +632,19 @@ def _trigger(r: _Record) -> None:
             "subscription-v0.3 requires of every control verb"
         )
     atoms = _atoms(r.body["from"]) if "from" in r.body else []
-    if atoms is None or r.body.keys() - {"from"}:
-        raise _unreadable(r, "subscription-v0.3's StopTrigger")
+    unknown = sorted(r.body.keys() - {"from"})
+    if unknown:
+        raise _unreadable(
+            r,
+            "subscription-v0.3's StopTrigger",
+            f"it holds {', '.join(unknown)}, which the schema does not define",
+        )
+    if atoms is None:
+        raise _unreadable(
+            r,
+            "subscription-v0.3's StopTrigger",
+            "its from is no Condition (step, time_seconds, any, all)",
+        )
     if "step" in atoms:
         raise _refused(r, "holds a step atom, which subscription-v0.4 removed")
 
@@ -597,7 +661,7 @@ def _launch_id(r: _Record) -> str:
 def _launched(r: _Record) -> _Launched:
     launch = _launch_id(r)
     if not _fits(r.body, _LAUNCHED):
-        raise _unreadable(r, "launcher-v0.4's")
+        raise _unfit(r, _LAUNCHED, "launcher-v0.4's")
     return _Launched(r.seq, launch, handle=r.body["handle"])
 
 
@@ -612,7 +676,17 @@ def _terminated(r: _Record) -> _Terminated:
                 return _Terminated(r.seq, launch, Exited(code), b["t"])
             case "killed", None, int() as signal:
                 return _Terminated(r.seq, launch, Killed(signal), b["t"])
-    raise _unreadable(r, "launcher-v0.4's")
+        raise _unreadable(
+            r,
+            "launcher-v0.4's",
+            f"its reason is {b['reason']}, which needs "
+            + (
+                "an exit code and no signal"
+                if b["reason"] == "exited"
+                else "a signal and no exit code"
+            ),
+        )
+    raise _unfit(r, _TERMINATED, "launcher-v0.4's")
 
 
 def _a_second_reap(t: _Terminated, reaped: Mapping[str, int]) -> None:
@@ -837,7 +911,7 @@ def parse(rows: list[Row]) -> _Log:
             case _Topic.STOP:
                 _trigger(r)
             case _Topic.NAK if not _fits(r.body, _NAK):
-                raise _unreadable(r, "format 0.3.0's (lifecycle-v0.5)")
+                raise _unfit(r, _NAK, "format 0.3.0's (lifecycle-v0.5)")
             case _Topic.LAUNCHED:
                 launched.append(_launched(r))
             case _Topic.TERMINATED:
