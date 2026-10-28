@@ -132,6 +132,7 @@ from runstate.migrations.ambiguity import (  # noqa: E402
     parse_choices,
     resolutions,
 )
+from runstate.migrations.stores import sqlite_traces  # noqa: E402
 from runstate.migrations.v0_2_0_to_v0_3_0 import V0_2_0_to_V0_3_0  # noqa: E402
 
 _STEP_0_2_0 = V0_2_0_to_V0_3_0()
@@ -423,6 +424,11 @@ _REFUSALS: dict[StepName, tuple[tuple[str, str], ...]] = {
             "the facts admit no history",
         ),
         (r"closes a pass at the horizon, its loop free", "the horizon"),
+        (r"nothing shows where its log was born", "a birth nothing dates"),
+        (
+            r"born in format 0\.2\.0, as .* shows, but",
+            "a birth the evidence contradicts",
+        ),
         (r"states summed over the layers", "past the budget"),
         (r"more than \d+ states", "past the cap"),
         (r"refused it:", "a chooser refused"),
@@ -555,7 +561,7 @@ def _address(path: Path) -> tuple[str, str] | SkipWhy:
             return path.parent.name, version
     if _VERSIONED.match(path.parent.name):
         return SkipWhy.UNREGISTERED_FORMAT
-    return "legacy", formats._BASE
+    return "legacy", formats.LEGACY_FORMAT
 
 
 def _newer(path: Path, version: str, address: str) -> SkipWhy | None:
@@ -1237,7 +1243,14 @@ def measure(
     except (OSError, sqlite3.Error, MemoryError, ValueError) as exc:
         # a file it may not read, a corrupt log, too big a one, a body not JSON
         return _crashed(base, Stage.READ, exc)
-    history: History = ()
+    # what `runstate migrate` reads beside the log: a versioned log's traces in its
+    # root (a legacy log's chain starts at format 0.2.0, whose entry it writes)
+    traces = (
+        ()
+        if found.address == "legacy"
+        else sqlite_traces(found.path.parent.parent, found.path.stem)
+    )
+    history = History((), traces)
     fmt = found.format
     rows03 = rows
     migrated04: Migrated | None = None
@@ -1263,7 +1276,7 @@ def measure(
             return _refused(base, name, exc)
         except Exception as exc:
             return _crashed(base, stage, exc)
-        history = (*history, plan.entry(base.run_id, migrated))
+        history = history.then(plan.entry(base.run_id, migrated))
         rows = migrated.rows
         migrated04 = migrated if fmt == _STEP_0_3_0.FROM else None
         fmt = plan.step.TO

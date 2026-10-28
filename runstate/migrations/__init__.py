@@ -192,8 +192,11 @@ class Memo:
     @staticmethod
     def key(step: Step, rows: list[Row], history: History) -> str:
         """What a transform reads: the step (two steps may be handed the same rows under
-        the same history, a log that reads in both their formats), every row, and each
-        earlier entry's word, not when it was written nor by which code."""
+        the same history, a log that reads in both their formats), every row, each
+        earlier entry's word, not when it was written nor by which code, and the formats
+        the run is shown to have been in, not where that shows. So the detection pass's
+        chain, whose earlier entry is in memory, and the migration's, which reads it and
+        the earlier log's seal from the store, key one transform alike."""
         word = [
             (
                 e.from_format,
@@ -205,9 +208,9 @@ class Memo:
                 sorted((p, sorted(r.items())) for p, r in e.readings.items()),
                 sorted(e.accepted.items()),
             )
-            for e in history
+            for e in history.entries
         ]
-        read = ((step.FROM, step.TO), tuple(rows), word)
+        read = ((step.FROM, step.TO), tuple(rows), word, sorted(history.formats()))
         return hashlib.sha256(repr(read).encode()).hexdigest()
 
     def get(self, key: str) -> Migrated | None:
@@ -382,7 +385,7 @@ def _detect(
         if diverged:
             report.defer(steps[k + 1 :], run_id)
             return
-        history = (*history, plan.entry(run_id, migrated))
+        history = history.then(plan.entry(run_id, migrated))
         rows = migrated.rows
 
 

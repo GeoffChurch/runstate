@@ -24,9 +24,10 @@ default.
 **Names an earlier step filled.** In a log born in format 0.2.0 the 0.2.0 -> 0.3.0 step
 filled every ``stopped``'s ``honored`` and every heartbeat's and ``stopped``'s
 ``claim_seq``, by the readings its consumer chose for ``stop-honored`` and
-``record-claim`` (reference-by-name.md §6). They are that step's choices, recorded in
-the root's manifest, which tells this step the log's birth (``Born020``); no fact states
-them.
+``record-claim`` (reference-by-name.md §6). They are that step's choices, so no fact
+states them. Where a log was born is part of what happened: the step reads it from
+evidence, and where none decides, from the consumer's statement (``Birth``,
+``Configuration.born``).
 """
 
 from __future__ import annotations
@@ -460,16 +461,54 @@ class Classifier(Protocol):
     def read(self, log: Sequence[Row]) -> LogReader: ...
 
 
+class Birth(Enum):
+    """The format a log was born in: the one its first record was written in.
+
+    It decides whose word a 0.3.0 log's names are. In a log born in 0.3.0 each
+    heartbeat's and ``stopped``'s ``claim_seq`` and each ``stopped``'s ``honored`` is
+    its writer's; in one born in 0.2.0 the 0.2.0 -> 0.3.0 step filled them, by the
+    readings its consumer chose, so each is that reading's inference, and any live worker
+    may have written such a record (``Born020``)."""
+
+    V0_2_0 = "0.2.0"  # migrated by the 0.2.0 -> 0.3.0 step, a legacy log's included
+    V0_3_0 = "0.3.0"  # written in 0.3.0 by its writers
+
+
 class Configuration(NamedTuple):
     """A consumer's whole statement for one root: its facts per version, keyed as its
-    classifier names them."""
+    classifier names them, its classifier, and where the root's logs were born.
+
+    **``born`` is a per-root statement, not a fact.** A fact classifies what a writer
+    version does, and belongs to that version; no writer decides where a log was born.
+    The root's migration history does, so the statement sits beside the classifier, the
+    other part of the configuration that speaks for the root rather than for a writer.
+
+    The step reads a log's birth from evidence first: the root's manifest entry of the
+    0.2.0 -> 0.3.0 step, else the store's own trace of the log in format 0.2.0 (a sealed
+    v0.2.0 log, a legacy tombstone, a ``sealed_runs`` row). The log alone cannot show
+    it: the earlier step's output is a log some conforming 0.3.0 history writes, each
+    name it fills one a writer may have written. Where no evidence decides, ``born`` is
+    the births a log of the root may have: every such log's birth lies in it.
+    - ``{V0_3_0}`` reads each name as its writer's word, ``{V0_2_0}`` as an inference;
+    - both is the wider reading, under which names are inferences, so who wrote a
+      record surfaces as the ``writer`` fork rather than being settled;
+    - the empty set says no log of the root lacks evidence, so one that does is
+      refused, as evidence of 0.2.0 is refused against a statement without it.
+
+    ``None`` states nothing, and a log no evidence dates is then refused, the refusal
+    naming this field. Unlike a fact's, birth's unstated form is no whole domain: the two
+    readings are not nested (in a log born in 0.2.0 the engine reads ``progress``
+    positionally, as the runstate that wrote it did), so reading silence as either
+    would answer a question about what happened. A consumer that migrated its logs from
+    0.2.0 with a runstate that wrote no manifest states ``{V0_2_0}``."""
 
     workers: Mapping[Hashable, WorkerFacts]
     third_parties: Mapping[Hashable, ThirdPartyFacts]
     classifier: Classifier
+    born: frozenset[Birth] | None
 
 
-# ----- the earlier step's readings ----------------------------------------------------
+# ----- a log's birth ------------------------------------------------------------------
 
 
 @dataclass(frozen=True)

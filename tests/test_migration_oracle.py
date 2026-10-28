@@ -53,6 +53,7 @@ import pytest
 import runstate.migrations.v0_3_0_to_v0_4_0 as STEP
 import runstate.migrations.v0_3_0_to_v0_4_0_engine as E
 import runstate.migrations.v0_3_0_to_v0_4_0_facts as V
+from tests.migration_helpers import NO_HISTORY
 import tests.migration_derive as D
 import tests.migration_sim.enumerate as enumeration
 import tests.test_migration_sim as S
@@ -475,8 +476,8 @@ def _born_history(h: H.History) -> Any:
     from runstate.migrations.ambiguity import Entry, Limits
 
     if h.born is H.Born.V0_3_0:
-        return ()
-    return (
+        return NO_HISTORY
+    return NO_HISTORY.then(
         Entry(
             run_id="h",
             from_format="0.2.0",
@@ -490,7 +491,7 @@ def _born_history(h: H.History) -> Any:
             resolved={},
             readings={},
             accepted={},
-        ),
+        )
     )
 
 
@@ -1088,7 +1089,7 @@ def test_whether_a_tick_dates_a_commit_is_the_end_time_projections():
     step = STEP.V0_3_0_to_V0_4_0()
     limits = Limits(cap=CAP, budget=BUDGET, run_on=RUN_ON)
     found = step.detect(
-        list(rows), assumptions=Assumptions(cfg, "x", limits), history=()
+        list(rows), assumptions=Assumptions(cfg, "x", limits), history=NO_HISTORY
     )
     assert [f.seq for f in found.forks["end-time"]] == [3]
     assert not any(found.forks[p] for p in ("end", "span", "origin"))
@@ -1104,7 +1105,7 @@ def test_whether_a_tick_dates_a_commit_is_the_end_time_projections():
                 "end-time": Chosen(name, STEP.END_TIME.generic[chooser].chooser),
             },
         )
-        m = step.transform(list(rows), resolutions=res, history=())
+        m = step.transform(list(rows), resolutions=res, history=NO_HISTORY)
         out[name] = [(x.topic, json.loads(x.body).get("t")) for x in m.rows[6:]]
         assert m.readings["end-time"] == {
             3: {
@@ -1168,7 +1169,8 @@ a = S.CHECKPOINTED
 b = dataclasses.replace(a, final_step=frozenset(V.FinalStep),
                         error_final_step=frozenset(V.FinalStep),
                         watermark=frozenset(V.Watermark))
-two = V.Configuration({{"version-a": a, "version-b": b}}, {{}}, O.TwoVersions())
+two = V.Configuration({{"version-a": a, "version-b": b}}, {{}}, O.TwoVersions(),
+                      frozenset({{V.Birth.V0_3_0}}))
 for rid, rows in T.G.GOLDEN.items():
     try:
         g = E.candidates(list(rows), two, born=V.Born030(), cap=3000,
@@ -1461,7 +1463,9 @@ def test_a_cut_nothing_reads_does_not_refuse() -> None:
                 limits=res.assumptions.limits._replace(run_on=run_on)
             )
         )
-        m = STEP.V0_3_0_to_V0_4_0().transform(loaded, resolutions=res, history=())
+        m = STEP.V0_3_0_to_V0_4_0().transform(
+            loaded, resolutions=res, history=NO_HISTORY
+        )
         assert [x.topic for x in m.rows] == [
             "lifecycle.started",
             "supervisor.died",

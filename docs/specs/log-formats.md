@@ -288,11 +288,21 @@ projections and divergences.
   before it. It checks every reading against what the log proves, refusing the run, naming the chooser and
   the seq, when a reading contradicts it. It returns the rows, the reading it gave at each fork, and where
   each divergence's rule fires, for the manifest and the runner.
-- **`history`** is the run's entries in the root's manifest, oldest first, the earlier steps of this
-  invocation's chain included: how the earlier steps migrated it. A later step may read an earlier step's
-  choices from it (the owner's D3): in a log born in format 0.2.0, the 0.3.0 → 0.4.0 step reads the
-  `record-claim` and `stop-honored` readings that filled its names (`commits-and-lineage.md` §7, "Names an
-  earlier step filled").
+- **`history`** is how the run came to be, as its root records it (`History`):
+  - its **entries** in the root's manifest, oldest first, the earlier steps of this invocation's chain
+    included: how the earlier steps migrated it. A later step may read an earlier step's choices from them
+    (the owner's D3);
+  - its **traces**: what the store holds of its log in other formats, each with where it shows it. On
+    SQLite, a sealed log at a format's address, and a legacy tombstone (§7), which shows a log moved into
+    format 0.2.0. On Postgres, a row of a format's `sealed_runs`; the legacy tombstone is a whole schema's
+    table and names no run.
+
+  The 0.3.0 → 0.4.0 step reads from it only the log's **birth**, never the earlier step's readings: whether
+  an entry of the 0.2.0 → 0.3.0 step, or a trace of the log in format 0.2.0, shows it was born in 0.2.0, in
+  which case each name that step filled is an inference, whichever reading made it. Where neither shows it,
+  the consumer's statement decides, and an unstated birth is refused (`commits-and-lineage.md` §7, "Names an
+  earlier step filled"): silence is no evidence, since a run copied between roots, or migrated by a
+  runstate that wrote no manifest, has no entry.
 
 The built-in choosers live beside their step, in its module. `runstate/migrations/ambiguity.py` holds what
 every step shares:
@@ -590,6 +600,10 @@ On SQLite and Postgres (Memory has no addresses):
     records whose read differs (`reattributed-record` at every fork read otherwise than by position),
     checked against master's reads on the golden logs under four sets of readings, and a `record-claim`
     reading that changes the verdict fires `reattributed-record`, not the positional leak's `stale-beat`;
+  - the 0.3.0 → 0.4.0 step reads a log's birth from the manifest's entry of the earlier step, else from the
+    store's trace of the log in 0.2.0 (a sealed v0.2.0 log or a legacy tombstone on SQLite, a
+    `sealed_runs` row on Postgres), else from the consumer's statement; an unstated birth, and evidence the
+    statement contradicts, refuse the run;
   - each of the 0.3.0 → 0.4.0 step's divergences fires where its rule applies, and every read the
     migration changes on the goldens and on the corpus is attributed to one that fired; its `exit-honored`
     fires at exactly the exits of the simulator's stated costs (`commits-and-lineage.md` §7);

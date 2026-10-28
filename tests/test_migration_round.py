@@ -26,6 +26,7 @@ pytest.importorskip("jsonschema")
 
 from runstate.channel.sqlite import _SCHEMA  # noqa: E402
 from runstate.migrations import MigrationError, Row  # noqa: E402
+from tests.migration_helpers import NO_HISTORY  # noqa: E402
 from tests.migration_goldens import (  # noqa: E402
     BACKSTOP,
     DEAD,
@@ -396,8 +397,14 @@ def _every_refusal():
             [claim, r(2, "lifecycle.heartbeat", _beat(5, 0, 1, 2.0))],
             t.REFERENCE,
         ),
-        "past_the_cap": ([claim], t.UNSTATED),
+        "past_the_cap": ([claim], t.UNSTATED, t.History((t.BORN_020,), ())),
         "the_horizon": (t._a_claim_then_another(), _unbounded(t)),
+        "a_birth_nothing_dates": ([claim], t.REFERENCE._replace(born=None)),
+        "a_birth_the_evidence_contradicts": (
+            [claim],
+            t.REFERENCE,
+            t.History((t.BORN_020,), ()),
+        ),
     }
     return cases
 
@@ -409,9 +416,9 @@ def test_every_refusal_the_step_raises_maps_to_one_known_kind():
 
     table = mr._REFUSALS[mr.StepName.FROM_0_3_0]
     reached = set()
-    for case, (rows, configuration) in _every_refusal().items():
+    for case, (rows, configuration, *history) in _every_refusal().items():
         with pytest.raises(MigrationError) as refused:
-            t.migrated(rows, configuration, **t.CHOSEN)
+            t.migrated(rows, configuration, *history, **t.CHOSEN)
         message = str(refused.value)
         matched = [i for i, (p, _) in enumerate(table) if re.search(p, message)]
         assert matched, (case, message)
@@ -552,7 +559,9 @@ def _v0_2_0(rid_handle="local://n1/11"):
 
 def test_the_format_is_read_from_the_address(tmp_path):
     """A legacy address and v0.2.0 are format 0.2.0, which the shipped step
-    brings to 0.3.0; a 0.2.0 log it refuses is recorded as its refusal."""
+    brings to 0.3.0; a 0.2.0 log it refuses is recorded as its refusal. The root
+    holds logs of either birth, so its statement says so; one that states 0.3.0
+    alone is contradicted by the 0.2.0 logs' evidence, and refuses them."""
     root = tmp_path / "root"
     _write(root / "cell" / "legacy.db", _v0_2_0())
     _write(root / "v0.2.0" / "old.db", _v0_2_0())
@@ -571,7 +580,11 @@ def test_the_format_is_read_from_the_address(tmp_path):
     )
     _write(root / "v0.3.0" / "new.db", EXIT)
     out = tmp_path / "out"
-    assert _main(root, out, max_rows=100) == 0
+    either = [
+        "tests.test_migration_goldens:GOLDENS_EITHER_BIRTH" if "GOLDENS" in c else c
+        for c in CONFIG
+    ]
+    assert _main(root, out, max_rows=100, config=either) == 0
     runs, summary = _outputs(out)
     assert {k: (x["address"], x["format"], x["status"]) for k, x in runs.items()} == {
         "legacy": ("legacy", "0.2.0", "measured"),
@@ -579,6 +592,14 @@ def test_the_format_is_read_from_the_address(tmp_path):
         "beatfirst": ("v0.2.0", "0.2.0", "refused"),
         "new": ("v0.3.0", "0.3.0", "measured"),
     }
+    stated_030 = tmp_path / "stated-0.3.0"
+    assert _main(root, stated_030, max_rows=100) == 0
+    contradicted, _ = _outputs(stated_030)
+    for rid in ("legacy", "old"):
+        assert (
+            contradicted[rid]["refusal"]["kind"] == "a birth the evidence contradicts"
+        )
+    assert contradicted["new"]["status"] == "measured"
     assert runs["legacy"]["reads"]["series"]["differing"] == 0
     assert runs["beatfirst"]["refusal"]["step"] == "0.2.0 -> 0.3.0"
     assert runs["beatfirst"]["refusal"]["kind"] == "a heartbeat before every claim"
@@ -1021,7 +1042,7 @@ def _census(rows, resolutions):
     """The runner's census of ``rows``, as ``_run_step`` takes it: right after the
     0.3.0 step's detect, from the candidates the step holds."""
     rows = list(rows)
-    mr._STEP_0_3_0.detect(rows, assumptions=resolutions.assumptions, history=())
+    mr._STEP_0_3_0.detect(rows, assumptions=resolutions.assumptions, history=NO_HISTORY)
     plan = mr.Planned(mr._STEP_0_3_0, resolutions, frozenset(), mr.Memo())
     return mr.census(rows, plan)
 
@@ -1091,7 +1112,7 @@ def _migrated_beacon():
     m = t.step.transform(
         t._a_beacon_between_two_places(),
         resolutions=t.under(t.FIX1, **t.CHOSEN),
-        history=(),
+        history=NO_HISTORY,
     )
     env = mr._envelopes(m.rows)
     return MemoryChannel(log=env), env

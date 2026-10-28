@@ -53,6 +53,7 @@ class Observation(NamedTuple):
     stops: dict[int, V.StopAnswer]
     roles: dict[int, V.ValueRole]  # seq of a value -> its role
     starts: tuple[int, ...]  # each claim's started seq, by claim index
+    born: V.Birth  # the format the history's log was born in
 
 
 _WORKER = (
@@ -488,7 +489,12 @@ def observe(h: H.History) -> Observation:
             if not _renders_alike(h, i, fold=flip):
                 obs[claim_seq[ev.claim]]["fold"].append(one(V.Fold(ev.fold.value)))
     return Observation(
-        {k: dict(v) for k, v in obs.items()}, third, stops_by, roles, tuple(starts)
+        {k: dict(v) for k, v in obs.items()},
+        third,
+        stops_by,
+        roles,
+        tuple(starts),
+        V.Birth(h.born.value),
     )
 
 
@@ -610,7 +616,9 @@ def configuration(observations: Sequence[Observation]) -> V.Configuration:
         {k: frozenset(v) for k, v in stops.items()},
         {k: frozenset(v) for k, v in roles.items()},
     )
-    return V.Configuration(workers, third, Oracle(reader))
+    # the births of the histories, each a truth, as the consumer of a root states them
+    born = frozenset(ob.born for ob in observations)
+    return V.Configuration(workers, third, Oracle(reader), born)
 
 
 def born(h: H.History) -> V.Born:

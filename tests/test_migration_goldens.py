@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.migration_helpers import NO_HISTORY
 import tests.migration_derive as D
 import tests.migration_goldens as G
 import tests.test_migration_sim as S
@@ -127,8 +128,8 @@ def _history(h):
     """The manifest a golden's run carries: an entry of the earlier step when its log
     was born in 0.2.0."""
     if h is None or h.born is H.Born.V0_3_0:
-        return ()
-    return (
+        return NO_HISTORY
+    return NO_HISTORY.then(
         Entry(
             run_id="golden",
             from_format="0.2.0",
@@ -142,7 +143,7 @@ def _history(h):
             resolved={"record-claim": "positional", "stop-honored": "positional"},
             readings={},
             accepted={},
-        ),
+        )
     )
 
 
@@ -151,7 +152,7 @@ def facts(rid):
     h = _HISTORY.get(id(G.GOLDEN[rid]))
     if h is None:
         assert rid in MALFORMED
-        return M10, ()
+        return M10, NO_HISTORY
     return D.configuration([D.observe(h)]), _history(h)
 
 
@@ -230,12 +231,16 @@ def _every_golden():
         configuration, _ = facts(rid)
         workers |= {f"{rid}:{k}": f for k, f in configuration.workers.items()}
         third |= {f"{rid}:{k}": f for k, f in configuration.third_parties.items()}
-    return V.Configuration(workers, third, _ByGolden())
+    return V.Configuration(workers, third, _ByGolden(), frozenset({V.Birth.V0_3_0}))
 
 
 GOLDENS_CONFIGURATION = _every_golden()
 """Each golden's facts, for ``--assume tests.test_migration_goldens:GOLDENS_CONFIGURATION``
 in the corpus runner's tests; every golden is born in 0.3.0."""
+
+GOLDENS_EITHER_BIRTH = GOLDENS_CONFIGURATION._replace(born=frozenset(V.Birth))
+"""The goldens' facts for a root that also holds logs migrated from 0.2.0: either
+birth, so a log the manifest's evidence dates in 0.2.0 does not contradict it."""
 
 
 def migrated(rid):
@@ -271,7 +276,7 @@ def test_each_goldens_divergences_are_pinned(rid):
 def test_a_malformed_golden_is_refused_under_no_stated_facts(rid):
     res = Resolutions(Assumptions(UNSTATED, None, LIMITS), CHOICES)
     with pytest.raises(MigrationError, match="only a consumer's classifier may read"):
-        step.transform(list(G.GOLDEN[rid]), resolutions=res, history=())
+        step.transform(list(G.GOLDEN[rid]), resolutions=res, history=NO_HISTORY)
 
 
 def _schema_errors(row):

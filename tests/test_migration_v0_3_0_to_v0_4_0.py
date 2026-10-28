@@ -26,15 +26,21 @@ from runstate.formats import FORMATS, DirectoryLayout
 from runstate.migrations import RENUMBERING_FROM, STEPS, MigrationError, Row, migrate
 from runstate.migrations.ambiguity import (
     REFUSE,
+    Assumed,
     Assumptions,
+    Choices,
     Chosen,
     Entry,
+    History,
     Limits,
+    Trace,
     Refusal,
     Resolutions,
+    Undecided,
     parse_choices,
     resolutions,
 )
+from runstate.migrations.seal import seal_sqlite
 from runstate.migrations.stores import SqliteStore
 from runstate.migrations.v0_3_0_to_v0_4_0 import (
     END_TIME,
@@ -56,6 +62,7 @@ from runstate.migrations.v0_3_0_to_v0_4_0 import (
 )
 import runstate.migrations.v0_3_0_to_v0_4_0 as STEP
 import runstate.migrations.v0_3_0_to_v0_4_0_facts as V
+from tests.migration_helpers import NO_HISTORY
 from tests.migration_goldens import (
     BACKSTOP,
     DEAD,
@@ -80,7 +87,9 @@ NONE = parse_choices([step], assume=[], resolve=[], accept=[], limits=LIMITS)
 
 def transform(rows):
     """The step under no stated facts: the boundary refuses before the engine."""
-    return step.transform(rows, resolutions=resolutions(step, NONE), history=()).rows
+    return step.transform(
+        rows, resolutions=resolutions(step, NONE), history=NO_HISTORY
+    ).rows
 
 
 class _Reference:
@@ -116,6 +125,7 @@ CONSUMER = dict(
     load=frozenset({V.Load.FRESH, V.Load.NEWEST}),
     resume=frozenset({V.Resume.AFTER}),
     strays=frozenset(),
+    born=frozenset({V.Birth.V0_3_0}),
 )
 """A consumer's word on its own code, as a consumer of the reference Worker would give
 it: every claim resumed at the loaded step plus one (``steps(start=k + 1)`` after
@@ -140,6 +150,7 @@ REFERENCE = V.Configuration(
     },
     {"tp": UNSTATED.third_parties["any"]},
     _Reference(),
+    frozenset({V.Birth.V0_3_0}),
 )
 """``CHECKPOINTED`` widened for these tests' hand-written logs: a clock before the first
 pass that reads the loaded step, any ``final_step`` at an exit, the last tick at an
@@ -182,7 +193,7 @@ CHOSEN = {
 }
 
 
-def migrated(rows, configuration=REFERENCE, history=(), **choosers):
+def migrated(rows, configuration=REFERENCE, history=NO_HISTORY, **choosers):
     return step.transform(
         rows, resolutions=under(configuration, **choosers), history=history
     )
@@ -1121,7 +1132,9 @@ def test_a_fork_answer_must_be_one_of_its_own():
         SPAN_CHECK(q, E.Answer((E.PHold(6, 1, 0),), lambda: ()))
 
 
-def test_a_logs_birth_is_read_from_the_manifest():
+def test_a_logs_birth_is_read_from_evidence_then_the_statement():
+    """Evidence first (an entry of the earlier step, a trace of the log in 0.2.0), then
+    the statement; neither, and the run is refused."""
     from runstate.migrations.v0_3_0_to_v0_4_0 import _born
 
     earlier = Entry(
@@ -1138,8 +1151,14 @@ def test_a_logs_birth_is_read_from_the_manifest():
         readings={},
         accepted={},
     )
-    assert _born(()) == V.Born030()
-    assert _born((earlier,)) == V.Born020()
+    sealed = Trace("0.2.0", "a row of runstate_v0_2_0.sealed_runs")
+    for history in (History((earlier,), ()), History((), (sealed,))):
+        assert _born(history, None) == V.Born020()
+    assert _born(NO_HISTORY, frozenset({V.Birth.V0_3_0})) == V.Born030()
+    assert _born(NO_HISTORY, frozenset({V.Birth.V0_2_0})) == V.Born020()
+    assert _born(NO_HISTORY, frozenset(V.Birth)) == V.Born020()
+    with pytest.raises(MigrationError, match="nothing shows where its log was born"):
+        _born(NO_HISTORY, None)
 
 
 def test_a_malformed_stopped_is_read_only_by_a_consumers_classifier():
@@ -1168,7 +1187,7 @@ def test_the_step_reports_each_fork_with_the_facts_that_could_settle_it():
         }
     )
     a = Assumptions(wide, "test", LIMITS)
-    found = step.detect(rows, assumptions=a, history=())
+    found = step.detect(rows, assumptions=a, history=NO_HISTORY)
     assert set(found.forks) == {p.name for p in step.PROJECTIONS}
     origin = found.forks["origin"]
     assert origin and all(f.seq == 4 for f in origin)
@@ -1193,7 +1212,7 @@ def test_a_run_past_the_budget_is_refused_naming_the_record():
         under(REFERENCE, **CHOSEN).choosers,
     )
     with pytest.raises(MigrationError, match=r"more than 3 states summed .* seq \d"):
-        step.transform(GOLDEN["exit"], resolutions=tight, history=())
+        step.transform(GOLDEN["exit"], resolutions=tight, history=NO_HISTORY)
 
 
 def _a_claim_then_another():
@@ -1233,7 +1252,7 @@ def test_a_run_on_cut_at_the_horizon_refuses_naming_the_claim_and_the_facts(run_
         match=r"a candidate of claims? [0-9, ]+ closes a pass at the horizon, its loop "
         rf"free to continue \({run_on} labels .*: marker, closing, beat-cov$",
     ):
-        step.transform(_a_claim_then_another(), resolutions=res, history=())
+        step.transform(_a_claim_then_another(), resolutions=res, history=NO_HISTORY)
 
 
 class _Closes(_Reference):
@@ -1269,17 +1288,22 @@ def test_each_fact_the_horizon_refusal_names_clears_it(narrowed):
     if "closing" in narrowed:  # a pass then closes only at a value that closes it
         cleared = cleared._replace(classifier=_Closes())
     m = step.transform(
-        _a_claim_then_another(), resolutions=under(cleared, **CHOSEN), history=()
+        _a_claim_then_another(),
+        resolutions=under(cleared, **CHOSEN),
+        history=NO_HISTORY,
     )
     assert m.rows[0].topic == "lifecycle.started"
 
 
 def test_no_stated_facts_names_the_facts_to_state_and_the_preset():
     """Under no stated facts a small log already exceeds the cap: the refusal says so,
-    names the facts that widen the pass, and points at the reference preset."""
+    names the facts that widen the pass, and points at the reference preset. (Its
+    birth is the manifest's: under no stated facts nothing else could date it.)"""
     with pytest.raises(MigrationError) as refused:
         step.detect(
-            GOLDEN["exit"], assumptions=resolutions(step, NONE).assumptions, history=()
+            GOLDEN["exit"],
+            assumptions=resolutions(step, NONE).assumptions,
+            history=History((BORN_020,), ()),
         )
     message = str(refused.value)
     assert "under no stated facts (no --assume)" in message
@@ -1303,9 +1327,10 @@ UNKNOWN = dict(
     load=V.every(V.Load),
     resume=V.every(V.Resume),
     strays=V.every(V.Stray),
+    born=frozenset(V.Birth),
 )
 """A consumer that knows nothing of its own code passes each fact's whole domain,
-explicitly."""
+explicitly, and states either birth, the wider reading, for a log no evidence dates."""
 
 PRESET = STEP.reference(**UNKNOWN)
 """A consumer's own call of the preset, as its ``--assume`` names it."""
@@ -1328,7 +1353,7 @@ def test_a_consumer_names_its_own_call_of_the_preset_and_migrates_its_log():
     )
     res = resolutions(step, choices)
     assert res.assumptions.facts.workers == PRESET.workers
-    out = step.transform(EXIT, resolutions=res, history=())
+    out = step.transform(EXIT, resolutions=res, history=NO_HISTORY)
     topics = [x.topic for x in out.rows]
     assert topics[0] == "lifecycle.started" and topics[-1] == "lifecycle.stopped"
     assert topics.count("lifecycle.commit") == 1 and "control.stop" in topics
@@ -1336,6 +1361,8 @@ def test_a_consumer_names_its_own_call_of_the_preset_and_migrates_its_log():
     assert FACTS.describe(PRESET)["classifier"] == (
         "runstate.migrations.v0_3_0_to_v0_4_0:Reference"
     )
+    assert FACTS.describe(PRESET)["born"] == ["0.2.0", "0.3.0"]
+    assert FACTS.describe(UNSTATED)["born"] is None
 
 
 @pytest.mark.parametrize("missing", list(UNKNOWN))
@@ -1364,7 +1391,7 @@ def test_the_preset_states_what_the_worker_fixes():
         {V.Watermark.CONTROL},
     )
     for k, v in UNKNOWN.items():
-        assert getattr(w, k) == v, k
+        assert (PRESET.born if k == "born" else getattr(w, k)) == v, k
     reader = PRESET.classifier.read(
         [
             r(1, "value", _value(0.5, 0, 1.0), name="a"),
@@ -1422,8 +1449,8 @@ def test_the_reference_workers_own_logs_migrate_under_the_preset(kind):
     )
     res = resolutions(step, choices)
     rows = _the_reference_workers_log(kind)
-    step.detect(rows, assumptions=res.assumptions, history=())
-    out = step.transform(rows, resolutions=res, history=())
+    step.detect(rows, assumptions=res.assumptions, history=NO_HISTORY)
+    out = step.transform(rows, resolutions=res, history=NO_HISTORY)
     fired = {d: seqs for d, seqs in out.divergences.items() if seqs}
     assert fired == ({"unheld-value": (6,)} if kind == "error" else {})
     assert [x.topic for x in out.rows].count("lifecycle.started") == (
@@ -1434,7 +1461,9 @@ def test_the_reference_workers_own_logs_migrate_under_the_preset(kind):
 # ----- where an undated commit stands is part of its end-time reading (fix round 2) ----
 
 
-FIX1 = V.Configuration({"reference": CHECKPOINTED}, {}, STEP.Reference())
+FIX1 = V.Configuration(
+    {"reference": CHECKPOINTED}, {}, STEP.Reference(), frozenset({V.Birth.V0_3_0})
+)
 """The reference preset as fix round 1 shipped it: the reference Worker with its
 consumer's checkpoints (``CHECKPOINTED``)."""
 
@@ -1470,7 +1499,7 @@ def test_each_place_an_undated_commit_may_stand_is_its_own_answer():
     the tick at its bound, ``upper`` after the beacon at the next record's ``t``."""
     rows = _a_beacon_between_two_places()
     found = step.detect(
-        rows, assumptions=under(FIX1, **CHOSEN).assumptions, history=()
+        rows, assumptions=under(FIX1, **CHOSEN).assumptions, history=NO_HISTORY
     ).forks
     assert {p: [f.seq for f in fs] for p, fs in found.items() if fs} == {
         "end-time": [1]
@@ -1481,7 +1510,7 @@ def test_each_place_an_undated_commit_may_stand_is_its_own_answer():
         m = step.transform(
             rows,
             resolutions=under(FIX1, **{**CHOSEN, "end_time": Chosen("x", asked)}),
-            history=(),
+            history=NO_HISTORY,
         )
         assert asked.asked == [
             EndTime(
@@ -1523,7 +1552,7 @@ def test_a_consumers_end_time_at_a_place_is_written_there():
     m = step.transform(
         _a_beacon_between_two_places(),
         resolutions=under(FIX1, **{**CHOSEN, "end_time": Chosen("x", Late())}),
-        history=(),
+        history=NO_HISTORY,
     )
     assert [(x.topic, json.loads(x.body)["t"]) for x in m.rows[3:5]] == [
         ("lifecycle.heartbeat", 4.0),
@@ -1538,7 +1567,7 @@ def test_a_consumers_end_time_at_a_place_is_written_there():
         step.transform(
             _a_beacon_between_two_places(),
             resolutions=under(FIX1, **{**CHOSEN, "end_time": Chosen("x", Early())}),
-            history=(),
+            history=NO_HISTORY,
         )
 
 
@@ -1606,8 +1635,8 @@ def test_the_step_drops_the_last_runs_candidates_before_building_the_next():
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(E, "candidates", watched)
         for rows in (EXIT, _a_beacon_between_two_places()):
-            mine.detect(rows, assumptions=res.assumptions, history=())
-            mine.transform(rows, resolutions=res, history=())
+            mine.detect(rows, assumptions=res.assumptions, history=NO_HISTORY)
+            mine.transform(rows, resolutions=res, history=NO_HISTORY)
     assert held == [None, None]
 
 
@@ -1641,13 +1670,9 @@ class _NotTheLatest:
         return WRITER_NEWEST.chooser.choose(question)
 
 
-def test_who_wrote_a_heartbeat_in_a_log_born_in_0_2_0_is_the_writer_projection():
-    """0.4.0 writes a heartbeat's writer as its ``claim_seq``, which ``await_consumed``
-    and the Watcher read; in a log born in 0.2.0 any live worker may have written it.
-    With claim 1's worker alive past claim 3's takeover, the beacon at seq 4 is either
-    one's: a Writer fork for each claim, naming ``takeover`` as the fact that settles
-    it, which ``newest`` reads as the newest worker's and a consumer's chooser may read
-    otherwise. Span reads no heartbeat, and its built-ins never see one."""
+def _two_live_workers_beat():
+    """Claim 1's worker alive past claim 3's takeover, and a beacon at seq 4 naming
+    claim 3; and the statement that admits it, its birth unstated."""
     rows = _dated(
         [
             r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
@@ -1664,9 +1689,24 @@ def test_who_wrote_a_heartbeat_in_a_log_born_in_0_2_0_is_the_writer_projection()
             )
         },
         third_parties={},
+        born=None,
     )
+    return rows, live
+
+
+def test_who_wrote_a_heartbeat_in_a_log_born_in_0_2_0_is_the_writer_projection():
+    """0.4.0 writes a heartbeat's writer as its ``claim_seq``, which ``await_consumed``
+    and the Watcher read; in a log born in 0.2.0 any live worker may have written it.
+    With claim 1's worker alive past claim 3's takeover, the beacon at seq 4 is either
+    one's: a Writer fork for each claim, naming ``takeover`` as the fact that settles
+    it, which ``newest`` reads as the newest worker's and a consumer's chooser may read
+    otherwise. Span reads no heartbeat, and its built-ins never see one. The birth is
+    the manifest's evidence, the consumer stating none."""
+    rows, live = _two_live_workers_beat()
     found = step.detect(
-        rows, assumptions=under(live, **WRITES).assumptions, history=(BORN_020,)
+        rows,
+        assumptions=under(live, **WRITES).assumptions,
+        history=History((BORN_020,), ()),
     ).forks
     assert [f.seq for f in found["writer"]] == [4, 4]  # claim 3's and claim 1's
     assert all("takeover" in f.settled_by for f in found["writer"])
@@ -1685,7 +1725,7 @@ def test_who_wrote_a_heartbeat_in_a_log_born_in_0_2_0_is_the_writer_projection()
 
     def beacon(**choosers):
         m = step.transform(
-            rows, resolutions=under(live, **choosers), history=(BORN_020,)
+            rows, resolutions=under(live, **choosers), history=History((BORN_020,), ())
         )
         (b,) = [x for x in m.rows if x.topic == "lifecycle.heartbeat"][:1]
         return json.loads(b.body)["claim_seq"], m.rows
@@ -1696,6 +1736,200 @@ def test_who_wrote_a_heartbeat_in_a_log_born_in_0_2_0_is_the_writer_projection()
     assert named == [x.seq for x in out if x.topic == "lifecycle.started"][0]
     with pytest.raises(MigrationError, match="writer"):
         beacon(**CHOSEN)  # no --resolve decides writer
+
+
+def _writer_forks(rows, configuration, history):
+    a = under(configuration, **WRITES).assumptions
+    return [
+        f.seq for f in step.detect(rows, assumptions=a, history=history).forks["writer"]
+    ]
+
+
+def _beacon_names(rows, configuration, history):
+    m = step.transform(
+        rows, resolutions=under(configuration, **WRITES), history=history
+    )
+    starts = [x.seq for x in m.rows if x.topic == "lifecycle.started"]
+    (b,) = [x for x in m.rows if x.topic == "lifecycle.heartbeat"][:1]
+    return starts.index(json.loads(b.body)["claim_seq"])
+
+
+def test_a_log_no_evidence_dates_is_refused_unless_its_birth_is_stated():
+    """The review's pair, under every statement. With no manifest entry and no trace,
+    silence decides nothing: unstated, or stated empty, the run is refused, the refusal
+    naming the statement. ``{0.3.0}`` takes the beacon's name at its word, so no fork;
+    ``{0.2.0}`` and both, the wider reading, read it as an inference, so the writer
+    forks, as the manifest's evidence makes it."""
+    rows, live = _two_live_workers_beat()
+    for born in (None, frozenset()):
+        cfg = live._replace(born=born)
+        for run in (_writer_forks, _beacon_names):
+            with pytest.raises(MigrationError, match=r"Configuration\.born") as e:
+                run(rows, cfg, NO_HISTORY)
+            assert "nothing shows where its log was born" in str(e.value)
+    at_its_word = live._replace(born=frozenset({V.Birth.V0_3_0}))
+    assert _writer_forks(rows, at_its_word, NO_HISTORY) == []
+    assert _beacon_names(rows, at_its_word, NO_HISTORY) == 1  # claim 3, as it says
+    inferred = _writer_forks(rows, live, History((BORN_020,), ()))
+    assert inferred == [4, 4]
+    for born in ({V.Birth.V0_2_0}, set(V.Birth)):
+        cfg = live._replace(born=frozenset(born))
+        assert _writer_forks(rows, cfg, NO_HISTORY) == inferred
+        assert _beacon_names(rows, cfg, NO_HISTORY) == 1  # ``newest``: claim 3
+
+
+def test_evidence_of_a_birth_decides_it_and_refuses_a_statement_it_contradicts():
+    """The manifest's 0.2.0 -> 0.3.0 entry and the store's trace of the log in 0.2.0
+    each show a birth in 0.2.0, whatever is stated, unless the statement leaves 0.2.0
+    out: the run is then refused, naming the evidence and the statement."""
+    rows, live = _two_live_workers_beat()
+    sealed = Trace("0.2.0", "a sealed log at v0.2.0/r.db")
+    tombstone = Trace("0.2.0", "a legacy tombstone at r.db")
+    for history in (
+        History((BORN_020,), ()),
+        History((), (sealed,)),
+        History((), (tombstone,)),
+    ):
+        for born in (None, frozenset({V.Birth.V0_2_0}), frozenset(V.Birth)):
+            assert _writer_forks(rows, live._replace(born=born), history) == [4, 4]
+        shows = history.traces[0].where if history.traces else "manifest entry"
+        for born in (frozenset({V.Birth.V0_3_0}), frozenset()):
+            with pytest.raises(MigrationError, match="born in format 0.2.0") as e:
+                _writer_forks(rows, live._replace(born=born), history)
+            assert shows in str(e.value) and "Configuration.born" in str(e.value)
+    # a trace of the log in its own format, sealed by a failed migration, is no birth
+    own = History((), (Trace("0.3.0", "a sealed log at v0.3.0/r.db"),))
+    assert (
+        _writer_forks(rows, live._replace(born=frozenset({V.Birth.V0_3_0})), own) == []
+    )
+
+
+def _dead_workers_beat():
+    """``_two_live_workers_beat``'s log, its workers' handles dead now, so the runner
+    lets the step read it."""
+    rows, live = _two_live_workers_beat()
+    other = DEAD[: -len("2147483646")] + "2147483645"
+    handles = {1: DEAD, 3: other}
+    return [
+        (
+            x._replace(
+                body=json.dumps(_started(handles[x.seq], json.loads(x.body)["t"]))
+            )
+            if x.topic == "lifecycle.started"
+            else x
+        )
+        for x in rows
+    ], live
+
+
+def _choices_stating(configuration):
+    return Choices((Assumed("tests:live", configuration),), {}, frozenset(), LIMITS)
+
+
+def test_a_sqlite_store_s_sealed_v0_2_0_log_dates_a_birth_the_manifest_does_not(
+    registered, tmp_path
+):
+    """No manifest entry, but the root holds the run's sealed v0.2.0 log: the store's
+    trace dates the birth, so the detection pass finds the writer forks, as an entry
+    would make it; a statement leaving 0.2.0 out is contradicted. Without the trace,
+    and with nothing stated, the run is refused. A legacy tombstone dates it too."""
+    rows, live = _dead_workers_beat()
+    _seed_0_3_0(tmp_path, "r1", rows)
+    store = SqliteStore(tmp_path)
+    assert store.history("r1") == NO_HISTORY
+
+    def detected(configuration):
+        """The detection pass's report, or the refusal of a run it refused."""
+        try:
+            out = migrate(
+                store, ["r1"], to="0.4.0", choices=_choices_stating(configuration)
+            )
+        except Undecided as u:
+            return u.report
+        (refused,) = out.refused
+        assert not out.moved and not out.errored
+        return refused.message
+
+    assert "nothing shows where its log was born" in detected(live)
+    old = FORMATS["0.2.0"].sqlite_path(tmp_path, "r1")
+    old.parent.mkdir()
+    SqliteChannel(old).close()
+    seal_sqlite(old)
+    (trace,) = SqliteStore(tmp_path).history("r1").traces
+    assert trace == Trace("0.2.0", f"a sealed log at {old}")
+    store = SqliteStore(tmp_path)
+    report = detected(live)
+    ((_, writer),) = [k for k in report.forks if k[1].name == "writer"]
+    assert [f.seq for _, f in report.forks[("0.3.0 -> 0.4.0", writer)]] == [4, 4]
+    contradicted = detected(live._replace(born=frozenset({V.Birth.V0_3_0})))
+    assert f"as a sealed log at {old} shows" in contradicted
+    old.unlink()
+    tombstone = tmp_path / "r1.db"
+    tombstone.touch()
+    tombstone.chmod(0o444)
+    store = SqliteStore(tmp_path)
+    assert store.history("r1").traces == (
+        Trace("0.2.0", f"a legacy tombstone at {tombstone}"),
+    )
+    assert "writer" in {p.name for _, p in detected(live).forks}
+
+
+def test_a_postgres_store_s_sealed_runs_row_dates_a_birth_the_manifest_does_not(
+    pg_ready,
+):
+    """No manifest entry, but ``runstate_v0_2_0.sealed_runs`` holds the run: the
+    store's trace dates the birth, so the step finds the writer forks; without it,
+    and with nothing stated, the run is refused."""
+    import uuid
+
+    import psycopg
+    from psycopg import sql
+
+    from runstate.channel.postgres import ensure_schema
+    from runstate.migrations.seal import seal_postgres
+    from runstate.migrations.stores import PostgresStore
+
+    rows, live = _dead_workers_beat()
+    rid = f"born-{uuid.uuid4().hex}"
+    ensure_schema(pg_ready)
+    new = FORMATS["0.3.0"].pg_schema()
+    with psycopg.connect(pg_ready) as c, c.transaction():
+        for x in rows:
+            c.execute(
+                sql.SQL(
+                    "INSERT INTO {}.log (run_id, seq, topic, name, request_id, body,"
+                    " created_at) VALUES (%s, %s, %s, %s, %s, %s, %s)"
+                ).format(sql.Identifier(new)),
+                [rid, *x],
+            )
+    store = PostgresStore(pg_ready)
+    history = store.history(rid)
+    assert history == NO_HISTORY
+    with pytest.raises(MigrationError, match="nothing shows where its log was born"):
+        _writer_forks(rows, live, history)
+    old = FORMATS["0.2.0"].pg_schema()
+    with psycopg.connect(pg_ready) as c, c.transaction():
+        c.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(old)))
+        c.execute(
+            sql.SQL("CREATE TABLE IF NOT EXISTS {}.log (LIKE {}.log)").format(
+                sql.Identifier(old), sql.Identifier(new)
+            )
+        )
+        seal_postgres(c, old, rid)
+    try:
+        history = store.history(rid)
+        assert history == History((), (Trace("0.2.0", f"a row of {old}.sealed_runs"),))
+        assert _writer_forks(rows, live, history) == [4, 4]
+    finally:
+        with psycopg.connect(pg_ready) as c, c.transaction():
+            for schema in (old, new):
+                table = "sealed_runs" if schema == old else "log"
+                c.execute(
+                    sql.SQL("DELETE FROM {}.{} WHERE run_id = %s").format(
+                        sql.Identifier(schema), sql.Identifier(table)
+                    ),
+                    [rid],
+                )
 
 
 class _FirstAnswer:
@@ -1727,7 +1961,7 @@ def test_a_rewinds_place_and_time_are_its_end_time_reading():
         }
     )
     found = step.detect(
-        rows, assumptions=under(rewinding, **CHOSEN).assumptions, history=()
+        rows, assumptions=under(rewinding, **CHOSEN).assumptions, history=NO_HISTORY
     ).forks
     assert {f.seq for f in found["end-time"]} == {1}
     out, offered = {}, {}
@@ -1743,7 +1977,7 @@ def test_a_rewinds_place_and_time_are_its_end_time_reading():
                     "end_time": Chosen("x", asked),
                 },
             ),
-            history=(),
+            history=NO_HISTORY,
         )
         (reload,) = [q for q in asked.asked if isinstance(q.act, E.RewindId)]
         assert reload.ticks == ()
@@ -1815,19 +2049,19 @@ def test_a_record_before_the_first_pass_is_the_consumers_loading_and_values():
     rows = _a_resumed_workers_log(3, before=2)
     assert [json.loads(x.body)["step"] for x in rows if x.topic == "value"][3] == 2
     with pytest.raises(MigrationError, match=r"^no history .*: relaxing values"):
-        step.transform(rows, resolutions=_preset(), history=())
+        step.transform(rows, resolutions=_preset(), history=NO_HISTORY)
     with pytest.raises(MigrationError, match=r"relaxing loading; values admits one"):
         step.transform(
             rows,
             resolutions=_preset(values=frozenset({V.Phase.LOADING, V.Phase.PASS})),
-            history=(),
+            history=NO_HISTORY,
         )
     res = _preset(
         loading=frozenset({V.Loading.LOADED}),
         values=frozenset({V.Phase.LOADING, V.Phase.PASS}),
     )
-    step.detect(rows, assumptions=res.assumptions, history=())
-    m = step.transform(rows, resolutions=res, history=())
+    step.detect(rows, assumptions=res.assumptions, history=NO_HISTORY)
+    m = step.transform(rows, resolutions=res, history=NO_HISTORY)
     (pre,) = [x for x in m.rows if x.name == "val_loss"]
     first = next(
         x
@@ -1846,8 +2080,10 @@ def test_a_resumed_claims_first_pass_label_is_the_consumers_stride():
     migrates."""
     rows = _a_resumed_workers_log(5)
     with pytest.raises(MigrationError, match=r"^no history .*relaxing stride"):
-        step.transform(rows, resolutions=_preset(), history=())
-    m = step.transform(rows, resolutions=_preset(stride=V.every(V.Stride)), history=())
+        step.transform(rows, resolutions=_preset(), history=NO_HISTORY)
+    m = step.transform(
+        rows, resolutions=_preset(stride=V.every(V.Stride)), history=NO_HISTORY
+    )
     assert [x.topic for x in m.rows].count("lifecycle.commit") == 5
 
 
@@ -1879,13 +2115,13 @@ def test_a_resume_at_the_loaded_step_is_the_consumers_resume():
     both = frozenset(V.Resume)
     older = frozenset({V.Load.FRESH, V.Load.NEWEST, V.Load.OLDER})
     with pytest.raises(MigrationError, match=r"^no history .*relaxing .*resume"):
-        step.transform(rows, resolutions=_preset(), history=())
+        step.transform(rows, resolutions=_preset(), history=NO_HISTORY)
     # at: the newest save, pass 2's result (its tick at seq 7 is its commit), run again
     at = _preset(resume=frozenset({V.Resume.AT}))
     assert not any(
-        step.detect(rows, assumptions=at.assumptions, history=()).forks.values()
+        step.detect(rows, assumptions=at.assumptions, history=NO_HISTORY).forks.values()
     )
-    m = step.transform(rows, resolutions=at, history=())
+    m = step.transform(rows, resolutions=at, history=NO_HISTORY)
     assert _resume_from(m, 9) == (7, "lifecycle.commit", 1)
     assert {d: s for d, s in m.divergences.items() if s} == {
         "recounted-value": (10, 12)
@@ -1893,26 +2129,35 @@ def test_a_resume_at_the_loaded_step_is_the_consumers_resume():
     # after: pass 1's save, an older one, continued at 2
     after = _preset(load=older)
     assert not any(
-        step.detect(rows, assumptions=after.assumptions, history=()).forks.values()
+        step.detect(
+            rows, assumptions=after.assumptions, history=NO_HISTORY
+        ).forks.values()
     )
-    m = step.transform(rows, resolutions=after, history=())
+    m = step.transform(rows, resolutions=after, history=NO_HISTORY)
     assert _resume_from(m, 9) == (5, "lifecycle.commit", 1)
     assert {d: s for d, s in m.divergences.items() if s} == {"off-head-value": (6,)}
     # both, with both saves loadable: the origin forks between them
     res = _preset(resume=both, load=older)
-    forks = step.detect(rows, assumptions=res.assumptions, history=()).forks
+    forks = step.detect(rows, assumptions=res.assumptions, history=NO_HISTORY).forks
     (origin,) = forks["origin"]
     assert origin.seq == 9 and "resume" in origin.settled_by
     assert [f.seq for f in forks["span"]] == [9]
     assert not forks["end"] and not forks["writer"] and not forks["end-time"]
-    m = step.transform(rows, resolutions=res, history=())  # origin=newest: pass 2's
+    m = step.transform(
+        rows, resolutions=res, history=NO_HISTORY
+    )  # origin=newest: pass 2's
     assert _resume_from(m, 9) == (7, "lifecycle.commit", 1)
     # both, the newest save alone loadable: one history, pass 2's save run again
     res = _preset(resume=both)
     assert not any(
-        step.detect(rows, assumptions=res.assumptions, history=()).forks.values()
+        step.detect(
+            rows, assumptions=res.assumptions, history=NO_HISTORY
+        ).forks.values()
     )
-    assert _resume_from(step.transform(rows, resolutions=res, history=()), 9)[0] == 7
+    assert (
+        _resume_from(step.transform(rows, resolutions=res, history=NO_HISTORY), 9)[0]
+        == 7
+    )
 
 
 class _Picks:
@@ -1949,13 +2194,13 @@ def test_a_stopped_that_writes_nothing_fires_each_divergence_the_paths_left_read
     by the path ``written`` picked."""
     rows = _a_release_then_a_stopped_naming_the_released_claim()
     cfg = V.Configuration(
-        {"ref": CHECKPOINTED}, {"tp": UNSTATED.third_parties["any"]}, _Reference()
+        {"ref": CHECKPOINTED}, {"tp": UNSTATED.third_parties["any"]}, _Reference(), None
     )
     first = Chosen("first", _Picks(0))
     m = step.transform(
         rows,
         resolutions=under(cfg, **{**WRITES, "end": first, "span": first}),
-        history=(BORN_020,),
+        history=History((BORN_020,), ()),
     )
     fired = {d: seqs for d, seqs in m.divergences.items() if seqs}
     assert fired["fenced-exit"] == fired["third-party-note"] == (9,)
@@ -1982,9 +2227,11 @@ def test_a_writer_fork_names_every_fact_spans_pieces_depend_on():
     taken = dataclasses.replace(CHECKPOINTED, takeover=V.every(V.Takeover))
 
     def forks(f):
-        cfg = V.Configuration({"reference": f}, {}, STEP.Reference())
+        cfg = V.Configuration({"reference": f}, {}, STEP.Reference(), None)
         a = under(cfg, **WRITES).assumptions
-        return step.detect(rows, assumptions=a, history=(BORN_020,)).forks["writer"]
+        return step.detect(rows, assumptions=a, history=History((BORN_020,), ())).forks[
+            "writer"
+        ]
 
     found = forks(taken)
     assert [f.seq for f in found] == [4, 4]
@@ -2044,6 +2291,7 @@ def test_two_rewinds_at_one_count_one_to_the_root_write_a_lineage():
         },
         {},
         _Reads(),
+        frozenset({V.Birth.V0_3_0}),
     )
     for builtin in END_TIME.generic:
         m = step.transform(
@@ -2056,7 +2304,7 @@ def test_two_rewinds_at_one_count_one_to_the_root_write_a_lineage():
                     "end_time": Chosen(builtin.name, builtin.chooser),
                 },
             ),
-            history=(),
+            history=NO_HISTORY,
         )
         rewinds = [k for k in m.readings["end-time"][1] if k.startswith("rewind")]
         assert len(rewinds) == 3

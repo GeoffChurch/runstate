@@ -15,8 +15,10 @@ A run goes through four parts, in this order:
    conforming 0.3.0 history that writes the log and satisfies the consumer's stated
    facts and its classifier's answers (``FACTS``; §7, "The writer facts"). A
    statement of none is the whole domain of every fact (``UNSTATED``). In a log born
-   in format 0.2.0, which the root's manifest records (``_born``), the names the
-   earlier step filled are its inference, never their writer's word.
+   in format 0.2.0, the names the earlier step filled are its inference, never their
+   writer's word. The step reads the birth from evidence, the root's manifest or the
+   store's trace of the log in 0.2.0, else from the consumer's statement, and refuses a
+   run neither decides (``_born``).
 3. **The decode** (``_decide``): each fork of a subject's End, Span, Origin or
    Writer, asked of the chooser its projection was given, in the decode's stated
    order (subjects from the last claim back to the first, then the run; for each,
@@ -136,6 +138,9 @@ whole-number float such as 3.0, which 0.3.0's schemas accept. It refuses:
   its loop may continue past, so how many commits a longer run made is open; the
   refusal names the claims and the facts that can clear it (``marker``,
   ``closing``, ``beat-cov``);
+- **a log's birth that nothing decides:** no evidence shows it and the
+  configuration states none (``Configuration.born``), or evidence contradicts the
+  statement, naming both (``_born``);
 - **a chooser's refusal,** or an answer of another shape, naming the projection
   and the chooser (``Projection.ask``);
 - **a name of a record that leaves the log:** a heartbeat's ``consumed_seq``
@@ -195,6 +200,7 @@ from .ambiguity import (
 from .v0_3_0_to_v0_4_0_engine import domain
 from . import v0_3_0_to_v0_4_0_facts as V
 from .v0_3_0_to_v0_4_0_facts import (
+    Birth,
     Born,
     Born020,
     Born030,
@@ -899,10 +905,11 @@ UNSTATED = Configuration(
         )
     },
     Unstated(),
+    None,
 )
 """The facts when a consumer states none: one worker version and one third-party
-version, every fact its whole domain, and a classifier that answers every record's
-whole domain."""
+version, every fact its whole domain, a classifier that answers every record's whole
+domain, and no birth, so a log no evidence dates is refused."""
 
 
 def _value_of(x: object) -> Json:
@@ -927,6 +934,7 @@ def _describe(c: Configuration) -> Json:
         "workers": {str(k): facts(f) for k, f in c.workers.items()},
         "third_parties": {str(k): facts(f) for k, f in c.third_parties.items()},
         "classifier": f"{kind.__module__}:{kind.__qualname__}",
+        "born": None if c.born is None else _value_of(c.born),
     }
 
 
@@ -990,6 +998,7 @@ def reference(
     load: frozenset[V.Load],
     resume: frozenset[V.Resume],
     strays: frozenset[V.Stray],
+    born: frozenset[V.Birth] | None,
 ) -> Configuration:
     """A statement a consumer may build (§7, "The writer facts"): every claim's worker
     runstate's reference ``Worker`` driven by ``steps()``, and no third party, every
@@ -1028,7 +1037,10 @@ def reference(
     silently wrote a value (``marker``); how its loop is left (``loop_end``); its
     checkpoints (``discards``, ``cut_save``, ``save_at``, ``save_cov``, ``leave_save``,
     ``load``); and other writers' values (``strays``). A consumer that does not know
-    one passes its whole domain, ``every(...)``.
+    one passes its whole domain, ``every(...)``. Where its root's logs were born
+    (``born``) is the root's history, no fact of the Worker's: where no evidence dates a
+    log, it is read from this statement, and ``None`` refuses such a log
+    (``Configuration``).
 
     It can be false of a run: a control record landing between a drain and its
     heartbeat breaks ``watermark``, an explicit ``final_step`` breaks ``final-step``.
@@ -1064,6 +1076,7 @@ def reference(
         },
         {},
         Reference(),
+        born,
     )
 
 
@@ -1407,14 +1420,52 @@ DIVERGENCES: tuple[Divergence, ...] = (
 # ----- the candidates ---------------------------------------------------------------
 
 
-def _born(history: History) -> Born:
-    """A log's birth, from the root's manifest (§7, "Names an earlier step filled"): an
-    entry of the 0.2.0 -> 0.3.0 step means the earlier step filled its names. No entry
-    means born in 0.3.0, which holds because no consumer ran that step before the
-    manifest existed."""
-    if any(e.from_format == "0.2.0" for e in history):
+def _born(history: History, stated: frozenset[Birth] | None) -> Born:
+    """A log's birth (§7, "Names an earlier step filled"), never read from silence.
+
+    From evidence first, in this order: the root's manifest entry of the 0.2.0 -> 0.3.0
+    step; the store's trace of the log in format 0.2.0 (a sealed v0.2.0 log, a legacy
+    tombstone, a ``sealed_runs`` row). Evidence only ever shows a birth in 0.2.0: no
+    record says a log was born in 0.3.0. The log itself cannot show either: the earlier
+    step's output is a log some conforming 0.3.0 history writes, so nothing in it, which
+    a copy between roots would keep, tells it from a log written in 0.3.0.
+
+    Where no evidence decides, the consumer's statement does (``Configuration.born``):
+    ``{0.3.0}`` reads names as their writers' word; ``{0.2.0}``, or both, the wider
+    reading, as inferences. Unstated, or stated empty, the run is refused, naming the
+    statement; so is evidence the statement contradicts, naming both."""
+    shown = [
+        "the root's manifest entry of the 0.2.0 -> 0.3.0 step"
+        for e in history.entries
+        if e.from_format == Birth.V0_2_0.value
+    ] + [t.where for t in history.traces if t.format == Birth.V0_2_0.value]
+    if shown:
+        if stated is not None and Birth.V0_2_0 not in stated:
+            raise MigrationError(
+                f"its log was born in format 0.2.0, as {shown[0]} shows, but the "
+                f"configuration states its root's logs were born in {_births(stated)} "
+                "(Configuration.born): the statement is false of this run"
+            )
         return Born020()
-    return Born030()
+    if stated is None or not stated:
+        said = (
+            "states none (Configuration.born is None, as under no --assume)"
+            if stated is None
+            else "states that every log of the root has evidence (born is empty)"
+        )
+        raise MigrationError(
+            "nothing shows where its log was born: the root's manifest holds no "
+            "0.2.0 -> 0.3.0 entry for it, the store no trace of it in format 0.2.0, and "
+            f"the log alone cannot tell; the configuration {said}. State the births its "
+            "root's logs may have, Configuration.born: {Birth.V0_3_0} where runstate "
+            "0.3.0 wrote them, {Birth.V0_2_0} where a runstate that wrote no manifest "
+            "migrated them from 0.2.0, both where either may hold"
+        )
+    return Born020() if Birth.V0_2_0 in stated else Born030()
+
+
+def _births(stated: frozenset[Birth]) -> str:
+    return " or ".join(sorted(b.value for b in stated)) or "no format at all"
 
 
 def _unread(log: _Log, configuration: Configuration) -> None:
@@ -2378,7 +2429,9 @@ class V0_3_0_to_V0_4_0:
         limits: Limits,
         history: History,
     ) -> E.Graph:
-        built = _Built(_digest(rows), configuration, limits, _born(history))
+        built = _Built(
+            _digest(rows), configuration, limits, _born(history, configuration.born)
+        )
         if self._last is not None and self._last.built.same(built):
             return self._last.graph
         # the previous run's graph goes before this one is built: memory holds one

@@ -479,13 +479,43 @@ class Entry:
         )
 
 
-History: TypeAlias = tuple[Entry, ...]
-"""A run's manifest entries, one per step, oldest first: how the earlier steps migrated
-it. A later step may read an earlier step's choices from it (the owner's D3)."""
+class Trace(NamedTuple):
+    """What a store holds of a run's log in a format, beside the root's manifest: a
+    sealed log at that format's address, a ``sealed_runs`` row, or a legacy tombstone,
+    which onboarding leaves for a log it moved into format 0.2.0. ``where`` names it, for
+    a refusal's message."""
+
+    format: str
+    where: str
 
 
-def latest(entries: Iterable[Entry]) -> History:
-    """A run's history from its manifest lines, oldest first: per step, the last line.
+class History(NamedTuple):
+    """How a run came to be, as its root records it.
+
+    ``entries`` are its manifest entries, one per step, oldest first, the earlier steps
+    of this invocation's chain included: how the earlier steps migrated it. A later step
+    may read an earlier step's choices from them (the owner's D3). ``traces`` are what
+    the store holds of its log in other formats, which a step may read where the
+    manifest is silent: a run copied between roots, or migrated by a runstate that wrote
+    no manifest, has no entries, and may still have traces."""
+
+    entries: tuple[Entry, ...]
+    traces: tuple[Trace, ...]
+
+    def then(self, entry: Entry) -> History:
+        """The history a later step of the chain reads, once ``entry``'s step ran."""
+        return self._replace(entries=(*self.entries, entry))
+
+    def formats(self) -> frozenset[str]:
+        """Every format the run's log is shown to have been in: each format an entry
+        left, and each a trace holds it in."""
+        return frozenset(
+            {e.from_format for e in self.entries} | {t.format for t in self.traces}
+        )
+
+
+def latest(entries: Iterable[Entry]) -> tuple[Entry, ...]:
+    """A run's entries from its manifest lines, oldest first: per step, the last line.
     A step's line is written before its log is published, so a crash in between leaves
     a line for an attempt that did not publish; the attempt that published last wrote
     the last line (log-formats.md §6)."""

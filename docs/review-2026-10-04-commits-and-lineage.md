@@ -1641,7 +1641,10 @@ mycooc's, since bookgen's 160 `.db` files and runstate-tui's hold none. The step
       receives an earlier step's choices from the root's manifest, a ruling that rests on the owner's
       approval of the manifest and of D3. So the 0.3.0 → 0.4.0 step learns from the manifest that a log was
       born in 0.2.0, and reads the names the earlier step filled as its inference, not their writer's word
-      (§7, "Names an earlier step filled").
+      (§7, "Names an earlier step filled"). The final review (2026-10-28, I1) found the converse unsound:
+      no entry was read as a birth in 0.3.0, though a run copied between roots, or migrated by a runstate
+      that wrote no manifest, has none. Birth is now read from the manifest or the store's trace of the log
+      in 0.2.0, else from the consumer's statement, and an unstated one is refused.
   - **Stage 6, the architecture, and the target (2026-10-25; approved with the critique's six named
     changes).**
     - **The target** is the conforming 0.4.0 lineage that records the 0.3.0 history's own events: which

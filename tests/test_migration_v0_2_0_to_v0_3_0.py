@@ -35,6 +35,7 @@ from runstate.observables import (
     progress,
     undischarged_stops,
 )
+from tests.migration_helpers import NO_HISTORY
 
 step = V0_2_0_to_V0_3_0()
 CONSUMER = "tests.migration_consumer:"  # a consumer's choosers, by module:attr
@@ -57,7 +58,9 @@ TODAY = parse_choices(
 
 
 def transform(rows, choices=TODAY):
-    return step.transform(rows, resolutions=resolutions(step, choices), history=()).rows
+    return step.transform(
+        rows, resolutions=resolutions(step, choices), history=NO_HISTORY
+    ).rows
 
 
 def r(seq, topic, body, rid=None, name=None, t=0.0):
@@ -653,12 +656,14 @@ def _choices(*resolve, accept=()):
 
 
 def _migrated_by(rows, choices):
-    return step.transform(rows, resolutions=resolutions(step, choices), history=())
+    return step.transform(
+        rows, resolutions=resolutions(step, choices), history=NO_HISTORY
+    )
 
 
 def _forks(rows):
     detected = step.detect(
-        rows, assumptions=resolutions(step, TODAY).assumptions, history=()
+        rows, assumptions=resolutions(step, TODAY).assumptions, history=NO_HISTORY
     )
     return {p: [f.seq for f in fs] for p, fs in detected.forks.items() if fs}
 

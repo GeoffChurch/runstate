@@ -7,7 +7,9 @@ Part of the step, under its import rule: from the package it takes only ``Row`` 
 in ``tests/migration_sim``, which is the second encoding the oracle checks it against.
 
 **What it computes.** For one run's 0.3.0 rows, the facts a consumer states per writer
-version, its classifier, and the earlier step's readings, the set of conforming 0.4.0
+version, its classifier, and the log's birth (``Born``, which the step reads from
+evidence or the consumer's statement; never the earlier step's readings, whose names it
+takes as inferences whichever reading made them), the set of conforming 0.4.0
 lineages that record a 0.3.0 history writing those rows and meeting every statement and
 every classifier answer (§7, "The target"; "The writer facts"). An empty set refuses the
 run. A set of one is the answer. Several are forks, reported per claim in four
@@ -4028,7 +4030,7 @@ def _relaxed(configuration: Configuration, names: Sequence[Named]) -> Configurat
         )
         for k, f in configuration.third_parties.items()
     }
-    out = Configuration(workers, third, configuration.classifier)
+    out = configuration._replace(workers=workers, third_parties=third)
     for reader in _READERS:
         if reader.name in names:
             out = out._replace(classifier=_Relaxing(out, reader))

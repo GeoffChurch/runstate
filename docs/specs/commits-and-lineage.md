@@ -1008,7 +1008,9 @@ facts, and the refusal says so, naming the facts that widen the pass.
   pass's body ends (`closing`), whether a pass that closes silently wrote a value (`marker`), how its loop is
   left (`loop_end`), its checkpoints (`discards`, `cut_save`, `save_at`, `save_cov`, `leave_save`, `load`),
   and other writers' values (`strays`). A consumer that does not know one passes its whole domain,
-  `every(...)`, explicitly. The preset can be false of a run, as a control record landing between a drain and
+  `every(...)`, explicitly. Last, `born`: where its root's logs were born, for a log no evidence dates
+  ("Names an earlier step filled", below), which is the root's history, not the Worker's, and which the
+  preset takes as a required argument too (`None` states nothing). The preset can be false of a run, as a control record landing between a drain and
   its heartbeat breaks `watermark`; a false word is not silent, since no history then writes the log and the
   refusal names the fact to relax.
 - **A fact classifies** every element of one kind, a claim or one kind of act its writer makes, into one class
@@ -1035,9 +1037,10 @@ facts, and the refusal says so, naming the facts that widen the pass.
 - **Names an earlier step filled are no writer's.** In a log born in format 0.2.0, the 0.2.0 → 0.3.0 step
   filled every `stopped`'s `honored` and every heartbeat's and `stopped`'s `claim_seq`, by the readings its
   consumer chose for `stop-honored` and `record-claim` (`reference-by-name.md` §6). They are that step's
-  choices, so no fact states them. The step learns the log's birth from the earlier step's entry in the root's
-  manifest (`log-formats.md` §6; the owner's D3, 2026-10-24, as the controller applied it; review §12, item
-  16), and reads every such name as an inference, not as its writer's word, whichever reading made it: under
+  choices, so no fact states them. The step reads the log's birth, never those readings (below, "Names an
+  earlier step filled"; the owner's D3, 2026-10-24, as the controller applied it; review §12, item 16), and
+  in a log born in 0.2.0 reads every such name as an inference, not as its writer's word, whichever reading
+  made it: under
   `positional`, a displaced worker's heartbeat or `stopped` after a later `started` names the later claim, and
   an exit's `honored` lists every stop since the previous `stopped` (E2's case 5). So any live worker may have
   written such a heartbeat or `stopped`, and no `honored` is checked against its writer's encoding. The facts
@@ -1422,9 +1425,38 @@ forbids all follow a marked close. A load sets the worker's clock, which Origin 
 that reads the clock (a step, a `final_step`, a save a later claim loads) bounds it by its own label, below
 the horizon, so a load at the horizon is on no candidate where its step is read.
 
-**Names an earlier step filled** are read by the log's birth, which the root's manifest records: an entry of
-the 0.2.0 → 0.3.0 step means the log was born in 0.2.0 (above), and no entry means born in 0.3.0. That holds
-because no consumer ran the earlier step before the manifest existed.
+**Names an earlier step filled** are read by the log's birth (above), which is part of what happened, so it is
+never read from silence (the final review's I1, 2026-10-28). The step reads it from evidence, in this order:
+1. the root's manifest entry of the 0.2.0 → 0.3.0 step;
+2. the store's own trace of the log in format 0.2.0 (`log-formats.md` §6, `history`): a sealed v0.2.0 log, a
+   legacy tombstone, or a row of `runstate_v0_2_0.sealed_runs`.
+
+The log itself cannot show it, so it is not consulted: the earlier step's output is a log some conforming
+0.3.0 history writes, each name it fills one a writer may have written (a minted stop id is a request id like
+any other), so nothing in it, which a copy between roots would keep, tells it from a log written in 0.3.0. No
+marker is added to the 0.3.0 format to make it so. Evidence only ever shows a birth in 0.2.0: no record says
+a log was born in 0.3.0.
+
+Where no evidence decides, birth is the consumer's statement, `born` in its `Configuration`: a closed set of
+births, `Birth.V0_2_0` and `Birth.V0_3_0`, the births a log of the root may have. It is a per-root statement,
+not a fact, since no writer version decides where a log was born; it sits beside the classifier, the other
+part of the configuration that speaks for the root.
+- `{0.3.0}` reads each name as its writer's word; `{0.2.0}` reads it as an inference.
+- Both is the wider reading, under which names are inferences, so who wrote a heartbeat surfaces as the
+  `writer` fork (below) instead of being settled.
+- Unstated (`None`, as under no `--assume`), the run is refused, and the refusal names the statement. So is
+  the empty set, which says no log of the root lacks evidence. Unlike a fact's, birth's unstated form is no
+  whole domain: the two readings are not nested (in a log born in 0.2.0 the engine also reads `progress`
+  positionally, as the runstate that wrote it did), so reading silence as either would answer a question
+  about what happened.
+- Evidence that contradicts the statement refuses the run, naming both: a log the evidence dates in 0.2.0,
+  under a statement that leaves 0.2.0 out. A root holding logs of both births therefore states both.
+
+**A consumer that migrated from 0.2.0 with a runstate that wrote no manifest** (master's `runstate migrate`
+before this round, which moves 0.2.0 logs to 0.3.0 and seals them) states its logs' birth: its root still
+holds each run's sealed v0.2.0 log, which dates the birth by itself, and where it deleted them, or copied runs
+between roots without them, it states `born={Birth.V0_2_0}`, or both where the root also holds logs written
+in 0.3.0.
 
 **The projections,** each a kind of fork the candidates can leave open, read per subject: each claim, and the
 run for what speaks for no claim. A fork's site is the record at which its reading is read.

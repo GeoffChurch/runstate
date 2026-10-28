@@ -28,6 +28,7 @@ from runstate.migrations.ambiguity import (
     resolutions,
 )
 from runstate.migrations.stores import PostgresStore, SqliteStore
+from tests.migration_helpers import NO_HISTORY
 from tests.migration_consumer import ASKED, UNSETTLED, ToyFacts
 
 # The toy steps declare no facts, projections or divergences: the user has nothing
@@ -843,7 +844,9 @@ def test_detection_takes_no_chooser_and_finds_the_same_forks_whatever_the_choice
     rows = SqliteStore(tmp_path).rows("8.0.0", "r1")
     step = forking[0]
     found = [
-        step.detect(rows, assumptions=resolutions(step, c).assumptions, history=())
+        step.detect(
+            rows, assumptions=resolutions(step, c).assumptions, history=NO_HISTORY
+        )
         for c in [_choose(), _choose(resolve=["a=yes"]), _choose(resolve=["a=no"])]
     ]
     assert found == [Detected({"a": (Fork(2, ("settled",)),)})] * 3
@@ -948,13 +951,13 @@ def test_a_chooser_sees_its_forks_and_the_run_s_history(forking, tmp_path):
     forking[1].histories.clear()
     migrate(SqliteStore(tmp_path), ["r1"], to="8.2.0", choices=choices)
     for history in forking[1].histories:
-        (earlier,) = history
+        (earlier,) = history.entries
         assert (earlier.from_format, earlier.to_format) == ("8.0.0", "8.1.0")
         assert earlier.resolved == {"a": "tests.migration_consumer:ASKED"}
         assert earlier.readings == {"a": {2: "asked-2"}}
     forking[1].histories.clear()
     migrate(SqliteStore(tmp_path), ["r2"], to="8.2.0", choices=choices)
-    assert {h[0].readings["a"][2] for h in forking[1].histories} == {"asked-2"}
+    assert {h.entries[0].readings["a"][2] for h in forking[1].histories} == {"asked-2"}
 
 
 def test_a_divergence_halts_the_pass_until_it_is_accepted(
@@ -1043,7 +1046,7 @@ def test_the_entry_is_written_before_the_publish_and_the_latest_is_read(
     monkeypatch.setattr(stores.os, "replace", real)
     migrate(SqliteStore(tmp_path), None, to="8.1.0", choices=_choose(resolve=["a=no"]))
     assert target.exists() and len(_manifest(tmp_path)) == 2
-    (entry,) = SqliteStore(tmp_path).history("r1")
+    (entry,) = SqliteStore(tmp_path).history("r1").entries
     assert entry.readings == {"a": {2: "no"}}
 
 
@@ -1170,7 +1173,7 @@ def test_postgres_writes_the_manifest_entry_in_the_sealing_transaction(
         PostgresStore(pg_toy), ["r1"], to="8.1.0", choices=_choose(resolve=["a=yes"])
     )
     assert outcome.moved == ("r1",)
-    (entry,) = PostgresStore(pg_toy).history("r1")
+    (entry,) = PostgresStore(pg_toy).history("r1").entries
     assert (entry.from_format, entry.resolved) == ("8.0.0", {"a": "yes"})
     assert entry.readings == {"a": {1: "yes"}}
 
@@ -1274,5 +1277,5 @@ def test_one_memo_serves_every_step_of_an_invocation(toy, monkeypatch, tmp_path)
     assert len(made) == 1
     rows = [Row(1, "value", "x", None, "{}", 0.0)]
     first, second = toy
-    assert Memo.key(first, rows, ()) != Memo.key(second, rows, ())
-    assert Memo.key(first, rows, ()) == Memo.key(first, list(rows), ())
+    assert Memo.key(first, rows, NO_HISTORY) != Memo.key(second, rows, NO_HISTORY)
+    assert Memo.key(first, rows, NO_HISTORY) == Memo.key(first, list(rows), NO_HISTORY)

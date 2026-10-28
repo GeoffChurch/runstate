@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 from .. import formats
 from ..channel.sqlite import _SCHEMA
 from . import MigrationError, Planned, Row
-from .ambiguity import Entry, History, latest
+from .ambiguity import Entry, History, Trace, latest
 from .seal import seal_postgres, seal_sqlite
 
 
@@ -28,7 +28,8 @@ class Store(Protocol):
         ...
 
     def history(self, run_id: str) -> History:
-        """The run's entries in the root's manifest, oldest first."""
+        """The run's entries in the root's manifest, oldest first, and what the store
+        holds of its log in other formats (``Trace``)."""
         ...
 
     def migrate_one(self, planned: Planned, run_id: str) -> None:
@@ -62,6 +63,29 @@ def _read_sqlite(path: Path) -> list[Row]:
         ]
     finally:
         conn.close()
+
+
+def _sealed(path: Path) -> bool:
+    """Whether a log file is sealed: every write bit cleared (seal.py)."""
+    return not os.stat(path).st_mode & 0o222
+
+
+def sqlite_traces(root: Path, run_id: str) -> tuple[Trace, ...]:
+    """What a sqlite root holds of a run's log beside its manifest: a sealed log at a
+    format's address, and a legacy tombstone, the empty read-only file that onboarding
+    leaves at the legacy address of a log it moved into format 0.2.0 (log-formats.md
+    §7)."""
+    out = [
+        Trace(version, f"a sealed log at {path}")
+        for version, layout in sorted(
+            formats.FORMATS.items(), key=lambda kv: formats.parse(kv[0])
+        )
+        if (path := layout.sqlite_path(root, run_id)).is_file() and _sealed(path)
+    ]
+    legacy = root / f"{run_id}.db"
+    if legacy.is_file() and legacy.stat().st_size == 0 and _sealed(legacy):
+        out.append(Trace(formats.LEGACY_FORMAT, f"a legacy tombstone at {legacy}"))
+    return tuple(out)
 
 
 class SqliteStore:
@@ -103,11 +127,13 @@ class SqliteStore:
         return _read_sqlite(formats.FORMATS[version].sqlite_path(self._root, run_id))
 
     def history(self, run_id: str) -> History:
-        return latest(self._manifest().get(run_id, ()))
+        return History(
+            latest(self._manifest().get(run_id, ())),
+            sqlite_traces(self._root, run_id),
+        )
 
     def sealed(self, version: str, run_id: str) -> bool:
-        path = formats.FORMATS[version].sqlite_path(self._root, run_id)
-        return not os.stat(path).st_mode & 0o222
+        return _sealed(formats.FORMATS[version].sqlite_path(self._root, run_id))
 
     def _manifest(self) -> dict[str, list[Entry]]:
         if self._entries is None:
@@ -142,7 +168,7 @@ class SqliteStore:
         src = formats.FORMATS[step.FROM].sqlite_path(self._root, run_id)
         dst = formats.FORMATS[step.TO].sqlite_path(self._root, run_id)
         history = self.history(run_id)
-        if os.stat(src).st_mode & 0o222:  # not yet sealed
+        if not _sealed(src):
             rows = _read_sqlite(src)
             if step.is_live(rows):
                 raise MigrationError("it has a live episode; stop it first")
@@ -333,14 +359,42 @@ def _pg_history(conn: "psycopg.Connection[Any]", run_id: str) -> History:
     (reg,) = conn.execute(
         "SELECT to_regclass(%s)", [f"{PG_MANIFEST_SCHEMA}.manifest"]
     ).fetchall()
-    if reg[0] is None:
-        return ()
-    return latest(
-        Entry.from_json(text)
-        for (text,) in conn.execute(
-            sql.SQL(
-                "SELECT entry FROM {}.manifest WHERE run_id = %s ORDER BY id"
-            ).format(sql.Identifier(PG_MANIFEST_SCHEMA)),
-            [run_id],
+    entries = (
+        ()
+        if reg[0] is None
+        else latest(
+            Entry.from_json(text)
+            for (text,) in conn.execute(
+                sql.SQL(
+                    "SELECT entry FROM {}.manifest WHERE run_id = %s ORDER BY id"
+                ).format(sql.Identifier(PG_MANIFEST_SCHEMA)),
+                [run_id],
+            )
         )
     )
+    return History(entries, _pg_traces(conn, run_id))
+
+
+def _pg_traces(conn: "psycopg.Connection[Any]", run_id: str) -> tuple[Trace, ...]:
+    """What a database holds of a run's log beside its manifest: a row in a format's
+    ``sealed_runs``. Onboarding's legacy tombstone is a whole schema's table, naming no
+    run, so it is no trace of one."""
+    from psycopg import sql
+
+    out: list[Trace] = []
+    for version in sorted(formats.FORMATS, key=formats.parse):
+        schema = formats.FORMATS[version].pg_schema()
+        (reg,) = conn.execute(
+            "SELECT to_regclass(%s)", [f"{schema}.sealed_runs"]
+        ).fetchall()
+        if reg[0] is None:
+            continue
+        found = conn.execute(
+            sql.SQL("SELECT 1 FROM {}.sealed_runs WHERE run_id = %s").format(
+                sql.Identifier(schema)
+            ),
+            [run_id],
+        ).fetchone()
+        if found is not None:
+            out.append(Trace(version, f"a row of {schema}.sealed_runs"))
+    return tuple(out)

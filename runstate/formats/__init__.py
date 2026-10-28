@@ -94,7 +94,8 @@ class LogFormatMissing(LogFormatError):
         super().__init__(instructions)
 
 
-_BASE = "0.2.0"  # what every log written before versioned addresses can be onboarded as
+# What every log written before versioned addresses is onboarded as.
+LEGACY_FORMAT = "0.2.0"
 _BASE_COMMIT = "4729fcd (2026-07-16, lifecycle-v0.4 and launcher-v0.4)"
 
 
@@ -117,7 +118,7 @@ def sqlite_onboarding(root: Path, run_id: str) -> str:
     it must skip because another sits at its destination is left untouched, every
     other log is still moved, and the loop then exits non-zero: that run is not
     onboarded."""
-    base = root / ("v" + _BASE)
+    base = root / ("v" + LEGACY_FORMAT)
     q_root, q_base = shlex.quote(str(root)), shlex.quote(str(base))
     sidecars = " ".join(["''", *_SIDECARS])
     loop = (
@@ -133,7 +134,7 @@ def sqlite_onboarding(root: Path, run_id: str) -> str:
     return (
         f"{root / (run_id + '.db')} predates versioned addresses, so its format "
         f"is unknown and nothing will infer it. If it was written by runstate at "
-        f"or after {_BASE_COMMIT}, it is format {_BASE}: check that its "
+        f"or after {_BASE_COMMIT}, it is format {LEGACY_FORMAT}: check that its "
         f"lifecycle.heartbeat bodies carry a `t` field. First stop every process "
         f"that writes under {root}, and drain any queued jobs that would. Then "
         f"move the log, with any {', '.join(_SIDECARS[:-1])} or {_SIDECARS[-1]} "
@@ -150,7 +151,7 @@ def postgres_onboarding(run_id: str, schema: str) -> str:
     leave a tombstone in its place, an empty ``log`` with the old columns whose
     trigger refuses every insert (§5). One transaction, so it moves whole or not
     at all."""
-    target = DirectoryLayout(_BASE).pg_schema()
+    target = DirectoryLayout(LEGACY_FORMAT).pg_schema()
     s = '"' + schema.replace('"', '""') + '"'
     fn = f"{s}.runstate_log_moved"
     sql = (
@@ -168,7 +169,7 @@ def postgres_onboarding(run_id: str, schema: str) -> str:
         f"run {run_id!r} is in the unversioned `log` table of schema {s}, which "
         f"predates versioned addresses, so its format is unknown and nothing will "
         f"infer it. If it was written by runstate at or after {_BASE_COMMIT}, it "
-        f"is format {_BASE}. First stop every process that writes to it, and drain "
+        f"is format {LEGACY_FORMAT}. First stop every process that writes to it, and drain "
         f"any queued jobs that would. Then move the table into schema {target}, "
         f"and leave a tombstone in its place: an empty `log` that refuses every "
         f"insert. {_WHY_TOMBSTONE} Then run `{POSTGRES_MIGRATE_COMMAND}`:\n"
@@ -179,6 +180,7 @@ def postgres_onboarding(run_id: str, schema: str) -> str:
 __all__ = [
     "DirectoryLayout",
     "FORMATS",
+    "LEGACY_FORMAT",
     "LOG_FORMAT",
     "POSTGRES_MIGRATE_COMMAND",
     "Layout",
