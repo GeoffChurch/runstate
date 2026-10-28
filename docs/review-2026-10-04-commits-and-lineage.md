@@ -1605,14 +1605,15 @@ Recorded as each settled.
 12a waited on this round. It implemented §7 as the retained step `runstate/migrations/v0_3_0_to_v0_4_0.py`,
 with its engine and facts modules; the mechanism every step shares for what a log leaves open
 (`runstate/migrations/ambiguity.py`; `specs/log-formats.md` §6, "Ambiguity"); and the pure 0.4.0 reads
-(`runstate/lineage.py`). It then ran the step on every consumer log there is. The step is not registered:
+(`runstate/lineage.py`). It then ran the step on every runstate log the consumers hold: translation's and
+mycooc's, since bookgen's 160 `.db` files and runstate-tui's hold none. The step is not registered:
 `LOG_FORMAT` stays 0.3.0 until layer 2's last commit (log-formats §2, rule 3). The plan is
 `plans/2026-10-23-migration-round.md`; the branch is `impl/migration-round`, 113 commits on #59's head through
 `21835e6`.
 - **How the round went.**
   - Stage 2 encoded §7's hand-written rules (M1–M12), and the local corpora ran clean under them (`05004ff`).
   - Stating which of those rules were inferences gave fifteen ambiguities. Five rounds of prose review of them
-    did not converge: the Important findings ran 2, 2, 2, then 6.
+    did not converge: the Important findings of the four re-reviews ran 2, 2, 2, then 6.
   - The owner froze the clause text (2026-10-24). A model of conforming 0.3.0 writers was built
     (`tests/migration_sim/`, `2cc4a41`), and three architectures were designed against it, judged twice and
     critiqued: Stage 6 (`plans/2026-10-23-migration-round.md`, "Stage 6").
@@ -1634,7 +1635,17 @@ with its engine and facts modules; the mechanism every step shares for what a lo
     - **So runstate ships generic choosers only.** The rules that read one consumer's texts left the step for
       mycooc's classifier: the backstop's error text (c′), the reclaim tool's malformed body (M10), and the
       lone-stop rule's 60 s clause.
-  - **Stage 6, the architecture (2026-10-25; approved with the critique's six named changes).**
+    - **Each step judges the format it reads** (also 2026-10-24). Names in a 0.3.0 log are taken at their
+      word, and reading 0.2.0's records by position became a chooser of the 0.2.0 → 0.3.0 step. A step's
+      questions read only that step's input log (D3), and a later step receives an earlier step's choices from
+      the root's manifest. So the 0.3.0 → 0.4.0 step learns from the manifest that a log was born in 0.2.0,
+      and reads the names the earlier step filled as its inference, not their writer's word (§7, "Names an
+      earlier step filled").
+  - **Stage 6, the architecture, and the target (2026-10-25; approved with the critique's six named
+    changes).**
+    - **The target** is the conforming 0.4.0 lineage that records the 0.3.0 history's own events: which
+      iterations finished, and where; what each claim loaded; which stops each worker read, so its drains
+      follow the 0.3.0 watermarks; and who reported each death (§7, "The target").
     - **One forward-backward pass** over the log finds every 0.4.0 lineage of a conforming 0.3.0 history that
       writes the log and satisfies the consumer's statements. Between claims it carries only a declared state:
       the checkpoint's candidates, the promises, and the workers still alive.
@@ -1647,12 +1658,9 @@ with its engine and facts modules; the mechanism every step shares for what a lo
     - **The prose is the referee** (§2–§4 and §7's encoding rules). The simulator is a second, independent
       encoding, and the oracle holds the engine to it.
     - **The contest:** both judges ranked the per-claim factoring (B) over a migration defined by a writer
-      model (C) and the fifteen rules repaired (A), 25 / 21 / 16 and 24 / 21 / 15. The adopted design is B's
-      factoring with C's writer facts.
-  - **No writer tag on `started` (2026-10-25).** The owner asked why a `started` should not name its writer
-    now. The 0.4.0 audit found no writer habit that a 0.4.0 reader depends on and that 0.4.0 cannot record,
-    and a consumer can already commit its version as a value. Its one wording finding, `resume_from: null`
-    also covering state from outside the run, was fixed instead (`4ce721e`, `ffe373a`).
+      model (C) and the fifteen rules repaired (A), 25 / 21 / 16 and 24 / 21 / 15. The two were not fully
+      independent: judge 2 read the ledger's summary of judge 1 before scoring, and said so. The adopted
+      design is B's factoring with C's writer facts.
   - **Consumers decide what happened; runstate decides only how 0.4.0 writes it down (2026-10-25).** Otherwise
     a migrated log's records would mean different things depending on who migrated it, 0.3.0's ambiguity
     brought back by the migration. The proposed table of conventions for runstate to rule dissolved into this:
@@ -1660,9 +1668,13 @@ with its engine and facts modules; the mechanism every step shares for what a lo
     iteration ended became a fork (`end-time`); and the two rows about writing became encoding rules: E1, a
     migrated death report says it was migrated, and E2 below.
   - **Records stay where 0.3.0 put them (2026-10-25), E2.** No stop moves; the native drains read what lies
-    before them, and each exit's `honored` follows from them. The accepted cost: in five named cases a
-    migrated exit's `honored` differs from its 0.3.0 list, which a running worker sees only if the run is
-    resumed (§7, E2, *Its cost*).
+    before them, and each exit's `honored` follows from them. Its cost: a migrated exit's `honored` can differ
+    from its 0.3.0 list, which a running worker sees only if the run is resumed. The owner accepted it for two
+    cases (2026-10-25): an exit that lists only the stops its ticks read, and a tick-first loop's stop cleared
+    between an iteration's end and the next tick. The controller's rulings generalised the second and extended
+    the same mechanism to three more, a stop answered after the claim, a stop an earlier migrated exit
+    discharged, and an exit whose list the 0.2.0 step inferred, and told the owner. §7 names the five (E2,
+    *Its cost*); ruling 12a confirms them (below).
   - **Divergences (2026-10-25).** A rule under which a read of the migrated log answers differently from the
     same read of the input is declared by name, detected where it fires, refused until `--accept` names it,
     and recorded in the manifest. Corrections count. The 0.3.0 → 0.4.0 step declares twelve (§7, "The
@@ -1692,8 +1704,9 @@ with its engine and facts modules; the mechanism every step shares for what a lo
   - **The provisional M1 candidacy and M6 anchor rulings** were Stage 2's rules, and went with them.
 - **The corpus.**
   - **What ran:** every log, from its legacy address through the shipped 0.2.0 → 0.3.0 step and the new one,
-    each in a forked child under a 4 GB address space. The engine is `8ccf4a8`, and the runner
-    `scripts/migration_round.py` at `2ae322c`; `21835e6` changed no recorded field.
+    each in a forked child under a 4 GB address space. The engine is `8ccf4a8`. The full queue ran under the
+    runner `scripts/migration_round.py` at `cdde565`; the undecided runs and the wide samples were re-run at
+    `2ae322c`, which kept their census and forks, and `21835e6` changed no recorded field.
   - **The configuration:** mycooc's facts as it answered them (256 worker versions), proposed to mycooc and
     kept out of its tree; translation's, with `resume` stated both ways, which it never reaches. The choosers:
     `record-claim=positional`, `stop-honored=positional` and `lease-bound=first-claim` for the 0.2.0 step, and
@@ -1709,11 +1722,11 @@ with its engine and facts modules; the mechanism every step shares for what a lo
 
   - **The mirror** is an older local copy of mostly the same runs, and the store copy, frozen for the round,
     decides where they differ. Deduplicated, mycooc has 5,971 runs.
-  - **Clean everywhere:** 0 crashes, 0 rows the 0.4.0 schemas reject, 0 lineage reads that raise or disagree
-    with the series (P1), and 0 violations of §7's "Also".
+  - **Clean in every run that reached the transform:** 0 crashes, 0 rows the 0.4.0 schemas reject, 0 lineage
+    reads that raise or disagree with the series (P1), and 0 violations of §7's "Also".
   - **The undecided runs are exactly revision 2's ambiguous runs** (Task 19's configuration on `9c788a9`), in
     every corpus: the engine's later changes moved none. Of them, 17 store and 12 mirror runs were live by
-    0.3.0, which `runstate migrate` refuses anyway.
+    0.3.0, which `runstate migrate` refuses anyway; the store's 2 refused runs read live too, 19 in all.
 - **The figures, in place of §11.3's.**
   - **The reads (P4).** Every series cell, verdict and stop fold the migration changes is attributed to a
     divergence that fired there, and none is unattributed, in any corpus.
@@ -1754,14 +1767,17 @@ with its engine and facts modules; the mechanism every step shares for what a lo
     `steps(start=k)` after loading "checkpoint step k", migrated silently with the wrong `resume_from`. **The
     rule** (2026-10-27): what a save labelled k holds, and where a load from it resumes, is the consumer's,
     the writer fact `resume` (`after`, `at`); stated both ways, the claim's origin forks (`11ff610`). **The
-    census** counts such claims directly. Under mycooc's `after` there are none in any corpus, by
-    construction: a load of k under `after` runs k + 1 first. Stated both ways, as a check, the wide sample
-    holds 6 claims in 5 runs (store 25e831b1, 5cde93c0, d78b72f1 twice, ed34ca78; mirror 3ba2b399), each in a
-    run that statement leaves undecided. So no migrated run carries one under any reading. A test pins the
+    census** counts such claims directly, over detection's candidates. Under mycooc's answer, `after`, there
+    are none in any corpus, by construction: a load of k under `after` runs k + 1 first, so the 0 is no
+    evidence. Stated both ways, which ran only on samples (300 store, 300 mirror and all 41 archive runs), the
+    census finds 6 claims in 5 runs: store 25e831b1, 5cde93c0, d78b72f1 twice and ed34ca78, and mirror
+    3ba2b399. Three of those runs, d78b72f1, 5cde93c0 and 3ba2b399, migrate under mycooc's answers; under `at`
+    they would become undecided on `origin`. So mycooc's statement of `resume` decides them. A test pins the
     count (`test_the_census_counts_a_resume_at_the_loaded_step_under_any_reading`).
   - **End times.** In every migrated run, each end-time fork is a commit no record dates, at exactly one
-    place: only its time is open, which `lower` answers (863,546 sites in 4,945 store runs). A commit two
-    candidates place apart occurs only in undecided runs, 6 store and 36 mirror. No run holds a rewind.
+    place: only its time is open, which `lower` answers (863,546 sites in 4,945 store runs, the undecided
+    runs' forks included). A commit two candidates place apart occurs only in undecided runs, 6 store and 36
+    mirror. No run holds a rewind.
   - **Item 10(d)'s lone stops** (Task 13; 5,129 local mycooc logs). Of 5,412 lone stops, 5,085 are the
     worker's own exits, 295 its exception exits, 24 the reclaim tool's (`t` before `created_at`) and 8 the
     runner's backstop. Every class has exactly one writer. The rule that reads them is mycooc's classifier.
@@ -1771,9 +1787,9 @@ with its engine and facts modules; the mechanism every step shares for what a lo
   differing cells are all `register-value`. The golden `beatless_full_step` and a simulator history pin its
   shape. No unattributed difference remains in any corpus, so Task 14 needed no commit.
 - **The cost.**
-  - **In the runner** (`8ccf4a8`): 2.93 s a store run on average, 2.73 s a mirror run, 0.6 s a translation
-    run. The step itself is about 0.9 s of that; the rest is the runner's own checks. The time is linear in
-    commits.
+  - **In the runner** (`8ccf4a8`): 2.93 s a store run on average (2.85 s without 664f8795's 411.5 s), 2.73 s a
+    mirror run, 0.6 s a translation run. The step itself is about 0.9 s of that; the rest is the runner's own
+    checks. The time is linear in commits.
   - **A measured `runstate migrate`** (2026-10-28) over 300 store runs, seeded from the 4,882 migrated, none
     live (`random.Random(15)`; a mean of 4,085 rows against the store's 4,040).
     - **Laid out as mycooc lays them.** A run's home is its channel root (mycooc's `run_experiment.py` sets
@@ -1781,9 +1797,19 @@ with its engine and facts modules; the mechanism every step shares for what a lo
       migrated by `runstate migrate <home> --to 0.4.0`, one home at a time.
     - **The step registered in process,** as `tests/test_migrate.py` registers its toy steps: format 0.4.0's
       layout added to `FORMATS`, the step appended to `STEPS`, then the CLI's own `main`. Nothing else
-      changes.
+      changes. The harness is three lines before `cli.main`: `formats.FORMATS["0.4.0"] =
+      DirectoryLayout("0.4.0")`, `migrations.STEPS = (*migrations.STEPS, V0_3_0_to_V0_4_0())`, and timers
+      around `migrations._detect` and `SqliteStore.migrate_one`. The shipped CLI does not register the step
+      yet, so this is the only way to reach 0.4.0 today.
     - **The settings:** mycooc's facts; the round's choosers, above; and every divergence that fired in Task
       23 accepted. These settings are measurement settings only. Each choice and each acceptance is mycooc's.
+      The flags, exactly: `--to 0.4.0 --assume mycooc:CONFIGURATION --resolve record-claim=positional
+      --resolve stop-honored=positional --resolve lease-bound=first-claim --resolve end-time=lower`,
+      `--accept` for `stale-beat`, `naked-stop`, `ended-lease`, `unhonored-stop`, `unbound-lease`,
+      `register-value`, `third-party-note`, `third-party-release`, `off-head-value` and `unheld-value`, and
+      `--cap 3000 --budget 5000000 --run-on 2`, each process under a 4 GB address space. The harness, the
+      subset and the raw timings stayed in the session's scratch space; this item and the Task 15 report hold
+      the figures.
     - **The result:** 300 of 300 migrated, 0.2.0 → 0.3.0 → 0.4.0, every old log sealed, every new one written,
       exit 0. A run took 0.90 s of wall time on average (median 0.82, p99 2.5, max 2.9 s), interpreter start
       included. Detection took 0.73 s of it, and the migrate pass 0.05 s, since it reuses the dry run's
@@ -1792,8 +1818,9 @@ with its engine and facts modules; the mechanism every step shares for what a lo
       invocation, whose one detection pass covers every run. The logs it wrote are the per-home ones, row for
       row, but it took 503 s (1.68 s a run: detection 243 s, the migrate pass 260 s) at a peak RSS of 691 MB.
       The memo that lets the migrate pass reuse detection's transforms holds 1,000,000 output rows across both
-      steps, about 120 of these runs, so the rest were transformed twice more, before and after the seal.
-      mycooc's layout never fills it.
+      steps. That is about 120 of these runs, inferred: about 8,400 output rows a run over the two steps, and
+      the migrate pass's 260 s fits 120 runs at 0.05 s and 180 at about 1.4 s, two transforms each. So the
+      rest were transformed twice more, before and after the seal. mycooc's layout never fills it.
     - **Per corpus,** scaling each run's runner time by the measured ratio (0.31; p10–p90 0.30–0.34): the
       store's 4,882 migrated runs about 4,400 s (4,100–4,800 s), 1.2–1.3 h; the mirror's 4,982 about 4,300 s
       (4,100–4,700 s); the archive under 20 s. Scaling by rows instead gives the same within 1%. This is Task
@@ -1827,10 +1854,26 @@ with its engine and facts modules; the mechanism every step shares for what a lo
      leaving those runs unmigrated.
   6. **58e1ab75 and ed5960af:** repair their `started`, or leave them.
   7. **664f8795:** its `span` and `origin`, at the cost above, once its stranded claim is released.
-  8. **Its live runs:** 17 store and 12 mirror runs read live by 0.3.0, and `runstate migrate` refuses each
-     until its claim ends. Some are stranded rather than running: 664f8795's last claim, on ai06 since
-     2026-08-10, never ended, and a foreign handle reads live. mycooc releases such a claim (its reclaim tool,
-     from `sacct`) before migrating it.
+  8. **Its live runs:** 17 undecided store runs (19 counting the 2 refused) and 12 mirror runs read live by
+     0.3.0, and `runstate migrate` refuses each until its claim ends. At least one is stranded rather than
+     running: 664f8795's last claim, on ai06 since 2026-08-10, never ended, and a foreign handle reads live.
+     mycooc releases such a claim (its reclaim tool, from `sacct`) before migrating it.
+- **For the owner to confirm at ruling 12a.** Each goes further than any owner ruling the ledger records.
+  - **No writer tag on `started`.** The owner asked (2026-10-25) why a `started` should not name its writer
+    now. The 0.4.0 audit found no writer habit that a 0.4.0 reader depends on and that 0.4.0 cannot record, so
+    nothing needs a tag before ship, and it recommended against adding one: a consumer can already commit its
+    version as a value. The plan went ahead without it. Its one wording finding, `resume_from: null` also
+    covering state from outside the run, was fixed (`4ce721e`, `ffe373a`).
+  - **E2's cost in five cases,** where the owner accepted two (above).
+- **Open for the final review,** each found by the measured migrate:
+  - **The shipped wiring is untested end to end.** Format 0.4.0's layout in `FORMATS`, its opening checks
+    (`log-formats.md` §4) and the step in `STEPS` are written with layer 2's last commit; the measurement
+    registered the step in process.
+  - **The manifest's size.** Every 0.3.0 → 0.4.0 entry repeats the whole description of the consumer's facts:
+    about 195 KB a run for mycooc, about 1 GB over its store. A single root's manifest is read whole when
+    `migrate` starts.
+  - **The memo bound.** Under one root, past about 120 of mycooc's runs (inferred, above), each run is
+    transformed twice more, so a single-root consumer pays about twice the per-home cost.
 - **What runstate decided** is only how 0.4.0 writes the history down, the same for every consumer: E1 and E2,
   §7's "Records", the generic choosers, the refusals, and the limits set at the command line and recorded with
   each run (cap 3,000 states a layer, budget 5,000,000 summed, run-on 2).

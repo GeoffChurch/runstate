@@ -1,9 +1,9 @@
 # Spec: commits and lineage — values committed to a lineage of nodes (log format 0.4.0)
 
 **Status:** DRAFT, revision 2, 2026-10-14; its drafting choices settled 2026-10-23 (review §12, item 14).
-Its migration (§7) and §5's pure reads are implemented and measured on every consumer log (2026-10-28;
-review §12, item 16); the step stays unregistered until layer 2's last commit. For the owner's review; the
-rest is not implemented.
+Its migration (§7) and §5's pure reads are implemented, and the step was run over every runstate log the
+consumers hold (2026-10-28; review §12, item 16); it stays unregistered until layer 2's last commit. For the
+owner's review; the rest is not implemented.
 
 This is layer 2 of [`../backlog/identity-in-records.md`](../backlog/identity-in-records.md). It introduces
 **log format 0.4.0** under [`log-formats.md`](log-formats.md), and builds on
@@ -937,9 +937,10 @@ act that it has no record for, and each is the least-distorting way to do so.
     exit's `honored` is 0.4.0's consequence of them, not a separate fact to preserve.
   - It needs no fork and no choice per consumer, so every consumer's migrated log reads alike.
 
-  *Its cost,* which the owner accepted (2026-10-25; review §12, item 16). The native reads can make a migrated
-  exit's `honored` differ from its 0.3.0 list in five cases. Each is named here as the simulator's
-  `Truth.costs` labels it:
+  *Its cost.* The native reads can make a migrated exit's `honored` differ from its 0.3.0 list in five cases.
+  The owner accepted the cost for cases 1 and 2 (2026-10-25); the controller's rulings generalised case 2 and
+  extended the same mechanism to cases 3 to 5, and told the owner; ruling 12a confirms the five (review §12,
+  item 16). Each is named here as the simulator's `Truth.costs` labels it:
   1. **`TICKS_EXIT`: a ticks-only exit honours a stop it did not list.** A writer whose exits list only the
      stops it read at its ticks omits a stop logged after its last tick. Its native exit drains every stop
      before it, and honours that one. A stop 0.3.0 left pending is spent there. A stop a commit's native
@@ -1628,8 +1629,9 @@ records and leave shapes no 0.4.0 writer produces.
   and every migrated record conforms to the 0.4.0 schemas.
 
 **Figures** (review §12, item 16, which gives them in full). The step on its engine at `8ccf4a8`, run over
-every consumer log from its legacy address through the 0.2.0 → 0.3.0 step, under each consumer's stated facts,
-with `end-time` resolved `lower` and `span` and `origin` left unresolved:
+every runstate log the consumers hold, from its legacy address through the 0.2.0 → 0.3.0 step, under each
+consumer's stated facts, with `end-time` resolved `lower` and `span` and `origin` left unresolved; the
+choosers and accepts were measurement settings only, each the consumer's to make:
 - **Translation:** 1,218 of 1,221 runs migrate, and 3 fork on `span`. No divergence fires, and none of its
   1,010,403 series cells differs.
 - **mycooc:** in its store copy 4,882 of 4,953 runs migrate, 69 fork on `span` (30 of them also on `origin`),
@@ -1637,12 +1639,16 @@ with `end-time` resolved `lower` and `span` and `origin` left unresolved:
   106 fork; in its archive 40 of 41 migrate and 1 forks. Every read the migration changes is a divergence that
   fired: `register-value` (mycooc's `status` register, which leaves every lineage) in every changed series
   cell but 24, which are `off-head-value`, and `third-party-note` in the 27 runs whose verdict changes.
-- **In every corpus:** no crash, no row the 0.4.0 schemas reject, no violation of "Also", and no changed read
-  that a divergence does not explain.
-- **The cost** is linear in commits (fitted exponent 1.05 to 1.09). `runstate migrate`, measured over 300 of
-  mycooc's store logs one root at a time, took 0.90 s a run, 0.73 s of it detection, at a peak RSS under
-  80 MB: about 1.2 to 1.3 hours for each of mycooc's two large corpora. The costliest log, 664f8795 (4,017
-  records, 670 claims), took 819 s at a peak RSS of 1.8 GB under provisional choosers.
+- **In every run that reached the transform:** no crash, no row the 0.4.0 schemas reject, no violation of
+  "Also", and no changed read that a divergence does not explain. The forked and refused runs never reached
+  it.
+- **The cost** is linear in commits (fitted exponent 1.05 to 1.09). `runstate migrate` was measured over 300
+  of mycooc's store logs, each run's home its own root, as mycooc lays them out. The step was registered in
+  process, since the shipped command does not register it yet, and the logs sat on tmpfs, not on mycooc's
+  NFS. It took 0.90 s a run, 0.73 s of it detection, at a peak RSS under 80 MB: about 1.2 to 1.3 hours for
+  each of mycooc's two large corpora, before NFS. The costliest log, 664f8795 (4,017 records, 670 claims),
+  took 819 s at a peak RSS of 1.8 GB under provisional choosers, with the liveness check overridden for the
+  measurement: `runstate migrate` refuses it as live, since its last claim never ended.
 
 
 ## 8. A consumer's upgrade

@@ -302,7 +302,7 @@ direct checks stay in the default run (about 30 s). CI's `oracle` job runs the f
 when the step, its engine or facts module, the simulator or the oracle changes, and
 on demand (`workflow_dispatch`). Before committing to any of those, run
 `pytest -m oracle tests/` and `python -m tests.migration_mutation` (every mutant
-must be caught; about 9 minutes).
+must be caught; about 9–10 minutes).
 
 The Channel conformance tests and the substrate-level convention tests are
 parametrized over the backends (`memory` + `sqlite` always, and `postgres` when
