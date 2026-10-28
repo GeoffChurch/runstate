@@ -1449,6 +1449,14 @@ class _Built(NamedTuple):
         )
 
 
+class _Held(NamedTuple):
+    """The step's memo of one run's candidates: what they were built from, and the
+    graph."""
+
+    built: _Built
+    graph: E.Graph
+
+
 def _digest(rows: Sequence[Row]) -> str:
     return hashlib.sha256(repr(tuple(rows)).encode()).hexdigest()
 
@@ -2361,7 +2369,7 @@ class V0_3_0_to_V0_4_0:
     def __init__(self) -> None:
         # the last run's candidates, so detect and the transform that follows it build
         # them once; it changes no result
-        self._last: tuple[_Built, E.Graph] | None = None
+        self._last: _Held | None = None
 
     def _candidates(
         self,
@@ -2371,13 +2379,13 @@ class V0_3_0_to_V0_4_0:
         history: History,
     ) -> E.Graph:
         built = _Built(_digest(rows), configuration, limits, _born(history))
-        if self._last is not None and self._last[0].same(built):
-            return self._last[1]
+        if self._last is not None and self._last.built.same(built):
+            return self._last.graph
         # the previous run's graph goes before this one is built: memory holds one
         # graph at a time, which the budget bounds
         self._last = None
         g = _candidates(rows, configuration, limits, built.born)
-        self._last = (built, g)
+        self._last = _Held(built, g)
         return g
 
     def _taken(

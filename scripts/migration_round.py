@@ -1157,9 +1157,13 @@ def census(rows: list[Row], plan: Planned) -> Census:
     """The census of the candidates ``detect`` just built and the step keeps for its
     transform (``_last``): a measurement of the step's own graph, read, never changed.
     """
-    kept = _STEP_0_3_0._last
-    assert kept is not None, "detect keeps the candidates it built"
-    g = kept[1]
+    # The census reads the step's private memo, by name: no public reading gives the
+    # graph detect built without building it again. ``engine.candidates`` would build
+    # a second graph beside the one the step holds for its transform, doubling the
+    # run's peak (1.7 GB each for the store's largest).
+    held = _STEP_0_3_0._last
+    assert held is not None, "detect keeps the candidates it built"
+    g = held.graph
     ends = engine.end_times(g)
     datings = ends.datings()
     places = sum(1 for c, d in datings.items() if d.undated and len(ends.places(c)) > 1)
@@ -1369,6 +1373,29 @@ class RunTotals:
 
 
 @dataclass
+class CensusTotals:
+    """The census summed over the runs that reached the 0.3.0 step's detect: each
+    field ``Census``'s, the resumes counted by claim and by run."""
+
+    commits: int = 0
+    dating: int = 0
+    undated: int = 0
+    places: int = 0
+    rewinds: int = 0
+    resumed_at_loaded: int = 0
+    runs_resumed_at_loaded: int = 0
+
+    def add(self, c: Census) -> None:
+        self.commits += c.commits
+        self.dating += c.dating
+        self.undated += c.undated
+        self.places += c.places
+        self.rewinds += c.rewinds
+        self.resumed_at_loaded += len(c.resumed)
+        self.runs_resumed_at_loaded += bool(c.resumed)
+
+
+@dataclass
 class SchemaTotals:
     invalid_rows: int = 0
     runs_with_invalid_rows: int = 0
@@ -1412,7 +1439,7 @@ class Totals:
     lineage_raised: int = 0
     lineage_disagrees: int = 0
     # the census, summed over the runs that reached the 0.3.0 step's detect
-    census: Counter[str] = field(default_factory=Counter)
+    census: CensusTotals = field(default_factory=CensusTotals)
     seconds: float = 0.0
     peak_rss_kb: int = 0
 
@@ -1444,16 +1471,7 @@ class Totals:
             self.lineage_raised += bool(x.lineage_check.raised)
             self.lineage_disagrees += bool(x.lineage_check.last_disagrees)
         if x.census is not None:
-            c = x.census
-            self.census.update(
-                commits=c.commits,
-                dating=c.dating,
-                undated=c.undated,
-                places=c.places,
-                rewinds=c.rewinds,
-                resumed_at_loaded=len(c.resumed),
-                runs_resumed_at_loaded=bool(c.resumed),
-            )
+            self.census.add(x.census)
         self.seconds += x.seconds or 0.0
         self.peak_rss_kb = max(self.peak_rss_kb, x.peak_rss_kb or 0)
 
@@ -1528,53 +1546,62 @@ def _runner_crashed(found: Found, exc: Exception) -> RunRecord:
     return replace(base, status=Status.CRASHED, crash=_crash(Stage.RUNNER, exc))
 
 
-# The exit status of a child interrupted while it measured: the runner aborts.
+# The exit statuses of a child that did not send its record, on each of which the
+# runner aborts: one interrupted, and one that failed sending it.
 _INTERRUPTED = 130
+_UNSENT = 1
 
 
 def isolated(found: Found, measure_one: Callable[[], RunRecord]) -> RunRecord:
     """``measure_one()`` in a child process: the run's record, with the child's wall
-    time and peak RSS. A child the OS kills, or one that sends no record, is the run's
-    crash, by its signal or exit status."""
+    time and peak RSS. A child the OS kills is the run's crash, by its signal; one
+    interrupted aborts the runner. The child never returns into the runner's frames:
+    whatever it raises, it leaves by ``os._exit``, and only one that sent its whole
+    record exits 0 (one that could not send it, say a ``MemoryError`` pickling it,
+    is the runner's own failure, which aborts it).
+
+    The peak RSS is the child's, which starts as a copy of the parent: it includes
+    what the parent held at the fork (the interpreter, the modules and the schemas,
+    about 31 MB), so it is a process's figure, not the run's increment."""
     r, w = os.pipe()
     t0 = time.perf_counter()
     pid = os.fork()
     if pid == 0:  # the child: measure, send the record, and leave at once
         os.close(r)
+        code = _UNSENT
         try:
             try:
                 sent = measure_one()
             except Exception as exc:
                 sent = _runner_crashed(found, exc)
-            data = pickle.dumps(sent)
-        except KeyboardInterrupt:  # the runner's abort, which the parent re-raises
-            os._exit(_INTERRUPTED)
-        except BaseException:  # MemoryError pickling the record
-            data = b""
-        with os.fdopen(w, "wb") as out:
-            out.write(data)
-        os._exit(0)
+            with os.fdopen(w, "wb") as out:
+                out.write(pickle.dumps(sent))
+            code = 0
+        except KeyboardInterrupt:
+            code = _INTERRUPTED
+        finally:  # whatever was raised, the child ends here
+            os._exit(code)
     os.close(w)
     with os.fdopen(r, "rb") as inp:
         data = inp.read()
     _, status, usage = os.wait4(pid, 0)
     seconds = time.perf_counter() - t0
-    if not data and os.WIFEXITED(status) and os.WEXITSTATUS(status) == _INTERRUPTED:
-        raise KeyboardInterrupt
     record: RunRecord
-    if data:
-        record = pickle.loads(data)
-    else:
-        why = (
-            f"killed by signal {os.WTERMSIG(status)}"
-            if os.WIFSIGNALED(status)
-            else f"exited {os.waitstatus_to_exitcode(status)} with no record"
-        )
+    if os.WIFSIGNALED(status):
+        why = f"killed by signal {os.WTERMSIG(status)}"
         record = replace(
             _base(found),
             status=Status.CRASHED,
             crash=Crash(Stage.RUNNER.value, f"the child {why}", why),
         )
+    elif os.WEXITSTATUS(status) == _INTERRUPTED:
+        raise KeyboardInterrupt
+    elif os.WEXITSTATUS(status) == _UNSENT:
+        raise RuntimeError(
+            f"the child measuring {found.path} could not send its record"
+        )
+    else:
+        record = pickle.loads(data)
     return replace(record, seconds=round(seconds, 4), peak_rss_kb=usage.ru_maxrss)
 
 

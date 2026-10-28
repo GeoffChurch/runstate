@@ -10,7 +10,6 @@ corrupted output reads unattributed, a fork no chooser decides leaves its run
 undecided, a symlinked duplicate is counted once, and the runner streams: one run
 in memory at a time, each run's line written before the next run is read."""
 
-import gc
 import importlib.util
 import json
 import os
@@ -19,7 +18,6 @@ import shlex
 import sqlite3
 import subprocess
 import sys
-import weakref
 from pathlib import Path
 
 import pytest
@@ -325,6 +323,26 @@ def test_each_refusal_is_mapped_to_its_kind_once(tmp_path, rid):
     assert summary["refusals"] == {"0.3.0 -> 0.4.0": {kind: 1}}
 
 
+def _unbounded(t):
+    """The step's horizon case's facts: the reference Worker with ``beat-cov`` and
+    ``marker`` unstated, so each claim may run silent passes no record shows."""
+    import dataclasses
+
+    import runstate.migrations.v0_3_0_to_v0_4_0_facts as V
+
+    ref = t.REFERENCE.workers["ref"]
+    return t.REFERENCE._replace(
+        workers={
+            "ref": dataclasses.replace(
+                ref,
+                load=frozenset(V.Load) - {V.Load.OUTSIDE},
+                marker=frozenset(V.Marker),
+                beat_cov=frozenset(V.Covered),
+            )
+        }
+    )
+
+
 def _every_refusal():
     """Each input the step's own tests refuse at its boundary, and one of each
     refusal those tables leave out, with the facts that bring it about."""
@@ -379,6 +397,7 @@ def _every_refusal():
             t.REFERENCE,
         ),
         "past_the_cap": ([claim], t.UNSTATED),
+        "the_horizon": (t._a_claim_then_another(), _unbounded(t)),
     }
     return cases
 
@@ -993,3 +1012,153 @@ def test_a_claims_first_pass_is_its_first_tick_or_its_first_nonzero_value():
         r(7, "value", _value(0.4, 2, 2.2), name="loss"),
     ]
     assert mr._first_ticks(rows) == {1: 1, 5: 2}
+
+
+# ----- the census and P1's reads, on logs whose values are argued (Task 23 fix 1) ------
+
+
+def _census(rows, resolutions):
+    """The runner's census of ``rows``, as ``_run_step`` takes it: right after the
+    0.3.0 step's detect, from the candidates the step holds."""
+    rows = list(rows)
+    mr._STEP_0_3_0.detect(rows, assumptions=resolutions.assumptions, history=())
+    plan = mr.Planned(mr._STEP_0_3_0, resolutions, frozenset(), mr.Memo())
+    return mr.census(rows, plan)
+
+
+def _versions(rows, resolutions, claim):
+    reader = mr.step04.FACTS.of(resolutions.assumptions).classifier.read(list(rows))
+    return sorted(repr(v) for v in reader.started(claim))
+
+
+def test_the_census_counts_a_resume_at_the_loaded_step_under_any_reading():
+    """The reference Worker's log of three passes (0, 1, 2), then a claim at seq 9
+    resuming at 2: its first pass is labelled 2. Under ``resume`` ``at`` it loaded pass
+    2's save and runs pass 2 again: a resume at the loaded step, the census's one hit.
+    Under ``after`` it loaded pass 1's save, an older one, and continues at 2: the
+    loaded step is 1, no hit. With both stated, both candidates stand and the hit is
+    counted once, as the census counts it, under any reading."""
+    import test_migration_v0_3_0_to_v0_4_0 as t
+    import runstate.migrations.v0_3_0_to_v0_4_0_facts as V
+
+    rows = t._a_resumed_workers_log(2)
+    older = frozenset({V.Load.FRESH, V.Load.NEWEST, V.Load.OLDER})
+    at = t._preset(resume=frozenset({V.Resume.AT}))
+    hit = [mr.Resumed(9, 2, _versions(rows, at, 9))]
+    assert _census(rows, at).resumed == hit
+    assert _census(rows, t._preset(load=older)).resumed == []
+    both = t._preset(resume=frozenset(V.Resume), load=older)
+    assert _census(rows, both).resumed == hit
+
+
+def test_the_census_splits_an_end_time_fork_into_its_dating_and_its_places():
+    """Two logs whose end-time forks the step's own tests pin. The beacon log: pass 0
+    is dated by its tick (one dating, no fork); pass 1 closes silently, before the
+    beacon or after it: undated, with no tick, at two places. The six-record log: claim
+    1 never commits; claim 3's one commit is dated by its tick or ended before it,
+    undated: a dating fork, its undated end at one place."""
+    import test_migration_oracle as o
+    import test_migration_v0_3_0_to_v0_4_0 as t
+    from runstate.migrations.ambiguity import REFUSE, Assumptions, Chosen, Resolutions
+
+    beacon = _census(t._a_beacon_between_two_places(), t.under(t.FIX1, **t.CHOSEN))
+    assert beacon == mr.Census(
+        commits=2, dating=0, undated=1, places=1, rewinds=0, resumed=[]
+    )
+    rows, hs = o._six_records()
+    cfg = o.D.configuration([o.observed(h) for h in hs])
+    limits = mr.Limits(cap=o.CAP, budget=o.BUDGET, run_on=o.RUN_ON)
+    lower = Chosen("lower", mr.step04.END_TIME.generic[0].chooser)
+    res = Resolutions(
+        Assumptions(cfg, "x", limits),
+        {
+            **{
+                p.name: Chosen(None, REFUSE.chooser)
+                for p in mr.step04.V0_3_0_to_V0_4_0.PROJECTIONS
+            },
+            "end-time": lower,
+        },
+    )
+    assert _census(rows, res) == mr.Census(
+        commits=1, dating=1, undated=0, places=0, rewinds=0, resumed=[]
+    )
+
+
+def _migrated_beacon():
+    import test_migration_v0_3_0_to_v0_4_0 as t
+    from runstate.channel import MemoryChannel
+
+    m = t.step.transform(
+        t._a_beacon_between_two_places(),
+        resolutions=t.under(t.FIX1, **t.CHOSEN),
+        history=(),
+    )
+    env = mr._envelopes(m.rows)
+    return MemoryChannel(log=env), env
+
+
+def test_p1s_reads_hold_over_a_migrated_log():
+    assert mr.lineage_check(*_migrated_beacon()) == mr.LineageCheck([], [])
+
+
+def test_p1_records_a_lineage_read_that_raises(monkeypatch):
+    """The lineage itself raising stops the check there; a per-name read raising is
+    that name's, and the other reads go on."""
+    ch, env = _migrated_beacon()
+
+    def boom(*args, **kw):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(mr.reads, "prefix_len", boom)
+    assert mr.lineage_check(ch, env) == mr.LineageCheck(["loss: ValueError: boom"], [])
+    monkeypatch.setattr(mr.reads, "lineage", boom)
+    assert mr.lineage_check(ch, env) == mr.LineageCheck(
+        ["lineage: ValueError: boom"], []
+    )
+
+
+def test_p1_records_a_last_element_that_is_not_the_series_last(monkeypatch):
+    """The beacon log's ``loss`` series holds one element, pass 0's value. A
+    ``last_element`` that answers none, or an element other than that one, disagrees
+    with the series."""
+    import dataclasses
+
+    ch, env = _migrated_beacon()
+    head = mr.reads.LatestClaimHead().resolve(ch)
+    (only,) = mr.reads.series(ch, "loss", head=head)
+    real = mr.reads.last_element
+    monkeypatch.setattr(mr.reads, "last_element", lambda *a, **kw: None)
+    assert mr.lineage_check(ch, env) == mr.LineageCheck([], ["loss"])
+    other = dataclasses.replace(only, value=only.value + 1)
+    monkeypatch.setattr(mr.reads, "last_element", lambda *a, **kw: other)
+    assert mr.lineage_check(ch, env) == mr.LineageCheck([], ["loss"])
+    monkeypatch.setattr(mr.reads, "last_element", real)
+    assert mr.lineage_check(ch, env) == mr.LineageCheck([], [])
+
+
+def test_a_refusal_at_the_horizon_is_its_own_kind():
+    """The step's own horizon case (a claim, then another, with ``beat-cov`` and
+    ``marker`` unstated, so a candidate runs silent passes to the horizon): the runner
+    names its kind, ``the horizon``, never unknown."""
+    import test_migration_v0_3_0_to_v0_4_0 as t
+
+    rows, configuration = _every_refusal()["the_horizon"]
+    with pytest.raises(MigrationError) as refused:
+        t.migrated(rows, configuration, **t.CHOSEN)
+    assert "closes a pass at the horizon" in str(refused.value)
+    kind = mr.refusal_kind(mr.StepName.FROM_0_3_0, str(refused.value))
+    assert kind == "the horizon"
+
+
+def test_a_child_that_cannot_send_its_record_aborts_the_runner(tmp_path, monkeypatch):
+    """A record the child cannot pickle (a ``MemoryError``, say) is the runner's own
+    failure: it aborts, naming the run, rather than recording something else."""
+    root = tmp_path / "root"
+    _write(root / "v0.3.0" / "unsent.db", GOLDEN["exit"])
+
+    def fail(*args, **kw):
+        raise MemoryError
+
+    monkeypatch.setattr(mr.pickle, "dumps", fail)
+    with pytest.raises(RuntimeError, match=r"unsent\.db could not send its record"):
+        _main(root, tmp_path / "out", max_rows=100)
