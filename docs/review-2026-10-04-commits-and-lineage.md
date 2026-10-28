@@ -1637,8 +1637,9 @@ mycooc's, since bookgen's 160 `.db` files and runstate-tui's hold none. The step
       lone-stop rule's 60 s clause.
     - **Each step judges the format it reads** (also 2026-10-24). Names in a 0.3.0 log are taken at their
       word, and reading 0.2.0's records by position became a chooser of the 0.2.0 → 0.3.0 step. A step's
-      questions read only that step's input log (D3), and a later step receives an earlier step's choices from
-      the root's manifest. So the 0.3.0 → 0.4.0 step learns from the manifest that a log was born in 0.2.0,
+      questions read only that step's input log (D3). Applying D3, the controller ruled that a later step
+      receives an earlier step's choices from the root's manifest, which the owner approved. So the 0.3.0 →
+      0.4.0 step learns from the manifest that a log was born in 0.2.0,
       and reads the names the earlier step filled as its inference, not their writer's word (§7, "Names an
       earlier step filled").
   - **Stage 6, the architecture, and the target (2026-10-25; approved with the critique's six named
