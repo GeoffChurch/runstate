@@ -9,6 +9,7 @@ copy, and are pasted below as literals."""
 
 import json
 import os
+import re
 import socket
 import sqlite3
 from pathlib import Path
@@ -20,6 +21,10 @@ from runstate import LOG_FORMAT, Worker, create_channel
 from runstate.channel.sqlite import _SCHEMA, SqliteChannel
 from runstate.formats import FORMATS, DirectoryLayout
 from runstate.migrations import STEPS, MigrationError, Row, chain, migrate
+from runstate.migrations.ambiguity import Limits, parse_choices, resolutions
+
+# the limits of a step that reads none of them
+ONE = Limits(cap=1, budget=1, run_on=0)
 from runstate.migrations.stores import SqliteStore
 from runstate.migrations.v0_2_0_to_v0_3_0 import V0_2_0_to_V0_3_0
 from runstate.observables import (
@@ -30,8 +35,32 @@ from runstate.observables import (
     progress,
     undischarged_stops,
 )
+from tests.migration_helpers import NO_HISTORY
 
 step = V0_2_0_to_V0_3_0()
+CONSUMER = "tests.migration_consumer:"  # a consumer's choosers, by module:attr
+
+# The readings the step encoded before its projections were declared, and the three
+# divergences the golden logs show (below): what every test migrates under unless it
+# says otherwise. The step reads no cap.
+TODAY_RESOLVE = [
+    "record-claim=positional",
+    "stop-honored=positional",
+    "lease-bound=first-claim",
+]
+TODAY = parse_choices(
+    [step],
+    assume=[],
+    resolve=TODAY_RESOLVE,
+    accept=["stale-beat", "naked-stop", "ended-lease"],
+    limits=ONE,
+)
+
+
+def transform(rows, choices=TODAY):
+    return step.transform(
+        rows, resolutions=resolutions(step, choices), history=NO_HISTORY
+    ).rows
 
 
 def r(seq, topic, body, rid=None, name=None, t=0.0):
@@ -49,8 +78,8 @@ def test_names_are_what_the_positional_rule_said():
             {"completed": False, "error": None, "final_step": 1, "t": 2.0},
         ),
     ]
-    out = {x.seq: json.loads(x.body) for x in step.transform(rows)}
-    stop_id = [x for x in step.transform(rows) if x.seq == 2][0].request_id
+    out = {x.seq: json.loads(x.body) for x in transform(rows)}
+    stop_id = [x for x in transform(rows) if x.seq == 2][0].request_id
     assert stop_id == "stop@2"
     assert out[3]["claim_seq"] == 1
     assert out[4]["claim_seq"] == 1 and out[4]["honored"] == ["stop@2"]
@@ -58,7 +87,7 @@ def test_names_are_what_the_positional_rule_said():
 
 def test_unchanged_records_keep_their_bytes():
     raw = r(1, "value", {"value": 0.1, "step": 0, "t": None}, name="loss")
-    assert step.transform([raw]) == [raw]
+    assert transform([raw]) == [raw]
 
 
 def test_unchanged_bodies_are_never_reserialized():
@@ -66,7 +95,7 @@ def test_unchanged_bodies_are_never_reserialized():
     this body would drop the spaces, spell 1.50 as 1.5 and escape the é."""
     text = '{ "value" : 1.50, "step": 0, "t": null, "unit": "é" }'
     raw = Row(1, "value", "loss", "s1", text, 7.0)
-    assert step.transform([raw]) == [raw]
+    assert transform([raw]) == [raw]
 
 
 def test_minted_names_never_collide():
@@ -81,7 +110,7 @@ def test_minted_names_never_collide():
             {"completed": False, "error": None, "final_step": 0, "t": 1.0},
         ),
     ]
-    out = step.transform(rows)
+    out = transform(rows)
     ids = [x.request_id for x in out if x.topic == "control.stop"]
     assert len(set(ids)) == 2
     honored = json.loads([x for x in out if x.topic == "lifecycle.stopped"][0].body)[
@@ -220,8 +249,10 @@ SUBS = [
     r(32, "lifecycle.stopped", _stopped(2, 13.0)),
 ]
 
-# Episodes: A is displaced by B and writes a late beat and a late stopped (the
-# cascade), B is killed, C errors before its first beat.
+# Episodes: B claims while A's records run on, then a beat and a stopped follow B's
+# claim (the cascade the positional rule attributes to B; no stopped released A, so
+# by the claim guard A was dead when B claimed and they are B's), B is killed, C
+# errors before its first beat.
 EPISODES = [
     r(1, "launcher.launched", _launched("local://n2/31", 1.0), rid="LA"),
     r(2, "lifecycle.started", _started("local://n2/31", 2.0), rid="LA"),
@@ -500,7 +531,8 @@ def _migrated(root, rid):
 
 def test_golden_logs_read_as_master_read_them(tmp_path):
     write_v0_2_0(tmp_path)
-    assert sorted(migrate(SqliteStore(tmp_path), None, to="0.3.0")) == sorted(GOLDEN)
+    moved = migrate(SqliteStore(tmp_path), None, to="0.3.0", choices=TODAY).moved
+    assert sorted(moved) == sorted(GOLDEN)
     for rid in GOLDEN:
         expected = dict(MASTER[rid])
         if rid in STALE_BEAT_LEAK:
@@ -527,7 +559,7 @@ def test_the_stale_beat_leak_is_the_whole_progress_difference(tmp_path):
     had none of its own. Here the latest claim (13) has no beat naming it, and the
     beat master read (999, at seq 8) names the claim before it."""
     write_v0_2_0(tmp_path)
-    migrate(SqliteStore(tmp_path), ["episodes"], to="0.3.0")
+    migrate(SqliteStore(tmp_path), ["episodes"], to="0.3.0", choices=TODAY)
     ch = _migrated(tmp_path, "episodes")
     beats = ch.read(topics=["lifecycle.heartbeat"])
     assert [e.body["claim_seq"] for e in beats if e.body["step"] == 999] == [7]
@@ -540,7 +572,7 @@ def test_the_naked_stop_is_answered_by_its_own_nak(tmp_path):
     """Master kept listing a refused stop until the next stopped. The stop at seq
     15 is the only request bearing its id, and the nak at 17 bears that id."""
     write_v0_2_0(tmp_path)
-    migrate(SqliteStore(tmp_path), ["stops"], to="0.3.0")
+    migrate(SqliteStore(tmp_path), ["stops"], to="0.3.0", choices=TODAY)
     ch = _migrated(tmp_path, "stops")
     (stop,) = [e for e in ch.read(topics=["control.stop"]) if e.seq == 15]
     naks = ch.read(topics=["lifecycle.nak"])
@@ -566,7 +598,7 @@ def test_a_lease_its_ended_latest_episode_served_is_no_longer_demand(tmp_path):
     a terminal names the claim. The crashed log is the class's edge: no terminal
     names its claim, so the lease stays demand, as master read it."""
     write_v0_2_0(tmp_path)
-    migrate(SqliteStore(tmp_path), None, to="0.3.0")
+    migrate(SqliteStore(tmp_path), None, to="0.3.0", choices=TODAY)
     for rid in [*ENDED_LEASE, "crashed"]:
         ch = _migrated(tmp_path, rid)
         seq = ENDED_LEASE.get(rid, 1)
@@ -591,7 +623,7 @@ def test_a_worker_resumed_after_migration_serves_what_masters_would(tmp_path, ri
     claim since its send has already served stays unserved: its ``bound`` voids
     it for every later episode, as the positional rule did."""
     _write(tmp_path, rid, GOLDEN[rid])
-    migrate(SqliteStore(tmp_path), [rid], to=LOG_FORMAT)
+    migrate(SqliteStore(tmp_path), [rid], to=LOG_FORMAT, choices=TODAY)
     ch = create_channel(rid, root=tmp_path)
     before = {e.request_id for e in live_demand(ch)}
     head = ch.last_seq()
@@ -607,13 +639,320 @@ def test_a_worker_resumed_after_migration_serves_what_masters_would(tmp_path, ri
     ch.close()
 
 
+# ----- the projections (reference-by-name.md §6, "Ambiguities") -------------------
+
+
+def _choices(*resolve, accept=()):
+    """TODAY with ``resolve`` replacing the choosers it names."""
+    given = dict(item.split("=", 1) for item in TODAY_RESOLVE)
+    given.update(item.split("=", 1) for item in resolve)
+    return parse_choices(
+        [step],
+        assume=[],
+        resolve=[f"{k}={v}" for k, v in given.items()],
+        accept=list(accept),
+        limits=ONE,
+    )
+
+
+def _migrated_by(rows, choices):
+    return step.transform(
+        rows, resolutions=resolutions(step, choices), history=NO_HISTORY
+    )
+
+
+def _forks(rows):
+    detected = step.detect(
+        rows, assumptions=resolutions(step, TODAY).assumptions, history=NO_HISTORY
+    )
+    return {p: [f.seq for f in fs] for p, fs in detected.forks.items() if fs}
+
+
+def test_the_golden_logs_forks():
+    """Each site test reads the 0.2.0 log alone. No golden log's worker could have
+    outlived a release of its claim: each release is followed by its launch's
+    terminated, or by no later record of a claim."""
+    assert {rid: _forks(rows) for rid, rows in GOLDEN.items() if _forks(rows)} == {
+        "stops": {"stop-honored": [5, 12]},
+        "subs": {"lease-bound": [30]},
+        "malformed": {"stop-honored": [8]},
+        "claimless": {"stop-honored": [2]},
+        "released": {"stop-honored": [6]},
+    }
+
+
+# A's claim is released by a third party's stopped while its process may live on (no
+# terminated reports it), so B's records may be A's displaced worker's.
+DISPLACED = [
+    r(1, "launcher.launched", _launched("local://n6/71", 1.0), rid="LA"),
+    r(2, "lifecycle.started", _started("local://n6/71", 2.0), rid="LA"),
+    r(3, "lifecycle.heartbeat", _beat(0, 0, 3.0)),
+    r(4, "lifecycle.stopped", _stopped(None, 4.0)),
+    r(5, "lifecycle.started", _started(DEAD, 5.0)),
+    r(6, "control.stop", {}, rid="halt"),
+    r(7, "lifecycle.heartbeat", _beat(1, 6, 6.0)),
+    r(8, "lifecycle.stopped", _stopped(1, 7.0)),
+]
+
+
+def test_a_record_after_a_release_its_worker_may_outlive_is_a_fork():
+    assert _forks(DISPLACED)["record-claim"] == [7, 8]
+    reaped = DISPLACED[:4] + [r(5, "launcher.terminated", _killed(9, 4.5), rid="LA")]
+    reaped += [x._replace(seq=x.seq + 1) for x in DISPLACED[4:]]
+    assert "record-claim" not in _forks(reaped)  # its process ended first
+    halted = [*DISPLACED]
+    halted[3] = r(4, "lifecycle.stopped", {**_stopped(None, 4.0), "completed": True})
+    assert "record-claim" not in _forks(halted)  # its worker's own halt
+    unreleased = [x for x in DISPLACED if x.seq != 4]
+    assert "record-claim" not in _forks(unreleased)  # dead when B claimed
+
+
+def _named(migrated, seq, field):
+    return {x.seq: json.loads(x.body) for x in migrated.rows}[seq][field]
+
+
+def test_record_claim_reads_a_fork_as_its_chooser_says():
+    today = _migrated_by(DISPLACED, TODAY)
+    assert [_named(today, s, "claim_seq") for s in (3, 4, 7, 8)] == [2, 2, 5, 5]
+    assert today.readings["record-claim"] == {7: 5, 8: 5}
+    h2 = _migrated_by(DISPLACED, _choices("record-claim=" + CONSUMER + "EARLIER_CLAIM"))
+    assert [_named(h2, s, "claim_seq") for s in (3, 4, 7, 8)] == [2, 2, 2, 2]
+    with pytest.raises(MigrationError, match=r"seq 7 a reading the log excludes"):
+        _migrated_by(DISPLACED, _choices("record-claim=" + CONSUMER + "NO_CLAIM"))
+    with pytest.raises(MigrationError, match="record-claim=refuse refused it"):
+        _migrated_by(DISPLACED, _choices("record-claim=refuse"))
+
+
+def test_drained_reads_the_claims_record_claim_gave():
+    """``drained`` honours the stops its claim's newest heartbeat had consumed, so
+    which heartbeat is the claim's is record-claim's reading: read as A's displaced
+    worker's, the beat at 7 is not B's, and B's exit drained nothing."""
+    drained = "stop-honored=drained"
+    today = _migrated_by(DISPLACED, _choices(drained))
+    assert _named(today, 8, "honored") == ["halt"]
+    beats = _migrated_by(
+        DISPLACED, _choices(drained, "record-claim=" + CONSUMER + "BEATS_EARLIER")
+    )
+    assert (_named(beats, 7, "claim_seq"), _named(beats, 8, "claim_seq")) == (2, 5)
+    assert _named(beats, 8, "honored") == []
+    none = _migrated_by(DISPLACED, _choices("stop-honored=none"))
+    assert _named(none, 8, "honored") == [] and none.readings["stop-honored"] == {8: []}
+
+
+def test_a_record_claim_reading_must_be_a_claim_that_may_have_written_it():
+    """The candidates are the latest claim and the displaced claims still alive: C0
+    no stopped followed, so by the claim guard it was dead when C1 claimed."""
+    rows = [
+        r(1, "lifecycle.started", _started(DEAD, 1.0)),
+        r(2, "lifecycle.started", _started(DEAD, 2.0)),
+        r(3, "lifecycle.stopped", _stopped(None, 3.0)),
+        r(4, "lifecycle.started", _started(DEAD, 4.0)),
+        r(5, "lifecycle.heartbeat", _beat(1, 0, 5.0)),
+    ]
+    assert _forks(rows) == {"record-claim": [5]}
+    with pytest.raises(
+        MigrationError, match=r"claim 1 is neither the latest .*\[2, 4\]"
+    ):
+        _migrated_by(rows, _choices("record-claim=" + CONSUMER + "FIRST_CLAIM"))
+    assert (
+        _named(
+            _migrated_by(rows, _choices("record-claim=" + CONSUMER + "EARLIER_CLAIM")),
+            5,
+            "claim_seq",
+        )
+        == 2
+    )
+
+
+@pytest.mark.parametrize(
+    "chooser, refusal",
+    [
+        (
+            "ALL_STOPS",
+            "answered in another shape: at seq 7, frozenset({6}) is no claim",
+        ),
+        ("LISTED", "answered in another shape: a list, not a mapping of fork seqs"),
+        ("RAISING", "raised RuntimeError: a consumer's bug"),
+    ],
+)
+def test_a_choosers_failure_is_a_refusal_naming_it(chooser, refusal):
+    with pytest.raises(MigrationError) as exc:
+        _migrated_by(DISPLACED, _choices(f"record-claim={CONSUMER}{chooser}"))
+    assert str(exc.value).startswith(
+        f"--resolve record-claim={CONSUMER}{chooser} {refusal}"
+    )
+
+
+def test_a_record_claim_reading_that_changes_a_read_diverges_by_name(tmp_path):
+    """Read as A's displaced worker's, B's beat and exit name A: B's claim has no
+    exit, so the verdict, the frontier and the liveness reads all change, and the
+    divergence that names it is record-claim's, not the positional leak's."""
+    today = _migrated_by(DISPLACED, TODAY)
+    assert not any(today.divergences.values())
+    earlier = _migrated_by(DISPLACED, _choices(f"record-claim={CONSUMER}EARLIER_CLAIM"))
+    assert {n: list(s) for n, s in earlier.divergences.items() if s} == {
+        "reattributed-record": [7, 8]
+    }
+    before = _sqlite_reads(tmp_path, "today", today.rows)
+    after = _sqlite_reads(tmp_path, "earlier", earlier.rows)
+    assert (before["peek_terminal"], before["progress"]) == (("preempted", None, 1), 1)
+    assert (after["peek_terminal"], after["progress"]) == (None, None)
+
+
+def test_a_stop_honored_reading_may_name_only_stops_since_the_previous_stopped():
+    with pytest.raises(MigrationError, match="not one since the previous stopped"):
+        _migrated_by(
+            GOLDEN["stops"], _choices("stop-honored=" + CONSUMER + "ALL_STOPS")
+        )
+
+
+# A lease whose first claim shows no heartbeat, and a later claim after it.
+TWO_CLAIMS = [
+    r(1, "control.subscribe", {"until": {"count": 5}}, rid="lease", name="loss"),
+    r(2, "lifecycle.started", _started(DEAD, 1.0)),
+    r(3, "lifecycle.started", _started(DEAD, 2.0)),
+]
+
+
+def test_lease_bound_reads_a_fork_and_keeps_a_proven_site():
+    assert _forks(TWO_CLAIMS) == {"lease-bound": [1]}
+    bound = _migrated_by(TWO_CLAIMS, TODAY)
+    assert [json.loads(x.body) for x in bound.rows[3:]] == [{"claim_seq": 2}]
+    assert _migrated_by(TWO_CLAIMS, _choices("lease-bound=unbound")).rows[3:] == []
+    with pytest.raises(MigrationError, match="a claim other than the first after it"):
+        _migrated_by(TWO_CLAIMS, _choices("lease-bound=" + CONSUMER + "LATEST_CLAIM"))
+    # a heartbeat of the lease's first claim that reached its send proves the binding
+    for rid in ["lazy", "crashed"]:
+        unbound = _migrated_by(GOLDEN[rid], _choices("lease-bound=unbound"))
+        assert unbound.rows == _migrated_by(GOLDEN[rid], TODAY).rows
+        assert unbound.readings["lease-bound"] == {}
+
+
+# ----- the divergences ------------------------------------------------------------
+
+
+def _sqlite_reads(tmp_path, rid, rows):
+    path = FORMATS["0.3.0"].sqlite_path(tmp_path, rid)
+    path.parent.mkdir(exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.executescript(_SCHEMA)
+    conn.executemany(
+        "INSERT INTO log (seq, topic, name, request_id, body, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+    conn.commit()
+    conn.close()
+    ch = SqliteChannel(path, create=False)
+    try:
+        return reads(ch)
+    finally:
+        ch.close()
+
+
+VARIANTS = {
+    "today": (),
+    "none": ("stop-honored=none",),
+    "drained": ("stop-honored=drained",),
+    "unbound": ("lease-bound=unbound",),
+}
+
+
+@pytest.mark.parametrize("variant", list(VARIANTS))
+@pytest.mark.parametrize("rid", list(GOLDEN))
+def test_each_divergence_is_where_a_read_changes(tmp_path, rid, variant):
+    """The definition, checked against the reads themselves: master's (72d9c3f) on
+    the input, runstate's on the output. A divergence fires exactly where a read
+    answers differently, and each difference is one divergence's."""
+    migrated = _migrated_by(GOLDEN[rid], _choices(*VARIANTS[variant]))
+    now, then = _sqlite_reads(tmp_path, rid, migrated.rows), MASTER[rid]
+    fired = {name: list(seqs) for name, seqs in migrated.divergences.items() if seqs}
+    expected = {
+        "stale-beat": bool(now["progress"] != then["progress"]),
+        "naked-stop": sorted(
+            set(then["undischarged_stops"]) - set(now["undischarged_stops"])
+        ),
+        "unhonored-stop": sorted(
+            set(now["undischarged_stops"]) - set(then["undischarged_stops"])
+        ),
+        "ended-lease": sorted(set(then["live_demand"]) - set(now["live_demand"])),
+        "unbound-lease": sorted(set(now["live_demand"]) - set(then["live_demand"])),
+    }
+    assert bool(fired.pop("stale-beat", False)) == expected.pop("stale-beat")
+    assert fired == {k: v for k, v in expected.items() if v}
+    assert {k: now[k] for k in ("peek_terminal", "live_episode")} == {
+        k: then[k] for k in ("peek_terminal", "live_episode")
+    }
+
+
+def test_the_golden_logs_divergences_today_are_the_three_classes():
+    fired = {
+        rid: {n: list(s) for n, s in _migrated_by(rows, TODAY).divergences.items() if s}
+        for rid, rows in GOLDEN.items()
+    }
+    assert {rid: f for rid, f in fired.items() if f} == {
+        "episodes": {"stale-beat": [8]},
+        "stops": {"naked-stop": [NAKED_STOP["stops"]]},
+        "subs": {"ended-lease": [ENDED_LEASE["subs"]]},
+        "lazy": {"ended-lease": [ENDED_LEASE["lazy"]]},
+    }
+
+
+def test_a_reading_other_than_the_positional_one_diverges_by_name():
+    honored = _migrated_by(GOLDEN["stops"], _choices("stop-honored=none"))
+    assert list(honored.divergences["unhonored-stop"]) == [1, 7, 8]
+    unbound = _migrated_by(TWO_CLAIMS, _choices("lease-bound=unbound"))
+    assert list(unbound.divergences["unbound-lease"]) == [1]
+    assert not any(_migrated_by(TWO_CLAIMS, TODAY).divergences.values())
+
+
+def test_the_cli_asks_for_each_fork_and_each_divergence(tmp_path, capsys):
+    from runstate.cli import main
+
+    write_v0_2_0(tmp_path)
+    assert main(["migrate", str(tmp_path)]) == 1
+    err = capsys.readouterr().err
+    assert "stop-honored (0.2.0 -> 0.3.0)" in err and "lease-bound (0.2.0" in err
+    assert "record-claim (0.2.0" not in err  # no golden log forks there
+    assert (
+        "forks: 5 in 4 runs, e.g. claimless seq 2, malformed seq 8, released seq 6"
+        in err
+    )
+    assert not (tmp_path / "v0.3.0").exists()
+    argv = ["migrate", str(tmp_path), *(f"--resolve={x}" for x in TODAY_RESOLVE)]
+    assert main(argv) == 1  # the divergences are questions too: nothing migrates
+    out = capsys.readouterr()
+    assert out.out == "" and not (tmp_path / "v0.3.0").exists()
+    assert "stale-beat (0.2.0 -> 0.3.0): progress reads only" in out.err
+    assert "sites: 2 in 2 runs, e.g. lazy seq 1, subs seq 30" in out.err
+    assert "add: --accept naked-stop" in out.err
+    accept = ["--accept=stale-beat", "--accept=naked-stop", "--accept=ended-lease"]
+    assert main([*argv, *accept]) == 0
+    assert sorted(capsys.readouterr().out.split()) == sorted(GOLDEN)
+    entries = [
+        json.loads(line)
+        for line in (tmp_path / "runstate-migrations.jsonl").read_text().splitlines()
+    ]
+    assert sorted(e["run_id"] for e in entries) == sorted(GOLDEN)
+    (stops,) = [e for e in entries if e["run_id"] == "stops"]
+    assert stops["resolved"] == {
+        "record-claim": "positional",
+        "stop-honored": "positional",
+        "lease-bound": "first-claim",
+    }
+    assert stops["readings"]["stop-honored"] == {"5": [1], "12": [7, 8]}
+    assert stops["accepted"] == {"naked-stop": [15]}
+    assert stops["assumed"] is None
+    assert SqliteStore(tmp_path).facts(stops["facts"]) is None  # a step without facts
+
+
 # ----- what the step writes ----------------------------------------------------
 
 
 @pytest.mark.parametrize("rid", list(GOLDEN))
 def test_records_keep_seq_topic_name_created_at_and_unchanged_bytes(rid):
     rows = GOLDEN[rid]
-    out = step.transform(rows)
+    out = transform(rows)
     kept, appended = out[: len(rows)], out[len(rows) :]
     assert all(type(x.topic) is str for x in out)  # never an enum member
     assert [(x.seq, x.topic, x.name, x.created_at) for x in kept] == [
@@ -633,7 +972,7 @@ def test_each_request_id_names_one_request(rid):
     """Positionally each stop record was its own request, and a subscription id
     one request per answer-delimited segment. After the step, no two stops share
     an id and no stop shares one with a subscription."""
-    out = step.transform(GOLDEN[rid])
+    out = transform(GOLDEN[rid])
     stops = [x.request_id for x in out if x.topic == "control.stop"]
     subscribed = {x.request_id for x in out if x.topic == "control.subscribe"}
     assert None not in stops
@@ -642,7 +981,7 @@ def test_each_request_id_names_one_request(rid):
 
 
 def test_reused_stop_ids_are_split_and_honored_by_their_stopped():
-    out = {x.seq: x for x in step.transform(GOLDEN["stops"])}
+    out = {x.seq: x for x in transform(GOLDEN["stops"])}
     assert [out[s].request_id for s in (1, 7, 8, 14, 15, 19, 20)] == [
         "stop@1",
         "halt#7",
@@ -657,7 +996,7 @@ def test_reused_stop_ids_are_split_and_honored_by_their_stopped():
 
 
 def test_subscription_ids_are_split_at_each_answer():
-    out = {x.seq: x for x in step.transform(GOLDEN["subs"])}
+    out = {x.seq: x for x in transform(GOLDEN["subs"])}
     assert out[2].request_id == "ghost!orphan@2"  # answered nothing; names nothing
     assert [out[s].request_id for s in (1, 7, 9, 15)] == ["s1"] * 4
     assert [out[s].request_id for s in (18, 23)] == ["s1#1"] * 2  # with its fire
@@ -667,7 +1006,7 @@ def test_subscription_ids_are_split_at_each_answer():
 def test_an_answer_naming_a_later_subscription_is_renamed():
     """SHARED: the nak at 3 refused the stop at 2, before any subscribe of x;
     named, it would spend the subscription at 5."""
-    out = {x.seq: x for x in step.transform(GOLDEN["shared"])}
+    out = {x.seq: x for x in transform(GOLDEN["shared"])}
     assert out[3].request_id == "x!orphan@3"
     assert (out[2].request_id, out[5].request_id) == ("x#2", "x")
     assert (out[7].request_id, out[8].request_id, out[9].request_id) == (
@@ -684,7 +1023,7 @@ def test_a_nak_before_every_stop_of_its_id_names_nothing():
         r(1, "lifecycle.nak", _nak("unsupported", "m"), rid="p"),
         r(2, "control.stop", {}, rid="p"),
     ]
-    nak, stop = step.transform(rows)
+    nak, stop = transform(rows)
     assert (nak.request_id, stop.request_id) == ("p!orphan@1", "p")
 
 
@@ -692,7 +1031,7 @@ def test_a_stop_sharing_its_id_with_any_other_request_is_renamed():
     """VERBS: an unknown verb is a request too, and master's worker naks it under
     its id. A stop sharing that id keeps it only at the cost of being answered
     by a nak that refused something else."""
-    out = {x.seq: x.request_id for x in step.transform(GOLDEN["verbs"])}
+    out = {x.seq: x.request_id for x in transform(GOLDEN["verbs"])}
     assert (out[4], out[5]) == ("p#4", "q#5")
     assert (out[3], out[7]) == ("p!orphan@3", "q")  # q now names no stop
 
@@ -702,14 +1041,14 @@ def test_leases_get_an_inferred_bound_to_the_first_claim_after_them():
     Positionally a lease was void for every claim after the first claim that
     followed it, latest or not. So each unanswered one is bound to that first
     claim, which voids it by name for every later episode (Ruling 17)."""
-    out = step.transform(GOLDEN["subs"])
+    out = transform(GOLDEN["subs"])
     bound = [(x.seq, x.request_id, json.loads(x.body)) for x in out[32:]]
     assert bound == [
         (33, "tl", {"claim_seq": 22}),
         (34, "cnt", {"claim_seq": 22}),
         (35, "tl2", {"claim_seq": 31}),  # the latest claim
     ]
-    assert step.transform(GOLDEN["lazy"])[9:] == [
+    assert transform(GOLDEN["lazy"])[9:] == [
         Row(10, "lifecycle.bound", None, "lease", '{"claim_seq":3}', 1002.25)
     ]
 
@@ -718,14 +1057,14 @@ def test_a_lease_no_claim_follows_gets_no_bound():
     """No claim since its send has taken it, so the next episode serves it, as
     master's next worker would."""
     rows = GOLDEN["shared"]  # the lease at 5 follows the only claim, at 1
-    assert [x for x in step.transform(rows) if x.topic == "lifecycle.bound"] == []
+    assert [x for x in transform(rows) if x.topic == "lifecycle.bound"] == []
 
 
 def test_a_displaced_workers_late_records_name_its_successor():
     """A known limit (episode-aim's objection): the misattribution is copied, not
     corrected. A's late beat and stopped land after B's claim, so the positional
     rule attributed them to B, and that is the name they get."""
-    out = {x.seq: json.loads(x.body) for x in step.transform(GOLDEN["episodes"])}
+    out = {x.seq: json.loads(x.body) for x in transform(GOLDEN["episodes"])}
     assert out[8]["claim_seq"] == 7 and out[9]["claim_seq"] == 7
 
 
@@ -733,7 +1072,7 @@ def test_a_malformed_stopped_still_gets_the_names_it_had_positionally():
     """The positional rule was blind to body: a third party's malformed release
     still ended the claim and discharged the stops before it. It keeps its
     malformed fields (the verdict reads still raise) and gains only the names."""
-    out = {x.seq: json.loads(x.body) for x in step.transform(GOLDEN["malformed"])}
+    out = {x.seq: json.loads(x.body) for x in transform(GOLDEN["malformed"])}
     assert out[8] == {
         "reason": "reclaimed: slurm TIMEOUT",
         "honored": ["bad", "stop@7"],
@@ -750,7 +1089,7 @@ def test_a_stopped_before_any_claim_names_no_claim():
             {"completed": False, "error": None, "final_step": None, "t": 1.0},
         ),
     ]
-    body = json.loads(step.transform(rows)[1].body)
+    body = json.loads(transform(rows)[1].body)
     assert body["claim_seq"] is None and body["honored"] == ["pre"]
 
 
@@ -764,7 +1103,7 @@ def test_a_heartbeat_before_any_claim_refuses_the_run():
         r(3, "lifecycle.started", _started("local://n/1", 2.0), rid="L"),
     ]
     with pytest.raises(MigrationError, match="seq 2"):
-        step.transform(rows)
+        transform(rows)
 
 
 def _journal_mode(path):
@@ -780,8 +1119,10 @@ def test_a_refused_sqlite_run_is_refused_before_the_seal(tmp_path):
     run stays writable and unsealed, and a re-run refuses it the same way."""
     old = _write(tmp_path, "r", [r(1, "lifecycle.heartbeat", _beat(0, 0, 1.0))])
     for attempt in range(2):
-        with pytest.raises(MigrationError, match=r"^run 'r': .*seq 1"):
-            migrate(SqliteStore(tmp_path), ["r"], to="0.3.0")
+        (refused,) = migrate(
+            SqliteStore(tmp_path), ["r"], to="0.3.0", choices=TODAY
+        ).refused
+        assert re.match(r"^run 'r': .*seq 1", refused.message)
         assert os.stat(old).st_mode & 0o200  #          no read-only bit
         assert _journal_mode(old) == "wal"  #   the seal would have left WAL
         assert not FORMATS["0.3.0"].sqlite_path(tmp_path, "r").exists()
@@ -838,8 +1179,10 @@ def test_a_refused_postgres_run_rolls_back_its_seal(pg_v0_2_0_run):
     with psycopg.connect(dsn) as c:
         c.execute(insert, [rid, *r(1, "lifecycle.heartbeat", _beat(0, 0, 1.0))])
     for attempt in range(2):
-        with pytest.raises(MigrationError, match=rf"^run '{rid}': .*seq 1"):
-            migrate(PostgresStore(dsn), [rid], to="0.3.0")
+        (refused,) = migrate(
+            PostgresStore(dsn), [rid], to="0.3.0", choices=TODAY
+        ).refused
+        assert re.match(rf"^run '{rid}': .*seq 1", refused.message)
         with psycopg.connect(dsn) as c:
             sealed = c.execute(
                 "SELECT to_regclass('runstate_v0_2_0.sealed_runs')"
@@ -875,14 +1218,16 @@ def test_a_claim_without_a_handle_cannot_be_judged():
 
 
 def test_a_refusal_through_migrate_names_its_run(tmp_path):
-    """Minor 1: migrate() names the run in every refusal it surfaces, and stops
-    at the first."""
+    """Minor 1: migrate() names the run in every refusal, and carries on past it
+    to the other runs (log-formats.md §6, "Carrying on past refusals")."""
     _write(tmp_path, "a", [r(1, "lifecycle.started", {"t": 0.0})])
     _write(tmp_path, "b", [r(1, "lifecycle.heartbeat", _beat(0, 0, 1.0))])
-    with pytest.raises(MigrationError, match=r"^run 'a': .*seq 1.*no handle"):
-        migrate(SqliteStore(tmp_path), None, to="0.3.0")
-    with pytest.raises(MigrationError, match=r"^run 'b': .*seq 1.*precedes"):
-        migrate(SqliteStore(tmp_path), ["b"], to="0.3.0")
+    _write(tmp_path, "c", GOLDEN["claimless"])
+    outcome = migrate(SqliteStore(tmp_path), None, to="0.3.0", choices=TODAY)
+    assert outcome.moved == ("c",)
+    a, b = outcome.refused
+    assert re.match(r"^run 'a': .*seq 1.*no handle", a.message)
+    assert re.match(r"^run 'b': .*seq 1.*precedes", b.message)
 
 
 # ----- schema validity -----------------------------------------------------------
@@ -960,7 +1305,7 @@ def test_golden_inputs_are_0_2_0_as_declared(rid):
 
 @pytest.mark.parametrize("rid", WELL_FORMED)
 def test_well_formed_logs_come_out_valid_under_the_0_3_0_schemas(rid):
-    assert _invalid_seqs(step.transform(GOLDEN[rid]), STACK_0_3_0) == []
+    assert _invalid_seqs(transform(GOLDEN[rid]), STACK_0_3_0) == []
 
 
 # ----- a retained step carries its formats' semantics ------------------------------
@@ -969,8 +1314,9 @@ def test_well_formed_logs_come_out_valid_under_the_0_3_0_schemas(rid):
 def test_the_step_imports_no_record_semantics():
     """Ruling 13 (log-formats §6): the step is retained forever, so it must read
     0.2.0 and write 0.3.0 as they were defined, whatever later code does. From
-    the package it takes only Row, MigrationError and resolve(), an OS probe of a
-    handle rather than a format rule."""
+    the package it takes only Row, MigrationError, resolve(), an OS probe of a
+    handle rather than a format rule, and the shared mechanism of ambiguity.py,
+    which holds no format's semantics."""
     import ast
     import inspect
 
@@ -984,11 +1330,12 @@ def test_the_step_imports_no_record_semantics():
         and (n.level > 0 or (n.module or "").startswith("runstate"))
         for a in n.names
     }
-    assert internal == {
+    assert {x for x in internal if x[1] != "ambiguity"} == {
         (1, None, "MigrationError"),
         (1, None, "Row"),
         (2, "vocabulary.handle", "resolve"),
     }
+    assert {level for level, module, _ in internal if module == "ambiguity"} == {1}
     plain = {
         a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names
     }
@@ -1014,7 +1361,7 @@ def test_the_cli_migrates_to_the_current_format_by_default(tmp_path, capsys):
     old = _write(tmp_path, "episodes", GOLDEN["episodes"])
     with pytest.raises(LogFormatMismatch, match="runstate migrate"):
         attach_channel("episodes", root=tmp_path)
-    assert main(["migrate", str(tmp_path)]) == 0
+    assert main(["migrate", str(tmp_path), "--accept", "stale-beat"]) == 0
     assert capsys.readouterr().out.split() == ["episodes"]
     assert not os.stat(old).st_mode & 0o200  # sealed
     with attach_channel("episodes", root=tmp_path) as ch:

@@ -159,17 +159,20 @@ verdict plane an unnamed lifecycle record raises the existing `MalformedRecordEr
 `runstate/migrations/v0_2_0_to_v0_3_0.py`, under `log-formats.md` §6. It reads
 `<root>/v0.2.0/<rid>.db` and writes `<root>/v0.3.0/<rid>.db`, **preserving every record's seq**, because
 `claim_seq` values point at seqs. It deletes nothing, and appends only `lifecycle.bound` records, after the
-last record. Every name it writes is exactly what the positional rule said; the step's docstring is the
-precise statement of the rules.
+last record. Where 0.2.0's conventions settle a name, it writes exactly what the positional rule said; the
+step's docstring is the precise statement of the rules. Where the positional rule answers a question the
+0.2.0 log leaves open, the answer is the reading of one of the step's declared projections, whose chooser a
+user names explicitly (below, "Ambiguities").
 
 - **Stops.** A nameless stop gets the deterministic id `stop@<seq>`. A stop keeps its id only if no other
   control request bears it, unsubscribes aside: it is the only stop with that id, and no subscription or
   unknown verb bears it. Otherwise every stop with that id gets a minted id, `<id>#<seq>`. Positionally
   each stop record was its own request, while in 0.3.0 the requests of one id are one request, which
   every nak bearing that id answers. Each `stopped.honored` lists the stops that `stopped` cleared under
-  the old rule: every stop since the previous `stopped`, blind to both author and body.
-- **Episodes.** The `claim_seq` of a heartbeat or a `stopped` is the latest claim before it. A `stopped`
-  before any claim names none (null).
+  the old rule: every stop since the previous `stopped`, blind to both author and body (`stop-honored`'s
+  `positional`, below).
+- **Episodes.** The `claim_seq` of a heartbeat or a `stopped` is the latest claim before it
+  (`record-claim`'s `positional`, below). A `stopped` before any claim names none (null).
 - **Subscriptions.** A reused id is split into segments at each answer, and the later segments become
   `<id>#k`, along with their answers and value sends. An answer that precedes every subscribe of its id
   answered nothing, so it is renamed to name nothing: an `unsubscribe` always, and a nak unless no
@@ -177,14 +180,14 @@ precise statement of the rules.
   nothing either, since a nak cannot refuse a stop that comes after it. A nak that keeps its id names
   its stop.
 - **Episode-local subscriptions.** One `lifecycle.bound` for each unanswered one that a claim follows,
-  naming the first claim after its latest send. Positionally a lease was void for a drainer when a claim
-  lay strictly between the lease and the drainer's own claim, so once any claim follows it, every later
-  claim finds that one in between: the first claim after it was its last drainer. That holds when the
-  first claim is the latest one too, and then the next worker, which claims after migration, is the
-  drainer the binding voids it for. *Found in the final review* (Ruling 17): binding only to a claim
-  strictly before the latest one left a lease served by an ended latest episode unbound, and the next
-  0.3.0 worker served it again with a fresh `time_seconds`, which neither master nor a native 0.3.0 log
-  does.
+  naming the first claim after its latest send (`lease-bound`'s `first-claim`, below). Positionally a
+  lease was void for a drainer when a claim lay strictly between the lease and the drainer's own claim, so
+  once any claim follows it, every later claim finds that one in between: the first claim after it was its
+  last drainer. That holds when the first claim is the latest one too, and then the next worker, which
+  claims after migration, is the drainer the binding voids it for. *Found in the final review* (Ruling
+  17): binding only to a claim strictly before the latest one left a lease served by an ended latest
+  episode unbound, and the next 0.3.0 worker served it again with a fresh `time_seconds`, which neither
+  master nor a native 0.3.0 log does.
 - **Every minted name is fresh:** it is checked against every request id in the run and every name minted
   before it.
 - **Refused: a heartbeat before any claim.** `Heartbeat.claim_seq` is a required integer, so format 0.3.0
@@ -203,10 +206,110 @@ precise statement of the rules.
   claim is live unless a `stopped` follows it or its handle resolves dead, and an unresolvable foreign
   handle reads as live.
 
+**Ambiguities** (*specified 2026-10-24, encoded 2026-10-26*; review §12, item 16; `log-formats.md` §6,
+"Ambiguity"). The step judges against any writer conforming to format 0.2.0, whose records named nothing
+and were related by position (§1's table). Three of its answers are inferences that 0.2.0's records do not
+settle. They are its declared projections, asked in the table's order, and the positional rule is one
+reading of each, whose chooser a user must name. The step states no facts (`NO_FACTS`, the plan's Task
+21): each fork is settled by a chooser, and `record-claim`'s `positional` is itself the user's statement
+about their own orchestration (below). The built-in choosers are in the step's module,
+`v0_2_0_to_v0_3_0.py`. The step is shipped, and no consumer has run it yet, so each consumer's first
+migration is its first choice. Each site test reads only the 0.2.0 log; a chooser is asked once per run,
+with every fork of its projection and the readings given before it.
+
+| projection | the question | built-ins | the step's reading today |
+|---|---|---|---|
+| `record-claim` | which claim a heartbeat or `stopped` speaks for | `positional`, `refuse` | `positional` |
+| `stop-honored` | which stops a `stopped` answered | `positional`, `drained`, `none`, `refuse` | `positional` |
+| `lease-bound` | which claim registered an episode-local subscription | `first-claim`, `unbound`, `refuse` | `first-claim` |
+
+What the site tests rely on as settled by 0.2.0's conventions:
+- **`completed: true` is the worker's own claim** (`design-v0.2.md` §7: "`completed=True` is the worker's
+  opt-in claim of intrinsic, permanent completion"; `completed-opt-in.md`), and **a worker's `stopped` is its
+  halt** (§7: "Existence = a clean, resumable halt"), so a claim a completed `stopped` ended was ended by its
+  worker's own halt, after which that worker beat no more and wrote no second `stopped`;
+- **a `launcher.terminated` follows its process's end**, since only a `wait()`ing parent writes it
+  (`design-v0.2.md` §8), and the launch id a claim's `started` re-emits, with an equal handle, makes that
+  process the claimant;
+- **a claim is taken only when the latest one is followed by a `stopped` or its worker resolves dead**: "the
+  single-claim guards (run-episodes self-claim, §12.1) rest on" the claim CAS (`design-v0.2.md` §4), and "the
+  lazy-launch race is arbitrated by the worker's birth-CAS" (§8); `run-episodes.md` §3 spells the guard out.
+  So a claim that no `stopped` followed was dead when the next one began.
+
+The entries:
+- **`record-claim`: which claim a heartbeat or `stopped` speaks for.**
+  - **Site:** a heartbeat or `stopped` after the `started` of a claim that is not the run's first, when an
+    earlier claim was followed, before **its own successor's** `started`, by a `stopped` that is not
+    `completed: true` (a malformed one counts), and no `launcher.terminated` of that earlier claim's launch,
+    carrying its handle, precedes the record. Such a `stopped` let the next claim begin, and a third party
+    may have written it, so the earlier claim's worker may have outlived it. Only the release before a
+    claim's own successor counts: by the claim guard below, a claim that no `stopped` followed before the
+    next claim began was dead then, so a `stopped` after that cannot have let it live on (*narrowed
+    2026-10-26*; the literal "before that `started`" would have counted it).
+  - **Candidates:** the latest claim before the record, and each earlier claim the site test finds
+    displaced and still alive. A reading naming any other claim is one the log excludes, and is refused.
+  - **H1:** the latest claim's worker wrote the record, which needs the latest claim before it.
+  - **H2:** a third party's `stopped` released the earlier claim while its worker lived, and that displaced
+    worker wrote the record after the later claim began, which needs the earlier claim.
+  - **Built-ins:** `positional`, the latest claim before it, which is the step's rule today; `refuse`.
+  - **Refuse-only:** no, as a declaration. Nothing in the log says who wrote the record, so no reading
+    computed from it is right for most histories. `positional` is the user's statement about their own
+    orchestration: no worker outlived a release of its claim.
+- **`stop-honored`: which stops a `stopped` answered.**
+  - **Site:** a `stopped` with at least one `control.stop` since the previous `stopped`. 0.2.0's positional
+    rule cleared them all, whoever wrote the `stopped`, while 0.3.0's `honored` names the stops its writer
+    carried out.
+  - **H1:** the worker drained stop x at its last tick and stopped on it, which needs `honored: [x]`.
+  - **H2:** a third party released a dead worker's claim, or the worker stopped at a bound of its own while x
+    landed unseen, which needs `honored: []`, with x pending for the next claim, as §7 has mycooc's reclaim
+    tool leave it.
+  - **Built-ins:**
+    - `positional`: every stop since the previous `stopped`, which is the step's rule today;
+    - `drained`: those that the newest heartbeat of its claim before it had consumed, its `consumed_seq` at
+      or above the stop's seq: what a 0.2.0 reference worker held when it stopped. It reads `record-claim`'s
+      readings;
+    - `none`: no stop, so each stays pending;
+    - `refuse`.
+  - **Refuse-only:** no.
+- **`lease-bound`: which claim registered an episode-local subscription.**
+  - **Site:** an unanswered episode-local subscription that a claim follows, when the first claim after its
+    latest send wrote no heartbeat whose `consumed_seq` reaches that send. A claim whose heartbeat reaches
+    it drained it, and so registered it: the watermark passes a request only once it is registered or
+    refused (`design-v0.2.md` §6), and an unanswered one was not refused. There the binding to that claim is
+    the proven reading.
+  - **H1:** the first claim drained and registered the lease, then died before that tick's heartbeat, which
+    needs the lease bound to that claim, as 0.2.0's positional void treated it.
+  - **H2:** the first claim died before it drained the lease, which needs the lease unbound: a `bound`
+    asserts that its claim registered the lease (lifecycle-v0.5's `Bound`), and here none did, which the
+    0.2.0 log cannot record. The next claim then registers and serves it.
+  - **Built-ins:**
+    - `first-claim`: the first claim after its latest send, which reproduces 0.2.0's positional void. It is
+      the step's rule today, and Ruling 17's;
+    - `unbound`: no `bound` record, so the lease is void for no episode;
+    - `refuse`.
+  - **Refuse-only:** no. The real corpus has no subscribes, so no consumer's log has a site.
+
+**Carried unread.** A `stopped` whose body 0.2.0 does not define is carried with its body unread, the step
+adding only the names its rules write: the step relates it by position and never reads its body, so it
+declares no projection for it. The 0.3.0 → 0.4.0 step, which reads it, declares `malformed-stop`
+(`commits-and-lineage.md` §7; `log-formats.md` §6). Since the step does not read it, a malformed `stopped`
+proves nothing in a site test: in `record-claim`'s, it counts as a `stopped` that is not `completed: true`,
+the way that makes the site wider.
+
+**Determined, not declared,** because 0.2.0's own rules settle them, and the step reproduces those rules:
+- a `stopped` before any claim names none;
+- a stop's id, kept or minted, since each 0.2.0 stop record was its own request;
+- a reused subscription id split at each answer, and an answer before every subscribe of its id renamed to
+  name nothing, since 0.2.0 paired an answer with the request before it;
+- a nak that keeps its id names its stop, since a nak is the refusal of the request its id names.
+
+A heartbeat before any claim stays a refusal.
+
 **Measured on the spike, on copies of 2,569 real consumer logs:** identical reads on 2,562. The 7
 differences are all one positional bug that names fix: `progress` reading a previous episode's heartbeat.
-The step's golden logs (`tests/test_migration_v0_2_0_to_v0_3_0.py`) read as 0.2.0's positional folds
-read them (computed at `72d9c3f`), except in three classes, each a positional defect that names fix:
+The step's golden logs (`tests/test_migration_v0_2_0_to_v0_3_0.py`), migrated under the readings marked
+"today" above, read as 0.2.0's positional folds read them (computed at `72d9c3f`), except in three classes,
+each a positional defect that names fix:
 
 1. that **stale-beat leak**;
 2. a **naked stop**, which `undischarged_stops` kept listing until the next `stopped` and which its nak
@@ -219,12 +322,47 @@ A worker resumed on a migrated log serves exactly the demand master's next worke
 one on the golden logs. The final review's fuzz (7,000 synthetic logs, master's reads computed at
 `72d9c3f`) found no difference outside the three classes, and none in the demand a resumed worker faces.
 
+**Divergences** (`log-formats.md` §6; *declared 2026-10-26*). Each class above is a divergence, a rule under
+which a read of the migrated log answers differently from the same read of the input log, and so is each
+difference a reading other than the positional one makes. The step declares six, and finds each by
+computing the reads, its own copies of 0.2.0's positional folds (`72d9c3f`) on the input and 0.3.0's
+by-name folds on the output: `progress`, the verdict `peek_terminal` reads off a `stopped` (with whether
+`live_episode` finds the latest claim ended), `undischarged_stops` and `live_demand`. The step's rules
+change only `progress`, `undischarged_stops` and `live_demand`; a `record-claim` reading other than the
+positional one can change every one of the four. A divergence that fires halts the detection pass until the
+user names it with `--accept`.
+
+| divergence | the read it changes, and how | fires |
+|---|---|---|
+| `stale-beat` | `progress` reads only the records that name the latest claim | the stale-beat leak, under any reading |
+| `naked-stop` | `undischarged_stops` no longer lists a stop its own nak answered | a naked stop, under any reading |
+| `ended-lease` | `live_demand` no longer lists a lease bound to the latest claim once a terminal names it | an ended lease, under `first-claim` or a proven binding |
+| `unhonored-stop` | `undischarged_stops` lists a stop a later `stopped` cleared positionally | under `stop-honored`'s `drained` or `none` |
+| `unbound-lease` | `live_demand` lists a lease a later claim voided positionally | under `lease-bound`'s `unbound`, where a second claim follows the lease |
+| `reattributed-record` | any of the four reads, where a heartbeat or `stopped` names another claim than by position | under a consumer's `record-claim` reading |
+
+**Which one fires is named by the link that changed the read.** The step computes the output three ways:
+under the positional readings, under `record-claim`'s reading with the others positional, and under every
+reading. Where a read answers differently on the output than on the input, it fires the rule's divergence if
+the positional output already differs (`stale-beat`, `naked-stop`, `ended-lease`), `reattributed-record` if
+`record-claim`'s reading changed it further, and `unhonored-stop` or `unbound-lease` if `stop-honored`'s or
+`lease-bound`'s did. A read changed and changed back fires nothing: under `unbound`, the ended lease that
+`first-claim` would void stays listed, as 0.2.0 listed it. A test checks every golden log, under four sets
+of readings, against master's reads and runstate's: each divergence fires in exactly the runs where its read
+answers differently, and nothing else differs. Each fires at the records whose read differs, except
+`reattributed-record`, whose sites are every fork read otherwise than by position, once any read differs: a
+read can change only through several reattributions jointly, so no single fork is its site. Under the
+positional `record-claim`, `peek_terminal` and `live_episode` answer alike; under a consumer's reading they
+may not, and `reattributed-record` says so (a test reads the verdict of a displaced worker's exit go from
+`preempted` to none).
+
 **Known limits:**
-- A historical misattribution is copied faithfully, not corrected: episode-aim's objection, stated in the
-  step's docstring. A displaced worker's late heartbeat or `stopped` is named for its successor's claim,
-  because the positional rule attributed it there, and the log does not record which worker wrote it.
-- The `bound` records are inferred from the positional rule. The 0.2.0 log never recorded which episode
-  registered a lease.
+- Under `record-claim`'s `positional`, a historical misattribution is copied faithfully, not corrected:
+  episode-aim's objection, stated in the step's docstring. A displaced worker's late heartbeat or `stopped`
+  is named for its successor's claim, because the positional rule attributed it there, and the log does not
+  record which worker wrote it.
+- Under `lease-bound`'s `first-claim`, the `bound` records are inferred from the positional rule. The 0.2.0
+  log never recorded which episode registered a lease.
 - A nak bearing a uniquely named stop's id, after that stop, is presumed to be that stop's refusal. The
   reference worker naks only the request it is handling, so only a nak it did not write (a third
   party's, or another worker's) could make that wrong: a forged nak.
@@ -238,7 +376,9 @@ At the consumer's own time, in this order:
 1. Stop its old processes and drain its queued jobs (`log-formats.md` §8).
 2. Bump its pin to the commit that introduces format 0.3.0.
 3. Onboard: move its legacy logs into `v0.2.0/`, as the `LogFormatMissing` message instructs.
-4. Migrate a **copy** first and compare its reads, then run `runstate migrate <root>`.
+4. Migrate a **copy** first and compare its reads, then run `runstate migrate <root>`, with a `--resolve`
+   for each projection its detection pass reports, and an `--accept` for each divergence it reports (§6,
+   "Ambiguities" and "Divergences"; `log-formats.md` §6).
 5. Change its code:
    - mint a `request_id` on every `control.stop` (none of the corpus's 184 stops has one). Grep its
      code for every send of `control.stop` (`Topic.CONTROL_STOP`) and check each carries a

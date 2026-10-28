@@ -80,9 +80,9 @@ class MemoryChannel(Channel):
                 e.request_id is None or e.request_id in request_ids
             ):
                 continue
-            out.append(_snapshot(e))
             if limit is not None and len(out) >= limit:
-                break
+                break  # checked before the append, so limit=0 returns nothing
+            out.append(_snapshot(e))
         return out
 
     def latest(self, topic: str, name: str | None = None) -> Envelope | None:

@@ -346,8 +346,11 @@ What each became:
       - `progress`'s second source (`stopped.final_step`), since heartbeats alone define the frontier;
       - the vouching recipe's `stopped` clause;
       - any need for `stopped` to carry commits.
-12. **The 0.3.0 → 0.4.0 migration repairs missing ticks and keeps no step stream.** Each rule copies what
-    the old positional reading implied.
+12. **The 0.3.0 → 0.4.0 migration repairs missing ticks and keeps no step stream.** *Superseded as a
+    standard:* the step now writes the conforming 0.4.0 lineage of the 0.3.0 history its consumer's stated
+    facts and choosers decide, under runstate's encoding rules (`commits-and-lineage.md` §7, "The target"),
+    never "what the old positional reading implied". The sub-items below are this proposal's own, kept as
+    its record.
     - **`parent`.** The previous heartbeat of the same claim. For an episode's first heartbeat, the latest
       earlier heartbeat one step behind it, otherwise null.
     - **`commits`.** The values each heartbeat commits, attributed by their own step labels within the

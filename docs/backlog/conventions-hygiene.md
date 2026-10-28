@@ -81,6 +81,18 @@ string probe is never the sole tier, so its non-provability is acceptable.
 **Conclusion:** add `?start=T` when hardening liveness resolution; it is not
 needed for correctness.
 
+**Revisited 2026-10-25 by the 0.4.0 audit** (the migration round, finding F3).
+Under log format 0.4.0 the handle also decides death reports, so pid reuse now
+has a cost there: when a crashed claimant's pid is taken by an unrelated
+process, `report_if_dead` writes nothing and `report_death` raises
+`ClaimAliveError`, and the claim stays held while that process lives.
+`?start=T` narrows it with no schema change (it only sharpens the probe, as
+above), and a handle without it truthfully records no start time, so it can
+still wait: not before 0.4.0 ships. The audit's second pair, one process
+running two Workers, needs no wire fact: an in-process registry keyed by (run,
+`claim_seq`) can say whether the claimant Worker is live. On Postgres the
+session probe settles both.
+
 ---
 
 Low-rated and self-defended as probably-correct, **not** actioned: F2 (`started`

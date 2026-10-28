@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://runstate.dev/protocol/subscription-v0.4.json",
+  "title": "runstate v0.4 subscription convention",
+  "description": "Pins the bodies of the control.* topics an orchestrator produces (log format 0.4.0; docs/specs/commits-and-lineage.md section 3): control.subscribe and control.stop carry a Schedule / StopTrigger over the condition-algebra; control.withdraw (new) carries {t} and cancels by request_id, replacing the retired control.unsubscribe. Every control record's request_id is required and non-null (a subscription's id, a stop's id, or on withdraw the id of the request withdrawn). control.subscribe's envelope name is the source it targets, or null for pure demand; control.stop and control.withdraw carry name null. Atoms: {stream, n} and {commits: n} (n from 0 to 2^53-1) replace the removed {step: N}; time_seconds, count, any and all are unchanged; count only in `until`. Applied on top of the envelope schema. CONSTRAINTS THE SCHEMA CANNOT CHECK, each answered by a nak rather than refused on the wire: a pure demand (name null) takes only an `until`, and a from, an every or a {count: n} atom in it is refused with reason malformed; a re-send of a live id may replace its schedule but not its target or class (lease or durable), else malformed; a subscription targeting a name the claim does not declare a source, a progress atom naming a source, and an empty window (a from that implies the until) are refused with reason unsatisfiable. Whether a {stream} atom names an eager stream is a fact of the claim's declaration, not of the body.",
+
+  "allOf": [
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"pattern": "^control\\."}}},
+      "then": {"properties": {"topic": {"enum": ["control.subscribe", "control.stop", "control.withdraw"]}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "control.subscribe"}}},
+      "then": {"required": ["name"], "properties": {"name": {"type": ["string", "null"]}, "body": {"$ref": "#/$defs/Schedule"}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "control.stop"}}},
+      "then": {"required": ["name"], "properties": {"name": {"type": "null"}, "body": {"$ref": "#/$defs/StopTrigger"}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "control.withdraw"}}},
+      "then": {"required": ["name"], "properties": {"name": {"type": "null"}, "body": {"$ref": "#/$defs/Withdraw"}}}
+    },
+    {
+      "comment": "Every control verb is correlated by request_id, so it MUST be present (a non-null string).",
+      "if": {"required": ["topic"], "properties": {"topic": {"enum": ["control.subscribe", "control.stop", "control.withdraw"]}}},
+      "then": {"required": ["request_id"], "properties": {"request_id": {"type": "string"}}}
+    }
+  ],
+
+  "$defs": {
+    "Withdraw": {
+      "type": "object", "required": ["t"], "additionalProperties": false,
+      "description": "control.withdraw cancels the request its envelope request_id names (a stop or a subscription). t is the asker's wall-clock.",
+      "properties": {"t": {"type": "number", "minimum": 0}}
+    },
+
+    "StopTrigger": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "control.stop is one-shot: it carries at most a `from`. No `every`/`until`.",
+      "properties": {
+        "from": {"$ref": "#/$defs/Condition"}
+      }
+    },
+
+    "Schedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "from/every/until, each a Condition. Absent `every` => one-shot. `count` thresholds are valid only in `until`.",
+      "properties": {
+        "from": {"$ref": "#/$defs/Condition"},
+        "every": {"$ref": "#/$defs/Condition"},
+        "until": {"$ref": "#/$defs/UntilCondition"}
+      }
+    },
+
+    "Count": {
+      "description": "A threshold n from 0 to 2^53-1.",
+      "type": "integer", "minimum": 0, "maximum": 9007199254740991
+    },
+    "StreamThreshold": {
+      "type": "object", "required": ["stream", "n"], "additionalProperties": false,
+      "description": "The count of elements of the named eager stream on the lineage reaches n.",
+      "properties": {"stream": {"type": "string", "minLength": 1}, "n": {"$ref": "#/$defs/Count"}}
+    },
+    "CommitsThreshold": {
+      "type": "object", "required": ["commits"], "additionalProperties": false,
+      "description": "The lineage's own clock: iterations committed.",
+      "properties": {"commits": {"$ref": "#/$defs/Count"}}
+    },
+    "TimeThreshold": {
+      "type": "object", "required": ["time_seconds"], "additionalProperties": false,
+      "properties": {"time_seconds": {"type": "number", "minimum": 0}}
+    },
+    "CountThreshold": {
+      "type": "object", "required": ["count"], "additionalProperties": false,
+      "description": "A subscription's fire budget; only in `until`.",
+      "properties": {"count": {"type": "integer", "minimum": 0}}
+    },
+
+    "Condition": {
+      "description": "Threshold over (stream, commits, time) or any/all of Conditions. No `count` here.",
+      "oneOf": [
+        {"$ref": "#/$defs/StreamThreshold"},
+        {"$ref": "#/$defs/CommitsThreshold"},
+        {"$ref": "#/$defs/TimeThreshold"},
+        {"type": "object", "required": ["any"], "additionalProperties": false,
+         "properties": {"any": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/Condition"}}}},
+        {"type": "object", "required": ["all"], "additionalProperties": false,
+         "properties": {"all": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/Condition"}}}}
+      ]
+    },
+
+    "UntilCondition": {
+      "description": "The `until` slot's grammar: as Condition, plus `count` thresholds.",
+      "oneOf": [
+        {"$ref": "#/$defs/StreamThreshold"},
+        {"$ref": "#/$defs/CommitsThreshold"},
+        {"$ref": "#/$defs/TimeThreshold"},
+        {"$ref": "#/$defs/CountThreshold"},
+        {"type": "object", "required": ["any"], "additionalProperties": false,
+         "properties": {"any": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/UntilCondition"}}}},
+        {"type": "object", "required": ["all"], "additionalProperties": false,
+         "properties": {"all": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/UntilCondition"}}}}
+      ]
+    }
+  }
+}

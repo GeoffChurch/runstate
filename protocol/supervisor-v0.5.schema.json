@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://runstate.dev/protocol/supervisor-v0.5.json",
+  "title": "runstate v0.5 supervisor convention",
+  "description": "Pins the supervisor.* topics, the external-report plane (log format 0.4.0; docs/specs/commits-and-lineage.md section 3), renamed from launcher.*: launched (spawn-intent + liveness handle) and terminated (the manner of a launch's process death) name a LAUNCH, and REQUIRE the envelope request_id, the launch's correlation id, as launcher-v0.4 did; died (the death report) names a CLAIM by claim_seq and its request_id is null (launcher-v0.4's prefix-wide request_id rule is split per record). launched and terminated bodies are unchanged from launcher-v0.4. Applied on top of the envelope schema. Prose-only constraints: died.claim_seq names a lifecycle.started of this run; evidence is a string no fold parses; evidence-without-a-cause reports (lost) are written only while the claim is held, and a reap's signal, nonzero exit code or raised exception map to killed or errored (spec section 3, 'Who writes a death report').",
+
+  "allOf": [
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"pattern": "^supervisor\\."}}},
+      "then": {"properties": {"topic": {"enum": ["supervisor.launched", "supervisor.terminated", "supervisor.died"]}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"enum": ["supervisor.launched", "supervisor.terminated"]}}},
+      "then": {
+        "required": ["request_id"],
+        "properties": {"request_id": {"type": "string", "minLength": 1, "description": "The launch's correlation id. Never null on launched or terminated."}}
+      }
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "supervisor.launched"}}},
+      "then": {"properties": {"body": {"$ref": "#/$defs/Launched"}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "supervisor.terminated"}}},
+      "then": {"properties": {"body": {"$ref": "#/$defs/Terminated"}}}
+    },
+    {
+      "if": {"required": ["topic"], "properties": {"topic": {"const": "supervisor.died"}}},
+      "then": {"required": ["request_id"], "properties": {"request_id": {"type": "null"}, "body": {"$ref": "#/$defs/Died"}}}
+    }
+  ],
+
+  "$defs": {
+    "Launched": {
+      "type": "object", "required": ["handle", "status", "t"], "additionalProperties": false,
+      "description": "Spawn-intent plus the worker's liveness handle. Unchanged from launcher-v0.4.",
+      "properties": {
+        "handle": {"type": "string"},
+        "status": {"type": "string", "enum": ["running"]},
+        "t": {"type": "number", "minimum": 0}
+      }
+    },
+    "Terminated": {
+      "type": "object", "required": ["reason", "exit_code", "signal", "t"], "additionalProperties": false,
+      "description": "The manner of a launch's process death (present-nullable + reason-coupled): exited carries a non-null exit_code (signal null); killed a non-null signal (exit_code null). Unchanged from launcher-v0.4.",
+      "properties": {
+        "reason": {"type": "string", "enum": ["exited", "killed"]},
+        "exit_code": {"type": ["integer", "null"], "minimum": 0},
+        "signal": {"type": ["integer", "null"], "minimum": 1},
+        "t": {"type": "number", "minimum": 0}
+      },
+      "allOf": [
+        {
+          "if": {"required": ["reason"], "properties": {"reason": {"const": "exited"}}},
+          "then": {"properties": {"exit_code": {"type": "integer"}, "signal": {"type": "null"}}}
+        },
+        {
+          "if": {"required": ["reason"], "properties": {"reason": {"const": "killed"}}},
+          "then": {"properties": {"signal": {"type": "integer"}, "exit_code": {"type": "null"}}}
+        }
+      ]
+    },
+    "Died": {
+      "type": "object", "required": ["claim_seq", "outcome", "evidence", "t"], "additionalProperties": false,
+      "description": "The death report: a third party's account of how a claim ended. claim_seq names the claim. outcome is preempted, errored, killed or lost (lost: its writer saw the claim end without an exit and nothing of how); a death is never a completion. evidence is a non-empty string no fold parses, e.g. slurm:TIMEOUT. t is the reporter's clock when it saw the death.",
+      "properties": {
+        "claim_seq": {"type": "integer", "minimum": 1},
+        "outcome": {"type": "string", "enum": ["preempted", "errored", "killed", "lost"]},
+        "evidence": {"type": "string", "minLength": 1},
+        "t": {"type": "number", "minimum": 0}
+      }
+    }
+  }
+}

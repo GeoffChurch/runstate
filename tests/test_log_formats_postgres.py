@@ -13,7 +13,11 @@ from runstate import (
     create_channel,
 )
 from runstate.formats import FORMATS, DirectoryLayout
-from runstate.migrations import migrate
+from runstate.migrations import STEPS, migrate
+from runstate.migrations.ambiguity import Limits, parse_choices
+
+# the limits of a step that reads none of them
+ONE = Limits(cap=1, budget=1, run_on=0)
 
 
 @pytest.fixture
@@ -214,7 +218,14 @@ def test_onboarding_leaves_a_tombstone_an_old_writer_cannot_use(scratch_db, sche
     for locate in (attach_channel, create_channel):  # an older format holds it
         with pytest.raises(LogFormatMismatch, match="runstate migrate"):
             locate("r1", root=dsn, backend="postgres")
-    assert migrate(PostgresStore(dsn), None, to=LOG_FORMAT) == ["r1"]
+    # the log holds values only: no fork, and no divergence fires
+    nothing = parse_choices(STEPS, assume=[], resolve=[], accept=[], limits=ONE)
+    assert migrate(PostgresStore(dsn), None, to=LOG_FORMAT, choices=nothing).moved == (
+        "r1",
+    )
+    with psycopg.connect(dsn) as c:  # the manifest is no format and no legacy log
+        reg = c.execute("SELECT to_regclass('runstate_migrations.manifest')")
+        assert reg.fetchone() != (None,)
     with attach_channel("r1", root=dsn, backend="postgres") as ch:
         assert ch.last_seq() == 3
     with pytest.raises(RunNotFound):

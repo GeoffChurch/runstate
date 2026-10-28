@@ -17,8 +17,14 @@ from runstate import (
 )
 from runstate.channel.sqlite import SqliteChannel
 from runstate.formats import FORMATS
-from runstate.migrations import migrate
+from runstate.migrations import STEPS, migrate
+from runstate.migrations.ambiguity import Limits, parse_choices
 from runstate.migrations.stores import SqliteStore
+
+# The logs below hold values only: no fork, and no divergence fires.
+# the limits of a step that reads none of them
+ONE = Limits(cap=1, budget=1, run_on=0)
+NOTHING = parse_choices(STEPS, assume=[], resolve=[], accept=[], limits=ONE)
 
 
 def _path(root, rid):
@@ -204,7 +210,10 @@ def test_a_tombstone_leaves_the_opening_checks_and_migrate_as_they_were(
         with pytest.raises(LogFormatMismatch, match="runstate migrate"):
             locate("r1", root=tmp_path)
     assert SqliteStore(tmp_path).formats_of(None) == {"r1": "0.2.0"}
-    assert migrate(SqliteStore(tmp_path), None, to=LOG_FORMAT) == ["r1"]
+    assert migrate(
+        SqliteStore(tmp_path), None, to=LOG_FORMAT, choices=NOTHING
+    ).moved == ("r1",)
+    assert (tmp_path / "runstate-migrations.jsonl").exists()  # no format, no log
 
     assert attach_channel("r1", root=tmp_path).last_seq() == 3  # 2: current
     with pytest.raises(RunNotFound):  # 5: nothing anywhere
@@ -281,6 +290,8 @@ def test_a_crashed_delete_mode_writer_onboards_and_migrates(
     moved = FORMATS["0.2.0"].sqlite_path(tmp_path, "r1")
     assert sorted(p.name for p in moved.parent.iterdir()) == ["r1.db", "r1.db-journal"]
     assert sorted(p.name for p in tmp_path.iterdir()) == ["r1.db", "v0.2.0"]
-    assert migrate(SqliteStore(tmp_path), None, to=LOG_FORMAT) == ["r1"]
+    assert migrate(
+        SqliteStore(tmp_path), None, to=LOG_FORMAT, choices=NOTHING
+    ).moved == ("r1",)
     with attach_channel("r1", root=tmp_path) as ch:
         assert [e.body for e in ch.read()] == [{"i": i} for i in range(5)]

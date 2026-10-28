@@ -135,31 +135,51 @@ would without it, before `runstate migrate` and after; tests pin both backends.
 ## 6. `runstate migrate`
 
 ```
-runstate migrate <root> [<rid> ...] [--to V]
+runstate migrate <root> [<rid> ...] [--to V] [--backend sqlite|postgres]
+                 [--assume <module:attr> ...] [--resolve <projection>=<chooser> ...]
+                 [--accept <divergence> ...] [--cap N] [--budget N] [--run-on N]
 ```
 
 `<root>` is a directory for SQLite and a DSN for Postgres. With no run ids, every run under the root is
 migrated.
 
 - **Steps** live in `runstate/migrations/`, one module per step, each declaring `FROM` and `TO` format
-  versions and a transform from a run's records in `FROM` to its records in `TO`.
+  versions, its facts, projections and divergences (below, "Ambiguity"), and a transform from a run's
+  records in `FROM` to its records in `TO`.
 - **The runner chains steps** from each log's format to `--to`, which defaults to `LOG_FORMAT`. It refuses
   if there is no path, or if two steps leave the same format.
+- **A step preserves seq and topic, except one.** A step returns every input row with its `seq` and `topic`
+  unchanged; it may rewrite a body, and it may append rows above the input's last seq. The runner refuses a
+  step that changes a seq or a topic, drops a row, or appends at or below the last seq, and it refuses
+  before the seal (on Postgres, before any insert, so the transaction rolls back). Exactly one step is
+  exempt, declared by `RENUMBERS`: 0.3.0 -> 0.4.0 renumbers. The runner also refuses to build a chain
+  if more than one registered step sets `RENUMBERS`, or if the one that does leaves a format other than
+  0.3.0. Every other format boundary is a place where a pinned reader's seq cursors stay valid.
 - **Each step, per run:**
   1. Refuse if the run has a live episode, read with the `FROM` format's semantics; a step carries what it
      needs of its old format. An unresolvable foreign claim reads as live, so a stranded claim must be
      released first.
-  2. Refuse if the step refuses the run's records. A step's refusal is deterministic, so it comes before
-     the seal: on SQLite the runner dry-runs the transform on the records it read for step 1.
+  2. Refuse if the step, a chooser it was given, or a divergence no `--accept` names refuses the run's
+     records. A step's refusal is deterministic, and so is a chooser's, so it comes before the seal: on
+     SQLite the runner dry-runs the transform on the records it read for step 1.
   3. Seal the old log.
   4. Transform into the new format's address. On SQLite, write to a temporary file of its own in the target
      directory and rename it into place; on Postgres, use the sealing transaction.
+
+  **How often a run is transformed.** The detection pass transforms each run once, and an invocation keeps
+  the outputs (`Memo`) up to a bound of rows held at once (one million, about 0.35 to 0.5 GB), so that the
+  dry run and the transform after the seal reuse them. On SQLite the transform after the seal reuses the dry
+  run's output whenever the seal's re-read finds the rows it read before, memo or none. So a run the memo
+  holds is transformed once, and a run past its bound (a root of more than about 120 large runs) twice: the
+  detection pass's, and the dry run's again. On Postgres the seal comes first and there is no dry run, so it
+  is likewise transformed once while the memo holds it and twice past the bound. Both stores read the run's
+  history before the seal, so the memo's key is the detection pass's. None of it changes a result.
 - **A refusal leaves the run untouched.** Every refusal is a `MigrationError` that names its run
-  (`run '<rid>': …`), and `migrate` stops at the first. The refused run stays writable and unmigrated, and
-  a re-run refuses it the same way. One residual on SQLite: records that land between the pre-seal read
-  and the seal can still make the post-seal transform refuse, which leaves the run sealed and unmigrated;
-  recovery is §8's rollback. On Postgres there is no such window, because the seal is taken before the
-  read.
+  (`run '<rid>': …`), and `migrate` carries on past it to the other runs (below, "Carrying on past
+  refusals"). The refused run stays writable and unmigrated, and a re-run refuses it the same way. One
+  residual on SQLite: records that land between the pre-seal read and the seal can still make the post-seal
+  transform refuse, which leaves the run sealed and unmigrated; recovery is §8's rollback. On Postgres
+  there is no such window, because the seal is taken before the read.
 - **A failure is recoverable by re-running `runstate migrate`, which completes it.** On SQLite a failure
   after the seal leaves the run sealed and unmigrated: new code raises "migrate", and old code cannot
   write. On Postgres the seal and the copy are one transaction, so a failure, a refusal included, rolls
@@ -168,8 +188,8 @@ migrated.
 - **Steps are retained, never deleted.** This resolves `release-and-stability-contract.md` §(b) in favor
   of its option 3, with the detection problem removed by the address.
 
-*Found in implementation.* The CLI is `runstate migrate <root> [<rid>...] [--to V] [--backend
-sqlite|postgres]`. On Postgres the seal is taken first, then the rows are read and copied in that one transaction.
+*Found in implementation.* The CLI needs `--backend sqlite|postgres`, in the synopsis above. On Postgres the
+seal is taken first, then the rows are read and copied in that one transaction.
 
 *Found in the final review.* `runstate migrate` exited 0 having done nothing when the root did not exist,
 or when a DSN was given without `--backend postgres` and read as a SQLite root with no runs. It refuses
@@ -177,6 +197,335 @@ both now: a SQLite root that is not a directory, and a `postgres://` or `postgre
 `--backend postgres`. Every message that says to migrate gives the whole command, `runstate migrate
 <root>` or `runstate migrate '<dsn>' --backend postgres` (a placeholder, since a DSN can carry a
 password).
+
+### Ambiguity
+
+*Specified 2026-10-24* (review §12, item 16); *revised 2026-10-26 for facts, choosers and divergences, and
+implemented* in `runstate/migrations/ambiguity.py` (the plan's Task 21). **A step that cannot settle an
+answer from the log refuses the run, unless the user states a fact about its writers that settles it, or
+explicitly names a chooser for that kind of question.** There is no default guess: a migration is an easy
+place to make a large mistake, and a replayable mistake is still made. Every step shares the mechanism
+below, so every ambiguous migration has the same ergonomics.
+
+**The owner's principle** (2026-10-25): consumers decide what happened, by facts and choosers; runstate
+decides how the new format writes it down, by encoding rules, the same for every consumer. So `--assume`
+takes facts, `--resolve <projection>=<chooser>` takes choosers, and `--accept <divergence>` takes
+acceptances. Otherwise a migrated log's records would mean different things depending on who migrated it.
+
+**Vocabulary.**
+- A **fact** classifies every element of one kind, a claim or one kind of act its writer makes, into one
+  class of a closed domain, defined over what the writer does, never over a pattern in the log. A
+  **statement** is a subset of the domain; the unstated fact is the whole domain. Facts belong to a
+  **writer version**, never to a root, and a consumer's **classifier** names the version of each record's
+  writer where the log does not. `commits-and-lineage.md` §7, "The writer facts", gives the 0.3.0 → 0.4.0
+  step's facts and its classifier Protocol.
+- A **projection** is a kind of question a step must answer about some records of a run, which the log
+  and the stated facts can leave open. A step declares its projections as a closed set, and names each in
+  kebab-case, as the command line spells it.
+- A **fork** is one open question at one record of one run, named by run id and seq: its **site**, where
+  two histories that a conforming writer of the input format could produce, and that satisfy every stated
+  fact, give the same log there and need different output. **A site is where histories of conforming
+  writers call for different outputs, never where the shipped built-ins happen to disagree:** the choice of
+  built-ins never removes a site, and how often one history occurs may justify a built-in's description,
+  never a site's absence. **A site test reads only the step's input log and the stated facts,** never a
+  reading of any of the step's projections, its own included (review §12, item 16). Each fork names the
+  facts whose statement would settle it, none where no fact can.
+- A **malformed record,** one whose body the input format does not define, has no conforming writer, so its
+  meaning is open by definition. It is a question only for a step that reads that body. A step carries a
+  record it does not read to the next step with its body unread, as the 0.2.0 → 0.3.0 step carries a
+  malformed `stopped`, adding only the names its rules write. The step that reads it either declares a
+  projection for that kind of record, every such record being one of its sites, or refuses the record
+  outright. Only that step declares it (review §12, item 16).
+- A **proven site** is a record at which the question arises but the log settles it: what the log proves
+  there, under the input format's conventions, gives one reading, its **proven reading**. A proven site
+  is not a fork. It never asks a chooser, and no chooser changes its reading.
+- A **reading** is one answer at one fork: a value of the projection's reading type.
+- A **chooser** implements its projection's chooser Protocol: `choose(question)` returns an answer or a
+  `Refusal` with a reason. It is deterministic, a function of the question it is given, so the dry run and
+  the transform agree. A step's question carries what its chooser may read: the run's records, its forks
+  of the projection, and the readings given to the projections asked before it.
+- A **divergence** is a rule under which a read of the migrated log answers differently from the same
+  read of the input log (the owner, 2026-10-25). Corrections count. It is not an ambiguity: no two
+  histories differ, so the site principle stays clean. Every rule that changes a read is one; a rule that
+  changes no read is not, as `commits-and-lineage.md` §7's E1 is not, since no fold parses `evidence`.
+- A step's **resolutions** are its whole configuration: its facts (stated, else unstated), the limits, and
+  exactly one chooser for each projection it declares.
+- The **choices** are what the user gave across a chain: the `--assume`s, the `--resolve`s by projection
+  name, possibly fewer than its steps declare, the `--accept`s and the limits (cap, budget and run-on). The
+  detection pass runs on the choices, and builds each step's resolutions from them once every projection of
+  that step that forks has a chooser.
+
+**The principle: ambiguity is judged against any conforming writer of the input format, under that format's
+conventions.** A question is settled where the input format's conventions pin the meaning of the records it
+reads, and open where they do not. Its conventions are what its schemas and its design write: another spec
+may elaborate one, never make one, and a reference implementation's behaviour makes none. **Every meaning
+they do not pin is a declared projection, with its narrowest site; no convention is pinned by ruling**
+(review §12, item 16). A step judges against the format it reads, never against a later one, and never
+against one consumer's writers, except as that consumer states facts about them:
+- runstate ships **generic** built-in choosers only. A built-in is any reading expressible over the input
+  format's own vocabulary that is right for some conforming writer;
+- a reading of a consumer's texts or shapes is that consumer's chooser or classifier, and its "preset" is
+  its own set of `--assume`, `--resolve` and `--accept` choices, kept in the consumer;
+- a step may ship a **constructor of its facts** for a reference implementation's writers, as the 0.3.0 →
+  0.4.0 step ships `reference(*, ...)` for the reference `Worker` (`commits-and-lineage.md` §7, "The writer
+  facts"). It states only what that implementation's code fixes, and takes every fact the consumer's own code
+  decides as a required argument, so none is left wide unasked. It pins no convention: a consumer's `--assume`
+  names its own call of it, which is that consumer's word that its writers are those, recorded in the
+  manifest as any statement is;
+- a malformed record that a step reads is refused unless a chooser for its projection reads it, and one of a
+  kind the step declares no projection for is refused outright.
+
+Each step's spec names what the input format pins, with where each is written, and lists its facts,
+projections and divergences.
+
+**The Step protocol** (`runstate/migrations/__init__.py`) gains, from the types `ambiguity.py` defines:
+- **`FACTS`:** a `Facts` declaration: the type a statement takes, whose objects `--assume` names (for the
+  0.3.0 → 0.4.0 step, its facts per writer version and its classifier); the statement that holds when the
+  user states nothing, every fact its whole domain; and how the manifest renders a statement, the
+  classifier's identity included. A step with nothing to state declares `NO_FACTS`.
+- **`PROJECTIONS`:** its closed set, in the order the step asks them, each a `Projection`: its name; a
+  one-sentence definition; what its readings are; its generic built-in choosers, each with a one-line
+  description, to which `refuse` is always added; and its answer's shape, which turns whatever a chooser
+  returned into the typed answer or says what is wrong with it. The set may be empty. It is a tuple of
+  module constants, not an enum, since each projection carries its own question and answer types.
+- **`DIVERGENCES`:** its closed set, each a `Divergence`: its name, and the reads it changes and how, in one
+  sentence. The set may be empty.
+- **`detect(rows, *, assumptions, history)`:** the run's forks of each projection, from the input log and
+  the stated facts alone, writing nothing. It takes no chooser.
+- **`transform(rows, *, resolutions, history)`:** `resolutions` is required and keyword-only. It asks each
+  projection's chooser at the run's forks, in the declared order, each question carrying the readings given
+  before it. It checks every reading against what the log proves, refusing the run, naming the chooser and
+  the seq, when a reading contradicts it. It returns the rows, the reading it gave at each fork, and where
+  each divergence's rule fires, for the manifest and the runner.
+- **`history`** is how the run came to be, as its root records it (`History`):
+  - its **entries** in the root's manifest, oldest first, the earlier steps of this invocation's chain
+    included: how the earlier steps migrated it. A later step may read an earlier step's choices from them
+    (the owner's D3);
+  - its **traces**: what the store holds of its log in other formats, each with where it shows it. On
+    SQLite, a sealed log at a format's address, and a legacy tombstone (§7), which shows a log moved into
+    format 0.2.0. On Postgres, a row of a format's `sealed_runs`; the legacy tombstone is a whole schema's
+    table and names no run.
+
+  The 0.3.0 → 0.4.0 step reads from it only the log's **birth**, never the earlier step's readings: whether
+  an entry of the 0.2.0 → 0.3.0 step, or a trace of the log in format 0.2.0, shows it was born in 0.2.0, in
+  which case each name that step filled is an inference, whichever reading made it. Where neither shows it,
+  the consumer's statement decides, and an unstated birth is refused (`commits-and-lineage.md` §7, "Names an
+  earlier step filled"): silence is no evidence, since a run copied between roots, or migrated by a
+  runstate that wrote no manifest, has no entry.
+
+The built-in choosers live beside their step, in its module. `runstate/migrations/ambiguity.py` holds what
+every step shares:
+- the declaration types (`Facts`, `Projection`, `Divergence`), the `Chooser` Protocol and `refuse`;
+- `Choices`, what the user gave, and `Assumptions` and `Resolutions`, built from it per step;
+- the manifest's `Entry`, the detection pass's report and its refusal (`Undecided`);
+- the command-line parsing.
+
+**`choices` is a required keyword-only argument of `migrate()`.** It takes `Choices`, not `Resolutions`,
+since a chain's later steps can be resolved only once the earlier ones are: `migrate()` builds each step's
+`Resolutions` from the choices, and the detection pass refuses a chain step with a fork of a projection that
+has no chooser.
+
+**No defaults; `refuse` always.** Every projection has the built-in `refuse`, which refuses a run with a fork
+of it. It is the only chooser a step's resolutions may hold for a projection the user did not resolve, which
+can happen only where no run has a fork of it. No other built-in is a default, and no option resolves every
+projection at once. A proven site takes its proven reading whatever the chooser.
+
+**A chooser sees every fork of its kind** in one call per run, or one fork at a time where the step's
+decode re-prunes between choices (below), with the run's records and the earlier readings, so it can read a
+run's records together, as a claim's several stops must be read. A reading the log excludes is refused,
+naming the chooser and the seq.
+
+**The decode order is a rule.** A step asks a run's forks in an order its declaration states, since an
+answer can remove candidates that a later fork's answers stood on, and the order is part of what the
+manifest's readings mean:
+- the 0.2.0 → 0.3.0 step asks `record-claim`, then `stop-honored`, then `lease-bound`, each once per run with
+  all its forks;
+- the 0.3.0 → 0.4.0 step's engine (`v0_3_0_to_v0_4_0_engine.py`'s `decode`) asks per fork: its subjects
+  from the last claim back to the first, then the run; for each subject its End, then its Span, then its
+  Origin, then its Writer; within a projection, position by position in log order. After each answer only
+  the candidates through it are kept, and the next fork is read off what remains. Its `end-time` forks are
+  asked last, on the decided lineage, commit by commit, then rewind by rewind. The last claim goes first
+  because its records are the ones a resumed worker and every current read rest on; the claims before it
+  are read in the light of what it was.
+
+**The detection pass.** `runstate migrate` first runs every selected run's chain of steps in memory, sealing
+nothing and changing no log's content: step 2 above, for the whole root before any run is sealed. (On SQLite
+it opens each log read-write, as every pre-seal read does, so it can roll back a dead writer's hot journal or
+checkpoint its WAL; neither changes a committed record.) It goes **step by step**. A step's forks are found
+on its input log, which for a later step is the earlier step's output. A projection **forks** in the root
+when any run has a fork of it, and a divergence **fires** in it when any run's dry run fires it. **The pass
+refuses unless every projection that forks has a `--resolve` and every divergence that fires has an
+`--accept`,** and then migrates nothing: the user meets every question before anything is written. There is
+no default and no accept-all.
+
+**A later step's forks are undecided until every fork of the earlier steps in the chain is resolved, and
+every divergence they fire accepted,** since they are found on their output. So a user resolves in one round
+per step: a root at format 0.2.0 that migrates to 0.4.0 takes at most two. On refusal the pass prints a
+summary **per projection**, never a list of every site:
+- the step, the projection's name and its one-sentence definition;
+- its readings, and its built-in choosers, each with a one-line description;
+- how many forks it has, in how many runs;
+- a few example forks: the first three, by run id and seq;
+- the facts whose statement would settle them, each with how many forks it would settle, and how many no
+  fact can;
+- the option to add, `--resolve <projection>=<chooser>`.
+
+It prints one summary per divergence that fires unaccepted (below), names the later steps whose forks are
+undecided until these are answered, and lists the runs already refused whatever is chosen (a live run, a
+step's own refusal), so the user meets them in the same round.
+
+```
+stop-honored (0.2.0 -> 0.3.0): which stops a lifecycle.stopped answered, of those since the previous one.
+  readings: the seqs of the stops it honored
+  built-ins: positional  every stop since the previous stopped
+             drained     the stops its claim's newest heartbeat before it had consumed
+             none        no stop: each stays pending
+             refuse      refuse every run with a fork of it
+  forks: <n> in <m> runs, e.g. <rid> seq <seq>, <rid> seq <seq>, <rid> seq <seq>
+  settled by stating: no fact (<n>)
+  add: --resolve stop-honored=<built-in or module:attr>
+```
+
+**Divergences.** Detection finds each divergence where its rule fires, on the dry run once the step's forks
+are resolved, since a reading can make a rule fire, and reports it by name: the reads it changes and how,
+how many sites in how many runs, and the first three sites. **A divergence that fires halts the detection
+pass until the user accepts it by name,** `--accept <divergence>`, exactly as a fork without a chooser does
+(the owner, 2026-10-26): it is a question the user has not answered, and the approved contract is that
+nothing is written until every question is. `refuse` is the only alternative: the invocation is refused,
+and a user who wants the runs it fires in left behind names the other runs.
+
+```
+ended-lease (0.2.0 -> 0.3.0): live_demand no longer lists a lease bound to the latest claim once a terminal
+  names that claim, which 0.2.0's listed though no worker would serve it.
+  sites: <n> in <m> runs, e.g. <rid> seq <seq>, <rid> seq <seq>
+  add: --accept ended-lease
+```
+
+A divergence is named by the link that made the read differ: a rule of the step, or a reading other than
+the one the input format's own read took. A read changed back along the way changed nothing, so nothing
+fires for it.
+
+An acceptance holds for every run of the invocation where its rule fires; an `--accept` of a divergence that
+fires nowhere is allowed, so a consumer can keep one set of choices for every root.
+
+**The command line.** Each choice is resolved once, before the detection pass.
+- **`--assume <module:attr>`,** repeatable, imports the object and checks that it is a statement of a
+  registered step's facts, which it then states for every step of that kind. It refuses an import that
+  fails, an object that is no step's statement, and two for one step.
+- **`--resolve <projection>=<chooser>`,** repeatable, one per projection. `<projection>` is a name some
+  registered step declares, so a consumer can keep one set of choices for every root. Names are unique
+  across the registered steps: the runner refuses to start when two steps declare one projection, or one
+  divergence, as it refuses two steps that leave one format. `<chooser>` is a built-in's name, spelled with
+  no colon, or `module:attr`, naming an instance that implements the `Chooser` Protocol. It refuses an
+  unknown projection, an unknown built-in, an import that fails, a class where an instance is needed, and an
+  object that is no chooser. A `--resolve` for a projection that does not fork is accepted. An explicit
+  `--resolve <projection>=refuse` refuses only the runs with a fork of it, and the rest migrate. A
+  projection that forks and is left unresolved refuses the whole invocation.
+- **A consumer's chooser is validated where it is called,** since the Protocol's check is only that the
+  object has `choose`. A chooser that raises, answers in another shape than its projection's, or was written
+  for another projection's question refuses the run, naming the run, the projection and the chooser, and
+  never escapes as a traceback. The step then checks the answer against what the log proves.
+- **`--accept <divergence>`,** repeatable, names a divergence some registered step declares, resolved to its
+  declaration once. It refuses an unknown name and a repeated one.
+- **`--cap N`** bounds the states a step may hold at once on one run before it refuses the run, naming the
+  record: the 0.3.0 → 0.4.0 engine's cap. It decides a refusal, so it is set at the edge, the command line,
+  and recorded with each migrated run, never as a library default. The command line's value is 3,000. The
+  engine keeps every layer's edges for its backward pass, so its memory is the cap times the records, about
+  400 bytes a state: 664f8795, the widest real log measured, holds 2,344 states a layer over 4,017 records,
+  4,347,785 in all, at a peak of 1,738 MB (re-measured after the begin-time floor of the plan's Task 22 fix
+  5, 2026-10-28, which merged none of its states). 3,000 clears that layer by a quarter, and, as measured
+  before that floor (Task 21), refuses b02eb431 under facts too wide to follow at its seq 81 in 6 s and 105
+  MB, where 20,000 exhausted 4 GB.
+- **`--budget N`** bounds the states a step may hold on one run summed over every layer, which its memory
+  follows, refusing the run past it, naming the record; the cap alone does not, since a log holding a layer
+  near the cap over many more records would exceed a machine's memory (about 16 GB at 3,000 over 13,000). The
+  command line's value is 5,000,000 states, about 2.1 GB built: it clears 664f8795's 4.3 million by a sixth
+  (the same count after the floor). The pass's peak is the decode's on a long log: it narrows the built graph
+  in place of itself, holding the graph and the one its answer leaves, every edge the answer keeps shared
+  between them, and its own structures (the keys' windows, each layer's edge tuples) put its peak at about 1.2
+  times the build's on a log of 2,000 records, about 2.5 GB at the budget; on a wide log the build's per-layer
+  worlds are the peak (`cli.py` gives the measurements).
+- **`--run-on N`** is how many labels past the log's highest step a run of passes that no record pins is
+  followed, per claim: the 0.3.0 → 0.4.0 engine's horizon, past which such a run is cut. It decides how many
+  silent passes a reading may hold, so it is set at the edge and recorded too. The command line's value is
+  2, the oracle's, whose histories run on by at most one pass.
+
+**Carrying on past refusals.** Once the detection pass is satisfied, `migrate` migrates every run it can.
+A run refused by a chooser, by `refuse`, or by a step's own refusal is left untouched, and the other runs go
+on. (A divergence refuses a run here only where records landed after the pass read it.) `migrate()` returns
+the runs it moved and every refusal, each naming its run, and the command prints them and exits nonzero
+when any run was refused.
+
+**An unexpected error fails its run only.** Any other error a step raises on a run is a bug in the step, not
+a refusal, and it is reported as such, with the run and the error: in the detection pass, beside the
+questions and refusals of the same round (the pass writes nothing, so the run is left as it was); in the
+migration pass, as a run left unmigrated where the error came before its seal, or sealed and not copied where
+it came after (on SQLite, a re-run completes it, as any failure after the seal; on Postgres the transaction
+rolls the seal back). The invocation goes on to the other runs, keeps every refusal and report it has, and
+exits nonzero; the command prints each failed run's error with its traceback.
+
+**The manifest** records, for each root, what every migrated run was migrated under. The log formats are
+untouched: the manifest belongs to the root, outside every format's address.
+- **SQLite:** `<root>/runstate-migrations.jsonl`, one JSON object per line, appended. It is neither a format
+  directory (§4, check 1) nor a legacy address (§4, check 4).
+- **Postgres:** the table `manifest` in the schema `runstate_migrations`. That schema is outside every
+  `runstate_v…` schema, so check 1 does not read it as a format, and the table is not named `log`, so
+  check 4 does not read it as a legacy log.
+- **One entry per run per step:** the run id; the step's `FROM` and `TO`; the code that ran it, as the
+  runstate version with the commit its install records (a git pin's), and the SHA-256 of the step module's
+  source, since a pin's version string (`0.3.0.dev0`) names no code; when; the limits; the facts, as `--assume`
+  spelled them (null when unstated) and as the digest of the step's rendering of them (below); each
+  projection's chooser as it was given, a built-in's name or `module:attr`, or null where none was given, as
+  for a projection that forked in no run; each fork's reading, keyed by its site's seq and then its subject
+  (a step may key a projection whose forks have no site of their own otherwise, saying how: the 0.3.0 →
+  0.4.0 step keys `end-time` by claim seq and then the commit's index, or `rewind <e>` for the rewind that
+  closed the claim's epoch `e`, `commits-and-lineage.md` §7); and each divergence that fired, with its
+  sites, every one accepted. Proven sites are not recorded.
+- **The facts statement is content-addressed.** An entry's `facts` is `"sha256:<hex>"` of the step's rendering
+  of the stated facts, the classifier's identity included, as canonical JSON (sorted keys, no spaces). The
+  rendering is written once per root per digest, beside the manifest, since a consumer's whole statement can
+  be large and is the same for every run of an invocation (mycooc's 256 worker versions render to 182,676
+  bytes, which every entry repeated before: a mycooc run's 0.3.0 → 0.4.0 entry measured 206,261 bytes so, and
+  23,658 citing the digest, the rest its readings and divergence sites): on SQLite a line `{"digest",
+  "facts"}` of `<root>/runstate-migrations-facts.jsonl`, appended only when the digest is absent; on Postgres
+  a row of `runstate_migrations.facts (digest PRIMARY KEY, facts)`, inserted in the sealing transaction with
+  `ON CONFLICT DO NOTHING`. It is written before the entry that cites it. A reader resolves a digest only when
+  it needs the facts (`Store.facts`), checking the rendering against it.
+- **When it is written:** with the run's new log. On Postgres the entry is inserted in the sealing
+  transaction. On SQLite it is appended before the rename that publishes the log, so a migrated run always
+  has its entry. A crash between the two leaves an entry for an attempt that did not publish; a re-run
+  appends its own. **A reader takes a run's latest entry per step:** the attempt that published last wrote
+  the last line. A later step's `history` is these, oldest first. On NFS, `O_APPEND` is not atomic, so two
+  migrators of one root can interleave lines: run one migrator per root (a known limit).
+- **Copying a run** between roots (§8) copies its log at its format's address. Its manifest entries go with
+  it only if they are copied by hand.
+- **Collecting a run** (`store.md` Recipe 3) leaves its manifest entries behind unless the collector deletes
+  them too (§11).
+
+**The escape hatch: a whole step is a Strategy too** (documented, not built). A consumer whose history does
+not fit a step's declared facts and projections may supply its own step for that edge, named `module:attr`:
+an object implementing the Step protocol, with the stock step's `FROM` and `TO`. It may import the stock
+step's passes and reuse them. The same runner runs it under the same invariants:
+- it keeps every input row's seq and topic, the one renumbering step's exemption aside;
+- every row it writes conforms to the `TO` format's schemas, which the runner checks row by row for a
+  custom step, since no runstate test covers it;
+- its refusals come before the seal;
+- it declares at least the stock step's divergences, and reports where each fires;
+- the manifest records it by its `module:attr`, beside the resolutions it declares.
+
+No command-line option takes one yet. The trigger to build it is a consumer whose log a step's declared
+facts and projections cannot express.
+
+**Redo is a known gap, not built.** A migrated run's old log is sealed and its new one exists, so `runstate
+migrate` does not migrate it again under other choices. §8's rollback is the manual path: make the old log
+writable, delete the new one, and migrate again. The manifest says what was chosen the first time, and the
+new entry is appended beside the old.
+
+**The precedent.** Every later step declares its facts, its projections and its divergences, each empty
+where it has none, so every step takes `resolutions` and the detection pass treats every chain alike. The
+first two steps declare theirs in [`reference-by-name.md`](reference-by-name.md) §6 (format 0.2.0 → 0.3.0:
+no facts, three projections, six divergences) and [`commits-and-lineage.md`](commits-and-lineage.md) §7
+(format 0.3.0 → 0.4.0, rebuilt on its engine by the plan's Task 22). The mechanism's tests are in §10.
 
 ## 7. Onboarding legacy logs
 
@@ -243,8 +592,45 @@ On SQLite and Postgres (Memory has no addresses):
 - an old-style writer appending to a sealed log fails loudly;
 - chaining through test-only steps (`FROM`→`TO` edges, no-path and two-steps-from-one-format refusals);
 - a migration that fails midway leaves the run sealed and unmigrated, and a retry completes it;
+- an unexpected error in a step fails its run only: in the detection pass it is kept in the report beside
+  the questions, nothing migrated; in the migration pass the run is reported unmigrated or, after its seal,
+  sealed and not copied (rolled back on Postgres), the other runs are moved, and the command prints the
+  error with its traceback and exits nonzero;
 - refusing a run with a live episode;
-- the atomic publish: no reader ever sees a partial new log.
+- the atomic publish: no reader ever sees a partial new log;
+- the ambiguity mechanism (§6, "Ambiguity"; `tests/test_migrate.py`, with toy steps that fork, take facts
+  and diverge, and `tests/test_migration_v0_2_0_to_v0_3_0.py`):
+  - the command line refuses an unknown projection, divergence or built-in, a repeated `--resolve` or
+    `--accept`, a failed import, an object that is no chooser or no step's facts, two `--assume`s for one
+    step, a cap below one, and two steps declaring one name;
+  - `detect` takes no chooser, and finds the same forks whatever the choices; a stated fact settles the
+    forks it names, and the manifest records it;
+  - the detection pass migrates nothing while a projection that forks has no `--resolve` or a divergence
+    that fires has no `--accept`, prints one summary per question with at most three examples and the facts
+    that would settle a fork, keeps the runs already refused, and holds a later step's forks undecided
+    until the earlier step's are answered;
+  - an explicit `refuse` refuses only the runs with a fork, and the others migrate;
+  - a run refused by a chooser or a step leaves the other runs migrated, and the command exits nonzero; a
+    chooser that raises, answers in another shape or was written for another projection is a refusal
+    naming the run, the projection and the chooser, and a class is refused where an instance is needed;
+  - a chooser sees its forks with the earlier readings; a later step receives the earlier steps' entries,
+    from this invocation and from the manifest; a proven site reads the same under every chooser, and a
+    reading the log excludes is refused, a `record-claim` reading naming a claim proven dead among them;
+  - a divergence halts the pass until it is accepted, and is reported once per name; each of the 0.2.0 →
+    0.3.0 step's divergences fires in exactly the runs where a read it names answers differently, at the
+    records whose read differs (`reattributed-record` at every fork read otherwise than by position),
+    checked against master's reads on the golden logs under four sets of readings, and a `record-claim`
+    reading that changes the verdict fires `reattributed-record`, not the positional leak's `stale-beat`;
+  - the 0.3.0 → 0.4.0 step reads a log's birth from the manifest's entry of the earlier step, else from the
+    store's trace of the log in 0.2.0 (a sealed v0.2.0 log or a legacy tombstone on SQLite, a
+    `sealed_runs` row on Postgres), else from the consumer's statement; an unstated birth, and evidence the
+    statement contradicts, refuse the run;
+  - each of the 0.3.0 → 0.4.0 step's divergences fires where its rule applies, and every read the
+    migration changes on the goldens and on the corpus is attributed to one that fired; its `exit-honored`
+    fires at exactly the exits of the simulator's stated costs (`commits-and-lineage.md` §7);
+  - the manifest holds one entry per migrated run per step, written in the sealing transaction on Postgres,
+    and on SQLite before the publish, the latest per step read back; none for a refused run; a root holding
+    it opens as it did without it.
 
 ## 11. Ripple
 
@@ -254,6 +640,13 @@ On SQLite and Postgres (Memory has no addresses):
 - `design-v0.2.md` §4: the locators check formats.
 - `CLAUDE.md`: the upgrade procedure, beside the pinning note.
 - `../backlog/release-and-stability-contract.md` §(b): resolved by this spec.
+- `store.md` Recipe 3: collecting a run also deletes its entries in the root's migration manifest (§6,
+  "Ambiguity").
+- `CLAUDE.md`: the upgrade procedure's `runstate migrate` takes a `--resolve` for each projection the
+  detection pass reports, and an `--accept` for each divergence it reports. The code ships with the plan's
+  Task 21; the line is the owner's to add.
+- `reference-by-name.md` §6 and `commits-and-lineage.md` §7: each step's declared facts, projections and
+  divergences.
 
 ## Related
 
