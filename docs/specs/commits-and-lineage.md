@@ -1,7 +1,9 @@
 # Spec: commits and lineage — values committed to a lineage of nodes (log format 0.4.0)
 
 **Status:** DRAFT, revision 2, 2026-10-14; its drafting choices settled 2026-10-23 (review §12, item 14).
-For the owner's review. Not implemented.
+Its migration (§7) and §5's pure reads are implemented and measured on every consumer log (2026-10-28;
+review §12, item 16); the step stays unregistered until layer 2's last commit. For the owner's review; the
+rest is not implemented.
 
 This is layer 2 of [`../backlog/identity-in-records.md`](../backlog/identity-in-records.md). It introduces
 **log format 0.4.0** under [`log-formats.md`](log-formats.md), and builds on
@@ -10,7 +12,7 @@ This is layer 2 of [`../backlog/identity-in-records.md`](../backlog/identity-in-
   and an alternatives round found nine design decisions it got wrong or left open:
   [`../review-2026-10-04-commits-and-lineage.md`](../review-2026-10-04-commits-and-lineage.md).
 - **This revision** applies that review as the owner settled it, one decision at a time (its §12, items
-  0–14). Where the two differ, this spec is current. The review keeps the evidence and the alternatives
+  0–16). Where the two differ, this spec is current. The review keeps the evidence and the alternatives
   rejected; this spec cites it as "review §N".
 - **The drafting choices,** which the decisions left open or the drafting changed, were settled by the owner
   one at a time (review §12, item 14). None is open.
@@ -879,8 +881,8 @@ This is a recipe, not protocol. runstate supplies no directory.
 
 `runstate/migrations/v0_3_0_to_v0_4_0.py`, under `log-formats.md` §6.
 
-**The target** (the owner, 2026-10-25). The step writes the conforming 0.4.0 lineage that records the 0.3.0
-history's own events:
+**The target** (the owner, 2026-10-25; review §12, item 16). The step writes the conforming 0.4.0 lineage that
+records the 0.3.0 history's own events:
 - which iterations finished, and where;
 - what each claim loaded;
 - which stops each worker read, so that its drains follow the 0.3.0 watermarks;
@@ -901,8 +903,8 @@ is labelled as one.
   encodes the same target independently. Where it and the step disagree, the prose decides which one is
   wrong.
 
-**The encoding rules** (the owner, 2026-10-25). Each fixes how 0.4.0 writes down a 0.3.0 act that it has no
-record for, and each is the least-distorting way to do so.
+**The encoding rules** (the owner, 2026-10-25; review §12, item 16). Each fixes how 0.4.0 writes down a 0.3.0
+act that it has no record for, and each is the least-distorting way to do so.
 - **E1. A death report the step writes says it was migrated.** Its `evidence` is `migrated:`, then the kind
   of the 0.3.0 record it stands for, then that record's own evidence:
   - `migrated: reap: signal s` or `migrated: reap: exit n`, for one attributed from a `launcher.terminated`
@@ -935,8 +937,9 @@ record for, and each is the least-distorting way to do so.
     exit's `honored` is 0.4.0's consequence of them, not a separate fact to preserve.
   - It needs no fork and no choice per consumer, so every consumer's migrated log reads alike.
 
-  *Its cost,* which the owner accepted (2026-10-25). The native reads can make a migrated exit's `honored`
-  differ from its 0.3.0 list in five cases. Each is named here as the simulator's `Truth.costs` labels it:
+  *Its cost,* which the owner accepted (2026-10-25; review §12, item 16). The native reads can make a migrated
+  exit's `honored` differ from its 0.3.0 list in five cases. Each is named here as the simulator's
+  `Truth.costs` labels it:
   1. **`TICKS_EXIT`: a ticks-only exit honours a stop it did not list.** A writer whose exits list only the
      stops it read at its ticks omits a stop logged after its last tick. Its native exit drains every stop
      before it, and honours that one. A stop 0.3.0 left pending is spent there. A stop a commit's native
@@ -972,14 +975,14 @@ record for, and each is the least-distorting way to do so.
   - The step declares the cost as the divergence `exit-honored` ("The divergences", below), which fires at each
     exit whose `honored` differs from its 0.3.0 list.
 
-**The writer facts.** A consumer states what it knows about its writers in this vocabulary
-(`v0_3_0_to_v0_4_0_facts.py`), passed as `--assume <module>:<attr>` naming a `Configuration`, and the step's
-candidates are the lineages of the histories that write the log and satisfy every statement and every
-classifier answer. A fact is a choice a conforming 0.3.0 writer makes that no event of the log records; none
-names a 0.4.0 encoding, since how 0.4.0 writes a history down is runstate's (above). A consumer that states
-nothing states the whole domain of every fact, with a classifier that answers every record's whole domain;
-under it all but the smallest logs exceed the cap, so a consumer states its writers' facts, and the refusal
-says so, naming the facts that widen the pass.
+**The writer facts** (the owner, 2026-10-25; review §12, item 16). A consumer states what it knows about its
+writers in this vocabulary (`v0_3_0_to_v0_4_0_facts.py`), passed as `--assume <module>:<attr>` naming a
+`Configuration`, and the step's candidates are the lineages of the histories that write the log and satisfy
+every statement and every classifier answer. A fact is a choice a conforming 0.3.0 writer makes that no event
+of the log records; none names a 0.4.0 encoding, since how 0.4.0 writes a history down is runstate's (above).
+A consumer that states nothing states the whole domain of every fact, with a classifier that answers every
+record's whole domain; under it all but the smallest logs exceed the cap, so a consumer states its writers'
+facts, and the refusal says so, naming the facts that widen the pass.
 - **The reference preset** is a constructor a consumer builds its statement with, `reference(*, ...)` in
   `v0_3_0_to_v0_4_0.py`: a consumer's `--assume` names its own call of it (`FACTS = reference(...)` in its
   module), which is its word that every claim's worker is runstate's reference `Worker` driven by `steps()`,
@@ -1032,12 +1035,12 @@ says so, naming the facts that widen the pass.
   filled every `stopped`'s `honored` and every heartbeat's and `stopped`'s `claim_seq`, by the readings its
   consumer chose for `stop-honored` and `record-claim` (`reference-by-name.md` §6). They are that step's
   choices, so no fact states them. The step learns the log's birth from the earlier step's entry in the root's
-  manifest (`log-formats.md` §6; the owner, 2026-10-24), and reads every such name as an inference, not as its
-  writer's word, whichever reading made it: under `positional`, a displaced worker's heartbeat or `stopped`
-  after a later `started` names the later claim, and an exit's `honored` lists every stop since the previous
-  `stopped` (E2's case 5). So any live worker may have written such a heartbeat or `stopped`, and no
-  `honored` is checked against its writer's encoding. The facts that describe how a writer fills those fields
-  hold only of a log born in 0.3.0.
+  manifest (`log-formats.md` §6; the owner, 2026-10-24; review §12, item 16), and reads every such name as an
+  inference, not as its writer's word, whichever reading made it: under `positional`, a displaced worker's
+  heartbeat or `stopped` after a later `started` names the later claim, and an exit's `honored` lists every
+  stop since the previous `stopped` (E2's case 5). So any live worker may have written such a heartbeat or
+  `stopped`, and no `honored` is checked against its writer's encoding. The facts that describe how a writer
+  fills those fields hold only of a log born in 0.3.0.
 - **Encodings.** Four facts say only how a writer fills a field of its records: a worker's `fold`, `honored`
   and `watermark`, and a third party's `final-step`. No output depends on them. Under E2 every record stays in
   place and each native drain reads what lies before it, whatever the 0.3.0 worker folded, listed or wrote as
@@ -1316,7 +1319,8 @@ rewind).
   copies the list of the log's records once (a pointer each), so the stage holds a term in acts times records,
   with a constant small enough not to show at mycooc's sizes (365 commits over 8,398 records). A claim whose
   own records are open early (a value or a heartbeat several live workers may have written) widens its acts'
-  windows back to that record.
+  windows back to that record. The owner had the stage made linear before the step freezes (2026-10-27; review
+  §12, item 16): it had read the whole log for each commit's question.
 - **The reading's key** is the claim's seq, then the commit's index in its claim from 0, or `rewind <e>` for
   the rewind that closed the claim's epoch e: `{"end-time": {"<claim seq>": {"<n>": {"is": "DatedBy", "seq":
   s} | {"is": "EndedAt", "after": a, "t": t}}}}`. The other
@@ -1517,11 +1521,12 @@ where 0.3.0 put it (E2), and a record the step adds stands just after the record
 - **`created_at`:** each input record keeps its own; a record the step adds takes that of the record it stands
   after, and a gate's death report that of the claim it precedes.
 
-**The divergences** (`log-formats.md` §6). Each is a rule under which a read of the migrated log answers
-differently from the same read of the 0.3.0 log, corrections included. A run where one fires is refused until
-`--accept` names it. Each fires where its rule applies, which a read may then answer differently, so its sites
-can be wider than the reads it changes, never narrower: the corpus runner attributes every read the migration
-changes to a divergence that fired there, and an unattributed one is a rule this table lacks.
+**The divergences** (the owner, 2026-10-25; `log-formats.md` §6; review §12, item 16). Each is a rule under
+which a read of the migrated log answers differently from the same read of the 0.3.0 log, corrections
+included. A run where one fires is refused until `--accept` names it. Each fires where its rule applies,
+which a read may then answer differently, so its sites can be wider than the reads it changes, never
+narrower: the corpus runner attributes every read the migration changes to a divergence that fired there, and
+an unattributed one is a rule this table lacks.
 
 | divergence | the read it changes, and how |
 |---|---|
@@ -1584,8 +1589,8 @@ The liveness check that `runstate migrate` asks before it moves a run refuses on
 
 **What moved out of the generic step** (review §12, item 16). Rules that read one consumer's texts or shapes
 are no part of the step: each is a statement a consumer's facts or classifier make, and mycooc's, which mycooc
-keeps, hold them. The owner's rulings on them, c′ and the M10 mapping (review §12, item 14), are their
-content:
+keeps, hold them. The owner's rulings on them, c′ (review §12, item 16) and the M10 mapping (item 14), are
+their content:
 - **the runner's hard-crash backstop,** known by its error text, "subprocess exited N with no terminal
   record": the classifier answers it as a third party's, a release where it ends its claim, a reap (`exited`
   with code N, or `killed` by signal −N) where it ends none (c′);
@@ -1622,7 +1627,22 @@ records and leave shapes no 0.4.0 writer produces.
   or after themselves, every seq-valued field names a record of the kind it names, no claim has a second exit,
   and every migrated record conforms to the 0.4.0 schemas.
 
-**Figures** wait for the corpus re-run (the plan's Task 23).
+**Figures** (review §12, item 16, which gives them in full). The step on its engine at `8ccf4a8`, run over
+every consumer log from its legacy address through the 0.2.0 → 0.3.0 step, under each consumer's stated facts,
+with `end-time` resolved `lower` and `span` and `origin` left unresolved:
+- **Translation:** 1,218 of 1,221 runs migrate, and 3 fork on `span`. No divergence fires, and none of its
+  1,010,403 series cells differs.
+- **mycooc:** in its store copy 4,882 of 4,953 runs migrate, 69 fork on `span` (30 of them also on `origin`),
+  and 2 are refused at the boundary, logs older than format 0.2.0; in its mirror 4,982 of 5,088 migrate and
+  106 fork; in its archive 40 of 41 migrate and 1 forks. Every read the migration changes is a divergence that
+  fired: `register-value` (mycooc's `status` register, which leaves every lineage) in every changed series
+  cell but 24, which are `off-head-value`, and `third-party-note` in the 27 runs whose verdict changes.
+- **In every corpus:** no crash, no row the 0.4.0 schemas reject, no violation of "Also", and no changed read
+  that a divergence does not explain.
+- **The cost** is linear in commits (fitted exponent 1.05 to 1.09). `runstate migrate`, measured over 300 of
+  mycooc's store logs one root at a time, took 0.90 s a run, 0.73 s of it detection, at a peak RSS under
+  80 MB: about 1.2 to 1.3 hours for each of mycooc's two large corpora. The costliest log, 664f8795 (4,017
+  records, 670 claims), took 819 s at a peak RSS of 1.8 GB under provisional choosers.
 
 
 ## 8. A consumer's upgrade
