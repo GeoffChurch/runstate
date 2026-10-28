@@ -1036,12 +1036,12 @@ facts, and the refusal says so, naming the facts that widen the pass.
   filled every `stopped`'s `honored` and every heartbeat's and `stopped`'s `claim_seq`, by the readings its
   consumer chose for `stop-honored` and `record-claim` (`reference-by-name.md` §6). They are that step's
   choices, so no fact states them. The step learns the log's birth from the earlier step's entry in the root's
-  manifest (`log-formats.md` §6; the owner, 2026-10-24; review §12, item 16), and reads every such name as an
-  inference, not as its writer's word, whichever reading made it: under `positional`, a displaced worker's
-  heartbeat or `stopped` after a later `started` names the later claim, and an exit's `honored` lists every
-  stop since the previous `stopped` (E2's case 5). So any live worker may have written such a heartbeat or
-  `stopped`, and no `honored` is checked against its writer's encoding. The facts that describe how a writer
-  fills those fields hold only of a log born in 0.3.0.
+  manifest (`log-formats.md` §6; the owner's D3, 2026-10-24, as the controller applied it; review §12, item
+  16), and reads every such name as an inference, not as its writer's word, whichever reading made it: under
+  `positional`, a displaced worker's heartbeat or `stopped` after a later `started` names the later claim, and
+  an exit's `honored` lists every stop since the previous `stopped` (E2's case 5). So any live worker may have
+  written such a heartbeat or `stopped`, and no `honored` is checked against its writer's encoding. The facts
+  that describe how a writer fills those fields hold only of a log born in 0.3.0.
 - **Encodings.** Four facts say only how a writer fills a field of its records: a worker's `fold`, `honored`
   and `watermark`, and a third party's `final-step`. No output depends on them. Under E2 every record stays in
   place and each native drain reads what lies before it, whatever the 0.3.0 worker folded, listed or wrote as

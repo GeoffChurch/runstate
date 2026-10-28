@@ -1638,10 +1638,10 @@ mycooc's, since bookgen's 160 `.db` files and runstate-tui's hold none. The step
     - **Each step judges the format it reads** (also 2026-10-24). Names in a 0.3.0 log are taken at their
       word, and reading 0.2.0's records by position became a chooser of the 0.2.0 → 0.3.0 step. A step's
       questions read only that step's input log (D3). Applying D3, the controller ruled that a later step
-      receives an earlier step's choices from the root's manifest, which the owner approved. So the 0.3.0 →
-      0.4.0 step learns from the manifest that a log was born in 0.2.0,
-      and reads the names the earlier step filled as its inference, not their writer's word (§7, "Names an
-      earlier step filled").
+      receives an earlier step's choices from the root's manifest, a ruling that rests on the owner's
+      approval of the manifest and of D3. So the 0.3.0 → 0.4.0 step learns from the manifest that a log was
+      born in 0.2.0, and reads the names the earlier step filled as its inference, not their writer's word
+      (§7, "Names an earlier step filled").
   - **Stage 6, the architecture, and the target (2026-10-25; approved with the critique's six named
     changes).**
     - **The target** is the conforming 0.4.0 lineage that records the 0.3.0 history's own events: which
@@ -1670,7 +1670,8 @@ mycooc's, since bookgen's 160 `.db` files and runstate-tui's hold none. The step
     migrated death report says it was migrated, and E2 below.
   - **Records stay where 0.3.0 put them (2026-10-25), E2.** No stop moves; the native drains read what lies
     before them, and each exit's `honored` follows from them. Its cost: a migrated exit's `honored` can differ
-    from its 0.3.0 list, which a running worker sees only if the run is resumed. The owner accepted it for two
+    from its 0.3.0 list. The recorded lists differ at once, the stop fold in cases 1 and 5, and running
+    behaviour only if the run is resumed (§7, "What the cost changes"). The owner accepted it for two
     cases (2026-10-25): an exit that lists only the stops its ticks read, and a tick-first loop's stop cleared
     between an iteration's end and the next tick. The controller's rulings generalised the second and extended
     the same mechanism to three more, a stop answered after the claim, a stop an earlier migrated exit
@@ -1871,8 +1872,8 @@ mycooc's, since bookgen's 160 `.db` files and runstate-tui's hold none. The step
     (`log-formats.md` §4) and the step in `STEPS` are written with layer 2's last commit; the measurement
     registered the step in process.
   - **The manifest's size.** Every 0.3.0 → 0.4.0 entry repeats the whole description of the consumer's facts:
-    about 195 KB a run for mycooc, about 1 GB over its store. A single root's manifest is read whole when
-    `migrate` starts.
+    about 195 KB a run for mycooc, about 1 GB over its store. On SQLite, the backend measured, a single root's
+    manifest is read whole when `migrate` starts.
   - **The memo bound.** Under one root, past about 120 of mycooc's runs (inferred, above), each run is
     transformed twice more, so a single-root consumer pays about twice the per-home cost.
 - **What runstate decided** is only how 0.4.0 writes the history down, the same for every consumer: E1 and E2,
