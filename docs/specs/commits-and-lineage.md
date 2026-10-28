@@ -386,7 +386,9 @@ party, whatever else it does, an observer included, may write one for a death it
   claim's row is still held. Its evidence is that the claim can write nothing more, since a channel never
   reconnects and every record naming a claim travels on the session that wrote it. It is not about the
   process, which may outlive its session until its next write raises, so it outranks a live pid on the same
-  host, and a launcher there kills such an orphan rather than launch a successor beside it.
+  host. A `LocalLauncher` kills such an orphan of its own, through the process handle it holds, once a death
+  report has ended the child's claim, rather than launch a successor beside it. Nothing kills by pid alone,
+  which pid reuse makes unsafe (§12).
 - **Evidence without a cause reports only while the claim is held.** A probe that finds the process gone, an
   exit 0 and a thread that returned say that it is gone and nothing of how, or of why it left no exit. Each
   reports `lost`, which adds nothing once anything has ended the claim (§5). A signal, a nonzero exit code, a
@@ -621,7 +623,8 @@ construction. A target of 0 is reached at once. The wire spells a target `{strea
 - **`steps(until)`** takes a `Target`, or `None` for no bound. It calls `commit()` once per iteration, and
   yields each iteration's index, `count(Commits(), position)` before its commit. So a resumed driver
   continues from the log, run-absolute, and a rewind inside the body moves the next index. It ends when the
-  target is reached at the position, or on a stop. 0.3.0's `start=` is removed: the log holds the position
+  target is reached at the position, or on a stop. A target naming a declared source raises `ValueError`
+  before the first iteration, since its count is 0 forever (§5). 0.3.0's `start=` is removed: the log holds the position
   (rubric S11).
 - **`serve()`** is the driver for demand: it calls `commit()` once per iteration while some subscription is
   live for it, a lease of its claim or a durable subscription live on its lineage, and retires at zero. It
@@ -710,6 +713,8 @@ envelope (topic `value`, and the name), which keeps tolerant readers' counts ali
   - **It has no `head` parameter.** Under `AtNode` every read is settled and nothing could be produced, and
     the produce branch follows the newest claim, so `LatestClaimHead` is implied.
   - **Read first:** when `count(x, head) ≥ n`, it returns `Reached` at the head.
+  - **A target its drive's claim declares a source** raises `ValueError`: it counts 0 forever, and each chunk
+    would commit without reaching it.
   - **Unreachable:** when the head is closed below `n`, it returns `Unreachable` at it without producing. This
     generalizes today's "never re-drive a completed run".
   - **Otherwise it produces:** it calls `producer.extend(target)`, then polls the newest claim's head with
@@ -748,7 +753,8 @@ envelope (topic `value`, and the name), which keeps tolerant readers' counts ali
     sits inside node bodies, and never runs on a polled path.
 - **The incremental folds are public and standalone,** like `pending_stops`, because `ensure`'s loop has no
   Watcher and the TUI may use public API only. Each is built with its question and polled with
-  `fold.poll(ch, head)`, at O(new records) per poll. Their test: incremental equals pure after every step.
+  `fold.poll(ch, head)`, at O(new records) per poll; the folds by name, `LiveDemand` and `PendingStops`, read
+  the whole log (§2) and are polled with `fold.poll(ch)`. Their test: incremental equals pure after every step.
   - **The stream-prefix fold** holds a cursor over nodes, a cursor over the values of S, the set of S's value
     seqs, and `count[node] = count[parent] + |values ∩ S|`, with membership decided per committing claim.
   - **`Answers`** re-derives on a head that does not descend from its last one, and returns the full list.
@@ -785,7 +791,7 @@ null-worker startup crash does.
   - `reason: str` becomes `tier: Tier`, a closed enum naming the viewpoint the verdict rests on (review §12,
     item 14): `exit`, the claim's own exit; `died`, the death reports and unreadable records that ended it;
     `terminated`, an unclaimed run's launch; and the Watcher's `probed_dead`, `heartbeat_stale` and
-    `episode_lock_released`. Under `died`, `error` is `None`, and the evidence is in `reports`.
+    `session_ended`, the session probe's. Under `died`, `error` is `None`, and the evidence is in `reports`.
 - **`worker_completed`** is "the head is closed". Its reading of an exit-0 `terminated` goes, since
   `terminated` no longer enters a claimed run's verdict.
 
