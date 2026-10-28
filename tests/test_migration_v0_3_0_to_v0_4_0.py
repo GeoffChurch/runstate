@@ -62,7 +62,18 @@ from runstate.migrations.v0_3_0_to_v0_4_0 import (
 )
 import runstate.migrations.v0_3_0_to_v0_4_0 as STEP
 import runstate.migrations.v0_3_0_to_v0_4_0_facts as V
-from tests.migration_helpers import NO_HISTORY
+from tests.migration_helpers import (
+    CHOSEN,
+    CONSUMER,
+    LIMITS,
+    NO_HISTORY,
+    a_beacon_between_two_places,
+    a_claim_then_another,
+    a_resumed_workers_log,
+    a_watermark_on,
+    preset,
+    under,
+)
 from tests.migration_goldens import (
     BACKSTOP,
     DEAD,
@@ -81,7 +92,6 @@ from tests.migration_goldens import (
 )
 
 step = V0_3_0_to_V0_4_0()
-LIMITS = Limits(cap=3000, budget=6_000_000, run_on=2)
 NONE = parse_choices([step], assume=[], resolve=[], accept=[], limits=LIMITS)
 
 
@@ -110,31 +120,6 @@ class _Reference:
         return frozenset({V.ValueRole(V.Role.PASS, False)})
 
 
-CONSUMER = dict(
-    stride=frozenset({V.Stride.NEXT}),
-    loading=frozenset(),
-    closing=frozenset({V.Closing.OTHER}),
-    marker=V.every(V.Marker),
-    values=frozenset({V.Phase.PASS}),
-    loop_end=frozenset({V.LoopEnd.AFTER_CLOSE}),
-    discards=frozenset({V.Discards.KEEPS}),
-    cut_save=frozenset({V.CutSave.CLOSED}),
-    save_at=frozenset({V.SaveAt.IN_PASS, V.SaveAt.AT_CLOSE}),
-    save_cov=frozenset({V.Saved.SAVED}),
-    leave_save=frozenset({V.Saved.SAVED}),
-    load=frozenset({V.Load.FRESH, V.Load.NEWEST}),
-    resume=frozenset({V.Resume.AFTER}),
-    strays=frozenset(),
-    born=frozenset({V.Birth.V0_3_0}),
-)
-"""A consumer's word on its own code, as a consumer of the reference Worker would give
-it: every claim resumed at the loaded step plus one (``steps(start=k + 1)`` after
-loading pass ``k``'s save, ``resume`` ``after``) or started at 0, no record written
-before the first pass, no pass ends at a value, values only inside a pass, the loop left
-after a close, each pass's completed state saved inside it or at its close, the newest
-save or nothing loaded, and no other writer's values; whether a silent pass wrote a
-value, unknown."""
-
 CHECKPOINTED = STEP.reference(**CONSUMER).workers["reference"]
 """The reference preset under ``CONSUMER``."""
 
@@ -158,16 +143,6 @@ error, any watermark, and any third party; narrow enough that a small log follow
 the cap."""
 
 
-def under(configuration, **choosers):
-    """Resolutions: ``configuration`` stated, each projection's chooser as given, else
-    ``refuse``."""
-    picked = {
-        p.name: choosers.get(p.name.replace("-", "_"), Chosen(None, REFUSE.chooser))
-        for p in step.PROJECTIONS
-    }
-    return Resolutions(Assumptions(configuration, "test", LIMITS), picked)
-
-
 NOTES = REFERENCE._replace(
     workers={
         "ref": dataclasses.replace(
@@ -185,12 +160,6 @@ NOTES = REFERENCE._replace(
     },
 )
 """The reference Worker, its third party writing only notes on ended claims."""
-
-CHOSEN = {
-    "span": Chosen("fewest", FEWEST.chooser),
-    "origin": Chosen("newest", NEWEST.chooser),
-    "end_time": Chosen("lower", END_TIME.generic[0].chooser),
-}
 
 
 def migrated(rows, configuration=REFERENCE, history=NO_HISTORY, **choosers):
@@ -1036,24 +1005,10 @@ def test_the_simulator_never_imports_the_step():
         assert not {m for m in named if "v0_3_0_to_v0_4_0" in m}, mod.__name__
 
 
-def _watermark_on(stop_body):
-    """A beats, B claims over it, a third party's stop names A, and B's beat's
-    watermark (the log's tail, as a ``tail`` writer fills it) names that stop."""
-    return _dated(
-        [
-            r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
-            r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0)),
-            r(3, "lifecycle.started", _started("local://n1/12", 3.0)),
-            r(4, "lifecycle.stopped", stop_body),
-            r(5, "lifecycle.heartbeat", _beat(None, 4, 3, 5.0)),
-        ]
-    )
-
-
 def test_a_watermark_naming_a_stop_that_leaves_the_log_is_refused():
     """A third party's note on an ended claim becomes only its withdrawals, so
     nothing is left for the watermark to name."""
-    rows = _watermark_on(_stopped(False, None, 0, 1, [], 4.0))
+    rows = a_watermark_on(_stopped(False, None, 0, 1, [], 4.0))
     with pytest.raises(
         MigrationError,
         match=r"heartbeat at seq 5 has consumed_seq 4, which names the "
@@ -1256,17 +1211,6 @@ def test_a_run_past_the_budget_is_refused_naming_the_record():
         step.transform(GOLDEN["exit"], resolutions=tight, history=NO_HISTORY)
 
 
-def _a_claim_then_another():
-    return _dated(
-        [
-            r(1, "lifecycle.started", _started("local://n1/11", 1.0)),
-            r(2, "value", _value(0.9, 0, 2.0), name="loss"),
-            r(3, "lifecycle.heartbeat", _beat(0, 0, 1, 3.0)),
-            r(4, "lifecycle.started", _started("local://n1/12", 4.0)),
-        ]
-    )
-
-
 @pytest.mark.parametrize("run_on", [0, 2, 4])
 def test_a_run_on_cut_at_the_horizon_refuses_naming_the_claim_and_the_facts(run_on):
     """--run-on is a limit, never a reading: with ``beat-cov`` and ``marker``
@@ -1293,7 +1237,7 @@ def test_a_run_on_cut_at_the_horizon_refuses_naming_the_claim_and_the_facts(run_
         match=r"a candidate of claims? [0-9, ]+ closes a pass at the horizon, its loop "
         rf"free to continue \({run_on} labels .*: marker, closing, beat-cov$",
     ):
-        step.transform(_a_claim_then_another(), resolutions=res, history=NO_HISTORY)
+        step.transform(a_claim_then_another(), resolutions=res, history=NO_HISTORY)
 
 
 class _Closes(_Reference):
@@ -1329,7 +1273,7 @@ def test_each_fact_the_horizon_refusal_names_clears_it(narrowed):
     if "closing" in narrowed:  # a pass then closes only at a value that closes it
         cleared = cleared._replace(classifier=_Closes())
     m = step.transform(
-        _a_claim_then_another(),
+        a_claim_then_another(),
         resolutions=under(cleared, **CHOSEN),
         history=NO_HISTORY,
     )
@@ -1509,19 +1453,6 @@ FIX1 = V.Configuration(
 consumer's checkpoints (``CHECKPOINTED``)."""
 
 
-def _a_beacon_between_two_places():
-    """The re-review's five records: pass 0 dated by its tick (seq 3); pass 1, which the
-    exit's ``final_step`` begins, closes silently before the beacon at seq 4 or after
-    it. The beacon is the worker's own record, which no other reading reads."""
-    return [
-        r(1, "lifecycle.started", _started("local://n/1", 1.0), t=1.0),
-        r(2, "value", _value(1.0, 0, 2.0), name="loss", t=2.0),
-        r(3, "lifecycle.heartbeat", _beat(0, 0, 1, 3.0), t=3.0),
-        r(4, "lifecycle.heartbeat", _beat(None, 0, 1, 4.0), t=4.0),
-        r(5, "lifecycle.stopped", _stopped(False, None, 1, 1, [], 5.0), t=5.0),
-    ]
-
-
 class _Asked:
     """An end-time chooser that keeps each question it is asked and answers as a
     built-in does."""
@@ -1538,7 +1469,7 @@ def test_each_place_an_undated_commit_may_stand_is_its_own_answer():
     """Where the undated commit stands sets its lower bound, so each place is an
     answer, and the paths an answer keeps all write it there: ``lower`` writes it after
     the tick at its bound, ``upper`` after the beacon at the next record's ``t``."""
-    rows = _a_beacon_between_two_places()
+    rows = a_beacon_between_two_places()
     found = step.detect(
         rows, assumptions=under(FIX1, **CHOSEN).assumptions, history=NO_HISTORY
     ).forks
@@ -1591,7 +1522,7 @@ def test_a_consumers_end_time_at_a_place_is_written_there():
             return EndedAt(4, 4.5)
 
     m = step.transform(
-        _a_beacon_between_two_places(),
+        a_beacon_between_two_places(),
         resolutions=under(FIX1, **{**CHOSEN, "end_time": Chosen("x", Late())}),
         history=NO_HISTORY,
     )
@@ -1606,7 +1537,7 @@ def test_a_consumers_end_time_at_a_place_is_written_there():
                 return EndedAt(4, 3.5)
 
         step.transform(
-            _a_beacon_between_two_places(),
+            a_beacon_between_two_places(),
             resolutions=under(FIX1, **{**CHOSEN, "end_time": Chosen("x", Early())}),
             history=NO_HISTORY,
         )
@@ -1675,7 +1606,7 @@ def test_the_step_drops_the_last_runs_candidates_before_building_the_next():
     res = under(FIX1, **CHOSEN)
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(E, "candidates", watched)
-        for rows in (EXIT, _a_beacon_between_two_places()):
+        for rows in (EXIT, a_beacon_between_two_places()):
             mine.detect(rows, assumptions=res.assumptions, history=NO_HISTORY)
             mine.transform(rows, resolutions=res, history=NO_HISTORY)
     assert held == [None, None]
@@ -2043,42 +1974,6 @@ def test_a_rewinds_place_and_time_are_its_end_time_reading():
 # ----- what the consumer's code decides is the consumer's (fix round 4) ------------------
 
 
-def _a_resumed_workers_log(start, *, before=None):
-    """A log the reference Worker writes: three passes, then a second claim resuming at
-    ``start``, which first ``channel.send``s ``val_loss`` at step ``before`` when given,
-    the Worker's own route for a caller-clocked point (``emit`` raises before the first
-    tick)."""
-    from runstate.channel import MemoryChannel
-    from runstate.worker import Worker
-
-    clock = itertools.count(1.0)
-    ch = MemoryChannel()
-
-    def passes(start, total, before=None):
-        with Worker(ch, now=lambda: next(clock)) as w:
-            if before is not None:
-                ch.send(
-                    {"value": 0.5, "step": before, "t": next(clock)},
-                    topic="value",
-                    name="val_loss",
-                )
-            for s in w.steps(total, start=start):
-                w.emit("loss", 1.0 / (s + 1))
-
-    passes(0, 3)
-    passes(start, start + 2, before)
-    return [
-        Row(e.seq, e.topic, e.name, e.request_id, json.dumps(e.body), float(e.seq))
-        for e in ch.read(after=0)
-    ]
-
-
-def _preset(**word):
-    return under(
-        STEP.reference(**{**CONSUMER, "closing": V.every(V.Closing), **word}), **CHOSEN
-    )
-
-
 def test_a_record_before_the_first_pass_is_the_consumers_loading_and_values():
     """Consumer code around the reference Worker can write a stepped value before the
     first pass (a resumed claim logging the checkpoint it loaded, at that checkpoint's
@@ -2087,17 +1982,17 @@ def test_a_record_before_the_first_pass_is_the_consumers_loading_and_values():
     the value every worker role for them to narrow. Under ``loading`` empty the log
     has no history; under ``loaded`` with ``values`` {loading, pass} it migrates, the
     value held by the resumed claim's first commit and read at its count."""
-    rows = _a_resumed_workers_log(3, before=2)
+    rows = a_resumed_workers_log(3, before=2)
     assert [json.loads(x.body)["step"] for x in rows if x.topic == "value"][3] == 2
     with pytest.raises(MigrationError, match=r"^no history .*: relaxing values"):
-        step.transform(rows, resolutions=_preset(), history=NO_HISTORY)
+        step.transform(rows, resolutions=preset(), history=NO_HISTORY)
     with pytest.raises(MigrationError, match=r"relaxing loading; values admits one"):
         step.transform(
             rows,
-            resolutions=_preset(values=frozenset({V.Phase.LOADING, V.Phase.PASS})),
+            resolutions=preset(values=frozenset({V.Phase.LOADING, V.Phase.PASS})),
             history=NO_HISTORY,
         )
-    res = _preset(
+    res = preset(
         loading=frozenset({V.Loading.LOADED}),
         values=frozenset({V.Phase.LOADING, V.Phase.PASS}),
     )
@@ -2119,11 +2014,11 @@ def test_a_resumed_claims_first_pass_label_is_the_consumers_stride():
     plus one is a skip, the consumer's choice, so ``stride`` is the preset's argument.
     Under ``next`` alone the log has no history, naming the fact; under both it
     migrates."""
-    rows = _a_resumed_workers_log(5)
+    rows = a_resumed_workers_log(5)
     with pytest.raises(MigrationError, match=r"^no history .*relaxing stride"):
-        step.transform(rows, resolutions=_preset(), history=NO_HISTORY)
+        step.transform(rows, resolutions=preset(), history=NO_HISTORY)
     m = step.transform(
-        rows, resolutions=_preset(stride=V.every(V.Stride)), history=NO_HISTORY
+        rows, resolutions=preset(stride=V.every(V.Stride)), history=NO_HISTORY
     )
     assert [x.topic for x in m.rows].count("lifecycle.commit") == 5
 
@@ -2147,7 +2042,7 @@ def test_a_resume_at_the_loaded_step_is_the_consumers_resume():
     detection reports with ``resume`` among the facts that settle it. Under the
     consumer's word that it resumes after the save it loaded, the newest, the log has
     no history, and the refusal names ``resume``."""
-    rows = _a_resumed_workers_log(2)
+    rows = a_resumed_workers_log(2)
     assert [json.loads(x.body)["step"] for x in rows if x.topic == "value"] == [
         *range(3),
         2,
@@ -2156,9 +2051,9 @@ def test_a_resume_at_the_loaded_step_is_the_consumers_resume():
     both = frozenset(V.Resume)
     older = frozenset({V.Load.FRESH, V.Load.NEWEST, V.Load.OLDER})
     with pytest.raises(MigrationError, match=r"^no history .*relaxing .*resume"):
-        step.transform(rows, resolutions=_preset(), history=NO_HISTORY)
+        step.transform(rows, resolutions=preset(), history=NO_HISTORY)
     # at: the newest save, pass 2's result (its tick at seq 7 is its commit), run again
-    at = _preset(resume=frozenset({V.Resume.AT}))
+    at = preset(resume=frozenset({V.Resume.AT}))
     assert not any(
         step.detect(rows, assumptions=at.assumptions, history=NO_HISTORY).forks.values()
     )
@@ -2168,7 +2063,7 @@ def test_a_resume_at_the_loaded_step_is_the_consumers_resume():
         "recounted-value": (10, 12)
     }
     # after: pass 1's save, an older one, continued at 2
-    after = _preset(load=older)
+    after = preset(load=older)
     assert not any(
         step.detect(
             rows, assumptions=after.assumptions, history=NO_HISTORY
@@ -2178,7 +2073,7 @@ def test_a_resume_at_the_loaded_step_is_the_consumers_resume():
     assert _resume_from(m, 9) == (5, "lifecycle.commit", 1)
     assert {d: s for d, s in m.divergences.items() if s} == {"off-head-value": (6,)}
     # both, with both saves loadable: the origin forks between them
-    res = _preset(resume=both, load=older)
+    res = preset(resume=both, load=older)
     forks = step.detect(rows, assumptions=res.assumptions, history=NO_HISTORY).forks
     (origin,) = forks["origin"]
     assert origin.seq == 9 and "resume" in origin.settled_by
@@ -2189,7 +2084,7 @@ def test_a_resume_at_the_loaded_step_is_the_consumers_resume():
     )  # origin=newest: pass 2's
     assert _resume_from(m, 9) == (7, "lifecycle.commit", 1)
     # both, the newest save alone loadable: one history, pass 2's save run again
-    res = _preset(resume=both)
+    res = preset(resume=both)
     assert not any(
         step.detect(
             rows, assumptions=res.assumptions, history=NO_HISTORY

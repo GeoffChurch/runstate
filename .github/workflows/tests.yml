@@ -47,7 +47,7 @@ jobs:
         run: black --check runstate/ tests/
 
   # The migration oracle (`-m oracle`): the 0.3.0 -> 0.4.0 step's engine against the
-  # simulator's exhaustive families (about 30 s locally). The step is frozen once it
+  # simulator's exhaustive families (about 7 minutes locally). The step is frozen once it
   # ships, so the job runs only when the step, its engine or facts, the simulator or
   # the oracle changes, and on demand (Actions -> tests -> Run workflow). The default
   # job runs the oracle's named histories either way.
@@ -63,7 +63,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
-          paths='^(runstate/migrations/v0_3_0_to_v0_4_0(_engine|_facts)?\.py|tests/migration_sim/|tests/test_migration_sim\.py|tests/migration_derive\.py|tests/migration_mutation\.py|tests/test_migration_oracle\.py)'
+          paths='^(runstate/migrations/v0_3_0_to_v0_4_0(_engine|_facts)?\.py|tests/migration_sim/|tests/test_migration_sim\.py|tests/migration_derive\.py|tests/migration_helpers\.py|tests/migration_mutation\.py|tests/test_migration_oracle\.py)'
           # on demand, or with no base to compare (a new branch): run
           if [ "$EVENT" = workflow_dispatch ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
             echo run=true >> "$GITHUB_OUTPUT"

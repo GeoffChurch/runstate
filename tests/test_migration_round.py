@@ -27,6 +27,8 @@ pytest.importorskip("jsonschema")
 from runstate.channel.sqlite import _SCHEMA  # noqa: E402
 from runstate.migrations import MigrationError, Row  # noqa: E402
 from runstate.migrations.ambiguity import Statement  # noqa: E402
+import tests.migration_helpers as H  # noqa: E402
+from runstate.migrations.ambiguity import History  # noqa: E402
 from tests.migration_helpers import NO_HISTORY  # noqa: E402
 from tests.migration_goldens import (  # noqa: E402
     BACKSTOP,
@@ -34,6 +36,7 @@ from tests.migration_goldens import (  # noqa: E402
     GOLDEN,
     _beat,
     _dated,
+    _launched,
     _started,
     _stopped,
     _value,
@@ -348,7 +351,7 @@ def _unbounded(t):
 def _every_refusal():
     """Each input the step's own tests refuse at its boundary, and one of each
     refusal those tables leave out, with the facts that bring it about."""
-    import test_migration_v0_3_0_to_v0_4_0 as t
+    import tests.test_migration_v0_3_0_to_v0_4_0 as t
 
     cases = {}
     for table in ("UNREADABLE", "REFUSED", "HONORS_THE_EMPTY_ID", "SECOND_REAPS"):
@@ -356,7 +359,7 @@ def _every_refusal():
             f"{table}:{k}": (v, t.REFERENCE) for k, v in getattr(t, table).items()
         }
     claim = r(1, "lifecycle.started", _started("local://n1/11", 1.0))
-    launch = r(1, "launcher.launched", t._launched(DEAD, 0.5), rid="L1")
+    launch = r(1, "launcher.launched", _launched(DEAD, 0.5), rid="L1")
     cases |= {
         "a_name_0_4_0_pins_null": ([claim._replace(name="n")], t.REFERENCE),
         "a_beat_naming_no_claim": (
@@ -372,7 +375,7 @@ def _every_refusal():
             t.REFERENCE,
         ),
         "a_watermark_on_a_dropped_stop": (
-            t._watermark_on(_stopped(False, None, 0, 1, [], 4.0)),
+            H.a_watermark_on(_stopped(False, None, 0, 1, [], 4.0)),
             t.NOTES,
         ),
         "a_whole_number_float": (
@@ -398,13 +401,13 @@ def _every_refusal():
             [claim, r(2, "lifecycle.heartbeat", _beat(5, 0, 1, 2.0))],
             t.REFERENCE,
         ),
-        "past_the_cap": ([claim], t.UNSTATED, t.History((t.BORN_020,), ())),
-        "the_horizon": (t._a_claim_then_another(), _unbounded(t)),
+        "past_the_cap": ([claim], t.UNSTATED, History((t.BORN_020,), ())),
+        "the_horizon": (H.a_claim_then_another(), _unbounded(t)),
         "a_birth_nothing_dates": ([claim], t.REFERENCE._replace(born=None)),
         "a_birth_the_evidence_contradicts": (
             [claim],
             t.REFERENCE,
-            t.History((t.BORN_020,), ()),
+            History((t.BORN_020,), ()),
         ),
     }
     return cases
@@ -413,13 +416,13 @@ def _every_refusal():
 def test_every_refusal_the_step_raises_maps_to_one_known_kind():
     """The one boundary that reads a refusal's message: every refusal the step's
     tests know maps to exactly one pattern of the table, never to unknown."""
-    import test_migration_v0_3_0_to_v0_4_0 as t
+    import tests.test_migration_v0_3_0_to_v0_4_0 as t
 
     table = mr._REFUSALS[mr.StepName.FROM_0_3_0]
     reached = set()
     for case, (rows, configuration, *history) in _every_refusal().items():
         with pytest.raises(MigrationError) as refused:
-            t.migrated(rows, configuration, *history, **t.CHOSEN)
+            t.migrated(rows, configuration, *history, **H.CHOSEN)
         message = str(refused.value)
         matched = [i for i, (p, _) in enumerate(table) if re.search(p, message)]
         assert matched, (case, message)
@@ -1061,24 +1064,52 @@ def _versions(rows, resolutions, claim):
     return sorted(repr(v) for v in reader.started(claim))
 
 
-def test_the_census_counts_a_resume_at_the_loaded_step_under_any_reading():
+def test_the_census_counts_a_resume_at_the_loaded_step_wherever_a_candidate_resumes_at_it():
     """The reference Worker's log of three passes (0, 1, 2), then a claim at seq 9
     resuming at 2: its first pass is labelled 2. Under ``resume`` ``at`` it loaded pass
     2's save and runs pass 2 again: a resume at the loaded step, the census's one hit.
     Under ``after`` it loaded pass 1's save, an older one, and continues at 2: the
     loaded step is 1, no hit. With both stated, both candidates stand and the hit is
-    counted once, as the census counts it, under any reading."""
-    import test_migration_v0_3_0_to_v0_4_0 as t
+    counted once: the census counts it wherever some candidate resumes at the loaded
+    step, which none does under ``after`` alone."""
+    import tests.test_migration_v0_3_0_to_v0_4_0 as t
     import runstate.migrations.v0_3_0_to_v0_4_0_facts as V
 
-    rows = t._a_resumed_workers_log(2)
+    rows = H.a_resumed_workers_log(2)
     older = frozenset({V.Load.FRESH, V.Load.NEWEST, V.Load.OLDER})
-    at = t._preset(resume=frozenset({V.Resume.AT}))
+    at = H.preset(resume=frozenset({V.Resume.AT}))
     hit = [mr.Resumed(9, 2, _versions(rows, at, 9))]
     assert _census(rows, at).resumed == hit
-    assert _census(rows, t._preset(load=older)).resumed == []
-    both = t._preset(resume=frozenset(V.Resume), load=older)
+    assert _census(rows, H.preset(load=older)).resumed == []
+    both = H.preset(resume=frozenset(V.Resume), load=older)
     assert _census(rows, both).resumed == hit
+
+
+def test_the_census_counts_a_rewind_a_candidate_makes():
+    """The step's own rewind log (its end-time test's): pass 1 closes, and under facts
+    that let the reference Worker rewind to its newest save, a rewind follows it on a
+    candidate. The census counts it (the final review's M7: a census that counted none
+    whatever the log passed every test)."""
+    import dataclasses
+
+    import runstate.migrations.v0_3_0_to_v0_4_0_facts as V
+    import tests.test_migration_v0_3_0_to_v0_4_0 as t
+
+    rows = [
+        r(1, "lifecycle.started", _started("local://n/1", 1.0), t=1.0),
+        r(2, "lifecycle.heartbeat", _beat(0, 0, 1, 2.0), t=2.0),
+        r(3, "lifecycle.heartbeat", _beat(None, 0, 1, 3.0), t=3.0),
+        r(4, "lifecycle.stopped", _stopped(False, "boom", 1, 1, [], 4.0), t=4.0),
+    ]
+    rewinding = t.FIX1._replace(
+        workers={
+            "reference": dataclasses.replace(
+                t.CHECKPOINTED, rewinds=frozenset({V.Rewinds.NEWEST})
+            )
+        }
+    )
+    assert _census(rows, H.under(rewinding, **H.CHOSEN)).rewinds >= 1
+    assert _census(rows, H.under(t.FIX1, **H.CHOSEN)).rewinds == 0
 
 
 def test_the_census_splits_an_end_time_fork_into_its_dating_and_its_places():
@@ -1089,15 +1120,15 @@ def test_the_census_splits_an_end_time_fork_into_its_dating_and_its_places():
     undated: a dating fork, its undated end at one place; and since some of the
     histories writing it resume ``at`` the save's step, a candidate resumes claim 3 at
     the loaded step 0."""
-    import test_migration_oracle as o
-    import test_migration_v0_3_0_to_v0_4_0 as t
+    import tests.test_migration_oracle as o
+    import tests.test_migration_v0_3_0_to_v0_4_0 as t
     from runstate.migrations.ambiguity import REFUSE, Assumptions, Chosen, Resolutions
 
-    beacon = _census(t._a_beacon_between_two_places(), t.under(t.FIX1, **t.CHOSEN))
+    beacon = _census(H.a_beacon_between_two_places(), H.under(t.FIX1, **H.CHOSEN))
     assert beacon == mr.Census(
         commits=2, dating=0, undated=1, places=1, rewinds=0, resumed=[]
     )
-    rows, hs = o._six_records()
+    rows, hs = H.six_records()
     cfg = o.D.configuration([o.observed(h) for h in hs])
     limits = mr.Limits(cap=o.CAP, budget=o.BUDGET, run_on=o.RUN_ON)
     lower = Chosen("lower", mr.step04.END_TIME.generic[0].chooser)
@@ -1122,12 +1153,12 @@ def test_the_census_splits_an_end_time_fork_into_its_dating_and_its_places():
 
 
 def _migrated_beacon():
-    import test_migration_v0_3_0_to_v0_4_0 as t
+    import tests.test_migration_v0_3_0_to_v0_4_0 as t
     from runstate.channel import MemoryChannel
 
     m = t.step.transform(
-        t._a_beacon_between_two_places(),
-        resolutions=t.under(t.FIX1, **t.CHOSEN),
+        H.a_beacon_between_two_places(),
+        resolutions=H.under(t.FIX1, **H.CHOSEN),
         history=NO_HISTORY,
     )
     env = mr._envelopes(m.rows)
@@ -1177,25 +1208,30 @@ def test_a_refusal_at_the_horizon_is_its_own_kind():
     """The step's own horizon case (a claim, then another, with ``beat-cov`` and
     ``marker`` unstated, so a candidate runs silent passes to the horizon): the runner
     names its kind, ``the horizon``, never unknown."""
-    import test_migration_v0_3_0_to_v0_4_0 as t
+    import tests.test_migration_v0_3_0_to_v0_4_0 as t
 
     rows, configuration = _every_refusal()["the_horizon"]
     with pytest.raises(MigrationError) as refused:
-        t.migrated(rows, configuration, **t.CHOSEN)
+        t.migrated(rows, configuration, **H.CHOSEN)
     assert "closes a pass at the horizon" in str(refused.value)
     kind = mr.refusal_kind(mr.StepName.FROM_0_3_0, str(refused.value))
     assert kind == "the horizon"
 
 
-def test_a_child_that_cannot_send_its_record_aborts_the_runner(tmp_path, monkeypatch):
+def test_a_child_that_cannot_send_its_record_aborts_the_runner(
+    tmp_path, monkeypatch, capfd
+):
     """A record the child cannot pickle (a ``MemoryError``, say) is the runner's own
-    failure: it aborts, naming the run, rather than recording something else."""
+    failure: it aborts, naming the run, rather than recording something else; the
+    child prints why on stderr, and the abort points to it."""
     root = tmp_path / "root"
     _write(root / "v0.3.0" / "unsent.db", GOLDEN["exit"])
 
     def fail(*args, **kw):
-        raise MemoryError
+        raise MemoryError("pickling the record")
 
     monkeypatch.setattr(mr.pickle, "dumps", fail)
     with pytest.raises(RuntimeError, match=r"unsent\.db could not send its record"):
         _main(root, tmp_path / "out", max_rows=100)
+    err = capfd.readouterr().err
+    assert "MemoryError: pickling the record" in err and "Traceback" in err

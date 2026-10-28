@@ -53,7 +53,7 @@ import pytest
 import runstate.migrations.v0_3_0_to_v0_4_0 as STEP
 import runstate.migrations.v0_3_0_to_v0_4_0_engine as E
 import runstate.migrations.v0_3_0_to_v0_4_0_facts as V
-from tests.migration_helpers import NO_HISTORY
+from tests.migration_helpers import NO_HISTORY, six_records
 import tests.migration_derive as D
 import tests.migration_sim.enumerate as enumeration
 import tests.test_migration_sim as S
@@ -1055,28 +1055,6 @@ def test_a_tick_at_once_after_its_close_dates_the_commit() -> None:
 # ----- whether a tick dates a commit is a reading (the Task 22 review's Critical 1) ------
 
 
-def _six_records() -> tuple[tuple[Row, ...], list[H.History]]:
-    """The review's six-record ``save-points`` log, which twelve histories write (four
-    whose second claim resumes after the save's step, eight at it): two claims, the
-    second's three step-0 values, then its tick at step 0."""
-    for rows, hs in by_log(FAMILIES["save-points"]()).items():
-        if [r.topic for r in rows] == [
-            "lifecycle.started",
-            "value",
-            "lifecycle.started",
-            "value",
-            "value",
-            "lifecycle.heartbeat",
-        ] and json.loads(rows[5].body) == {
-            "step": 0,
-            "consumed_seq": 0,
-            "claim_seq": 3,
-            "t": 6.0,
-        }:
-            return rows, hs
-    raise AssertionError("the six-record log is gone from save-points")
-
-
 def test_whether_a_tick_dates_a_commit_is_the_end_time_projections():
     """The tick may date claim 3's commit, or the commit may have ended before it,
     undated: detection reports the end-time fork, and each chooser writes its own log
@@ -1085,7 +1063,7 @@ def test_whether_a_tick_dates_a_commit_is_the_end_time_projections():
     from runstate.migrations.ambiguity import REFUSE, Assumptions, Chosen, Limits
     from runstate.migrations.ambiguity import Resolutions as R
 
-    rows, hs = _six_records()
+    rows, hs = six_records()
     cfg = D.configuration([observed(h) for h in hs])
     step = STEP.V0_3_0_to_V0_4_0()
     limits = Limits(cap=CAP, budget=BUDGET, run_on=RUN_ON)

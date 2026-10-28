@@ -1589,6 +1589,14 @@ def isolated(found: Found, measure_one: Callable[[], RunRecord]) -> RunRecord:
             code = 0
         except KeyboardInterrupt:
             code = _INTERRUPTED
+        except BaseException:
+            # what kept it from sending its record, on its stderr, which the
+            # parent's abort points to
+            try:
+                traceback.print_exc(file=sys.stderr)
+                sys.stderr.flush()
+            except BaseException:
+                pass
         finally:  # whatever was raised, the child ends here
             os._exit(code)
     os.close(w)
@@ -1608,7 +1616,8 @@ def isolated(found: Found, measure_one: Callable[[], RunRecord]) -> RunRecord:
         raise KeyboardInterrupt
     elif os.WEXITSTATUS(status) == _UNSENT:
         raise RuntimeError(
-            f"the child measuring {found.path} could not send its record"
+            f"the child measuring {found.path} could not send its record: its "
+            "traceback, on the runner's stderr just above, says why"
         )
     else:
         record = pickle.loads(data)
