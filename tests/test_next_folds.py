@@ -38,10 +38,12 @@ from tests.test_next_reads import (
     SAMPLE_BEFORE_SUBSCRIBE,
     TWICE,
     bound,
+    channel,
     commit,
     died,
     started,
     stop,
+    stopped,
     subscribe,
     value,
     withdraw,
@@ -314,6 +316,39 @@ def test_a_spent_stop_id_reused_is_dead_on_arrival():
     assert fold.poll(ch) == []
     ch.send({}, topic="control.stop", request_id="s1")
     assert fold.poll(ch) == [] == undischarged_stops(ch)
+
+
+def test_an_empty_id_request_is_nameless_in_every_fold():
+    """An empty id is no name, in every fold (§4, "A drain"): an empty-id stop is
+    never pending, and an empty-id subscribe never live."""
+    ch = MemoryChannel()
+    stops, demand = PendingStops(), LiveDemand()
+    ch.send({}, topic="control.stop", request_id="")
+    ch.send(
+        {"every": {"commits": 1}}, topic="control.subscribe", name="lr", request_id=""
+    )
+    assert undischarged_stops(ch) == [] == stops.poll(ch)
+    assert live_demand(ch) == [] == demand.poll(ch)
+
+
+def test_a_subscribe_reusing_an_honored_stop_id_is_not_live_demand():
+    """Request ids are one namespace (§4, "A drain": a spent id is skipped on every
+    control topic): a subscribe reusing the id of a stop an exit honored is dead
+    on arrival, as the Worker skips it, so no waker relaunches for it."""
+    ch = channel(
+        list(
+            enumerate(
+                [
+                    stop("X"),
+                    started(None),
+                    stopped(2, None, [], honored=["X"]),
+                    subscribe("lr", "X", every={"commits": 1}),
+                ],
+                1,
+            )
+        )
+    )
+    assert live_demand(ch) == [] == LiveDemand().poll(ch)
 
 
 def test_pending_stops_reads_only_new_records():

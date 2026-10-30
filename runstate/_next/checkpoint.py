@@ -33,6 +33,8 @@ class SavePolicy(Protocol):
     the node that just landed, ``commits`` its ``count(Commits(), node)``, and
     ``exit`` True when it is an extendable exit rather than a commit."""
 
+    # ``exit`` shadows the builtin, kept since it is the spec's keyword (§6:
+    # ``after(node, *, commits, exit)``).
     def after(self, node: int, *, commits: int, exit: bool) -> None: ...
 
 

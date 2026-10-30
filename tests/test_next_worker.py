@@ -12,6 +12,7 @@ builders), as another implementation would write them.
 import pytest
 
 from runstate._next.checkpoint import Every, NoSave
+from runstate._next.claims import CAS_ATTEMPTS
 from runstate._next.launcher import report_death
 from runstate._next.observables import (
     AtNode,
@@ -24,9 +25,10 @@ from runstate._next.observables import (
 from runstate._next.vocabulary.coordinate import Commits, Target
 from runstate._next.vocabulary.payloads import Outcome, Topic
 from runstate._next.walk import MalformedRecordError
-from runstate._next.worker import Worker
-from runstate.channel import Channel
+from runstate._next.worker import Worker, WorkerStarvedError
+from runstate.channel.memory import MemoryChannel
 from runstate.vocabulary.launch import launch_scope
+from tests.next_helpers import Interloping, Wrapping
 from tests.test_next_death_reports import dead_handle
 from tests.test_next_reads import (
     Rec,
@@ -68,7 +70,7 @@ def end(ch, w):
 def conforms(ch, *, after=0):
     """Every record on the log above ``after`` conforms to the 0.4.0 schemas."""
     pytest.importorskip("jsonschema")
-    from test_schema_v0_4_0 import record_errors
+    from tests.test_schema_v0_4_0 import record_errors
 
     bad = {
         e.seq: errs
@@ -367,7 +369,7 @@ def test_a_rewind_writes_its_record_discards_pending_and_resets_registers(open_r
     w.rewind(AtNode(first))
     assert ch.latest(Topic.LIFECYCLE_REWIND).body["resume_from"] == first
     # the register holds no value at the new position until the next set (§4)
-    assert w._registers == {}
+    assert w._position.registers == {}
     w.commit()
     assert nodes(ch)[-1]["values"] == []  # the discarded value is in no node
     assert nodes(ch)[-1]["parent"] == first
@@ -847,6 +849,56 @@ def test_a_nameless_record_an_ended_claim_never_drained_is_refused_by_the_next(
     assert naks(ch) == [(None, "malformed")]  # not again
 
 
+def test_a_nameless_record_a_claim_refused_is_not_refused_by_the_next(open_run):
+    """The bound is the previous claim's watermark, not its ``started`` (§4, "A
+    drain"): a nameless record that landed after claim N began, and that claim N
+    refused, lies below claim N's watermark, so claim N+1 passes over it."""
+    ch = open_run()
+    obs = open_run()
+    with worker(ch) as w:
+        send_stop(obs, None)  # after the claim's started
+        assert w.commit() is False  # refused, and below this commit's watermark
+    with worker(ch, resume_from=LatestClaimHead()) as w:
+        assert w.commit() is False
+    assert naks(ch) == [(None, "malformed")]
+
+
+class _CommitFails(Wrapping):
+    """A channel whose ``lifecycle.commit`` never lands: a worker that crashes
+    after its drain's writes and before its watermark."""
+
+    def send(self, body, *, topic, name=None, request_id=None, expected_seq=None):
+        if topic == Topic.LIFECYCLE_COMMIT:
+            raise OSError("crashed before the watermark")
+        return super().send(
+            body,
+            topic=topic,
+            name=name,
+            request_id=request_id,
+            expected_seq=expected_seq,
+        )
+
+
+def test_a_claim_that_crashed_before_its_watermark_leaves_a_refusal_to_repeat_once(
+    open_run,
+):
+    """A claim that crashed between a refusal and its next watermark leaves the
+    record to be refused once more, by the next claim (§4, "A drain"), and the
+    claim after that one passes over it."""
+    ch = open_run()
+    obs = open_run()
+    w = worker(_CommitFails(ch))
+    send_stop(obs, None)
+    with pytest.raises(OSError, match="before the watermark"):
+        w.commit()  # the refusal landed; the commit, its watermark, did not
+    assert naks(obs) == [(None, "malformed")]
+    end(obs, w)
+    for _ in range(2):
+        with worker(ch, resume_from=LatestClaimHead()) as w:
+            assert w.commit() is False
+    assert naks(obs) == [(None, "malformed")] * 2
+
+
 def test_a_spent_id_is_skipped_silently_on_every_control_topic(open_run):
     """A spent id is dead on arrival on every control topic (§4, "A drain"): an
     unknown verb refused once is skipped by its re-send in the same claim, and by
@@ -916,6 +968,44 @@ def test_a_resend_of_a_held_stop_is_ignored(open_run):
     assert honored(ch) == {"s"}
 
 
+class _Spanning(MemoryChannel):
+    """A memory channel that records, for each read, the rows of the log its window
+    covers: those above ``after``, up to its ``limit``."""
+
+    def __init__(self):
+        super().__init__()
+        self.spans = []
+
+    def read(self, after=0, **kw):
+        span = self.last_seq() - after
+        limit = kw.get("limit")
+        self.spans.append(span if limit is None else min(limit, span))
+        return super().read(after, **kw)
+
+
+def test_a_drain_reads_only_the_records_since_the_last_drain():
+    """I1: with no control traffic, a drain's reads cover the records since the
+    last complete drain (its W), not the log back to the newest control record:
+    the same rows after 10 iterations as after 10,000, for a commit and a
+    heartbeat alike."""
+
+    def last_drain(n):
+        ch = _Spanning()
+        w = worker(ch)
+        for _ in range(n):
+            w.emit("loss", 1.0)
+            w.commit()
+        rows = []
+        for step in (w.commit, w.heartbeat):
+            ch.spans.clear()
+            w.emit("loss", 1.0)
+            step()
+            rows.append(sum(ch.spans))
+        return rows
+
+    assert last_drain(10) == last_drain(10_000)
+
+
 # ----- steps(until) (§4, "The drivers") ----------------------------------------------
 
 
@@ -979,46 +1069,6 @@ def died_rec(claim):
     return {"claim_seq": claim, "outcome": "killed", "evidence": "test: x", "t": 1.0}
 
 
-class Interloping(Channel):
-    """A channel handle on which, once ``arm``ed, a record lands through another
-    handle just before the next compare-and-append: that CAS loses, and its
-    writer must read again."""
-
-    def __init__(self, inner, other):
-        self._inner, self._other, self._armed = inner, other, None
-        self.fired = False
-
-    def arm(self, body, *, topic, request_id=None):
-        self._armed = (body, topic, request_id)
-
-    def send(self, body, *, topic, name=None, request_id=None, expected_seq=None):
-        if expected_seq is not None and self._armed is not None:
-            (armed, armed_topic, armed_id), self._armed = self._armed, None
-            self._other.send(armed, topic=armed_topic, request_id=armed_id)
-            self.fired = True
-        return self._inner.send(
-            body,
-            topic=topic,
-            name=name,
-            request_id=request_id,
-            expected_seq=expected_seq,
-        )
-
-    def read(self, after=0, *, topics=None, name=None, request_ids=None, limit=None):
-        return self._inner.read(
-            after, topics=topics, name=name, request_ids=request_ids, limit=limit
-        )
-
-    def latest(self, topic, name=None):
-        return self._inner.latest(topic, name)
-
-    def last_seq(self):
-        return self._inner.last_seq()
-
-    def close(self):
-        self._inner.close()
-
-
 @pytest.mark.parametrize(
     "topic, body",
     [
@@ -1060,6 +1110,90 @@ def test_a_drain_that_loses_a_refusals_cas_refuses_once(open_run):
     assert w.heartbeat() is False
     assert ch.fired
     assert naks(obs) == [("a", "unsupported"), ("b", "unsupported")]
+
+
+class _ReadFailsAfterTheClaim(Wrapping):
+    """A channel whose first read after the claim's CAS raises."""
+
+    armed = False
+
+    def send(self, body, *, topic, name=None, request_id=None, expected_seq=None):
+        seq = super().send(
+            body,
+            topic=topic,
+            name=name,
+            request_id=request_id,
+            expected_seq=expected_seq,
+        )
+        if topic == Topic.LIFECYCLE_STARTED and seq is not None:
+            self.armed = True
+        return seq
+
+    def read(self, after=0, **kw):
+        if self.armed:
+            self.armed = False
+            raise OSError("the disk is gone")
+        return super().read(after, **kw)
+
+
+def test_a_raise_after_the_claims_cas_writes_its_errored_exit(open_run):
+    """M1: a read after the claim's CAS that raises leaves no held claim with no
+    object to end it. The worker writes the claim's exit, errored and torn, and
+    the raise propagates; the next worker claims without a death report."""
+    ch = open_run()
+    send_stop(ch, "s")  # a log to fold: the fold reads it
+    with pytest.raises(OSError, match="the disk is gone"):
+        worker(_ReadFailsAfterTheClaim(ch))
+    claim = ch.latest(Topic.LIFECYCLE_STARTED).seq
+    exit_ = ch.latest(Topic.LIFECYCLE_STOPPED)
+    assert exit_.seq > claim
+    assert {k: exit_.body[k] for k in ("claim_seq", "completed", "error")} == {
+        "claim_seq": claim,
+        "completed": False,
+        "error": "the disk is gone",
+    }
+    assert (exit_.body["parent"], exit_.body["values"]) == (None, None)
+    assert worker(ch, resume_from=LatestClaimHead()).claimed
+    conforms(ch)
+
+
+_OUTRUN = {"value": 1.0, "t": 1.0}  # what an always-faster writer appends
+
+
+def test_a_claim_that_never_wins_its_cas_raises_worker_starved(open_run):
+    """M3: a writer that appends before every CAS starves the claim, which gives up
+    after ``CAS_ATTEMPTS``, typed, having claimed nothing."""
+    obs = open_run()
+    ch = Interloping(open_run(), obs)
+    ch.arm(_OUTRUN, topic=Topic.VALUE, name="x", times=None)
+    with pytest.raises(WorkerStarvedError) as exc:
+        worker(ch)
+    assert (exc.value.step, exc.value.claim_seq, exc.value.attempts) == (
+        "claim",
+        None,
+        CAS_ATTEMPTS,
+    )
+    assert ch.cas == CAS_ATTEMPTS
+    assert records(obs, Topic.LIFECYCLE_STARTED) == []
+
+
+def test_a_drain_whose_refusal_never_wins_its_cas_raises_worker_starved(open_run):
+    """M3: a drain's refusal that loses every CAS gives up after ``CAS_ATTEMPTS``,
+    typed and naming the claim, having refused nothing."""
+    obs = open_run()
+    ch = Interloping(open_run(), obs)
+    w = worker(ch)
+    claim = obs.latest(Topic.LIFECYCLE_STARTED).seq
+    obs.send({}, topic="control.frob", request_id="a")
+    ch.arm(_OUTRUN, topic=Topic.VALUE, name="x", times=None)
+    with pytest.raises(WorkerStarvedError) as exc:
+        w.heartbeat()
+    assert (exc.value.step, exc.value.claim_seq, exc.value.attempts) == (
+        "drain",
+        claim,
+        CAS_ATTEMPTS,
+    )
+    assert naks(obs) == []
 
 
 def test_a_released_worker_writes_nothing_more(open_run):

@@ -16,6 +16,7 @@ import sys
 import pytest
 
 from runstate._next.checkpoint import Every
+from runstate._next.claims import CAS_ATTEMPTS, endings
 from runstate._next.launcher import Command, LocalLauncher, report_death
 from runstate._next.observables import (
     AtNode,
@@ -30,10 +31,11 @@ from runstate._next.observables import (
 from runstate._next.vocabulary.coordinate import Commits, Target
 from runstate._next.vocabulary.payloads import Outcome, Topic
 from runstate._next.walk import NodeKind, kind_at
+from runstate._next.worker import WorkerStarvedError
+from tests.next_helpers import Interloping
 from tests.test_next_death_reports import dead_handle
 from tests.test_next_worker import (
     Clock,
-    Interloping,
     Recording,
     conforms,
     died_rec,
@@ -268,6 +270,44 @@ def test_a_lost_exit_cas_redrains_and_honors_a_stop_first_drained_there(open_run
     assert undischarged_stops(obs) == []
 
 
+def test_an_exit_whose_cas_never_wins_raises_worker_starved_and_the_claim_stays_held(
+    open_run,
+):
+    """M3: an exit that loses every CAS gives up after ``CAS_ATTEMPTS``, raising
+    out of ``stopped()``, typed and naming the claim: no exit is written, and the
+    claim is held for a death report to end."""
+    obs = open_run()
+    ch = Interloping(open_run(), obs)
+    w = worker(ch)
+    w.commit()
+    claim = obs.latest(Topic.LIFECYCLE_STARTED)
+    ch.arm({"value": 1.0, "t": 1.0}, topic=Topic.VALUE, name="x", times=None)
+    with pytest.raises(WorkerStarvedError) as exc:
+        w.stopped(completed=False, error=None)
+    assert (exc.value.step, exc.value.claim_seq, exc.value.attempts) == (
+        "exit",
+        claim.seq,
+        CAS_ATTEMPTS,
+    )
+    assert exits(obs) == []
+    assert endings(obs, claim, obs.last_seq()) == []
+
+
+@pytest.mark.parametrize(
+    "exc", [KeyboardInterrupt(), SystemExit(), RuntimeError()], ids=repr
+)
+def test_an_exception_with_no_message_names_its_type_as_the_error(open_run, exc):
+    """M2: ``__exit__`` never writes ``error: ""``. An exception whose message is
+    empty is named by its type."""
+    ch = open_run()
+    with pytest.raises(type(exc)):
+        with worker(ch) as w:
+            w.commit()
+            raise exc
+    assert exits(ch)[0].body["error"] == type(exc).__name__
+    conforms(ch)
+
+
 def test_one_exit_honors_every_pending_stop(open_run):
     """Every stop pending at the exit is honored, the one that held and the one
     that did not, and so is one sent after the last drain: none haunts the next
@@ -422,6 +462,7 @@ SAVE_RAISES_AT_THE_EXIT = """
 import sys
 from runstate import current_channel
 from runstate._next.checkpoint import Every
+from runstate._next.claims import CAS_ATTEMPTS, endings
 from runstate._next.vocabulary.coordinate import Commits, Target
 from runstate._next.worker import Worker
 

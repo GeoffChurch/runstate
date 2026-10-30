@@ -20,9 +20,50 @@ poison the present.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
+
 from ..channel import Channel, Envelope
 from .vocabulary.payloads import Stopped, Topic
-from .walk import readable
+from .walk import FIRST_WINDOW, readable
+
+# The attempts each compare-and-append loop makes before it gives up: a death
+# report's (``launcher``), and the Worker's claim, drain and exit. Such a CAS loses
+# only to a record that landed inside one round trip of its loop (``last_seq``, the
+# reads that loop makes, perhaps a probe, then the append): about a millisecond on
+# SQLite and a few on Postgres. Losing 256 in a row takes a log that grew by a record
+# in each of 256 round trips, a quarter of a second to a few seconds of out-writing
+# every read: no burst, but a writer outrunning its reader, where more attempts
+# change nothing and the caller had better learn that its record has not landed.
+CAS_ATTEMPTS = 256
+
+
+def request_name(e: Envelope) -> str | None:
+    """The request ``e`` names: its ``request_id``, or ``None`` when that is missing
+    or empty. An empty id is no name (§4, "A drain"): nothing can spend it, so on
+    every control topic and in every fold a record bearing one is nameless."""
+    return e.request_id or None
+
+
+def spent_by(e: Envelope) -> Iterable[str]:
+    """The request ids ``e`` spends by name, for the whole log (§2, "Requests"): a
+    readable exit's ``honored``, and the name of a ``control.withdraw`` or a
+    ``lifecycle.nak``. An unreadable exit's ``honored`` is not read, as no fold
+    reads more of an unreadable record (§5), and a nameless record spends nothing.
+
+    Request ids are one namespace: an id spent here is dead on arrival on every
+    control topic, whatever kind of request first bore it.
+
+    A node's ``expired`` is not here, since its two readers take it differently
+    (§4, "The claim"): the folds (``live_demand``) take it from any node, as spent
+    by name, while the Worker takes it per lineage, from the rebuild, so that it
+    re-arms a durable subscription another lineage expired. Each site reads it."""
+    if e.topic == Topic.LIFECYCLE_STOPPED:
+        exit_ = readable(Stopped, e)
+        return () if exit_ is None else [r for r in exit_.honored if r]
+    if e.topic in (Topic.CONTROL_WITHDRAW, Topic.LIFECYCLE_NAK):
+        r = request_name(e)
+        return () if r is None else (r,)
+    return ()
 
 
 def named_claim(e: Envelope) -> int | None:
@@ -76,3 +117,47 @@ def has_exit(endings: list[Envelope]) -> bool:
         e.topic == Topic.LIFECYCLE_STOPPED and readable(Stopped, e) is not None
         for e in endings
     )
+
+
+def backward(
+    ch: Channel, *, after: int, hi: int, topics: list[str]
+) -> Iterator[Envelope]:
+    """The records on ``topics`` above ``after`` and at or below ``hi``, newest
+    first, read in windows that grow by 4x back from ``hi``: a search that stops at
+    its first match costs the distance back to it, not the log's length."""
+    width = FIRST_WINDOW
+    while hi > after:
+        lo = max(after, hi - width)
+        window = ch.read(after=lo, topics=topics, limit=hi - lo)
+        yield from reversed([e for e in window if e.seq <= hi])
+        hi, width = lo, width * 4
+
+
+def claim_before(ch: Channel, seq: int) -> Envelope | None:
+    """The newest ``lifecycle.started`` below ``seq``, or ``None``."""
+    return next(
+        backward(ch, after=0, hi=seq - 1, topics=[Topic.LIFECYCLE_STARTED]), None
+    )
+
+
+def watermark(ch: Channel, claim: Envelope, w: int) -> int | None:
+    """The newest watermark ``claim`` wrote at or below ``w`` (§4, "A drain"): its
+    exit's seq, or else the ``consumed_seq`` of its newest commit or heartbeat;
+    ``None`` when it wrote none. A claim's watermark only grows and its exit is its
+    last record, so the newest of these records is the greatest; one whose
+    ``consumed_seq`` is unreadable is passed over. It reads back from ``w`` only as
+    far as that record, and never raises."""
+    topics: list[str] = [
+        Topic.LIFECYCLE_COMMIT,
+        Topic.LIFECYCLE_HEARTBEAT,
+        Topic.LIFECYCLE_STOPPED,
+    ]
+    for e in backward(ch, after=claim.seq, hi=w, topics=topics):
+        if named_claim(e) != claim.seq:
+            continue
+        if e.topic == Topic.LIFECYCLE_STOPPED:
+            return e.seq
+        c = e.body.get("consumed_seq")
+        if isinstance(c, int) and not isinstance(c, bool) and c >= 0:
+            return c
+    return None

@@ -24,8 +24,8 @@ from dataclasses import asdict
 
 import pytest
 
+from runstate._next.claims import CAS_ATTEMPTS
 from runstate._next.launcher import (
-    REPORT_ATTEMPTS,
     ClaimAliveError,
     Command,
     LocalLauncher,
@@ -49,6 +49,7 @@ from runstate._next.vocabulary.payloads import Died, Outcome, Started, Topic
 from runstate.channel.memory import MemoryChannel
 from runstate.vocabulary.handle import local_handle, local_handle_of
 from runstate.vocabulary.launch import current_launch_id
+from tests.next_helpers import Interloping
 from tests.test_next_reads import Rec, append, bound, channel, died, stopped, subscribe
 
 # A launcher's thread that raises is a test failure, never a warning.
@@ -207,31 +208,26 @@ def test_report_death_records_a_second_report():
     ]
 
 
-class _Interloper(MemoryChannel):
-    """A channel on which one record lands just before the first compare-and-append:
-    the report's CAS at its W loses, and it must read again."""
-
-    def __init__(self, rows, interloper):
-        super().__init__()
-        append(self, rows)
-        self.interloper = interloper
-
-    def send(self, body, *, topic, name=None, request_id=None, expected_seq=None):
-        if expected_seq is not None and self.interloper is not None:
-            r, self.interloper = self.interloper, None
-            super().send(r.body, topic=r.topic, name=r.name, request_id=r.request_id)
-        return super().send(
-            body,
-            topic=topic,
-            name=name,
-            request_id=request_id,
-            expected_seq=expected_seq,
-        )
+def _interloping(rows, interloper, *, times=1):
+    """A memory channel holding ``rows`` on which ``interloper`` lands just before
+    a compare-and-append (``times`` of them; ``None``, every one): the report's CAS
+    at its W loses, and it must read again."""
+    inner = MemoryChannel()
+    append(inner, rows)
+    ch = Interloping(inner, inner)
+    ch.arm(
+        interloper.body,
+        topic=interloper.topic,
+        name=interloper.name,
+        request_id=interloper.request_id,
+        times=times,
+    )
+    return ch
 
 
 def test_report_death_retries_a_lost_cas():
     beat = {"claim_seq": 1, "consumed_seq": 0, "t": 2.0}
-    ch = _Interloper(
+    ch = _interloping(
         [(1, claim(FOREIGN))], Rec("lifecycle.heartbeat", beat, None, None)
     )
     assert report_death(ch, 1, outcome=K, evidence="slurm:x", force=True) == 3
@@ -241,7 +237,7 @@ def test_report_death_retries_a_lost_cas():
         Topic.SUPERVISOR_DIED,
     ]
     # the read again applies the rules at the new W: the claim's exit landed
-    ch = _Interloper([(1, claim(FOREIGN))], stopped(1, None, []))
+    ch = _interloping([(1, claim(FOREIGN))], stopped(1, None, []))
     assert report_death(ch, 1, outcome=K, evidence="slurm:x", force=True) is None
     assert ch.last_seq() == 2
 
@@ -251,30 +247,16 @@ def test_a_report_that_never_wins_its_cas_raises_report_starved():
     trip: the report's CAS loses every time, and it gives up, typed, after a
     bounded number of attempts rather than spinning forever."""
 
-    class Outrun(MemoryChannel):
-        cas = 0
-
-        def send(self, body, *, topic, name=None, request_id=None, expected_seq=None):
-            if expected_seq is not None:
-                self.cas += 1
-                if self.cas > 10 * REPORT_ATTEMPTS:
-                    raise AssertionError("an unbounded CAS loop")
-                beat = {"claim_seq": 1, "consumed_seq": 0, "t": 2.0}
-                super().send(beat, topic=Topic.LIFECYCLE_HEARTBEAT)
-            return super().send(
-                body,
-                topic=topic,
-                name=name,
-                request_id=request_id,
-                expected_seq=expected_seq,
-            )
-
-    ch = Outrun()
-    append(ch, [(1, claim(FOREIGN))])
+    beat = {"claim_seq": 1, "consumed_seq": 0, "t": 2.0}
+    ch = _interloping(
+        [(1, claim(FOREIGN))],
+        Rec("lifecycle.heartbeat", beat, None, None),
+        times=None,
+    )
     with pytest.raises(ReportStarvedError) as exc:
         report_death(ch, 1, outcome=K, evidence="slurm:x", force=True)
-    assert (exc.value.claim_seq, exc.value.attempts) == (1, REPORT_ATTEMPTS)
-    assert ch.cas == REPORT_ATTEMPTS
+    assert (exc.value.claim_seq, exc.value.attempts) == (1, CAS_ATTEMPTS)
+    assert ch.cas == CAS_ATTEMPTS
     assert deaths(ch) == []
 
 

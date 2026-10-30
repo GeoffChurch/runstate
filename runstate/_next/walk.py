@@ -78,6 +78,15 @@ def readable(cls: type[_T], e: Envelope) -> _T | None:
         return None
 
 
+def point(ch: Channel, seq: int, *, w: int) -> Envelope | None:
+    """The record at ``seq``, one point read, or ``None`` when there is none at or
+    below ``w``."""
+    if not 1 <= seq <= w:
+        return None
+    got = ch.read(after=seq - 1, limit=1)
+    return got[0] if got and got[0].seq == seq else None
+
+
 # ----- a node, its kind and its checks ----------------------------------------------
 
 

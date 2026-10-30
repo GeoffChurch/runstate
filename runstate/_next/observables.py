@@ -80,7 +80,7 @@ from .vocabulary.payloads import (
     Topic,
     Value,
 )
-from .claims import claim_window, ends, named_claim
+from .claims import claim_window, ends, named_claim, request_name, spent_by
 from .vocabulary.schedule import MalformedSchedule, is_lease, parse_schedule
 from .walk import (
     EVERY_NAME,
@@ -99,6 +99,7 @@ from .walk import (
     no_claim,
     node_at,
     not_a_value,
+    point,
     readable,
     value_record,
     verdict_parse,
@@ -162,7 +163,7 @@ class AtNode:
 
     def resolve(self, ch: Channel) -> Head:
         w = ch.last_seq()
-        e = _point(ch, w, self.node)
+        e = point(ch, self.node, w=w)
         if e is None:
             raise ValueError(f"AtNode({self.node}): no record at or below w={w}")
         if node_at(e) is None:
@@ -684,8 +685,12 @@ def live_demand(ch: Channel) -> list[Envelope]:
     ascending by seq, unless
 
     - it is **spent**: a node's ``expired`` names it, on any lineage, or a
-      ``control.withdraw`` or a ``lifecycle.nak`` does, wherever it sits; a spent
-      id stays spent, so a later send reusing it is dead on arrival;
+      ``control.withdraw``, a ``lifecycle.nak`` or an exit's ``honored`` does,
+      wherever it sits (``claims.spent_by``). Request ids are one namespace, so a
+      subscribe reusing a stop's honored id is dead on arrival, as the Worker
+      skips it; a spent id stays spent, so a later send reusing it is dead on
+      arrival. A subscribe with a missing or empty id is nameless, and never
+      live;
     - it is a **void** lease: a ``lifecycle.bound`` binds it to a claim that has
       ended (``ends``: the presence of an exit or a death report naming the
       claim, which never raises, so a malformed record in an old claim's window
@@ -730,7 +735,9 @@ def undischarged_stops(ch: Channel) -> list[Envelope]:
     another. A spent id stays spent, and a re-sent live one is one stop, at its
     newest send. A death report spends nothing. An unreadable exit's ``honored``
     is not read (§5: no fold reads more of an unreadable record's body), and a
-    stop or an answer with no ``request_id`` names nothing. Pending is not due: a
+    stop or an answer with a missing or empty ``request_id`` names nothing
+    (``claims.request_name``), so an empty-id stop is never pending. Pending is
+    not due: a
     stop with a ``from`` is pending the moment it lands. One-shot: the question
     is the whole log (``PendingStops`` is its fold)."""
     w = ch.last_seq()
@@ -801,18 +808,17 @@ class _Demand:
         if e.topic in (Topic.LIFECYCLE_COMMIT, Topic.LIFECYCLE_STOPPED):
             for r in _expired(e):
                 self._kill(r)
-        elif e.topic == Topic.SUPERVISOR_DIED or e.request_id is None:
-            return
-        elif e.request_id in self._dead:
-            return  # dead on arrival, whatever it is
-        elif e.topic == Topic.CONTROL_SUBSCRIBE:
-            self._send(e.request_id, e)
+        for r in spent_by(e):  # one namespace: a stop's honored id is spent too
+            self._kill(r)
+        name = request_name(e)
+        if name is None or name in self._dead:
+            return  # nameless, or dead on arrival, whatever it is
+        if e.topic == Topic.CONTROL_SUBSCRIBE:
+            self._send(name, e)
         elif e.topic == Topic.LIFECYCLE_BOUND:
             b = readable(Bound, e)
             if b is not None:
-                self._bind(e.request_id, b.claim_seq)
-        else:
-            self._kill(e.request_id)
+                self._bind(name, b.claim_seq)
 
     def live(self, *, closed: bool) -> list[Envelope]:
         """The live subscriptions, ascending by seq; none when the head is
@@ -860,18 +866,13 @@ class _Stops:
 
     def apply(self, e: Envelope) -> None:
         """Apply ``e``, one of ``_STOP_TOPICS``."""
-        if e.topic == Topic.LIFECYCLE_STOPPED:
-            exit_ = readable(Stopped, e)
-            for r in () if exit_ is None else exit_.honored:
-                self._spend(r)
-        elif e.request_id is None:
-            return
-        elif e.topic == Topic.CONTROL_STOP:
-            if e.request_id not in self._spent:
-                self._pending.pop(e.request_id, None)  # the newest send, last
-                self._pending[e.request_id] = e
-        else:
-            self._spend(e.request_id)
+        for r in spent_by(e):
+            self._spend(r)
+        name = request_name(e)
+        if e.topic == Topic.CONTROL_STOP and name is not None:
+            if name not in self._spent:
+                self._pending.pop(name, None)  # the newest send, last
+                self._pending[name] = e
 
     def pending(self) -> list[Envelope]:
         """The pending stops, ascending by seq."""
@@ -964,18 +965,18 @@ class HeadFold:
     def poll(self, ch: Channel) -> Head:
         w = ch.last_seq()
 
-        def point(seq: int) -> Envelope | None:
-            return _point(ch, w, seq)
+        def read_at(seq: int) -> Envelope | None:
+            return point(ch, seq, w=w)
 
         if self._head.claim is None and w > self._cursor:
             claim = _newest(ch, Topic.LIFECYCLE_STARTED, w)
             if claim is None:
                 self._cursor = w  # nothing claimed: no record below w is the head's
             else:
-                self._head.apply(claim, point)
+                self._head.apply(claim, read_at)
                 self._cursor = claim.seq
         for e in _tail(ch, self._cursor, w, _HEAD_TOPICS):
-            self._head.apply(e, point)
+            self._head.apply(e, read_at)
             self._cursor = e.seq
         self._cursor = max(self._cursor, w)
         return self._head.head(w)
@@ -1137,7 +1138,7 @@ class LastElement(_NodeFold[_Last | None]):
         last = self._held(ch, head)
         if last is None:
             return None
-        e = _point(ch, head.w, last.seq)
+        e = point(ch, last.seq, w=head.w)
         assert e is not None  # a value the fold read, at or below w
         v = verdict_parse(Value, e)
         return Element(node=last.node, seq=last.seq, value=v.value, t=v.t)
@@ -1227,7 +1228,7 @@ class Answers(_NodeFold[_AnswerNode]):
             raise _not_one_sample(
                 node, firing.topic, self._request_id, target, len(samples)
             )
-        e = _point(ch, w, samples[0])
+        e = point(ch, samples[0], w=w)
         assert e is not None  # a value the fold read, at or below w
         v = verdict_parse(Value, e)
         answer = Element(node=node, seq=samples[0], value=v.value, t=v.t)
@@ -1271,15 +1272,15 @@ class LiveDemand:
     def poll(self, ch: Channel) -> list[Envelope]:
         w = ch.last_seq()
 
-        def point(seq: int) -> Envelope | None:
-            return _point(ch, w, seq)
+        def read_at(seq: int) -> Envelope | None:
+            return point(ch, seq, w=w)
 
         batch = _tail(ch, self._cursor, w, _LIVE_DEMAND_TOPICS)
         claims = [e.seq for e in batch if e.topic == Topic.LIFECYCLE_STARTED]
         newest = claims[-1] if claims else 0
         for e in batch:
             if e.topic in _HEAD_TOPICS and e.seq >= newest:
-                self._head.apply(e, point)
+                self._head.apply(e, read_at)
             if e.topic in _DEMAND_TOPICS:
                 self._demand.apply(e)
             self._cursor = e.seq
@@ -1311,14 +1312,6 @@ class PendingStops:
 # ----- reading at W -----------------------------------------------------------------
 
 
-def _point(ch: Channel, w: int, seq: int) -> Envelope | None:
-    """The record at ``seq``, or ``None`` when there is none at or below ``w``."""
-    if not 1 <= seq <= w:
-        return None
-    got = ch.read(after=seq - 1, limit=1)
-    return got[0] if got and got[0].seq == seq else None
-
-
 def _newest(ch: Channel, topic: Topic, w: int) -> Envelope | None:
     """The newest record on ``topic`` at or below ``w``: the newest on the log,
     unless one landed above ``w`` since it was read. ``latest`` takes no bound;
@@ -1346,17 +1339,17 @@ def _latest_claim_head(ch: Channel, w: int) -> Head:
     claim = _newest(ch, Topic.LIFECYCLE_STARTED, w)
     if claim is not None:
 
-        def point(seq: int) -> Envelope | None:
-            return _point(ch, w, seq)
+        def read_at(seq: int) -> Envelope | None:
+            return point(ch, seq, w=w)
 
-        head.apply(claim, point)
+        head.apply(claim, read_at)
         topics: list[str] = [
             Topic.LIFECYCLE_COMMIT,
             Topic.LIFECYCLE_REWIND,
             Topic.LIFECYCLE_STOPPED,
         ]
         for e in claim_window(ch, claim, w, topics):
-            head.apply(e, point)
+            head.apply(e, read_at)
     return head.head(w)
 
 
@@ -1382,7 +1375,7 @@ class _ClaimHead:
     record of the claim after its exit, the exit being its last node, raises, a
     second exit included.
 
-    ``apply`` reads only the node a ``resume_from`` names, through ``point``, and
+    ``apply`` reads only the node a ``resume_from`` names, through ``read_at``, and
     either applies its record whole or, when that read raises, changes nothing."""
 
     def __init__(self) -> None:
@@ -1396,12 +1389,12 @@ class _ClaimHead:
         """The claim applied, or ``None`` before any."""
         return self._claim
 
-    def apply(self, e: Envelope, point: Callable[[int], Envelope | None]) -> None:
+    def apply(self, e: Envelope, read_at: Callable[[int], Envelope | None]) -> None:
         """Apply ``e``, one of ``_HEAD_TOPICS``, whose ``resume_from`` is read
-        through ``point``."""
+        through ``read_at``."""
 
         def kind_of(seq: int) -> NodeKind | None:
-            return kind_at(point(seq))
+            return kind_at(read_at(seq))
 
         if e.topic == Topic.LIFECYCLE_STARTED:
             position: int | None = None

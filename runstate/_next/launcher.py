@@ -59,7 +59,7 @@ from ..channel import Channel, Envelope, RunNotFound, attach_channel, create_cha
 from ..channel.base import SessionProbe
 from ..vocabulary.handle import local_handle, local_handle_of, resolve
 from ..vocabulary.launch import LAUNCH_ID_ENV, launch_scope, new_launch_id
-from .claims import endings, has_exit
+from .claims import CAS_ATTEMPTS, endings, has_exit
 from .observables import LiveDemand, latest_episode, live_episode
 from .vocabulary.coordinate import Target
 from .vocabulary.payloads import (
@@ -71,23 +71,13 @@ from .vocabulary.payloads import (
     Terminated,
     Topic,
 )
-from .walk import readable
+from .walk import point, readable
 
 # ----- the helpers (§3, "The helpers") ---------------------------------------------
 
 
-# The attempts ``_report`` makes before it gives up. Its CAS loses only to a record
-# that landed inside one round trip of its loop (``last_seq``, the claim's point read,
-# its window's read, perhaps a probe, then the append): about a millisecond on SQLite
-# and a few on Postgres. Losing 256 in a row takes a log that grew by a record in each
-# of 256 round trips, a quarter of a second to a few seconds of out-writing every
-# read: no burst, but a writer outrunning its reporter, where more attempts change
-# nothing and the caller had better learn that its report has not landed.
-REPORT_ATTEMPTS = 256
-
-
 class ReportStarvedError(RuntimeError):
-    """A death report lost its CAS ``attempts`` times in a row (``REPORT_ATTEMPTS``):
+    """A death report lost its CAS ``attempts`` times in a row (``CAS_ATTEMPTS``):
     the log grew faster than the report could read it, and nothing was appended.
     It names the claim; a Channel carries no run identity, so the caller that knows
     the run adds it (``LocalLauncher.reap`` notes it on every failure)."""
@@ -147,7 +137,7 @@ def report_death(
     evidence records it once (review §12, item 14). ``t`` is this call's clock, when
     its caller saw the death. The append is a CAS at W, and a lost CAS reads again,
     so each rule is checked at the W of the append. A report that loses
-    ``REPORT_ATTEMPTS`` CASes in a row raises ``ReportStarvedError``."""
+    ``CAS_ATTEMPTS`` CASes in a row raises ``ReportStarvedError``."""
     return _report(
         ch,
         Died(claim_seq=claim_seq, outcome=outcome, evidence=evidence, t=time.time()),
@@ -158,7 +148,7 @@ def report_death(
 def _report(ch: Channel, died: Died, *, force: bool) -> int | None:
     """``report_death`` of a body already built (and so already checked): a reap
     dates its report by the death it reaped, the ``t`` of its ``terminated``."""
-    for _ in range(REPORT_ATTEMPTS):
+    for _ in range(CAS_ATTEMPTS):
         w = ch.last_seq()
         claim = _claim_at(ch, died.claim_seq, w)
         ended = endings(ch, claim, w)
@@ -171,16 +161,16 @@ def _report(ch: Channel, died: Died, *, force: bool) -> int | None:
         seq = ch.send(asdict(died), topic=Died.TOPIC, expected_seq=w)
         if seq is not None:
             return seq
-    raise ReportStarvedError(died.claim_seq, REPORT_ATTEMPTS)
+    raise ReportStarvedError(died.claim_seq, CAS_ATTEMPTS)
 
 
 def _claim_at(ch: Channel, claim_seq: int, w: int) -> Envelope:
     """The claim at ``claim_seq``, at or below ``w``; ``ValueError`` if there is
     none: a report naming no claim would end nothing any reader can name."""
-    got = ch.read(after=claim_seq - 1, limit=1) if claim_seq <= w else []
-    if not got or got[0].seq != claim_seq or got[0].topic != Topic.LIFECYCLE_STARTED:
+    e = point(ch, claim_seq, w=w)
+    if e is None or e.topic != Topic.LIFECYCLE_STARTED:
         raise ValueError(f"no lifecycle.started at seq {claim_seq} of {w}")
-    return got[0]
+    return e
 
 
 def report_if_dead(ch: Channel) -> int | None:
