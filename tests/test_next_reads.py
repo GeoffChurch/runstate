@@ -29,8 +29,6 @@ from runstate._next.observables import (
     SettledShort,
     Streams,
     Tier,
-    _coordinates,
-    _walk,
     aligned,
     answers,
     last_element,
@@ -42,6 +40,7 @@ from runstate._next.observables import (
     undischarged_stops,
 )
 from runstate._next.vocabulary.coordinate import Commits
+from runstate._next.walk import coordinates, walk
 from runstate._next.vocabulary.payloads import Commit, Outcome
 from runstate.channel.memory import MemoryChannel
 
@@ -54,7 +53,7 @@ def pending(ch):
 def lineage(ch, *, head):
     """The node seqs from the root to the head: the private walk's nodes (§5
     names no public lineage read; plan, open question 11)."""
-    return [at.env.seq for at in _walk(ch, head.resolve(ch)).nodes]
+    return [at.env.seq for at in walk(ch, head.resolve(ch).node).nodes]
 
 
 def count(ch, x, *, node):
@@ -765,6 +764,16 @@ FIRES_A_PURE_DEMAND = _log(
     (4, commit(1, None, [], fired=["p"])),
 )
 
+# The sample q's node commits was written before q's subscribe landed: a source
+# is sampled whenever the worker samples it, and the target is the subscribe's.
+SAMPLE_BEFORE_SUBSCRIBE = _log(
+    "a sample written before its subscription",
+    (1, started(None, sources=["lr"])),
+    (2, value("lr", 0.1)),
+    (3, subscribe("lr", "q", every={"commits": 1})),
+    (4, commit(1, None, [2], fired=["q"])),
+)
+
 # A completed exit that discarded its open iteration: closed, whatever its values.
 CLOSED_DISCARDED = _log(
     "a completed exit that discarded its iteration",
@@ -1066,14 +1075,14 @@ def test_a_name_that_was_a_source_throughout_counts_0():
 
 
 def test_the_coordinates_at_each_node_are_the_counts_there():
-    """``_coordinates``, the counts the Worker and ``history`` evaluate a schedule
+    """``coordinates``, the counts the Worker and ``history`` evaluate a schedule
     at, agree with ``prefix_len`` at every node, by the committing claim's
     declaration."""
     for rows, names in ((RESUMED, ["loss"]), (KIND_CHANGED, ["loss", "lr"])):
         ch = channel(rows)
         for h in (LatestClaimHead(), AtNode(10 if rows is RESUMED else 6)):
-            walked = _walk(ch, h.resolve(ch))
-            for at, c in zip(walked.nodes, _coordinates(walked), strict=True):
+            walked = walk(ch, h.resolve(ch).node)
+            for at, c in zip(walked.nodes, coordinates(walked), strict=True):
                 n = at.env.seq
                 assert c.commits == count(ch, Commits(), node=n)
                 for name in names:
@@ -1558,35 +1567,83 @@ def test_the_verdict_reads_nothing_above_its_w(rows, w, expected):
     assert peek_terminal(_LateW(rows, w)) == expected
 
 
-@pytest.mark.parametrize(
-    "fields",
-    [
-        {"outcomes": frozenset()},  # never empty
-        {"node": None},  # an exit's node
-        {"claim_seq": None},  # an exit's claim
-        {"reports": (DeathReport(4, K, "signal 9", 5.0),)},  # only under died
-    ],
-)
-def test_an_exits_run_result_holds_its_viewpoints_shape(fields):
-    with pytest.raises(ValueError):
-        RunResult(**{**by_exit(3, 1, P).__dict__, **fields})
+def by_inference(tier):
+    """A Watcher's inferred verdict (``Tier.PROBED_DEAD``, ``HEARTBEAT_STALE`` or
+    ``SESSION_ENDED``)."""
+    return RunResult(
+        outcomes=frozenset({Outcome.PRESUMED_DEAD}),
+        reports=(),
+        node=None,
+        claim_seq=3,
+        malformed=(),
+        tier=tier,
+        error=None,
+        run_id="r",
+    )
+
+
+_INFERRED = (Tier.PROBED_DEAD, Tier.HEARTBEAT_STALE, Tier.SESSION_ENDED)
 
 
 @pytest.mark.parametrize(
-    "fields",
+    "result",
     [
-        {"node": 3},  # only under exit
-        {"error": "boom"},  # only under exit
+        by_exit(3, 1, P),
+        by_exit(3, 1, E, error="boom", malformed=(2,)),
+        by_deaths(1, {K, E}, [DeathReport(3, K, "signal 9", 5.0)], malformed=(4,)),
+        by_launch(K),
+        *(by_inference(t) for t in _INFERRED),
     ],
 )
-def test_a_death_reports_run_result_holds_its_viewpoints_shape(fields):
-    with pytest.raises(ValueError):
-        RunResult(**{**by_deaths(1, {K}, []).__dict__, **fields})
+def test_a_run_result_of_each_tier_is_the_terminal_arm(result):
+    assert result.done
 
 
-def test_a_launchs_run_result_names_no_claim():
+@pytest.mark.parametrize(
+    "result, fields",
+    [
+        # never empty
+        (by_exit(3, 1, P), {"outcomes": frozenset()}),
+        (by_deaths(1, {K}, []), {"outcomes": frozenset()}),
+        # a node under an exit, and only there
+        (by_exit(3, 1, P), {"node": None}),
+        (by_deaths(1, {K}, []), {"node": 3}),
+        (by_inference(Tier.SESSION_ENDED), {"node": 4}),
+        # every tier but a launch's names its claim, and a launch's names none
+        (by_exit(3, 1, P), {"claim_seq": None}),
+        (by_deaths(1, {K}, []), {"claim_seq": None}),
+        *((by_inference(t), {"claim_seq": None}) for t in _INFERRED),
+        (by_launch(K), {"claim_seq": 1}),
+        # one outcome under every tier but death reports'
+        (by_exit(3, 1, P), {"outcomes": frozenset({P, E})}),
+        (by_launch(K), {"outcomes": frozenset({K, E})}),
+        *((by_inference(t), {"outcomes": frozenset({K, L})}) for t in _INFERRED),
+        # reports under death reports only
+        (by_exit(3, 1, P), {"reports": (DeathReport(4, K, "signal 9", 5.0),)}),
+        # an error under an exit only
+        (by_deaths(1, {K}, []), {"error": "boom"}),
+        (by_inference(Tier.HEARTBEAT_STALE), {"error": "boom"}),
+        # no malformed records under a launch's or an inference: neither reads a
+        # claim's window
+        (by_launch(K), {"malformed": (2,)}),
+        *((by_inference(t), {"malformed": (2,)}) for t in _INFERRED),
+    ],
+)
+def test_a_run_result_holds_its_tiers_shape(result, fields):
+    """``RunResult`` refuses a combination its tier rules out (§5, "``RunResult``")."""
     with pytest.raises(ValueError):
-        RunResult(**{**by_launch(K).__dict__, "claim_seq": 1})
+        RunResult(**{**result.__dict__, **fields})
+
+
+def test_the_tiers_are_closed():
+    assert {t.value for t in Tier} == {
+        "exit",
+        "died",
+        "terminated",
+        "probed_dead",
+        "heartbeat_stale",
+        "session_ended",
+    }
 
 
 # ----- the stop fold (§5, "The answer fold") ----------------------------------------

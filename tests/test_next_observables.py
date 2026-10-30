@@ -14,7 +14,6 @@ import pytest
 from runstate._next.observables import (
     LiveDemand,
     MalformedRecordError,
-    RunResult,
     Tier,
     current_heartbeat,
     last_activity,
@@ -168,13 +167,6 @@ def test_live_episode_is_none_once_an_exit_or_a_died_names_the_latest_claim(ch):
     assert c4 > c3
 
 
-def test_live_episode_running_then_none_when_stopped(ch):
-    c = claim(ch, local_handle())
-    assert live_episode(ch) == local_handle()
-    exit_(ch, c, None, completed=True)
-    assert live_episode(ch) is None
-
-
 def test_live_episode_foreign_host_episode_reads_live(ch):
     claim(ch, "local://otherhost/2147483646")
     assert live_episode(ch) == "local://otherhost/2147483646"
@@ -213,7 +205,7 @@ def test_latest_episode_none_when_no_worker_ever_attached(ch):
     assert latest_episode(ch) is None
 
 
-def test_latest_episode_returns_the_started_envelope(ch):
+def test_latest_episode_is_the_newest_claims_started_record(ch):
     seq = claim(ch, "local://h/1")
     e = latest_episode(ch)
     assert e.seq == seq and e.body["handle"] == "local://h/1"
@@ -236,7 +228,7 @@ def test_latest_episode_tracks_the_newest_started(ch):
 # ----- the verdict ------------------------------------------------------------------
 
 
-def test_none_while_running(ch):
+def test_the_verdict_is_none_while_the_claim_is_held(ch):
     c = claim(ch)
     n = commit(ch, c, None)
     beat(ch, c)
@@ -356,34 +348,6 @@ def test_a_junk_typed_launcher_death_is_refused_too(ch):
         peek_terminal(ch)
 
 
-def test_a_run_results_shape_follows_its_tier():
-    """The Watcher's inferred tiers carry no node, no reports and no error; a
-    death's verdict names its claim; ``done`` is the terminal arm."""
-    inferred = RunResult(
-        outcomes=frozenset({Outcome.PRESUMED_DEAD}),
-        reports=(),
-        node=None,
-        claim_seq=3,
-        malformed=(),
-        tier=Tier.SESSION_ENDED,
-        error=None,
-        run_id="r",
-    )
-    assert inferred.done
-    with pytest.raises(ValueError):
-        RunResult(**{**inferred.__dict__, "node": 4})
-    with pytest.raises(ValueError):
-        RunResult(**{**inferred.__dict__, "tier": Tier.DIED, "claim_seq": None})
-    assert {t.value for t in Tier} == {
-        "exit",
-        "died",
-        "terminated",
-        "probed_dead",
-        "heartbeat_stale",
-        "session_ended",
-    }
-
-
 def test_worker_completed_is_a_closed_head(ch):
     """True for the claim's own completed exit only: a launch's exit 0 is a fact
     about a process, and a death report is never a completion."""
@@ -498,11 +462,11 @@ def test_current_heartbeat_is_the_claims_newest_commit_or_heartbeat(ch):
 # ----- the answer fold: demand ------------------------------------------------------
 
 
-def test_live_demand_empty(ch):
+def test_live_demand_is_empty_on_an_empty_log(ch):
     assert live_demand(ch) == []
 
 
-def test_live_demand_subscribe_then_answers(ch):
+def test_a_subscription_is_spent_by_a_withdrawal_or_a_nodes_expired(ch):
     """A subscription is spent by a withdrawal, the asker's, or a node's
     ``expired``, the worker's."""
     subscribe(ch, "r1", every={"commits": 1})
@@ -515,7 +479,7 @@ def test_live_demand_subscribe_then_answers(ch):
     assert demand(ch) == []
 
 
-def test_live_demand_nak_answers(ch):
+def test_a_subscription_is_spent_by_a_nak(ch):
     subscribe(ch, "r1", **{"from": {"commits": 5}})
     nak(ch, "r1")
     assert live_demand(ch) == []

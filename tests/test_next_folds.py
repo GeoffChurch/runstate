@@ -7,12 +7,14 @@ Ported from ``tests/test_pending_stops.py``, whose fold was the Watcher's
 """
 
 import random
+import sys
 
 import pytest
 
 from runstate._next.observables import (
     Answers,
     AtNode,
+    Element,
     HeadFold,
     LastElement,
     LatestClaimHead,
@@ -33,8 +35,11 @@ from tests.test_migration_goldens import OUTPUT as GOLDEN_LOGS
 from tests.test_next_reads import (
     ANSWERED,
     LOGS as READS_LOGS,
+    SAMPLE_BEFORE_SUBSCRIBE,
     TWICE,
+    bound,
     commit,
+    died,
     started,
     stop,
     subscribe,
@@ -175,6 +180,11 @@ def _iteration(ch, claim, parent):
     return _send(ch, commit(claim, parent, [v, s], fired=["q"]))
 
 
+# The rows a poll read, by the lineage's length: each run of the test adds its own,
+# and all must be equal.
+_ROWS_PER_POLL: dict[int, int] = {}
+
+
 @pytest.mark.parametrize("commits", [10, 10_000])
 def test_polled_reads_stay_within_a_bound_as_the_lineage_grows(commits):
     """§5's criterion for a polled read: its cost is independent of lineage length
@@ -204,7 +214,8 @@ def test_polled_reads_stay_within_a_bound_as_the_lineage_grows(commits):
     _iteration(ch, claim, parent)
     ch.rows = 0
     h, (loss, iterations, last, sampled, *_), wanted, pending = poll()
-    assert ch.rows <= 30
+    _ROWS_PER_POLL[commits] = ch.rows
+    assert len(set(_ROWS_PER_POLL.values())) == 1, _ROWS_PER_POLL  # the same rows
     assert (loss, iterations, last.seq) == (commits + 1, commits + 1, h.node - 2)
     assert len(sampled) == commits + 1 and sampled[-1].node == h.node
     assert [e.request_id for e in wanted] == ["q", "p"]
@@ -306,14 +317,167 @@ def test_a_spent_stop_id_reused_is_dead_on_arrival():
 
 
 def test_pending_stops_reads_only_new_records():
-    ch = MemoryChannel()
+    ch = _Counting()
     fold = PendingStops()
     for i in range(100):
         ch.send({}, topic="control.stop", request_id=f"s{i}")
     fold.poll(ch)
-    calls = []
-    real_read = ch.read
-    ch.read = lambda after=0, **kw: (calls.append(after), real_read(after, **kw))[1]
+    ch.rows = 0
     ch.send({}, topic="control.stop", request_id="new")
     assert len(fold.poll(ch)) == 101
-    assert calls == [100]  # one read, starting after everything already seen
+    assert ch.rows == 1  # the one new record
+
+
+# ----- a read that raises mid-poll (§5, "Bounded reads") ----------------------------
+
+
+class _Flaky(MemoryChannel):
+    """A channel whose next point read (one row, any topic), once armed, raises,
+    as a locked SQLite database or a dropped Postgres connection does."""
+
+    def __init__(self):
+        super().__init__()
+        self.armed = False
+
+    def read(self, after=0, **kw):
+        if self.armed and kw.get("limit") == 1 and "topics" not in kw:
+            self.armed = False
+            raise OSError("database is locked")
+        return super().read(after, **kw)
+
+
+@pytest.mark.parametrize("label", [f"reads:{label}" for label in READS_LOGS])
+def test_a_fold_whose_read_raised_mid_poll_recovers_on_the_next(label):
+    """A poll that a read interrupts leaves the fold as if it had applied the
+    records before the read and none after: the cursor moves past each record as
+    it is applied, so none is applied twice. Every log is replayed in two
+    batches, split at every record, and the second poll of each fold has its
+    first point read raise. The next poll equals the pure read."""
+    rows = LOGS[label]
+    names = sorted(
+        {"loss"} | {name for _, topic, name, _, _ in rows if topic == "value" and name}
+    )
+    rids = sorted(
+        {rid for _, topic, _, rid, _ in rows if topic == "control.subscribe" and rid}
+    )
+    for split in range(len(rows)):
+        ch = _Flaky()
+        head_fold, demand, stops = HeadFold(), LiveDemand(), PendingStops()
+        counts = {x: PrefixLen(x) for x in [Commits(), *names]}
+        lasts = {name: LastElement(name) for name in names}
+        answered = {rid: Answers(rid) for rid in rids}
+
+        def head():
+            return _outcome(lambda: LatestClaimHead().resolve(ch))
+
+        def polls():
+            h = head()
+            out = [
+                lambda: head_fold.poll(ch),
+                lambda: demand.poll(ch),
+                lambda: stops.poll(ch),
+            ]
+            if h[0] == "value":
+                out += [lambda f=f: f.poll(ch, h[1]) for f in counts.values()]
+                out += [lambda f=f: f.poll(ch, h[1]) for f in lasts.values()]
+                out += [lambda f=f: f.poll(ch, h[1]) for f in answered.values()]
+            return out
+
+        for i, (seq, topic, name, rid, body) in enumerate(rows):
+            assert ch.send(body, topic=topic, name=name, request_id=rid) == seq
+            if i == split:  # the first batch
+                for poll in polls():
+                    _outcome(poll)
+        for poll in polls():  # the second batch, each poll interrupted
+            ch.armed = True
+            try:
+                _outcome(poll)
+            except OSError:
+                pass
+            ch.armed = False
+        h = head()
+        assert _outcome(lambda: head_fold.poll(ch)) == h, split
+        assert _agree(label, lambda: demand.poll(ch), lambda: live_demand(ch)), split
+        assert _agree(label, lambda: stops.poll(ch), lambda: undischarged_stops(ch))
+        if h[0] == "raised":
+            continue
+        h = h[1]
+        for x, fold in counts.items():
+            assert _agree(
+                label, lambda: fold.poll(ch, h), lambda: prefix_len(ch, x, head=h)
+            ), (split, x)
+        for name, fold in lasts.items():
+            assert _agree(
+                label, lambda: fold.poll(ch, h), lambda: last_element(ch, name, head=h)
+            ), (split, name)
+        for r, fold in answered.items():
+            assert _agree(
+                label, lambda: fold.poll(ch, h), lambda: answers(ch, r, head=h)
+            ), (split, r)
+
+
+def test_the_answers_fold_takes_a_sample_written_before_its_subscription():
+    """The target is fixed by the subscribe, but its sample may precede it: the
+    fold holds every value's name, so it finds the sample when the node lands."""
+    ch = MemoryChannel()
+    for _, r in SAMPLE_BEFORE_SUBSCRIBE:
+        _send(ch, r)
+    h = LatestClaimHead().resolve(ch)
+    assert (
+        Answers("q").poll(ch, h)
+        == answers(ch, "q", head=h)
+        == [Element(node=4, seq=2, value=0.1, t=1.5)]
+    )
+
+
+# ----- a poll's cost by what is held (§5, "Bounded reads") --------------------------
+
+
+def _steps(poll):
+    """The Python steps a call takes: each line, call and return the tracer sees,
+    in every frame. Deterministic, unlike a timer."""
+    n = 0
+
+    def tracer(frame, event, arg):
+        nonlocal n
+        n += 1
+        return tracer
+
+    sys.settrace(tracer)
+    try:
+        poll()
+    finally:
+        sys.settrace(None)
+    return n
+
+
+def _spent_history(ch, n):
+    """``n`` stops withdrawn, ``n`` subscriptions withdrawn, and ``n`` leases bound
+    to a claim that then died: every request spent or void."""
+    claim = _send(ch, started(None))
+    for i in range(n):
+        _send(ch, stop(f"s{i}"))
+        _send(ch, withdraw(f"s{i}"))
+        _send(ch, subscribe(None, f"p{i}", until={"commits": 10}))
+        _send(ch, withdraw(f"p{i}"))
+        _send(ch, subscribe(None, f"l{i}", until={"time_seconds": 60}))
+        _send(ch, bound(claim, f"l{i}"))
+    _send(ch, died(claim, "killed"))
+    _send(ch, started(None))
+
+
+@pytest.mark.parametrize("fold", [PendingStops, LiveDemand])
+def test_a_polls_cost_does_not_grow_with_the_requests_spent(fold):
+    """A spent request, or a void lease, is dropped from what a fold by name
+    holds, but for its id: a poll after one new request takes the same steps
+    after 10 spent requests as after 1,000."""
+    steps = []
+    for n in (10, 1_000):
+        ch = MemoryChannel()
+        _spent_history(ch, n)
+        held = fold()
+        held.poll(ch)
+        _send(ch, stop("new"))
+        _send(ch, subscribe(None, "new", until={"commits": 10}))
+        steps.append(_steps(lambda: held.poll(ch)))
+    assert steps[0] == steps[1]

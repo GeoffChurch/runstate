@@ -23,12 +23,11 @@ settled, w)``. ``LatestClaimHead`` takes the newest claim, by the claim CAS, the
 that writer's own order, which the log's seq order is within one writer: the
 claim's readable exit if it has one, else its position. ``AtNode(x)`` takes ``x``.
 
-THE PURE WALK. Each read takes ``w`` first and reads nothing above it. It reads
-backwards from its head node in windows that grow by 4x (§5, "The pure walk":
-bulk reads, never a point read per node), as far as the lineage, its values and
-its claims reach, walks the lineage back to the root, and checks every node it
-walks (§5, "Well-formedness"). These are one-shot reads, never polled. Nothing is
-cached between calls.
+THE PURE WALK (``walk``, the internal module the reads, the Worker and ``ensure``
+share). Each read takes ``w`` first and reads nothing above it, and walks the
+lineage from its head node back to the root in bulk windows, checking every node
+it walks (§5, "Well-formedness"). These are one-shot reads, never polled. Nothing
+is cached between calls.
 
 THE CLAIM PLANE (§2, §5). A claim has ended once its exit, or a death report
 naming it, is on the log, readable or not: the one predicate the gate, lease
@@ -51,13 +50,16 @@ standalone, since ``ensure``'s loop has no Watcher and the TUI may use public AP
 only: ``HeadFold``, ``PrefixLen``, ``LastElement``, ``Answers``, ``LiveDemand``
 and ``PendingStops``. Each holds its state and reads only the records above its
 cursor, so a poll costs O(new records), and equals its pure read after every
-record.
+record. Each pure read and its fold share one accumulator (``_ClaimHead``,
+``_Demand``, ``_Stops``) or one node check (``check_node``), so a rule is written
+once.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+import sys
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
@@ -69,7 +71,6 @@ from .vocabulary.payloads import (
     Bound,
     Commit,
     Died,
-    Node,
     Outcome,
     Reap,
     Rewind,
@@ -79,42 +80,30 @@ from .vocabulary.payloads import (
     Topic,
     Value,
 )
-from .vocabulary.schedule import (
-    Coordinates,
-    MalformedSchedule,
-    is_lease,
-    parse_schedule,
+from .vocabulary.schedule import MalformedSchedule, is_lease, parse_schedule
+from .walk import (
+    EVERY_NAME,
+    FIRST_WINDOW,
+    At,
+    KindOf,
+    MalformedRecordError as MalformedRecordError,
+    NodeKind,
+    Walked,
+    check_node,
+    check_reference,
+    classified,
+    kind,
+    kind_at,
+    members,
+    no_claim,
+    node_at,
+    not_a_value,
+    value_record,
+    verdict_parse,
+    walk,
 )
 
 _T = TypeVar("_T")
-
-
-# ----- malformed records ------------------------------------------------------------
-
-
-class MalformedRecordError(Exception):
-    """A record a read must interpret cannot be (§5, "Well-formedness"): the writer
-    violated the convention. Typed and catchable: ``seq`` and ``topic`` name the
-    record, ``detail`` says what is wrong with it. A read raises rather than
-    guesses, since completeness is well-formedness: a read never waits."""
-
-    def __init__(self, seq: int, topic: str, detail: str) -> None:
-        super().__init__(
-            f"uninterpretable record at seq {seq} on topic {topic!r}: {detail}"
-        )
-        self.seq = seq
-        self.topic = topic
-        self.detail = detail
-
-
-def verdict_parse(cls: type[_T], e: Envelope) -> _T:
-    """``e``'s body parsed as ``cls(**body)``, the writer's convention violation (a
-    bad or missing key -> ``TypeError``, a bad value -> ``ValueError``) wrapped in
-    the typed ``MalformedRecordError``."""
-    try:
-        return cls(**e.body)
-    except (TypeError, ValueError) as exc:
-        raise MalformedRecordError(e.seq, e.topic, str(exc)) from exc
 
 
 # ----- the heads (§5) ---------------------------------------------------------------
@@ -177,7 +166,7 @@ class AtNode:
         e = _point(ch, w, self.node)
         if e is None:
             raise ValueError(f"AtNode({self.node}): no record at or below w={w}")
-        if _node_at(e) is None:
+        if node_at(e) is None:
             raise ValueError(f"AtNode({self.node}): a {e.topic} is not a node")
         return Head(self.node, True, w)
 
@@ -246,7 +235,7 @@ class Streams(NamedTuple):
 def prefix_len(ch: Channel, x: str | Commits, *, head: HeadStrategy) -> int:
     """``count(x, head)`` (§5): what ``progress`` was, as a count, for an eager
     stream or ``Commits()``. A name that was a source throughout counts 0."""
-    return _count(_walk(ch, head.resolve(ch)), x)
+    return _count(walk(ch, head.resolve(ch).node), x)
 
 
 def prefix(
@@ -263,8 +252,8 @@ def prefix(
     h = head.resolve(ch)
     if n == 0:
         return Complete((), h.node)
-    walked = _walk(ch, h)
-    found = tuple(_element(walked, at, s) for at, s in _members(walked, stream)[:n])
+    walked = walk(ch, h.node)
+    found = tuple(_element(walked, at, s) for at, s in members(walked, stream)[:n])
     if len(found) == n:
         return Complete(found, h.node)
     if h.settled:
@@ -275,19 +264,19 @@ def prefix(
 def series(ch: Channel, stream: str, *, head: HeadStrategy) -> list[Element]:
     """One eager stream's elements in lineage order (§5). It reads every
     element's body, so a malformed one raises."""
-    walked = _walk(ch, head.resolve(ch))
-    return [_element(walked, at, s) for at, s in _members(walked, stream)]
+    walked = walk(ch, head.resolve(ch).node)
+    return [_element(walked, at, s) for at, s in members(walked, stream)]
 
 
 def last_element(ch: Channel, stream: str, *, head: HeadStrategy) -> Element | None:
     """The last element in lineage order, or ``None`` (§5). That is not always
     the newest by seq: ``include`` can commit an older value after a newer one.
     It reads the last element's body only."""
-    walked = _walk(ch, head.resolve(ch))
-    members = _members(walked, stream)
-    if not members:
+    walked = walk(ch, head.resolve(ch).node)
+    found = members(walked, stream)
+    if not found:
         return None
-    at, s = members[-1]
+    at, s = found[-1]
     return _element(walked, at, s)
 
 
@@ -302,13 +291,13 @@ def aligned(
     element. Sources' samples appear here, keyed by node: a cell is every value of
     its name the node commits, whatever its kind. It reads the bodies of the
     values in its cells."""
-    walked = _walk(ch, head.resolve(ch))
+    walked = walk(ch, head.resolve(ch).node)
     wanted = frozenset(names)
     rows: list[AlignedRow] = []
     for at, x in zip(walked.nodes, _axis(walked, axis), strict=True):
         cells: dict[str, list[Element]] = {n: [] for n in names}
         for s in at.node.committed:
-            name = _value_record(walked, at, s).name
+            name = value_record(walked, at, s).name
             if name is not None and name in wanted:
                 cells[name].append(_element(walked, at, s))
         if any(cells.values()):
@@ -330,30 +319,46 @@ def answers(ch: Channel, request_id: str, *, head: HeadStrategy) -> list[Element
     node"), is malformed: ``MalformedRecordError``. The read resolves the values
     of the nodes that fire, and reads the samples' bodies."""
     h = head.resolve(ch)
-    walked = _walk(ch, h)
+    walked = walk(ch, h.node)
     target = _subscription_target(ch, request_id, h.w)
     out: list[Element] = []
     for at in walked.nodes:
         if request_id not in at.node.fired:
             continue
         if target is None:
-            raise MalformedRecordError(
-                at.env.seq,
-                at.env.topic,
-                f"fired names {request_id!r}, which no source subscription names",
-            )
+            raise _unsubscribed(at.env.seq, at.env.topic, request_id)
         samples = [
-            s for s in at.node.committed if _value_record(walked, at, s).name == target
+            s for s in at.node.committed if value_record(walked, at, s).name == target
         ]
         if len(samples) != 1:
-            raise MalformedRecordError(
-                at.env.seq,
-                at.env.topic,
-                f"fired names {request_id!r}, and commits {len(samples)} samples "
-                f"of its target {target!r}, not one",
+            raise _not_one_sample(
+                at.env.seq, at.env.topic, request_id, target, len(samples)
             )
         out.append(_element(walked, at, samples[0]))
     return out
+
+
+def _unsubscribed(seq: int, topic: str, request_id: str) -> MalformedRecordError:
+    """The error of the node at ``seq`` whose ``fired`` names a request no source
+    subscription names: none, or a pure demand, which never fires."""
+    return MalformedRecordError(
+        seq,
+        topic,
+        f"fired names {request_id!r}, which no source subscription names",
+    )
+
+
+def _not_one_sample(
+    seq: int, topic: str, request_id: str, target: str, n: int
+) -> MalformedRecordError:
+    """The error of the node at ``seq`` that fires a request and commits ``n``
+    samples of its target, not one (§3, "A source fires once per node")."""
+    return MalformedRecordError(
+        seq,
+        topic,
+        f"fired names {request_id!r}, and commits {n} samples of its target "
+        f"{target!r}, not one",
+    )
 
 
 def streams(ch: Channel, *, head: HeadStrategy) -> Streams:
@@ -361,19 +366,10 @@ def streams(ch: Channel, *, head: HeadStrategy) -> Streams:
     committing claim's declaration (§2, "Membership"): ``sources`` the names some
     committing claim declared, ``eager`` the names some committing claim did not.
     A name that changed kind is in both. It resolves every value on the lineage."""
-    walked = _walk(ch, head.resolve(ch))
     eager: set[str] = set()
     sources: set[str] = set()
-    declared: dict[int, frozenset[str]] = {}
-    for at in walked.nodes:
-        for s in at.node.committed:
-            name = _value_record(walked, at, s).name
-            if name is None:
-                continue
-            claim = at.node.claim_seq
-            if claim not in declared:
-                declared[claim] = _declared(walked, at)
-            (sources if name in declared[claim] else eager).add(name)
+    for c in classified(walk(ch, head.resolve(ch).node), among=EVERY_NAME):
+        (sources if c.is_source else eager).add(c.name)
     return Streams(frozenset(eager), frozenset(sources))
 
 
@@ -412,18 +408,20 @@ class DeathReport:
 class RunResult:
     """The verdict (§5), the terminal arm of ``RunStatus``:
 
-    - ``outcomes``: never empty. One under an exit, a launch's ``terminated`` or
-      an inference; under death reports, the set of their outcomes, a ``lost``
+    - ``outcomes``: never empty. Exactly one under an exit, a launch's
+      ``terminated`` or an inference; under death reports, the set of their
+      outcomes, a ``lost``
       for each unreadable record that ended the claim, less ``lost`` beside
       another. A consumer's policy tests the set, as ``ensure`` does with "any of
       its outcomes in ``Outcome.failures()``". There is no ``success``;
     - ``reports``: the readable death reports naming the claim, in seq order,
       under ``DIED`` only;
     - ``node``: the exit node's seq under ``EXIT``, else ``None``;
-    - ``claim_seq``: the claim the verdict is about: required under ``EXIT`` and
-      ``DIED``, ``None`` for a run nothing claimed (``TERMINATED``);
+    - ``claim_seq``: the claim the verdict is about: required under every tier
+      but ``TERMINATED``, a run nothing claimed, where it is ``None``;
     - ``malformed``: the seqs of the unreadable records the verdict skipped, so
-      they are reported, not raised;
+      they are reported, not raised: under ``EXIT`` and ``DIED`` only, the tiers
+      that read a claim's window;
     - ``tier``: the viewpoint;
     - ``error``: the exit's error under ``EXIT``, else ``None``: under ``DIED``
       the evidence is in ``reports``;
@@ -442,12 +440,19 @@ class RunResult:
     def __post_init__(self) -> None:
         if not self.outcomes:
             raise ValueError("a verdict's outcomes are never empty")
+        if len(self.outcomes) != 1 and self.tier != Tier.DIED:
+            raise ValueError("a verdict has one outcome, but under death reports")
         if (self.node is not None) != (self.tier == Tier.EXIT):
             raise ValueError("a verdict names its node under an exit, and only there")
-        if self.claim_seq is None and self.tier in (Tier.EXIT, Tier.DIED):
-            raise ValueError("a verdict under an exit or a death names its claim")
-        if self.claim_seq is not None and self.tier == Tier.TERMINATED:
-            raise ValueError("a launch's verdict is an unclaimed run's: no claim")
+        if (self.claim_seq is None) != (self.tier == Tier.TERMINATED):
+            raise ValueError(
+                "a verdict names its claim, but a launch's: an unclaimed run's"
+            )
+        if self.malformed and self.tier not in (Tier.EXIT, Tier.DIED):
+            raise ValueError(
+                "a verdict reports malformed records under an exit or death "
+                "reports only, the tiers that read a claim's window"
+            )
         if self.reports and self.tier != Tier.DIED:
             raise ValueError("a verdict carries reports under death reports only")
         if self.error is not None and self.tier != Tier.EXIT:
@@ -656,7 +661,7 @@ def current_heartbeat(ch: Channel, claim: Envelope | None) -> Envelope | None:
     top = max(newest, key=lambda e: e.seq)
     if _named_claim(top) == claim.seq:
         return top
-    hi, width = top.seq, _FIRST_WINDOW
+    hi, width = top.seq, FIRST_WINDOW
     while hi > claim.seq:
         lo = max(claim.seq, hi - width)
         window = ch.read(
@@ -730,22 +735,12 @@ def undischarged_stops(ch: Channel) -> list[Envelope]:
     w = ch.last_seq()
     if w == 0:
         return []
-    stops: dict[str, Envelope] = {}
-    spent: set[str] = set()
+    stops = _Stops()
     for e in ch.read(topics=list(_STOP_TOPICS), limit=w):
         if e.seq > w:
             break
-        if e.topic == Topic.LIFECYCLE_STOPPED:
-            exit_ = _readable(Stopped, e)
-            if exit_ is not None:
-                spent.update(exit_.honored)
-        elif e.request_id is None:
-            continue
-        elif e.topic == Topic.CONTROL_STOP:
-            stops[e.request_id] = e
-        else:
-            spent.add(e.request_id)
-    return sorted((e for r, e in stops.items() if r not in spent), key=lambda e: e.seq)
+        stops.apply(e)
+    return stops.pending()
 
 
 # What the answer fold reads: the requests, the records that spend or bind them,
@@ -771,17 +766,24 @@ _STOP_TOPICS = (
 class _Demand:
     """The answer fold's subscriptions (§5, "The answer fold"), applied record by
     record in seq order: ``live_demand`` applies the whole log in one pass, and
-    ``LiveDemand`` holds one and applies each poll's new records. It holds each
-    id's newest send, its class by its first send, the spent ids, the bindings,
-    the claims, and the claims a record has ended."""
+    ``LiveDemand`` holds one and applies each poll's new records.
+
+    It holds each live id's newest send, in send order, so the live list is read
+    off in seq order; each such id's class, by its first send, and the claims it
+    is bound to; the claims, and those a record has ended. A spent id, or a void
+    lease, is **dead**: never live again, since a spent id stays spent and void
+    never reverts (a void lease's class and its ended claim are fixed). So its
+    send and its bindings are dropped, only its id is kept, and a send reusing it
+    is skipped: a poll costs O(new records) and the live list O(live)."""
 
     def __init__(self) -> None:
-        self._subs: dict[str, Envelope] = {}
+        self._live: dict[str, Envelope] = {}
         self._lease: dict[str, bool] = {}
-        self._spent: set[str] = set()
-        self._bound: dict[str, set[int]] = {}
+        self._dead: set[str] = set()
+        self._bound: dict[str, set[int]] = {}  # each id's claims
+        self._bound_to: dict[int, set[str]] = {}  # each live claim's ids
         self._claims: set[int] = set()
-        self._ended: set[int] = set()
+        self._ended: set[int] = set()  # the claims a record has ended
 
     def apply(self, e: Envelope) -> None:
         """Apply ``e``, one of ``_DEMAND_TOPICS``."""
@@ -789,43 +791,94 @@ class _Demand:
             self._claims.add(e.seq)
             return
         ended = _ends(e)
-        if ended is not None:
+        if ended is not None and ended in self._claims and ended not in self._ended:
+            # a record ends a claim below it, so whether it was a claim is known
             self._ended.add(ended)
+            for r in self._bound_to.pop(ended, ()):
+                if self._lease.get(r, False):
+                    self._kill(r)
         if e.topic in (Topic.LIFECYCLE_COMMIT, Topic.LIFECYCLE_STOPPED):
-            self._spent.update(_expired(e))
+            for r in _expired(e):
+                self._kill(r)
         elif e.topic == Topic.SUPERVISOR_DIED or e.request_id is None:
             return
+        elif e.request_id in self._dead:
+            return  # dead on arrival, whatever it is
         elif e.topic == Topic.CONTROL_SUBSCRIBE:
-            self._subs[e.request_id] = e
-            if e.request_id not in self._lease:
-                self._lease[e.request_id] = _is_lease(e)
+            self._send(e.request_id, e)
         elif e.topic == Topic.LIFECYCLE_BOUND:
             b = _readable(Bound, e)
             if b is not None:
-                self._bound.setdefault(e.request_id, set()).add(b.claim_seq)
+                self._bind(e.request_id, b.claim_seq)
         else:
-            self._spent.add(e.request_id)
+            self._kill(e.request_id)
 
     def live(self, *, closed: bool) -> list[Envelope]:
         """The live subscriptions, ascending by seq; none when the head is
         ``closed``."""
-        if closed:
-            return []
-        return sorted(
-            (
-                e
-                for r, e in self._subs.items()
-                if r not in self._spent and not self._void(r)
-            ),
-            key=lambda e: e.seq,
-        )
+        return [] if closed else list(self._live.values())
 
-    def _void(self, request_id: str) -> bool:
-        """Is it a lease bound to a claim that has ended?"""
-        return self._lease[request_id] and any(
-            c in self._claims and c in self._ended
-            for c in self._bound.get(request_id, ())
-        )
+    def _send(self, r: str, e: Envelope) -> None:
+        if r not in self._lease:  # the first send fixes the class
+            self._lease[r] = _is_lease(e)
+            if self._lease[r] and not self._bound.get(r, set()).isdisjoint(self._ended):
+                self._kill(r)  # bound before its first send, to an ended claim
+                return
+        self._live.pop(r, None)  # the newest send, last
+        self._live[r] = e
+
+    def _bind(self, r: str, claim: int) -> None:
+        if claim in self._ended:
+            if self._lease.get(r, False):
+                self._kill(r)
+                return
+        else:
+            self._bound_to.setdefault(claim, set()).add(r)
+        self._bound.setdefault(r, set()).add(claim)
+
+    def _kill(self, r: str) -> None:
+        self._dead.add(r)
+        self._live.pop(r, None)
+        self._lease.pop(r, None)
+        self._bound.pop(r, None)
+
+
+class _Stops:
+    """The stop fold (§5, "The answer fold"), applied record by record in seq
+    order: ``undischarged_stops`` applies the whole log in one pass, and
+    ``PendingStops`` holds one and applies each poll's new records.
+
+    It holds each pending id's newest send, in send order, and the spent ids. A
+    spent id stays spent, so its send is dropped, only its id is kept, and a send
+    reusing it is skipped: a poll costs O(new records) and the pending list
+    O(pending)."""
+
+    def __init__(self) -> None:
+        self._pending: dict[str, Envelope] = {}
+        self._spent: set[str] = set()
+
+    def apply(self, e: Envelope) -> None:
+        """Apply ``e``, one of ``_STOP_TOPICS``."""
+        if e.topic == Topic.LIFECYCLE_STOPPED:
+            exit_ = _readable(Stopped, e)
+            for r in () if exit_ is None else exit_.honored:
+                self._spend(r)
+        elif e.request_id is None:
+            return
+        elif e.topic == Topic.CONTROL_STOP:
+            if e.request_id not in self._spent:
+                self._pending.pop(e.request_id, None)  # the newest send, last
+                self._pending[e.request_id] = e
+        else:
+            self._spend(e.request_id)
+
+    def pending(self) -> list[Envelope]:
+        """The pending stops, ascending by seq."""
+        return list(self._pending.values())
+
+    def _spend(self, r: str) -> None:
+        self._spent.add(r)
+        self._pending.pop(r, None)
 
 
 def _ends(e: Envelope) -> int | None:
@@ -872,15 +925,20 @@ def _is_lease(e: Envelope) -> bool:
 # ``Head`` (``HeadFold``'s, or ``AtNode``'s), and read up to its ``w``; the folds by
 # name, for the whole log (§2), are polled ``fold.poll(ch)`` (plan, open question 4).
 #
+# The cursor moves past each record as it is applied, and applying a record either
+# completes or, when a read inside it raises (the head's point read of a
+# ``resume_from``), changes nothing. So a poll a read interrupts leaves the fold as if
+# it had applied the records before that one, and the next poll applies the rest:
+# none is applied twice.
+#
 # A fold raises wherever its pure read raises (§5, "Bounded reads"): each node's
-# ``values`` and ``parent`` below its own seq, its ``parent`` an extendable node,
-# membership's claim, and, where the pure read resolves them, its ``values`` seqs
-# naming ``value`` records. A fold reads every ``value`` record, so it holds their
-# seqs and checks each node's against them as the node lands, at O(new records). A
-# node's check that fails is held as the node's state and raised by any read of a
-# lineage through it. The one check left to the pure walk is a seq committed twice
-# along one lineage, which in a fold would cost O(depth) per value (§5,
-# "Well-formedness": "Checked by the pure walk only").
+# ``check_node``, membership's claim, and, where the pure read resolves them, its
+# ``values`` seqs naming ``value`` records. A fold reads every ``value`` record, so
+# it holds each one's name, never the record, and checks each node's against them
+# as the node lands, at O(new records). A node's check that fails is held as the
+# node's state and raised by any read of a lineage through it. The one check left to
+# the pure walk is a seq committed twice along one lineage, which in a fold would
+# cost O(depth) per value (§5, "Well-formedness": "Checked by the pure walk only").
 
 
 def _tail(ch: Channel, cursor: int, w: int, topics: Sequence[str]) -> list[Envelope]:
@@ -893,150 +951,95 @@ def _tail(ch: Channel, cursor: int, w: int, topics: Sequence[str]) -> list[Envel
     return [e for e in got if e.seq <= w]
 
 
-def _non_values(at: _At, value_seqs: set[int]) -> MalformedRecordError | None:
-    """The error of a node whose ``values`` names a seq that is no ``value``
-    record (§5, "Membership"), as ``_value_record`` raises it, or ``None``."""
-    for s in at.node.committed:
-        if s not in value_seqs:
-            return MalformedRecordError(
-                at.env.seq, at.env.topic, f"values names {s}, which is not a value"
-            )
-    return None
-
-
-class HeadFold:
-    """``LatestClaimHead``, held (§5): the newest claim, its position and its
-    readable exit. A poll applies the records above its cursor in order, as the
-    pure head fold applies the claim's window, and a new claim re-resolves from
-    that claim, reading below it only the node its ``resume_from`` names. The
-    checks are the head fold's (``_latest_claim_head``): one that fails holds for
-    the claim, and every poll raises it, until a newer claim."""
-
-    def __init__(self) -> None:
-        self._cursor = 0
-        self._claim: int | None = None
-        self._position: int | None = None
-        self._exit: _At | None = None
-        self._error: MalformedRecordError | None = None
-
-    def poll(self, ch: Channel) -> Head:
-        w = ch.last_seq()
-        for e in _tail(ch, self._cursor, w, _HEAD_TOPICS):
-            self._apply(ch, w, e)
-        self._cursor = max(self._cursor, w)
-        return self._resolved(w)
-
-    def _resolved(self, w: int) -> Head:
-        """The head held, at ``w``: the error that holds for the claim raised."""
-        if self._error is not None:
-            raise self._error
-        if self._claim is None:
-            return Head(None, False, w)
-        if self._exit is not None:
-            return Head(self._exit.env.seq, self._exit.node.closed, w)
-        return Head(self._position, False, w)
-
-    def _apply(self, ch: Channel, w: int, e: Envelope) -> None:
-        """Apply ``e``, one of ``_HEAD_TOPICS``, read at ``w``."""
-
-        def lookup(seq: int) -> Envelope | None:
-            return _point(ch, w, seq)
-
-        if e.topic == Topic.LIFECYCLE_STARTED:
-            self._claim, self._exit, self._error = e.seq, None, None
-            try:
-                started = verdict_parse(Started, e)
-                self._position = _resume_point(lookup, e, started.resume_from)
-            except MalformedRecordError as exc:
-                self._error = exc
-            return
-        if self._claim is None or self._error is not None:
-            return
-        try:
-            body = _claims(e, self._claim)
-            if body is None:
-                return
-            if self._exit is not None:
-                raise MalformedRecordError(
-                    e.seq,
-                    e.topic,
-                    f"claim {self._claim} exited at seq {self._exit.env.seq}: "
-                    "the exit is its claim's last node",
-                )
-            if isinstance(body, Rewind):
-                self._position = _resume_point(lookup, e, body.resume_from)
-                return
-            if body.parent != self._position:
-                raise MalformedRecordError(
-                    e.seq,
-                    e.topic,
-                    f"parent {body.parent} is not its claim's position "
-                    f"{self._position}",
-                )
-            if isinstance(body, Commit):
-                self._position = e.seq
-            else:
-                self._exit = _At(e, body)
-        except MalformedRecordError as exc:
-            self._error = exc
-
-
 _HEAD_TOPICS = (
     Topic.LIFECYCLE_STARTED,
     Topic.LIFECYCLE_COMMIT,
     Topic.LIFECYCLE_REWIND,
     Topic.LIFECYCLE_STOPPED,
 )
-_STREAM_TOPICS = (
-    Topic.LIFECYCLE_STARTED,
-    Topic.LIFECYCLE_COMMIT,
-    Topic.LIFECYCLE_STOPPED,
-    Topic.VALUE,
-)
+
+
+class HeadFold:
+    """``LatestClaimHead``, held (§5): the newest claim, its position and its
+    readable exit (``_ClaimHead``). Its first poll starts at the newest claim, and
+    reads below it only the node its ``resume_from`` names (CLAUDE.md, "Bound a
+    fold to the window its question is about"); a poll applies the records above
+    its cursor in order, and a newer claim re-resolves from that claim. A check
+    that fails holds for the claim, and every poll raises it, until a newer
+    claim."""
+
+    def __init__(self) -> None:
+        self._cursor = 0
+        self._head = _ClaimHead()
+
+    def poll(self, ch: Channel) -> Head:
+        w = ch.last_seq()
+
+        def point(seq: int) -> Envelope | None:
+            return _point(ch, w, seq)
+
+        if self._head.claim is None and w > self._cursor:
+            claim = _newest(ch, Topic.LIFECYCLE_STARTED, w)
+            if claim is None:
+                self._cursor = w  # nothing claimed: no record below w is the head's
+            else:
+                self._head.apply(claim, point)
+                self._cursor = claim.seq
+        for e in _tail(ch, self._cursor, w, _HEAD_TOPICS):
+            self._head.apply(e, point)
+            self._cursor = e.seq
+        self._cursor = max(self._cursor, w)
+        return self._head.head(w)
+
+
+_NODE_TOPICS = (Topic.LIFECYCLE_COMMIT, Topic.LIFECYCLE_STOPPED)
+_STREAM_TOPICS = (Topic.LIFECYCLE_STARTED, *_NODE_TOPICS, Topic.VALUE)
 
 _S = TypeVar("_S")
 
 
 class _NodeFold(ABC, Generic[_S]):
-    """What the stream folds share: a cursor, and for every node seen its derived
-    state, ``_S``, from its parent's and the elements of the stream it commits, or
-    the ``MalformedRecordError`` a read of a lineage through it raises. Membership
-    is decided per committing claim, from the claims' declared sources, and the
-    stream's value records are held as they pass (§5, "The stream-prefix fold"),
-    with every value's seq, so a node naming a non-value raises as the pure read
-    that resolves it does. The ``Commits()`` count resolves no value, and holds
-    none."""
+    """What the folds by a head share: a cursor, and for every node seen its kind
+    and its derived state, ``_S``, from its parent's, or the
+    ``MalformedRecordError`` a read of a lineage through it raises, after
+    ``check_node``. Of the records it reads (``topics``), it holds each claim's
+    declared sources and each value's name, never a record: membership is decided
+    per committing claim (§5, "The stream-prefix fold"), and a node naming a
+    non-value raises as the pure read that resolves it does."""
 
-    def __init__(self, stream: str | None) -> None:
-        self._stream = stream  # None: no stream, the Commits() count
+    def __init__(self, topics: tuple[Topic, ...]) -> None:
+        self._topics = topics
         self._cursor = 0
         self._state: dict[int, _S | MalformedRecordError] = {}
-        self._extendable: dict[int, bool] = {}
+        self._kinds: dict[int, NodeKind | MalformedRecordError] = {}
         self._sources: dict[int, frozenset[str] | MalformedRecordError] = {}
-        self._values: dict[int, Envelope] = {}  # the stream's, by seq
-        self._value_seqs: set[int] = set()  # every value's, for a stream
+        self._name_of: dict[int, str | None] = {}  # every value's
+
+    def _advance(self, ch: Channel, w: int) -> None:
+        """Apply the records above the cursor and at or below ``w``."""
+        for e in _tail(ch, self._cursor, w, self._topics):
+            self._apply(e)
+            self._cursor = e.seq
+        self._cursor = max(self._cursor, w)
 
     def _held(self, ch: Channel, head: Head) -> _S | None:
         """The state at ``head.node`` after reading up to ``head.w``; ``None`` for
         the empty lineage."""
-        for e in _tail(ch, self._cursor, head.w, _STREAM_TOPICS):
-            self._apply(e)
-        self._cursor = max(self._cursor, head.w)
-        if head.node is None:
-            return None
-        if head.node not in self._state:
-            raise ValueError(f"head node {head.node} is not a node")
-        state = self._state[head.node]
+        self._advance(ch, head.w)
+        return None if head.node is None else self._at(head.node)
+
+    def _at(self, node: int) -> _S:
+        """The state at ``node``: the error a read through it raises, raised."""
+        if node not in self._state:
+            raise ValueError(f"head node {node} is not a node")
+        state = self._state[node]
         if isinstance(state, MalformedRecordError):
             raise state
         return state
 
     def _apply(self, e: Envelope) -> None:
         if e.topic == Topic.VALUE:
-            if self._stream is not None:
-                self._value_seqs.add(e.seq)
-                if e.name == self._stream:
-                    self._values[e.seq] = e
+            self._name_of[e.seq] = None if e.name is None else sys.intern(e.name)
             return
         if e.topic == Topic.LIFECYCLE_STARTED:
             try:
@@ -1045,88 +1048,86 @@ class _NodeFold(ABC, Generic[_S]):
                 self._sources[e.seq] = exc
             return
         try:
-            at = _node_at(e)
-            assert at is not None  # a commit or an exit, by _STREAM_TOPICS
+            at = node_at(e)
+        except MalformedRecordError as exc:
+            self._kinds[e.seq] = self._state[e.seq] = exc
+            return
+        assert at is not None  # a commit or an exit, by the topics
+        self._kinds[e.seq] = kind(at.node)
+        try:
             self._state[e.seq] = self._node(at)
-            self._extendable[e.seq] = at.node.extendable
         except MalformedRecordError as exc:
             self._state[e.seq] = exc
-            self._extendable[e.seq] = False
 
-    def _node(self, at: _At) -> _S | MalformedRecordError:
-        """The state at a parsed node, checked as the pure walk checks it."""
-        seq, node = at.env.seq, at.node
-        later = [s for s in node.committed if s >= seq]
-        if later:
-            raise MalformedRecordError(
-                seq, at.env.topic, f"values names {later}, at or above its own seq"
-            )
+    def _kind_of(self, seq: int) -> NodeKind | None:
+        """``check_node``'s lookup: a node's kind, ``None`` where no node is, and an
+        unreadable node's error raised."""
+        k = self._kinds.get(seq)
+        if isinstance(k, MalformedRecordError):
+            raise k
+        return k
+
+    def _node(self, at: At) -> _S | MalformedRecordError:
+        """The state at a parsed node, checked as the pure walk checks it: its own
+        structure, then its parent's state, then what it adds."""
+        check_node(at, self._kind_of)
         base: _S | None = None
-        if node.parent is not None:
-            if node.parent >= seq:
-                raise MalformedRecordError(
-                    seq,
-                    at.env.topic,
-                    f"parent {node.parent} is at or above its own seq",
-                )
-            if node.parent not in self._state:
-                raise MalformedRecordError(
-                    seq, at.env.topic, f"parent {node.parent} names no node"
-                )
-            parent = self._state[node.parent]
+        if at.node.parent is not None:
+            parent = self._state[at.node.parent]  # a node, by check_node
             if isinstance(parent, MalformedRecordError):
                 return parent  # a read through this node raises the parent's
-            if not self._extendable[node.parent]:
-                raise MalformedRecordError(
-                    seq,
-                    at.env.topic,
-                    f"parent {node.parent} names no extendable node",
-                )
             base = parent
-        if self._stream is not None:
-            error = _non_values(at, self._value_seqs)
-            if error is not None:
-                return error
-        members = [s for s in node.committed if s in self._values]
-        if members and self._declares(at):
-            members = []
-        return self._extend(base, at, members)
+        return self._extend(base, at)
 
-    def _declares(self, at: _At) -> bool:
-        """Did the claim that committed ``at`` declare the stream a source?"""
+    def _members(self, at: At, stream: str) -> list[int]:
+        """The value seqs of ``stream`` that ``at`` commits, in its order: none when
+        its claim declared ``stream`` a source. It resolves every value seq the
+        node commits, as the pure read does (``members``)."""
+        for s in at.node.committed:
+            if s not in self._name_of:
+                raise not_a_value(at, s)
+        found = [s for s in at.node.committed if self._name_of[s] == stream]
+        if not found:
+            return found
         claim = at.node.claim_seq
         sources = self._sources.get(claim) if claim < at.env.seq else None
         if sources is None:
-            raise MalformedRecordError(
-                at.env.seq,
-                at.env.topic,
-                f"claim_seq {claim} names no lifecycle.started below it",
-            )
+            raise no_claim(at)
         if isinstance(sources, MalformedRecordError):
             raise sources
-        return self._stream in sources
+        return [] if stream in sources else found
 
     @abstractmethod
-    def _extend(self, base: _S | None, at: _At, members: list[int]) -> _S:
-        """The state at ``at`` from its parent's (``None`` at a root) and the value
-        seqs of the stream it commits, in its order."""
+    def _extend(self, base: _S | None, at: At) -> _S:
+        """The state at ``at`` from its parent's, ``None`` at a root."""
+
+
+def _iterations(at: At) -> int:
+    return at.node.iterations
 
 
 class PrefixLen(_NodeFold[int]):
     """``prefix_len`` held (§5): ``count[node] = count[parent] + |values ∩ S|``,
     with membership decided per committing claim, for an eager stream, or
-    ``count[parent] + 1`` at a commit for ``Commits()``."""
+    ``count[parent] + 1`` at a commit for ``Commits()``, which reads the nodes
+    alone."""
 
     def __init__(self, x: str | Commits) -> None:
-        super().__init__(None if isinstance(x, Commits) else x)
+        self._adds: Callable[[At], int]
+        if isinstance(x, Commits):
+            super().__init__(_NODE_TOPICS)
+            self._adds = _iterations
+        else:
+            super().__init__(_STREAM_TOPICS)
+            stream = x
+            self._adds = lambda at: len(self._members(at, stream))
 
     def poll(self, ch: Channel, head: Head) -> int:
         count = self._held(ch, head)
         return 0 if count is None else count
 
-    def _extend(self, base: int | None, at: _At, members: list[int]) -> int:
-        add = at.node.iterations if self._stream is None else len(members)
-        return (base or 0) + add
+    def _extend(self, base: int | None, at: At) -> int:
+        return (base or 0) + self._adds(at)
 
 
 class _Last(NamedTuple):
@@ -1136,166 +1137,137 @@ class _Last(NamedTuple):
 
 class LastElement(_NodeFold[_Last | None]):
     """``last_element`` held (§5): ``last[node]`` is the node's last element of the
-    stream, else its parent's. A poll reads that element's body, which the fold
-    held as it passed, so a malformed one raises, as the pure read's does."""
+    stream, else its parent's. A poll reads that element's record, one row, so a
+    malformed body raises, as the pure read's does."""
 
     def __init__(self, stream: str) -> None:
-        super().__init__(stream)
+        super().__init__(_STREAM_TOPICS)
+        self._stream = stream
 
     def poll(self, ch: Channel, head: Head) -> Element | None:
         last = self._held(ch, head)
         if last is None:
             return None
-        v = verdict_parse(Value, self._values[last.seq])
+        e = _point(ch, head.w, last.seq)
+        assert e is not None  # a value the fold read, at or below w
+        v = verdict_parse(Value, e)
         return Element(node=last.node, seq=last.seq, value=v.value, t=v.t)
 
-    def _extend(self, base: _Last | None, at: _At, members: list[int]) -> _Last | None:
-        return _Last(at.env.seq, members[-1]) if members else base
+    def _extend(self, base: _Last | None, at: At) -> _Last | None:
+        found = self._members(at, self._stream)
+        return _Last(at.env.seq, found[-1]) if found else base
+
+
+class _Firing(NamedTuple):
+    """A node that fires the request: its topic, and the value seqs it commits,
+    each a value, among which its sample is found by name once the target is
+    known."""
+
+    topic: str
+    committed: tuple[int, ...]
 
 
 class _AnswerNode(NamedTuple):
-    """A node as ``Answers`` holds it: its parent, and its answer: the sample's
-    seq where it fires the request, ``None`` where it does not, or the error a
-    firing without exactly one sample of the target is."""
+    """A node as ``Answers`` holds it: its parent, and its firing: ``None`` where
+    it does not fire the request, or the error of one that commits a non-value."""
 
     parent: int | None
-    answer: int | MalformedRecordError | None
+    firing: _Firing | MalformedRecordError | None
 
 
-class Answers:
+_ANSWER_TOPICS = (Topic.CONTROL_SUBSCRIBE, *_NODE_TOPICS, Topic.VALUE)
+
+
+class Answers(_NodeFold[_AnswerNode]):
     """``answers`` held (§5): the answers along the head it last read. A poll at a
     head that descends from that one extends the list by the new nodes' answers;
     at one that does not, it re-derives the list along the new head's lineage, and
     returns it whole. A caller that streams answers diffs the lists, since a
-    callback cannot retract an answer. Its reads are O(new records); returning
-    the list is O(answers)."""
+    callback cannot retract an answer.
+
+    It holds every value's name, so a sample written before the subscribe is
+    found when its node is read, and reads a sample's record, one row, the first
+    time it answers. Its reads are O(new records); returning the list is
+    O(answers)."""
 
     def __init__(self, request_id: str) -> None:
+        super().__init__(_ANSWER_TOPICS)
         self._request_id = request_id
-        self._cursor = 0
-        self._target: str | None = None  # the subscribe's name, once one is seen
         self._subscribed = False
-        self._nodes: dict[int, _AnswerNode | MalformedRecordError] = {}
-        self._extendable: dict[int, bool] = {}
-        self._samples: dict[int, Envelope] = {}  # the target's values, by seq
-        self._value_seqs: set[int] = set()  # every value's
-        self._at: int | None = None  # the head its list is along
+        self._target: str | None = None  # the first subscribe's name
+        self._answers: dict[int, Element] = {}  # each answer read, by its node
+        self._along: int | None = None  # the head its list is along
         self._list: list[Element] = []
 
     def poll(self, ch: Channel, head: Head) -> list[Element]:
-        for e in _tail(ch, self._cursor, head.w, _ANSWER_TOPICS):
-            self._apply(e)
-        self._cursor = max(self._cursor, head.w)
+        self._advance(ch, head.w)
         # parents decrease, so the walk back from the head meets the held head,
         # if it descends from it, before it passes below it. That the extend path
         # visits only the new nodes is pinned by review only: it reads no channel.
         path: list[int] = []
         node = head.node
-        while node is not None and (self._at is None or node > self._at):
+        while node is not None and (self._along is None or node > self._along):
             path.append(node)
-            node = self._entry(node).parent
-        descends = node == self._at
+            node = self._at(node).parent
+        descends = node == self._along
         while not descends and node is not None:  # re-derive, to the root
             path.append(node)
-            node = self._entry(node).parent
+            node = self._at(node).parent
         answers = list(self._list) if descends else []
         for n in reversed(path):
-            answer = self._entry(n).answer
-            if isinstance(answer, MalformedRecordError):
-                raise answer
-            if answer is not None:
-                v = verdict_parse(Value, self._samples[answer])
-                answers.append(Element(node=n, seq=answer, value=v.value, t=v.t))
-        self._at, self._list = head.node, answers
+            firing = self._at(n).firing
+            if firing is not None:
+                answers.append(self._answer(ch, head.w, n, firing))
+        self._along, self._list = head.node, answers
         return list(answers)
 
-    def _entry(self, node: int) -> _AnswerNode:
-        if node not in self._nodes:
-            raise ValueError(f"head node {node} is not a node")
-        entry = self._nodes[node]
-        if isinstance(entry, MalformedRecordError):
-            raise entry
-        return entry
+    def _answer(
+        self, ch: Channel, w: int, node: int, firing: _Firing | MalformedRecordError
+    ) -> Element:
+        """The answer at ``node``, which fires the request, checked as ``answers``
+        checks it; its sample's record is read the first time."""
+        if isinstance(firing, MalformedRecordError):
+            raise firing
+        if node in self._answers:
+            return self._answers[node]
+        if self._target is None:
+            raise _unsubscribed(node, firing.topic, self._request_id)
+        target = self._target
+        samples = [s for s in firing.committed if self._name_of[s] == target]
+        if len(samples) != 1:
+            raise _not_one_sample(
+                node, firing.topic, self._request_id, target, len(samples)
+            )
+        e = _point(ch, w, samples[0])
+        assert e is not None  # a value the fold read, at or below w
+        v = verdict_parse(Value, e)
+        answer = Element(node=node, seq=samples[0], value=v.value, t=v.t)
+        self._answers[node] = answer
+        return answer
 
     def _apply(self, e: Envelope) -> None:
         if e.topic == Topic.CONTROL_SUBSCRIBE:
             if e.request_id == self._request_id and not self._subscribed:
                 self._subscribed, self._target = True, e.name
             return
-        if e.topic == Topic.VALUE:
-            self._value_seqs.add(e.seq)
-            if self._target is not None and e.name == self._target:
-                self._samples[e.seq] = e
-            return
-        try:
-            at = _node_at(e)
-            assert at is not None  # a commit or an exit, by _ANSWER_TOPICS
-            self._nodes[e.seq] = self._node(at)
-            self._extendable[e.seq] = at.node.extendable
-        except MalformedRecordError as exc:
-            self._nodes[e.seq] = exc
-            self._extendable[e.seq] = False
+        super()._apply(e)
 
-    def _node(self, at: _At) -> _AnswerNode | MalformedRecordError:
-        """The node as held, checked as the pure walk checks it; a read through a
-        node whose parent is unreadable raises the parent's error."""
-        seq, node = at.env.seq, at.node
-        later = [s for s in node.committed if s >= seq]
-        if later:
-            raise MalformedRecordError(
-                seq, at.env.topic, f"values names {later}, at or above its own seq"
-            )
-        if node.parent is not None:
-            if node.parent >= seq:
-                raise MalformedRecordError(
-                    seq,
-                    at.env.topic,
-                    f"parent {node.parent} is at or above its own seq",
-                )
-            parent = self._nodes.get(node.parent)
-            if isinstance(parent, MalformedRecordError):
-                return parent
-            if parent is None or not self._extendable[node.parent]:
-                raise MalformedRecordError(
-                    seq, at.env.topic, f"parent {node.parent} names no extendable node"
-                )
-        if self._request_id not in node.fired:
-            return _AnswerNode(node.parent, None)
-        if self._target is None:
-            error = MalformedRecordError(
-                seq,
-                at.env.topic,
-                f"fired names {self._request_id!r}, which no source subscription names",
-            )
-            return _AnswerNode(node.parent, error)
-        non_value = _non_values(at, self._value_seqs)
-        if non_value is not None:
-            return _AnswerNode(node.parent, non_value)
-        samples = [s for s in node.committed if s in self._samples]
-        if len(samples) != 1:
-            error = MalformedRecordError(
-                seq,
-                at.env.topic,
-                f"fired names {self._request_id!r}, and commits {len(samples)} "
-                f"samples of its target {self._target!r}, not one",
-            )
-            return _AnswerNode(node.parent, error)
-        return _AnswerNode(node.parent, samples[0])
-
-
-_ANSWER_TOPICS = (
-    Topic.CONTROL_SUBSCRIBE,
-    Topic.LIFECYCLE_COMMIT,
-    Topic.LIFECYCLE_STOPPED,
-    Topic.VALUE,
-)
+    def _extend(self, base: _AnswerNode | None, at: At) -> _AnswerNode:
+        parent = at.node.parent
+        if self._request_id not in at.node.fired:
+            return _AnswerNode(parent, None)
+        for s in at.node.committed:
+            if s not in self._name_of:
+                return _AnswerNode(parent, not_a_value(at, s))
+        return _AnswerNode(parent, _Firing(at.env.topic, tuple(at.node.committed)))
 
 
 class LiveDemand:
     """``live_demand`` held (§5): the answer fold's subscriptions (``_Demand``)
-    and the newest claim's head (``HeadFold``), applied from one cursor at one W.
+    and the newest claim's head (``_ClaimHead``), applied from one cursor at one W.
     By name, for the whole log, so it takes no head (plan, open question 4): it
     reads the newest head's closedness itself, and raises where that head does.
+    Of each poll's records, the head takes those from the newest claim among them.
     ``ensure_served``'s standing form holds one per run, and polls it again after
     its ``report_if_dead`` reports, since a report may void the only lease.
 
@@ -1305,55 +1277,49 @@ class LiveDemand:
     def __init__(self) -> None:
         self._cursor = 0
         self._demand = _Demand()
-        self._head = HeadFold()
+        self._head = _ClaimHead()
 
     def poll(self, ch: Channel) -> list[Envelope]:
         w = ch.last_seq()
-        for e in _tail(ch, self._cursor, w, _LIVE_DEMAND_TOPICS):
-            if e.topic in _HEAD_TOPICS:
-                self._head._apply(ch, w, e)
+
+        def point(seq: int) -> Envelope | None:
+            return _point(ch, w, seq)
+
+        batch = _tail(ch, self._cursor, w, _LIVE_DEMAND_TOPICS)
+        claims = [e.seq for e in batch if e.topic == Topic.LIFECYCLE_STARTED]
+        newest = claims[-1] if claims else 0
+        for e in batch:
+            if e.topic in _HEAD_TOPICS and e.seq >= newest:
+                self._head.apply(e, point)
             if e.topic in _DEMAND_TOPICS:
                 self._demand.apply(e)
+            self._cursor = e.seq
         self._cursor = max(self._cursor, w)
-        return self._demand.live(closed=self._head._resolved(w).settled)
+        return self._demand.live(closed=self._head.head(w).settled)
 
 
 _LIVE_DEMAND_TOPICS = tuple(dict.fromkeys((*_DEMAND_TOPICS, *_HEAD_TOPICS)))
 
 
 class PendingStops:
-    """``undischarged_stops`` held (§5): each stop id's newest send and the spent
-    ids. By name, for the whole log, polled ``fold.poll(ch)``; the Watcher's
-    ``pending_stops`` is one held per run."""
+    """``undischarged_stops`` held (§5): the stop fold (``_Stops``). By name, for
+    the whole log, polled ``fold.poll(ch)``; the Watcher's ``pending_stops`` is
+    one held per run."""
 
     def __init__(self) -> None:
         self._cursor = 0
-        self._stops: dict[str, Envelope] = {}
-        self._spent: set[str] = set()
+        self._stops = _Stops()
 
     def poll(self, ch: Channel) -> list[Envelope]:
         w = ch.last_seq()
         for e in _tail(ch, self._cursor, w, _STOP_TOPICS):
-            if e.topic == Topic.LIFECYCLE_STOPPED:
-                exit_ = _readable(Stopped, e)
-                if exit_ is not None:
-                    self._spent.update(exit_.honored)
-            elif e.request_id is None:
-                continue
-            elif e.topic == Topic.CONTROL_STOP:
-                self._stops[e.request_id] = e
-            else:
-                self._spent.add(e.request_id)
+            self._stops.apply(e)
+            self._cursor = e.seq
         self._cursor = max(self._cursor, w)
-        return sorted(
-            (e for r, e in self._stops.items() if r not in self._spent),
-            key=lambda e: e.seq,
-        )
+        return self._stops.pending()
 
 
 # ----- reading at W -----------------------------------------------------------------
-
-_Lookup = Callable[[int], Envelope | None]
 
 
 def _point(ch: Channel, w: int, seq: int) -> Envelope | None:
@@ -1403,69 +1369,126 @@ def _named_claim(e: Envelope) -> int | None:
 
 
 def _latest_claim_head(ch: Channel, w: int) -> Head:
-    """The newest claim's head at ``w``, the caller's W, taken first.
+    """The newest claim's head at ``w``, the caller's W, taken first: the claim and
+    the records after it applied to a ``_ClaimHead``. It reads nothing above ``w``
+    (``_window``), and below the claim only the nodes its ``resume_from``s name:
+    the claim is a Markov boundary for its own position, so a malformed record
+    from a dead past cannot poison it."""
+    head = _ClaimHead()
+    claim = _newest(ch, Topic.LIFECYCLE_STARTED, w)
+    if claim is not None:
 
-    It folds the claim and the records after it, and below the claim reads only
-    the nodes its ``resume_from``s name: the claim is a Markov boundary for its
-    own position, so a malformed record from a dead past cannot poison it. In
-    the claim's own order, which is seq order within one writer, its position
+        def point(seq: int) -> Envelope | None:
+            return _point(ch, w, seq)
+
+        head.apply(claim, point)
+        topics: list[str] = [
+            Topic.LIFECYCLE_COMMIT,
+            Topic.LIFECYCLE_REWIND,
+            Topic.LIFECYCLE_STOPPED,
+        ]
+        for e in _window(ch, claim, w, topics):
+            head.apply(e, point)
+    return head.head(w)
+
+
+class _ClaimHead:
+    """The head fold (§5), applied record by record in seq order: the newest claim
+    applied, its position and its readable exit, or the error that holds for it.
+    ``_latest_claim_head`` applies a claim and its window; ``HeadFold`` and
+    ``LiveDemand`` hold one and apply each poll's records. A ``started``
+    re-resolves from that claim.
+
+    In the claim's own order, which is seq order within one writer, its position
     starts at its ``resume_from``; a commit leaves itself and a rewind its
     ``resume_from``. Each position-bearing record is checked where it is held
-    (§5): a ``resume_from`` below its record and naming an extendable node, and
-    a node whose ``parent`` is the position before it.
+    (§5): a ``resume_from`` by ``check_reference``, and a node whose ``parent`` is
+    the position before it.
 
     Records naming another claim or none, a displaced worker's, are skipped:
-    anything in the window that the fold cannot attribute to this claim is not
-    its. The claim's readable exit is its head; an unreadable one is absent for
-    the head (§5, "The verdict"). A nameless record that was in fact one of this
-    claim's commits is still caught, unless it is the claim's last: its next
-    node's ``parent`` names it, not the position. The fold refuses to guess
-    where §2 says "at most one": a record of the claim after its exit, the exit
-    being its last node, raises, a second exit included.
+    anything that the fold cannot attribute to this claim is not its. The claim's
+    readable exit is its head; an unreadable one is absent for the head (§5, "The
+    verdict"). A nameless record that was in fact one of this claim's commits is
+    still caught, unless it is the claim's last: its next node's ``parent`` names
+    it, not the position. The fold refuses to guess where §2 says "at most one": a
+    record of the claim after its exit, the exit being its last node, raises, a
+    second exit included.
 
-    It reads nothing above ``w`` (``_window``)."""
-    claim = _newest(ch, Topic.LIFECYCLE_STARTED, w)
-    if claim is None:
-        return Head(None, False, w)
+    ``apply`` reads only the node a ``resume_from`` names, through ``point``, and
+    either applies its record whole or, when that read raises, changes nothing."""
 
-    def lookup(seq: int) -> Envelope | None:
-        return _point(ch, w, seq)
+    def __init__(self) -> None:
+        self._claim: int | None = None
+        self._position: int | None = None
+        self._exit: At | None = None
+        self._error: MalformedRecordError | None = None
 
-    started = verdict_parse(Started, claim)
-    position = _resume_point(lookup, claim, started.resume_from)
-    exit_: _At | None = None
-    for e in _window(
-        ch,
-        claim,
-        w,
-        [Topic.LIFECYCLE_COMMIT, Topic.LIFECYCLE_REWIND, Topic.LIFECYCLE_STOPPED],
-    ):
-        body = _claims(e, claim.seq)
-        if body is None:
-            continue
-        if exit_ is not None:
-            raise MalformedRecordError(
+    @property
+    def claim(self) -> int | None:
+        """The claim applied, or ``None`` before any."""
+        return self._claim
+
+    def apply(self, e: Envelope, point: Callable[[int], Envelope | None]) -> None:
+        """Apply ``e``, one of ``_HEAD_TOPICS``, whose ``resume_from`` is read
+        through ``point``."""
+
+        def kind_of(seq: int) -> NodeKind | None:
+            return kind_at(point(seq))
+
+        if e.topic == Topic.LIFECYCLE_STARTED:
+            position: int | None = None
+            error: MalformedRecordError | None = None
+            try:
+                started = verdict_parse(Started, e)
+                position = _resume_point(e, started.resume_from, kind_of)
+            except MalformedRecordError as exc:
+                error = exc
+            self._claim, self._position, self._exit, self._error = (
                 e.seq,
-                e.topic,
-                f"claim {claim.seq} exited at seq {exit_.env.seq}: "
-                "the exit is its claim's last node",
+                position,
+                None,
+                error,
             )
-        if isinstance(body, Rewind):
-            position = _resume_point(lookup, e, body.resume_from)
-            continue
-        if body.parent != position:
-            raise MalformedRecordError(
-                e.seq,
-                e.topic,
-                f"parent {body.parent} is not its claim's position {position}",
-            )
-        if isinstance(body, Commit):
-            position = e.seq
-        else:
-            exit_ = _At(e, body)
-    if exit_ is not None:
-        return Head(exit_.env.seq, exit_.node.closed, w)
-    return Head(position, False, w)
+            return
+        if self._claim is None or self._error is not None:
+            return
+        try:
+            body = _claims(e, self._claim)
+            if body is None:
+                return
+            if self._exit is not None:
+                raise MalformedRecordError(
+                    e.seq,
+                    e.topic,
+                    f"claim {self._claim} exited at seq {self._exit.env.seq}: "
+                    "the exit is its claim's last node",
+                )
+            if isinstance(body, Rewind):
+                self._position = _resume_point(e, body.resume_from, kind_of)
+                return
+            if body.parent != self._position:
+                raise MalformedRecordError(
+                    e.seq,
+                    e.topic,
+                    f"parent {body.parent} is not its claim's position "
+                    f"{self._position}",
+                )
+            if isinstance(body, Commit):
+                self._position = e.seq
+            else:
+                self._exit = At(e, body)
+        except MalformedRecordError as exc:
+            self._error = exc
+
+    def head(self, w: int) -> Head:
+        """The head, at ``w``: the error that holds for the claim raised."""
+        if self._error is not None:
+            raise self._error
+        if self._claim is None:
+            return Head(None, False, w)
+        if self._exit is not None:
+            return Head(self._exit.env.seq, self._exit.node.closed, w)
+        return Head(self._position, False, w)
 
 
 def _claims(e: Envelope, claim: int) -> Commit | Rewind | Stopped | None:
@@ -1485,165 +1508,31 @@ def _claims(e: Envelope, claim: int) -> Commit | Rewind | Stopped | None:
 
 
 def _resume_point(
-    lookup: _Lookup, record: Envelope, resume_from: int | None
+    record: Envelope, resume_from: int | None, kind_of: KindOf
 ) -> int | None:
     """A ``started``'s or a ``rewind``'s ``resume_from``, checked: below its own
-    record, and naming an extendable node."""
+    record, and naming an extendable node (``check_reference``)."""
     if resume_from is not None:
-        if resume_from >= record.seq:
-            raise MalformedRecordError(
-                record.seq,
-                record.topic,
-                f"resume_from {resume_from} is at or above its own seq",
-            )
-        _extendable(lookup, record, "resume_from", resume_from)
+        check_reference(record, "resume_from", resume_from, kind_of)
     return resume_from
 
 
-# ----- the walk ---------------------------------------------------------------------
+# ----- the reads' helpers over a walked lineage ----------------------------------
 
 
-class _At(NamedTuple):
-    """A node: its record, and its parsed body."""
-
-    env: Envelope
-    node: Node
-
-
-class _Walked(NamedTuple):
-    """A lineage walked: the records the walk read, by seq (every record from the
-    lowest it needed up to its head node: the lineage's nodes, their values and
-    their claims among them), and its nodes, root first."""
-
-    records: dict[int, Envelope]
-    nodes: list[_At]
-
-
-def _node_at(e: Envelope) -> _At | None:
-    """The node at ``e``, or ``None`` when its topic is not a node's. A node's
-    unreadable body raises ``MalformedRecordError``."""
-    if e.topic == Topic.LIFECYCLE_COMMIT:
-        return _At(e, verdict_parse(Commit, e))
-    if e.topic == Topic.LIFECYCLE_STOPPED:
-        return _At(e, verdict_parse(Stopped, e))
-    return None
-
-
-def _extendable(lookup: _Lookup, referrer: Envelope, field: str, target: int) -> _At:
-    """The node ``referrer``'s ``field`` names, which must be extendable (§5)."""
-    e = lookup(target)
-    at = None if e is None else _node_at(e)
-    if at is None:
-        what = "no record" if e is None else f"a {e.topic}"
-        raise MalformedRecordError(
-            referrer.seq, referrer.topic, f"{field} {target} names {what}, not a node"
-        )
-    if not at.node.extendable:
-        kind = "closed" if at.node.closed else "torn"
-        raise MalformedRecordError(
-            referrer.seq,
-            referrer.topic,
-            f"{field} {target} names a {kind} node, not an extendable one",
-        )
-    return at
-
-
-# The first backward window, in rows; each later one is 4x the last. Exempt: it sets
-# how many rows each bulk read asks for, never which records a read returns.
-_FIRST_WINDOW = 64
-
-
-class _Backward:
-    """The records at or below ``hi``, read backwards in bulk windows that grow by
-    4x (§5, "The pure walk"): a record below what is loaded loads windows until it
-    is, so a walk reads O(the distance back to the lowest record it needs) rows in
-    O(log) reads, whatever the log's length below that."""
-
-    def __init__(self, ch: Channel, hi: int) -> None:
-        self._ch = ch
-        self._hi = hi
-        self._lo = hi  # the records in (lo, hi] are loaded
-        self._width = _FIRST_WINDOW
-        self.records: dict[int, Envelope] = {}
-
-    def get(self, seq: int) -> Envelope | None:
-        """The record at ``seq``, or ``None`` when there is none at or below
-        ``hi``."""
-        if not 1 <= seq <= self._hi:
-            return None
-        while seq <= self._lo:
-            lo = max(0, self._lo - self._width)
-            for e in self._ch.read(after=lo, limit=self._lo - lo):
-                if e.seq <= self._lo:
-                    self.records[e.seq] = e
-            self._lo, self._width = lo, self._width * 4
-        return self.records.get(seq)
-
-
-def _walk(ch: Channel, head: Head) -> _Walked:
-    """The lineage ending at ``head.node``, checked (§5): on every node walked, a
-    ``parent`` or a ``values`` seq at or above the node's own seq, and a
-    ``parent`` naming no extendable node; along the lineage, a seq committed
-    twice. A head node that is not a node (a hand-built ``Head``) raises
-    ``ValueError``.
-
-    It reads backwards from the head node (``_Backward``), and loads what a read
-    may resolve: each node's values, and its claim's ``started`` when it lies
-    below the node. Loading resolves nothing: membership raises only when a read
-    resolves (``_members``)."""
-    if head.node is None:
-        return _Walked({}, [])
-    back = _Backward(ch, head.node)
-    first = back.get(head.node)
-    at = None if first is None else _node_at(first)
-    if at is None:
-        raise ValueError(f"head node {head.node} is not a node")
-    chain = [at]
-    while True:
-        seq, node = at.env.seq, at.node
-        later = [s for s in node.committed if s >= seq]
-        if later:
-            raise MalformedRecordError(
-                seq, at.env.topic, f"values names {later}, at or above its own seq"
-            )
-        if node.parent is None:
-            break
-        if node.parent >= seq:
-            raise MalformedRecordError(
-                seq, at.env.topic, f"parent {node.parent} is at or above its own seq"
-            )
-        at = _extendable(back.get, at.env, "parent", node.parent)
-        chain.append(at)
-    chain.reverse()
-    seen: set[int] = set()
-    for at in chain:
-        for s in at.node.committed:
-            if s in seen:
-                raise MalformedRecordError(
-                    at.env.seq,
-                    at.env.topic,
-                    f"value seq {s} is committed twice along one lineage",
-                )
-            seen.add(s)
-            back.get(s)
-        if at.node.claim_seq < at.env.seq:
-            back.get(at.node.claim_seq)
-    return _Walked(back.records, chain)
-
-
-def _count(walked: _Walked, x: str | Commits) -> int:
+def _count(walked: Walked, x: str | Commits) -> int:
     if isinstance(x, Commits):
         return sum(at.node.iterations for at in walked.nodes)
-    return len(_members(walked, x))
+    return len(members(walked, x))
 
 
-def _axis(walked: _Walked, axis: str | Commits) -> list[int]:
+def _axis(walked: Walked, axis: str | Commits) -> list[int]:
     """``count(axis, node)`` at each node of the lineage, root first."""
     if isinstance(axis, Commits):
         per = [at.node.iterations for at in walked.nodes]
     else:
         at_node: dict[int, int] = {}
-        for at, _ in _members(walked, axis):
+        for at, _ in members(walked, axis):
             at_node[at.env.seq] = at_node.get(at.env.seq, 0) + 1
         per = [at_node.get(at.env.seq, 0) for at in walked.nodes]
     out: list[int] = []
@@ -1654,80 +1543,7 @@ def _axis(walked: _Walked, axis: str | Commits) -> list[int]:
     return out
 
 
-def _coordinates(walked: _Walked) -> list[Coordinates]:
-    """The coordinates at and including each node of the lineage, root first
-    (§3, "Evaluation"): ``count(X, node)`` for every eager stream X with an
-    element there, by the committing claim's declaration, and ``count(Commits(),
-    node)``. It resolves every value on the lineage."""
-    out: list[Coordinates] = []
-    counts: dict[str, int] = {}
-    commits = 0
-    declared: dict[int, frozenset[str]] = {}
-    for at in walked.nodes:
-        for s in at.node.committed:
-            name = _value_record(walked, at, s).name
-            if name is None:
-                continue
-            claim = at.node.claim_seq
-            if claim not in declared:
-                declared[claim] = _declared(walked, at)
-            if name not in declared[claim]:
-                counts[name] = counts.get(name, 0) + 1
-        commits += at.node.iterations
-        out.append(Coordinates(MappingProxyType(dict(counts)), commits))
-    return out
-
-
-def _value_record(walked: _Walked, at: _At, seq: int) -> Envelope:
-    """The ``value`` record at ``seq``, which ``at`` commits: a ``values`` seq
-    naming a record that is not a ``value`` raises (§5, "Membership, checked only
-    for the records a read resolves")."""
-    e = walked.records.get(seq)
-    if e is None or e.topic != Topic.VALUE:
-        what = "no record" if e is None else f"a {e.topic}"
-        raise MalformedRecordError(
-            at.env.seq, at.env.topic, f"values names {seq}, {what}, not a value"
-        )
-    return e
-
-
-def _members(walked: _Walked, stream: str) -> list[tuple[_At, int]]:
-    """(node, value seq) of each element of ``stream``, in lineage order.
-
-    Membership is decided by the envelope, never the body (§5): a committed
-    ``value`` named ``stream`` is an element if and only if the claim that
-    committed it, the node's ``claim_seq``, did not declare ``stream`` a source
-    (§2, "Membership"). Deciding it resolves every value seq on the lineage, so
-    one naming a record that is not a ``value`` raises here; and the claim's
-    ``started``, which must lie below its node."""
-    sources: dict[int, frozenset[str]] = {}
-    out: list[tuple[_At, int]] = []
-    for at in walked.nodes:
-        for s in at.node.committed:
-            if _value_record(walked, at, s).name != stream:
-                continue
-            claim = at.node.claim_seq
-            if claim not in sources:
-                sources[claim] = _declared(walked, at)
-            if stream not in sources[claim]:
-                out.append((at, s))
-    return out
-
-
-def _declared(walked: _Walked, at: _At) -> frozenset[str]:
-    """The sources declared by the claim that wrote ``at``."""
-    claim = at.node.claim_seq
-    e = walked.records.get(claim) if claim < at.env.seq else None
-    if e is None or e.topic != Topic.LIFECYCLE_STARTED:
-        raise MalformedRecordError(
-            at.env.seq,
-            at.env.topic,
-            f"claim_seq {claim} names no lifecycle.started below it",
-        )
-    return frozenset(verdict_parse(Started, e).sources)
-
-
-def _element(walked: _Walked, at: _At, seq: int) -> Element:
+def _element(walked: Walked, at: At, seq: int) -> Element:
     """The element at value ``seq``, its body read: a malformed one raises."""
     v = verdict_parse(Value, walked.records[seq])
     return Element(node=at.env.seq, seq=seq, value=v.value, t=v.t)
