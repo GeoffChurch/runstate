@@ -766,10 +766,15 @@ envelope (topic `value`, and the name), which keeps tolerant readers' counts ali
   Watcher and the TUI may use public API only. Each is built with its question and polled with
   `fold.poll(ch, head)`, at O(new records) per poll; the folds by name, `LiveDemand` and `PendingStops`, read
   the whole log (§2) and are polled with `fold.poll(ch)`. Their test: incremental equals pure after every step.
+  - **A fold raises wherever its pure read raises,** except for the checks the pure walk alone makes (above).
+    Membership is not one of them: a fold reads every `value` record, so it can tell a node that commits a
+    non-value at O(new records), and must, or a malformed log reads differently by how it is read (amended
+    2026-10-30, while implementing).
   - **The stream-prefix fold** holds a cursor over nodes, a cursor over the values of S, the set of S's value
     seqs, and `count[node] = count[parent] + |values ∩ S|`, with membership decided per committing claim.
   - **`Answers`** re-derives on a head that does not descend from its last one, and returns the full list.
-    A caller that streams answers diffs the lists, since a callback cannot retract an answer.
+    A caller that streams answers diffs the lists, since a callback cannot retract an answer. Its reads are
+    O(new records); returning the list is O(answers).
 - **The pure walk** uses windowed bulk reads backward from the head (about 5 µs a row), not point reads (65 µs
   a node on Postgres).
 - **The memory backend** reads a tail as a slice (seq = index + 1), and gains a per-topic index: its `latest`
@@ -810,6 +815,15 @@ null-worker startup crash does.
 - a stop is spent by an exit's `honored`, a `control.withdraw` or a `nak` naming it;
 - a subscription is spent by any node's `expired`, a `control.withdraw` or a `nak` naming it; a lease is also
   void once its claim has ended;
+- **a subscription's class and target are its first send's,** as §3 fixes them: a re-send that changes either
+  is refused, so a void lease does not come back as demand by being sent again as durable;
+- **a subscribe whose body does not parse is live until a `nak` names it,** as a malformed stop is pending
+  until its `nak`: no fold judges a body the worker has not refused, and a waker must launch a worker to
+  refuse it. It is never voided, since no claim binds it;
+- **`ended` here is the presence of an exit or a death report naming the claim** (§3), which never raises.
+  A malformed record in an old claim's window must not poison the present (§2, the claim as a Markov
+  boundary), so the fold and its pure read use this one predicate. The verdict, which reads that claim's
+  window, is where a contradiction in it raises;
 - **nothing is demanded of a closed head:** `live_demand` is empty while `LatestClaimHead` is closed, since
   nothing more can fire on a completed run. A subscription posted to one is never answered and never
   refused: the head shows it settled, and `await_consumed` returns the terminal `RunResult`;
