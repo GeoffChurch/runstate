@@ -12,7 +12,6 @@ import functools
 import json
 import os
 import re
-import socket
 from pathlib import Path
 
 import pytest
@@ -21,9 +20,8 @@ import runstate.migrations.v0_3_0_to_v0_4_0_engine as E
 from runstate import migrations
 from runstate.channel.sqlite import SqliteChannel
 from runstate.formats import FORMATS, DirectoryLayout
-from runstate.migrations import RENUMBERING_FROM, STEPS, MigrationError, Row, migrate
+from runstate.migrations import RENUMBERING_FROM, STEPS, MigrationError, migrate
 from runstate.migrations.ambiguity import (
-    REFUSE,
     Assumed,
     Assumptions,
     Choices,

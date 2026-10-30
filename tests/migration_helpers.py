@@ -107,14 +107,17 @@ def reference_worker_log(key: str) -> list[Row]:
       (``emit`` raises before the first tick). Each pass emits ``loss``.
     - ``reference-done`` (completed), ``reference-plain`` (preempted),
       ``reference-stop`` (honouring a stop at pass 1), ``reference-error`` (raising in
-      pass 2): four passes, each ``set``-ting ``lr`` and emitting ``loss``;
+      pass 2): four passes, each emitting ``loss`` (each claim's ``set("lr")`` is
+      unsubscribed, so it leaves no record);
       ``reference-resume``, four passes then a second claim resuming at step 4.
     - ``sim-clean-run``, ``sim-kill-mid-step``, ``sim-resume``,
       ``sim-cooperative-stop``: the simulator's reference-Worker scenarios
       (``tests/test_migration_sim.py``), on the wall clock.
 
-    Every claim's handle is the capturing process's. A body is the stored JSON text,
-    byte for byte."""
+    Every claim's handle is the capturing process's, so ``resolve`` reads it by the
+    host it runs on: ``sim-kill-mid-step``, the one log whose claim is still open, is
+    never fed to ``migrate`` or ``is_live``. A body is the stored JSON text, byte for
+    byte."""
     return [
         Row(seq, topic, name, request_id, body, float(seq))
         for seq, topic, name, request_id, body in _reference_worker_logs()[key]

@@ -31,7 +31,6 @@ import tests.migration_helpers as H  # noqa: E402
 from runstate.migrations.ambiguity import History  # noqa: E402
 from tests.migration_helpers import NO_HISTORY  # noqa: E402
 from tests.migration_goldens import (  # noqa: E402
-    BACKSTOP,
     DEAD,
     GOLDEN,
     _beat,
@@ -1072,7 +1071,6 @@ def test_the_census_counts_a_resume_at_the_loaded_step_wherever_a_candidate_resu
     loaded step is 1, no hit. With both stated, both candidates stand and the hit is
     counted once: the census counts it wherever some candidate resumes at the loaded
     step, which none does under ``after`` alone."""
-    import tests.test_migration_v0_3_0_to_v0_4_0 as t
     import runstate.migrations.v0_3_0_to_v0_4_0_facts as V
 
     rows = H.reference_worker_log("resumed-2")
