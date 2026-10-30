@@ -24,12 +24,29 @@ the next node commits every pending seq, in the writer's order, so two emits of 
 name in one iteration are two elements. ``set`` updates a source's register, which
 is sampled only on demand. ``include`` adds a value another handle sent. A value no
 node names is outside every lineage.
+
+CONTROL (§4, "A drain"). ``commit()`` and ``heartbeat()`` first drain: the death
+reports naming the claim, then ``control.*`` above the watermark. A stop registers
+or is refused; a withdrawal spends what it names. Every record a drain writes is
+compare-and-appended at the tail it last read, so a death report that lands first
+fences the worker before it refuses anything. Requests are answered by name, for
+the whole log (§2, "Requests"): the claim folds every answer on the log below it,
+and a spent id is dead on arrival.
+
+THE STOP DECISION (§4). A pending stop's ``from`` is evaluated at each node the
+claim writes, with the counts at the node being written, and at each heartbeat,
+with the counts at the position. Once one holds, the decision is True for the rest
+of the claim: a monotone level, which a rewind does not lower.
+
+THE FENCE (§4, "A released worker fences itself"). Once a drain reads a death
+report naming its claim, the worker writes nothing more: a worker released by
+mistake costs at most the iteration in flight.
 """
 
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import asdict
 from enum import Enum
 from types import MappingProxyType
@@ -39,13 +56,36 @@ from ..channel import Channel, Envelope
 from ..vocabulary.handle import local_handle
 from ..vocabulary.launch import current_launch_id
 from .checkpoint import SavePolicy
-from .claims import endings
+from .claims import endings, ends
 from .launcher import report_if_dead
 from .observables import LatestClaimHead
-from .vocabulary.coordinate import NodeRef
-from .vocabulary.payloads import Commit, Rewind, Started, Topic, Value
-from .vocabulary.schedule import Coordinates
+from .vocabulary.coordinate import Commits, NodeRef, Target
+from .vocabulary.payloads import (
+    Commit,
+    Heartbeat,
+    Nak,
+    NakReason,
+    Rewind,
+    Started,
+    Stopped,
+    Topic,
+    Value,
+)
+from .vocabulary.schedule import (
+    Coordinates,
+    MalformedSchedule,
+    Schedule,
+    Term,
+    parse_stop_trigger,
+    satisfied,
+    unsatisfiable,
+)
+from .walk import readable
 from .walk import NodeKind, coordinates, kind, node_at, walk
+
+# What a drain reads: every control request, a read-glob the substrate expands, not
+# a wire topic.
+_CONTROL = "control.>"
 
 # The coordinates of the empty lineage: no element, no commit (§2: empty is 0).
 _ROOT = Coordinates(streams=MappingProxyType({}), commits=0)
@@ -58,6 +98,17 @@ class _Phase(Enum):
     """It won the claim, and computes."""
     LOST = "lost"
     """It lost the claim race: it never claimed, and writes nothing (§4)."""
+    RELEASED = "released"
+    """It read a death report naming its claim, and writes nothing more (§4)."""
+
+
+class _Stop(NamedTuple):
+    """A drained, pending ``control.stop``: its ``from``, parsed at the drain
+    (``None`` holds once drained), and the claim's clock when it registered, which
+    a time atom counts from."""
+
+    from_: Term | None
+    registered_at: float
 
 
 class _Pending(NamedTuple):
@@ -202,6 +253,10 @@ class Worker:
         self._discarded: set[int] = set()  # values this claim discarded at a rewind
         self._registers: dict[str, object] = {}
         self._cursor = 0  # the control-drain watermark, ``consumed_seq``
+        self._reports_read = 0  # the death reports are read up to here
+        self._spent: set[str] = set()  # stop ids an answer names (§2, "Requests")
+        self._stops: dict[str, _Stop] = {}  # pending: drained, not yet held
+        self._held: list[str] = []  # the stops whose ``from`` held, in that order
         self._claim_run(resume_from)
 
     # ----- the claim (§4, "The claim") -------------------------------------------
@@ -209,8 +264,13 @@ class Worker:
     def _claim_run(self, resume_from: NodeRef | LatestClaimHead | None) -> None:
         """Claim the run, in order: if the latest claim is held, call
         ``report_if_dead`` (§3), and start again if it reports, else lose the claim;
-        CAS ``started`` at W; after winning, rebuild at the position. A lost CAS
-        starts again from a new W.
+        CAS ``started`` at W; after winning, fold the answers by name up to W and
+        rebuild at the position. A lost CAS starts again from a new W.
+
+        The answers are folded once the claim has won rather than before each
+        attempt: the CAS at W proves that the log at or below W is exactly what
+        preceded the claim, so the fold reads the same records either way, and a
+        loser, or a lost CAS, reads none of them.
 
         "Held" is the presence test (``claims.endings``): no exit and no death
         report names the latest claim, readable or not. It never raises, so a
@@ -246,8 +306,31 @@ class Worker:
                 break
         self._phase = _Phase.LIVE
         self._claim = seq
+        self._reports_read = seq
         self._resume_node = node
+        self._fold_answers(w)
         self._lineage = _Lineage.at(self._ch, node)
+
+    def _fold_answers(self, w: int) -> None:
+        """The answers on the log at or below ``w``, by name (§4, "The claim", step
+        1): a stop is spent once an exit's ``honored``, a ``control.withdraw`` or a
+        ``lifecycle.nak`` names it, wherever that sits, a displaced worker's exit
+        included, so a resumed claim never re-honors a stop. An unreadable exit's
+        ``honored`` is not read, as no fold reads more of an unreadable record
+        (§5)."""
+        topics: list[str] = [
+            Topic.LIFECYCLE_STOPPED,
+            Topic.CONTROL_WITHDRAW,
+            Topic.LIFECYCLE_NAK,
+        ]
+        for e in self._ch.read(topics=topics, limit=w) if w else []:
+            if e.seq > w:
+                break
+            if e.topic == Topic.LIFECYCLE_STOPPED:
+                exit_ = readable(Stopped, e)
+                self._spent.update(() if exit_ is None else exit_.honored)
+            elif e.request_id is not None:
+                self._spent.add(e.request_id)
 
     def _resume_point(
         self, resume_from: NodeRef | LatestClaimHead | None
@@ -283,6 +366,21 @@ class Worker:
     def claimed(self) -> bool:
         """True if this worker won the claim; False if it lost the race."""
         return self._phase is not _Phase.LOST
+
+    @property
+    def released(self) -> bool:
+        """True once a drain has read a death report naming this worker's claim:
+        it writes nothing more (§4)."""
+        return self._phase is _Phase.RELEASED
+
+    @property
+    def stop_pending(self) -> bool:
+        """The stop decision, read without side effects (§4): the level
+        ``commit()`` and ``heartbeat()`` last returned, for a callback guest whose
+        host loop cannot act on a return value. True for a worker that writes
+        nothing, a claim-race loser or a released worker included, whose every
+        safe point is a stop."""
+        return self._phase is not _Phase.LIVE or bool(self._held)
 
     @property
     def resume_node(self) -> int | None:
@@ -371,15 +469,20 @@ class Worker:
         return Coordinates(MappingProxyType(streams), tip.commits + iterations)
 
     def commit(self) -> bool:
-        """End an iteration: write one ``lifecycle.commit`` extending the position,
-        committing the pending values in the order they were added; run the save
-        policy once it has landed (§6); and return the stop decision.
+        """End an iteration, in order (§4, "commit()"): drain; evaluate the stops
+        at the node being written; write one ``lifecycle.commit`` extending the
+        position, committing the pending values in the order they were added; run
+        the save policy once it has landed (§6); return the stop decision.
 
         A save that raises propagates, and the node stands (§6): the claim ends,
         and its exit, errored and torn, names that node as its ``parent``."""
         if self._phase is not _Phase.LIVE:
             return True
+        self._drain()
+        if self._phase is not _Phase.LIVE:
+            return True  # released by a report the drain read
         at = self._written(iterations=1)
+        decision = self._decide(at)
         values = [p.seq for p in self._pending]
         body = Commit(
             claim_seq=self._claim,
@@ -395,7 +498,177 @@ class Worker:
         self._lineage.extend(seq, at, values)
         self._pending = []
         self._save.after(seq, commits=at.commits, exit=False)
-        return False
+        return decision
+
+    def heartbeat(self) -> bool:
+        """Liveness inside a slow iteration (§4): drain, decide the stops at the
+        position and the heartbeat's clock, and write a ``lifecycle.heartbeat``.
+        It commits nothing and evaluates no subscription. It returns the stop
+        decision, so a stop drained mid-iteration whose ``from`` holds, or one whose
+        time ``from`` comes due inside the iteration, lands here."""
+        if self._phase is not _Phase.LIVE:
+            return True
+        self._drain()
+        if self._phase is not _Phase.LIVE:
+            return True
+        decision = self._decide(self._lineage.tip)
+        body = Heartbeat(
+            claim_seq=self._claim, consumed_seq=self._cursor, t=self._now()
+        )
+        self._ch.send(asdict(body), topic=Heartbeat.TOPIC)
+        return decision
+
+    # ----- the drain (§4, "A drain") -------------------------------------------------
+
+    def _drain(self) -> int:
+        """Read W; read the death reports naming the claim at or below W, and latch
+        ``released`` on one; then handle each ``control.*`` record above the
+        watermark. Return the tail the drain last read, its own writes included,
+        which the exit compare-and-appends at.
+
+        Each refusal is a ``nak`` compare-and-appended at that tail. A lost CAS
+        means a record landed unread, perhaps a death report, so the drain runs
+        again from the request it was refusing: the records before it were
+        handled, and the watermark is past them."""
+        while True:
+            w = self._ch.last_seq()
+            if self._reported(w):
+                self._phase = _Phase.RELEASED
+                return w
+            tail = self._drain_control(w)
+            if tail is not None:
+                return tail
+
+    def _reported(self, w: int) -> bool:
+        """Does a ``supervisor.died`` at or below ``w`` name the claim? Presence
+        alone, readable or not (§3): a report's other fields are no reason to keep
+        writing for a claim it ended."""
+        lo = self._reports_read
+        if w <= lo:
+            return False
+        got = self._ch.read(after=lo, topics=[Topic.SUPERVISOR_DIED], limit=w - lo)
+        self._reports_read = w
+        return any(e.seq <= w and ends(e) == self._claim for e in got)
+
+    def _drain_control(self, w: int) -> int | None:
+        """Handle the control records above the watermark and at or below ``w``;
+        the tail, or ``None`` when a refusal's CAS lost."""
+        tail = w
+        if w <= self._cursor:
+            return tail
+        for e in self._ch.read(
+            after=self._cursor, topics=[_CONTROL], limit=w - self._cursor
+        ):
+            if e.seq > w:
+                break
+            refusal = self._take(e)
+            if refusal is not None:
+                seq = self._ch.send(
+                    asdict(refusal),
+                    topic=Nak.TOPIC,
+                    request_id=e.request_id,
+                    expected_seq=tail,
+                )
+                if seq is None:
+                    return None  # run the drain again, from this request
+                tail = seq
+                if e.request_id is not None:
+                    self._spent.add(e.request_id)  # a nak names what it spends
+            self._cursor = e.seq
+        return tail
+
+    def _take(self, e: Envelope) -> Nak | None:
+        """Handle one control record, or return the refusal to write for it,
+        having changed nothing: the refusal takes effect only once it lands.
+
+        - **A stop** (subscription-v0.4) is named by its ``request_id``. A spent
+          id is skipped, silently: "already answered" is not a refusal. Its
+          trigger is parsed once here (``parse_stop_trigger``): ``malformed`` when
+          it does not parse, ``unsatisfiable`` when a progress atom names a
+          declared source (§3, "Refusals"). A re-send of a pending id replaces its
+          registration; one that already held is decided.
+        - **A withdrawal** spends what it names (§2): a pending stop that has not
+          held is dropped, and one that held is too late, since the claim stops
+          and ``honored`` names it (§4, "The exit").
+        - **A subscription** is passed over (plan Task 12).
+        - **Any other ``control.*`` topic** is refused ``unsupported``."""
+        r = e.request_id
+        if e.topic == Topic.CONTROL_STOP:
+            if r is None:
+                return Nak(
+                    reason=NakReason.MALFORMED,
+                    message="a stop is named by its request_id",
+                )
+            if r in self._spent or r in self._held:
+                return None
+            try:
+                trigger = parse_stop_trigger(e.body)
+            except MalformedSchedule as exc:
+                return Nak(reason=NakReason.MALFORMED, message=str(exc))
+            if trigger is not None:
+                why = unsatisfiable(
+                    Schedule(from_=trigger, every=None, until=None),
+                    sources=self._sources,
+                )
+                if why is not None:
+                    return Nak(reason=NakReason.UNSATISFIABLE, message=why)
+            self._stops[r] = _Stop(trigger, self._now())
+            return None
+        if e.topic == Topic.CONTROL_WITHDRAW:
+            if r is None:
+                return Nak(
+                    reason=NakReason.MALFORMED,
+                    message="a withdrawal is named by the request_id it withdraws",
+                )
+            self._spent.add(r)
+            self._stops.pop(r, None)
+            return None
+        if e.topic == Topic.CONTROL_SUBSCRIBE:
+            return None
+        return Nak(
+            reason=NakReason.UNSUPPORTED, message=f"unknown control topic {e.topic!r}"
+        )
+
+    def _decide(self, at: Coordinates) -> bool:
+        """The stop decision at the coordinates ``at`` and the clock now (§4): each
+        pending stop whose ``from`` holds there is held for the rest of the claim,
+        a monotone level; a stop with no ``from`` holds once drained. Every atom is
+        a ``>=`` threshold, so a stop that held would hold again."""
+        now = self._now()
+        for r, stop in list(self._stops.items()):
+            if stop.from_ is None or satisfied(
+                stop.from_, at=at, time_seconds=now - stop.registered_at, count=0
+            ):
+                del self._stops[r]
+                self._held.append(r)
+        return bool(self._held)
+
+    # ----- the driver (§4, "The drivers") -------------------------------------------
+
+    def steps(self, until: Target | None) -> Iterator[int]:
+        """Drive the iterations: while ``until`` is not reached at the position
+        (``count(until.x, position) >= until.n``) and no stop holds, yield the
+        iteration's index, ``count(Commits(), position)``, then ``commit()``. So a
+        resumed driver continues from the log, run-absolute, and a rewind inside
+        the body moves the next index. ``None`` is no bound: it ends on a stop.
+
+        ``ValueError``, here at the call and before the first iteration, when
+        ``until`` names a declared source: its count is 0 forever, so the drive
+        would never end (§4; plan, open question 1)."""
+        if until is not None and not isinstance(until.x, Commits):
+            if until.x in self._sources:
+                raise ValueError(
+                    f"the target {until.x!r} is a declared source, which counts 0 "
+                    "forever: drive to an eager stream or Commits()"
+                )
+        return self._iterations(until)
+
+    def _iterations(self, until: Target | None) -> Iterator[int]:
+        while not self.stop_pending and (
+            until is None or self._lineage.tip.of(until.x) < until.n
+        ):
+            yield self._lineage.tip.commits
+            self.commit()
 
     # ----- the position (§4, "rewind()", "At every position change") ---------------
 
