@@ -391,10 +391,10 @@ def parse_schedule(body: Condition, *, pure_demand: bool) -> Schedule:
     ``nak`` of reason ``malformed``, decided before any refusal as
     ``unsatisfiable``. A fold that meets a logged body parses it too, and reads a
     body that does not parse as malformed, spent by that ``nak`` (``is_lease``)."""
-    unknown = sorted(body.keys() - {"from", "every", "until"})
+    unknown = _unknown_keys(body, {"from", "every", "until"})
     if unknown:
         raise MalformedSchedule(
-            f"`{unknown[0]}`: unknown schedule key (a schedule takes from/every/until)"
+            f"`{unknown}`: unknown schedule key (a schedule takes from/every/until)"
         )
 
     def slot(key: str) -> Term | None:
@@ -419,12 +419,25 @@ def parse_stop_trigger(body: Condition) -> Term | None:
     decision"); raise ``MalformedSchedule`` naming the offending key. A stop is
     one-shot, so an ``every`` is inert and an ``until`` could gate it from ever
     firing: it takes only a ``from``, with no ``count``."""
-    unknown = sorted(body.keys() - {"from"})
+    unknown = _unknown_keys(body, {"from"})
     if unknown:
-        raise MalformedSchedule(f"`{unknown[0]}`: control.stop takes only `from`")
+        raise MalformedSchedule(f"`{unknown}`: control.stop takes only `from`")
     if "from" not in body:
         return None
     return _parse_term(body["from"], path="from", no_count=_COUNT_OUTSIDE_UNTIL)
+
+
+def _unknown_keys(body: object, allowed: set[str]) -> str | None:
+    """The first key of ``body`` outside ``allowed``, or None; raise
+    ``MalformedSchedule`` when ``body`` is no object. A Python caller can hand the
+    boundary what JSON cannot spell (a list, an ``int`` key), and the boundary
+    refuses all of it with its one error."""
+    if not isinstance(body, dict):
+        raise MalformedSchedule(
+            f"a schedule must be an object, got {type(body).__name__}"
+        )
+    unknown = sorted(str(k) for k in body if k not in allowed)
+    return unknown[0] if unknown else None
 
 
 def _parse_term(cond: object, *, path: str, no_count: str | None) -> Term:

@@ -135,6 +135,16 @@ def test_a_malformed_message_names_its_key_by_its_path():
         parse_stop_trigger({"until": {"commits": 1}})
 
 
+def test_the_boundary_refuses_what_only_a_python_caller_can_spell():
+    """JSON spells neither, but a Python caller (``Watcher.broadcast``) can: the
+    boundary refuses both with its one error, never a ``TypeError``."""
+    for parse in (lambda b: parse_schedule(b, pure_demand=False), parse_stop_trigger):
+        with pytest.raises(MalformedSchedule, match="`1`"):
+            parse({1: {"commits": 1}, "x": 1})
+        with pytest.raises(MalformedSchedule, match="must be an object"):
+            parse([{"from": {"commits": 1}}])
+
+
 def test_a_schedule_refuses_a_count_outside_until():
     """``Schedule`` holds the grammar's one cross-slot rule itself, so a term built
     without the parse cannot put a ``Fired`` atom in ``from`` or ``every``."""
