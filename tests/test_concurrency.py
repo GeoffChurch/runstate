@@ -197,6 +197,84 @@ def test_two_workers_racing_the_claim_muzzle_the_loser(conc_backend):
         sys.setswitchinterval(old)
 
 
+def _claim_then_commit_0_4_0(i, root, run_id, backend, claimed_barrier, results):
+    """Thread body, for the staged 0.4.0 Worker: construct it (the claim races
+    here), record the verdict, then HOLD at a barrier so the winner's claim stays
+    held while the loser claims, and only then emit and commit. The winner never
+    exits (the exit is Task 11's), so its claim stays held, and its channel stays
+    open until the loser has claimed, so a backend's session probe finds the
+    winner's session alive."""
+    from runstate._next.checkpoint import NoSave
+    from runstate._next.worker import Worker as Worker0_4_0
+
+    ch = locate(run_id, root=root, backend=backend)
+    try:
+        w = Worker0_4_0(ch, resume_from=None, sources=[], save=NoSave())
+        results[i] = w.claimed
+        claimed_barrier.wait(timeout=10)
+        w.emit("loss", float(i))  # a loser's writes do nothing
+        results[i] = (w.claimed, w.commit())
+    finally:
+        ch.close()
+
+
+@pytest.mark.tier("in_process")
+def test_two_workers_racing_the_claim_one_wins_and_the_loser_writes_nothing(
+    conc_backend,
+):
+    """Two staged 0.4.0 Worker constructors contend for one run (§4, "The claim"):
+    exactly one wins. The loser finds the winner's claim held, ``report_if_dead``
+    reports nothing (the winner's handle is this live process), so it loses: it
+    writes nothing, explicit calls included, and its ``commit()`` returns True.
+    (Replaces ``test_two_workers_racing_the_claim_muzzle_the_loser`` at the
+    cutover, plan Task 19.)"""
+    n = 2
+    old = sys.getswitchinterval()
+    sys.setswitchinterval(1e-9)  # fine interleaving, so the claim's race is real
+    try:
+        for trial in range(5):
+            run_id = f"{conc_backend.namespace}-claim04-{trial}"
+            locate(run_id, root=conc_backend.root, backend=conc_backend.backend).close()
+            claimed_barrier = threading.Barrier(n)
+            results: list[object] = [None] * n
+            threads = [
+                threading.Thread(
+                    target=_claim_then_commit_0_4_0,
+                    args=(
+                        i,
+                        conc_backend.root,
+                        run_id,
+                        conc_backend.backend,
+                        claimed_barrier,
+                        results,
+                    ),
+                )
+                for i in range(n)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=15)
+
+            check = locate(run_id, root=conc_backend.root, backend=conc_backend.backend)
+            try:
+                topics = [e.topic for e in check.read()]
+            finally:
+                check.close()
+            assert sorted(results) == [(False, True), (True, False)], (
+                f"[trial {trial}] expected one winner and a loser told to stop, "
+                f"got {results}"
+            )
+            # the winner's claim, value and commit; nothing of the loser's
+            assert topics == [
+                "lifecycle.started",
+                "value",
+                "lifecycle.commit",
+            ], f"[trial {trial}] {topics}"
+    finally:
+        sys.setswitchinterval(old)
+
+
 # ===================== in_process tier (relocated) =====================
 # The in-process CAS races + the memory seq-RMW vector, gathered here so every
 # *real*-contention test lives in one tier-organized home; test_channel.py keeps
