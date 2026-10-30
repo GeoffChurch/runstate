@@ -623,8 +623,9 @@ outside every lineage, as at a rewind. A torn iteration to be redone is a `rewin
 
 **The exit.** `stopped(*, completed, error)` writes the exit node by the dying-breath CAS. In order, it:
 1. reads W and drains up to it: stops, withdrawals, and the death reports naming its claim. It registers no
-   subscription, as 0.3.0's plain exit did not, and passes over every `control.subscribe`, a malformed one
-   included: one that arrives after the last commit stays live for the next claim, which registers or refuses
+   subscription, as 0.3.0's plain exit did not, and passes over every named `control.subscribe`, a malformed
+   one included (a nameless one it refuses, as every drain does, or its watermark would shield it from the
+   next claim): one that arrives after the last commit stays live for the next claim, which registers or refuses
    it, where a lease bound here would be void at once;
 2. unless the exit discards its iteration (an error, or after `discard()`), evaluates the registered
    subscriptions once, at the exit node;
