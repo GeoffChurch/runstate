@@ -395,3 +395,258 @@ def test_interop_stop_from_latch_and_honored(open_run):
     body = obs.latest(T.LIFECYCLE_STOPPED).body
     assert set(body["honored"]) == {"at_beat", "at_node", "pending"}  # a set (§3)
     assert undischarged_stops(obs) == []
+
+
+def test_interop_fired_expired_and_one_sample(open_run):
+    """§9 item 6: firing and expiry are facts at a node, its ``fired`` naming the
+    subscriptions that fired there and its ``expired`` those whose schedule ended
+    there, the exit node's included; and a source fires once per node: one sample
+    of its register (``name`` the source, ``request_id`` null), written before the
+    node, committed after the node's pending values, however many of its
+    subscriptions fire there. ``answers`` reads ``fired``."""
+    from runstate._next.vocabulary.payloads import Topic as T
+    from tests.test_next_subscriptions import samples, sub
+    from tests.test_next_worker import worker
+
+    ch, obs = open_run(), open_run()
+    sub(obs, "a")  # a one-shot
+    sub(obs, "b", every={"commits": 1})
+    sub(obs, "c", source="lr", every={"commits": 0})
+    with worker(ch, sources=["loss", "lr"]) as w:
+        w.emit("acc", 0.9)
+        w.set("loss", 0.5)
+        w.set("lr", 0.1)
+        w.commit()
+        w.set("lr", 0.2)
+    nodes = obs.read(topics=[T.LIFECYCLE_COMMIT, T.LIFECYCLE_STOPPED])
+    commit_, exit_ = nodes[0].body, nodes[1].body
+    acc = obs.latest(T.VALUE, "acc").seq
+    loss = obs.read(topics=[T.VALUE], name="loss")
+    lr = obs.read(topics=[T.VALUE], name="lr")
+    assert [(e.name, e.request_id) for e in loss + lr] == [
+        ("loss", None),
+        ("lr", None),
+        ("lr", None),
+    ]
+    assert commit_["values"][0] == acc  # the pending values, then the samples
+    assert sorted(commit_["values"][1:]) == [loss[0].seq, lr[0].seq]
+    assert all(e.seq < nodes[0].seq for e in loss + lr[:1])
+    assert (sorted(commit_["fired"]), commit_["expired"]) == (["a", "b", "c"], ["a"])
+    assert (exit_["fired"], exit_["expired"], exit_["values"]) == (
+        ["c"],
+        [],
+        [lr[1].seq],
+    )
+    assert samples(obs) == [0.5]  # two fired on loss: one sample
+    assert [e.value for e in answers(obs, "a", head=LatestClaimHead())] == [0.5]
+    assert [e.value for e in answers(obs, "c", head=LatestClaimHead())] == [0.1, 0.2]
+
+
+def test_interop_leases_durables_and_demand(open_run):
+    """§9 item 7: a lease is per claim, bound by ``lifecycle.bound``, its fire
+    count kept across a rewind and void once its claim has ended, while its
+    lineage atoms' baselines are read on the lineage; a durable subscription is per
+    lineage, re-armed on a lineage that did not expire it; and demand is by name,
+    for the whole log, and empty on a closed head, where a subscription is never
+    answered and never refused."""
+    from runstate._next.vocabulary.payloads import Topic as T
+    from tests.test_next_subscriptions import bindings, claim_of, demand, sub
+    from tests.test_next_worker import naks, worker
+
+    ch, obs = open_run(), open_run()
+    sub(obs, "lease", every={"commits": 2}, until={"count": 3})
+    sub(obs, "held", every={"commits": 1}, until={"time_seconds": 100})
+    sub(obs, "durable")  # a one-shot
+    w = worker(ch, sources=["loss"])
+    w.set("loss", 1.0)
+    w.commit()  # c1: every one fires: durable expires on this lineage
+    c1 = obs.latest(T.LIFECYCLE_COMMIT).seq
+    w.commit()  # c2: the lease's delta from c1 is 1
+    w.rewind(AtNode(c1))  # the lineage's newest firing is still c1's
+    for _ in range(3):  # c3 on [c1]; then c4 and c5, each on the root
+        w.set("loss", 2.0)
+        w.commit()
+        w.rewind(None)
+    nodes = [e.body for e in obs.read(topics=[T.LIFECYCLE_COMMIT])]
+    assert [(sorted(b["fired"]), sorted(b["expired"])) for b in nodes] == [
+        (["durable", "held", "lease"], ["durable"]),
+        (["held"], []),
+        (["held"], []),  # c3: commits 2 on [c1], 1 past c1's firing
+        (["durable", "held", "lease"], ["durable"]),  # no firing on the lineage
+        (["durable", "held", "lease"], ["durable", "lease"]),  # the third firing
+    ]
+    assert bindings(obs) == [("lease", claim_of(obs)), ("held", claim_of(obs))]
+    assert demand(obs) == ["held"]  # the others are spent by name
+    w.stopped(completed=False, error=None)
+    assert demand(obs) == []  # held is void with its claim
+    w2 = worker(open_run(), resume_from=None, sources=["loss"])
+    w2.set("loss", 4.0)
+    w2.commit()  # the root, which expires nothing: the durable one fires again
+    assert obs.latest(T.LIFECYCLE_COMMIT).body["fired"] == ["durable"]
+    w2.stopped(completed=True, error=None)
+    sub(obs, "late", every={"commits": 1})  # posted to a closed head
+    assert live_demand(obs) == [] and naks(obs) == []
+
+
+def test_interop_atoms(open_run):
+    """§9 item 9: ``from`` and ``until`` hold once ``count(X, node) >= n``, with the
+    counts at the node being written, its pending values included; ``every`` is
+    the delta rule from the last firing, not rounded to a multiple; ``{commits:
+    n}`` counts iterations; a 0 in ``every`` fires at every evaluation, the exit
+    included; and an ``until`` that holds at registration expires at the next
+    node, unrefused, firing nothing."""
+    from runstate._next.vocabulary.payloads import Topic as T
+    from tests.test_next_subscriptions import sub
+    from tests.test_next_worker import naks, worker
+
+    ch, obs = open_run(), open_run()
+    sub(obs, "from_c1", **{"from": {"commits": 1}})
+    sub(obs, "from_x2", **{"from": {"stream": "x", "n": 2}})
+    sub(obs, "every_x3", every={"stream": "x", "n": 3})
+    sub(obs, "until_c2", every={"commits": 1}, until={"commits": 2})
+    sub(obs, "zero", every={"commits": 0})
+    with worker(ch, sources=["loss"]) as w:
+        w.set("loss", 1.0)
+        for batch in (1, 1, 2, 1):  # x counts 1, 2, 4, 5 at the nodes
+            for _ in range(batch):
+                w.emit("x", 0)
+            w.commit()
+        sub(obs, "held", until={"commits": 1})
+        w.commit()  # c5: held already holds; it expires here, unfired
+        w.emit("x", 0)
+        w.emit("x", 0)  # x counts 7 at the exit
+    nodes = [e.body for e in obs.read(topics=[T.LIFECYCLE_COMMIT, T.LIFECYCLE_STOPPED])]
+
+    def at(r):
+        return [i for i, b in enumerate(nodes) if r in b["fired"]]
+
+    assert at("from_c1") == [0]  # commits 1 at the first node being written
+    assert at("from_x2") == [1]  # x counts 2 there, its own pending value included
+    assert at("every_x3") == [0, 2, 5]  # 1, then 4 (+3), then 7 (+3) at the exit
+    assert at("until_c2") == [0] and "until_c2" in nodes[1]["expired"]
+    assert at("zero") == [0, 1, 2, 3, 4, 5]  # the exit included
+    assert at("held") == [] and nodes[4]["expired"] == ["held"]
+    assert naks(obs) == []
+
+
+def test_interop_refusals(open_run):
+    """§9 item 10: the three ``unsatisfiable`` refusals, judged against the
+    evaluating claim's declaration (a target it does not declare a source, a
+    progress atom naming one it does, an empty window with an absent ``from`` read
+    as ``from`` 0); and the ``malformed`` refusals of a re-send that changes its
+    target or its class, and of a pure demand with a ``from``, an ``every`` or a
+    ``count`` atom. Each refusal is a ``nak`` naming the id, which spends it."""
+    from tests.test_next_subscriptions import demand, sub
+    from tests.test_next_worker import naks, worker
+
+    ch, obs = open_run(), open_run()
+    sub(obs, "not_a_source", source="acc")
+    sub(obs, "counts_a_source", every={"stream": "lr", "n": 1})
+    sub(obs, "empty", until={"commits": 0})
+    sub(obs, "pure_from", source=None, **{"from": {"commits": 1}})
+    sub(obs, "pure_every", source=None, every={"commits": 1})
+    sub(obs, "pure_count", source=None, until={"count": 1})
+    sub(obs, "target", every={"commits": 1})
+    sub(obs, "class", every={"commits": 1})
+    w = worker(ch, sources=["loss", "lr"])
+    w.set("loss", 1.0)
+    w.commit()
+    sub(obs, "target", source="lr", every={"commits": 1})
+    sub(obs, "class", every={"commits": 1}, until={"time_seconds": 60})
+    w.commit()
+    U, M = "unsatisfiable", "malformed"
+    assert naks(obs) == [
+        ("not_a_source", U),
+        ("counts_a_source", U),
+        ("empty", U),
+        ("pure_from", M),
+        ("pure_every", M),
+        ("pure_count", M),
+        ("target", M),
+        ("class", M),
+    ]
+    assert demand(obs) == [] and w.pinned is False
+
+
+def test_interop_pure_demand_lifetime(open_run):
+    """§9 item 11: a pure demand targets nothing, so it never fires and no node's
+    ``fired`` names it, and it writes no sample. It lives until its ``until``
+    holds at a node, which names it in ``expired``; or a withdrawal or a refusal
+    names it; or, as a lease (a time ``until``), its claim ends."""
+    from runstate._next.vocabulary.payloads import Topic as T
+    from tests.test_next_subscriptions import demand, sub
+    from tests.test_next_worker import send_withdraw, worker
+
+    ch, obs = open_run(), open_run()
+    sub(obs, "until", source=None, until={"commits": 2})
+    sub(obs, "withdrawn", source=None)
+    sub(obs, "lease", source=None, until={"time_seconds": 100})
+    sub(obs, "refused", source=None, every={"commits": 1})
+    w = worker(ch, sources=[])
+    w.commit()
+    assert w._live() == {"until", "withdrawn", "lease"} == set(demand(obs))
+    send_withdraw(obs, "withdrawn")
+    w.commit()  # until holds at this node
+    nodes = [e.body for e in obs.read(topics=[T.LIFECYCLE_COMMIT])]
+    assert [(b["fired"], b["expired"]) for b in nodes] == [([], []), ([], ["until"])]
+    assert w._live() == {"lease"} == set(demand(obs))
+    w.stopped(completed=False, error=None)
+    assert demand(obs) == []  # the lease is void with its claim
+    assert obs.read(topics=[T.VALUE]) == []
+
+
+def test_interop_fence_and_cas_drain(open_run):
+    """§9 item 14: each record a drain writes, a ``lifecycle.bound`` or a
+    ``lifecycle.nak``, is compare-and-appended at the tail the drain last read, its
+    own writes included; so a death report that lands first is read on the re-run,
+    and the worker, released, writes nothing more: no binding, no refusal, no
+    sample, no commit, no exit."""
+    from runstate._next.vocabulary.payloads import Topic as T
+    from tests.next_helpers import Interloping, Wrapping
+    from tests.test_next_reads import died
+    from tests.test_next_subscriptions import claim_of, sub
+    from tests.test_next_worker import worker
+
+    class Recording(Wrapping):
+        """Records each bound's and nak's ``expected_seq``, and the tail then."""
+
+        def __init__(self, inner):
+            super().__init__(inner)
+            self.writes = []
+
+        def send(self, body, *, topic, name=None, request_id=None, expected_seq=None):
+            if topic in (T.LIFECYCLE_BOUND, T.LIFECYCLE_NAK):
+                self.writes.append((topic, expected_seq, self.last_seq()))
+            return super().send(
+                body,
+                topic=topic,
+                name=name,
+                request_id=request_id,
+                expected_seq=expected_seq,
+            )
+
+    obs = open_run()
+    rec = Recording(open_run())
+    with worker(rec, sources=["loss"]) as w:
+        sub(obs, "lease", every={"commits": 1}, until={"time_seconds": 100})
+        sub(obs, "refused", source="acc")
+        sub(obs, "lease2", every={"commits": 1}, until={"count": 9})
+        w.set("loss", 1.0)
+        w.commit()
+    topics = [T.LIFECYCLE_BOUND, T.LIFECYCLE_NAK, T.LIFECYCLE_BOUND]
+    assert [t for t, _, _ in rec.writes] == topics
+    assert all(cas == tail for _, cas, tail in rec.writes)  # each at the tail
+    # a death report lands just before the next claim's first write's CAS
+    ip = Interloping(open_run(), obs)
+    w2 = worker(ip, resume_from=LatestClaimHead(), sources=["loss"])
+    sub(obs, "late", every={"commits": 1}, until={"time_seconds": 100})
+    sub(obs, "refused2", source="acc")
+    report = died(claim_of(obs), "killed")
+    ip.arm(report.body, topic=report.topic)
+    before = obs.last_seq()
+    w2.set("loss", 2.0)
+    assert w2.commit() is True and w2.released
+    assert w2.heartbeat() is True and w2.retire() is True
+    w2.emit("acc", 1.0)
+    w2.stopped(completed=False, error=None)
+    assert [e.topic for e in obs.read(after=before)] == [T.SUPERVISOR_DIED]

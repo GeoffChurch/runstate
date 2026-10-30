@@ -357,6 +357,12 @@ def test_a_malformed_lineage_behind_a_valid_resume_node_raises_with_nothing_writ
 
 def test_a_rewind_writes_its_record_discards_pending_and_resets_registers(open_run):
     ch = open_run()
+    ch.send(
+        {"every": {"commits": 1}},
+        topic=Topic.CONTROL_SUBSCRIBE,
+        name="lr",
+        request_id="lr",
+    )
     w = worker(ch, sources=["lr"])
     w.emit("loss", 1.0)
     w.commit()
@@ -368,14 +374,18 @@ def test_a_rewind_writes_its_record_discards_pending_and_resets_registers(open_r
     discarded = ch.last_seq()
     w.rewind(AtNode(first))
     assert ch.latest(Topic.LIFECYCLE_REWIND).body["resume_from"] == first
-    # the register holds no value at the new position until the next set (§4)
-    assert w._position.registers == {}
     w.commit()
-    assert nodes(ch)[-1]["values"] == []  # the discarded value is in no node
+    # the discarded value is in no node; and the register holds no value at the
+    # new position until the next set (§4), so the subscription samples nothing
+    assert nodes(ch)[-1]["values"] == [] and nodes(ch)[-1]["fired"] == []
     assert nodes(ch)[-1]["parent"] == first
     loss = [e.value for e in series(ch, "loss", head=LatestClaimHead())]
     assert loss == [1.0]
     assert ch.read(after=discarded - 1, limit=1)[0].body["value"] == 99.0
+    assert ch.read(topics=[Topic.VALUE], name="lr") == []
+    w.set("lr", 0.2)
+    w.commit()
+    assert [e.body["value"] for e in ch.read(topics=[Topic.VALUE], name="lr")] == [0.2]
 
 
 def test_rewind_none_reaches_the_root(open_run):
@@ -766,6 +776,7 @@ def test_the_claim_folds_the_answers_so_a_spent_stop_is_never_drained(open_run):
         ("control.stop", "s", {"from": {"bogus": 1}}, "malformed"),
         ("control.stop", "s", {"every": {"commits": 1}}, "malformed"),
         ("control.stop", "s", {"until": {"commits": 9}}, "malformed"),
+        ("control.stop", "s", {"from": {"count": 1}}, "malformed"),
         ("control.stop", "s", {"bogus": 1}, "malformed"),
         ("control.stop", None, {}, "malformed"),  # a stop is named by its id
         ("control.stop", "s", {"from": {"stream": "lr", "n": 1}}, "unsatisfiable"),

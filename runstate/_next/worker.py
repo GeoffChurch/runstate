@@ -36,6 +36,16 @@ and a spent id is dead on arrival, on every control topic. A record with a missi
 or empty id is nameless: nothing can spend it, so a claim refuses one only above the
 previous claim's watermark, below which that claim drained and refused.
 
+SUBSCRIPTIONS (§3, subscription-v0.4; §4). A drain parses each
+``control.subscribe`` once, and refuses what the claim cannot serve; a lease (a
+time or count atom) registers only once its ``lifecycle.bound`` has landed. Each
+node evaluates the live subscriptions once, at the node being written, writes one
+sample per source that fired, and names what fired and expired (``fired``,
+``expired``). A lease's clock, fire count and expiry are the claim's; a durable
+subscription's baselines and expiry are the lineage's, rebuilt at every position
+change, so it is live again on a lineage that did not expire it. ``serve()``
+commits while one is live, and ``retire()`` exits when none is.
+
 THE STOP DECISION (§4). A pending stop's ``from`` is evaluated at each node the
 claim writes, with the counts at the node being written, and at each heartbeat,
 with the counts at the position. Once one holds, the decision is True for the rest
@@ -60,10 +70,11 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from types import MappingProxyType
-from typing import Literal, NamedTuple, Self
+from typing import Literal, NamedTuple, Self, assert_never
 
 from ..channel import Channel, Envelope
 from ..vocabulary.handle import local_handle
@@ -71,6 +82,7 @@ from ..vocabulary.launch import current_launch_id
 from .checkpoint import SavePolicy
 from .claims import (
     CAS_ATTEMPTS,
+    Bindings,
     claim_before,
     endings,
     ends,
@@ -82,6 +94,7 @@ from .launcher import report_if_dead
 from .observables import LatestClaimHead
 from .vocabulary.coordinate import Commits, NodeRef, Target
 from .vocabulary.payloads import (
+    Bound,
     Commit,
     Heartbeat,
     Nak,
@@ -96,7 +109,10 @@ from .vocabulary.schedule import (
     Coordinates,
     MalformedSchedule,
     Schedule,
+    Subscription,
     Term,
+    is_lease,
+    parse_schedule,
     parse_stop_trigger,
     satisfied,
     unsatisfiable,
@@ -171,22 +187,41 @@ class _Phase(Enum):
 
 class _Node(NamedTuple):
     """A node of the lineage at the position: its seq, the coordinates at and
-    including it, and the value seqs it commits."""
+    including it, the value seqs it commits, and the subscriptions that fired and
+    expired there (§2: firing and expiry are facts at a node)."""
 
     seq: int
     coords: Coordinates
     values: tuple[int, ...]
+    fired: tuple[str, ...]
+    expired: tuple[str, ...]
 
 
 class _Lineage:
     """The lineage at the position, root first (§4, "At every position change"),
     one ``_Node`` each. It is the Worker's count map, so a rewind to a node on it is
-    a truncation, and a target elsewhere costs the walk from it."""
+    a truncation, and a target elsewhere costs the walk from it.
+
+    It folds what the subscriptions read of the lineage (§3, "Evaluation"): each
+    one's baseline, the coordinates at the newest node whose ``fired`` names it,
+    for a lease's lineage atoms as for a durable subscription's; and the
+    subscriptions some node expired, which a durable subscription is not live
+    beside. A lease reads only the baseline: its expiry is the claim's."""
 
     def __init__(self, nodes: list[_Node]) -> None:
         self._nodes = nodes
         self._index = {n.seq: i for i, n in enumerate(nodes)}
-        self._committed = {s for n in nodes for s in n.values}
+        self._committed: set[int] = set()
+        self._baselines: dict[str, Coordinates] = {}
+        self._expired: set[str] = set()
+        for n in nodes:
+            self._fold(n)
+
+    def _fold(self, node: _Node) -> None:
+        self._committed.update(node.values)
+        for r in node.fired:
+            self._baselines[r] = node.coords
+        self._expired.update(node.expired)
 
     @classmethod
     def at(cls, ch: Channel, node: int | None) -> _Lineage:
@@ -195,7 +230,13 @@ class _Lineage:
         walked = walk(ch, node)
         return cls(
             [
-                _Node(at.env.seq, c, tuple(at.node.committed))
+                _Node(
+                    at.env.seq,
+                    c,
+                    tuple(at.node.committed),
+                    tuple(at.node.fired),
+                    tuple(at.node.expired),
+                )
                 for at, c in zip(walked.nodes, coordinates(walked), strict=True)
             ]
         )
@@ -214,6 +255,15 @@ class _Lineage:
         """Does a node of the lineage commit the value ``seq``?"""
         return seq in self._committed
 
+    def baseline(self, r: str) -> Coordinates | None:
+        """The coordinates at the newest node whose ``fired`` names ``r``, or
+        ``None`` when none does: ``every``'s lineage baseline (§3)."""
+        return self._baselines.get(r)
+
+    def expires(self, r: str) -> bool:
+        """Does a node of the lineage name ``r`` in its ``expired``?"""
+        return r in self._expired
+
     def to(self, ch: Channel, node: int | None) -> _Lineage:
         """The lineage ending at ``node``: this one's prefix when ``node`` is on it
         (or is the root), else walked from ``node``."""
@@ -226,7 +276,7 @@ class _Lineage:
         """Append the node the claim just wrote."""
         self._index[node.seq] = len(self._nodes)
         self._nodes.append(node)
-        self._committed.update(node.values)
+        self._fold(node)
 
 
 @dataclass(frozen=True)
@@ -236,9 +286,12 @@ class _Position:
     position, and the source registers. A claim and a rewind each rebuild it whole,
     by ``at``, so a position change is one assignment.
 
-    (Plan Task 12 adds here what it folds from the lineage at each change: each
-    durable subscription's fire count, ``every`` baseline and expiry, and each
-    lease's lineage baselines.)"""
+    The subscriptions' per-lineage state is the lineage's fold (``_Lineage``):
+    each one's ``every`` baseline, and which a node expired, so a durable
+    subscription another lineage expired is live again here. A durable
+    subscription reads no fire count and no clock, so none is rebuilt; a lease's
+    clock, fire count and expiry are the claim's (``Subscription``,
+    ``_Requests``), and survive the change."""
 
     resume_node: int | None
     lineage: _Lineage
@@ -250,6 +303,23 @@ class _Position:
         registers are reset, so a sample never carries a value computed on an
         abandoned branch."""
         return cls(resume_node=node, lineage=lineage, registers={})
+
+
+class _Landed(NamedTuple):
+    """An exit that landed: its seq, and whether it is extendable, so the save
+    policy runs after it."""
+
+    seq: int
+    extendable: bool
+
+
+class _Unwritten(Enum):
+    """Why an exit's compare-and-append loop wrote no exit."""
+
+    RELEASED = "released"
+    """A drain read a death report naming the claim: it writes nothing more."""
+    SERVING = "serving"
+    """A retiring drain registered a live subscription: the worker serves it."""
 
 
 class _ResumePoint(NamedTuple):
@@ -312,23 +382,51 @@ class _Pending(NamedTuple):
 
 class _Mode(Enum):
     """What a drain is for, which decides what it registers (§4): an iteration's
-    (``commit()``, ``heartbeat()``) registers every verb; the exit's registers no
+    (``commit()``, ``heartbeat()``) registers every verb, and so do ``retire()``'s
+    two, since it exits only when no subscription arrived; the exit's registers no
     subscription, so one that arrives after the last commit stays live for the
-    next claim. (A placeholder: plan Task 12 reads it, and ``retire()`` takes its
-    own.)"""
+    next claim, where a lease bound here would be void at once."""
 
     ITERATION = "iteration"
     EXIT = "exit"
 
 
-class _Write(NamedTuple):
-    """A record a drain compare-and-appends for a control record, which takes
-    effect only once it lands (``_Requests.landed``): a refusal now; plan Task 12
-    adds the lease binding, ``lifecycle.bound``. ``request_id`` is the request it
-    names, ``None`` for a nameless one."""
+class _Refusal(NamedTuple):
+    """A ``lifecycle.nak`` a drain writes for a control record it refuses: once it
+    lands, it spends ``request_id`` (``None`` for a nameless record)."""
 
     body: Nak
     request_id: str | None
+
+
+class _Binding(NamedTuple):
+    """A ``lifecycle.bound`` a drain writes for a lease it registers (§4,
+    "Leases"): once it lands, ``subscription`` registers under ``request_id``,
+    bound to this claim, and not before, so the log binds every lease the claim
+    serves."""
+
+    body: Bound
+    request_id: str
+    subscription: Subscription
+
+
+_Write = _Refusal | _Binding
+"""A record a drain compare-and-appends for a control record, which takes effect
+only once it lands (``_Requests.landed``)."""
+
+
+class _Evaluation(NamedTuple):
+    """The subscriptions' evaluation at one node (§3, "Evaluation"): the ids that
+    fired and expired there, and the sources to sample, one each, in the order of
+    their first firing."""
+
+    fired: list[str]
+    expired: list[str]
+    sources: list[str]
+
+
+_NOTHING = _Evaluation(fired=[], expired=[], sources=[])
+""""An exit that discarded its iteration evaluates nothing" (§3)."""
 
 
 class _Stop(NamedTuple):
@@ -342,19 +440,31 @@ class _Stop(NamedTuple):
 
 class _Requests:
     """The claim's requests, by name (§2, "Requests"): the ids spent, the stops
-    pending, and the stops held, in the order they held. (Plan Task 12 adds the
-    subscriptions, the leases and their bindings.)"""
+    pending, the stops held, in the order they held, and the subscriptions
+    registered, with the leases bound to this claim.
 
-    def __init__(self, sources: frozenset[str]) -> None:
+    A subscription is dropped only when a withdrawal, a refusal or its own claim's
+    expiry of a lease spends it, or it is a void lease (§4, "The claim"). A durable
+    subscription's expiry is the lineage's (``_Lineage.expires``), so it stays
+    registered, live again on a lineage that does not expire it."""
+
+    def __init__(self, sources: frozenset[str], *, claim: int) -> None:
         self._sources = sources
+        self._claim = claim
         self._spent: set[str] = set()
         self._stops: dict[str, _Stop] = {}
         self._held: list[str] = []
+        self._subs: dict[str, Subscription] = {}
+        self._bound: set[str] = set()  # the leases bound to this claim
+        self._bindings = Bindings()  # the log's, below the claim
 
     def answered(self, e: Envelope) -> None:
-        """Fold an answer on the log below the claim: the ids ``e`` spends
-        (``claims.spent_by``), a displaced worker's exit included."""
+        """Fold a record on the log below the claim: the ids ``e`` spends
+        (``claims.spent_by``), a displaced worker's exit included; and the
+        bindings (``claims.Bindings``), so a lease bound to a claim that has ended
+        is void."""
         self._spent.update(spent_by(e))
+        self._bindings.apply(e)
 
     def take(
         self, e: Envelope, *, mode: _Mode, now: float, nameless_above: int
@@ -383,13 +493,14 @@ class _Requests:
         - **A withdrawal** spends what it names (§2): a pending stop that has not
           held is dropped, and one that held is too late, since the claim stops
           and ``honored`` names it (§4, "The exit").
-        - **A subscription** is passed over, in either ``mode`` (plan Task 12).
+        - **A subscription** (``_subscribe``) registers, in ``ITERATION`` mode; the
+          exit passes it over, for the next claim.
         - **Any other ``control.*`` topic** is refused ``unsupported``."""
         r = request_name(e)
         if r is None:
             if e.seq <= nameless_above:
                 return None  # the previous claim drained it, and refused it
-            return _Write(
+            return _Refusal(
                 Nak(
                     reason=NakReason.MALFORMED,
                     message=f"a {e.topic} is named by its request_id, and this "
@@ -405,23 +516,24 @@ class _Requests:
             try:
                 trigger = parse_stop_trigger(e.body)
             except MalformedSchedule as exc:
-                return _Write(Nak(reason=NakReason.MALFORMED, message=str(exc)), r)
+                return _Refusal(Nak(reason=NakReason.MALFORMED, message=str(exc)), r)
             if trigger is not None:
                 why = unsatisfiable(
                     Schedule(from_=trigger, every=None, until=None),
                     sources=self._sources,
                 )
                 if why is not None:
-                    return _Write(Nak(reason=NakReason.UNSATISFIABLE, message=why), r)
+                    return _Refusal(Nak(reason=NakReason.UNSATISFIABLE, message=why), r)
             self._stops[r] = _Stop(trigger, now)
             return None
         if e.topic == Topic.CONTROL_WITHDRAW:
             self._spent.update(spent_by(e))
             self._stops.pop(r, None)
+            self._subs.pop(r, None)
             return None
         if e.topic == Topic.CONTROL_SUBSCRIBE:
-            return None
-        return _Write(
+            return None if mode is _Mode.EXIT else self._subscribe(e, r, now)
+        return _Refusal(
             Nak(
                 reason=NakReason.UNSUPPORTED,
                 message=f"unknown control topic {e.topic!r}",
@@ -429,13 +541,128 @@ class _Requests:
             r,
         )
 
+    def _subscribe(self, e: Envelope, r: str, now: float) -> _Write | None:
+        """Register a ``control.subscribe`` named ``r``, or return the record to
+        write for it (§3, subscription-v0.4; §4, "A drain"), in order:
+
+        - its body is parsed (``parse_schedule``, a pure demand's as one, its
+          ``name`` null), and refused ``malformed`` when it does not parse;
+        - at its first send, a lease bound to a claim that has ended is void: it is
+          dropped, and its id is dead (its class is its first send's, and void
+          never reverts);
+        - a re-send that changes its target or its class (lease or durable) is
+          refused ``malformed``: the first send fixes the subscription;
+        - a target the claim does not declare a source, or a schedule
+          ``unsatisfiable`` against the claim's sources, is refused
+          ``unsatisfiable``;
+        - otherwise it registers afresh, as a new ``Subscription``, so a lease's
+          time atoms count from ``now`` and its fire count is 0, while what the
+          lineage holds stays. A lease not yet bound to this claim registers only
+          once its ``lifecycle.bound`` lands."""
+        try:
+            schedule = parse_schedule(e.body, pure_demand=e.name is None)
+        except MalformedSchedule as exc:
+            return _Refusal(Nak(reason=NakReason.MALFORMED, message=str(exc)), r)
+        lease = is_lease(schedule)
+        first = self._subs.get(r)
+        if first is None:
+            if lease and self._bindings.void(r):
+                self._spent.add(r)  # void: bound to a claim that has ended
+                return None
+        elif (first.target, first.lease) != (e.name, lease):
+            was = "a lease" if first.lease else "durable"
+            return _Refusal(
+                Nak(
+                    reason=NakReason.MALFORMED,
+                    message=f"a re-send of {r!r} must keep its first send's "
+                    f"target {first.target!r} and class ({was})",
+                ),
+                r,
+            )
+        if e.name is not None and e.name not in self._sources:
+            return _Refusal(
+                Nak(
+                    reason=NakReason.UNSATISFIABLE,
+                    message=f"{e.name!r} is not a declared source of this claim: "
+                    "an eager stream is read, not subscribed",
+                ),
+                r,
+            )
+        why = unsatisfiable(schedule, sources=self._sources)
+        if why is not None:
+            return _Refusal(Nak(reason=NakReason.UNSATISFIABLE, message=why), r)
+        sub = Subscription(schedule, registered_at=now, target=e.name)
+        if lease and r not in self._bound:
+            return _Binding(Bound(claim_seq=self._claim), r, sub)
+        self._subs[r] = sub
+        return None
+
     def landed(self, write: _Write) -> None:
         """A write's effect, once it has landed: a refusal spends the id it names,
-        as a ``nak`` does (``claims.spent_by``), and drops a stop registered under
-        it (a refused re-send)."""
-        if write.request_id is not None:
-            self._spent.add(write.request_id)
-            self._stops.pop(write.request_id, None)
+        as a ``nak`` does (``claims.spent_by``), and drops a stop or a
+        subscription registered under it (a refused re-send); a binding registers
+        its lease, bound to this claim."""
+        match write:
+            case _Refusal(request_id=r):
+                if r is not None:
+                    self._spent.add(r)
+                    self._stops.pop(r, None)
+                    self._subs.pop(r, None)
+            case _Binding(request_id=r, subscription=sub):
+                self._bound.add(r)
+                self._subs[r] = sub
+            case _:
+                assert_never(write)
+
+    def live(self, lineage: _Lineage) -> frozenset[str]:
+        """The subscriptions live for this claim at ``lineage``: every lease
+        registered (its expiry is the claim's, and spends it), and every durable
+        one no node of the lineage expired."""
+        return frozenset(
+            r for r, sub in self._subs.items() if sub.lease or not lineage.expires(r)
+        )
+
+    def evaluate(
+        self,
+        *,
+        lineage: _Lineage,
+        at: Coordinates,
+        now: float,
+        valued: AbstractSet[str],
+    ) -> _Evaluation:
+        """Evaluate each live subscription once, at the node being written, whose
+        coordinates are ``at`` (§3, "Evaluation"): ``until`` first, then ``from``
+        and ``every`` against its lineage baseline (``_Lineage.baseline``); a
+        source fires only once ``valued`` holds it. The call is the firing
+        (``Subscription.evaluate``), so a caller that retries a write reuses the
+        result."""
+        live = self.live(lineage)
+        fired: list[str] = []
+        expired: list[str] = []
+        sources: list[str] = []
+        for r, sub in self._subs.items():
+            if r not in live:
+                continue
+            d = sub.evaluate(
+                at=at, baseline=lineage.baseline(r), now=now, valued=valued
+            )
+            if d.fire:
+                fired.append(r)
+                assert sub.target is not None  # a pure demand never fires
+                if sub.target not in sources:
+                    sources.append(sub.target)
+            if d.expired:
+                expired.append(r)
+        return _Evaluation(fired=fired, expired=expired, sources=sources)
+
+    def node_landed(self, evaluation: _Evaluation) -> None:
+        """A commit's effect on the claim, once it has landed: a lease it expired
+        is spent, since a lease's expiry is the claim's, which no rewind re-arms. A
+        durable subscription's expiry is the node's, which the lineage folds."""
+        for r in evaluation.expired:
+            if self._subs[r].lease:
+                del self._subs[r]
+                self._spent.add(r)
 
     def decide(self, at: Coordinates, now: float) -> bool:
         """The stop decision at the coordinates ``at`` and the clock ``now`` (§4):
@@ -539,7 +766,7 @@ class Worker:
         self._position = _Position.at(None, _Lineage([]))
         self._iteration = _Iteration(pending=[], discarded=set())
         self._drained = _Drain(drained_to=0, watermark=0, reports_read=0)
-        self._requests = _Requests(self._sources)
+        self._requests = _Requests(self._sources, claim=0)
         self._claim_run(resume_from)
 
     # ----- the claim (§4, "The claim") -------------------------------------------
@@ -608,7 +835,7 @@ class Worker:
         self._position = _Position.at(at.node, lineage)
         self._drained = _Drain(drained_to=at.w, watermark=0, reports_read=seq)
         try:
-            requests = self._answers(at.w)
+            requests = self._answers(seq, at.w)
             bound = self._previous_watermark(previous, at.w)
         except BaseException as exc:
             try:
@@ -620,17 +847,20 @@ class Worker:
         self._claim = _Claim(seq=seq, previous_watermark=bound)
         self._drained.drained_to = 0  # the first drain reads every control record
 
-    def _answers(self, w: int) -> _Requests:
-        """The answers on the log at or below ``w``, by name (§4, "The claim", step
-        4): a request is spent once a ``control.withdraw`` or a ``lifecycle.nak``
-        names it, and a stop once an exit's ``honored`` does, wherever that sits, a
-        displaced worker's exit included, so a resumed claim never re-honors a stop
-        (``claims.spent_by``)."""
-        requests = _Requests(self._sources)
+    def _answers(self, claim: int, w: int) -> _Requests:
+        """The answers on the log at or below ``w``, by name, and the lease
+        bindings (§4, "The claim", step 4): a request is spent once a
+        ``control.withdraw`` or a ``lifecycle.nak`` names it, and a stop once an
+        exit's ``honored`` does, wherever that sits, a displaced worker's exit
+        included, so a resumed claim never re-honors a stop
+        (``claims.spent_by``); and a lease is void once a ``lifecycle.bound`` binds
+        it to a claim that has ended (``claims.Bindings``), so the claim never
+        re-anchors another claim's lease."""
+        requests = _Requests(self._sources, claim=claim)
         topics: list[str] = [
-            Topic.LIFECYCLE_STOPPED,
             Topic.CONTROL_WITHDRAW,
             Topic.LIFECYCLE_NAK,
+            *Bindings.TOPICS,
         ]
         for e in self._ch.read(topics=topics, limit=w) if w else []:
             if e.seq > w:
@@ -702,6 +932,21 @@ class Worker:
         return self._phase is not _Phase.LIVE or self._requests.stopping
 
     @property
+    def pinned(self) -> bool:
+        """Is some subscription live for this claim (§4, "The drivers"): a lease of
+        the claim, or a durable subscription live on its lineage? It reads what the
+        drains have registered, so before the first drain it is False; ``serve()``
+        and ``retire()`` drain before they read it. False for a worker that commits
+        nothing more."""
+        return bool(self._live())
+
+    def _live(self) -> frozenset[str]:
+        """The ids of the subscriptions live for this claim (``pinned``)."""
+        if self._phase is not _Phase.LIVE:
+            return frozenset()
+        return self._requests.live(self._position.lineage)
+
+    @property
     def resume_node(self) -> int | None:
         """The node the claim resumed from, which a rewind moves to its target, or
         ``None`` when it names no node: what the checkpoint recipe's load assertion
@@ -738,9 +983,15 @@ class Worker:
                 f"{name!r} is a declared source: set() its register, which is "
                 "sampled on demand"
             )
+        seq = self._send_value(name, value, self._now())
+        self._iteration.pending.append(_Pending(seq, name))
+
+    def _send_value(self, name: str, value: object, now: float) -> int:
+        """Send a ``value`` record of ``name``: an emitted element, or a source's
+        sample. A value that does not serialize raises ``TypeError`` naming it."""
         try:
             seq = self._ch.send(
-                asdict(Value(value=value, t=self._now())), topic=Value.TOPIC, name=name
+                asdict(Value(value=value, t=now)), topic=Value.TOPIC, name=name
             )
         except (TypeError, ValueError) as exc:
             raise TypeError(
@@ -749,7 +1000,7 @@ class Worker:
                 "current_channel()/create_channel() to coerce it"
             ) from exc
         assert seq is not None  # an unconditional send always lands
-        self._iteration.pending.append(_Pending(seq, name))
+        return seq
 
     def set(self, name: str, value: object) -> None:
         """Update the source ``name``'s register, which a subscription samples only
@@ -804,12 +1055,17 @@ class Worker:
         return Coordinates(MappingProxyType(streams), tip.commits + iterations)
 
     def commit(self) -> bool:
-        """End an iteration, in order (§4, "commit()"): drain; evaluate the stops
-        at the node being written; write one ``lifecycle.commit`` extending the
-        position, committing the pending values in the order they were added; run
-        the save policy once it has landed (§6); return the stop decision. The
-        clock is read once, for the drain, the decision and the node's ``t``.
+        """End an iteration, in order (§4, "commit()"): drain, so a subscription
+        registered here may fire here; evaluate the stops and the subscriptions at
+        the node being written; write one sample per source whose subscriptions
+        fired; write one ``lifecycle.commit`` extending the position, committing
+        the pending values in the order they were added, then the samples, and
+        naming what fired and expired; run the save policy once it has landed
+        (§6); return the stop decision. The clock is read once, for the drain, the
+        evaluations, the samples and the node's ``t``.
 
+        A sample that cannot be written raises, as ``emit`` does, and the claim
+        then ends errored; the samples already written stay outside every lineage.
         A save that raises propagates, and the node stands (§6): the claim ends,
         and its exit, errored and torn, names that node as its ``parent``."""
         if self._phase is not _Phase.LIVE:
@@ -819,22 +1075,44 @@ class Worker:
             return True  # released by a report the drain read
         at = self._written(iterations=1)
         decision = self._requests.decide(at, now)
+        evaluation = self._evaluate(at, now)
         values = [p.seq for p in self._iteration.pending]
+        values += self._samples(evaluation, now)
         body = Commit(
             claim_seq=self._claim.seq,
             consumed_seq=self._drained.watermark,
             parent=self._position.lineage.node,
             values=values,
-            fired=[],
-            expired=[],
+            fired=evaluation.fired,
+            expired=evaluation.expired,
             t=now,
         )
         seq = self._ch.send(asdict(body), topic=Commit.TOPIC)
         assert seq is not None  # an unconditional send always lands
-        self._position.lineage.extend(_Node(seq, at, tuple(values)))
+        node = _Node(
+            seq, at, tuple(values), tuple(evaluation.fired), tuple(evaluation.expired)
+        )
+        self._position.lineage.extend(node)
+        self._requests.node_landed(evaluation)
         self._iteration.pending = []
         self._save.after(seq, commits=at.commits, exit=False)
         return decision
+
+    def _evaluate(self, at: Coordinates, now: float) -> _Evaluation:
+        """The subscriptions' evaluation at the node being written, whose
+        coordinates are ``at``, against the registers that hold a value."""
+        return self._requests.evaluate(
+            lineage=self._position.lineage,
+            at=at,
+            now=now,
+            valued=self._position.registers.keys(),
+        )
+
+    def _samples(self, evaluation: _Evaluation, now: float) -> list[int]:
+        """Write one sample of each source ``evaluation`` fired, its register's
+        value (§3: a source fires once per node); their seqs, in order."""
+        registers = self._position.registers
+        return [self._send_value(n, registers[n], now) for n in evaluation.sources]
 
     def heartbeat(self) -> bool:
         """Liveness inside a slow iteration (§4): drain, decide the stops at the
@@ -949,6 +1227,21 @@ class Worker:
             yield self._position.lineage.tip.commits
             self.commit()
 
+    def serve(self) -> Iterator[int]:
+        """The driver for demand (§4, "The drivers"): while some subscription is
+        live for this claim (``pinned``) and no stop holds, yield the iteration's
+        index, ``count(Commits(), position)``, as ``steps`` does, then
+        ``commit()``. At zero it calls ``retire()``, which drains first: so a
+        subscription already on the log when ``serve()`` starts is served from the
+        first iteration, and one that arrives as the worker retires keeps it
+        serving. It ends on a stop, leaving the exit to the ``with`` block, and
+        does nothing for a worker that commits nothing more."""
+        while not self.stop_pending:
+            if not self.pinned and self.retire():
+                return
+            yield self._position.lineage.tip.commits
+            self.commit()
+
     # ----- the position (§4, "rewind()", "At every position change") ---------------
 
     def rewind(self, target: NodeRef | None) -> None:
@@ -996,21 +1289,28 @@ class Worker:
         1. read W and drain up to it: the death reports naming the claim, stops and
            withdrawals. No subscription is registered: one that arrives after the
            last commit stays live for the next claim;
-        2. (plan Task 12: evaluate the subscriptions once, and write their samples);
-        3. read W again, drain as in step 1, and compare-and-append ``stopped`` at
+        2. unless the exit discards its iteration (an error, or after
+           ``discard()``), evaluate the registered subscriptions once, at the exit
+           node, which adds no iteration;
+        3. write their samples once. A failure while writing them makes the exit an
+           error exit, torn, with the failure as its ``error``; the samples already
+           written stay outside every lineage, and the failure is raised once the
+           exit has landed;
+        4. read W again, drain as in step 1, and compare-and-append ``stopped`` at
            the drain's tail, with ``parent`` the position, ``values`` the pending
-           values, or null when the exit discards its iteration (an error, or after
-           ``discard()``), and ``honored`` every stop that held during the claim and
-           every stop pending now, a set whose order means nothing (§3). A lost
-           CAS repeats this step only, so a stop first drained here is honored;
-        4. if the exit is extendable, run the save policy (§6).
+           values then the samples, or null when the exit discards its iteration,
+           ``fired`` and ``expired`` step 2's, and ``honored`` every stop that held
+           during the claim and every stop pending now, a set whose order means
+           nothing (§3). A lost CAS repeats this step only: it does not evaluate
+           again, and a stop first drained here is honored;
+        5. if the exit is extendable, run the save policy (§6).
 
         ``completed`` is the worker's claim of intrinsic completion, which closes
         the lineage; a completed exit carries no ``error`` (``ValueError``, checked
         first). A second call does nothing, and so does a lost or released
         worker's.
 
-        After ``CAS_ATTEMPTS`` lost CASes in a row, step 3 raises
+        After ``CAS_ATTEMPTS`` lost CASes in a row, step 4 raises
         ``WorkerStarvedError``, out of ``stopped()`` and so out of ``__exit__``: no
         exit was written, the claim is still held, and a death report is what ends
         it. The worker keeps its phase, so a later call may try again.
@@ -1022,36 +1322,108 @@ class Worker:
         may not get."""
         if completed and error is not None:
             raise ValueError("a completed exit carries no error")
+        self._exit(completed=completed, error=error, mode=_Mode.EXIT)
+
+    def retire(self) -> bool:
+        """``serve()``'s careful death (§4, "The exit"): the exit, preempted, with
+        every control verb drained at both of its reads, subscriptions included.
+        False, writing no exit, if a subscription is live after either read: one
+        arrived, and the worker serves it. Otherwise True, its exit landed: it
+        fires nothing, since nothing is live when it is written, and it is
+        extendable, so a woken successor that holds no state continues from it.
+
+        True, writing nothing, for a worker that commits nothing more: a lost, a
+        released or a stopped one; and after ``discard()``, True once its torn exit
+        has landed."""
+        if self._phase is not _Phase.LIVE:
+            self.stopped(completed=False, error=None)
+            return True
+        return self._exit(completed=False, error=None, mode=_Mode.ITERATION)
+
+    def _exit(self, *, completed: bool, error: str | None, mode: _Mode) -> bool:
+        """``stopped()``'s steps, its drains in ``mode``: ``EXIT``'s, or for
+        ``retire()`` ``ITERATION``'s, whose registrations make it return False,
+        having written no exit, when a subscription is live after a drain. True
+        once the exit has landed, or when there is nothing to write."""
         if self._phase not in (_Phase.LIVE, _Phase.DISCARDED):
-            return
+            return True
+        retiring = mode is _Mode.ITERATION
         discards = error is not None or self._phase is _Phase.DISCARDED
-        if self._drain(_Mode.EXIT, self._now()) is None:  # step 1
-            return
-        for _ in range(CAS_ATTEMPTS):  # step 3, until its CAS lands
+        if self._drain(mode, self._now()) is None:  # step 1
+            return True
+        if retiring and self.pinned:
+            return False
+        evaluation, samples = _NOTHING, []
+        failure: Exception | None = None
+        if not discards:  # steps 2 and 3, once
             now = self._now()
-            tail = self._drain(_Mode.EXIT, now)
+            evaluation = self._evaluate(self._written(iterations=0), now)
+            try:
+                samples = self._samples(evaluation, now)
+            except Exception as exc:
+                failure = exc
+                completed, error, discards = False, _described(exc), True
+                evaluation, samples = _NOTHING, []
+        landed = self._exit_cas(
+            completed=completed,
+            error=error,
+            values=None if discards else [*self._pending(), *samples],
+            evaluation=evaluation,
+            mode=mode,
+        )
+        if failure is not None:
+            raise failure
+        match landed:
+            case _Unwritten.SERVING:
+                return False
+            case _Unwritten.RELEASED:
+                return True
+            case _Landed(seq=seq, extendable=extendable):
+                if extendable:
+                    commits = self._position.lineage.tip.commits  # an exit adds none
+                    self._save.after(seq, commits=commits, exit=True)
+                return True
+            case _:
+                assert_never(landed)
+
+    def _pending(self) -> list[int]:
+        return [p.seq for p in self._iteration.pending]
+
+    def _exit_cas(
+        self,
+        *,
+        completed: bool,
+        error: str | None,
+        values: list[int] | None,
+        evaluation: _Evaluation,
+        mode: _Mode,
+    ) -> _Landed | _Unwritten:
+        """Step 4: drain in ``mode``, then compare-and-append the exit at the
+        drain's tail, until it lands; the exit that landed, or why none was
+        written."""
+        for _ in range(CAS_ATTEMPTS):
+            now = self._now()
+            tail = self._drain(mode, now)
             if tail is None:
-                return
-            pending = [p.seq for p in self._iteration.pending]
+                return _Unwritten.RELEASED
+            if mode is _Mode.ITERATION and self.pinned:
+                return _Unwritten.SERVING
             body = Stopped(
                 completed=completed,
                 error=error,
                 claim_seq=self._claim.seq,
                 honored=self._requests.honored(),
                 parent=self._position.lineage.node,
-                values=None if discards else pending,
-                fired=[],
-                expired=[],
+                values=values,
+                fired=evaluation.fired,
+                expired=evaluation.expired,
                 t=now,
             )
             seq = self._ch.send(asdict(body), topic=Stopped.TOPIC, expected_seq=tail)
             if seq is None:
                 continue  # a record landed unread: drain it, and try again
             self._phase = _Phase.STOPPED
-            if body.extendable:
-                commits = self._position.lineage.tip.commits  # an exit adds none
-                self._save.after(seq, commits=commits, exit=True)
-            return
+            return _Landed(seq=seq, extendable=body.extendable)
         raise WorkerStarvedError("exit", self._claim.seq, CAS_ATTEMPTS)
 
     def __enter__(self) -> Self:

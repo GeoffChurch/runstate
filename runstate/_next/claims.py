@@ -23,7 +23,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator
 
 from ..channel import Channel, Envelope
-from .vocabulary.payloads import Stopped, Topic
+from .vocabulary.payloads import Bound, Stopped, Topic
 from .walk import FIRST_WINDOW, readable
 
 # The attempts each compare-and-append loop makes before it gives up: a death
@@ -86,6 +86,62 @@ def ends(e: Envelope) -> int | None:
         return None
     claim = named_claim(e)
     return claim if claim is not None and claim < e.seq else None
+
+
+class Bindings:
+    """Which subscriptions a ``lifecycle.bound`` binds to a claim that has ended
+    (§2, "Per claim"; §5, "The answer fold"): a lease is void once its claim has
+    ended. Applied record by record in seq order, from the claims, the records that
+    end them (``ends``, presence alone, which never raises) and the bindings.
+
+    Its two readers take the lease question from it, since only they know a
+    subscription's class (its first send's): the answer fold (``observables``),
+    which kills a lease the moment ``apply`` names it, and the Worker's claim, which
+    folds the log below its claim and asks ``void`` of each lease its drain meets.
+    A binding before its subscription's first send is kept, so that send can be
+    judged when it lands."""
+
+    TOPICS: tuple[Topic, ...] = (
+        Topic.LIFECYCLE_STARTED,
+        Topic.LIFECYCLE_STOPPED,
+        Topic.SUPERVISOR_DIED,
+        Topic.LIFECYCLE_BOUND,
+    )
+    """The records ``apply`` reads; it passes over any other."""
+
+    def __init__(self) -> None:
+        self._bound: dict[str, set[int]] = {}  # each id's claims
+        self._bound_to: dict[int, set[str]] = {}  # each held claim's ids
+        self._claims: set[int] = set()
+        self._ended: set[int] = set()  # the claims a record has ended
+
+    def apply(self, e: Envelope) -> Iterable[str]:
+        """Apply ``e``; the ids it newly binds to an ended claim: every id bound to
+        the claim it ends, or the id it binds when that claim has already ended. A
+        record ends a claim below it, so whether that was a claim is known."""
+        if e.topic == Topic.LIFECYCLE_STARTED:
+            self._claims.add(e.seq)
+            return ()
+        ended = ends(e)
+        if ended is not None and ended in self._claims and ended not in self._ended:
+            self._ended.add(ended)
+            return self._bound_to.pop(ended, set())
+        if e.topic == Topic.LIFECYCLE_BOUND:
+            r, b = request_name(e), readable(Bound, e)
+            if r is not None and b is not None:
+                self._bound.setdefault(r, set()).add(b.claim_seq)
+                if b.claim_seq in self._ended:
+                    return (r,)
+                self._bound_to.setdefault(b.claim_seq, set()).add(r)
+        return ()
+
+    def void(self, r: str) -> bool:
+        """Is ``r`` bound to a claim that has ended? Void, if ``r`` is a lease."""
+        return not self._bound.get(r, set()).isdisjoint(self._ended)
+
+    def forget(self, r: str) -> None:
+        """Drop ``r``'s bindings: its reader holds it dead, which never reverts."""
+        self._bound.pop(r, None)
 
 
 def claim_window(

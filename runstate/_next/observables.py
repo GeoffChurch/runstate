@@ -68,7 +68,6 @@ from typing import Any, Generic, NamedTuple, Protocol, TypeVar
 from ..channel import Channel, Envelope
 from .vocabulary.coordinate import Commits
 from .vocabulary.payloads import (
-    Bound,
     Commit,
     Died,
     Outcome,
@@ -80,7 +79,7 @@ from .vocabulary.payloads import (
     Topic,
     Value,
 )
-from .claims import claim_window, ends, named_claim, request_name, spent_by
+from .claims import Bindings, claim_window, named_claim, request_name, spent_by
 from .vocabulary.schedule import MalformedSchedule, is_lease, parse_schedule
 from .walk import (
     EVERY_NAME,
@@ -777,8 +776,8 @@ class _Demand:
     ``LiveDemand`` holds one and applies each poll's new records.
 
     It holds each live id's newest send, in send order, so the live list is read
-    off in seq order; each such id's class, by its first send, and the claims it
-    is bound to; the claims, and those a record has ended. A spent id, or a void
+    off in seq order; each such id's class, by its first send; and the bindings
+    (``claims.Bindings``, which the Worker's claim shares). A spent id, or a void
     lease, is **dead**: never live again, since a spent id stays spent and void
     never reverts (a void lease's class and its ended claim are fixed). So its
     send and its bindings are dropped, only its id is kept, and a send reusing it
@@ -788,37 +787,24 @@ class _Demand:
         self._live: dict[str, Envelope] = {}
         self._lease: dict[str, bool] = {}
         self._dead: set[str] = set()
-        self._bound: dict[str, set[int]] = {}  # each id's claims
-        self._bound_to: dict[int, set[str]] = {}  # each live claim's ids
-        self._claims: set[int] = set()
-        self._ended: set[int] = set()  # the claims a record has ended
+        self._bindings = Bindings()
 
     def apply(self, e: Envelope) -> None:
         """Apply ``e``, one of ``_DEMAND_TOPICS``."""
-        if e.topic == Topic.LIFECYCLE_STARTED:
-            self._claims.add(e.seq)
-            return
-        ended = ends(e)
-        if ended is not None and ended in self._claims and ended not in self._ended:
-            # a record ends a claim below it, so whether it was a claim is known
-            self._ended.add(ended)
-            for r in self._bound_to.pop(ended, ()):
-                if self._lease.get(r, False):
-                    self._kill(r)
+        if e.topic == Topic.LIFECYCLE_BOUND and request_name(e) in self._dead:
+            return  # a dead id's binding: nothing to void
+        for r in list(self._bindings.apply(e)):
+            if self._lease.get(r, False):
+                self._kill(r)
         if e.topic in (Topic.LIFECYCLE_COMMIT, Topic.LIFECYCLE_STOPPED):
             for r in _expired(e):
                 self._kill(r)
         for r in spent_by(e):  # one namespace: a stop's honored id is spent too
             self._kill(r)
         name = request_name(e)
-        if name is None or name in self._dead:
-            return  # nameless, or dead on arrival, whatever it is
-        if e.topic == Topic.CONTROL_SUBSCRIBE:
-            self._send(name, e)
-        elif e.topic == Topic.LIFECYCLE_BOUND:
-            b = readable(Bound, e)
-            if b is not None:
-                self._bind(name, b.claim_seq)
+        if e.topic == Topic.CONTROL_SUBSCRIBE and name is not None:
+            if name not in self._dead:  # else dead on arrival
+                self._send(name, e)
 
     def live(self, *, closed: bool) -> list[Envelope]:
         """The live subscriptions, ascending by seq; none when the head is
@@ -828,26 +814,17 @@ class _Demand:
     def _send(self, r: str, e: Envelope) -> None:
         if r not in self._lease:  # the first send fixes the class
             self._lease[r] = _is_lease(e)
-            if self._lease[r] and not self._bound.get(r, set()).isdisjoint(self._ended):
+            if self._lease[r] and self._bindings.void(r):
                 self._kill(r)  # bound before its first send, to an ended claim
                 return
         self._live.pop(r, None)  # the newest send, last
         self._live[r] = e
 
-    def _bind(self, r: str, claim: int) -> None:
-        if claim in self._ended:
-            if self._lease.get(r, False):
-                self._kill(r)
-                return
-        else:
-            self._bound_to.setdefault(claim, set()).add(r)
-        self._bound.setdefault(r, set()).add(claim)
-
     def _kill(self, r: str) -> None:
         self._dead.add(r)
         self._live.pop(r, None)
         self._lease.pop(r, None)
-        self._bound.pop(r, None)
+        self._bindings.forget(r)
 
 
 class _Stops:
