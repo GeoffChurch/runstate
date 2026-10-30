@@ -7,9 +7,10 @@ Four guarantees:
    the reference Worker's.
 2. **Well-formed truths.** Every truth meets commits-and-lineage.md §2's
    structural rules (``truth.violations``).
-3. **The reference Worker lies inside the model.** Driven through a clean run, a
-   kill mid-step, a resume and a cooperative stop, its log equals, after ``t``
-   and ids are normalised, the log of a history the enumeration generates.
+3. **The reference Worker lies inside the model.** Its logs of a clean run, a
+   kill mid-step, a resume and a cooperative stop, as the 0.3.0 Worker wrote them
+   (``migration_helpers.reference_worker_log``), each equal, after ``t`` and ids
+   are normalised, the log of a history the enumeration generates.
 4. **The named histories are generable.** The histories §7's ambiguity entries
    name, every golden §7 lists that a conforming writer can write, and the
    d78b72f1 shape, are conforming histories. Each golden's history renders the
@@ -24,7 +25,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import uuid
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import replace
@@ -35,9 +35,8 @@ import pytest
 
 import tests.migration_sim.enumerate as enumeration
 import tests.migration_goldens as goldens
-from runstate.channel import Channel, create_channel
 from runstate.migrations import Row
-from runstate.worker import Worker
+from tests.migration_helpers import reference_worker_log
 from tests.migration_sim.build import (
     VALUE,
     Cut,
@@ -522,50 +521,24 @@ WORKER = Space(
 )
 
 
-def _clean(ch: Channel) -> None:
-    with Worker(ch) as w:
-        for s in w.steps(3):
-            w.emit(VALUE, f"{VALUE}@{s}")
-        w.stopped(completed=True)
-
-
-def _killed_mid_step(ch: Channel) -> None:
-    w = Worker(ch)
-    for s in w.steps(5):
-        w.emit(VALUE, f"{VALUE}@{s}")
-        if s == 2:
-            break  # the process dies here: nothing more of it reaches the log
-
-
-def _resumed(ch: Channel) -> None:
-    """Two Workers run in turn by this one process, as a resume in one process
-    is: they share its handle."""
-    with Worker(ch) as w:  # its __exit__ writes the preempted exit
-        for s in w.steps(2):
-            w.emit(VALUE, f"{VALUE}@{s}")
-    with Worker(ch) as w:
-        for s in w.steps(4, start=2):
-            w.emit(VALUE, f"{VALUE}@{s}")
-        w.stopped(completed=True)
-
-
-def _stopped_cooperatively(ch: Channel) -> None:
-    ch.send({}, topic="control.stop", request_id="halt")
-    with Worker(ch) as w:
-        for s in w.steps(5):
-            w.emit(VALUE, f"{VALUE}@{s}")
+# The Worker's logs (``reference_worker_log``): a clean run, three passes and a
+# completed exit; a kill mid-step, its process dead in pass 2, nothing more of it on
+# the log; a resume, two Workers run in turn by one process, as a resume in one
+# process is, sharing its handle: the first's ``__exit__`` writes its preempted exit
+# after two passes, the second resumes at 2 for two more and completes; and a
+# cooperative stop, sent before the claim and honoured at pass 0.
 
 
 class Scenario(NamedTuple):
-    drive: Callable[[Channel], None]
+    log: str  # the Worker's log, by its ``reference_worker_log`` key
     family: Family  # the histories searched for the Worker's log
 
 
 SCENARIOS = {
-    "clean run": Scenario(_clean, Family(1, 3, 0, WORKER)),
-    "kill mid-step": Scenario(_killed_mid_step, Family(1, 3, 0, WORKER)),
-    "resume": Scenario(_resumed, Family(2, 2, 0, WORKER)),
-    "cooperative stop": Scenario(_stopped_cooperatively, Family(1, 1, 1, WORKER)),
+    "clean run": Scenario("sim-clean-run", Family(1, 3, 0, WORKER)),
+    "kill mid-step": Scenario("sim-kill-mid-step", Family(1, 3, 0, WORKER)),
+    "resume": Scenario("sim-resume", Family(2, 2, 0, WORKER)),
+    "cooperative stop": Scenario("sim-cooperative-stop", Family(1, 1, 1, WORKER)),
 }
 
 
@@ -601,17 +574,15 @@ def _normalised(
 
 @pytest.mark.parametrize("scenario", SCENARIOS.values(), ids=list(SCENARIOS))
 def test_the_reference_worker_lies_inside_the_model(scenario: Scenario) -> None:
-    ch = create_channel(f"sim-{uuid.uuid4().hex}", root=None, backend="memory")
-    scenario.drive(ch)
     worker_log = _normalised(
         [
             {
-                "topic": e.topic,
-                "name": e.name,
-                "request_id": e.request_id,
-                "body": e.body,
+                "topic": x.topic,
+                "name": x.name,
+                "request_id": x.request_id,
+                "body": json.loads(x.body),
             }
-            for e in ch.read()
+            for x in reference_worker_log(scenario.log)
         ],
         payloads=True,
     )

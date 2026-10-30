@@ -1075,7 +1075,7 @@ def test_the_census_counts_a_resume_at_the_loaded_step_wherever_a_candidate_resu
     import tests.test_migration_v0_3_0_to_v0_4_0 as t
     import runstate.migrations.v0_3_0_to_v0_4_0_facts as V
 
-    rows = H.a_resumed_workers_log(2)
+    rows = H.reference_worker_log("resumed-2")
     older = frozenset({V.Load.FRESH, V.Load.NEWEST, V.Load.OLDER})
     at = H.preset(resume=frozenset({V.Resume.AT}))
     hit = [mr.Resumed(9, 2, _versions(rows, at, 9))]
@@ -1235,3 +1235,34 @@ def test_a_child_that_cannot_send_its_record_aborts_the_runner(
         _main(root, tmp_path / "out", max_rows=100)
     err = capfd.readouterr().err
     assert "MemoryError: pickling the record" in err and "Traceback" in err
+
+
+# ----- the 0.3.0 reads, frozen (the layer-2 live plan's Task 1) ----------------------
+
+
+def test_the_frozen_0_3_0_reads_import_only_the_substrate_and_resolve():
+    """``scripts/reads_v0_3_0.py`` is retained like a step: it reads 0.3.0 as 0.3.0
+    defined it, whatever the live layer's reads become. From the package it takes
+    only the substrate's ``Channel`` and ``Envelope`` and ``resolve()``, an OS probe
+    of a handle rather than a format rule; the vocabulary it parses with is its own
+    copy."""
+    import ast
+
+    source = (_SCRIPT.parent / "reads_v0_3_0.py").read_text()
+    tree = ast.parse(source)
+    internal = {
+        (n.level, n.module, a.name)
+        for n in ast.walk(tree)
+        if isinstance(n, ast.ImportFrom)
+        and (n.level > 0 or (n.module or "").startswith("runstate"))
+        for a in n.names
+    }
+    assert internal == {
+        (0, "runstate.channel", "Channel"),
+        (0, "runstate.channel", "Envelope"),
+        (0, "runstate.vocabulary.handle", "resolve"),
+    }
+    plain = {
+        a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names
+    }
+    assert not {m for m in plain if m.startswith("runstate")}

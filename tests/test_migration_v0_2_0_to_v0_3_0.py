@@ -17,7 +17,7 @@ from typing import NamedTuple
 
 import pytest
 
-from runstate import LOG_FORMAT, Worker, create_channel
+from runstate import LOG_FORMAT
 from runstate.channel.sqlite import _SCHEMA, SqliteChannel
 from runstate.formats import FORMATS, DirectoryLayout
 from runstate.migrations import STEPS, MigrationError, Row, chain, migrate
@@ -27,7 +27,7 @@ from runstate.migrations.ambiguity import Limits, parse_choices, resolutions
 ONE = Limits(cap=1, budget=1, run_on=0)
 from runstate.migrations.stores import SqliteStore
 from runstate.migrations.v0_2_0_to_v0_3_0 import V0_2_0_to_V0_3_0
-from runstate.observables import (
+from scripts.reads_v0_3_0 import (
     MalformedRecordError,
     live_demand,
     live_episode,
@@ -617,25 +617,20 @@ def test_a_lease_its_ended_latest_episode_served_is_no_longer_demand(tmp_path):
 
 
 @pytest.mark.parametrize("rid", sorted(MASTER_RESUMED))
-def test_a_worker_resumed_after_migration_serves_what_masters_would(tmp_path, rid):
-    """I1: the resume check. A 0.3.0 worker claims a migrated run, and the
-    demand it serves is master's demand once one more claim lands. Each lease a
-    claim since its send has already served stays unserved: its ``bound`` voids
-    it for every later episode, as the positional rule did."""
+def test_a_claim_after_migration_finds_masters_demand(tmp_path, rid):
+    """I1, the resume check: once one more claim lands on a migrated run, the demand
+    0.3.0 reads is master's. Each lease a claim since its send has already served
+    stays unserved: its ``bound`` voids it for every later episode, as the positional
+    rule did. The claim is a 0.3.0 ``lifecycle.started`` whose handle is dead, which
+    the demand read does not consult. I1's other half, the values a resumed 0.3.0
+    Worker fires, needs that Worker, which the 0.4.0 live layer replaces: dropped."""
     _write(tmp_path, rid, GOLDEN[rid])
-    migrate(SqliteStore(tmp_path), [rid], to=LOG_FORMAT, choices=TODAY)
-    ch = create_channel(rid, root=tmp_path)
-    before = {e.request_id for e in live_demand(ch)}
+    migrate(SqliteStore(tmp_path), [rid], to="0.3.0", choices=TODAY)
+    ch = _migrated(tmp_path, rid)
     head = ch.last_seq()
-    with Worker(ch) as w:
-        demand = {e.request_id: e.seq for e in live_demand(ch)}
-        assert sorted(demand.values()) == MASTER_RESUMED[rid]
-        for s in w.steps(3, start=10):
-            w.set("loss", float(s))
-            w.set("load", float(s))
-    fired = {e.request_id for e in ch.read(after=head, topics=["value"])}
-    assert fired <= set(demand)
-    assert not fired & (before - set(demand))
+    claim = _started(DEAD, 0.0)
+    assert ch.send(claim, topic="lifecycle.started", expected_seq=head) == head + 1
+    assert [e.seq for e in live_demand(ch)] == MASTER_RESUMED[rid]
     ch.close()
 
 

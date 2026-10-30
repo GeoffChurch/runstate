@@ -9,8 +9,6 @@ simulator history."""
 
 import dataclasses
 import functools
-import contextlib
-import itertools
 import json
 import os
 import re
@@ -69,9 +67,9 @@ from tests.migration_helpers import (
     NO_HISTORY,
     a_beacon_between_two_places,
     a_claim_then_another,
-    a_resumed_workers_log,
     a_watermark_on,
     preset,
+    reference_worker_log,
     under,
 )
 from tests.migration_goldens import (
@@ -1388,38 +1386,6 @@ def test_the_preset_states_what_the_worker_fixes():
     assert reader.value(2) == {V.ValueRole(x, True) for x in worker_roles}
 
 
-def _the_reference_workers_log(kind):
-    """A log the reference Worker writes: four passes ``done`` (completed), ``plain``
-    (preempted), ``stop`` (honouring a stop at pass 1) or ``error`` (raising in pass
-    2); ``resume``, four passes then a second claim resuming at step 4."""
-    from runstate.channel import MemoryChannel
-    from runstate.worker import Worker
-
-    clock = itertools.count(1.0)
-    ch = MemoryChannel()
-
-    def passes(start, total):
-        with Worker(ch, now=lambda: next(clock)) as w:
-            w.set("lr", 0.1)
-            for s in w.steps(total, start=start):
-                w.emit("loss", 1.0 / (s + 1))
-                if kind == "stop" and s == 1:
-                    ch.send({}, topic="control.stop", request_id="halt")
-                if kind == "error" and s == 2:
-                    raise RuntimeError("boom")
-            if kind == "done":
-                w.stopped(completed=True)
-
-    with contextlib.suppress(RuntimeError):
-        passes(0, 4)
-    if kind == "resume":
-        passes(4, 6)
-    return [
-        Row(e.seq, e.topic, e.name, e.request_id, json.dumps(e.body), float(e.seq))
-        for e in ch.read(after=0)
-    ]
-
-
 @pytest.mark.parametrize("kind", ["done", "plain", "stop", "error", "resume"])
 def test_the_reference_workers_own_logs_migrate_under_the_preset(kind):
     """The preset's word is the reference Worker's code: every log it writes is
@@ -1433,7 +1399,7 @@ def test_the_reference_workers_own_logs_migrate_under_the_preset(kind):
         limits=LIMITS,
     )
     res = resolutions(step, choices)
-    rows = _the_reference_workers_log(kind)
+    rows = reference_worker_log(f"reference-{kind}")
     step.detect(rows, assumptions=res.assumptions, history=NO_HISTORY)
     out = step.transform(rows, resolutions=res, history=NO_HISTORY)
     fired = {d: seqs for d, seqs in out.divergences.items() if seqs}
@@ -1982,7 +1948,7 @@ def test_a_record_before_the_first_pass_is_the_consumers_loading_and_values():
     the value every worker role for them to narrow. Under ``loading`` empty the log
     has no history; under ``loaded`` with ``values`` {loading, pass} it migrates, the
     value held by the resumed claim's first commit and read at its count."""
-    rows = a_resumed_workers_log(3, before=2)
+    rows = reference_worker_log("resumed-3-before-2")
     assert [json.loads(x.body)["step"] for x in rows if x.topic == "value"][3] == 2
     with pytest.raises(MigrationError, match=r"^no history .*: relaxing values"):
         step.transform(rows, resolutions=preset(), history=NO_HISTORY)
@@ -2014,7 +1980,7 @@ def test_a_resumed_claims_first_pass_label_is_the_consumers_stride():
     plus one is a skip, the consumer's choice, so ``stride`` is the preset's argument.
     Under ``next`` alone the log has no history, naming the fact; under both it
     migrates."""
-    rows = a_resumed_workers_log(5)
+    rows = reference_worker_log("resumed-5")
     with pytest.raises(MigrationError, match=r"^no history .*relaxing stride"):
         step.transform(rows, resolutions=preset(), history=NO_HISTORY)
     m = step.transform(
@@ -2042,7 +2008,7 @@ def test_a_resume_at_the_loaded_step_is_the_consumers_resume():
     detection reports with ``resume`` among the facts that settle it. Under the
     consumer's word that it resumes after the save it loaded, the newest, the log has
     no history, and the refusal names ``resume``."""
-    rows = a_resumed_workers_log(2)
+    rows = reference_worker_log("resumed-2")
     assert [json.loads(x.body)["step"] for x in rows if x.topic == "value"] == [
         *range(3),
         2,

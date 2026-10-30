@@ -59,8 +59,9 @@ EACH RUN, as ``runstate migrate``'s detection pass takes it, in memory:
 2. Every 0.4.0 row is validated against the 0.4.0 schemas, loaded from
    ``protocol/`` here (ruling R1), and "Also" is checked.
 3. THE READS. The 0.3.0 reads, ``value_series``, ``peek_terminal`` and
-   ``undischarged_stops``, over a ``MemoryChannel`` of the 0.3.0 rows; the 0.4.0
-   reads, ``runstate.lineage``'s ``series`` per name at ``LatestClaimHead``, its
+   ``undischarged_stops`` as 0.3.0 defined them (``scripts/reads_v0_3_0.py``),
+   over a ``MemoryChannel`` of the 0.3.0 rows; the 0.4.0 reads,
+   ``runstate.lineage``'s ``series`` per name at ``LatestClaimHead``, its
    ``verdict`` and ``undischarged_stops``, over one of the 0.4.0 rows. Each
    difference is attributed to the divergences that fired there (``Reads``), or
    ``unattributed``: an unattributed difference is a read-changing rule the step
@@ -111,7 +112,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from jsonschema import Draft202012Validator  # type: ignore[import-untyped]  # noqa: E402
 
-from runstate import formats, observables  # noqa: E402
+from runstate import formats  # noqa: E402
 from runstate import lineage as reads  # noqa: E402
 from runstate.channel import Envelope, MemoryChannel  # noqa: E402
 from runstate.migrations import (  # noqa: E402
@@ -134,6 +135,7 @@ from runstate.migrations.ambiguity import (  # noqa: E402
 )
 from runstate.migrations.stores import sqlite_traces  # noqa: E402
 from runstate.migrations.v0_2_0_to_v0_3_0 import V0_2_0_to_V0_3_0  # noqa: E402
+from scripts import reads_v0_3_0 as reads03  # noqa: E402
 
 _STEP_0_2_0 = V0_2_0_to_V0_3_0()
 _STEP_0_3_0 = step04.V0_3_0_to_V0_4_0()
@@ -793,8 +795,8 @@ class OldReads(NamedTuple):
 def old_reads(ch03: MemoryChannel) -> OldReads:
     """A verdict that raises ``MalformedRecordError`` is a value."""
     try:
-        result = observables.peek_terminal(ch03)
-    except observables.MalformedRecordError as exc:
+        result = reads03.peek_terminal(ch03)
+    except reads03.MalformedRecordError as exc:
         verdict = VerdictValue("raised", [], _raised(exc))
     else:
         verdict = (
@@ -803,7 +805,7 @@ def old_reads(ch03: MemoryChannel) -> OldReads:
             else VerdictValue("outcomes", [str(result.outcome)], None)
         )
     return OldReads(
-        observables.value_series(ch03), verdict, observables.undischarged_stops(ch03)
+        reads03.value_series(ch03), verdict, reads03.undischarged_stops(ch03)
     )
 
 
@@ -816,7 +818,7 @@ def new_verdict(ch04: MemoryChannel) -> NewVerdict:
     """A verdict that raises ``MalformedRecordError`` is a value."""
     try:
         result = reads.verdict(ch04)
-    except observables.MalformedRecordError as exc:
+    except reads.MalformedRecordError as exc:
         verdict = VerdictValue("raised", [], _raised(exc))
     else:
         verdict = (
@@ -839,7 +841,7 @@ def _old_cells(
             e.topic == _VALUE
             and e.name is not None
             and "value" in e.body
-            and observables.is_step(e.body.get("step"))
+            and reads03.is_step(e.body.get("step"))
         ):
             cells[(e.name, e.body["step"])] = Old(e.seq, e.body["value"])
     read = {(n, s): v for n, steps in series.items() for s, v in steps.items()}
@@ -1147,7 +1149,7 @@ def _first_ticks(rows: Sequence[Row]) -> dict[int, int]:
             claim = r.seq
         elif claim is not None and r.topic in (_HEARTBEAT, _VALUE):
             step = json.loads(r.body).get("step")
-            if not observables.is_step(step):
+            if not reads03.is_step(step):
                 continue
             if r.topic == _HEARTBEAT:
                 ticks.setdefault(claim, step)
@@ -1292,7 +1294,7 @@ def measure(
         verdict = new_verdict(ch04)
         try:
             new_cells = _new_cells(ch04, env03, env04)
-        except observables.MalformedRecordError as exc:
+        except reads.MalformedRecordError as exc:
             series = SeriesResult(_raised(exc), len(old_cells), 0, 0, {}, 0, [])
         else:
             series = series_result(old_cells, new_cells, migrated04.divergences)

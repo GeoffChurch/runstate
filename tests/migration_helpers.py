@@ -1,10 +1,11 @@
 """What the migration tests share beyond the golden logs (``migration_goldens.py``), by
 public names, so that no test module imports another's private builders: the empty
 history, the 0.3.0 -> 0.4.0 step tests' limits, consumer word and choosers, and the logs
-several test modules build."""
+several test modules build or read, the 0.3.0 reference Worker's among them."""
 
-import itertools
+import functools
 import json
+from pathlib import Path
 
 import runstate.migrations.v0_3_0_to_v0_4_0 as STEP
 import runstate.migrations.v0_3_0_to_v0_4_0_facts as V
@@ -80,33 +81,43 @@ def preset(**word):
     )
 
 
-def a_resumed_workers_log(start, *, before=None):
-    """A log the reference Worker writes: three passes, then a second claim resuming at
-    ``start``, which first ``channel.send``s ``val_loss`` at step ``before`` when given,
-    the Worker's own route for a caller-clocked point (``emit`` raises before the first
-    tick)."""
-    from runstate.channel import MemoryChannel
-    from runstate.worker import Worker
+_REFERENCE_WORKER_LOGS = (
+    Path(__file__).parent
+    / "fixtures"
+    / "log-format-0.3.0"
+    / "reference-worker-logs.json"
+)
 
-    clock = itertools.count(1.0)
-    ch = MemoryChannel()
 
-    def passes(start, total, before=None):
-        with Worker(ch, now=lambda: next(clock)) as w:
-            if before is not None:
-                ch.send(
-                    {"value": 0.5, "step": before, "t": next(clock)},
-                    topic="value",
-                    name="val_loss",
-                )
-            for s in w.steps(total, start=start):
-                w.emit("loss", 1.0 / (s + 1))
+@functools.cache
+def _reference_worker_logs():
+    return json.loads(_REFERENCE_WORKER_LOGS.read_text())
 
-    passes(0, 3)
-    passes(start, start + 2, before)
+
+def reference_worker_log(key: str) -> list[Row]:
+    """A log the 0.3.0 reference Worker wrote, as rows (``created_at`` = ``float(seq)``,
+    as the generators made them), from ``fixtures/log-format-0.3.0``. The 0.4.0 live
+    layer replaces that Worker, so its logs were captured at 9b83be6 by a scratch
+    script that drove it over a memory channel exactly as the generators these keys
+    replace did, and that checked these rows equal theirs, key by key:
+
+    - ``resumed-2``, ``resumed-5``: three passes, then a second claim resuming at that
+      step; ``resumed-3-before-2``: resuming at 3 after first ``channel.send``-ing
+      ``val_loss`` at step 2, the Worker's own route for a caller-clocked point
+      (``emit`` raises before the first tick). Each pass emits ``loss``.
+    - ``reference-done`` (completed), ``reference-plain`` (preempted),
+      ``reference-stop`` (honouring a stop at pass 1), ``reference-error`` (raising in
+      pass 2): four passes, each ``set``-ting ``lr`` and emitting ``loss``;
+      ``reference-resume``, four passes then a second claim resuming at step 4.
+    - ``sim-clean-run``, ``sim-kill-mid-step``, ``sim-resume``,
+      ``sim-cooperative-stop``: the simulator's reference-Worker scenarios
+      (``tests/test_migration_sim.py``), on the wall clock.
+
+    Every claim's handle is the capturing process's. A body is the stored JSON text,
+    byte for byte."""
     return [
-        Row(e.seq, e.topic, e.name, e.request_id, json.dumps(e.body), float(e.seq))
-        for e in ch.read(after=0)
+        Row(seq, topic, name, request_id, body, float(seq))
+        for seq, topic, name, request_id, body in _reference_worker_logs()[key]
     ]
 
 
