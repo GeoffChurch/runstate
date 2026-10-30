@@ -32,7 +32,7 @@ from runstate._next.vocabulary.coordinate import Commits, Target
 from runstate._next.vocabulary.payloads import Outcome, Topic
 from runstate._next.walk import NodeKind, kind_at
 from runstate._next.worker import WorkerStarvedError
-from tests.next_helpers import Interloping
+from tests.next_helpers import Interloping, Wrapping
 from tests.test_next_death_reports import dead_handle
 from tests.test_next_worker import (
     Clock,
@@ -645,3 +645,143 @@ def test_after_its_exit_a_worker_writes_nothing_and_says_stop(open_run, discarde
         assert list(w.steps(None)) == []
         assert records(ch) == before
     assert [e.value for e in series(ch, "loss", head=LatestClaimHead())] == [1.0, 101.0]
+
+
+# ----- a commit that raises before its node lands (§4, "commit()", amended) --------
+
+
+class _CommitLost(Wrapping):
+    """A channel handle whose ``lifecycle.commit`` sends raise once ``lost`` is set:
+    a write whose outcome the worker cannot know."""
+
+    lost = False
+
+    def send(self, body, *, topic, name=None, request_id=None, expected_seq=None):
+        if self.lost and topic == Topic.LIFECYCLE_COMMIT:
+            raise ConnectionError("acknowledgement lost")
+        return super().send(
+            body,
+            topic=topic,
+            name=name,
+            request_id=request_id,
+            expected_seq=expected_seq,
+        )
+
+
+def _subscribe_lease(ch):
+    """A count lease on ``x``: it expires at its second firing."""
+    ch.send(
+        {"every": {"commits": 1}, "until": {"count": 2}},
+        topic=Topic.CONTROL_SUBSCRIBE,
+        name="x",
+        request_id="L",
+    )
+
+
+def test_a_commit_whose_sample_raises_tears_its_iteration(open_run):
+    """§4, "commit()" (amended 2026-10-30): the evaluation had already counted the
+    lease's firing when the sample raised, so a caller that catches the raise and
+    carries on must not see the lease expire a firing early. The iteration is torn,
+    as by ``discard()``: writes raise, ``commit()`` writes nothing and says stop,
+    and the exit is torn, evaluating nothing."""
+    ch, obs = open_run(), open_run()
+    _subscribe_lease(obs)
+    w = worker(ch, sources=["x"])
+    w.set("x", object())  # not JSON: its sample raises
+    with pytest.raises(TypeError):
+        w.commit()
+    before = obs.last_seq()
+    for call in (lambda: w.emit("loss", 1.0), lambda: w.set("x", 1)):
+        with pytest.raises(RuntimeError, match="discarded"):
+            call()
+    assert w.commit() is True and w.heartbeat() is True
+    assert w.stop_pending is True and w.pinned is False
+    assert obs.last_seq() == before  # nothing drained or written
+    w.stopped(completed=False, error=None)
+    assert obs.read(topics=[Topic.LIFECYCLE_COMMIT]) == []
+    (e,) = exits(obs)
+    assert (e.body["values"], e.body["fired"], e.body["expired"]) == (None, [], [])
+    assert kind(obs, e.seq) is NodeKind.TORN
+
+
+def test_a_commit_whose_node_send_raises_tears_its_iteration_and_the_exit_errs(
+    open_run,
+):
+    """The ``lifecycle.commit`` send raises, its outcome unknown: the iteration is
+    torn, so the caller's writes raise, and the raise, left to the ``with`` block,
+    ends the claim errored and torn, its parent the position, its sample outside
+    every lineage."""
+    obs = open_run()
+    ch = _CommitLost(open_run())
+    _subscribe_lease(obs)
+    with pytest.raises(ConnectionError):
+        with worker(ch, sources=["x"]) as w:
+            w.set("x", 1.0)
+            ch.lost = True
+            try:
+                w.commit()
+            finally:
+                with pytest.raises(RuntimeError, match="discarded"):
+                    w.emit("loss", 1.0)
+                assert w.commit() is True
+    (e,) = exits(obs)
+    body = e.body
+    assert (body["error"], body["values"], body["parent"]) == (
+        "acknowledgement lost",
+        None,
+        None,
+    )
+    assert (body["fired"], body["expired"]) == ([], [])
+    assert len(obs.read(topics=[Topic.VALUE], name="x")) == 1  # the sample stays
+    assert kind(obs, e.seq) is NodeKind.TORN
+
+
+def test_a_save_that_raises_after_its_node_landed_leaves_the_worker_live(open_run):
+    """§6's case, not the torn one: the node stands, and the worker is as it was, so
+    a caller that catches the raise and carries on commits the next node on it."""
+
+    class FirstSaveFails:
+        calls = 0
+
+        def after(self, node, *, commits, exit):
+            self.calls += 1
+            if self.calls == 1:
+                raise OSError("disk full")
+
+    ch = open_run()
+    w = worker(ch, save=FirstSaveFails())
+    with pytest.raises(OSError):
+        w.commit()
+    first = ch.latest(Topic.LIFECYCLE_COMMIT).seq
+    w.emit("loss", 1.0)
+    assert w.commit() is False
+    assert nodes(ch)[-1]["parent"] == first
+
+
+def test_a_starved_exit_keeps_its_sample_failure_and_its_retry_raises_it(open_run):
+    """§4, "The exit", step 3, and "An exit that starves": a sample that fails makes
+    the exit errored and torn, and its CAS then starves. ``WorkerStarvedError``
+    names the failure as its cause, and the retried ``stopped()``, once its exit
+    lands, raises the failure, as the first attempt would have."""
+    obs = open_run()
+    ch = Interloping(open_run(), obs)
+    w = worker(ch, sources=["x"])
+    obs.send(
+        {"every": {"commits": 1}},
+        topic=Topic.CONTROL_SUBSCRIBE,
+        name="x",
+        request_id="d",
+    )
+    w.commit()  # registers d; x holds no value, so nothing fires
+    w.set("x", object())  # the exit's sample raises
+    noise = {"value": 1.0, "t": 1.0}
+    ch.arm(noise, topic=Topic.VALUE, name="noise", times=CAS_ATTEMPTS)
+    with pytest.raises(WorkerStarvedError) as exc:
+        w.stopped(completed=False, error=None)
+    assert isinstance(exc.value.__cause__, TypeError)
+    assert exits(obs) == []
+    with pytest.raises(TypeError):
+        w.stopped(completed=False, error=None)  # the retry, on a quiet channel
+    (e,) = exits(obs)
+    assert e.body["values"] is None and "x" in e.body["error"]
+    assert kind(obs, e.seq) is NodeKind.TORN

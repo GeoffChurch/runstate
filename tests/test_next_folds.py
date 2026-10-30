@@ -558,3 +558,31 @@ def test_a_polls_cost_does_not_grow_with_the_requests_spent(fold):
         _send(ch, subscribe(None, "new", until={"commits": 10}))
         steps.append(_steps(lambda: held.poll(ch)))
     assert steps[0] == steps[1]
+
+
+def _expired_durables(ch, n):
+    """``n`` durable one-shots, each fired and expired at the one node of the
+    claim's lineage: registered still, and live on no lineage through it."""
+    claim = _send(ch, started(None, sources=["lr"]))
+    ids = [f"d{i}" for i in range(n)]
+    for r in ids:
+        _send(ch, subscribe("lr", r))
+    s = _send(ch, value("lr", 0.1))
+    return claim, _send(ch, commit(claim, None, [s], fired=ids, expired=ids))
+
+
+def test_a_live_demand_polls_cost_does_not_grow_with_the_durables_expired_here():
+    """A durable subscription the head's lineage expired stays held, since another
+    lineage may revive it; but a poll after one more commit takes the same steps
+    after 10 such as after 1,000 (§5, "Bounded reads"): the fold holds the ids
+    expired on its lineage, extended as the head descends."""
+    steps = []
+    for n in (10, 1_000):
+        ch = MemoryChannel()
+        claim, node = _expired_durables(ch, n)
+        held = LiveDemand()
+        assert held.poll(ch) == []
+        _send(ch, commit(claim, node, []))
+        steps.append(_steps(lambda: held.poll(ch)))
+        assert held.poll(ch) == [] == live_demand(ch)
+    assert steps[0] == steps[1]

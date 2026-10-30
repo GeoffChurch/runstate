@@ -753,3 +753,26 @@ def test_undischarged_stops_drops_a_naked_stop_at_its_nak_by_name(ch):
     assert undischarged_stops(ch) == []
     exit_(ch, c, None)
     assert undischarged_stops(ch) == []
+
+
+def test_every_reader_of_the_heads_lineage_checks_its_nodes_alike(ch):
+    """One lineage walk (``walk.chain``): a node on the head's lineage that commits a
+    seq at or above its own fails ``check_node``, and the pure walk, the answer fold
+    and its held form all raise it, where the last two once checked only the
+    ``parent``. A durable expiry below it makes the answer fold read the lineage."""
+    from runstate._next.walk import walk
+
+    subscribe(ch, "d", every={"commits": 1}, until={"commits": 1})
+    c = claim(ch, src=["loss"])
+    n1 = commit(ch, c, None, [value(ch, "loss", 1.0)], fired=["d"], expired=["d"])
+    n2 = commit(ch, c, n1, [n1 + 50])  # a value above its own seq
+    for read in (
+        lambda: walk(ch, n2),
+        lambda: demand(ch),
+        lambda: held(LiveDemand(), ch),
+    ):
+        with pytest.raises(
+            MalformedRecordError, match="at or above its own seq"
+        ) as exc:
+            read()
+        assert exc.value.seq == n2

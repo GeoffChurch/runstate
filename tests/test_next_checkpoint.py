@@ -256,3 +256,16 @@ def test_on_head_lineage_respects_a_rewind_and_most_progress_may_not(open_run):
     # the empty lineage holds no checkpoint
     w.rewind(None)
     assert OnHeadLineage().choose(ch, saved, head=head) is None
+
+
+def test_most_progress_refuses_a_candidate_that_names_no_node(open_run):
+    """A candidate's node is looked up in the count map, which knows only nodes:
+    a seq below 1, or one that is not a node, raises ``ValueError`` naming it."""
+    ch = open_run()
+    w = worker(ch)
+    w.emit("loss", 0.0)
+    w.commit()
+    value = ch.latest(Topic.VALUE, "loss").seq
+    for node, says in ((0, "not a seq from 1"), (value, "not a node")):
+        with pytest.raises(ValueError, match=says):
+            MostProgress("loss").choose(ch, [Ckpt(node, 0)], head=LatestClaimHead())

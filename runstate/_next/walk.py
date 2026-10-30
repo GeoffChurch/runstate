@@ -15,7 +15,9 @@ bulk windows that grow by 4x (``Backward``), never a point read per node, as far
 the lineage, its values and its claims reach, walks the lineage back to the root,
 and checks every node it walks (§5, "Well-formedness"). Loading resolves nothing:
 membership raises only where a read resolves it (``value_record``, ``declared``,
-``classified``).
+``classified``). Its parent-chain loop is ``chain``, which every reader of a
+lineage runs over its own lookup of nodes (the answer fold's, ``observables``), so
+each checks what the walk checks.
 
 THE CHECKS. ``check_node`` is a node's structural check, one message per failure,
 which the pure walk and the incremental folds of ``observables`` share. A fold
@@ -233,10 +235,63 @@ class Backward:
         return self.records.get(seq)
 
 
+# What a chain reads its nodes with: the node at a seq, ``None`` where no node is
+# (no record, or one that is not a node's), raising the node's own
+# ``MalformedRecordError`` where its body is unreadable. A lookup of nodes, not of
+# records, so a reader that holds a node parsed (a held lineage's newest) passes it
+# without parsing its body again.
+NodeAt = Callable[[int], At | None]
+
+
+def nodes_in(get: Callable[[int], Envelope | None]) -> NodeAt:
+    """The ``NodeAt`` over a lookup of records, parsing each node it returns."""
+
+    def node_of(seq: int) -> At | None:
+        e = get(seq)
+        return None if e is None else node_at(e)
+
+    return node_of
+
+
+def chain(node: int, node_of: NodeAt, *, stop_at: int | None) -> list[At]:
+    """The lineage ending at ``node``, root first, read by ``node_of`` and checked
+    as it goes: ``node``, then each ``parent`` in turn, every one by
+    ``check_node`` (its parent's kind read by ``node_of``), so every reader of a
+    lineage checks the same rules. It stops after the first node whose ``parent``
+    is ``None`` (the root) or at or below ``stop_at``; ``None`` reads to the root.
+    A reader extending a lineage it holds, whose newest node is ``stop_at``,
+    compares the first node's ``parent`` with it: equal, the chain extends it;
+    else it passes below it.
+
+    A ``node`` that is not a node raises ``ValueError``; a check that fails,
+    ``MalformedRecordError``. ``stop_at`` is required: a reader that holds no
+    lineage says so with ``None``."""
+
+    def kind_of(seq: int) -> NodeKind | None:
+        at = node_of(seq)
+        return None if at is None else kind(at.node)
+
+    head = node_of(node)
+    if head is None:
+        raise ValueError(f"head node {node} is not a node")
+    at, out = head, [head]
+    while True:
+        check_node(at, kind_of)
+        parent = at.node.parent
+        if parent is None or (stop_at is not None and parent <= stop_at):
+            break
+        above = node_of(parent)
+        assert above is not None  # check_node found a node there
+        at = above
+        out.append(at)
+    out.reverse()
+    return out
+
+
 def walk(ch: Channel, node: int | None) -> Walked:
     """The lineage ending at ``node`` (``None``, the empty lineage), checked (§5):
-    every node walked by ``check_node``, and along the lineage, a seq committed
-    twice. A ``node`` that is not a node raises ``ValueError``.
+    every node walked by ``check_node`` (``chain``), and along the lineage, a seq
+    committed twice. A ``node`` that is not a node raises ``ValueError``.
 
     It reads backwards from ``node`` (``Backward``), and loads what a read may
     resolve: each node's values, and its claim's ``started`` when it lies below
@@ -245,23 +300,9 @@ def walk(ch: Channel, node: int | None) -> Walked:
     if node is None:
         return Walked({}, [])
     back = Backward(ch, node)
-    first = back.get(node)
-    at = None if first is None else node_at(first)
-    if at is None:
-        raise ValueError(f"head node {node} is not a node")
-    chain = [at]
-    while True:
-        check_node(at, lambda s: kind_at(back.get(s)))
-        if at.node.parent is None:
-            break
-        e = back.get(at.node.parent)
-        parent = None if e is None else node_at(e)
-        assert parent is not None  # check_node found a node there
-        at = parent
-        chain.append(at)
-    chain.reverse()
+    nodes = chain(node, nodes_in(back.get), stop_at=None)
     seen: set[int] = set()
-    for at in chain:
+    for at in nodes:
         for s in at.node.committed:
             if s in seen:
                 raise MalformedRecordError(
@@ -273,7 +314,7 @@ def walk(ch: Channel, node: int | None) -> Walked:
             back.get(s)
         if at.node.claim_seq < at.env.seq:
             back.get(at.node.claim_seq)
-    return Walked(back.records, chain)
+    return Walked(back.records, nodes)
 
 
 # ----- membership (§2, "Membership") -------------------------------------------------

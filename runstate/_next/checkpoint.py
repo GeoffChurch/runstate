@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from ..channel import Channel
-from .observables import Head, HeadStrategy, PrefixLen
+from .observables import HeadStrategy, PrefixLen
 from .vocabulary.coordinate import NodeRef
 from .walk import walk
 
@@ -148,7 +148,7 @@ class MostProgress:
         counts = PrefixLen(self.stream)
 
         def progress(c: C) -> tuple[int, int]:
-            return counts.poll(ch, Head(c.node, True, h.w)), c.node
+            return counts.at(ch, c.node, w=h.w), c.node
 
         return max(complete, key=progress)
 

@@ -357,7 +357,9 @@ def test_pure_demand_with_from_every_or_count_is_refused_malformed_and_spent(
     assert demand(obs) == []
 
 
-def test_the_three_unsatisfiable_refusals(open_run):
+def test_a_subscription_the_claims_declaration_cannot_serve_is_refused_unsatisfiable(
+    open_run,
+):
     """Judged against the claim's declaration (§3, "Refusals"): a target that is
     no declared source (an eager stream is read, not subscribed); a progress atom
     naming a declared source (its count depends on who asked); and an empty window,
@@ -592,7 +594,7 @@ def test_a_durable_subscription_crosses_claims_and_a_lease_does_not(open_run):
     w2.commit()
     fired = [r for b in node_bodies(obs) for r in b["fired"]]
     assert sorted(fired) == ["durable", "durable", "lease", "mixed", "twin", "twin"]
-    assert w2._live() == {"durable", "twin"}
+    assert demand(obs) == ["durable", "twin"]
 
 
 def test_a_lease_is_void_only_through_its_binding(open_run):
@@ -993,7 +995,9 @@ def test_a_lost_exit_cas_does_not_evaluate_again(open_run):
 # ----- pinned, retire() and serve() (§4, "The exit", "The drivers") ----------------
 
 
-def test_pinned_states(open_run):
+def test_pinned_is_some_lease_of_the_claim_or_durable_subscription_live_on_its_lineage(
+    open_run,
+):
     """Some subscription is live for this claim: a lease of the claim, or a durable
     one live on its lineage. It reads what the drains registered."""
     ch, obs, clock = open_run(), open_run(), Clock()
@@ -1097,7 +1101,7 @@ def test_retires_exit_fires_nothing_and_is_extendable(open_run):
     assert w2.resume_node == exit_.seq  # a successor continues from it
 
 
-def test_serve_full_lifecycle(open_run):
+def test_serve_serves_a_prestaged_lease_until_it_lapses_then_retires_once(open_run):
     """A prestaged lease is served from the first iteration, until it lapses; the
     careful death is then the claim's one exit."""
     ch, obs, clock = open_run(), open_run(), Clock()
@@ -1212,3 +1216,29 @@ def test_a_double_launch_leaves_one_claim_and_the_winners_own_verdict(tmp_path):
     assert {e.request_id for e in terms} == {h1.launch_id, h2.launch_id}
     assert obs.read(topics=[Topic.SUPERVISOR_DIED]) == []
     assert peek_terminal(obs).outcomes == frozenset({Outcome.PREEMPTED})
+
+
+# ----- a commit's cost by what is registered (§5, "Bounded reads") ------------------
+
+
+def test_a_commits_cost_does_not_grow_with_the_durables_expired_on_its_lineage():
+    """A durable subscription the lineage expired stays registered, live again on
+    a lineage that does not expire it; but a commit after the one that expired them
+    takes the same steps after 10 such as after 1,000: the claim holds the live
+    ones, and changes them by what each node and each move changes."""
+    from runstate.channel.memory import MemoryChannel
+    from tests.test_next_folds import _steps
+
+    steps = []
+    for n in (10, 1_000):
+        ch = MemoryChannel()
+        for i in range(n):
+            sub(ch, f"d{i}")  # durable one-shots
+        w = worker(ch, sources=["loss"])
+        w.set("loss", 1.0)
+        w.commit()  # every one fires and expires here
+        assert w.pinned is False
+        steps.append(_steps(w.commit))
+        w.rewind(None)
+        assert len(w._live()) == n  # live again off the lineage that expired them
+    assert steps[0] == steps[1]
