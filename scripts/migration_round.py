@@ -62,7 +62,7 @@ EACH RUN, as ``runstate migrate``'s detection pass takes it, in memory:
    ``undischarged_stops`` as 0.3.0 defined them (``scripts/reads_v0_3_0.py``),
    over a ``MemoryChannel`` of the 0.3.0 rows; the 0.4.0 reads,
    the staged observer plane's (``runstate._next.observables``) ``series`` per
-   name at ``LatestClaimHead``, its ``verdict`` and ``undischarged_stops``, over
+   name at ``LatestClaimHead``, its ``peek_terminal`` and ``undischarged_stops``, over
    one of the 0.4.0 rows. Each
    difference is attributed to the divergences that fired there (``Reads``), or
    ``unattributed``: an unattributed difference is a read-changing rule the step
@@ -821,7 +821,7 @@ class NewVerdict(NamedTuple):
 def new_verdict(ch04: MemoryChannel) -> NewVerdict:
     """A verdict that raises ``MalformedRecordError`` is a value."""
     try:
-        result = reads.verdict(ch04)
+        result = reads.peek_terminal(ch04)
     except reads.MalformedRecordError as exc:
         verdict = VerdictValue("raised", [], _raised(exc))
     else:
@@ -830,7 +830,7 @@ def new_verdict(ch04: MemoryChannel) -> NewVerdict:
             if result is None
             else VerdictValue("outcomes", sorted(str(o) for o in result.outcomes), None)
         )
-    return NewVerdict(verdict, reads.undischarged_stops(ch04))
+    return NewVerdict(verdict, [e.seq for e in reads.undischarged_stops(ch04)])
 
 
 def _old_cells(

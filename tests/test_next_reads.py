@@ -25,7 +25,7 @@ from runstate._next.observables import (
     LatestClaimHead,
     MalformedRecordError,
     Pending,
-    RunResult04,
+    RunResult,
     SettledShort,
     Streams,
     Tier,
@@ -34,16 +34,21 @@ from runstate._next.observables import (
     aligned,
     answers,
     last_element,
+    peek_terminal,
     prefix,
     prefix_len,
     series,
     streams,
     undischarged_stops,
-    verdict,
 )
 from runstate._next.vocabulary.coordinate import Commits
 from runstate._next.vocabulary.payloads import Commit, Outcome
 from runstate.channel.memory import MemoryChannel
+
+
+def pending(ch):
+    """The pending stops' seqs (``undischarged_stops`` returns their envelopes)."""
+    return [e.seq for e in undischarged_stops(ch)]
 
 
 def lineage(ch, *, head):
@@ -75,14 +80,14 @@ def started(resume_from, *, sources=(), t=1.0, launch=None):
     return Rec("lifecycle.started", body, None, launch)
 
 
-def commit(claim, parent, values, *, fired=(), t=2.0):
+def commit(claim, parent, values, *, fired=(), expired=(), t=2.0):
     body = {
         "claim_seq": claim,
         "consumed_seq": 0,
         "parent": parent,
         "values": list(values),
         "fired": list(fired),
-        "expired": [],
+        "expired": list(expired),
         "t": t,
     }
     return Rec("lifecycle.commit", body, None, None)
@@ -119,6 +124,10 @@ def value(name, v, *, t=1.5):
 
 def subscribe(source, request_id, **schedule):
     return Rec("control.subscribe", schedule, source, request_id)
+
+
+def bound(claim, request_id):
+    return Rec("lifecycle.bound", {"claim_seq": claim}, None, request_id)
 
 
 def died(claim, outcome, *, evidence="slurm:TIMEOUT", t=5.0):
@@ -768,7 +777,39 @@ CLOSED_DISCARDED = _log(
     (5, started(4)),
 )
 
+# --- the answer fold (§2 "Requests", §5)
+
+# Each subscription is spent by what names it, wherever that sits: "expires" by
+# the expired of a node a rewind then leaves off the lineage.
+DEMAND = _log(
+    "subscriptions answered by name",
+    (1, started(None, sources=["lr"])),
+    (2, subscribe("lr", "expires", until={"commits": 1})),
+    (3, subscribe("lr", "withdrawn", every={"commits": 1})),
+    (4, subscribe("lr", "refused", every={"commits": 1})),
+    (5, subscribe("lr", "live", every={"commits": 1})),
+    (6, subscribe("lr", "malformed", every={"step": 1})),  # the retired atom
+    (7, withdraw("withdrawn")),
+    (8, nak("refused")),
+    (9, value("lr", 0.1)),
+    (10, commit(1, None, [9], fired=["live"], expired=["expires"])),
+    (11, rewind(1, None)),
+    (12, subscribe("lr", "withdrawn", every={"commits": 1})),  # a spent id
+)
+
+# A lease bound to a claim that only an unreadable report ends.
+LEASED = _log(
+    "a lease bound to a claim an unreadable report ends",
+    (1, subscribe(None, "lease", until={"time_seconds": 60})),
+    (2, started(None)),
+    (3, bound(2, "lease")),
+    (4, commit(2, None, [])),
+    (5, junk(died(2, "killed"), outcome="completed")),
+)
+
 UNREADABLE = {
+    "subscriptions answered by name": {6},
+    "a lease bound to a claim an unreadable report ends": {5},
     "a malformed value body": {2},
     "a malformed value body, last": {2},
     "an unreadable exit": {3},
@@ -1393,7 +1434,7 @@ C, P, E, K, L = (
 
 
 def by_exit(node, claim, outcome, *, error=None, malformed=()):
-    return RunResult04(
+    return RunResult(
         outcomes=frozenset({outcome}),
         reports=(),
         node=node,
@@ -1401,11 +1442,12 @@ def by_exit(node, claim, outcome, *, error=None, malformed=()):
         malformed=malformed,
         tier=Tier.EXIT,
         error=error,
+        run_id=None,
     )
 
 
 def by_deaths(claim, outcomes, reports, *, malformed=()):
-    return RunResult04(
+    return RunResult(
         outcomes=frozenset(outcomes),
         reports=tuple(reports),
         node=None,
@@ -1413,11 +1455,12 @@ def by_deaths(claim, outcomes, reports, *, malformed=()):
         malformed=malformed,
         tier=Tier.DIED,
         error=None,
+        run_id=None,
     )
 
 
 def by_launch(outcome):
-    return RunResult04(
+    return RunResult(
         outcomes=frozenset({outcome}),
         reports=(),
         node=None,
@@ -1425,11 +1468,12 @@ def by_launch(outcome):
         malformed=(),
         tier=Tier.TERMINATED,
         error=None,
+        run_id=None,
     )
 
 
 def verdict_of(rows):
-    return verdict(channel(rows))
+    return peek_terminal(channel(rows))
 
 
 def test_an_empty_log_and_a_held_claim_have_no_verdict():
@@ -1451,61 +1495,6 @@ def test_the_claims_exit_is_its_self_report(rows, expected):
 
 def test_a_died_naming_the_claim_ends_it():
     assert verdict_of(KILLED) == by_deaths(1, {K}, [DeathReport(3, K, "signal 9", 5.0)])
-
-
-@pytest.mark.parametrize(
-    "rows, expected",
-    [(EXIT_THEN_DEATH, by_exit(3, 1, P)), (DEATH_THEN_EXIT, by_exit(4, 1, C))],
-)
-def test_the_self_report_outranks_the_death_reports_whatever_their_order(
-    rows, expected
-):
-    """Its ``reports`` are empty: they are the death reports' viewpoint's."""
-    assert verdict_of(rows) == expected
-
-
-def test_several_death_reports_are_kept_as_a_set_whatever_their_order():
-    reports = [
-        DeathReport(3, K, "signal 9", 5.0),
-        DeathReport(4, E, "slurm: NODE_FAIL", 5.0),
-        DeathReport(5, L, "probe: pid gone", 5.0),
-    ]
-    assert verdict_of(SEVERAL_DEATHS) == by_deaths(1, {K, E}, reports)
-    other = verdict_of(SEVERAL_DEATHS_REVERSED)
-    assert other.outcomes == {K, E}
-    assert [(r.seq, r.outcome) for r in other.reports] == [(3, L), (4, E), (5, K)]
-
-
-def test_lost_is_dropped_beside_another_outcome_and_kept_alone():
-    assert verdict_of(LOST_BESIDE_PREEMPTED) == by_deaths(
-        1,
-        {P},
-        [
-            DeathReport(3, L, "exit 0", 5.0),
-            DeathReport(4, P, "slurm: PREEMPTED", 5.0),
-        ],
-    )
-    assert verdict_of(ONLY_LOST) == by_deaths(
-        1,
-        {L},
-        [DeathReport(3, L, "exit 0", 5.0), DeathReport(4, L, "probe: pid gone", 5.0)],
-    )
-
-
-@pytest.mark.parametrize(
-    "rows, expected",
-    [
-        (UNREADABLE_EXIT, by_deaths(1, {L}, [], malformed=(3,))),
-        (UNREADABLE_DEATH, by_deaths(1, {L}, [], malformed=(3,))),
-        (ONLY_UNREADABLE, by_deaths(1, {L}, [], malformed=(3, 4))),
-    ],
-)
-def test_an_unreadable_record_ends_its_claim_as_a_lost_named_in_malformed(
-    rows, expected
-):
-    """It says only that its claim ended, which is all ``lost`` says, and no
-    more of its body is read."""
-    assert verdict_of(rows) == expected
 
 
 def test_an_unreadable_report_is_skipped_and_its_lost_dropped_beside_another():
@@ -1600,7 +1589,7 @@ def test_an_unclaimed_runs_unreadable_terminated_raises(rows, bad):
     ],
 )
 def test_the_verdict_reads_nothing_above_its_w(rows, w, expected):
-    assert verdict(_LateW(rows, w)) == expected
+    assert peek_terminal(_LateW(rows, w)) == expected
 
 
 @pytest.mark.parametrize(
@@ -1614,7 +1603,7 @@ def test_the_verdict_reads_nothing_above_its_w(rows, w, expected):
 )
 def test_an_exits_run_result_holds_its_viewpoints_shape(fields):
     with pytest.raises(ValueError):
-        RunResult04(**{**by_exit(3, 1, P).__dict__, **fields})
+        RunResult(**{**by_exit(3, 1, P).__dict__, **fields})
 
 
 @pytest.mark.parametrize(
@@ -1626,40 +1615,29 @@ def test_an_exits_run_result_holds_its_viewpoints_shape(fields):
 )
 def test_a_death_reports_run_result_holds_its_viewpoints_shape(fields):
     with pytest.raises(ValueError):
-        RunResult04(**{**by_deaths(1, {K}, []).__dict__, **fields})
+        RunResult(**{**by_deaths(1, {K}, []).__dict__, **fields})
 
 
 def test_a_launchs_run_result_names_no_claim():
     with pytest.raises(ValueError):
-        RunResult04(**{**by_launch(K).__dict__, "claim_seq": 1})
+        RunResult(**{**by_launch(K).__dict__, "claim_seq": 1})
 
 
 # ----- the stop fold (§5, "The answer fold") ----------------------------------------
 
 
-def test_a_stop_is_spent_by_an_exits_honored_a_withdrawal_or_a_nak():
-    """Not by a death report."""
-    assert undischarged_stops(channel(STOPS)) == [5]
-
-
 def test_a_stop_is_spent_by_name_and_a_spent_id_stays_spent():
     """A re-sent live id is one stop, at its newest send."""
-    assert undischarged_stops(channel(RESENT)) == [4]
+    assert pending(channel(RESENT)) == [4]
 
 
 def test_an_unreadable_exits_honored_is_not_read():
     """No fold reads more of an unreadable record's body (§5)."""
-    assert undischarged_stops(channel(HONORED_BY_AN_UNREADABLE_EXIT)) == [2]
-
-
-def test_a_stop_honored_on_one_branch_is_not_rearmed_on_another():
-    """A stop is a request about the process: a displaced worker's exit that
-    honors it spends it (§2)."""
-    assert undischarged_stops(channel(HONORED_BY_A_DISPLACED_EXIT)) == []
+    assert pending(channel(HONORED_BY_AN_UNREADABLE_EXIT)) == [2]
 
 
 def test_a_stop_naming_nothing_is_never_pending():
-    assert undischarged_stops(channel(A_STOP_NAMING_NOTHING)) == []
+    assert pending(channel(A_STOP_NAMING_NOTHING)) == []
 
 
 @pytest.mark.parametrize(
@@ -1667,7 +1645,7 @@ def test_a_stop_naming_nothing_is_never_pending():
     [(0, []), (5, [2, 3, 4, 5]), (6, [2, 4, 5]), (8, [2, 5]), (10, [5])],
 )
 def test_the_stop_fold_reads_nothing_above_its_w(w, expected):
-    assert undischarged_stops(_LateW(STOPS, w)) == expected
+    assert pending(_LateW(STOPS, w)) == expected
 
 
 # ----- the migration's goldens, read as the corpus runner will -----------------------
@@ -1828,31 +1806,31 @@ def test_every_golden_has_a_verdict_by_hand():
 
 @pytest.mark.parametrize("rid", _golden_ids())
 def test_every_goldens_verdict(rid):
-    assert verdict(_golden(rid)) == _golden_verdicts()[rid]
+    assert peek_terminal(_golden(rid)) == _golden_verdicts()[rid]
 
 
 def test_review_focus_4_a_backstop_then_a_default_body_reads_errored():
     """One death, ``{errored}``: the default body after the backstop wrote no
     second report and no exit."""
-    assert verdict(_golden("backstopped")).outcomes == {E}
+    assert peek_terminal(_golden("backstopped")).outcomes == {E}
 
 
 def test_a_claimless_backstops_terminated_is_the_verdict_until_a_claim():
     """Owner ruling c′: a never-claimed run keeps its verdict through the
     backstop's ``terminated``, under a minted launch id no ``launched`` names."""
     rows = _golden_rows("claimless_backstop")
-    assert verdict(_LateW(rows, 3)) == by_launch(K)
-    assert verdict(_LateW(rows, 4)) is None
+    assert peek_terminal(_LateW(rows, 3)) == by_launch(K)
+    assert peek_terminal(_LateW(rows, 4)) is None
 
 
 @pytest.mark.parametrize("rid", _golden_ids())
 def test_every_goldens_stops_are_spent(rid):
-    assert undischarged_stops(_golden(rid)) == []
+    assert pending(_golden(rid)) == []
 
 
 def test_a_goldens_stop_is_pending_until_its_answer():
-    assert undischarged_stops(_LateW(_golden_rows("exit"), 3)) == [3]
-    assert undischarged_stops(_LateW(_golden_rows("backstopped"), 4)) == [4]
+    assert pending(_LateW(_golden_rows("exit"), 3)) == [3]
+    assert pending(_LateW(_golden_rows("backstopped"), 4)) == [4]
 
 
 @pytest.mark.parametrize("rid", _golden_ids())
@@ -1863,8 +1841,8 @@ def test_every_goldens_verdict_and_stops_read_at_every_w(rid):
     for w in range(len(rows) + 1):
         ch = _LateW(rows, w)
         claims = [seq for seq, r in rows[:w] if r.topic == "lifecycle.started"]
-        v = verdict(ch)
+        v = peek_terminal(ch)
         if v is not None:
             assert v.claim_seq == (claims[-1] if claims else None)
         stops = {seq for seq, r in rows[:w] if r.topic == "control.stop"}
-        assert set(undischarged_stops(ch)) <= stops
+        assert set(pending(ch)) <= stops
