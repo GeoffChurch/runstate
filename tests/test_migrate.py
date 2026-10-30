@@ -11,7 +11,6 @@ import pytest
 
 from runstate import formats, migrations
 from runstate.channel.sqlite import SqliteChannel
-from runstate.formats import DirectoryLayout
 from runstate.migrations import Memo, MigrationError, Row, chain, migrate, plan
 from runstate.migrations.ambiguity import (
     Limits,
@@ -29,6 +28,7 @@ from runstate.migrations.ambiguity import (
     resolutions,
 )
 from runstate.migrations.stores import PostgresStore, SqliteStore
+from tests.conftest import toy_layout
 from tests.migration_helpers import NO_HISTORY
 from tests.migration_consumer import ASKED, UNSETTLED, ToyFacts
 
@@ -80,14 +80,14 @@ def _planned(step):
 @pytest.fixture
 def toy(monkeypatch):
     for v in ["8.0.0", "8.1.0", "8.2.0"]:
-        monkeypatch.setitem(formats.FORMATS, v, DirectoryLayout(v))
+        monkeypatch.setitem(formats.FORMATS, v, toy_layout(v))
     steps = (Tag("8.0.0", "8.1.0"), Tag("8.1.0", "8.2.0"))
     monkeypatch.setattr(migrations, "STEPS", steps)
     return steps
 
 
 def _seed(root, version, rid, n=3):
-    path = DirectoryLayout(version).sqlite_path(root, rid)
+    path = toy_layout(version).sqlite_path(root, rid)
     path.parent.mkdir(exist_ok=True)
     ch = SqliteChannel(path)
     for i in range(n):
@@ -126,7 +126,7 @@ def test_migrate_copies_seals_and_preserves_seq(toy, tmp_path):
     assert migrate(SqliteStore(tmp_path), None, to="8.2.0", choices=NONE).moved == (
         "r1",
     )
-    new = DirectoryLayout("8.2.0").sqlite_path(tmp_path, "r1")
+    new = toy_layout("8.2.0").sqlite_path(tmp_path, "r1")
     assert [b["tag"] for b in _bodies(new)] == ["8.2.0"] * 3
     assert [b["i"] for b in _bodies(new)] == [0, 1, 2]
     assert _bodies(old) == [{"i": 0}, {"i": 1}, {"i": 2}]  # non-destructive
@@ -140,7 +140,7 @@ def test_migrate_special_run_ids(toy, tmp_path, rid):
     assert migrate(SqliteStore(tmp_path), [rid], to="8.1.0", choices=NONE).moved == (
         rid,
     )
-    assert DirectoryLayout("8.1.0").sqlite_path(tmp_path, rid).exists()
+    assert toy_layout("8.1.0").sqlite_path(tmp_path, rid).exists()
 
 
 def test_a_live_run_is_refused_and_untouched(toy, monkeypatch, tmp_path):
@@ -153,7 +153,7 @@ def test_a_live_run_is_refused_and_untouched(toy, monkeypatch, tmp_path):
     assert re.match(r"^run 'r1': [^']*live episode", refused.message)
     assert os.stat(old).st_mode & 0o200  # not sealed: refused before the seal
     assert old.read_bytes() == before
-    assert not DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1").exists()
+    assert not toy_layout("8.1.0").sqlite_path(tmp_path, "r1").exists()
 
 
 def test_a_refusal_by_the_step_comes_before_the_seal(toy, monkeypatch, tmp_path):
@@ -173,7 +173,7 @@ def test_a_refusal_by_the_step_comes_before_the_seal(toy, monkeypatch, tmp_path)
         )
         assert os.stat(old).st_mode & 0o200  # not sealed
         assert old.read_bytes() == before
-        assert not DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1").exists()
+        assert not toy_layout("8.1.0").sqlite_path(tmp_path, "r1").exists()
 
 
 def test_a_failure_after_the_seal_leaves_it_sealed_and_a_retry_completes(
@@ -203,7 +203,7 @@ def test_a_failure_after_the_seal_leaves_it_sealed_and_a_retry_completes(
         "re-run completes it)"
     )
     monkeypatch.setattr(stores, "_read_sqlite", real)
-    target = DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1")
+    target = toy_layout("8.1.0").sqlite_path(tmp_path, "r1")
     assert not target.exists()
     assert os.stat(old).st_mode & 0o222 == 0  # sealed, per §6
     monkeypatch.setattr(migrations, "STEPS", (Tag("8.0.0", "8.1.0"),))
@@ -217,7 +217,7 @@ def test_a_write_path_failure_leaves_no_log_at_the_address(toy, monkeypatch, tmp
     from runstate.migrations import stores
 
     old = _seed(tmp_path, "8.0.0", "r1")
-    target = DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1")
+    target = toy_layout("8.1.0").sqlite_path(tmp_path, "r1")
     monkeypatch.setattr(migrations, "STEPS", (Tag("8.0.0", "8.1.0"),))
     real = os.replace
 
@@ -247,7 +247,7 @@ def test_a_migrator_overtaken_by_another_still_publishes_a_whole_log(
     from runstate.migrations import stores
 
     _seed(tmp_path, "8.0.0", "r1")
-    target = DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1")
+    target = toy_layout("8.1.0").sqlite_path(tmp_path, "r1")
     step = Tag("8.0.0", "8.1.0")
     real = os.replace
     overtaken = []
@@ -267,11 +267,11 @@ def test_a_migrator_overtaken_by_another_still_publishes_a_whole_log(
 
 def test_wal_frames_of_a_crashed_writer_survive(toy, tmp_path, crashed_wal_writer):
     """Review focus 3: a writer that died leaves frames in the WAL; the copy holds them."""
-    path = DirectoryLayout("8.0.0").sqlite_path(tmp_path, "r1")
+    path = toy_layout("8.0.0").sqlite_path(tmp_path, "r1")
     path.parent.mkdir()
     crashed_wal_writer(path, 50)
     migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0", choices=NONE)
-    new = DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1")
+    new = toy_layout("8.1.0").sqlite_path(tmp_path, "r1")
     assert [b["i"] for b in _bodies(new)] == list(range(50))
 
 
@@ -280,13 +280,13 @@ def test_a_hot_journal_of_a_crashed_writer_is_rolled_back(
 ):
     """I4: the pre-seal read opens read-write, so it rolls back a hot journal
     that a read-only open cannot, and the copy holds only committed records."""
-    path = DirectoryLayout("8.0.0").sqlite_path(tmp_path, "r1")
+    path = toy_layout("8.0.0").sqlite_path(tmp_path, "r1")
     path.parent.mkdir()
     crashed_journal_writer(path, 5)
     assert migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0", choices=NONE).moved == (
         "r1",
     )
-    new = DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1")
+    new = toy_layout("8.1.0").sqlite_path(tmp_path, "r1")
     assert [b["i"] for b in _bodies(new)] == list(range(5))
     assert not path.with_name("r1.db-journal").exists()
 
@@ -349,14 +349,8 @@ def pg_toy(pg_ready, monkeypatch):
     import psycopg
     from psycopg import sql
 
-    from runstate.channel.postgres import (
-        _CREATE_INDEX,
-        _CREATE_NAME_INDEX,
-        _CREATE_TABLE,
-    )
-
     for v in ["8.0.0", "8.1.0"]:
-        monkeypatch.setitem(formats.FORMATS, v, DirectoryLayout(v))
+        monkeypatch.setitem(formats.FORMATS, v, toy_layout(v))
     monkeypatch.setattr(migrations, "STEPS", (Tag("8.0.0", "8.1.0"),))
     old = sql.Identifier("runstate_v8_0_0")
     with psycopg.connect(pg_ready, autocommit=True) as conn:
@@ -365,7 +359,7 @@ def pg_toy(pg_ready, monkeypatch):
         conn.execute(sql.SQL("CREATE SCHEMA {}").format(old))
         with conn.transaction():
             conn.execute(sql.SQL("SET LOCAL search_path TO {}").format(old))
-            for ddl in (_CREATE_TABLE, _CREATE_INDEX, _CREATE_NAME_INDEX):
+            for ddl in toy_layout("8.0.0").pg_ddl():
                 conn.execute(ddl)
             for i in range(3):
                 conn.execute(
@@ -509,7 +503,7 @@ def test_a_migrated_log_has_the_mode_a_native_birth_has(toy, tmp_path, mask):
         assert migrate(SqliteStore(tmp_path), None, to="8.1.0", choices=NONE).moved == (
             "r1",
         )
-        migrated = DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1")
+        migrated = toy_layout("8.1.0").sqlite_path(tmp_path, "r1")
         born = _seed(tmp_path, "8.2.0", "r2")
         assert stat.S_IMODE(migrated.stat().st_mode) == stat.S_IMODE(
             born.stat().st_mode
@@ -560,7 +554,7 @@ def test_a_step_that_does_not_renumber_may_not_change_a_seq_or_topic(
     assert re.match(r"^run 'r1': .*does not renumber", refused.message)
     assert os.stat(old).st_mode & 0o200  # refused before the seal
     assert old.read_bytes() == before
-    assert not DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1").exists()
+    assert not toy_layout("8.1.0").sqlite_path(tmp_path, "r1").exists()
 
 
 @pytest.mark.parametrize(
@@ -594,14 +588,14 @@ def test_a_step_that_does_not_renumber_may_append_above(toy, monkeypatch, tmp_pa
     assert migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0", choices=NONE).moved == (
         "r1",
     )
-    assert len(_bodies(DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1"))) == 5
+    assert len(_bodies(toy_layout("8.1.0").sqlite_path(tmp_path, "r1"))) == 5
 
 
 def test_a_renumbering_steps_new_seqs_reach_the_new_sqlite_log(monkeypatch, tmp_path):
     import sqlite3
 
     for v in ["0.3.0", "8.1.0"]:
-        monkeypatch.setitem(formats.FORMATS, v, DirectoryLayout(v))
+        monkeypatch.setitem(formats.FORMATS, v, toy_layout(v))
     _seed(tmp_path, "0.3.0", "r1")
     step = Rewrite(
         "0.3.0", "8.1.0", edit=lambda r: r._replace(seq=r.seq + 10), renumbers=True
@@ -610,7 +604,7 @@ def test_a_renumbering_steps_new_seqs_reach_the_new_sqlite_log(monkeypatch, tmp_
     assert migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0", choices=NONE).moved == (
         "r1",
     )
-    new = DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1")
+    new = toy_layout("8.1.0").sqlite_path(tmp_path, "r1")
     c = sqlite3.connect(new)
     assert [q for (q,) in c.execute("SELECT seq FROM log ORDER BY seq")] == [11, 12, 13]
     c.close()
@@ -751,7 +745,7 @@ def forking(monkeypatch):
     """Two chained toy steps, each with its own projection: ``a`` forks at i=1 and
     ``b`` at i=2. Runs r1 and r2 hold i = 0, 1, 2; r3 holds only i = 0."""
     for v in ["8.0.0", "8.1.0", "8.2.0"]:
-        monkeypatch.setitem(formats.FORMATS, v, DirectoryLayout(v))
+        monkeypatch.setitem(formats.FORMATS, v, toy_layout(v))
     steps = (
         Forking("8.0.0", "8.1.0", "a", forks=[1]),
         Forking("8.1.0", "8.2.0", "b", forks=[2]),
@@ -779,7 +773,7 @@ def _three(root):
 def _untouched(root):
     """Nothing written: no run sealed, no new format, no manifest."""
     for rid in ["r1", "r2", "r3"]:
-        assert os.stat(DirectoryLayout("8.0.0").sqlite_path(root, rid)).st_mode & 0o200
+        assert os.stat(toy_layout("8.0.0").sqlite_path(root, rid)).st_mode & 0o200
     assert sorted(p.name for p in root.iterdir()) == ["v8.0.0"]
 
 
@@ -899,7 +893,7 @@ def test_a_later_steps_forks_are_asked_once_the_earlier_ones_are_decided(
     choices = _choose(resolve=["a=yes", "b=no"])
     outcome = migrate(SqliteStore(tmp_path), None, to="8.2.0", choices=choices)
     assert outcome.moved == ("r1", "r2", "r3") and not outcome.refused
-    final = _bodies(DirectoryLayout("8.2.0").sqlite_path(tmp_path, "r1"))
+    final = _bodies(toy_layout("8.2.0").sqlite_path(tmp_path, "r1"))
     assert [b["read"] for b in final] == [None, None, "no"]
 
 
@@ -941,10 +935,8 @@ def test_an_explicit_refuse_refuses_only_the_runs_with_a_fork(forking, tmp_path)
         "run 'r2': --resolve a=refuse refused it: its chooser is refuse",
     ]
     for rid in ["r1", "r2"]:  # untouched
-        assert (
-            os.stat(DirectoryLayout("8.0.0").sqlite_path(tmp_path, rid)).st_mode & 0o200
-        )
-        assert not DirectoryLayout("8.1.0").sqlite_path(tmp_path, rid).exists()
+        assert os.stat(toy_layout("8.0.0").sqlite_path(tmp_path, rid)).st_mode & 0o200
+        assert not toy_layout("8.1.0").sqlite_path(tmp_path, rid).exists()
     assert [e["run_id"] for e in _manifest(tmp_path)] == ["r3"]  # none for a refusal
 
 
@@ -1068,7 +1060,7 @@ def test_the_entry_is_written_before_the_publish_and_the_latest_is_read(
     from runstate.migrations import stores
 
     _seed(tmp_path, "8.0.0", "r1")
-    target = DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r1")
+    target = toy_layout("8.1.0").sqlite_path(tmp_path, "r1")
     real = os.replace
 
     def crash(*a, **k):
@@ -1253,11 +1245,11 @@ def test_an_unexpected_error_fails_its_run_alone(toy, monkeypatch, tmp_path):
     assert failed.message == (
         "run 'r2': RuntimeError: boom (its 8.0.0 log is left unmigrated)"
     )
-    old = DirectoryLayout("8.0.0").sqlite_path(tmp_path, "r2")
+    old = toy_layout("8.0.0").sqlite_path(tmp_path, "r2")
     assert os.stat(old).st_mode & 0o200  # not sealed
-    assert not DirectoryLayout("8.1.0").sqlite_path(tmp_path, "r2").exists()
+    assert not toy_layout("8.1.0").sqlite_path(tmp_path, "r2").exists()
     for rid in ("r1", "r3"):
-        assert DirectoryLayout("8.1.0").sqlite_path(tmp_path, rid).exists()
+        assert toy_layout("8.1.0").sqlite_path(tmp_path, rid).exists()
 
 
 def test_an_unexpected_error_in_the_detection_pass_stays_in_the_report(
@@ -1312,7 +1304,7 @@ def test_a_run_is_transformed_once_and_past_the_memo_s_bound_twice(
     re-read found being those it read: twice, never three times (final review M1)."""
     step = Tag("8.0.0", "8.1.0")
     for v in ["8.0.0", "8.1.0"]:
-        monkeypatch.setitem(formats.FORMATS, v, DirectoryLayout(v))
+        monkeypatch.setitem(formats.FORMATS, v, toy_layout(v))
     monkeypatch.setattr(migrations, "STEPS", (step,))
     monkeypatch.setattr(Memo, "ROWS", rows)
     for rid in ("r1", "r2", "r3"):
@@ -1364,3 +1356,133 @@ def test_one_memo_serves_every_step_of_an_invocation(toy, monkeypatch, tmp_path)
     first, second = toy
     assert Memo.key(first, rows, NO_HISTORY) != Memo.key(second, rows, NO_HISTORY)
     assert Memo.key(first, rows, NO_HISTORY) == Memo.key(first, list(rows), NO_HISTORY)
+
+
+# ----- a destination takes its format's tables (log-formats.md §3) -----------------
+
+# An index only the patched 0.3.0 states, so the destination can be told apart from
+# one created with the live channel's tables, which are 0.2.0's today.
+_MARK_SQLITE = "CREATE INDEX IF NOT EXISTS idx_mark ON log (created_at);"
+_MARK_PG = "CREATE INDEX IF NOT EXISTS idx_mark ON log (created_at)"
+
+
+def _sqlite_catalog(path):
+    import sqlite3
+
+    conn = sqlite3.connect(path)
+    try:
+        return sorted(
+            conn.execute(
+                "SELECT type, name, tbl_name, sql FROM sqlite_master"
+                " WHERE name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+        )
+    finally:
+        conn.close()
+
+
+def _pg_catalog(dsn, schema):
+    """The schema's columns and its indexes, the schema's name taken out of each
+    index's definition so two schemas compare."""
+    import psycopg
+
+    with psycopg.connect(dsn) as c:
+        cols = c.execute(
+            "SELECT table_name, column_name, data_type, is_nullable, ordinal_position"
+            " FROM information_schema.columns WHERE table_schema = %s ORDER BY 1, 5",
+            [schema],
+        ).fetchall()
+        idx = c.execute(
+            "SELECT indexname, replace(indexdef, %s, '') FROM pg_indexes"
+            " WHERE schemaname = %s ORDER BY 1",
+            [f"{schema}.", schema],
+        ).fetchall()
+    return cols, idx
+
+
+def _pg_reference(dsn, ddl):
+    """The catalog the statements make, in a scratch schema of their own."""
+    import psycopg
+
+    with psycopg.connect(dsn, autocommit=True) as c:
+        c.execute("CREATE SCHEMA ddl_reference")
+        with c.transaction():
+            c.execute("SET LOCAL search_path TO ddl_reference")
+            for stmt in ddl:
+                c.execute(stmt)
+    try:
+        return _pg_catalog(dsn, "ddl_reference")
+    finally:
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("DROP SCHEMA ddl_reference CASCADE")
+
+
+@pytest.mark.parametrize("backend", ["sqlite", "postgres"])
+def test_a_destination_takes_its_formats_ddl(backend, request, tmp_path, monkeypatch):
+    """Open question 9: a 0.2.0 -> 0.3.0 migration's destination has exactly the
+    tables and indexes of FORMATS["0.3.0"]'s DDL for its backend, and a channel's
+    birth creates FORMATS[LOG_FORMAT]'s. The patched 0.3.0 states one index more
+    than 0.2.0, so a writer that took the live channel's tables, or 0.2.0's, fails."""
+    import dataclasses
+    import sqlite3
+
+    from runstate import attach_channel, create_channel
+
+    if backend == "postgres":
+        dsn = request.getfixturevalue("scratch_db")  # SKIPs without a DSN
+    v020 = formats.FORMATS["0.2.0"]
+    v030 = dataclasses.replace(
+        formats.FORMATS["0.3.0"],
+        sqlite_script=v020.sqlite_ddl() + _MARK_SQLITE,
+        pg_statements=v020.pg_ddl() + (_MARK_PG,),
+    )
+    monkeypatch.setitem(formats.FORMATS, "0.3.0", v030)
+    assert formats.LOG_FORMAT == "0.3.0"
+    nothing = parse_choices(
+        migrations.STEPS, assume=[], resolve=[], accept=[], limits=ONE
+    )
+    rows = [(i, "value", "x", None, json.dumps({"i": i}), float(i)) for i in (1, 2, 3)]
+
+    if backend == "sqlite":
+        src = v020.sqlite_path(tmp_path, "r1")
+        src.parent.mkdir()
+        conn = sqlite3.connect(src)
+        conn.executescript(v020.sqlite_ddl())
+        conn.executemany("INSERT INTO log VALUES (?, ?, ?, ?, ?, ?)", rows)
+        conn.commit()
+        conn.close()
+        reference = tmp_path / "reference.db"
+        conn = sqlite3.connect(reference)
+        conn.executescript(v030.sqlite_ddl())
+        conn.close()
+
+        assert migrate(SqliteStore(tmp_path), None, to="0.3.0", choices=nothing).moved
+        assert _sqlite_catalog(v030.sqlite_path(tmp_path, "r1")) == _sqlite_catalog(
+            reference
+        )
+        create_channel("r2", root=tmp_path).close()
+        assert _sqlite_catalog(v030.sqlite_path(tmp_path, "r2")) == _sqlite_catalog(
+            reference
+        )
+        return
+
+    import psycopg
+
+    from runstate.channel.postgres import ensure_schema
+
+    reference = _pg_reference(dsn, v030.pg_ddl())
+    ensure_schema(dsn)  # the birth of every channel on the database
+    assert _pg_catalog(dsn, v030.pg_schema()) == reference
+    with psycopg.connect(dsn, autocommit=True) as c:
+        c.execute(f"DROP SCHEMA {v030.pg_schema()} CASCADE")
+        c.execute(f"CREATE SCHEMA {v020.pg_schema()}")
+        with c.transaction():
+            c.execute(f"SET LOCAL search_path TO {v020.pg_schema()}")
+            for stmt in v020.pg_ddl():
+                c.execute(stmt)
+            for row in rows:
+                c.execute("INSERT INTO log VALUES ('r1', %s, %s, %s, %s, %s, %s)", row)
+    assert migrate(PostgresStore(dsn), None, to="0.3.0", choices=nothing).moved
+    assert _pg_catalog(dsn, v030.pg_schema()) == reference
+    with attach_channel("r1", root=dsn, backend="postgres") as ch:
+        assert ch.last_seq() == 3

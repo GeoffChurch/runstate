@@ -151,7 +151,7 @@ def postgres_onboarding(run_id: str, schema: str) -> str:
     leave a tombstone in its place, an empty ``log`` with the old columns whose
     trigger refuses every insert (§5). One transaction, so it moves whole or not
     at all."""
-    target = DirectoryLayout(LEGACY_FORMAT).pg_schema()
+    target = FORMATS[LEGACY_FORMAT].pg_schema()
     s = '"' + schema.replace('"', '""') + '"'
     fn = f"{s}.runstate_log_moved"
     sql = (

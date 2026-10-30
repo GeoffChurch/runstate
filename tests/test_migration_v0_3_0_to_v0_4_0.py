@@ -19,7 +19,8 @@ import pytest
 import runstate.migrations.v0_3_0_to_v0_4_0_engine as E
 from runstate import migrations
 from runstate.channel.sqlite import SqliteChannel
-from runstate.formats import FORMATS, DirectoryLayout
+from runstate.formats import FORMATS
+from tests.conftest import toy_layout
 from runstate.migrations import RENUMBERING_FROM, STEPS, MigrationError, migrate
 from runstate.migrations.ambiguity import (
     Assumed,
@@ -717,7 +718,7 @@ def test_a_launchs_second_terminated_is_refused_whatever_the_claims(case):
 def registered(monkeypatch):
     """The step registered for the test only, as tests/test_migrate.py's toy
     fixture registers its steps: the format does not change in this round."""
-    monkeypatch.setitem(FORMATS, "0.4.0", DirectoryLayout("0.4.0"))
+    monkeypatch.setitem(FORMATS, "0.4.0", toy_layout("0.4.0"))
     monkeypatch.setattr(migrations, "STEPS", (V0_3_0_to_V0_4_0(),))
 
 

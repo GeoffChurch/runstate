@@ -16,6 +16,7 @@ from collections.abc import Callable
 from typing import Any
 from urllib.request import pathname2url
 
+from ..formats import FORMATS, LOG_FORMAT
 from .base import Channel, RunNotFound
 from .envelope import Body, Envelope
 
@@ -49,33 +50,6 @@ def _escape_glob(s: str) -> str:
     only itself. GLOB (unlike sqlite's LIKE, which is ASCII-case-insensitive)
     is case-sensitive, which topic matching requires."""
     return "".join(f"[{c}]" if c in "*?[" else c for c in s)
-
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS log (
-    seq        INTEGER PRIMARY KEY AUTOINCREMENT,
-    topic      TEXT NOT NULL,
-    name       TEXT,
-    request_id TEXT,
-    body       TEXT NOT NULL,
-    created_at REAL NOT NULL
-);
--- latest(topic) is WHERE topic=? ORDER BY seq DESC LIMIT 1, called on every
--- Watcher poll (twice, for stopped/terminated, which usually don't exist yet).
--- Without this it's a full table scan per poll; the index makes it a seek.
-CREATE INDEX IF NOT EXISTS idx_log_topic_seq ON log (topic, seq);
--- latest(topic, name=) adds AND name=?, which the index above CANNOT serve: it
--- seeks on topic, then walks the partition backwards post-filtering the name,
--- so a rare / early-only / not-yet-emitted name pays the whole partition on
--- every call, forever (#19).
---
--- An ADDITION, never a replacement. Measured on 300k value records: with
--- (topic, name, seq) ALONE, latest(topic) regresses 0.005ms -> 10.5ms (~2000x),
--- because `name` sits between the equality prefix and the sort key so ORDER BY
--- seq falls back to a temp B-tree. Both indexes; both are hot paths. The
--- (topic, seq) guard in tests/test_channel.py pins that.
-CREATE INDEX IF NOT EXISTS idx_log_topic_name_seq ON log (topic, name, seq);
-"""
 
 
 class SqliteChannel(Channel):
@@ -133,7 +107,8 @@ class SqliteChannel(Channel):
         # instead of raising "database is locked". Single-writer-per-run is the
         # norm, so outside a genuine multi-claimant race this never engages.
         self._conn.execute("PRAGMA busy_timeout=5000")
-        self._conn.executescript(_SCHEMA)
+        # the tables of the format this channel writes (log-formats.md §3)
+        self._conn.executescript(FORMATS[LOG_FORMAT].sqlite_ddl())
 
     def _open_existing(self, path: str | os.PathLike[str]) -> None:
         """Attach to an EXISTING file (``create=False``): open read-write but
@@ -145,7 +120,7 @@ class SqliteChannel(Channel):
         root or run_id is a literal filename character, not URI syntax (the
         create path passes the literal path, so attach must match its file
         identity). We also SKIP both ``PRAGMA journal_mode=`` (WAL conversion
-        writes the file header) and ``executescript(_SCHEMA)`` (writes tables) --
+        writes the file header) and the format's ``executescript`` (writes tables) --
         either would mutate a *foreign* valid sqlite db that a stale pointer
         resolved to (the PR #14 harm). ``busy_timeout`` is per-connection and
         writes nothing, so it is fine. A real WAL run stays writable through this

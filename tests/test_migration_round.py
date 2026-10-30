@@ -24,7 +24,7 @@ import pytest
 
 pytest.importorskip("jsonschema")
 
-from runstate.channel.sqlite import _SCHEMA  # noqa: E402
+from runstate.formats import FORMATS  # noqa: E402
 from runstate.migrations import MigrationError, Row  # noqa: E402
 from runstate.migrations.ambiguity import Statement  # noqa: E402
 import tests.migration_helpers as H  # noqa: E402
@@ -58,11 +58,14 @@ def _load():
 mr = _load()
 
 
-def _write(path: Path, rows) -> None:
+def _write(path: Path, rows, *, fmt: str) -> None:
+    """A log at ``path`` in the tables of format ``fmt``, every row as given. A
+    path outside every address (a legacy log, an unregistered format's) takes the
+    tables of the format its rows are written in."""
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     try:
-        conn.executescript(_SCHEMA)
+        conn.executescript(FORMATS[fmt].sqlite_ddl())
         conn.executemany(
             "INSERT INTO log (seq, topic, name, request_id, body, created_at)"
             " VALUES (?, ?, ?, ?, ?, ?)",
@@ -116,7 +119,7 @@ def _run(tmp_path, logs, *, max_rows=10_000, config=CONFIG):
     """Each log as a 0.3.0 file under one root; the runner's outputs, by run."""
     root = tmp_path / "root"
     for rid, rows in logs.items():
-        _write(root / "v0.3.0" / f"{rid}.db", rows)
+        _write(root / "v0.3.0" / f"{rid}.db", rows, fmt="0.3.0")
     out = tmp_path / "out"
     assert _main(root, out, max_rows=max_rows, config=config) == 0
     return _outputs(out)
@@ -447,7 +450,7 @@ def test_a_shipped_step_that_breaks_preservation_is_its_refusal(tmp_path, monkey
 
     monkeypatch.setattr(V0_2_0_to_V0_3_0, "transform", dropping)
     root = tmp_path / "root"
-    _write(root / "v0.2.0" / "old.db", _v0_2_0())
+    _write(root / "v0.2.0" / "old.db", _v0_2_0(), fmt="0.2.0")
     out = tmp_path / "out"
     assert _main(root, out, max_rows=100) == 0
     runs, _ = _outputs(out)
@@ -468,13 +471,13 @@ def test_a_corrupt_log_is_counted_never_raised(tmp_path):
         r(i, "value", _value("x" * 200, 0, 1.0), name="loss") for i in range(1, 2000)
     ]
     for rid in ("a_rows", "b_schema"):
-        _write(root / "v0.3.0" / f"{rid}.db", rows)
+        _write(root / "v0.3.0" / f"{rid}.db", rows, fmt="0.3.0")
     data = bytearray((root / "v0.3.0" / "a_rows.db").read_bytes())
     data[4096 * 5 : 4096 * 6] = b"\xff" * 4096  # a data page
     (root / "v0.3.0" / "a_rows.db").write_bytes(bytes(data))
     truncated = (root / "v0.3.0" / "b_schema.db").read_bytes()[: 4096 * 3]
     (root / "v0.3.0" / "b_schema.db").write_bytes(truncated)
-    _write(root / "v0.3.0" / "c_fine.db", EXIT)
+    _write(root / "v0.3.0" / "c_fine.db", EXIT, fmt="0.3.0")
     out = tmp_path / "out"
     assert _main(root, out, max_rows=10000) == 0
     runs, summary = _outputs(out)
@@ -566,8 +569,8 @@ def test_the_format_is_read_from_the_address(tmp_path):
     holds logs of either birth, so its statement says so; one that states 0.3.0
     alone is contradicted by the 0.2.0 logs' evidence, and refuses them."""
     root = tmp_path / "root"
-    _write(root / "cell" / "legacy.db", _v0_2_0())
-    _write(root / "v0.2.0" / "old.db", _v0_2_0())
+    _write(root / "cell" / "legacy.db", _v0_2_0(), fmt="0.2.0")
+    _write(root / "v0.2.0" / "old.db", _v0_2_0(), fmt="0.2.0")
     _write(
         root / "v0.2.0" / "beatfirst.db",
         [
@@ -580,8 +583,9 @@ def test_the_format_is_read_from_the_address(tmp_path):
                 1.0,
             )
         ],
+        fmt="0.2.0",
     )
-    _write(root / "v0.3.0" / "new.db", EXIT)
+    _write(root / "v0.3.0" / "new.db", EXIT, fmt="0.3.0")
     out = tmp_path / "out"
     either = [
         "tests.test_migration_goldens:GOLDENS_EITHER_BIRTH" if "GOLDENS" in c else c
@@ -612,7 +616,7 @@ def test_the_format_is_read_from_the_address(tmp_path):
 def test_a_symlinked_duplicate_is_counted_once(tmp_path):
     root = tmp_path / "root"
     target = root / "v0.3.0" / "exit.db"
-    _write(target, EXIT)
+    _write(target, EXIT, fmt="0.3.0")
     (root / "home").mkdir()
     (root / "home" / "exit.db").symlink_to(target)  # a file symlink
     (root / "cell").symlink_to(root / "v0.3.0", target_is_directory=True)
@@ -629,8 +633,8 @@ def test_a_symlinked_duplicate_is_counted_once(tmp_path):
 
 def test_files_that_are_not_logs_are_skipped_and_counted(tmp_path):
     root = tmp_path / "root"
-    _write(root / "v0.3.0" / "run.db", EXIT)
-    _write(root / "v0.2.0" / "run.db", _v0_2_0())
+    _write(root / "v0.3.0" / "run.db", EXIT, fmt="0.3.0")
+    _write(root / "v0.2.0" / "run.db", _v0_2_0(), fmt="0.2.0")
     (root / "v0.2.0" / "run.db").chmod(0o444)  # sealed by the migration that moved it
     (root / "cell").mkdir()
     (root / "cell" / "tomb.db").touch()  # a tombstone
@@ -639,7 +643,7 @@ def test_files_that_are_not_logs_are_skipped_and_counted(tmp_path):
     conn.execute("CREATE TABLE things (x)")
     conn.commit()
     conn.close()
-    _write(root / "v0.4.0" / "future.db", EXIT)
+    _write(root / "v0.4.0" / "future.db", EXIT, fmt="0.3.0")
     (root / "cell" / "gone.db").symlink_to(root / "nowhere.db")
     out = tmp_path / "out"
     assert _main(root, out, max_rows=100) == 0
@@ -664,11 +668,11 @@ def test_an_unsealed_log_beside_a_newer_one_is_a_conflict(tmp_path):
     is guessed at, and the newer is measured. A sealed older one is superseded
     (``runstate migrate`` seals the log it moves)."""
     root = tmp_path / "root"
-    _write(root / "cell" / "run.db", _v0_2_0())  # onboarding skipped it
-    _write(root / "cell" / "v0.2.0" / "run.db", _v0_2_0())
-    _write(root / "home" / "old.db", _v0_2_0())
+    _write(root / "cell" / "run.db", _v0_2_0(), fmt="0.2.0")  # onboarding skipped it
+    _write(root / "cell" / "v0.2.0" / "run.db", _v0_2_0(), fmt="0.2.0")
+    _write(root / "home" / "old.db", _v0_2_0(), fmt="0.2.0")
     (root / "home" / "old.db").chmod(0o444)
-    _write(root / "home" / "v0.2.0" / "old.db", _v0_2_0())
+    _write(root / "home" / "v0.2.0" / "old.db", _v0_2_0(), fmt="0.2.0")
     out = tmp_path / "out"
     assert _main(root, out, max_rows=100) == 0
     runs, summary = _outputs(out)
@@ -682,7 +686,7 @@ def test_an_unsealed_log_beside_a_newer_one_is_a_conflict(tmp_path):
 
 def test_the_runner_writes_nothing_under_a_root(tmp_path):
     root = tmp_path / "root"
-    _write(root / "v0.3.0" / "exit.db", EXIT)
+    _write(root / "v0.3.0" / "exit.db", EXIT, fmt="0.3.0")
     with pytest.raises(SystemExit):
         _main(root, root / "out", max_rows=100)
     assert sorted(p.name for p in root.rglob("*")) == ["exit.db", "v0.3.0"]
@@ -698,7 +702,7 @@ def test_the_runner_streams_one_run_at_a_time(tmp_path, monkeypatch):
     root = tmp_path / "root"
     logs = {k: GOLDEN[k] for k in ("displaced", "loading", "skipped", "late_reap")}
     for rid, rows in logs.items():
-        _write(root / "v0.3.0" / f"{rid}.db", rows)
+        _write(root / "v0.3.0" / f"{rid}.db", rows, fmt="0.3.0")
     out = tmp_path / "out"
     reads = tmp_path / "reads"
     real = mr._read_rows
@@ -724,7 +728,7 @@ def test_each_run_is_timed_and_its_peak_rss_recorded(goldens):
 
 def test_a_child_the_os_kills_is_its_runs_crash(tmp_path, monkeypatch):
     root = tmp_path / "root"
-    _write(root / "v0.3.0" / "killed.db", GOLDEN["displaced"])
+    _write(root / "v0.3.0" / "killed.db", GOLDEN["displaced"], fmt="0.3.0")
     out = tmp_path / "out"
     monkeypatch.setattr(mr, "_read_rows", lambda path: os.kill(os.getpid(), 9))
     assert _main(root, out, max_rows=100) == 0
@@ -737,8 +741,8 @@ def test_a_child_the_os_kills_is_its_runs_crash(tmp_path, monkeypatch):
 
 def test_max_rows_skips_a_run_without_loading_it(tmp_path, monkeypatch):
     root = tmp_path / "root"
-    _write(root / "v0.3.0" / "small.db", EXIT)  # 5 rows
-    _write(root / "v0.3.0" / "big.db", GOLDEN["displaced"])  # 12 rows
+    _write(root / "v0.3.0" / "small.db", EXIT, fmt="0.3.0")  # 5 rows
+    _write(root / "v0.3.0" / "big.db", GOLDEN["displaced"], fmt="0.3.0")  # 12 rows
     read = Shared(tmp_path / "read")
     real = mr._read_rows
     monkeypatch.setattr(mr, "_read_rows", lambda p: read.append(p.stem) or real(p))
@@ -755,7 +759,7 @@ def test_max_rows_skips_a_run_without_loading_it(tmp_path, monkeypatch):
 def test_the_runner_runs_under_a_4gb_address_space_limit(tmp_path):
     root = tmp_path / "root"
     for rid in ("displaced", "loading", "late_reap"):
-        _write(root / "v0.3.0" / f"{rid}.db", GOLDEN[rid])
+        _write(root / "v0.3.0" / f"{rid}.db", GOLDEN[rid], fmt="0.3.0")
     out = tmp_path / "out"
     command = " ".join(
         [
@@ -844,9 +848,9 @@ def test_a_failure_of_the_runners_own_measurement_is_recorded_and_the_run_goes_o
 
 def test_max_bytes_skips_a_file_without_opening_it(tmp_path, monkeypatch):
     root = tmp_path / "root"
-    _write(root / "v0.3.0" / "small.db", EXIT)
+    _write(root / "v0.3.0" / "small.db", EXIT, fmt="0.3.0")
     padded = [r(1, "value", _value("x" * 20_000, 0, 1.0), name="blob")]
-    _write(root / "v0.3.0" / "big.db", padded)
+    _write(root / "v0.3.0" / "big.db", padded, fmt="0.3.0")
     small = (root / "v0.3.0" / "small.db").stat().st_size
     assert (root / "v0.3.0" / "big.db").stat().st_size > small
     counted = Shared(tmp_path / "counted")
@@ -882,7 +886,7 @@ def test_the_summary_is_written_as_the_runner_goes_and_when_it_stops(
     stops: an abort loses no totals, and says it is incomplete."""
     root = tmp_path / "root"
     for rid in ("a", "b", "c"):
-        _write(root / "v0.3.0" / f"{rid}.db", EXIT)
+        _write(root / "v0.3.0" / f"{rid}.db", EXIT, fmt="0.3.0")
     out = tmp_path / "out"
     monkeypatch.setattr(mr, "_SUMMARY_EVERY", 1)
     real = mr.measure
@@ -937,15 +941,15 @@ def test_a_path_discovery_cannot_read_is_skipped_with_its_reason(tmp_path):
     not search, and a directory it may not list: each an unreadable path, with
     its errno, and the logs beside them are measured."""
     root = tmp_path / "root"
-    _write(root / "v0.3.0" / "aaa.db", EXIT)
-    _write(root / "v0.3.0" / "zzz.db", EXIT)
+    _write(root / "v0.3.0" / "aaa.db", EXIT, fmt="0.3.0")
+    _write(root / "v0.3.0" / "zzz.db", EXIT, fmt="0.3.0")
     locked = tmp_path / "locked"
-    _write(locked / "x.db", EXIT)
+    _write(locked / "x.db", EXIT, fmt="0.3.0")
     (locked / "sub").mkdir()
     (root / "v0.3.0" / "mmm.db").symlink_to(locked / "x.db")
     (root / "cell").mkdir()
     (root / "cell" / "link").symlink_to(locked / "sub", target_is_directory=True)
-    _write(root / "shut" / "y.db", EXIT)
+    _write(root / "shut" / "y.db", EXIT, fmt="0.3.0")
     out = tmp_path / "out"
     locked.chmod(0o000)
     (root / "shut").chmod(0o000)
@@ -998,10 +1002,12 @@ def test_a_body_that_is_not_json_is_a_crash_of_the_read(tmp_path):
     _write(
         root / "v0.3.0" / "after_claim.db",
         [claim, Row(2, "lifecycle.stopped", None, None, "{not json", 2.0)],
+        fmt="0.3.0",
     )
     _write(
         root / "v0.2.0" / "in_0_2_0.db",
         [Row(1, "lifecycle.started", None, None, "{not json", 1.0)],
+        fmt="0.2.0",
     )
     out = tmp_path / "out"
     assert _main(root, out, max_rows=100) == 0
@@ -1223,7 +1229,7 @@ def test_a_child_that_cannot_send_its_record_aborts_the_runner(
     failure: it aborts, naming the run, rather than recording something else; the
     child prints why on stderr, and the abort points to it."""
     root = tmp_path / "root"
-    _write(root / "v0.3.0" / "unsent.db", GOLDEN["exit"])
+    _write(root / "v0.3.0" / "unsent.db", GOLDEN["exit"], fmt="0.3.0")
 
     def fail(*args, **kw):
         raise MemoryError("pickling the record")

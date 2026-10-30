@@ -12,7 +12,8 @@ from runstate import (
     attach_channel,
     create_channel,
 )
-from runstate.formats import FORMATS, DirectoryLayout
+from runstate.formats import FORMATS
+from tests.conftest import toy_layout
 from runstate.migrations import STEPS, migrate
 from runstate.migrations.ambiguity import Limits, parse_choices
 
@@ -53,7 +54,7 @@ def test_older_schema_holding_the_run_says_migrate(dsn, monkeypatch):
 
     from runstate import formats
 
-    monkeypatch.setitem(formats.FORMATS, "0.1.0", DirectoryLayout("0.1.0"))
+    monkeypatch.setitem(formats.FORMATS, "0.1.0", toy_layout("0.1.0"))
     rid = _rid()
     with psycopg.connect(dsn, autocommit=True) as c:
         c.execute("CREATE SCHEMA IF NOT EXISTS runstate_v0_1_0")
@@ -119,42 +120,46 @@ def test_a_newer_schema_refuses(dsn):
 # ----- onboarding: the LogFormatMissing instructions, run as written -------------
 
 
-@pytest.fixture
-def scratch_db(dsn):
-    """A database of its own, dropped afterwards. Onboarding moves a whole table
-    into schema ``runstate_v0_2_0``, which the shared test database already has."""
-    import psycopg
-    from psycopg.conninfo import make_conninfo
-
-    name = f"rs_scratch_{uuid.uuid4().hex}"
-    with psycopg.connect(dsn, autocommit=True) as c:
-        c.execute(f"CREATE DATABASE {name}")
-    try:
-        yield make_conninfo(dsn, dbname=name)
-    finally:
-        with psycopg.connect(dsn, autocommit=True) as c:
-            c.execute(f"DROP DATABASE {name} WITH (FORCE)")
+# Master's writer, byte for byte (`git show 9b83be6:runstate/channel/postgres.py`):
+# vendored as the 0.2.0 schemas were, so a later change to the channel's table or
+# its append (the session stamp) cannot change what "as master wrote it" means.
+_MASTER_DDL = (
+    """
+CREATE TABLE IF NOT EXISTS log (
+    run_id     text   NOT NULL,
+    seq        bigint NOT NULL,
+    topic      text   NOT NULL,
+    name       text,
+    request_id text,
+    body       text   NOT NULL,
+    created_at double precision NOT NULL,
+    PRIMARY KEY (run_id, seq)
+)
+""",
+    "CREATE INDEX IF NOT EXISTS idx_log_run_topic_seq ON log (run_id, topic, seq)",
+    "CREATE INDEX IF NOT EXISTS idx_log_run_topic_name_seq"
+    " ON log (run_id, topic, name, seq)",
+)
+_MASTER_APPEND = """
+INSERT INTO log (run_id, seq, topic, name, request_id, body, created_at)
+SELECT %(run)s, COALESCE(MAX(seq), 0) + 1, %(topic)s, %(name)s, %(rid)s, %(body)s,
+       extract(epoch FROM clock_timestamp())
+FROM log WHERE run_id = %(run)s
+RETURNING seq
+"""
 
 
 def _master_log(dsn, run_id, n):
     """A log as master wrote it: its DDL and appends, unqualified, so they land
-    in the schema the connection's search path resolves (the channel's
-    constants are master's, byte for byte)."""
+    in the schema the connection's search path resolves."""
     import psycopg
 
-    from runstate.channel.postgres import (
-        _CREATE_INDEX,
-        _CREATE_NAME_INDEX,
-        _CREATE_TABLE,
-        _UNCONDITIONAL,
-    )
-
     with psycopg.connect(dsn, autocommit=True) as c:
-        for ddl in (_CREATE_TABLE, _CREATE_INDEX, _CREATE_NAME_INDEX):
+        for ddl in _MASTER_DDL:
             c.execute(ddl)
         for i in range(n):
             c.execute(
-                _UNCONDITIONAL,
+                _MASTER_APPEND,
                 {
                     "run": run_id,
                     "topic": "value",

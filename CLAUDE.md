@@ -362,7 +362,10 @@ add or change a convention body.
    (`docs/specs/log-formats.md` §3–§6 and §9; the address scheme and the opening
    checks are part of the protocol):
    - **a layout per format** — an address method on the `Layout` Protocol
-     (`runstate/formats/_layout.py`), defined for every registered format;
+     (`runstate/formats/_layout.py`) and, beside it, the backend's table DDL
+     (as `sqlite_ddl` and `pg_ddl` are), defined for every registered format;
+     every writer of a log (the channel's birth, a migration's destination)
+     runs the DDL of the format it writes;
    - **the five opening checks** (§4), in order, in its `_locate` branch: a newer
      format present, the current address, an older format, the legacy address
      (only for a backend that held logs before versioned addresses), nothing;

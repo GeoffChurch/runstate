@@ -5,11 +5,11 @@ import pytest
 from runstate import formats
 from runstate.formats import (
     LOG_FORMAT,
-    DirectoryLayout,
     LogFormatMismatch,
     LogFormatMissing,
     parse,
 )
+from tests.conftest import toy_layout
 
 
 def test_parse_orders_versions_numerically():
@@ -19,7 +19,7 @@ def test_parse_orders_versions_numerically():
 
 
 def test_directory_layout_addresses():
-    lay = DirectoryLayout("0.2.0")
+    lay = toy_layout("0.2.0")
     assert lay.sqlite_path(Path("/r"), "abc") == Path("/r/v0.2.0/abc.db")
     assert lay.pg_schema() == "runstate_v0_2_0"
 
@@ -33,7 +33,7 @@ def test_older_than_is_newest_first(monkeypatch):
     monkeypatch.setattr(
         formats,
         "FORMATS",
-        {v: DirectoryLayout(v) for v in ["0.1.0", "0.2.0", "0.3.0"]},
+        {v: toy_layout(v) for v in ["0.1.0", "0.2.0", "0.3.0"]},
     )
     assert [v for v, _ in formats.older_than("0.3.0")] == ["0.2.0", "0.1.0"]
 

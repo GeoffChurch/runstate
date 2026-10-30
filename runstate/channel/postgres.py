@@ -35,42 +35,6 @@ from .envelope import Body, Envelope
 # the DDL on it instead of racing the pg_type/pg_class catalog.
 _SCHEMA_LOCK_KEY = 0x72756E7374617465  # b"runstate"
 
-_CREATE_TABLE = """
-CREATE TABLE IF NOT EXISTS log (
-    run_id     text   NOT NULL,
-    seq        bigint NOT NULL,
-    topic      text   NOT NULL,
-    name       text,
-    request_id text,
-    body       text   NOT NULL,
-    created_at double precision NOT NULL,
-    PRIMARY KEY (run_id, seq)
-)
-"""
-
-_CREATE_INDEX = (
-    "CREATE INDEX IF NOT EXISTS idx_log_run_topic_seq ON log (run_id, topic, seq)"
-)
-
-# latest(topic, name=) adds AND name=%s, which the index above cannot serve: it
-# seeks on (run_id, topic) and then SORTS the partition to answer ORDER BY seq
-# DESC (#19). Measured on 300k value records: 2504 shared buffers through a
-# top-N heapsort, vs 4 through an Index Only Scan Backward with this index; an
-# absent name costs the same 2504 today and 3 with it.
-#
-# An ADDITION, never a replacement -- `name` sits between the equality prefix
-# and the sort key, so this index cannot answer the name-less latest(topic).
-#
-# Unlike sqlite, Postgres self-migrates: ensure_schema runs at orchestration
-# startup and CREATE INDEX IF NOT EXISTS reaches every existing row. (Not
-# CONCURRENTLY: it cannot run inside the advisory-lock transaction above. On a
-# large live deployment, build it out-of-band first -- the IF NOT EXISTS here
-# then finds it and does nothing.)
-_CREATE_NAME_INDEX = (
-    "CREATE INDEX IF NOT EXISTS idx_log_run_topic_name_seq"
-    " ON log (run_id, topic, name, seq)"
-)
-
 
 def ensure_schema(dsn: str) -> None:
     """Provision the shared ``log`` table, once, cross-host-safely.
@@ -92,9 +56,8 @@ def ensure_schema(dsn: str) -> None:
         conn.execute(
             sql.SQL("SET LOCAL search_path TO {}").format(sql.Identifier(schema))
         )
-        conn.execute(_CREATE_TABLE)
-        conn.execute(_CREATE_INDEX)
-        conn.execute(_CREATE_NAME_INDEX)
+        for ddl in FORMATS[LOG_FORMAT].pg_ddl():  # the tables of the format it writes
+            conn.execute(ddl)
 
 
 def _has_rows(conn: psycopg.Connection[Any], schema: str, run_id: str) -> bool:

@@ -14,7 +14,6 @@ if TYPE_CHECKING:
     import psycopg
 
 from .. import formats
-from ..channel.sqlite import _SCHEMA
 from . import MigrationError, Planned, Row
 from .ambiguity import Entry, History, Json, Migrated, Trace, digest, latest
 from .seal import seal_postgres, seal_sqlite
@@ -237,7 +236,7 @@ class SqliteStore:
         try:
             conn = sqlite3.connect(tmp, isolation_level=None)
             try:
-                conn.executescript(_SCHEMA)
+                conn.executescript(formats.FORMATS[step.TO].sqlite_ddl())
                 conn.execute("BEGIN")
                 conn.executemany(
                     "INSERT INTO log (seq, topic, name, request_id, body, created_at)"
@@ -370,15 +369,9 @@ class PostgresStore:
             if step.is_live(rows):
                 raise MigrationError("it has a live episode; stop it first")
             migrated = planned.run(rows, history)
-            from ..channel.postgres import (
-                _CREATE_INDEX,
-                _CREATE_NAME_INDEX,
-                _CREATE_TABLE,
-            )
-
             conn.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(dst))
             conn.execute(sql.SQL("SET LOCAL search_path TO {}").format(dst))
-            for ddl in (_CREATE_TABLE, _CREATE_INDEX, _CREATE_NAME_INDEX):
+            for ddl in formats.FORMATS[step.TO].pg_ddl():
                 conn.execute(ddl)
             with conn.cursor() as cur:
                 cur.executemany(

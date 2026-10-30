@@ -58,8 +58,15 @@ because only the outermost component leaves every future layout free.
 - **Directory and schema names** are `v` plus the version, and `runstate_v` plus the version with dots as
   underscores.
 - **Each format's layout lives in its own module,** `runstate/formats/v0_2_0.py` and so on. It is a
-  function from (root, run id) to an address for each persistent backend. The runtime uses only the
-  current format's module. The others exist for the opening checks and the migration steps.
+  function from (root, run id) to an address for each persistent backend, *and the format's tables* on
+  each: `sqlite_ddl()`, one script, and `pg_ddl()`, one statement each, run under the format's schema.
+  The runtime uses only the current format's module. The others exist for the opening checks and the
+  migration steps.
+- **Every writer of a log takes its tables from the format it writes.** A channel's birth (SQLite's
+  file, Postgres's `ensure_schema`) runs the current format's; a migration's destination runs its
+  step's `TO` format's. The tables belong to the format, not to the channel: had the destination taken
+  the live channel's, the first change to the current format's table would have reached every older
+  format's destination. A format states its tables even when they are another's (0.3.0's are 0.2.0's).
 - **Memory logs are in-process and ephemeral,** so they are always in the current format and carry no
   address.
 - **The legacy Postgres table** is the `log` that an unqualified name resolves to under the connection's

@@ -245,3 +245,37 @@ def crashed_journal_writer():
         assert journal.stat().st_size > 0, "the writer left no hot journal"
 
     return write
+
+
+# --- toy formats ---
+
+
+def toy_layout(version):
+    """A test-only format at ``version``'s address, with 0.2.0's tables: a format
+    states its tables, and a toy has no reason to differ from the oldest real one."""
+    from runstate.formats import DirectoryLayout, v0_2_0
+
+    return DirectoryLayout(
+        version=version,
+        sqlite_script=v0_2_0.SQLITE_SCRIPT,
+        pg_statements=v0_2_0.PG_STATEMENTS,
+    )
+
+
+@pytest.fixture
+def scratch_db(pg_ready):
+    """A database of its own, dropped afterwards, for a test that needs a schema the
+    shared test database already has: onboarding moves a whole table into schema
+    ``runstate_v0_2_0``, and a migration's destination must be created by the
+    migration, not found already there."""
+    import psycopg
+    from psycopg.conninfo import make_conninfo
+
+    name = f"rs_scratch_{uuid.uuid4().hex}"
+    with psycopg.connect(pg_ready, autocommit=True) as c:
+        c.execute(f"CREATE DATABASE {name}")
+    try:
+        yield make_conninfo(pg_ready, dbname=name)
+    finally:
+        with psycopg.connect(pg_ready, autocommit=True) as c:
+            c.execute(f"DROP DATABASE {name} WITH (FORCE)")

@@ -18,8 +18,8 @@ from typing import NamedTuple
 import pytest
 
 from runstate import LOG_FORMAT
-from runstate.channel.sqlite import _SCHEMA, SqliteChannel
-from runstate.formats import FORMATS, DirectoryLayout
+from runstate.channel.sqlite import SqliteChannel
+from runstate.formats import FORMATS
 from runstate.migrations import STEPS, MigrationError, Row, chain, migrate
 from runstate.migrations.ambiguity import Limits, parse_choices, resolutions
 
@@ -406,7 +406,7 @@ def _write(root: Path, rid: str, rows: list[Row]) -> Path:
     path.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript(_SCHEMA)
+    conn.executescript(FORMATS["0.2.0"].sqlite_ddl())
     conn.executemany(
         "INSERT INTO log (seq, topic, name, request_id, body, created_at)"
         " VALUES (?, ?, ?, ?, ?, ?)",
@@ -830,7 +830,7 @@ def _sqlite_reads(tmp_path, rid, rows):
     path = FORMATS["0.3.0"].sqlite_path(tmp_path, rid)
     path.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(path)
-    conn.executescript(_SCHEMA)
+    conn.executescript(FORMATS["0.3.0"].sqlite_ddl())
     conn.executemany(
         "INSERT INTO log (seq, topic, name, request_id, body, created_at)"
         " VALUES (?, ?, ?, ?, ?, ?)",
@@ -1129,7 +1129,7 @@ def test_a_refused_sqlite_run_is_refused_before_the_seal(tmp_path):
 @pytest.fixture
 def pg_v0_2_0_run(pg_ready):
     """A run id for the shared postgres test database's 0.2.0 schema, which the
-    fixture provisions with the channel's own DDL: no channel writes 0.2.0 now.
+    fixture provisions with 0.2.0's tables: no channel writes 0.2.0 now.
     The 0.3.0 schema is the current one, shared by every postgres test, so the
     fixture removes only its own run from either."""
     import uuid
@@ -1137,19 +1137,13 @@ def pg_v0_2_0_run(pg_ready):
     import psycopg
     from psycopg import sql
 
-    from runstate.channel.postgres import (
-        _CREATE_INDEX,
-        _CREATE_NAME_INDEX,
-        _CREATE_TABLE,
-    )
-
     rid = f"t12-{uuid.uuid4().hex}"
     old = sql.Identifier(FORMATS["0.2.0"].pg_schema())
     with psycopg.connect(pg_ready, autocommit=True) as c:
         c.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(old))
         with c.transaction():
             c.execute(sql.SQL("SET LOCAL search_path TO {}").format(old))
-            for ddl in (_CREATE_TABLE, _CREATE_INDEX, _CREATE_NAME_INDEX):
+            for ddl in FORMATS["0.2.0"].pg_ddl():
                 c.execute(ddl)
     try:
         yield pg_ready, rid
@@ -1341,7 +1335,10 @@ def test_the_step_imports_no_record_semantics():
 
 
 def test_the_step_and_format_are_registered():
-    assert FORMATS["0.3.0"] == DirectoryLayout("0.3.0")
+    fmt = FORMATS["0.3.0"]
+    assert fmt.version == "0.3.0"
+    assert fmt.sqlite_path(Path("/r"), "x") == Path("/r/v0.3.0/x.db")
+    assert fmt.pg_schema() == "runstate_v0_3_0"
     assert LOG_FORMAT == "0.3.0"  # the release that introduced it
     assert [type(s) for s in STEPS] == [V0_2_0_to_V0_3_0]
     assert chain("0.2.0", "0.3.0") == list(STEPS)
