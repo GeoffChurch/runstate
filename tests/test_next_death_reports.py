@@ -27,9 +27,11 @@ import pytest
 from runstate._next.launcher import (
     REPORT_ATTEMPTS,
     ClaimAliveError,
+    Command,
     LocalLauncher,
     ReportStarvedError,
     ThreadLauncher,
+    ThreadTarget,
     ensure_served,
     relaunch_if_needed,
     report_death,
@@ -42,6 +44,7 @@ from runstate._next.observables import (
     live_episode,
     peek_terminal,
 )
+from runstate._next.vocabulary.coordinate import Commits, Target
 from runstate._next.vocabulary.payloads import Died, Outcome, Started, Topic
 from runstate.channel.memory import MemoryChannel
 from runstate.vocabulary.handle import local_handle, local_handle_of
@@ -424,7 +427,13 @@ time.sleep(120)
 
 
 def child(*acts):
-    return [sys.executable, "-c", CHILD, *acts]
+    """The child's command, with no environment of its own."""
+    return Command([sys.executable, "-c", CHILD, *acts], env={})
+
+
+def thread(fn, **kwargs):
+    """A thread target with no positional arguments."""
+    return ThreadTarget(fn, args=(), kwargs=kwargs)
 
 
 def launched_claim(ch):
@@ -466,7 +475,9 @@ def test_local_launchers_reap_writes_only_terminated_when_the_handles_differ(
     so its exit says nothing of the claim (§3, "The writers")."""
     script = tmp_path / "worker.py"
     script.write_text(CHILD)
-    wrapper = ["sh", "-c", f'"{sys.executable}" "{script}" exit 0; exit 3']
+    wrapper = Command(
+        ["sh", "-c", f'"{sys.executable}" "{script}" exit 0; exit 3'], env={}
+    )
     with LocalLauncher(root=tmp_path) as launcher:
         h = launcher.launch("run", wrapper)
         assert h.wait(timeout=30) == 3
@@ -488,7 +499,7 @@ def test_local_launchers_reap_is_not_stopped_by_one_runs_unreadable_claim(tmp_pa
     script = tmp_path / "unreadable.py"
     script.write_text(UNREADABLE_CLAIM)
     with LocalLauncher(root=tmp_path) as launcher:
-        bad = launcher.launch("bad", [sys.executable, str(script)])
+        bad = launcher.launch("bad", Command([sys.executable, str(script)], env={}))
         good = launcher.launch("good", child("exit", "2"))
         bad_ch = launcher.attach_channel("bad")
         ch = launcher.attach_channel("good")
@@ -647,7 +658,7 @@ def test_thread_launcher_writes_died_when_its_thread_finishes_with_no_exit(tmp_p
             )
 
     launcher = ThreadLauncher(root=tmp_path)
-    h = launcher.launch("no-exit", claims, kwargs={"exits": False})
+    h = launcher.launch("no-exit", thread(claims, exits=False))
     h.wait()
     ch = launcher.attach_channel("no-exit")
     assert [e.topic for e in ch.read()] == [
@@ -659,12 +670,12 @@ def test_thread_launcher_writes_died_when_its_thread_finishes_with_no_exit(tmp_p
     assert ch.latest(Topic.SUPERVISOR_LAUNCHED).request_id == h.launch_id
     assert undated(deaths(ch)) == [died_body(2, L, "reap: returned")]
     # with its own exit, the thread's end adds nothing
-    h = launcher.launch("exited", claims, kwargs={"exits": True})
+    h = launcher.launch("exited", thread(claims, exits=True))
     h.wait()
     ch = launcher.attach_channel("exited")
     assert deaths(ch) == [] and terminated(ch) == [(h.launch_id, "exited", 0, None)]
     # and a launch nothing claimed writes its terminated only, its run's verdict
-    h = launcher.launch("unclaimed", lambda ch: None)
+    h = launcher.launch("unclaimed", thread(lambda ch: None))
     h.wait()
     ch = launcher.attach_channel("unclaimed")
     assert deaths(ch) == [] and peek_terminal(ch).tier == Tier.TERMINATED
@@ -692,12 +703,12 @@ def test_thread_launchers_end_never_raises_on_an_unreadable_claim_or_two_exits(
         raise RuntimeError("boom")
 
     launcher = ThreadLauncher(root=tmp_path)
-    h = launcher.launch("unreadable", unreadable)
+    h = launcher.launch("unreadable", thread(unreadable))
     h.wait()
     ch = launcher.attach_channel("unreadable")
     assert terminated(ch) == [(h.launch_id, "exited", 0, None)]
     assert undated(deaths(ch)) == [died_body(2, L, "reap: returned")]
-    h = launcher.launch("twice", exits_twice)
+    h = launcher.launch("twice", thread(exits_twice))
     h.wait()
     ch = launcher.attach_channel("twice")
     assert terminated(ch) == [(h.launch_id, "exited", 1, None)]
@@ -735,7 +746,7 @@ def test_a_signal_reports_killed_and_a_nonzero_exit_or_a_raise_errored_whether_o
         raise RuntimeError("boom")
 
     threads = ThreadLauncher(root=tmp_path)
-    h = threads.launch("raise", raises)
+    h = threads.launch("raise", thread(raises))
     h.wait()
     assert isinstance(h.exception, RuntimeError)
     ch = threads.attach_channel("raise")
@@ -771,7 +782,7 @@ def test_an_exit_0_or_a_return_reports_lost_while_held_and_nothing_after_a_relea
             ch.send(asdict(d), topic=Topic.SUPERVISOR_DIED)
 
     threads = ThreadLauncher(root=tmp_path)
-    threads.launch("return", returns).wait()
+    threads.launch("return", thread(returns)).wait()
     ch = threads.attach_channel("return")
     assert undated(deaths(ch)) == (
         [died_body(2, K, "test: released")]
@@ -856,6 +867,64 @@ def test_local_launcher_does_not_kill_a_child_its_own_unreadable_exit_ended(
                 h.wait(timeout=30)
 
 
+# ----- the targets: each launcher launches its own record ---------------------------
+
+
+def test_a_launcher_launches_its_own_target_record(tmp_path):
+    """``ThreadLauncher`` runs a ``ThreadTarget``'s ``fn(channel, *args, **kwargs)``;
+    ``LocalLauncher`` spawns a ``Command``'s ``argv`` with its ``env`` over
+    ``os.environ`` and under the ``RUNSTATE_*`` variables. Each record is a value:
+    the caller's later mutation does not reach it, and neither can the worker's."""
+    seen = []
+    kwargs = {"b": 2}
+    target = ThreadTarget(
+        lambda ch, *a, **kw: seen.append((a, kw)), args=[1], kwargs=kwargs
+    )
+    kwargs["b"] = 3  # the record copied it
+    assert target.args == (1,) and target.kwargs == {"b": 2}
+    with pytest.raises(TypeError):
+        target.kwargs["b"] = 4  # read-only
+    ThreadLauncher(root=tmp_path).launch("thread", target).wait()
+    assert seen == [((1,), {"b": 2})]
+
+    check = (
+        "import os, sys; e = os.environ; "
+        "sys.exit(0 if e['X'] == '1' and e['RUNSTATE_RUN_ID'] == 'local' "
+        "and 'PATH' in e else 5)"
+    )
+    env = {"X": "1", "RUNSTATE_RUN_ID": "spoofed"}
+    cmd = Command([sys.executable, "-c", check], env=env)
+    env["X"] = "2"  # the record copied it
+    assert cmd.argv == (sys.executable, "-c", check) and cmd.env["X"] == "1"
+    with LocalLauncher(root=tmp_path) as launcher:
+        assert launcher.launch("local", cmd).wait(timeout=30) == 0
+    with pytest.raises(TypeError, match="not a string"):
+        Command(sys.executable, env={})  # would split into its characters
+    with pytest.raises(ValueError, match="program"):
+        Command([], env={})
+
+
+def test_a_thread_target_is_driven_by_a_copy_whose_kwargs_carry_until(tmp_path):
+    """``driven(until)`` is ``Drivable``'s one member: a copy whose ``kwargs`` gain
+    ``until``, the ``Target`` the Worker's ``steps(until)`` takes. The original is
+    unchanged, and a target whose ``kwargs`` already carry an ``until`` refuses,
+    since a drive's target is the drive's."""
+    seen = []
+
+    def fn(ch, *args, **kwargs):
+        seen.append((args, kwargs))
+
+    target = ThreadTarget(fn, args=(1,), kwargs={"a": 2})
+    until = Target(Commits(), 3)
+    driven = target.driven(until)
+    assert driven == ThreadTarget(fn, args=(1,), kwargs={"a": 2, "until": until})
+    assert target.kwargs == {"a": 2}
+    ThreadLauncher(root=tmp_path).launch("driven", driven).wait()
+    assert seen == [((1,), {"a": 2, "until": until})]
+    with pytest.raises(ValueError, match="until is the drive's"):
+        driven.driven(Target("loss", 4))
+
+
 # ----- the deciders ----------------------------------------------------------------
 
 
@@ -875,14 +944,14 @@ def test_relaunch_if_needed_and_ensure_served_report_a_dead_held_claim_then_laun
 
     # relaunch_if_needed: a dead held claim is reported, then a worker launched
     ch = run_with("durable", [(1, claim(handle))])
-    h = relaunch_if_needed(launcher, "durable", target, kwargs={"run": "durable"})
+    h = relaunch_if_needed(launcher, "durable", thread(target, run="durable"))
     assert h is not None
     h.wait()
     assert undated(deaths(ch)) == [died_body(1, L, f"probe: {handle}")]
     assert ch.read(after=2)[0].topic == Topic.SUPERVISOR_LAUNCHED
     # a live held claim: nothing reports, and nothing launches
     ch = run_with("live", [(1, claim(LIVE))])
-    assert relaunch_if_needed(launcher, "live", target, kwargs={"run": "x"}) is None
+    assert relaunch_if_needed(launcher, "live", thread(target, run="x")) is None
     assert ch.last_seq() == 1
 
     # ensure_served: durable demand on a dead held claim is served
@@ -892,9 +961,7 @@ def test_relaunch_if_needed_and_ensure_served_report_a_dead_held_claim_then_laun
     ]
     ch = run_with("served", rows)
     demand = LiveDemand()
-    h = ensure_served(
-        launcher, "served", target, demand=demand, kwargs={"run": "served"}
-    )
+    h = ensure_served(launcher, "served", thread(target, run="served"), demand=demand)
     assert h is not None
     h.wait()
     assert undated(deaths(ch)) == [died_body(2, L, f"probe: {handle}")]
@@ -902,7 +969,10 @@ def test_relaunch_if_needed_and_ensure_served_report_a_dead_held_claim_then_laun
     # a live held claim with demand: nothing reports, nothing launches
     rows = [(1, subscribe("lr", "d", every={"commits": 1})), (2, claim(LIVE))]
     ch = run_with("busy", rows)
-    assert ensure_served(launcher, "busy", target, demand=LiveDemand()) is None
+    assert (
+        ensure_served(launcher, "busy", thread(target, run="busy"), demand=LiveDemand())
+        is None
+    )
     assert ch.last_seq() == 2
 
 
@@ -923,7 +993,10 @@ def test_ensure_served_reads_demand_again_after_a_report_voids_the_only_lease(
     ch = launcher.attach_channel("leased")
     demand = LiveDemand()
     assert [e.request_id for e in demand.poll(ch)] == ["lease"]
-    assert ensure_served(launcher, "leased", lambda ch: None, demand=demand) is None
+    assert (
+        ensure_served(launcher, "leased", thread(lambda ch: None), demand=demand)
+        is None
+    )
     assert undated(deaths(ch)) == [died_body(2, L, f"probe: {handle}")]
     assert demand.poll(ch) == [] and live_episode(ch) is None
     assert ch.read(topics=[Topic.SUPERVISOR_LAUNCHED]) == []
@@ -943,7 +1016,7 @@ def test_the_launchers_records_are_valid_0_4_0(tmp_path):
         claim_launch(c)
         raise ValueError("x")
 
-    threads.launch("thread", raises).wait()
+    threads.launch("thread", thread(raises)).wait()
     probed = channel([(1, claim(dead_handle()))])
     report_if_dead(probed)
     for c in (ch, threads.attach_channel("thread"), probed):

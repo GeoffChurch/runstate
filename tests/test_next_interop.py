@@ -58,6 +58,7 @@ from tests.test_next_death_reports import (
     dead_handle,
     deaths,
     died_body,
+    thread,
     undated,
     until,
 )
@@ -346,7 +347,7 @@ def test_interop_death_report_from_evidence(tmp_path):
     # a thread handle's is_alive() is pure: the thread's end is its reap
     release = threading.Event()
     threads = ThreadLauncher(root=tmp_path)
-    th = threads.launch("thread", lambda c: release.wait(30))
+    th = threads.launch("thread", thread(lambda c: release.wait(30)))
     tch = threads.attach_channel("thread")
     before = tch.last_seq()
     assert th.is_alive() and tch.last_seq() == before

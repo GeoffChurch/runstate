@@ -6,6 +6,14 @@ deciders).
 STAGED. Task 19 of docs/plans/2026-10-28-layer2-live.md moves this module over
 ``runstate/launcher.py``.
 
+A LAUNCHER IS TYPED BY ITS TARGET (plan, open question 18). ``Launcher[T]`` is a
+Strategy resolved where the caller reads its configuration: ``ThreadLauncher``
+launches a ``ThreadTarget`` and ``LocalLauncher`` a ``Command``, each a frozen
+record of everything that changes the worker's result. The deciders, and the
+producer and the sweep built on them, take a ``Launcher[T]`` and its ``T``, so a
+target the launcher does not run is a type error. A target a drive can aim is
+``Drivable``.
+
 TWO VIEWPOINTS. A claim's end is told from two sides. The worker's exit
 (``lifecycle.stopped``) is its own word. A death report (``supervisor.died``) is a
 third party's, naming the claim and carrying its evidence, on the external plane
@@ -40,12 +48,12 @@ import signal
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import KW_ONLY, asdict, dataclass, field, replace
 from enum import Enum
-from types import TracebackType
-from typing import Any, Optional, Protocol
+from types import MappingProxyType, TracebackType
+from typing import TYPE_CHECKING, Optional, Protocol, Self, TypeVar
 
 from ..channel import Channel, Envelope, RunNotFound, attach_channel, create_channel
 from ..channel.base import SessionProbe
@@ -53,6 +61,7 @@ from ..vocabulary.handle import local_handle, local_handle_of, resolve
 from ..vocabulary.launch import LAUNCH_ID_ENV, launch_scope, new_launch_id
 from .claims import endings, has_exit
 from .observables import LiveDemand, latest_episode, live_episode
+from .vocabulary.coordinate import Target
 from .vocabulary.payloads import (
     Died,
     Launched,
@@ -265,18 +274,106 @@ class LaunchHandle(Protocol):
     def terminate(self) -> None: ...
 
 
-class Launcher(Protocol):
+# ----- the targets: what a launcher launches ----------------------------------------
+
+
+@dataclass(frozen=True)
+class ThreadTarget:
+    """What ``ThreadLauncher`` runs: ``fn(channel, *args, **kwargs)`` on a thread.
+
+    ``args`` and ``kwargs`` are required: they are the worker's own arguments, and
+    so change its result. The record is a value: ``args`` is a tuple, and
+    ``kwargs`` a read-only copy, so neither the caller's later mutation nor the
+    worker's reaches it. The objects it holds are the caller's, unfrozen (a thread
+    worker receives real objects).
+
+    It is ``Drivable``: ``driven(until)`` is the copy whose ``kwargs`` carry
+    ``until``, the ``Target`` the Worker's ``steps(until)`` takes."""
+
+    fn: Callable[..., object]
+    _: KW_ONLY
+    args: tuple[object, ...]
+    kwargs: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "args", tuple(self.args))
+        object.__setattr__(self, "kwargs", MappingProxyType(dict(self.kwargs)))
+
+    def driven(self, until: Target) -> Self:
+        """This target, driven to ``until``: a copy whose ``kwargs`` gain
+        ``until``. ``ValueError`` when ``kwargs`` already holds one: a drive's
+        target is the drive's, and replacing the caller's in silence would answer
+        for it."""
+        if "until" in self.kwargs:
+            raise ValueError(
+                "a driven target's until is the drive's: keep it out of kwargs "
+                f"(got until={self.kwargs['until']!r})"
+            )
+        return replace(self, kwargs={**self.kwargs, "until": until})
+
+
+@dataclass(frozen=True)
+class Command:
+    """What ``LocalLauncher`` runs: the subprocess ``argv``, with ``env`` merged
+    over ``os.environ`` and under the launcher's ``RUNSTATE_*`` variables.
+
+    ``env`` is required: it changes the child's result, and ``{}`` says "the
+    parent's environment" explicitly. The record is a value: ``argv`` is a tuple,
+    and ``env`` a read-only copy. ``argv`` is a non-empty sequence of arguments,
+    never a single string, which would be split into its characters.
+
+    Not ``Drivable``. A subprocess has no defined way to receive a ``Target``:
+    0.3.0's ``launch_producer`` did not drive a ``LocalLauncher`` either, and
+    ``examples/redrive`` plumbs its own. *Revival trigger:* a defined environment
+    contract, e.g. the target's ``atom()`` JSON in an environment variable that
+    the Worker reads; ``driven`` would then set it in ``env``."""
+
+    argv: Sequence[str]
+    _: KW_ONLY
+    env: Mapping[str, str]
+
+    def __post_init__(self) -> None:
+        if isinstance(self.argv, str):
+            raise TypeError(
+                f"argv is a sequence of arguments, not a string: pass [{self.argv!r}]"
+            )
+        if not self.argv:
+            raise ValueError("argv must name a program")
+        object.__setattr__(self, "argv", tuple(self.argv))
+        object.__setattr__(self, "env", MappingProxyType(dict(self.env)))
+
+
+class Drivable(Protocol):
+    """A target a drive can aim (``launch_producer``): ``driven(until)`` is the
+    target that launches a worker whose ``steps(until)`` runs to ``until``. How
+    the ``Target`` reaches the worker is the target type's: a thread's keyword
+    (``ThreadTarget``); a subprocess has no contract yet (``Command``)."""
+
+    def driven(self, until: Target) -> Self: ...
+
+
+T_contra = TypeVar("T_contra", contravariant=True)
+T = TypeVar("T")
+
+
+class Launcher(Protocol[T_contra]):
     """Spawn a worker into a run and bracket it with ``supervisor.launched`` /
     ``supervisor.terminated``, and a ``supervisor.died`` where the launch's end is
     evidence of its claimant's. ``create_channel`` births the run (the launch);
     ``attach_channel`` reads an existing one (the deciders, which treat
-    ``RunNotFound`` as "not launched yet"). ``launch``'s *target* is
-    launcher-specific by nature: a callable for ``ThreadLauncher``, a command for
-    ``LocalLauncher``."""
+    ``RunNotFound`` as "not launched yet").
+
+    A Strategy typed by its target record: ``ThreadLauncher`` is a
+    ``Launcher[ThreadTarget]`` and ``LocalLauncher`` a ``Launcher[Command]``. The
+    caller resolves the launcher where it reads its configuration, builds the
+    target record that launcher takes, and passes both down; a decider, a producer
+    or a sweep that takes ``Launcher[T]`` and a ``T`` cannot be handed a target its
+    launcher does not run (``_proof`` below). Contravariant: a launcher of a wider
+    target type launches any narrower one."""
 
     def create_channel(self, run_id: str) -> Channel: ...
     def attach_channel(self, run_id: str) -> Channel: ...
-    def launch(self, run_id: str, target: object, **kwargs: object) -> LaunchHandle: ...
+    def launch(self, run_id: str, target: T_contra) -> LaunchHandle: ...
 
 
 def _launched(ch: Channel, handle: str, launch_id: str) -> None:
@@ -345,21 +442,12 @@ class ThreadLauncher:
     def attach_channel(self, run_id: str) -> Channel:
         return attach_channel(run_id, root=self._root, backend=self._backend)
 
-    def launch(
-        self,
-        run_id: str,
-        target: Callable[..., object],
-        *,
-        args: tuple[Any, ...] = (),
-        kwargs: dict[str, Any] | None = None,
-    ) -> _ThreadHandle:
-        """Run ``target(channel, *args, **kwargs)`` on a thread for ``run_id``,
-        bracketed by ``supervisor.launched`` and ``supervisor.terminated``, both
-        naming the launch. ``launch_scope`` binds the launch id for the target, so
-        the claim its Worker writes names the launch. ``args`` and ``kwargs``
-        default to none: they pass the target's own arguments through, so an
-        absent list is the empty one, and the default chooses nothing for it
-        (exempt).
+    def launch(self, run_id: str, target: ThreadTarget) -> _ThreadHandle:
+        """Run ``target.fn(channel, *target.args, **target.kwargs)`` on a thread
+        for ``run_id``, bracketed by ``supervisor.launched`` and
+        ``supervisor.terminated``, both naming the launch. ``launch_scope`` binds
+        the launch id for the target, so the claim its Worker writes names the
+        launch.
 
         When the thread finishes, the newest claim naming the launch, attributed by
         the id alone since a thread cannot be told apart by pid, gets a death
@@ -373,7 +461,6 @@ class ThreadLauncher:
 
         A raise's ``terminated`` carries exit code 1, a synthetic convention: a
         thread has no exit code."""
-        call_kwargs = {} if kwargs is None else kwargs
         channel = self.create_channel(run_id)
         handle = local_handle()
         launch_id = new_launch_id()
@@ -402,7 +489,7 @@ class ThreadLauncher:
         def _run() -> None:
             try:
                 with launch_scope(launch_id):
-                    target(channel, *args, **call_kwargs)
+                    target.fn(channel, *target.args, **target.kwargs)
             except BaseException as exc:  # recorded on the log, not swallowed
                 state.exc = exc
                 _ended(1, Outcome.ERRORED, f"reap: {type(exc).__name__}: {exc}")
@@ -692,22 +779,23 @@ class LocalLauncher:
     def attach_channel(self, run_id: str) -> Channel:
         return attach_channel(run_id, root=self._root, backend=self._backend)
 
-    def launch(
-        self, run_id: str, cmd: list[str] | str, *, env: dict[str, str] | None = None
-    ) -> _LocalHandle:
+    def launch(self, run_id: str, target: Command) -> _LocalHandle:
+        """Spawn ``target.argv`` for ``run_id``, its environment ``os.environ``,
+        then ``target.env``, then the ``RUNSTATE_*`` variables that open the run's
+        channel and name the launch, each over the last."""
         channel = self.create_channel(run_id)
         launch_id = new_launch_id()
         floor = channel.last_seq()
         child_env = {
             **os.environ,
-            **(env or {}),
+            **target.env,
             "RUNSTATE_RUN_ID": run_id,
             "RUNSTATE_CHANNEL_ROOT": str(self._root),
             "RUNSTATE_CHANNEL_BACKEND": self._backend,
             # The child's claim re-emits it, so it names the launch that spawned it.
             LAUNCH_ID_ENV: launch_id,
         }
-        proc = subprocess.Popen(cmd, env=child_env)
+        proc = subprocess.Popen(list(target.argv), env=child_env)
         handle = local_handle_of(proc.pid)
         _launched(channel, handle, launch_id)
         h = _LocalHandle(
@@ -796,7 +884,7 @@ class LocalLauncher:
 
 
 def relaunch_if_needed(
-    launcher: Any, run_id: str, target: object, **launch_kwargs: object
+    launcher: Launcher[T], run_id: str, target: T
 ) -> LaunchHandle | None:
     """Launch ``target`` into ``run_id`` unless its newest claim is held (§5): the
     durable-demand decider. A held claim is first given to ``report_if_dead``
@@ -804,27 +892,20 @@ def relaunch_if_needed(
     launches; when nothing reports, it returns ``None``. It never kills.
 
     A best-effort single-spawn guard over a log read: correctness rests on the
-    worker's claim CAS, and a check-to-spawn race wastes a spawn. ``launcher`` is
-    ``Any`` because the reference launchers' ``launch`` signatures differ in kind
-    (a callable with ``args``/``kwargs``, a command with ``env``), and
-    ``launch_kwargs`` is splatted into it."""
+    worker's claim CAS, and a check-to-spawn race wastes a spawn. ``target`` is
+    the record ``launcher`` takes (``Launcher[T]``), so a mismatched pair is a
+    type error, never a launch-time one."""
     try:
         with launcher.attach_channel(run_id) as channel:  # a probe handle: close it
             if live_episode(channel) is not None and report_if_dead(channel) is None:
                 return None
     except RunNotFound:
         pass  # no records: nothing claimed, so nothing is held
-    handle: LaunchHandle = launcher.launch(run_id, target, **launch_kwargs)
-    return handle
+    return launcher.launch(run_id, target)
 
 
 def ensure_served(
-    launcher: Any,
-    run_id: str,
-    target: object,
-    *,
-    demand: LiveDemand,
-    **launch_kwargs: object,
+    launcher: Launcher[T], run_id: str, target: T, *, demand: LiveDemand
 ) -> LaunchHandle | None:
     """Wake a service when there is live demand and no held claim (§5;
     specs/lazy-launch.md): ``relaunch_if_needed``'s leased-demand sibling. Returns
@@ -850,5 +931,17 @@ def ensure_served(
                     return None
     except RunNotFound:
         return None  # no records: no demand
-    handle: LaunchHandle = launcher.launch(run_id, target, **launch_kwargs)
-    return handle
+    return launcher.launch(run_id, target)
+
+
+# ----- the proof: each reference launcher satisfies the Protocol -------------------
+
+if TYPE_CHECKING:
+
+    def _proof(
+        thread: ThreadLauncher, local: LocalLauncher, target: ThreadTarget
+    ) -> tuple[Launcher[ThreadTarget], Launcher[Command], Drivable]:
+        """Checked by ``mypy --strict runstate``, never run: it fails when a
+        reference launcher stops satisfying ``Launcher`` of its target record, or
+        ``ThreadTarget`` stops being ``Drivable``."""
+        return thread, local, target

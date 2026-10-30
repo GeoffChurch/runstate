@@ -1768,6 +1768,11 @@ These extend [`reference-by-name.md`](reference-by-name.md) §7. File and line r
 - **`control.unsubscribe`** becomes `control.withdraw` for an asker; a reader of expiries reads the nodes'
   `expired`. **`launcher.*`** becomes `supervisor.*`.
 - **A stranded claim is released by a death report,** through `report_death`, never by a forged `stopped`.
+- **A launch takes its launcher's target record** (`Launcher[T]`; plan, open question 18):
+  `launch(run_id, fn, args=, kwargs=)` becomes `launch(run_id, ThreadTarget(fn, args=, kwargs=))`, and
+  `launch(run_id, cmd, env=)` becomes `launch(run_id, Command(argv, env=))`, each field required. A `Variant`'s
+  `launch_kwargs` move into its `target`. `launch_producer`'s `target_key` is gone: the drive's `Target` arrives
+  as `until`, which the worker passes to `steps(until)`.
 - **A same-host crash that nobody reports reads as held,** where 0.3.0's probe released it at once. A
   claimant, a launcher's reap or a reclaim tool reports it.
 - **Registers stay raw sends,** outside every lineage, read by
@@ -1836,6 +1841,8 @@ These extend [`reference-by-name.md`](reference-by-name.md) §7. File and line r
 - **Its GC gate** (gc_runs.py:179, `live_episode is None`) waits after a same-host crash until someone
   reports it: the safe direction.
 - **Convert its `checkpoint_last` files** from steps to nodes, once, after the log migration.
+- **Its launch takes a `Command`:** the launch its producer makes on analyze_run.py:1519's `LocalLauncher`
+  (analyze_run.py:1437, `launch(self.run_id, cmd)`) becomes `launch(self.run_id, Command(cmd, env={}))`.
 
 **translation:**
 - **Counts:** keys.py:77's `progress+1 >= n` becomes `prefix_len >= n`; its mirror has drifted (keys.py:75,
@@ -1845,6 +1852,11 @@ These extend [`reference-by-name.md`](reference-by-name.md) §7. File and line r
 - **No checkpoint object:** its state is the log plus its ArtifactStore. It passes `resume_from=None` and
   `save=NoSave()`, and re-emits; its tests at tests/test_workers.py:40–75 pin resume.
 - **Declare `sources=[]`.**
+- **Its producer drives by `until`:** translation/runner.py:32's `launch_producer(launcher, variant,
+  target_key="up_to")` becomes `launch_producer(launcher, variant)`, its `Variant` (runner.py:31) carrying
+  `ThreadTarget(worker, args=(), kwargs=cfg)`. Each worker takes `until` where it took `up_to` (workers.py:16,
+  :37, :52, :71, :99), reading `until.n` where it slices by the integer, and runner.py:29's reservation of
+  `up_to` becomes `ThreadTarget.driven`'s own refusal.
 
 **runstate-tui:**
 - use `Commits()` for its frontier, and `last_element` for its live value;
