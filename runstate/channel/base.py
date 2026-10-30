@@ -141,14 +141,15 @@ class EpisodeProbe(Protocol):
 class Session(NamedTuple):
     """A writer connection's identity, as stamped on the rows it wrote."""
 
-    server: str  # the writing server's identity: its system identifier and timeline
+    server: str  # the writing server: its system identifier and the row's WAL timeline
     key: int  # the connection's advisory-lock key, a signed 64-bit integer
 
 
 @runtime_checkable
 class SessionProbe(Protocol):
     def writer_session(self, seq: int) -> Session | None:
-        """The stamp on the record at ``seq``, or None when it has none (a migrated row)."""
+        """The stamp on the record at ``seq``, or None when it has none (a migrated row).
+        Raises ``LookupError`` when the run has no record at ``seq``."""
         ...
 
     def session_ended(self, session: Session) -> bool | None:

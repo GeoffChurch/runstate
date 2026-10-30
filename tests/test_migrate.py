@@ -1419,10 +1419,13 @@ def _pg_reference(dsn, ddl):
 
 @pytest.mark.parametrize("backend", ["sqlite", "postgres"])
 def test_a_destination_takes_its_formats_ddl(backend, request, tmp_path, monkeypatch):
-    """Open question 9: a 0.2.0 -> 0.3.0 migration's destination has exactly the
-    tables and indexes of FORMATS["0.3.0"]'s DDL for its backend, and a channel's
-    birth creates FORMATS[LOG_FORMAT]'s. The patched 0.3.0 states one index more
-    than 0.2.0, so a writer that took the live channel's tables, or 0.2.0's, fails."""
+    """Open question 9, where the destination is the current format: a 0.2.0 ->
+    0.3.0 migration's destination has exactly the tables and indexes of
+    FORMATS["0.3.0"]'s DDL for its backend, and a channel's birth creates
+    FORMATS[LOG_FORMAT]'s. The patched 0.3.0 states one index more than 0.2.0, so a
+    writer that took 0.2.0's tables, or tables of its own, fails. 0.3.0 is both the
+    step's TO and LOG_FORMAT here, so this case cannot tell a destination that takes
+    FORMATS[LOG_FORMAT]'s tables from one that takes its own: the next test does."""
     import dataclasses
     import sqlite3
 
@@ -1486,3 +1489,63 @@ def test_a_destination_takes_its_formats_ddl(backend, request, tmp_path, monkeyp
     assert _pg_catalog(dsn, v030.pg_schema()) == reference
     with attach_channel("r1", root=dsn, backend="postgres") as ch:
         assert ch.last_seq() == 3
+
+
+@pytest.mark.parametrize("backend", ["sqlite", "postgres"])
+def test_a_destination_of_an_older_format_takes_its_own_ddl(
+    backend, request, tmp_path, monkeypatch
+):
+    """Open question 9's mistake itself: a migration whose destination is NOT the
+    current format must still take the destination's tables, never LOG_FORMAT's,
+    since a change to the current format's table (the session stamp) would otherwise
+    reach an older format's destination. A toy 8.0.0 -> 8.1.0 step, LOG_FORMAT still
+    0.3.0, and 8.1.0 states a marker index no other format has."""
+    import dataclasses
+    import sqlite3
+
+    to = dataclasses.replace(
+        toy_layout("8.1.0"),
+        sqlite_script=toy_layout("8.1.0").sqlite_ddl() + _MARK_SQLITE,
+        pg_statements=toy_layout("8.1.0").pg_ddl() + (_MARK_PG,),
+    )
+    monkeypatch.setitem(formats.FORMATS, "8.0.0", toy_layout("8.0.0"))
+    monkeypatch.setitem(formats.FORMATS, "8.1.0", to)
+    monkeypatch.setattr(migrations, "STEPS", (Tag("8.0.0", "8.1.0"),))
+    assert formats.LOG_FORMAT != "8.1.0"
+    rows = [(i, "value", "x", None, json.dumps({"i": i}), float(i)) for i in (1, 2, 3)]
+
+    if backend == "sqlite":
+        src = toy_layout("8.0.0").sqlite_path(tmp_path, "r1")
+        src.parent.mkdir()
+        conn = sqlite3.connect(src)
+        conn.executescript(toy_layout("8.0.0").sqlite_ddl())
+        conn.executemany("INSERT INTO log VALUES (?, ?, ?, ?, ?, ?)", rows)
+        conn.commit()
+        conn.close()
+        reference = tmp_path / "reference.db"
+        conn = sqlite3.connect(reference)
+        conn.executescript(to.sqlite_ddl())
+        conn.close()
+        assert migrate(SqliteStore(tmp_path), None, to="8.1.0", choices=NONE).moved
+        dst = to.sqlite_path(tmp_path, "r1")
+        assert _sqlite_catalog(dst) == _sqlite_catalog(reference)
+        assert ("index", "idx_mark") in {r[:2] for r in _sqlite_catalog(dst)}
+        return
+
+    import psycopg
+
+    dsn = request.getfixturevalue("scratch_db")  # SKIPs without a DSN
+    reference = _pg_reference(dsn, to.pg_ddl())
+    old = toy_layout("8.0.0").pg_schema()
+    with psycopg.connect(dsn, autocommit=True) as c:
+        c.execute(f"CREATE SCHEMA {old}")
+        with c.transaction():
+            c.execute(f"SET LOCAL search_path TO {old}")
+            for stmt in toy_layout("8.0.0").pg_ddl():
+                c.execute(stmt)
+            for row in rows:
+                c.execute("INSERT INTO log VALUES ('r1', %s, %s, %s, %s, %s, %s)", row)
+    assert migrate(PostgresStore(dsn), None, to="8.1.0", choices=NONE).moved
+    got = _pg_catalog(dsn, to.pg_schema())
+    assert got == reference
+    assert "idx_mark" in {name for name, _ in got[1]}

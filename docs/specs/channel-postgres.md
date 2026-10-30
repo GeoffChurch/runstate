@@ -188,9 +188,27 @@ in which a claim's row exists and its session holds nothing.
 identity, in two nullable columns of the format's table (`writer_key bigint`, `writer_server
 text`), both written by the CAS and by the unconditional append. No wire field carries it: it is
 the backend's, carried losslessly beside the record. A row the migration store copies carries no
-stamp, and the probe abstains on it. The server's identity is its **system identifier** and its
-**timeline** (`pg_control_system()`, `pg_control_checkpoint()`), which a non-superuser can read:
-a physical standby shares the system identifier, and a promotion advances the timeline.
+stamp, and the probe abstains on it.
+
+**The server's identity** is its **system identifier** (`pg_control_system()`), which a physical
+standby shares, and the **timeline its WAL is being inserted on**,
+`(pg_split_walfile_name(pg_walfile_name(pg_current_wal_lsn()))).timeline_id`, which a promotion
+advances at once. A non-superuser can read both. The identity is computed **per row**, inside the
+statement that writes it, so a stamp is always the timeline the row was written on, even on a
+connection opened on a standby that has since been promoted (an INSERT succeeds only out of
+recovery, where `pg_current_wal_lsn()` is defined). Only the key is per connection.
+- **Not the checkpoint's timeline** (`pg_control_checkpoint()`). Since PostgreSQL 13 a promotion
+  writes only an end-of-recovery record and requests a *spread* checkpoint, so the checkpoint's
+  timeline stays the old one long after it. Reproduced on PostgreSQL 18.4 with a streaming standby
+  and `pg_promote(true)`: for more than 100 s after the promotion, a channel on the promoted server
+  reported the old identity, and `session_ended` returned `True` for a writer still alive on the old
+  primary. A connection opened in that window would also have stamped the old timeline for its
+  whole life, had the identity been read once at the open.
+- **PostgreSQL 16 is runstate's floor**, because `pg_split_walfile_name` arrived in 16. CI runs
+  `postgres:16`, and every known deployment is 16 or newer.
+- **Revival trigger:** a consumer on PostgreSQL 15 or older. Then add a parse of the WAL file name's
+  timeline (its first 8 hex digits) as a Strategy resolved at the open. The stamp's value is the
+  same integer either way, so no log changes.
 
 **The probe.** `SessionProbe` (`channel/base.py`) is an opt-in capability, isinstance-dispatched;
 `PostgresChannel` satisfies it and the other backends do not:
@@ -206,9 +224,9 @@ class SessionProbe(Protocol):
 ```
 `session_ended` reads `pg_locks`, read-only, for the key in **this database** (`pg_locks` is
 cluster-wide, and advisory keys are per database). It reads **only the server that wrote the
-stamp, never a standby**: a connection on a server in recovery, or on a server whose identity
-differs from the stamp's, abstains (`None`), since a standby's `pg_locks` know nothing of the
-primary's sessions.
+stamp, never a standby**: it reads the server's current identity at each probe, as `CASE WHEN
+pg_is_in_recovery() THEN NULL ELSE <identity> END`, and abstains (`None`) in recovery or on a
+mismatch, since a standby's `pg_locks` know nothing of the primary's sessions.
 
 **Every record naming a claim travels on the claim's session, never re-established.** A channel
 never reconnects: a dropped connection makes its next `send` raise, and the launcher relaunches
@@ -250,9 +268,9 @@ connection string (or `RUNSTATE_PG_DSN`), a **direct or session-pooled** endpoin
 `psycopg` v3 as an optional `runstate[postgres] = ["psycopg[binary]"]` extra; the locators'
 `"postgres"` branch imports it lazily and raises a clear *"pip install runstate[postgres]"* on
 absence.
-The `SessionProbe` Protocol (with `Session`), the `EpisodeHolder` / `EpisodeProbe` Protocols and
-the `isinstance`-dispatch sites live in a
-**psycopg-free module** (`channel/base.py`, `watcher`), so `import runstate` works without
+The server must be **PostgreSQL 16 or newer** (see *Liveness*, the server's identity). The
+`SessionProbe` Protocol (with `Session`), the `EpisodeHolder` / `EpisodeProbe` Protocols and the
+`isinstance`-dispatch sites live in a **psycopg-free module** (`channel/base.py`, `watcher`), so `import runstate` works without
 the extra (guarded by a CI job that imports without it).
 
 ## Convention-bump migrations on the shared table

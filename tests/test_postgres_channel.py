@@ -540,6 +540,17 @@ def _held_keys(conn, pid):
     return {k for (k,) in rows}
 
 
+def _server_identity(dsn):
+    """The server's system identifier and its current WAL timeline, the timeline read
+    from the WAL file name's first 8 hex digits: a second source, not the channel's."""
+    with psycopg.connect(dsn) as c:
+        sysid, walfile = c.execute(
+            "SELECT system_identifier, pg_walfile_name(pg_current_wal_lsn())"
+            " FROM pg_control_system()"
+        ).fetchone()
+    return f"{sysid}:{int(walfile[:8], 16)}"
+
+
 def _write_and_wait(dsn, run_id, ready):
     """Child entrypoint: open a channel, write one record, report its seq, then block
     until the parent SIGKILLs it. Top-level for the 'spawn' start method."""
@@ -584,7 +595,7 @@ def test_every_row_carries_its_writers_session(pg_ready):
                 assert session.key in _held_keys(admin, ch._conn.info.backend_pid)
                 sessions[ch] = session
         assert sessions[a].key != sessions[b].key
-        assert sessions[a].server == sessions[b].server
+        assert sessions[a].server == sessions[b].server == _server_identity(pg_ready)
     finally:
         a.close()
         b.close()
@@ -741,3 +752,42 @@ def test_a_server_with_fsync_off_is_refused(pg_ready):
             admin.execute("ALTER SYSTEM RESET fsync")
             admin.execute("SELECT pg_reload_conf()")
         assert _poll_until(lambda: _fsync_on_a_fresh_connection(pg_ready), "on")
+
+
+def test_the_stamp_reads_the_live_wal_timeline_not_the_checkpoints():
+    """A promotion advances the WAL timeline at once, but since PostgreSQL 13 it only
+    requests a spread checkpoint, so pg_control_checkpoint()'s timeline stayed the old
+    one for more than 100 s after it: a probe on the promoted server then took itself
+    for the old primary and read a live writer's session ended. With no standby to
+    promote here, this pins the source structurally: every statement that stamps a row
+    or reads the probe's identity reads the live WAL insertion point."""
+    from runstate.channel import postgres
+
+    for stmt in (postgres._CAS, postgres._UNCONDITIONAL, postgres._SERVER):
+        assert "pg_current_wal_lsn()" in stmt
+        assert "pg_control_checkpoint" not in stmt
+
+
+def test_session_ended_answers_where_resolve_abstains(pg_ready):
+    """The cross-host property, tested on one host: a claim whose handle names
+    ANOTHER host -> ``resolve`` abstains (it cannot read a foreign pid table), but the
+    session probe answers: held while the writer's connection lives, ended after."""
+    from runstate.channel.postgres import PostgresChannel
+    from runstate.vocabulary.handle import resolve
+
+    foreign = "local://OTHER-HOST/99999"
+    assert resolve(foreign) is None
+    run_id = f"xhost-{uuid.uuid4()}"
+    writer = PostgresChannel(pg_ready, run_id=run_id)
+    probe = PostgresChannel(pg_ready, run_id=run_id)
+    try:
+        seq = writer.send(
+            {"handle": foreign, "t": None}, topic="lifecycle.started", expected_seq=0
+        )
+        session = probe.writer_session(seq)
+        assert probe.session_ended(session) is False
+        writer.close()
+        assert _poll_until(lambda: probe.session_ended(session), True)
+    finally:
+        writer.close()
+        probe.close()

@@ -66,7 +66,9 @@ because only the outermost component leaves every future layout free.
   file, Postgres's `ensure_schema`) runs the current format's; a migration's destination runs its
   step's `TO` format's. The tables belong to the format, not to the channel: had the destination taken
   the live channel's, the first change to the current format's table would have reached every older
-  format's destination. A format states its tables even when they are another's (0.3.0's are 0.2.0's).
+  format's destination. A format states its tables even when they share another's: 0.3.0's SQLite
+  table and its Postgres indexes are 0.2.0's, and its Postgres table is 0.2.0's plus the session stamp
+  (`writer_key`, `writer_server`; [`channel-postgres.md`](channel-postgres.md), "Liveness").
 - **Memory logs are in-process and ephemeral,** so they are always in the current format and carry no
   address.
 - **The legacy Postgres table** is the `log` that an unqualified name resolves to under the connection's

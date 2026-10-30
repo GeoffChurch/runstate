@@ -122,25 +122,40 @@ def check_format(conn: psycopg.Connection[Any], run_id: str) -> bool:
     return False
 
 
+# The server a stamp names (channel-postgres.md, "Liveness"): its system identifier,
+# which a physical standby shares, and the timeline its WAL is being inserted on,
+# which a promotion advances at once. Not pg_control_checkpoint()'s timeline: since
+# PostgreSQL 13 a promotion writes only an end-of-recovery record and requests a
+# spread checkpoint, so the checkpoint's timeline stayed the old one for more than
+# 100 s after a promotion, and a probe there took the promoted server for the old
+# primary. pg_split_walfile_name needs PostgreSQL 16, runstate's floor. Evaluated in
+# the statement that writes each row, so a stamp is always the timeline the row was
+# written on, even on a connection opened on a standby that was promoted since; an
+# INSERT succeeds only out of recovery, where pg_current_wal_lsn() is defined.
+_IDENTITY = (
+    "(SELECT system_identifier FROM pg_control_system())::text || ':' ||"
+    " (pg_split_walfile_name(pg_walfile_name(pg_current_wal_lsn()))).timeline_id::text"
+)
+
 # The CAS: insert at seq=expected+1 iff the run's current max is still expected.
 # The PRIMARY KEY (run_id, seq) is the arbiter -- a rival that committed expected+1
 # first turns this into a UniqueViolation (a provable loss), not a corruption.
-_CAS = """
+_CAS = f"""
 INSERT INTO log (run_id, seq, topic, name, request_id, body, created_at,
                  writer_key, writer_server)
 SELECT %(run)s, %(expected)s + 1, %(topic)s, %(name)s, %(rid)s, %(body)s,
-       extract(epoch FROM clock_timestamp()), %(key)s, %(server)s
+       extract(epoch FROM clock_timestamp()), %(key)s, {_IDENTITY}
 WHERE (SELECT COALESCE(MAX(seq), 0) FROM log WHERE run_id = %(run)s) = %(expected)s
 RETURNING seq
 """
 
 # Unconditional append: max+1, optimistic; the PK is the sole arbiter, so a lost
 # race is a UniqueViolation we retry (a fresh max each round -> termination).
-_UNCONDITIONAL = """
+_UNCONDITIONAL = f"""
 INSERT INTO log (run_id, seq, topic, name, request_id, body, created_at,
                  writer_key, writer_server)
 SELECT %(run)s, COALESCE(MAX(seq), 0) + 1, %(topic)s, %(name)s, %(rid)s, %(body)s,
-       extract(epoch FROM clock_timestamp()), %(key)s, %(server)s
+       extract(epoch FROM clock_timestamp()), %(key)s, {_IDENTITY}
 FROM log WHERE run_id = %(run)s
 RETURNING seq
 """
@@ -188,15 +203,11 @@ SELECT EXISTS (
 
 # --- the session probe (commits-and-lineage.md §3; channel-postgres.md, "Liveness") ---
 
-# The server a stamp names: its system identifier, which a physical standby shares,
-# and its timeline, which a promotion advances. A probe reads pg_locks only on the
-# server that wrote the stamp, never a standby (whose pg_locks know nothing of the
-# primary's sessions), so a mismatch or a server in recovery abstains.
-_SERVER = """
-SELECT (SELECT system_identifier FROM pg_control_system())::text || ':' ||
-       (SELECT timeline_id FROM pg_control_checkpoint())::text,
-       pg_is_in_recovery()
-"""
+# The server this connection is on, as a stamp names it, or NULL in recovery. A probe
+# reads pg_locks only on the server that wrote the stamp, never a standby (whose
+# pg_locks know nothing of the primary's sessions), so NULL or a mismatch abstains.
+# CASE short-circuits, so pg_current_wal_lsn() is never evaluated in recovery.
+_SERVER = f"SELECT CASE WHEN pg_is_in_recovery() THEN NULL ELSE {_IDENTITY} END"
 
 # Draws of a fresh key before the open gives up. A collision with a held key is a
 # 2^-64 event per live connection, so a second draw is already a sign of something
@@ -264,7 +275,7 @@ class PostgresChannel(Channel):
         # lock_timeout is the busy_timeout analogue: a wedged conflicting writer
         # makes the CAS raise (indeterminate) rather than hang forever.
         self._conn.execute("SET lock_timeout = '5000ms'")
-        self._session = self._take_session()
+        self._key = self._take_key()
         has_rows = check_format(self._conn, run_id)  # before the search path
         self._conn.execute(
             sql.SQL("SET search_path TO {}").format(
@@ -285,9 +296,9 @@ class PostgresChannel(Channel):
             if not has_rows:
                 raise RunNotFound(f"run {run_id!r} has no records (postgres backend)")
 
-    def _take_session(self) -> Session:
-        """Make this connection a durable writer with a session of its own, before any
-        write (channel-postgres.md, "Liveness"), in this order:
+    def _take_key(self) -> int:
+        """Make this connection a durable writer with a session key of its own, before
+        any write (channel-postgres.md, "Liveness"), in this order:
 
         - ``synchronous_commit = on``: else a commit is acknowledged before it is
           durable, and a crash loses rows readers saw and reuses their seqs. Set on
@@ -295,11 +306,13 @@ class PostgresChannel(Channel):
         - refuse ``fsync = off``: the same loss, server-wide, which a connection cannot
           fix (14 to 2,386 visible rows lost in 40 of 40 crash trials; review §12,
           item 15).
-        - the server's identity, read once, stamped on every row.
         - a fresh random key, taken by try-lock: never derived from the run or the
           claim, which every racing claimant shares and which would make the lock a
           claim gate. Drawn again while another connection holds it.
-        - the pooler self-check."""
+        - the pooler self-check.
+
+        The key is stamped on every row this connection writes. The server's identity
+        is not read here: each row's statement stamps the timeline it is written on."""
         self._conn.execute("SET synchronous_commit = on")
         fsync = self._conn.execute("SHOW fsync").fetchone()
         assert fsync is not None  # SHOW always yields one row
@@ -308,9 +321,6 @@ class PostgresChannel(Channel):
                 "the postgres server runs with fsync = off, so a crash loses rows "
                 "readers already saw and reuses their seqs; runstate refuses it"
             )
-        identity = self._conn.execute(_SERVER).fetchone()
-        assert identity is not None  # a scalar SELECT always yields one row
-        server = str(identity[0])
         for _ in range(_KEY_DRAWS):
             key = int.from_bytes(secrets.token_bytes(8), "big", signed=True)
             taken = self._conn.execute(
@@ -332,7 +342,7 @@ class PostgresChannel(Channel):
                 "transaction-mode pooler (e.g. pgbouncer) is in the path -- use a direct "
                 "or session-pooled endpoint"
             )
-        return Session(server=server, key=key)
+        return key
 
     def send(
         self,
@@ -353,8 +363,7 @@ class PostgresChannel(Channel):
             "rid": request_id,
             "body": body_json,
             "expected": expected_seq,
-            "key": self._session.key,
-            "server": self._session.server,
+            "key": self._key,
         }
         with self._lock:
             if expected_seq is not None:
@@ -522,8 +531,7 @@ class PostgresChannel(Channel):
         with self._lock:
             identity = self._conn.execute(_SERVER).fetchone()
             assert identity is not None  # a scalar SELECT always yields one row
-            server, in_recovery = identity
-            if in_recovery or server != session.server:
+            if identity[0] != session.server:  # NULL in recovery: never a match
                 return None
             held = self._conn.execute(_KEY_HELD, {"key": session.key}).fetchone()
         assert held is not None  # a scalar SELECT always yields one row
