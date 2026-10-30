@@ -169,13 +169,16 @@ item 4).
 - **By name, for the whole log:**
   - **acts:** `control.withdraw`, the asker's, and `lifecycle.nak`, the worker's refusal, spend the request
     they name; an exit's `honored` spends a stop;
-  - **demand:** a subscription is spent once any node names it in `expired`, or a withdrawal or a refusal
-    names it, and nothing is demanded of a closed head. The decision to launch a worker reads demand so,
-    which keeps a claim that dies before its first commit from reviving answered demand;
+  - **demand:** a subscription is spent once a withdrawal or a refusal names it, and nothing is demanded of a
+    closed head. Expiry is the subscription's class's (below): a lease's is its claim's, and a durable
+    subscription's its lineage's. The decision to launch a worker and the decision to keep serving read
+    demand by the same rules (amended 2026-10-30, owner, while implementing: demand was by name, so a durable
+    subscription one lineage expired was served on another by a running worker but relaunched by no waker,
+    and the head's answers stayed truncated);
   - **stops:** a stop is a request about the process. One honoured on one branch is not re-armed on another.
 - **Per lineage:** a durable subscription, whose atoms are all lineage coordinates, is live on a lineage while
-  no withdrawal or refusal names it and no node on that lineage expires it. The Worker serves it so, and its
-  answers are the samples on that lineage. Firing and expiry are facts at a node: a node's `fired` names the
+  no withdrawal or refusal names it and no node on that lineage expires it. The Worker serves it so, a waker
+  launches for it so on the head's lineage, and its answers are the samples on that lineage. Firing and expiry are facts at a node: a node's `fired` names the
   subscriptions that fired there, and its `expired` those whose schedule ended there.
 - **Per claim:** a lease, a subscription with any time or count atom, is bound to its claim at drain by
   `lifecycle.bound`. Its clock, fire count and expiry are the claim's, kept across a rewind, and it is void
@@ -281,7 +284,8 @@ data-plane project.
   its own earlier send. The refusal spends the id, since a `nak` names the id and so the live original too,
   and the Worker drops the registration. So a subscription's target is its `name`, fixed.
 - **An accepted re-send registers the request afresh** for what the claim holds, as in 0.3.0: a lease's time
-  atoms count from the re-send, its fire count returns to 0, and its time baseline is dropped. That is how a
+  atoms count from the re-send's drain in this claim (a `control.subscribe` carries no clock of the asker's,
+  and positions are not compared), its fire count returns to 0, and its time baseline is dropped. That is how a
   lease is renewed. What the lineage holds stays: a lease's lineage baselines, and all of a durable
   subscription's firing state, are read on the lineage as before.
 - **`control.stop`:** unchanged, except that `StopTrigger.from` takes the new atoms. `name` is null.
@@ -619,12 +623,14 @@ outside every lineage, as at a rewind. A torn iteration to be redone is a `rewin
 
 **The exit.** `stopped(*, completed, error)` writes the exit node by the dying-breath CAS. In order, it:
 1. reads W and drains up to it: stops, withdrawals, and the death reports naming its claim. It registers no
-   subscription, as 0.3.0's plain exit did not: one that arrives after the last commit stays live for the
-   next claim, where a lease bound here would be void at once;
+   subscription, as 0.3.0's plain exit did not, and passes over every `control.subscribe`, a malformed one
+   included: one that arrives after the last commit stays live for the next claim, which registers or refuses
+   it, where a lease bound here would be void at once;
 2. unless the exit discards its iteration (an error, or after `discard()`), evaluates the registered
    subscriptions once, at the exit node;
 3. writes the samples once. A failure while writing them makes the exit an error exit: torn, with the
-   failure as its `error`, and the samples already written stay outside every lineage;
+   failure as its `error`, and the samples already written stay outside every lineage. The failure
+   propagates once that exit has landed, as a save's does (§6);
 4. reads W again, drains as in step 1, and CAS-appends `stopped` at it, with `parent` the position,
    `values` (the pending values, then the samples, or null if discarded), `fired`, `expired` and `honored`.
    On a lost CAS it repeats this step only: it does not evaluate again, and a stop first drained here is
@@ -644,8 +650,12 @@ The exit's other rules:
 - **A non-completed exit that is not torn is extendable.** The next claim may resume from it, and a chunk's
   post-loop values stay on the lineage the next chunk extends.
 - **`retire()`,** `serve()`'s careful death, drains everything at steps 1 and 4, subscriptions included, and
-  returns False if one arrived at either. Its exit fires nothing, since nothing is registered when it writes.
-  It is extendable, so a woken successor that holds no state continues from it.
+  returns False, writing no exit, if any subscription is live for the claim after either read. Its exit fires
+  nothing, since nothing is registered when it writes. It is extendable, so a woken successor that holds no
+  state continues from it; after `discard()` it writes the torn exit, as `stopped()` would.
+- **An exit that starves** (its CAS lost past the bound, §4's loops) raises and leaves the claim held for a
+  death report to end. The worker may retry `stopped()`; every other call is fenced, writing nothing, so no
+  watermark of the claim claims a request its failed exit passed over.
 - **`__exit__`** writes an error exit on an exception, and otherwise `stopped(completed=False, error=None)`,
   unless the worker has already stopped.
 
@@ -858,8 +868,13 @@ null-worker startup crash does.
 
 **The answer fold.** `live_demand`, `undischarged_stops` and `Watcher.pending_stops` read §2's rules:
 - a stop is spent by an exit's `honored`, a `control.withdraw` or a `nak` naming it;
-- a subscription is spent by any node's `expired`, a `control.withdraw` or a `nak` naming it; a lease is also
-  void once its claim has ended;
+- a subscription is spent by a `control.withdraw` or a `nak` naming it; a lease also by any node's `expired`
+  naming it, since its expiry is its claim's, and it is void once its claim has ended; a durable subscription
+  by an `expired` on the head's lineage only (§2, "Per lineage"). So a durable subscription another lineage
+  expired is live demand again once the head stands on a lineage that has not, and `LiveDemand` re-derives
+  which expiries lie on the head's lineage when the head moves off its last one, at O(L), as the Worker's
+  rebuild does, and O(new records) per poll otherwise. The fold still takes no head from its caller (it holds
+  its own head fold), and the question is the head's lineage, so the walk is inside its window;
 - **a subscription's class and target are its first send's,** as §3 fixes them: a re-send that changes either
   is refused, so a void lease does not come back as demand by being sent again as durable;
 - **a subscribe whose body does not parse is live until a `nak` names it,** as a malformed stop is pending
@@ -2040,7 +2055,8 @@ On every backend:
     clock and fire count, and keeps the lineage baselines of either class;
   - `answers` via `fired`, including time atoms, a rewind and a resume; its fold re-derives on a head flip;
   - a durable subscription answered on an abandoned branch is answered again on the new one, exactly once per
-    lineage, and not on a lineage that expired it, though `live_demand` counts it spent;
+    lineage, and not on a lineage that expired it, and `live_demand` agrees: live while the head's lineage
+    has not expired it;
   - a lease keeps its clock, fire count and expiry across a rewind, reads its lineage baselines on the new
     lineage, and is void once its claim has ended; a count lease whose service dies at its first firing stops
     the waker after one launch;
