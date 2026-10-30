@@ -25,6 +25,7 @@ lineage (§2, "Requests").
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from collections.abc import Set as AbstractSet
 from typing import Any, NamedTuple
 
 from .coordinate import Commits
@@ -100,6 +101,13 @@ class Subscription:
     the fire count and the time of the last firing; the lineage supplies the count
     baselines, which the caller passes to each ``evaluate``.
 
+    ``target`` is the source it samples, its envelope ``name``, or ``None`` for a
+    pure demand, which has a lifetime but no schedule and never fires. It is fixed
+    at registration (§3: a re-send that changes it is refused), so it is the
+    constructor's, and the constructor refuses exactly what the Worker refuses as
+    ``malformed``: ``malformed_schedule(schedule, pure_demand=target is None)``.
+    Which sources hold a value varies per node, so that is ``evaluate``'s.
+
     A re-send that the worker accepts registers afresh (§3, subscription-v0.4): a
     new ``Subscription``, so a lease's time atoms count from the re-send, its fire
     count returns to 0, and its time baseline is dropped, while its lineage
@@ -107,8 +115,10 @@ class Subscription:
     subscription's is the lineage's, which the Worker rebuilds at every position
     change (§4)."""
 
-    def __init__(self, schedule: Condition, *, registered_at: float) -> None:
-        problem = malformed_schedule(schedule, pure_demand=False)
+    def __init__(
+        self, schedule: Condition, *, registered_at: float, target: str | None
+    ) -> None:
+        problem = malformed_schedule(schedule, pure_demand=target is None)
         if problem is not None:
             raise ValueError(f"malformed schedule: {problem}")
         self.from_: Condition | None = schedule.get("from")
@@ -118,9 +128,20 @@ class Subscription:
         self.lease = is_lease(schedule)
         self.fires = 0
         self._fired_at: float | None = None
+        self._target = target
+
+    @property
+    def target(self) -> str | None:
+        """The source it samples, or ``None`` for a pure demand; fixed."""
+        return self._target
 
     def evaluate(
-        self, *, at: Coordinates, baseline: Coordinates | None, now: float
+        self,
+        *,
+        at: Coordinates,
+        baseline: Coordinates | None,
+        now: float,
+        valued: AbstractSet[str],
     ) -> Decision:
         """Evaluate the schedule once, at the node being written.
 
@@ -133,12 +154,20 @@ class Subscription:
         - ``now``: the writer's clock. ``time_seconds`` in ``from`` and ``until``
           reads ``now - registered_at``; in ``every`` it reads ``now`` minus the
           time of this claim's last firing, which a rewind does not move.
+        - ``valued``: the sources whose registers hold a value at this node. A
+          subscription can fire only when its target is one of them: a source with
+          no value yet does not fire, and waits for the first ``set`` (§3). A pure
+          demand never consults it, as a schedule with no time atom never consults
+          ``now``.
 
         ``until`` first: where it holds, the subscription expires and fires
         nothing. Otherwise it fires once ``from`` holds and ``every``'s delta rule
         does: ``count(now) - count(at the last firing) >= n``, not rounded to a
         multiple, with no interpolation inside a jump. An atom with no baseline
-        holds, so the first firing is immediate. A firing advances ``fires`` and
+        holds, so the first firing is immediate. One that cannot fire here (a pure
+        demand, or a target with no value) evaluates only its ``until``: it may
+        expire, never fires, and moves neither ``fires`` nor the time baseline, so
+        its first firing once it can sample is still immediate. A firing advances ``fires`` and
         the time baseline. It expires at the node where it fires if it is a
         one-shot (no ``every``), or if its ``until`` holds once this firing is
         counted: ``{count: n}`` counts the firings up to and including the node,
@@ -149,6 +178,8 @@ class Subscription:
             self.until, at=at, time_seconds=elapsed, count=self.fires
         ):
             return Decision(fire=False, expired=True)
+        if self._target is None or self._target not in valued:
+            return Decision(fire=False, expired=False)
         if self.from_ is not None and not satisfied(
             self.from_, at=at, time_seconds=elapsed, count=self.fires
         ):
@@ -351,10 +382,15 @@ def unsatisfiable(schedule: Condition, *, sources: frozenset[str]) -> str | None
       ``from`` does, since every condition is monotone. On one X, that is
       ``until``'s n at most ``from``'s; across two it is speed-contingent and not
       refused. A ``from`` with an ``any`` has many corners, and is not checked
-      rather than normalized. It does not depend on the position.
+      rather than normalized. It does not depend on the position. An absent
+      ``from`` reads as ``from`` 0 on each X, its least coordinates the root's,
+      since a 0 in ``from`` re-spells an absent one: ``{until: {commits: 0}}`` is
+      refused as ``{from: {commits: 0}, until: {commits: 0}}`` is, so one schedule
+      gets one answer (amended 2026-10-30).
 
-    An ``until`` that holds at registration is not refused (review §12, item 14):
-    whether it holds depends on the position, and it expires at the next node.
+    An ``until`` that holds at registration but not at the root is not refused
+    (review §12, item 14): whether it holds depends on the position, and it
+    expires at the next node.
     The third refusal, a subscription targeting a name the claim does not declare a
     source, is the Worker's, since it reads the envelope's ``name``."""
     named = sorted(_streams_named(schedule) & sources)
@@ -364,8 +400,8 @@ def unsatisfiable(schedule: Condition, *, sources: frozenset[str]) -> str | None
             " samples exist only where asked, so they are never counted"
         )
     from_, until = schedule.get("from"), schedule.get("until")
-    if from_ is not None and until is not None:
-        corner = _corner(from_)
+    if until is not None:
+        corner = _Corner({}, 0, 0.0) if from_ is None else _corner(from_)
         if corner is not None and satisfied(
             until,
             at=Coordinates(streams=corner.streams, commits=corner.commits),

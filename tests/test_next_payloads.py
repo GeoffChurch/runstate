@@ -334,6 +334,8 @@ def _edges():
     yield Topic.LIFECYCLE_STOPPED, {**torn, "completed": True, "error": "boom"}
     yield Topic.LIFECYCLE_STOPPED, {**torn, "expired": ["q"]}
     yield Topic.LIFECYCLE_STOPPED, {**torn, "fired": ["q"]}
+    # a non-string error the coupling cannot refuse first: values is already null
+    yield Topic.LIFECYCLE_STOPPED, {**torn, "error": 5}
     yield Topic.LIFECYCLE_STOPPED, {**bodies[Topic.LIFECYCLE_STOPPED], "error": "x"}
     by_signal = {"reason": "killed", "exit_code": None, "signal": 9, "t": 1.0}
     yield Topic.SUPERVISOR_TERMINATED, by_signal

@@ -30,6 +30,11 @@ from runstate._next.vocabulary.schedule import (
 
 _PROTO = Path(__file__).resolve().parent.parent / "protocol"
 
+# The source the subscriptions below target, and the valued sources at a node
+# where its register holds a value.
+SRC = "src"
+VALUED = frozenset({SRC})
+
 
 def at(commits: int = 0, **streams: int) -> Coordinates:
     return Coordinates(streams=streams, commits=commits)
@@ -46,7 +51,7 @@ def drive(sub: Subscription, points) -> list[Decision]:
     baseline = None
     out = []
     for point, now in points:
-        d = sub.evaluate(at=point, baseline=baseline, now=now)
+        d = sub.evaluate(at=point, baseline=baseline, now=now, valued=VALUED)
         if d.fire:
             baseline = point
         out.append(d)
@@ -65,7 +70,9 @@ def test_from_and_until_hold_as_counts():
     assert not holds({"stream": "loss", "n": 1}, point=at(5, acc=4))
     assert holds({"stream": "loss", "n": 0}, point=at())
     # a one-shot from fires at the node where the count reaches n, and expires there
-    sub = Subscription({"from": {"stream": "loss", "n": 2}}, registered_at=0.0)
+    sub = Subscription(
+        {"from": {"stream": "loss", "n": 2}}, registered_at=0.0, target=SRC
+    )
     assert drive(sub, [(at(loss=1), 0.0), (at(loss=2), 0.0)]) == [
         (False, False),
         (True, True),
@@ -74,6 +81,7 @@ def test_from_and_until_hold_as_counts():
     sub = Subscription(
         {"every": {"commits": 1}, "until": {"stream": "loss", "n": 2}},
         registered_at=0.0,
+        target=SRC,
     )
     got = drive(sub, [(at(1, loss=1), 0.0), (at(2, loss=2), 0.0)])
     assert got == [(True, False), (False, True)]
@@ -160,15 +168,23 @@ def test_every_is_the_delta_rule_under_batching():
     rounded to a multiple, with no interpolation inside a jump: a jump of 5
     commits under ``every {commits: 2}`` fires once, and the next firing measures
     from it."""
-    sub = Subscription({"every": {"commits": 2}}, registered_at=0.0)
+    sub = Subscription({"every": {"commits": 2}}, registered_at=0.0, target=SRC)
     got = drive(sub, [(at(1), 0.0), (at(6), 0.0), (at(7), 0.0), (at(8), 0.0)])
     assert [d.fire for d in got] == [True, True, False, True]
     assert not any(d.expired for d in got)
     assert sub.fires == 3
     # the baseline is what the caller passes: the newest firing on the lineage
-    sub = Subscription({"every": {"stream": "loss", "n": 3}}, registered_at=0.0)
-    assert sub.evaluate(at=at(loss=4), baseline=at(loss=2), now=0.0) == (False, False)
-    assert sub.evaluate(at=at(loss=5), baseline=at(loss=2), now=0.0) == (True, False)
+    sub = Subscription(
+        {"every": {"stream": "loss", "n": 3}}, registered_at=0.0, target=SRC
+    )
+    assert sub.evaluate(at=at(loss=4), baseline=at(loss=2), now=0.0, valued=VALUED) == (
+        False,
+        False,
+    )
+    assert sub.evaluate(at=at(loss=5), baseline=at(loss=2), now=0.0, valued=VALUED) == (
+        True,
+        False,
+    )
 
 
 def test_every_delta_is_measured_from_last_fire_not_registration():
@@ -176,7 +192,9 @@ def test_every_delta_is_measured_from_last_fire_not_registration():
     # commits SINCE THAT FIRE -> 13. A `from` offset breaks the tie that a
     # register-at-0 schedule hides.
     s = Subscription(
-        {"from": {"commits": 3}, "every": {"commits": 10}}, registered_at=0.0
+        {"from": {"commits": 3}, "every": {"commits": 10}},
+        registered_at=0.0,
+        target=SRC,
     )
     got = drive(s, [(at(c), 0.0) for c in range(20)])
     assert [c for c, d in enumerate(got) if d.fire] == [3, 13]
@@ -185,11 +203,11 @@ def test_every_delta_is_measured_from_last_fire_not_registration():
 def test_a_time_atoms_baseline_is_the_claims_last_firing():
     """§3: a time atom's baseline is the wall clock at the last firing, kept by the
     claim (the Subscription), whatever lineage baseline the caller passes."""
-    sub = Subscription({"every": {"time_seconds": 60}}, registered_at=100.0)
-    assert sub.evaluate(at=at(1), baseline=None, now=100.0).fire
-    assert not sub.evaluate(at=at(2), baseline=None, now=159.0).fire
-    assert sub.evaluate(at=at(3), baseline=at(2), now=160.0).fire
-    assert not sub.evaluate(at=at(4), baseline=None, now=200.0).fire
+    sub = Subscription({"every": {"time_seconds": 60}}, registered_at=100.0, target=SRC)
+    assert sub.evaluate(at=at(1), baseline=None, now=100.0, valued=VALUED).fire
+    assert not sub.evaluate(at=at(2), baseline=None, now=159.0, valued=VALUED).fire
+    assert sub.evaluate(at=at(3), baseline=at(2), now=160.0, valued=VALUED).fire
+    assert not sub.evaluate(at=at(4), baseline=None, now=200.0, valued=VALUED).fire
 
 
 def test_a_zero_in_each_atom_holds_at_once():
@@ -202,14 +220,20 @@ def test_a_zero_in_each_atom_holds_at_once():
         {"time_seconds": 0},
     ]
     for atom in zeros:
-        sub = Subscription({"from": atom}, registered_at=5.0)
-        assert sub.evaluate(at=at(), baseline=None, now=5.0) == (True, True)
+        sub = Subscription({"from": atom}, registered_at=5.0, target=SRC)
+        assert sub.evaluate(at=at(), baseline=None, now=5.0, valued=VALUED) == (
+            True,
+            True,
+        )
     for atom in [*zeros, {"count": 0}]:
-        sub = Subscription({"until": atom}, registered_at=5.0)
-        assert sub.evaluate(at=at(), baseline=None, now=5.0) == (False, True)
+        sub = Subscription({"until": atom}, registered_at=5.0, target=SRC)
+        assert sub.evaluate(at=at(), baseline=None, now=5.0, valued=VALUED) == (
+            False,
+            True,
+        )
         assert sub.fires == 0
     for atom in zeros:
-        sub = Subscription({"every": atom}, registered_at=5.0)
+        sub = Subscription({"every": atom}, registered_at=5.0, target=SRC)
         got = drive(sub, [(at(), 5.0)] * 4)
         assert got == [(True, False)] * 4
 
@@ -224,19 +248,21 @@ def test_an_atom_with_no_baseline_holds_so_the_first_firing_is_immediate():
         {"stream": "loss", "n": 50},
         {"time_seconds": 3600},
     ):
-        sub = Subscription({"every": every}, registered_at=0.0)
-        assert sub.evaluate(at=at(5, loss=1), baseline=None, now=1.0) == (True, False)
+        sub = Subscription({"every": every}, registered_at=0.0, target=SRC)
+        assert sub.evaluate(
+            at=at(5, loss=1), baseline=None, now=1.0, valued=VALUED
+        ) == (True, False)
     # a lineage baseline but no time baseline: the time atom holds, the commits
     # atom is judged against its baseline
     both = {"every": {"all": [{"commits": 10}, {"time_seconds": 60}]}}
     assert (
-        not Subscription(both, registered_at=0.0)
-        .evaluate(at=at(13), baseline=at(4), now=1.0)
+        not Subscription(both, registered_at=0.0, target=SRC)
+        .evaluate(at=at(13), baseline=at(4), now=1.0, valued=VALUED)
         .fire
     )
     assert (
-        Subscription(both, registered_at=0.0)
-        .evaluate(at=at(14), baseline=at(4), now=1.0)
+        Subscription(both, registered_at=0.0, target=SRC)
+        .evaluate(at=at(14), baseline=at(4), now=1.0, valued=VALUED)
         .fire
     )
 
@@ -244,17 +270,43 @@ def test_an_atom_with_no_baseline_holds_so_the_first_firing_is_immediate():
 def test_an_until_that_holds_at_registration_is_not_refused():
     """Review §12, item 14 (§3, "Expiry"): one whose ``until`` already holds when
     it registers expires at the next node, firing nothing; whether it holds
-    depends on the position, so it is no refusal."""
+    depends on the position, so it is no refusal. Each ``until`` here holds at
+    the node below, and fails at the root: a 0 would hold everywhere, and is the
+    empty window's (test_an_absent_from_reads_as_from_zero)."""
+    point = at(5, loss=2)
     for schedule in (
-        {"until": {"commits": 3}},
-        {"until": {"stream": "loss", "n": 0}},
-        {"until": {"count": 0}},
-        {"every": {"commits": 1}, "until": {"time_seconds": 0}},
+        {"until": {"commits": 5}},
+        {"until": {"stream": "loss", "n": 2}},
+        {"every": {"commits": 1}, "until": {"any": [{"commits": 3}, {"count": 4}]}},
     ):
         assert malformed_schedule(schedule, pure_demand=False) is None
         assert unsatisfiable(schedule, sources=frozenset()) is None
-        sub = Subscription(schedule, registered_at=0.0)
-        assert sub.evaluate(at=at(5), baseline=None, now=0.0) == (False, True)
+        sub = Subscription(schedule, registered_at=0.0, target=SRC)
+        assert sub.evaluate(at=point, baseline=None, now=0.0, valued=VALUED) == (
+            False,
+            True,
+        )
+        assert not holds(schedule["until"], point=at())
+
+
+def test_an_absent_from_reads_as_from_zero():
+    """§3, "Refusals" (amended 2026-10-30): a 0 in ``from`` re-spells an absent
+    ``from``, so the empty-window check reads an absent one as ``from`` 0 on each
+    X, and the two spellings of one schedule get one answer."""
+    for until in (
+        {"commits": 0},
+        {"time_seconds": 0},
+        {"stream": "loss", "n": 0},
+        {"any": [{"commits": 0}, {"commits": 5}]},
+    ):
+        bare = {"until": until}
+        assert unsatisfiable(bare, sources=frozenset()) is not None
+        for x in ({"commits": 0}, {"time_seconds": 0}, {"stream": "loss", "n": 0}):
+            spelled = {"from": x, "until": until}
+            assert unsatisfiable(spelled, sources=frozenset()) is not None
+    for until in ({"commits": 1}, {"time_seconds": 0.5}, {"stream": "loss", "n": 1}):
+        for spelled in ({"until": until}, {"from": {"commits": 0}, "until": until}):
+            assert unsatisfiable(spelled, sources=frozenset()) is None
 
 
 def test_until_is_checked_first_and_a_count_until_expires_at_its_last_firing():
@@ -263,7 +315,7 @@ def test_until_is_checked_first_and_a_count_until_expires_at_its_last_firing():
     ``count(X, node)`` counts up to and including the node (§2), so the nth
     firing's node expires it, as a one-shot's firing does."""
     sub = Subscription(
-        {"every": {"commits": 1}, "until": {"count": 3}}, registered_at=0.0
+        {"every": {"commits": 1}, "until": {"count": 3}}, registered_at=0.0, target=SRC
     )
     got = drive(sub, [(at(c), 0.0) for c in range(1, 6)])
     assert [d.fire for d in got] == [True, True, True, False, False]
@@ -271,18 +323,24 @@ def test_until_is_checked_first_and_a_count_until_expires_at_its_last_firing():
 
 
 def test_empty_schedule_fires_once_now():
-    sub = Subscription({}, registered_at=0.0)
-    assert sub.evaluate(at=at(), baseline=None, now=0.0) == (True, True)
+    sub = Subscription({}, registered_at=0.0, target=SRC)
+    assert sub.evaluate(at=at(), baseline=None, now=0.0, valued=VALUED) == (True, True)
 
 
 def test_from_commits_fires_once_at_that_count():
-    sub = Subscription({"from": {"commits": 100}}, registered_at=0.0)
-    assert sub.evaluate(at=at(50), baseline=None, now=0.0) == (False, False)
-    assert sub.evaluate(at=at(100), baseline=None, now=0.0) == (True, True)
+    sub = Subscription({"from": {"commits": 100}}, registered_at=0.0, target=SRC)
+    assert sub.evaluate(at=at(50), baseline=None, now=0.0, valued=VALUED) == (
+        False,
+        False,
+    )
+    assert sub.evaluate(at=at(100), baseline=None, now=0.0, valued=VALUED) == (
+        True,
+        True,
+    )
 
 
 def test_every_commits_recurs_from_registration():
-    sub = Subscription({"every": {"commits": 10}}, registered_at=0.0)
+    sub = Subscription({"every": {"commits": 10}}, registered_at=0.0, target=SRC)
     got = drive(sub, [(at(0), 0.0), (at(5), 0.0), (at(10), 0.0)])
     assert [d.fire for d in got] == [True, False, True]
     assert not got[2].expired
@@ -290,7 +348,7 @@ def test_every_commits_recurs_from_registration():
 
 def test_every_until_count_fires_exactly_n_times():
     sub = Subscription(
-        {"every": {"commits": 1}, "until": {"count": 3}}, registered_at=0.0
+        {"every": {"commits": 1}, "until": {"count": 3}}, registered_at=0.0, target=SRC
     )
     results = drive(sub, [(at(i), 0.0) for i in range(5)])
     assert [d.fire for d in results] == [True, True, True, False, False]
@@ -299,7 +357,9 @@ def test_every_until_count_fires_exactly_n_times():
 
 def test_every_until_commits_stops_at_threshold():
     sub = Subscription(
-        {"every": {"commits": 1}, "until": {"commits": 3}}, registered_at=0.0
+        {"every": {"commits": 1}, "until": {"commits": 3}},
+        registered_at=0.0,
+        target=SRC,
     )
     results = drive(sub, [(at(i), 0.0) for i in range(5)])
     assert [d.fire for d in results] == [True, True, True, False, False]
@@ -310,9 +370,98 @@ def test_every_whichever_first_commits_or_seconds():
     sub = Subscription(
         {"every": {"any": [{"commits": 10}, {"time_seconds": 60}]}},
         registered_at=0.0,
+        target=SRC,
     )
     got = drive(sub, [(at(0), 0.0), (at(5), 30.0), (at(5), 60.0), (at(15), 60.0)])
     assert [d.fire for d in got] == [True, False, True, True]
+
+
+def test_a_pure_demand_never_fires_and_lives_until_its_until():
+    """§3: a pure demand (``target`` None) targets nothing, so it never fires and
+    never consults ``valued``; it expires where its ``until`` holds, and with no
+    ``until`` it never expires."""
+    sub = Subscription({"until": {"commits": 3}}, registered_at=0.0, target=None)
+    assert sub.target is None
+    got = [
+        sub.evaluate(at=at(c), baseline=None, now=0.0, valued=v)
+        for c, v in ((1, VALUED), (2, frozenset()), (3, VALUED))
+    ]
+    assert got == [(False, False), (False, False), (False, True)]
+    assert sub.fires == 0
+    forever = Subscription({}, registered_at=0.0, target=None)
+    for c in range(5):
+        assert forever.evaluate(
+            at=at(c), baseline=None, now=float(c), valued=VALUED
+        ) == (False, False)
+
+
+def test_a_source_with_no_value_yet_does_not_fire_but_a_time_until_expires_it():
+    """§3: a source with no value yet does not fire; the subscription waits for
+    the first ``set``, and only its ``until`` is evaluated meanwhile."""
+    sub = Subscription(
+        {"every": {"commits": 1}, "until": {"time_seconds": 60}},
+        registered_at=0.0,
+        target=SRC,
+    )
+    assert sub.evaluate(at=at(1), baseline=None, now=10.0, valued=frozenset()) == (
+        False,
+        False,
+    )
+    assert sub.evaluate(
+        at=at(2), baseline=None, now=20.0, valued=frozenset({"other"})
+    ) == (False, False)
+    assert sub.evaluate(at=at(3), baseline=None, now=60.0, valued=frozenset()) == (
+        False,
+        True,
+    )
+    assert sub.fires == 0
+
+
+def test_a_one_shot_whose_source_gains_its_first_value_later_fires_then():
+    sub = Subscription({"from": {"commits": 1}}, registered_at=0.0, target=SRC)
+    got = [
+        sub.evaluate(at=at(c), baseline=None, now=0.0, valued=v)
+        for c, v in ((1, frozenset()), (2, frozenset()), (3, VALUED))
+    ]
+    assert got == [(False, False), (False, False), (True, True)]
+
+
+def test_an_every_whose_source_gains_its_first_value_later_fires_at_once_then():
+    """The first firing is immediate once the subscription can sample: until then
+    ``fires`` and the time baseline do not move, so the time atom has no baseline
+    at the first valued node."""
+    sub = Subscription(
+        {"every": {"time_seconds": 60}, "until": {"count": 2}},
+        registered_at=0.0,
+        target=SRC,
+    )
+    for now in (10.0, 100.0, 200.0):
+        assert not sub.evaluate(
+            at=at(1), baseline=None, now=now, valued=frozenset()
+        ).fire
+    assert sub.fires == 0
+    assert sub.evaluate(at=at(2), baseline=None, now=230.0, valued=VALUED) == (
+        True,
+        False,
+    )
+    assert not sub.evaluate(at=at(3), baseline=at(2), now=289.0, valued=VALUED).fire
+    assert sub.evaluate(at=at(4), baseline=at(2), now=290.0, valued=VALUED) == (
+        True,
+        True,
+    )
+
+
+def test_the_constructor_refuses_a_pure_demand_with_from_every_or_count():
+    """The constructor refuses exactly what the Worker naks as malformed."""
+    for bad in (
+        {"from": {"commits": 1}},
+        {"every": {"commits": 1}},
+        {"until": {"count": 2}},
+        {"until": {"all": [{"commits": 1}, {"count": 2}]}},
+    ):
+        Subscription(bad, registered_at=0.0, target=SRC)
+        with pytest.raises(ValueError):
+            Subscription(bad, registered_at=0.0, target=None)
 
 
 def test_a_subscription_refuses_a_malformed_schedule():
@@ -320,7 +469,7 @@ def test_a_subscription_refuses_a_malformed_schedule():
     it did not pass would mis-evaluate, so construction refuses it."""
     for bad in ({"every": {"count": 1}}, {"from": {"step": 1}}, {"until": None}):
         with pytest.raises(ValueError):
-            Subscription(bad, registered_at=0.0)
+            Subscription(bad, registered_at=0.0, target=SRC)
 
 
 # ----- lease or durable -------------------------------------------------------------
@@ -343,10 +492,10 @@ def test_a_lease_is_a_schedule_with_a_time_or_count_atom():
     ]
     for s in leases:
         assert is_lease(s)
-        assert Subscription(s, registered_at=0.0).lease
+        assert Subscription(s, registered_at=0.0, target=SRC).lease
     for s in durables:
         assert not is_lease(s)
-        assert not Subscription(s, registered_at=0.0).lease
+        assert not Subscription(s, registered_at=0.0, target=SRC).lease
     assert references_time(leases[0]) and references_time(leases[1])
     assert not references_time(leases[2]) and not references_time(leases[3])
     assert not any(references_time(s) for s in durables)
