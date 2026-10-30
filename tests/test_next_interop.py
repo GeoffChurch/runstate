@@ -9,20 +9,41 @@ checks each against the 0.4.0 schemas.
 
 import pytest
 
+from runstate._next.launcher import LocalLauncher, report_death, report_if_dead
 from runstate._next.observables import (
     AtNode,
     DeathReport,
     Element,
     Head,
+    HeadFold,
     LatestClaimHead,
+    LiveDemand,
     MalformedRecordError,
+    PendingStops,
+    PrefixLen,
+    current_heartbeat,
+    last_activity,
+    latest_episode,
     live_demand,
     live_episode,
     peek_terminal,
     prefix_len,
     series,
+    undischarged_stops,
 )
 from runstate._next.vocabulary.coordinate import Commits
+from runstate._next.vocabulary.payloads import Topic
+from tests.test_next_death_reports import (
+    FOREIGN,
+    LIVE,
+    child,
+    claim,
+    dead_handle,
+    deaths,
+    died_body,
+    undated,
+    until,
+)
 from tests.test_next_reads import (
     A_CLAIMS_LAUNCH_ENDED,
     BAD_BODY,
@@ -50,6 +71,8 @@ from tests.test_next_reads import (
     by_exit,
     by_launch,
     pending,
+    stop,
+    subscribe,
     CLOSED_DISCARDED,
     COMMITLESS,
     COMMITLESS_ERRORED,
@@ -240,3 +263,57 @@ def test_interop_answer_fold_by_name():
     assert [(e.seq, e.request_id) for e in live] == [(5, "live"), (6, "malformed")]
     live = live_demand(channel(DEMAND))
     assert [(e.seq, e.request_id) for e in live] == [(5, "live")]
+
+
+def test_interop_death_report_from_evidence(tmp_path):
+    """§9 item 15: a death report rests on evidence, never inference, and a ``lost``
+    one, which carries no cause, lands only while its claim is held. A read never
+    writes one: no read, no fold and no handle's ``is_alive()``; a reap, which
+    yields the exit status once, is where a launcher writes it (§3)."""
+    # a lost report only while held: checked at the W of its CAS
+    ch = channel([(1, claim(FOREIGN))])
+    assert report_death(ch, 1, outcome=L, evidence="probe: x", force=False) == 2
+    assert report_death(ch, 1, outcome=L, evidence="probe: y", force=False) is None
+    # a report with a cause lands whether or not the claim has ended
+    assert report_death(ch, 1, outcome=K, evidence="slurm:x", force=False) == 3
+    assert peek_terminal(ch).outcomes == {K}
+    # evidence, never inference: a live handle, or one another host owns, reports
+    # nothing however stale the claim; a dead same-host handle reports lost
+    for handle in (LIVE, FOREIGN):
+        ch = channel([(1, claim(handle, t=0.0))])
+        assert report_if_dead(ch) is None and ch.last_seq() == 1
+    handle = dead_handle()
+    rows = [
+        (1, subscribe(None, "lease", until={"time_seconds": 60})),
+        (2, stop("halt")),
+        (3, claim(handle, t=0.0)),
+    ]
+    # no read, fold or is_alive() writes one, though the claim's handle is dead
+    ch = channel(rows)
+    head = HeadFold().poll(ch)
+    for read in (
+        peek_terminal,
+        live_episode,
+        latest_episode,
+        live_demand,
+        undischarged_stops,
+        last_activity,
+        lambda c: current_heartbeat(c, latest_episode(c)),
+        lambda c: LiveDemand().poll(c),
+        lambda c: PendingStops().poll(c),
+        lambda c: PrefixLen(Commits()).poll(c, head),
+        lambda c: prefix_len(c, Commits(), head=LatestClaimHead()),
+    ):
+        read(ch)
+    assert ch.last_seq() == 3 and live_episode(ch) == handle
+    assert report_if_dead(ch) == 4  # the party that wants it recorded calls this
+    # a handle's is_alive() is pure, though the process has ended; its reap writes
+    with LocalLauncher(root=tmp_path) as launcher:
+        h = launcher.launch("run", child("exit", "0"))
+        until(lambda: not h.is_alive())
+        ch = launcher.attach_channel("run")
+        claim_seq = ch.latest(Topic.LIFECYCLE_STARTED).seq
+        assert deaths(ch) == [] and ch.read(topics=["supervisor.terminated"]) == []
+        h.wait()
+        assert undated(deaths(ch)) == [died_body(claim_seq, L, "reap: exit 0")]
+        ch.close()
