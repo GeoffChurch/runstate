@@ -399,7 +399,17 @@ party, whatever else it does, an observer included, may write one for a death it
   process, which may outlive its session until its next write raises, so it outranks a live pid on the same
   host. A `LocalLauncher` kills such an orphan of its own, through the process handle it holds, once a death
   report has ended the child's claim, rather than launch a successor beside it. Nothing kills by pid alone,
-  which pid reuse makes unsafe (§12).
+  which pid reuse makes unsafe (§12). Amended 2026-10-30, while implementing:
+  - **It kills (`SIGKILL`), not asks.** A graceful window buys the log nothing: the orphan's session is gone
+    and a released worker is fenced. A child that handles `SIGTERM`, as a requeue handler does, would live
+    beside its successor.
+  - **An orphan is a child whose claim a `died` names and no `stopped` names,** read by presence: a claim
+    its own exit ended, readable or not, is finishing, not orphaned.
+  - **The reap of a child killed as an orphan writes `terminated` only.** Its signal is the launcher's, sent
+    because the claim had already ended, so it is no evidence of how the claim ended.
+  - **The limits:** a standing loop reaps before it decides, and tolerates one cycle in which the successor
+    runs beside an orphan that can no longer write. A wrapper's grandchild is no child of the launcher's, so
+    it kills nothing there: that is the wrapper's to do, or a process group's.
 - **Evidence without a cause reports only while the claim is held.** A probe that finds the process gone, an
   exit 0 and a thread that returned say that it is gone and nothing of how, or of why it left no exit. Each
   reports `lost`, which adds nothing once anything has ended the claim (§5). A signal, a nonzero exit code, a
@@ -419,6 +429,11 @@ party, whatever else it does, an observer included, may write one for a death it
   all (§5). A `lost` report on a claim that has ended returns `None`: evidence without a cause reports only
   while the claim is held, and the helper checks it at the W of its CAS. It appends `died` with a CAS at W,
   reads again on a lost CAS, and returns the report's seq.
+  - **Its tests are presence-based and never raise** (amended 2026-10-30, while implementing), as the answer
+    fold's `ended` is (§5): "has a readable exit" is that some readable `stopped` names the claim, and "has
+    ended" that some `stopped` or `died` does. A contradiction in the claim's window is the verdict's to raise,
+    never a reporter's, so a death report and a reap land on any log. A claim whose `started` is unreadable has
+    no handle to probe, which does not refuse, as an unknown probe does not.
 - **`report_if_dead(ch) -> int | None`** is the probe's report (working name): when the latest claim is held,
   and its handle is on this host and probes dead, or the channel's session probe finds the claim's session
   ended, it reports `lost` through `report_death`, with `probe:` and the handle, or `session:` and the
