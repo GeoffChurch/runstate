@@ -539,6 +539,12 @@ lineage expired.
 5. runs the save policy (§6);
 6. returns the stop decision.
 
+**A `commit()` that raises before its node lands tears the iteration,** as `discard()` does (amended
+2026-10-30, while implementing): a raised write's outcome may be unknown (an acknowledgement lost), and a
+subscription's claim-held state has already moved with its evaluation, so the iteration cannot continue. The
+worker's calls then behave as after `discard()`, and its exit is torn, evaluating nothing. A save that raises
+after the node landed is §6's case instead: the node stands.
+
 **A drain** reads the death reports up to its W before it handles any control there, so a released worker
 handles nothing (below). Each record a drain writes, a `lifecycle.bound` for a lease it registers or a
 `lifecycle.nak` for a request it refuses, is CAS-appended at the tail the drain last read, its own writes
