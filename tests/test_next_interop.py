@@ -393,5 +393,5 @@ def test_interop_stop_from_latch_and_honored(open_run):
         assert w.stop_pending is True  # latched across the rewind
         assert w.heartbeat() is True
     body = obs.latest(T.LIFECYCLE_STOPPED).body
-    assert body["honored"] == ["at_beat", "at_node", "pending"]
+    assert set(body["honored"]) == {"at_beat", "at_node", "pending"}  # a set (§3)
     assert undischarged_stops(obs) == []

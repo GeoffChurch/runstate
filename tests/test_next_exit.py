@@ -279,7 +279,7 @@ def test_one_exit_honors_every_pending_stop(open_run):
     with worker(ch) as w:
         assert list(w.steps(Target(Commits(), 10))) == [0, 1]
         send_stop(obs, "late")  # after the last drain
-    assert exits(ch)[0].body["honored"] == ["s1", "s2", "late"]
+    assert set(exits(ch)[0].body["honored"]) == {"s1", "s2", "late"}  # a set (§3)
     assert undischarged_stops(obs) == []
     with worker(ch, resume_from=LatestClaimHead()) as w:
         assert list(w.steps(Target(Commits(), 4))) == [2, 3]
@@ -523,20 +523,36 @@ def test_a_displaced_workers_exit_and_beats_write_nothing(open_run):
     assert prefix_len(ch, Commits(), head=LatestClaimHead()) == 2
 
 
-def test_after_its_exit_a_worker_writes_nothing_and_says_stop(open_run):
+@pytest.mark.parametrize("discarded", [False, True])
+def test_after_its_exit_a_worker_writes_nothing_and_says_stop(open_run, discarded):
+    """A worker after its own exit is fenced as a released one is (§4, "A worker
+    after its own exit is fenced the same way"): it writes nothing,
+    ``commit()``/``heartbeat()`` return True, ``stop_pending`` is True, and its
+    other calls do nothing, misuse included, even after a ``discard()``, whose
+    raising ends with the exit."""
     ch = open_run()
     w = worker(ch, sources=["lr"])
+    w.emit("loss", 1.0)
     w.commit()
+    stray = ch.send({"value": 2.0, "t": 0.0}, topic=Topic.VALUE, name="loss")
+    if discarded:
+        w.discard()
     w.stopped(completed=False, error=None)
     with worker(ch, resume_from=LatestClaimHead()) as w2:
         w2.emit("loss", 101.0)
         w2.commit()
         before = records(ch)
         w.emit("loss", -999.0)  # the first claim's, after its exit
+        w.emit("lr", 1.0)  # misuse, silently nothing
         w.set("lr", 1.0)
+        w.set("loss", 1.0)
+        w.include(stray)
         w.rewind(None)
+        w.discard()
+        w.stopped(completed=True, error=None)
         assert w.commit() is True
         assert w.heartbeat() is True
         assert w.stop_pending is True
+        assert list(w.steps(None)) == []
         assert records(ch) == before
-    assert [e.value for e in series(ch, "loss", head=LatestClaimHead())] == [101.0]
+    assert [e.value for e in series(ch, "loss", head=LatestClaimHead())] == [1.0, 101.0]

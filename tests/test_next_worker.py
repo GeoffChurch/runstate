@@ -23,6 +23,7 @@ from runstate._next.observables import (
 )
 from runstate._next.vocabulary.coordinate import Commits, Target
 from runstate._next.vocabulary.payloads import Outcome, Topic
+from runstate._next.walk import MalformedRecordError
 from runstate._next.worker import Worker
 from runstate.channel import Channel
 from runstate.vocabulary.launch import launch_scope
@@ -32,6 +33,7 @@ from tests.test_next_reads import (
     append,
     beat,
     commit,
+    died,
     started,
     stopped,
     value,
@@ -63,14 +65,14 @@ def end(ch, w):
     report_death(ch, claim, outcome=Outcome.KILLED, evidence="test: ended", force=True)
 
 
-def conforms(ch):
-    """Every record on the log conforms to the 0.4.0 schemas."""
+def conforms(ch, *, after=0):
+    """Every record on the log above ``after`` conforms to the 0.4.0 schemas."""
     pytest.importorskip("jsonschema")
     from test_schema_v0_4_0 import record_errors
 
     bad = {
         e.seq: errs
-        for e in ch.read()
+        for e in ch.read(after)
         if (
             errs := record_errors(
                 {
@@ -326,6 +328,29 @@ def test_the_worker_refuses_a_resume_from_or_rewind_naming_a_closed_node_a_torn_
         w.rewind(AtNode(seq))
     assert ch.last_seq() == before  # no rewind was written
     assert w.resume_node == 3
+
+
+@pytest.mark.parametrize("resume_from", [AtNode(3), LatestClaimHead()])
+def test_a_malformed_lineage_behind_a_valid_resume_node_raises_with_nothing_written(
+    open_run, resume_from
+):
+    """The claim walks ``resume_from``'s lineage at W before its CAS (§4, "The
+    claim", step 1): the node at 3 is extendable, but its ``values`` names a seq at
+    or above its own, so the lineage is malformed, and the claim raises before it
+    writes ``started``, as a ``rewind`` to it does."""
+    ch = open_run()
+    append(
+        ch,
+        [
+            (1, started(None)),
+            (2, died(1, "killed")),
+            (3, commit(1, None, [4])),
+            (4, value("loss", 1.0)),
+        ],
+    )
+    with pytest.raises(MalformedRecordError):
+        worker(ch, resume_from=resume_from)
+    assert ch.last_seq() == 4  # the claim was never written
 
 
 def test_a_rewind_writes_its_record_discards_pending_and_resets_registers(open_run):
@@ -760,6 +785,135 @@ def test_a_bad_stop_or_control_verb_is_refused_and_never_pending(
     assert naks(ch) == [(request_id, reason)]
     assert undischarged_stops(obs) == []  # the nak answers it, by name
     assert ch.latest(Topic.LIFECYCLE_HEARTBEAT).body["consumed_seq"] == seq
+
+
+def honored(ch):
+    """The newest exit's ``honored``, as the set it is (§3)."""
+    return set(ch.latest(Topic.LIFECYCLE_STOPPED).body["honored"])
+
+
+@pytest.mark.parametrize("topic", ["control.stop", "control.withdraw", "control.frob"])
+def test_an_empty_id_is_nameless_refused_and_never_pending(open_run, topic):
+    """A missing or empty id is nameless, on every control topic (§4, "A drain"):
+    refused ``malformed`` by a ``nak`` whose ``request_id`` is null. An empty-id
+    stop is never pending, so the exit writes normally, honoring nothing."""
+    ch = open_run()
+    obs = open_run()
+    obs.send({}, topic=topic, request_id="")
+    with worker(ch) as w:
+        assert w.heartbeat() is False
+        assert w.commit() is False
+    assert naks(ch) == [(None, "malformed")]
+    assert honored(ch) == set()
+    conforms(ch, after=1)  # the worker's records; the empty id is not on the wire
+
+
+def test_a_nameless_record_is_refused_by_the_first_claim_that_drains_it(open_run):
+    """Nothing can spend a nameless record, so a claim refuses one only above the
+    previous claim's ``started`` (§4, "A drain"): the first claim refuses each
+    once, and the claims after it pass over them. A named one is spent by its
+    refusal, and every later claim skips it."""
+    ch = open_run()
+    obs = open_run()
+    obs.send({}, topic="control.frob", request_id="x")
+    send_stop(obs, None)
+    send_stop(obs, "")
+    claims = []
+    for _ in range(3):
+        with worker(ch, resume_from=LatestClaimHead()) as w:
+            claims.append(obs.latest(Topic.LIFECYCLE_STARTED).seq)
+            assert w.commit() is False
+    assert naks(ch) == [("x", "unsupported"), (None, "malformed"), (None, "malformed")]
+    assert all(e.seq < claims[1] for e in ch.read(topics=[Topic.LIFECYCLE_NAK]))
+
+
+def test_a_nameless_record_an_ended_claim_never_drained_is_refused_by_the_next(
+    open_run,
+):
+    """A nameless record above the previous claim's ``started`` is refused, since
+    that claim may have ended before it drained it (§4, "A drain"); the claim
+    after the refusing one passes over it."""
+    ch = open_run()
+    obs = open_run()
+    w1 = worker(ch)
+    send_stop(obs, None)  # after the first claim, which ends before it drains
+    end(ch, w1)
+    w2 = worker(ch, resume_from=LatestClaimHead())
+    assert w2.commit() is False
+    assert naks(ch) == [(None, "malformed")]
+    end(ch, w2)
+    w3 = worker(ch, resume_from=LatestClaimHead())
+    assert w3.commit() is False
+    assert naks(ch) == [(None, "malformed")]  # not again
+
+
+def test_a_spent_id_is_skipped_silently_on_every_control_topic(open_run):
+    """A spent id is dead on arrival on every control topic (§4, "A drain"): an
+    unknown verb refused once is skipped by its re-send in the same claim, and by
+    the next claim, whose fold reads the ``nak`` that spent it."""
+    ch = open_run()
+    obs = open_run()
+    obs.send({}, topic="control.frob", request_id="x")
+    with worker(ch) as w:
+        assert w.commit() is False
+        obs.send({}, topic="control.frob", request_id="x")  # a re-send, spent
+        assert w.commit() is False
+    with worker(ch, resume_from=LatestClaimHead()) as w:
+        assert w.commit() is False
+    assert naks(ch) == [("x", "unsupported")]
+
+
+def test_a_refused_resend_of_a_pending_stop_drops_it(open_run):
+    """A refused re-send spends the id and drops the registration (§4, "A drain";
+    §3's re-send rule): the stop it named never holds, and the exit honors
+    nothing."""
+    ch = open_run()
+    obs = open_run()
+    send_stop(obs, "s", **{"from": {"commits": 2}})
+    with worker(ch) as w:
+        assert w.commit() is False  # count 1: pending
+        send_stop(obs, "s", **{"from": {"bogus": 1}})
+        assert w.commit() is False  # count 2, but the refusal dropped it
+        assert w.stop_pending is False
+    assert naks(ch) == [("s", "malformed")]
+    assert honored(ch) == set()
+    assert undischarged_stops(obs) == []
+
+
+def test_an_accepted_resend_of_a_pending_stop_replaces_it_and_restarts_its_clock(
+    open_run,
+):
+    """An accepted re-send of a pending stop replaces its registration, its time
+    ``from`` counted from the re-send (§4, "A drain")."""
+    ch = open_run()
+    obs = open_run()
+    clock = Clock()
+    send_stop(obs, "s", **{"from": {"time_seconds": 10}})
+    with worker(ch, now=clock) as w:
+        assert w.heartbeat() is False  # registered at t 0
+        clock.t = 8.0
+        send_stop(obs, "s", **{"from": {"time_seconds": 10}})
+        assert w.heartbeat() is False  # registered afresh at t 8
+        clock.t = 12.0
+        assert w.heartbeat() is False  # 12 s from the first send, 4 from the re-send
+        clock.t = 18.0
+        assert w.heartbeat() is True
+    assert naks(ch) == []
+    assert honored(ch) == {"s"}
+
+
+def test_a_resend_of_a_held_stop_is_ignored(open_run):
+    """A re-send of a stop that has held is ignored, since the decision is a level
+    (§4, "A drain"): not re-parsed, so not refused, and still honored."""
+    ch = open_run()
+    obs = open_run()
+    send_stop(obs, "s")
+    with worker(ch) as w:
+        assert w.commit() is True
+        send_stop(obs, "s", **{"from": {"bogus": 1}})
+        assert w.heartbeat() is True
+    assert naks(ch) == []
+    assert honored(ch) == {"s"}
 
 
 # ----- steps(until) (§4, "The drivers") ----------------------------------------------

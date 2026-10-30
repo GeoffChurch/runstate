@@ -201,9 +201,9 @@ def _claim_then_commit_0_4_0(i, root, run_id, backend, claimed_barrier, results)
     """Thread body, for the staged 0.4.0 Worker: construct it (the claim races
     here), record the verdict, then HOLD at a barrier so the winner's claim stays
     held while the loser claims, and only then emit and commit. The winner never
-    exits (the exit is Task 11's), so its claim stays held, and its channel stays
-    open until the loser has claimed, so a backend's session probe finds the
-    winner's session alive."""
+    writes its exit, so its claim stays held, and its channel stays open until the
+    loser has claimed, so a backend's session probe finds the winner's session
+    alive."""
     from runstate._next.checkpoint import NoSave
     from runstate._next.worker import Worker as Worker0_4_0
 

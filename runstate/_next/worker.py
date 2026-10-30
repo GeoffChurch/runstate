@@ -31,7 +31,9 @@ or is refused; a withdrawal spends what it names. Every record a drain writes is
 compare-and-appended at the tail it last read, so a death report that lands first
 fences the worker before it refuses anything. Requests are answered by name, for
 the whole log (§2, "Requests"): the claim folds every answer on the log below it,
-and a spent id is dead on arrival.
+and a spent id is dead on arrival, on every control topic. A record with a missing
+or empty id is nameless: nothing can spend it, so a claim refuses one only above the
+previous claim's ``started``.
 
 THE STOP DECISION (§4). A pending stop's ``from`` is evaluated at each node the
 claim writes, with the counts at the node being written, and at each heartbeat,
@@ -47,9 +49,10 @@ is extendable, and the next claim may resume from it.
 
 THE FENCE (§4, "A released worker fences itself"). Once a drain reads a death
 report naming its claim, the worker writes nothing more: a worker released by
-mistake costs at most the iteration in flight. A worker writes nothing after its
-own exit either: a record of its claim after the exit would be malformed (§5), and
-a value then is outside every lineage.
+mistake costs at most the iteration in flight. A worker after its own exit is
+fenced the same way (§4, "A worker after its own exit is fenced the same way"): a
+record of its claim after the exit would be malformed (§5), and a value then is
+outside every lineage. Only ``discard()`` makes misuse raise, until the exit.
 """
 
 from __future__ import annotations
@@ -268,6 +271,7 @@ class Worker:
         self._sources = frozenset(self._started.sources)
         self._phase = _Phase.LOST
         self._claim = 0  # the claim's seq, once won
+        self._previous = 0  # the previous claim's seq, 0 when there is none
         self._resume_node: int | None = None
         self._lineage = _Lineage([], [], [])
         self._pending: list[_Pending] = []
@@ -275,7 +279,7 @@ class Worker:
         self._registers: dict[str, object] = {}
         self._cursor = 0  # the control-drain watermark, ``consumed_seq``
         self._reports_read = 0  # the death reports are read up to here
-        self._spent: set[str] = set()  # stop ids an answer names (§2, "Requests")
+        self._spent: set[str] = set()  # request ids an answer names (§2, "Requests")
         self._stops: dict[str, _Stop] = {}  # pending: drained, not yet held
         self._held: list[str] = []  # the stops whose ``from`` held, in that order
         self._claim_run(resume_from)
@@ -283,22 +287,29 @@ class Worker:
     # ----- the claim (§4, "The claim") -------------------------------------------
 
     def _claim_run(self, resume_from: NodeRef | LatestClaimHead | None) -> None:
-        """Claim the run, in order: if the latest claim is held, call
-        ``report_if_dead`` (§3), and start again if it reports, else lose the claim;
-        CAS ``started`` at W; after winning, fold the answers by name up to W and
-        rebuild at the position. A lost CAS starts again from a new W.
+        """Claim the run, in order (§4, "The claim"): read W, validate
+        ``resume_from`` there and walk the lineage that ends at its node, so a
+        malformed one raises with nothing written; if the latest claim is held,
+        call ``report_if_dead`` (§3), and start again if it reports, else lose the
+        claim; CAS ``started`` at W; after winning, fold the answers by name up to
+        that same W, and take the walked lineage as the position. A lost CAS starts
+        again from a new W, and walks again only if the node it resolves changed.
 
         The answers are folded once the claim has won rather than before each
         attempt: the CAS at W proves that the log at or below W is exactly what
         preceded the claim, so the fold reads the same records either way, and a
-        loser, or a lost CAS, reads none of them.
+        loser, or a lost CAS, reads none of them. A walked lineage is settled at
+        its node, whatever W, so the rebuild reuses it.
 
         "Held" is the presence test (``claims.endings``): no exit and no death
         report names the latest claim, readable or not. It never raises, so a
         contradiction in an old claim's window cannot keep the run from being
         claimed, and it agrees with ``report_if_dead``'s own test (§3)."""
+        lineage: _Lineage | None = None
         while True:
             node, w = self._resume_point(resume_from)
+            if lineage is None or lineage.node != node:
+                lineage = _Lineage.at(self._ch, node)  # raises before the CAS
             latest = self._ch.latest(Topic.LIFECYCLE_STARTED)
             if latest is not None and latest.seq > w:
                 continue  # a claim landed since W: the CAS at W would lose
@@ -327,18 +338,20 @@ class Worker:
                 break
         self._phase = _Phase.LIVE
         self._claim = seq
+        self._previous = 0 if latest is None else latest.seq
         self._reports_read = seq
         self._resume_node = node
         self._fold_answers(w)
-        self._lineage = _Lineage.at(self._ch, node)
+        self._lineage = lineage
 
     def _fold_answers(self, w: int) -> None:
         """The answers on the log at or below ``w``, by name (§4, "The claim", step
-        1): a stop is spent once an exit's ``honored``, a ``control.withdraw`` or a
-        ``lifecycle.nak`` names it, wherever that sits, a displaced worker's exit
-        included, so a resumed claim never re-honors a stop. An unreadable exit's
-        ``honored`` is not read, as no fold reads more of an unreadable record
-        (§5)."""
+        4): a request is spent once a ``control.withdraw`` or a ``lifecycle.nak``
+        names it, and a stop once an exit's ``honored`` does, wherever that sits, a
+        displaced worker's exit included, so a resumed claim never re-honors a stop.
+        An unreadable exit's ``honored`` is not read, as no fold reads more of an
+        unreadable record (§5); an answer with a missing or empty id names
+        nothing."""
         topics: list[str] = [
             Topic.LIFECYCLE_STOPPED,
             Topic.CONTROL_WITHDRAW,
@@ -350,7 +363,7 @@ class Worker:
             if e.topic == Topic.LIFECYCLE_STOPPED:
                 exit_ = readable(Stopped, e)
                 self._spent.update(() if exit_ is None else exit_.honored)
-            elif e.request_id is not None:
+            elif e.request_id:
                 self._spent.add(e.request_id)
 
     def _resume_point(
@@ -413,9 +426,11 @@ class Worker:
     def _acts(self) -> bool:
         """Whether ``emit``, ``set``, ``include`` and ``rewind`` act: only for a
         live worker. A lost, released or stopped worker's do nothing, since a
-        released one cannot know when its report landed; after ``discard()`` they
-        raise ``RuntimeError``: the worker discarded the iteration itself, so a
-        later write is its own bug, and could never be committed (§4)."""
+        released one cannot know when its report landed, and a stopped one is
+        fenced the same way (§4, "A worker after its own exit is fenced the same
+        way"); after ``discard()``, until the exit, they raise ``RuntimeError``:
+        the worker discarded the iteration itself, so a later write is its own
+        bug, and could never be committed (§4)."""
         if self._phase is _Phase.DISCARDED:
             raise RuntimeError(
                 "the worker discarded its open iteration: nothing it writes now "
@@ -555,7 +570,9 @@ class Worker:
         record above the watermark, and return the tail the drain last read, its
         own writes included, which the exit compare-and-appends at.
 
-        Each refusal is a ``nak`` compare-and-appended at that tail. A lost CAS
+        Each refusal is a ``nak`` compare-and-appended at that tail, naming the
+        request it refuses, or null for a nameless one. Once it lands it spends the
+        id, and drops a stop registered under it (a refused re-send). A lost CAS
         means a record landed unread, perhaps a death report, so the drain runs
         again from the request it was refusing: the records before it were
         handled, and the watermark is past them."""
@@ -592,17 +609,19 @@ class Worker:
                 break
             refusal = self._take(e)
             if refusal is not None:
+                r = e.request_id or None  # an empty id is no name
                 seq = self._ch.send(
                     asdict(refusal),
                     topic=Nak.TOPIC,
-                    request_id=e.request_id,
+                    request_id=r,
                     expected_seq=tail,
                 )
                 if seq is None:
                     return None  # run the drain again, from this request
                 tail = seq
-                if e.request_id is not None:
-                    self._spent.add(e.request_id)  # a nak names what it spends
+                if r is not None:
+                    self._spent.add(r)  # a nak names what it spends
+                    self._stops.pop(r, None)  # a refused re-send drops its stop
             self._cursor = e.seq
         return tail
 
@@ -610,25 +629,41 @@ class Worker:
         """Handle one control record, or return the refusal to write for it,
         having changed nothing: the refusal takes effect only once it lands.
 
-        - **A stop** (subscription-v0.4) is named by its ``request_id``. A spent
-          id is skipped, silently: "already answered" is not a refusal. Its
-          trigger is parsed once here (``parse_stop_trigger``): ``malformed`` when
-          it does not parse, ``unsatisfiable`` when a progress atom names a
-          declared source (§3, "Refusals"). A re-send of a pending id replaces its
-          registration; one that already held is decided.
+        By its id first, on every control topic (§4, "A drain"):
+
+        - **A missing or empty id is nameless,** and refused ``malformed``. Nothing
+          can spend it, so it is refused once: only above the previous claim's
+          ``started``, since an earlier claim had its chance.
+        - **A spent id is skipped,** silently: "already answered" is not a
+          refusal, and the id is dead on arrival.
+
+        Then by its topic:
+
+        - **A stop** (subscription-v0.4). Its trigger is parsed once here
+          (``parse_stop_trigger``): ``malformed`` when it does not parse,
+          ``unsatisfiable`` when a progress atom names a declared source (§3,
+          "Refusals"). An accepted re-send of a pending id replaces its
+          registration, its time ``from`` counted from the re-send; a refused one
+          drops it once the refusal lands (``_drain_control``); a re-send of one
+          that held is ignored, since the decision is a level.
         - **A withdrawal** spends what it names (§2): a pending stop that has not
           held is dropped, and one that held is too late, since the claim stops
           and ``honored`` names it (§4, "The exit").
         - **A subscription** is passed over (plan Task 12).
         - **Any other ``control.*`` topic** is refused ``unsupported``."""
         r = e.request_id
+        if not r:
+            if e.seq <= self._previous:
+                return None  # an earlier claim had its chance to refuse it
+            return Nak(
+                reason=NakReason.MALFORMED,
+                message=f"a {e.topic} is named by its request_id, and this one "
+                "has none",
+            )
+        if r in self._spent:
+            return None
         if e.topic == Topic.CONTROL_STOP:
-            if r is None:
-                return Nak(
-                    reason=NakReason.MALFORMED,
-                    message="a stop is named by its request_id",
-                )
-            if r in self._spent or r in self._held:
+            if r in self._held:
                 return None
             try:
                 trigger = parse_stop_trigger(e.body)
@@ -644,11 +679,6 @@ class Worker:
             self._stops[r] = _Stop(trigger, self._now())
             return None
         if e.topic == Topic.CONTROL_WITHDRAW:
-            if r is None:
-                return Nak(
-                    reason=NakReason.MALFORMED,
-                    message="a withdrawal is named by the request_id it withdraws",
-                )
             self._spent.add(r)
             self._stops.pop(r, None)
             return None
@@ -755,8 +785,8 @@ class Worker:
            the drain's tail, with ``parent`` the position, ``values`` the pending
            values, or null when the exit discards its iteration (an error, or after
            ``discard()``), and ``honored`` every stop that held during the claim and
-           every stop pending now. A lost CAS repeats this step only, so a stop
-           first drained here is honored;
+           every stop pending now, a set whose order means nothing (§3). A lost
+           CAS repeats this step only, so a stop first drained here is honored;
         4. if the exit is extendable, run the save policy (§6).
 
         ``completed`` is the worker's claim of intrinsic completion, which closes
