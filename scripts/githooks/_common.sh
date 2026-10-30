@@ -19,6 +19,8 @@ run_gate() {  # run_gate <label> <module> <args...>
     have "$mod" || { printf '  skip  %-6s (not installed in %s)\n' "$label" "$PY"; return 0; }
     if out=$("$PY" -m "$mod" "$@" 2>&1); then
         printf '  ok    %s\n' "$label"
+        # A passing gate's output is hidden, except the lines it marks "note: ".
+        printf '%s\n' "$out" | sed -n 's/^note: /  note  /p'
     else
         printf '  FAIL  %s\n' "$label"
         printf '%s\n' "$out" | tail -20

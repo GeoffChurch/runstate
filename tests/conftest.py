@@ -2,6 +2,10 @@
 
 The substrate conformance tests run against *every* Channel backend via the
 ``ch`` fixture, parametrized over backends; each must pass independently.
+
+The Postgres backend's tests get a throwaway server of their own unless
+``RUNSTATE_TEST_PG_DSN`` names one (``tests/pg_bootstrap.py``): it starts in
+``pytest_configure``, before collection, and stops in ``pytest_unconfigure``.
 """
 
 import os
@@ -10,15 +14,46 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests import pg_bootstrap
+
+_PG_KEY = pytest.StashKey["pg_bootstrap.Cluster | pg_bootstrap.Skipped | None"]()
+
+
+def pytest_configure(config):
+    config.stash[_PG_KEY] = pg_bootstrap.start()
+
+
+def pytest_unconfigure(config):
+    outcome = config.stash.get(_PG_KEY, None)
+    if isinstance(outcome, pg_bootstrap.Cluster):
+        outcome.stop()
+
+
+def pytest_terminal_summary(terminalreporter, config):
+    # "note: " is the prefix the pre-commit hook surfaces from a passing gate.
+    outcome = config.stash.get(_PG_KEY, None)
+    if isinstance(outcome, pg_bootstrap.Skipped):
+        terminalreporter.write_line(
+            f"note: Postgres tests skipped: {outcome.reason}", yellow=True
+        )
+
 
 @pytest.fixture(scope="session")
-def pg_dsn():
+def pg_dsn(request):
     """The DSN of a live Postgres for the backend tests, or SKIP. The shared-table
-    backend can't be conjured from ``tmp_path``; without a server its tests don't
-    run (set ``RUNSTATE_TEST_PG_DSN`` to a direct/session-pooled endpoint)."""
+    backend can't be conjured from ``tmp_path``: the session's bootstrap starts a
+    throwaway server when the binaries are found, ``RUNSTATE_TEST_PG_DSN`` names
+    your own (a direct/session-pooled endpoint), and without either its tests
+    don't run."""
     dsn = os.environ.get("RUNSTATE_TEST_PG_DSN")
     if not dsn:
-        pytest.skip("RUNSTATE_TEST_PG_DSN unset; skipping the Postgres backend tests")
+        outcome = request.config.stash.get(_PG_KEY, None)
+        why = (
+            outcome.reason
+            if isinstance(outcome, pg_bootstrap.Skipped)
+            else "RUNSTATE_TEST_PG_DSN unset"
+        )
+        pytest.skip(f"no Postgres server ({why}); skipping the Postgres backend tests")
     return dsn
 
 

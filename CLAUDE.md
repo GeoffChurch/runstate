@@ -275,8 +275,9 @@ them. The pre-commit hook prefers `./.conda/bin/python` when it exists.
 
 ```bash
 conda activate ./.conda             # the dev env: editable install + test + postgres extras
-conda create -p ./.conda python=3.12 && ./.conda/bin/pip install -e .[test,postgres]  # (re)create it
-pytest tests/ -m "not oracle"       # what the hook runs (~3,540, ~90 s; +Postgres if a DSN is set)
+conda create -p ./.conda -c conda-forge python=3.12 postgresql \
+  && ./.conda/bin/pip install -e .[test,postgres]  # (re)create it; postgresql: the test server
+pytest tests/ -m "not oracle"       # what the hook runs (~4,495, ~110 s, Postgres included)
 pytest tests/ -m oracle             # the migration oracle's families (below)
 pytest tests/test_channel.py -v     # one module
 pytest tests/test_schema.py -v      # emitted messages conform to the schema stack
@@ -284,9 +285,17 @@ pytest tests/test_schema.py -v      # emitted messages conform to the schema sta
 git config core.hooksPath scripts/githooks   # opt in to the local gates (per clone)
 ```
 
-**Run the Postgres suite locally.** Without a DSN, **~280 tests silently skip** -- every test of the
-CAS under real cross-process contention, the advisory-lock probe, and the shared-table paths. A
-throwaway server takes seconds (conda ships the binaries):
+**The Postgres suite runs on every local run.** The session starts its own throwaway server
+(`tests/pg_bootstrap.py`, about 0.5 s): a fresh cluster in a 0700 `/tmp/rspg*` directory, its DSN
+exported as `RUNSTATE_TEST_PG_DSN` before collection, stopped and deleted at session end. It also sets
+`RUNSTATE_TEST_PG_ALTER_SYSTEM=1`, since `ALTER SYSTEM` on that cluster touches nothing else. The
+binaries are looked for next to the interpreter (`./.conda/bin`), then on `PATH`. Without them
+(`conda install -p ./.conda -c conda-forge postgresql`) about 280 tests skip -- every test of the CAS
+under real cross-process contention, the advisory-lock probe, and the shared-table paths -- and the
+session ends with a `note:` line saying so.
+
+**An explicit `RUNSTATE_TEST_PG_DSN` wins**, and then nothing starts: CI's service, or a server of
+your own:
 
 ```bash
 initdb -D /tmp/rs-pg -U "$USER" --auth-local=trust
@@ -297,18 +306,17 @@ export RUNSTATE_TEST_PG_DSN="postgresql:///runstate_test?host=/tmp/rs-pgsock&por
 ```
 
 The socket directory **must be a short path** -- the sun_path limit is 107 bytes and a scratchpad
-path blows it (`Unix-domain socket path ... is too long`). 3,254 passed / 282 skipped without the DSN
-and 3,535 passed / 1 skipped with it, the oracle's 25 deselected (2026-10-28); 3,561 collected in all.
-The `fsync = off` refusal's test also needs `RUNSTATE_TEST_PG_ALTER_SYSTEM=1`, since it alters the
-server's persisted config: set it only on a throwaway server like this one (CI's job sets it).
+path blows it (`Unix-domain socket path ... is too long`). The `fsync = off` refusal's test needs
+`RUNSTATE_TEST_PG_ALTER_SYSTEM=1` on such a server, since it alters the server's persisted config:
+set it only on a throwaway one (CI's job sets it).
 
 The pre-commit hook runs CI's default gate set -- `black --check`,
-`mypy --strict`, `pytest` -- in ~100 s, almost all of it the suite. It exists
+`mypy --strict`, `pytest` -- in ~110 s, almost all of it the suite. It exists
 because the formatter gate is the one that gets skipped: run the checks, add
 code, commit, and CI goes red on a branch that looked green. `--no-verify`
-bypasses it. It is a *weaker* gate than CI in one respect: without
-`RUNSTATE_TEST_PG_DSN` the ~280 Postgres tests skip locally and CI runs them, so
-green here does not imply green there.
+bypasses it. It runs the Postgres suite too, on the session's own server; only
+where the binaries are missing do those tests skip, and the hook then prints the
+suite's `note:` line, since green there does not imply green in CI.
 
 **The migration oracle is deselected too** (`-m "not oracle"`, the hook and CI's
 default job alike). `tests/test_migration_oracle.py` runs the 0.3.0 -> 0.4.0 step's
