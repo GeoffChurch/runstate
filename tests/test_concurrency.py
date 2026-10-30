@@ -336,3 +336,121 @@ def test_concurrent_writers_produce_unique_contiguous_seqs(tmp_path):
     seqs = [e.seq for e in chans[0].read()]
     assert len(seqs) == total  # no lost writes
     assert sorted(seqs) == list(range(1, total + 1))  # unique + contiguous
+
+
+# ===================== the substrate contract (§9 item 5) =====================
+# A reader that has seen seq W has seen every seq below W. Contiguity alone does not
+# guarantee it: a sequence allocator broke it 30,780 times while leaving a contiguous
+# log (commits-and-lineage.md §5, "The substrate contract"). Every Layer 1 cursor
+# depends on it -- a cursor past a seq that was not yet visible skips that seq for
+# good -- so the reader below reads the way a cursor does: it takes W = last_seq()
+# first, then reads the tail after its cursor, and the tail must be contiguous from
+# the cursor and reach W.
+
+_CONTRACT_WRITERS = 4
+_CONTRACT_SENDS = 150
+
+
+def _contract_writer(root, run_id, backend, journal, fire, sends):
+    """One writer, a thread or a forked process: open its own handle, line up, append."""
+    import os
+
+    if journal:
+        os.environ["RUNSTATE_SQLITE_JOURNAL_MODE"] = journal
+    ch = locate(run_id, root=root, backend=backend)
+    try:
+        fire.wait(timeout=15)
+        for i in range(sends):
+            ch.send({"i": i}, topic="value", name="n")
+    finally:
+        ch.close()
+
+
+def _read_as_a_cursor_while(writing, ch):
+    """Read like a cursor until ``writing()`` is false, then once more; return the seqs
+    read, in order. Asserts the contract at every read."""
+    cursor, seen = 0, []
+    while True:
+        done = not writing()  # sampled BEFORE the read, so the last read sees all
+        w = ch.last_seq()
+        got = [e.seq for e in ch.read(after=cursor)]
+        assert got == list(
+            range(cursor + 1, cursor + 1 + len(got))
+        ), f"the tail after {cursor} is not contiguous: {got[:10]}..."
+        assert (
+            cursor + len(got) >= w
+        ), f"saw last_seq {w}, but the tail stops at {cursor + len(got)}"
+        cursor += len(got)
+        seen.extend(got)
+        if done:
+            return seen
+
+
+@pytest.mark.tier("in_process")
+def test_interop_substrate_contract_across_threads(conc_backend):
+    run_id = f"{conc_backend.namespace}-contract"
+    reader = locate(run_id, root=conc_backend.root, backend=conc_backend.backend)
+    try:
+        fire = threading.Barrier(_CONTRACT_WRITERS + 1)
+        writers = [
+            threading.Thread(
+                target=_contract_writer,
+                args=(
+                    conc_backend.root,
+                    run_id,
+                    conc_backend.backend,
+                    conc_backend.journal,
+                    fire,
+                    _CONTRACT_SENDS,
+                ),
+            )
+            for _ in range(_CONTRACT_WRITERS)
+        ]
+        for t in writers:
+            t.start()
+        fire.wait(timeout=15)
+        seen = _read_as_a_cursor_while(
+            lambda: any(t.is_alive() for t in writers), reader
+        )
+        for t in writers:
+            t.join()
+    finally:
+        reader.close()
+    assert seen == list(range(1, _CONTRACT_WRITERS * _CONTRACT_SENDS + 1))
+
+
+@pytest.mark.tier("cross_process")
+def test_interop_substrate_contract_across_processes(conc_backend):
+    if "fork" not in mp.get_all_start_methods():
+        pytest.skip("the cross_process writers need the 'fork' start method")
+    ctx = mp.get_context("fork")
+    run_id = f"{conc_backend.namespace}-contract"
+    reader = locate(run_id, root=conc_backend.root, backend=conc_backend.backend)
+    try:
+        fire = ctx.Barrier(_CONTRACT_WRITERS + 1)
+        writers = [
+            ctx.Process(
+                target=_contract_writer,
+                args=(
+                    conc_backend.root,
+                    run_id,
+                    conc_backend.backend,
+                    conc_backend.journal,
+                    fire,
+                    _CONTRACT_SENDS,
+                ),
+            )
+            for _ in range(_CONTRACT_WRITERS)
+        ]
+        for p in writers:
+            p.start()
+        fire.wait(timeout=15)
+        seen = _read_as_a_cursor_while(
+            lambda: any(p.is_alive() for p in writers), reader
+        )
+        for p in writers:
+            p.join(timeout=30)
+        assert [p.exitcode for p in writers] == [0] * _CONTRACT_WRITERS
+    finally:
+        reader.close()
+    assert seen == list(range(1, _CONTRACT_WRITERS * _CONTRACT_SENDS + 1))

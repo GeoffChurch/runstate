@@ -19,7 +19,6 @@ and the locator, and re-exports them. It is the top of the package's import DAG
 from __future__ import annotations
 
 import os
-import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -27,19 +26,19 @@ from .. import formats
 from ..formats import LOG_FORMAT, FORMATS, LogFormatMismatch, LogFormatMissing
 from .base import Channel, EpisodeHolder, EpisodeProbe, RunNotFound
 from .envelope import Body, Envelope
-from .memory import MemoryChannel
+from .memory import MemoryChannel, MemoryLog
 from .sqlite import SqliteChannel
 
 # In-process registry of MemoryChannel logs, keyed by (root, run_id). Lets
 # several ``create_channel`` / ``attach_channel`` (..., backend="memory") calls
 # in one process act as multiple readers/writers of the *same* run (the analogue
-# of several SqliteChannels on one file). Each entry is (log, lock): the shared
-# lock keeps the seq read-modify-write atomic across every instance on that log.
+# of several SqliteChannels on one file). Each entry is one ``MemoryLog``, whose
+# own lock keeps the seq read-modify-write atomic across every handle on it.
 # Distinct (root, run_id) keys stay isolated; the root is identity-normalized
 # (absolute path, None kept as None) so two spellings of one location share a log
 # exactly as they would share a file on sqlite -- and root=None never collides
 # with a namespace literally named "None".
-_MEMORY_LOGS: dict[tuple[str | None, str], tuple[list[Envelope], threading.Lock]] = {}
+_MEMORY_LOGS: dict[tuple[str | None, str], MemoryLog] = {}
 
 
 def _locate_sqlite(
@@ -117,17 +116,17 @@ def _locate(
     if backend == "memory":
         key = (None if root is None else os.path.abspath(str(root)), run_id)
         if create:
-            log, lock = _MEMORY_LOGS.setdefault(key, ([], threading.Lock()))
+            log = _MEMORY_LOGS.setdefault(key, MemoryLog([]))
         else:
             # Attach: look up WITHOUT setdefault (no phantom); an absent key or an
             # empty log is "no records" -> the run does not exist.
-            entry = _MEMORY_LOGS.get(key)
-            if entry is None or not entry[0]:
+            found = _MEMORY_LOGS.get(key)
+            if found is None or found.last_seq() == 0:
                 raise RunNotFound(
                     f"run {run_id!r} has no records (memory backend, root={root!r})"
                 )
-            log, lock = entry
-        return MemoryChannel(log, lock, json_default=json_default)
+            log = found
+        return MemoryChannel(log, json_default=json_default)
     if backend == "postgres":
         if root is None:
             raise ValueError("the postgres backend requires a DSN root (got root=None)")
@@ -198,6 +197,7 @@ __all__ = [
     "EpisodeProbe",
     "Envelope",
     "MemoryChannel",
+    "MemoryLog",
     "RunNotFound",
     "SqliteChannel",
     "attach_channel",

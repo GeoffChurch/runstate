@@ -1152,7 +1152,7 @@ def test_the_census_splits_an_end_time_fork_into_its_dating_and_its_places():
 
 def _migrated_beacon():
     import tests.test_migration_v0_3_0_to_v0_4_0 as t
-    from runstate.channel import MemoryChannel
+    from runstate.channel import MemoryChannel, MemoryLog
 
     m = t.step.transform(
         H.a_beacon_between_two_places(),
@@ -1160,7 +1160,7 @@ def _migrated_beacon():
         history=NO_HISTORY,
     )
     env = mr._envelopes(m.rows)
-    return MemoryChannel(log=env), env
+    return MemoryChannel(MemoryLog(env)), env
 
 
 def test_p1s_reads_hold_over_a_migrated_log():

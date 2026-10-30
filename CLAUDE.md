@@ -353,7 +353,12 @@ add or change a convention body.
    `cross_host`) in `tests/conftest.py`'s `_MAX_TIER` ladder, so the
    tier-gated concurrency suite covers it up to that tier.
 5. All existing Channel conformance tests must pass against it unchanged.
-6. A persistent backend (anything but memory) also meets the log-format obligations
+6. Meet the substrate contract (`design-v0.2.md` §4): a reader that has seen
+   seq W has seen every seq below W, which contiguity alone does not
+   guarantee. `test_interop_substrate_contract_across_threads` and
+   `..._across_processes` in `tests/test_concurrency.py` pin it at the
+   backend's tier.
+7. A persistent backend (anything but memory) also meets the log-format obligations
    (`docs/specs/log-formats.md` §3–§6 and §9; the address scheme and the opening
    checks are part of the protocol):
    - **a layout per format** — an address method on the `Layout` Protocol

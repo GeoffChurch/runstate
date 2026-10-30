@@ -435,3 +435,99 @@ def test_sqlite_name_index_does_not_displace_the_topic_index(tmp_path):
         )
     )
     assert "TEMP B-TREE" not in plan.upper()  # the tell that the sort is unserved
+
+
+# --- the memory backend's slice and index (Review Focus 5) ---
+# The memory log reads a tail as a slice (seq = index + 1) and answers ``latest``
+# from a per-topic index. Every in-process run reads through it (the
+# ThreadLauncher's default), and an off-by-one in a slice is silent: the reads
+# return envelopes of the right shape, one short or one over. So the two are
+# pinned against a full scan of what was sent, computed here and not by the backend.
+
+_TOPICS = ["value", "control.stop", "lifecycle.heartbeat", "control.subscribe"]
+_NAMES = [None, "loss", "acc"]
+_RIDS = [None, "r1", "r2", None]
+
+
+def _scan(sent, after, *, topics, name, request_ids, limit):
+    def topic_ok(topic):
+        if topics is None:
+            return True
+        return any(
+            topic.startswith(p[:-1]) if p.endswith(".>") else topic == p for p in topics
+        )
+
+    out = [
+        e
+        for e in sent
+        if e.seq > after
+        and topic_ok(e.topic)
+        and (name is None or e.name == name)
+        and (request_ids is None or e.request_id is None or e.request_id in request_ids)
+    ]
+    return out if limit is None else out[:limit]
+
+
+def test_memory_reads_and_latest_agree_with_a_full_scan_at_every_cursor(tmp_path):
+    from runstate.channel import Envelope, create_channel
+
+    a = create_channel("run", root=tmp_path, backend="memory")
+    b = create_channel("run", root=tmp_path, backend="memory")
+    sent = []
+    for i in range(23):  # periods 4, 3 and 4 interleave every topic with every name
+        handle = (a, b)[i % 2]
+        topic, name, rid = _TOPICS[i % 4], _NAMES[i % 3], _RIDS[(i // 2) % 4]
+        if i % 5 == 0:  # some by compare-and-append, which takes the same tail
+            seq = handle.send(
+                {"i": i}, topic=topic, name=name, request_id=rid, expected_seq=i
+            )
+        else:
+            seq = handle.send({"i": i}, topic=topic, name=name, request_id=rid)
+        assert seq == i + 1
+        sent.append(Envelope(seq, topic, name, rid, {"i": i}))
+
+    filters = [
+        dict(topics=t, name=n, request_ids=r)
+        for t in (None, ["value"], ["control.>"], ["value", "lifecycle.heartbeat"], [])
+        for n in (None, "loss")
+        for r in (None, ["r1"], [])
+    ]
+    for handle in (a, b):
+        assert handle.last_seq() == len(sent)
+        assert handle.read() == sent
+        for after in range(
+            -1, handle.last_seq() + 2
+        ):  # -1: seq > after, not a slice from the end
+            for f in filters:
+                for limit in (0, 1, None):
+                    got = handle.read(after, limit=limit, **f)
+                    assert got == _scan(sent, after, limit=limit, **f), (
+                        after,
+                        f,
+                        limit,
+                    )
+        for topic in _TOPICS + ["absent"]:
+            for name in _NAMES + ["absent"]:
+                match = [
+                    e
+                    for e in sent
+                    if e.topic == topic and (name is None or e.name == name)
+                ]
+                assert handle.latest(topic, name) == (match[-1] if match else None)
+
+
+def test_a_memory_log_refuses_envelopes_that_are_not_contiguous_from_1():
+    from runstate.channel.envelope import Envelope
+    from runstate.channel.memory import MemoryChannel, MemoryLog
+
+    def env(*seqs):
+        return [Envelope(s, "value", "n", None, {"s": s}) for s in seqs]
+
+    for bad in (env(2), env(1, 3), env(2, 1), env(1, 1), env(0, 1)):
+        with pytest.raises(ValueError, match="contiguous"):
+            MemoryLog(bad)
+    ch = MemoryChannel(MemoryLog(env(1, 2, 3)))
+    assert [e.seq for e in ch.read()] == [1, 2, 3]
+    assert ch.latest("value", "n") == env(3)[0]
+    assert ch.send({"s": 4}, topic="value", name="n", expected_seq=3) == 4
+    assert MemoryChannel(MemoryLog([])).last_seq() == 0

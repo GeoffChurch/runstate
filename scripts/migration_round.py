@@ -114,7 +114,7 @@ from jsonschema import Draft202012Validator  # type: ignore[import-untyped]  # n
 
 from runstate import formats  # noqa: E402
 from runstate import lineage as reads  # noqa: E402
-from runstate.channel import Envelope, MemoryChannel  # noqa: E402
+from runstate.channel import Envelope, MemoryChannel, MemoryLog  # noqa: E402
 from runstate.migrations import (  # noqa: E402
     Memo,
     MigrationError,
@@ -1283,8 +1283,8 @@ def measure(
     del rows
     env03 = _envelopes(rows03)
     env04 = _envelopes(migrated04.rows)
-    ch03 = MemoryChannel(log=env03)
-    ch04 = MemoryChannel(log=env04)
+    ch03 = MemoryChannel(MemoryLog(env03))
+    ch04 = MemoryChannel(MemoryLog(env04))
     try:
         old = old_reads(ch03)
         old_cells = _old_cells(env03, old.series)
