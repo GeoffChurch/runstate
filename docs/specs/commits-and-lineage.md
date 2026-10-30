@@ -16,6 +16,10 @@ This is layer 2 of [`../backlog/identity-in-records.md`](../backlog/identity-in-
   rejected; this spec cites it as "review §N".
 - **The drafting choices,** which the decisions left open or the drafting changed, were settled by the owner
   one at a time (review §12, item 14). None is open.
+- **Amendments while planning the live layer** (2026-10-28 and 2026-10-30) fill what the spec left silent
+  or self-contradicting: a target naming a declared source (§4, §5); the folds polled without a head (§5);
+  who kills an orphan (§3); the Watcher's session tier (§5); a save that raises (§6). The plan,
+  [`../plans/2026-10-28-layer2-live.md`](../plans/2026-10-28-layer2-live.md), records why.
 
 **What it gives:**
 - **A reader can project one lineage of a run's values.** A displaced worker, a rewind or a recomputed step
@@ -851,6 +855,20 @@ This is a recipe, not protocol. runstate supplies no directory.
     lands. At that instant the state is exactly the state the node commits. It never runs it after a torn
     exit, whose state is part of an iteration ahead of its parent, nor after a closed one. Saving at any other
     moment is outside the recipe.
+  - **A save that raises propagates, and the node it followed stands.** Whether a node has a checkpoint is
+    the store's fact, never the log's: a checkpoint that was saved can be lost later too, and no record could
+    track it. So the log records how the claim ended, and the next claim chooses among the checkpoints that
+    exist, resuming from an older node and branching there.
+    - **After a commit,** the raise leaves `commit()` and ends the claim, so its exit is errored and torn,
+      its `parent` that node.
+    - **After an extendable exit,** the claim has already ended. The exit stands and its verdict is the
+      exit's; nothing more is written. The process's failure is on the external plane: when a launcher reaps
+      it, its launch's `supervisor.terminated` carries the exit code.
+    - **Nothing records the failed save,** by design (owner, 2026-10-30). Saving before the exit's
+      compare-and-append would name a seq the exit may not get, a lineage lie. A record after the exit would
+      speak for a claim that has ended, and the one record that may, a death report, defers to a readable
+      exit (§3). A record of saves would duplicate the store's own listing, and could disagree with it.
+      Revival trigger: runstate owning the checkpoint store.
   - **The policy is a Strategy** (review §12, item 14): the `SavePolicy` Protocol's one method,
     `after(node, *, commits, exit)`, which the Worker calls at each of those moments, with `commits` the
     node's `count(Commits(), node)` and `exit` True at the exit. The Worker fixes *when* a save may happen,
