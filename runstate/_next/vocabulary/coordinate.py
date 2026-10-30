@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 # subscription-v0.4's ``Count``: a threshold the wire can carry is at most 2^53 - 1.
+# Defined once, here; ``schedule.py`` takes it with ``Target``.
 _MAX_COUNT = 2**53 - 1
 
 
@@ -32,7 +33,8 @@ class Target:
     """The first ``n`` of ``x`` (§4): ``x`` an eager stream name or ``Commits()``,
     ``n >= 0``, checked once here, so every consumer (``steps(until)``, ``ensure``,
     the producer seam's ``extend``) takes it unconverted. A target of 0 is reached
-    at once.
+    at once. It is also the condition algebra's lineage atom, ``{stream: x, n}`` or
+    ``{commits: n}``, which ``schedule.parse_schedule`` builds.
 
     ``n`` is also at most 2^53 - 1, so that ``atom()`` is always an atom the wire
     admits (subscription-v0.4's ``Count``). Whether ``x`` names an eager stream

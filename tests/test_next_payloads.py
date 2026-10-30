@@ -120,6 +120,8 @@ def _envelope(body: Any) -> dict[str, Any]:
 
 @pytest.mark.parametrize("body", _SAMPLES, ids=lambda b: type(b).__name__)
 def test_every_body_round_trips_through_asdict_and_its_schema(body):
+    """Serialize for the wire, parse back: the identical value object, and a record
+    the 0.4.0 stack admits. Holds 0.3.0's test_body_roundtrips_through_its_dict."""
     pytest.importorskip("jsonschema")
     from test_schema_v0_4_0 import record_errors
 
@@ -132,8 +134,16 @@ def test_a_strenum_field_serializes_as_its_string():
     assert json.dumps(asdict(Nak(reason=NakReason.UNSUPPORTED, message="m"))) == (
         '{"reason": "unsupported", "message": "m"}'
     )
-    died = Died(claim_seq=1, outcome="lost", evidence="probe:x", t=0.0)  # type: ignore[arg-type]
+
+
+def test_an_enum_field_parses_from_its_string_into_its_member():
+    """``Cls(**body)`` takes the wire string and holds the member."""
+    died = Died(claim_seq=1, outcome="lost", evidence="probe:x", t=0.0)
     assert died.outcome is Outcome.LOST
+    nak = Nak(reason="malformed", message="m")  # type: ignore[arg-type]
+    assert nak.reason is NakReason.MALFORMED
+    reap = Terminated(reason="killed", exit_code=None, signal=9, t=0.0)
+    assert reap.reason is Reap.KILLED
 
 
 # ----- parses iff the schema admits -------------------------------------------------
@@ -391,7 +401,25 @@ def test_a_whole_number_float_is_no_integer_here_though_json_schema_admits_it():
     with pytest.raises(ValueError):
         Heartbeat(claim_seq=1, consumed_seq=3.0, t=0.0)  # type: ignore[arg-type]
     with pytest.raises(ValueError):
-        Terminated(reason=Reap.EXITED, exit_code=0.0, signal=None, t=0.0)  # type: ignore[arg-type]
+        Terminated(reason=Reap.EXITED, exit_code=0.0, signal=None, t=0.0)
+
+
+def test_nan_is_no_number_here_though_json_schema_admits_it():
+    """NaN compares false with every bound, so JSON Schema's ``minimum: 0`` admits
+    it; the bodies refuse it. No writer's clock is NaN."""
+    pytest.importorskip("jsonschema")
+    from jsonschema import Draft202012Validator
+
+    nan = float("nan")
+    assert Draft202012Validator({"type": "number", "minimum": 0}).is_valid(nan)
+    for build in (
+        lambda: Value(value=1, t=nan),
+        lambda: Withdraw(t=nan),
+        lambda: Heartbeat(claim_seq=1, consumed_seq=0, t=nan),
+        lambda: Launched(handle="h", status="running", t=nan),
+    ):
+        with pytest.raises(ValueError):
+            build()
 
 
 def test_the_topic_enum_is_the_0_4_0_reserved_set():
@@ -516,12 +544,6 @@ def test_died_refuses_an_outcome_that_is_no_death():
 # ----- ported from tests/test_payloads.py (0.3.0) ------------------------------------
 
 
-@pytest.mark.parametrize("body", _SAMPLES, ids=lambda b: type(b).__name__)
-def test_body_roundtrips_through_its_dict(body):
-    # serialize for the wire, parse back -> identical value object
-    assert type(body)(**asdict(body)) == body
-
-
 def test_terminated_coupling_rejects_illegal_states():
     # exited(exit_code) XOR killed(signal) -- illegal states unrepresentable
     Terminated(reason=Reap.EXITED, exit_code=0, signal=None, t=0.0)  # ok
@@ -577,7 +599,7 @@ def test_error_with_values_and_a_discard_that_evaluates_are_rejected():
             Stopped(**{**base, **bad})
 
 
-def test_bound_and_stopped_round_trip_through_the_schema():
+def test_bound_and_stopped_serialize_to_their_wire_fields():
     assert asdict(Bound(claim_seq=3)) == {"claim_seq": 3}
     s = Stopped(
         completed=True,

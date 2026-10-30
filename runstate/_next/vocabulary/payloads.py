@@ -11,9 +11,11 @@ truth. A body serializes with ``dataclasses.asdict`` at ``channel.send`` (a
 Each body validates in ``__post_init__`` exactly what its schema definition
 admits, so ``Cls(**body)`` raises (``TypeError`` for a missing or an extra key,
 ``ValueError`` for a bad value) if and only if the schema refuses the body, with
-one exception: a whole-number float such as ``3.0`` is no integer here, though JSON
-Schema admits it, as in the migration step; no writer of a 0.4.0 log writes one,
-since Python's ``json`` writes an int as an int. ``bool`` is never a number either:
+two exceptions, where JSON Schema admits what these refuse: a whole-number float
+such as ``3.0`` is no integer here, as in the migration step, and NaN is no number,
+since it compares false with every bound (``minimum: 0`` admits it). No writer of a
+0.4.0 log writes either: Python's ``json`` writes an int as an int, and a clock is
+never NaN. ``bool`` is never a number either:
 JSON ``true`` is not a seq and not a clock. A record's envelope (its ``name`` and
 ``request_id``) is the convention schema's, not the body's.
 
@@ -25,7 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, ClassVar, Protocol, TypeGuard
+from typing import Any, ClassVar, Literal, Protocol, TypeGuard, TypeVar
 
 
 class Topic(StrEnum):
@@ -101,6 +103,24 @@ class Reap(StrEnum):
 # ----- the checks, one per shared schema definition ---------------------------------
 
 
+_E = TypeVar("_E", bound=StrEnum)
+
+# The members each enum field admits, computed once.
+_NAK_REASONS = frozenset(NakReason)
+_REAPS = frozenset(Reap)
+_DEATHS = Outcome.deaths()
+
+
+def _member(field: str, cls: type[_E], v: object, allowed: frozenset[_E]) -> _E:
+    """An enum field: one of ``allowed``, parsed from its wire string (or given as
+    the member), and returned as the member, so the frozen body holds the enum."""
+    if not (isinstance(v, str) and v in allowed):
+        raise ValueError(
+            f"{field} must be one of {sorted(map(str, allowed))}, got {v!r}"
+        )
+    return cls(v)
+
+
 def _is_int(v: object) -> TypeGuard[int]:
     return isinstance(v, int) and not isinstance(v, bool)
 
@@ -120,7 +140,8 @@ def _watermark(field: str, v: object) -> None:
 
 
 def _time(field: str, v: object, *, nullable: bool) -> None:
-    """``Time``: a number >= 0."""
+    """``Time``: a number >= 0. Spelled ``v >= 0`` so that NaN, which compares false
+    with everything, is refused."""
     if v is None and nullable:
         return
     if not (isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0):
@@ -146,6 +167,7 @@ def _names(field: str, v: object) -> None:
 
 
 def _string(field: str, v: object) -> None:
+    """A JSON string, possibly empty."""
     if not isinstance(v, str):
         raise ValueError(f"{field} must be a string, got {v!r}")
 
@@ -389,9 +411,8 @@ class Nak:
     TOPIC: ClassVar[Topic] = Topic.LIFECYCLE_NAK
 
     def __post_init__(self) -> None:
-        if not (isinstance(self.reason, str) and self.reason in set(NakReason)):
-            raise ValueError(f"reason must be a NakReason, got {self.reason!r}")
-        object.__setattr__(self, "reason", NakReason(self.reason))
+        reason = _member("reason", NakReason, self.reason, _NAK_REASONS)
+        object.__setattr__(self, "reason", reason)
         _string("message", self.message)
 
 
@@ -421,7 +442,7 @@ class Launched:
     the wire and so with no default here. Unchanged from launcher-v0.4."""
 
     handle: str
-    status: str
+    status: Literal["running"]
     t: float
     TOPIC: ClassVar[Topic] = Topic.SUPERVISOR_LAUNCHED
 
@@ -445,14 +466,13 @@ class Terminated:
     TOPIC: ClassVar[Topic] = Topic.SUPERVISOR_TERMINATED
 
     def __post_init__(self) -> None:
-        if not (isinstance(self.reason, str) and self.reason in set(Reap)):
-            raise ValueError(f"reason must be exited or killed, got {self.reason!r}")
-        object.__setattr__(self, "reason", Reap(self.reason))
+        object.__setattr__(self, "reason", _member("reason", Reap, self.reason, _REAPS))
         code, signal = self.exit_code, self.signal
         if self.reason == Reap.EXITED:
             if not (_is_int(code) and code >= 0 and signal is None):
                 raise ValueError(
-                    f"an exit carries a code >= 0 and no signal, got {code!r}, {signal!r}"
+                    "an exit carries a code >= 0 and no signal,"
+                    f" got {code!r}, {signal!r}"
                 )
         elif not (_is_int(signal) and signal >= 1 and code is None):
             raise ValueError(
@@ -477,9 +497,8 @@ class Died:
 
     def __post_init__(self) -> None:
         _seq("claim_seq", self.claim_seq, nullable=False)
-        if not (isinstance(self.outcome, str) and self.outcome in Outcome.deaths()):
-            raise ValueError(f"outcome must be a death's, got {self.outcome!r}")
-        object.__setattr__(self, "outcome", Outcome(self.outcome))
+        outcome = _member("outcome", Outcome, self.outcome, _DEATHS)
+        object.__setattr__(self, "outcome", outcome)
         if not (isinstance(self.evidence, str) and self.evidence):
             raise ValueError(
                 f"evidence must be a non-empty string, got {self.evidence!r}"
