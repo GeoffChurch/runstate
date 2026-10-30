@@ -7,28 +7,45 @@ These read the hand-written 0.4.0 logs of ``tests/test_next_reads.py``, which
 checks each against the 0.4.0 schemas.
 """
 
+import ast
+import threading
+from pathlib import Path
+
 import pytest
 
-from runstate._next.launcher import LocalLauncher, report_death, report_if_dead
+from runstate._next import observables, walk
+from runstate._next.launcher import (
+    LocalLauncher,
+    ThreadLauncher,
+    report_death,
+    report_if_dead,
+)
 from runstate._next.observables import (
+    Answers,
     AtNode,
     DeathReport,
     Element,
     Head,
     HeadFold,
+    LastElement,
     LatestClaimHead,
     LiveDemand,
     MalformedRecordError,
     PendingStops,
     PrefixLen,
+    aligned,
+    answers,
     current_heartbeat,
     last_activity,
+    last_element,
     latest_episode,
     live_demand,
     live_episode,
     peek_terminal,
+    prefix,
     prefix_len,
     series,
+    streams,
     undischarged_stops,
 )
 from runstate._next.vocabulary.coordinate import Commits
@@ -302,11 +319,39 @@ def test_interop_death_report_from_evidence(tmp_path):
         lambda c: LiveDemand().poll(c),
         lambda c: PendingStops().poll(c),
         lambda c: PrefixLen(Commits()).poll(c, head),
+        lambda c: LastElement("loss").poll(c, head),
+        lambda c: Answers("lease").poll(c, head),
         lambda c: prefix_len(c, Commits(), head=LatestClaimHead()),
+        lambda c: prefix(c, "loss", 1, head=LatestClaimHead()),
+        lambda c: series(c, "loss", head=LatestClaimHead()),
+        lambda c: last_element(c, "loss", head=LatestClaimHead()),
+        lambda c: answers(c, "lease", head=LatestClaimHead()),
+        lambda c: streams(c, head=LatestClaimHead()),
+        lambda c: aligned(c, ["loss"], head=LatestClaimHead(), axis=Commits()),
     ):
         read(ch)
     assert ch.last_seq() == 3 and live_episode(ch) == handle
+    # and structurally: the reads' modules never append
+    for module in (observables, walk):
+        tree = ast.parse(Path(module.__file__).read_text())
+        sends = [
+            n.lineno
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "send"
+        ]
+        assert sends == [], (module.__name__, sends)
     assert report_if_dead(ch) == 4  # the party that wants it recorded calls this
+    # a thread handle's is_alive() is pure: the thread's end is its reap
+    release = threading.Event()
+    threads = ThreadLauncher(root=tmp_path)
+    th = threads.launch("thread", lambda c: release.wait(30))
+    tch = threads.attach_channel("thread")
+    before = tch.last_seq()
+    assert th.is_alive() and tch.last_seq() == before
+    release.set()
+    th.wait()
     # a handle's is_alive() is pure, though the process has ended; its reap writes
     with LocalLauncher(root=tmp_path) as launcher:
         h = launcher.launch("run", child("exit", "0"))

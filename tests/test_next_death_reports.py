@@ -140,6 +140,26 @@ def test_report_death_returns_none_for_a_claim_with_a_readable_exit():
     assert report_death(ch, 1, outcome=K, evidence="slurm:x", force=True) == 3
 
 
+def test_report_death_is_presence_based_and_never_raises_on_a_contradictory_window():
+    """Two readable exits contradict §2's one per claim: the verdict's to raise,
+    never a reporter's (§3, "Its tests are presence-based and never raise"). The
+    claim has a readable exit, so a report of either kind returns ``None``."""
+    ch = channel(
+        [(1, claim(FOREIGN)), (2, stopped(1, None, [])), (3, stopped(1, None, []))]
+    )
+    for outcome in (L, K):
+        assert report_death(ch, 1, outcome=outcome, evidence="x", force=True) is None
+    assert ch.last_seq() == 3
+
+
+def test_report_death_on_an_unreadable_claim_does_not_refuse():
+    """A claim whose ``started`` is unreadable has no handle to probe, which does
+    not refuse, as an unknown probe does not (§3)."""
+    ch = channel([(1, Rec("lifecycle.started", {"handle": 5}, None, None))])
+    assert report_death(ch, 1, outcome=K, evidence="slurm:x", force=False) == 2
+    assert undated(deaths(ch)) == [died_body(1, K, "slurm:x")]
+
+
 def test_a_lost_report_on_an_ended_claim_returns_none():
     ended_by = [
         died(1, "killed"),  # a death report
@@ -249,6 +269,19 @@ def test_report_if_dead_reports_nothing_once_the_claim_has_ended():
     assert ch.last_seq() == 3
 
 
+def test_report_if_dead_never_raises_on_a_contradictory_window_or_an_unreadable_claim():
+    """Held is presence-based (§5's ``ended``), and an unreadable claim has no
+    handle to probe: either way the probe's report is ``None``, never a raise."""
+    handle = dead_handle()
+    ch = channel(
+        [(1, claim(handle)), (2, stopped(1, None, [])), (3, stopped(1, None, []))]
+    )
+    assert report_if_dead(ch) is None
+    ch = channel([(1, Rec("lifecycle.started", {"handle": 5}, None, None))])
+    assert report_if_dead(ch) is None
+    assert ch.last_seq() == 1
+
+
 def test_report_if_dead_reports_a_held_claim_whose_session_ended_though_its_pid_lives(
     pg_ready,
 ):
@@ -284,9 +317,11 @@ def test_report_if_dead_reports_a_held_claim_whose_session_ended_though_its_pid_
 #   release      a death report naming its claim lands (the claim has ended)
 #   exit N       it exits with code N
 #   signal N     it kills itself with signal N
+#   ignoreterm   it ignores SIGTERM, as a requeue handler may
+#   badexit      it writes an unreadable exit naming its claim (it is finishing)
 #   block        it sleeps until something kills it
 CHILD = """
-import os, sys, time
+import os, signal, sys, time
 from runstate import current_channel
 from runstate.vocabulary.handle import local_handle
 from runstate.vocabulary.launch import current_launch_id
@@ -317,8 +352,23 @@ while args:
         ch.close()
         os.kill(os.getpid(), int(args.pop(0)))
         time.sleep(60)
+    elif act == "ignoreterm":
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    elif act == "badexit":
+        ch.send({"claim_seq": claim, "completed": "yes"}, topic="lifecycle.stopped")
     elif act == "block":
         time.sleep(120)
+"""
+
+# A worker whose claim, naming its launch, is unreadable; it sleeps until killed.
+UNREADABLE_CLAIM = """
+import time
+from runstate import current_channel
+from runstate.vocabulary.launch import current_launch_id
+
+ch = current_channel()
+ch.send({"handle": 7}, topic="lifecycle.started", request_id=current_launch_id())
+time.sleep(120)
 """
 
 
@@ -379,6 +429,107 @@ def test_local_launchers_reap_writes_only_terminated_when_the_handles_differ(
     ch.close()
 
 
+def test_local_launchers_reap_is_not_stopped_by_one_runs_unreadable_claim(tmp_path):
+    """One run's unreadable claim neither raises out of ``reap()`` nor keeps it from
+    reaping another child (§3, "Its tests are presence-based and never raise"). An
+    unreadable ``started`` names no claimant, so its child's reap writes
+    ``terminated`` only."""
+    script = tmp_path / "unreadable.py"
+    script.write_text(UNREADABLE_CLAIM)
+    with LocalLauncher(root=tmp_path) as launcher:
+        bad = launcher.launch("bad", [sys.executable, str(script)])
+        good = launcher.launch("good", child("exit", "2"))
+        try:
+            bad_ch = launcher.attach_channel("bad")
+            launched_claim(bad_ch)
+            good._proc.wait(timeout=30)  # exited, and not yet reaped
+            for _ in range(3):
+                launcher.reap()
+            ch = launcher.attach_channel("good")
+            claim_seq = launched_claim(ch).seq
+            assert terminated(ch) == [(good.launch_id, "exited", 2, None)]
+            assert undated(deaths(ch)) == [died_body(claim_seq, E, "reap: exit 2")]
+            assert bad.is_alive() and terminated(bad_ch) == []
+            bad.terminate()
+            assert bad.wait(timeout=30) == -signal.SIGTERM
+            assert terminated(bad_ch) == [(bad.launch_id, "killed", None, 15)]
+            assert deaths(bad_ch) == []
+            ch.close()
+            bad_ch.close()
+        finally:
+            if bad.is_alive():
+                bad._proc.kill()
+                bad.wait(timeout=30)
+
+
+@pytest.mark.parametrize(
+    "failing", [Topic.SUPERVISOR_TERMINATED, Topic.SUPERVISOR_DIED]
+)
+def test_local_launchers_reap_retries_a_write_that_failed(
+    tmp_path, monkeypatch, failing
+):
+    """A write the reap could not land is retried by the next ``poll()``: the exit
+    status ``waitpid`` yielded once is kept on the handle, with the reap's one
+    ``t``, and a record that landed is not written twice."""
+    with LocalLauncher(root=tmp_path) as launcher:
+        h = launcher.launch("run", child("exit", "3"))
+        h._proc.wait(timeout=30)
+        sent = h.channel.send
+        fails = [failing]
+
+        def flaky(body, *, topic, **kw):
+            if fails and topic == fails[0]:
+                fails.pop()
+                raise OSError("the backend went away")
+            return sent(body, topic=topic, **kw)
+
+        monkeypatch.setattr(h.channel, "send", flaky)
+        with pytest.raises(OSError):
+            h.poll()
+        assert h.poll() == 3
+        h.wait()  # reaped: nothing more
+        ch = launcher.attach_channel("run")
+        claim_seq = launched_claim(ch).seq
+        assert terminated(ch) == [(h.launch_id, "exited", 3, None)]
+        assert undated(deaths(ch)) == [died_body(claim_seq, E, "reap: exit 3")]
+        end, report = (
+            ch.latest(topic).body["t"]
+            for topic in (Topic.SUPERVISOR_TERMINATED, Topic.SUPERVISOR_DIED)
+        )
+        assert end == report  # one reap, one t
+        ch.close()
+
+
+def test_local_launchers_reap_processes_every_handle_and_raises_what_failed_after(
+    tmp_path, monkeypatch
+):
+    """The backstop: a handle whose backend raises does not keep ``reap()`` from
+    the others; the errors are raised together once every handle is processed."""
+    with LocalLauncher(root=tmp_path) as launcher:
+        broken = launcher.launch("broken", child("block"))
+        good = launcher.launch("good", child("exit", "2"))
+        try:
+            launched_claim(launcher.attach_channel("broken"))
+            good._proc.wait(timeout=30)
+
+            def unreachable(*a, **kw):
+                raise OSError("the backend went away")
+
+            monkeypatch.setattr(broken.channel, "read", unreachable)
+            with pytest.raises(ExceptionGroup) as group:
+                launcher.reap()
+            assert [type(e) for e in group.value.exceptions] == [OSError]
+            ch = launcher.attach_channel("good")
+            assert terminated(ch) == [(good.launch_id, "exited", 2, None)]
+            assert len(deaths(ch)) == 1
+            ch.close()
+        finally:
+            monkeypatch.undo()
+            if broken.is_alive():
+                broken._proc.kill()
+                broken.wait(timeout=30)
+
+
 def test_thread_launcher_writes_died_when_its_thread_finishes_with_no_exit(tmp_path):
     def claims(ch, *, exits):
         body = asdict(Started(handle=LIVE, t=1.0, resume_from=None, sources=[]))
@@ -427,6 +578,46 @@ def test_thread_launcher_writes_died_when_its_thread_finishes_with_no_exit(tmp_p
     h.wait()
     ch = launcher.attach_channel("unclaimed")
     assert deaths(ch) == [] and peek_terminal(ch).tier == Tier.TERMINATED
+
+
+def test_thread_launchers_end_never_raises_on_an_unreadable_claim_or_two_exits(
+    tmp_path, monkeypatch
+):
+    """The thread's end writes its records on any log: an unreadable claim naming
+    the launch still ends by a report (no handle is probed, and none need be), and
+    a claim with two readable exits has one, so the raise adds nothing."""
+    import threading
+
+    raised = []
+    monkeypatch.setattr(threading, "excepthook", raised.append)
+
+    def unreadable(ch):
+        ch.send(
+            {"handle": 7}, topic=Topic.LIFECYCLE_STARTED, request_id=current_launch_id()
+        )
+
+    def exits_twice(ch):
+        body = asdict(Started(handle=LIVE, t=1.0, resume_from=None, sources=[]))
+        seq = ch.send(
+            body, topic=Topic.LIFECYCLE_STARTED, request_id=current_launch_id()
+        )
+        for _ in range(2):
+            r = stopped(seq, None, [])
+            ch.send(r.body, topic=r.topic)
+        raise RuntimeError("boom")
+
+    launcher = ThreadLauncher(root=tmp_path)
+    h = launcher.launch("unreadable", unreadable)
+    h.wait()
+    ch = launcher.attach_channel("unreadable")
+    assert terminated(ch) == [(h.launch_id, "exited", 0, None)]
+    assert undated(deaths(ch)) == [died_body(2, L, "reap: returned")]
+    h = launcher.launch("twice", exits_twice)
+    h.wait()
+    ch = launcher.attach_channel("twice")
+    assert terminated(ch) == [(h.launch_id, "exited", 1, None)]
+    assert deaths(ch) == []
+    assert raised == []
 
 
 @pytest.mark.parametrize("released", [False, True], ids=["held", "ended"])
@@ -516,12 +707,14 @@ def test_an_exit_0_or_a_return_reports_lost_while_held_and_nothing_after_a_relea
     )
 
 
-def test_local_launcher_reap_terminates_its_own_child_whose_claim_a_report_ended(
+def test_local_launcher_reap_kills_its_own_child_whose_claim_a_report_ended(
     tmp_path,
 ):
     """Only the launcher kills an orphan, through the ``Popen`` it holds, never by
     pid, and only once a death report has ended its claim (plan, open question
-    6): a child whose claim is held is left alone."""
+    6): a child whose claim is held is left alone. The kill is ``SIGKILL``, and
+    the orphan's reap writes ``terminated`` only: the signal is the launcher's,
+    no evidence of how the claim ended (§3, "A session probe")."""
     with LocalLauncher(root=tmp_path) as launcher:
         orphan = launcher.launch("orphan", child("block"))
         held = launcher.launch("held", child("block"))
@@ -533,19 +726,56 @@ def test_local_launcher_reap_terminates_its_own_child_whose_claim_a_report_ended
             assert orphan.is_alive() and held.is_alive()  # both claims are held
             report_death(ch, claim_seq, outcome=L, evidence="session: s/1", force=True)
             launcher.reap()
-            assert orphan.wait(timeout=30) == -signal.SIGTERM
+            assert orphan.wait(timeout=30) == -signal.SIGKILL
             assert held.is_alive()
-            # its reap records the signal, whatever ended the claim before it
-            assert undated(deaths(ch)) == [
-                died_body(claim_seq, L, "session: s/1"),
-                died_body(claim_seq, K, f"reap: signal {int(signal.SIGTERM)}"),
+            assert terminated(ch) == [
+                (orphan.launch_id, "killed", None, int(signal.SIGKILL))
             ]
+            assert undated(deaths(ch)) == [died_body(claim_seq, L, "session: s/1")]
+            assert peek_terminal(ch).outcomes == {L}
             ch.close()
         finally:
             for h in (orphan, held):
                 if h.is_alive():
-                    h.terminate()
+                    h._proc.kill()
                     h.wait(timeout=30)
+
+
+def test_local_launcher_kills_an_orphan_that_ignores_sigterm(tmp_path):
+    """A child that handles ``SIGTERM``, as a requeue handler does, would live
+    beside its successor: the orphan is killed, not asked (§3)."""
+    with LocalLauncher(root=tmp_path) as launcher:
+        h = launcher.launch("orphan", child("ignoreterm", "release", "block"))
+        try:
+            ch = launcher.attach_channel("orphan")
+            until(lambda: deaths(ch) != [])
+            launcher.reap()
+            assert h.wait(timeout=10) == -signal.SIGKILL
+            ch.close()
+        finally:
+            if h.is_alive():
+                h._proc.kill()
+                h.wait(timeout=30)
+
+
+def test_local_launcher_does_not_kill_a_child_its_own_unreadable_exit_ended(tmp_path):
+    """An orphan is a child whose claim a ``died`` names and no ``stopped`` does,
+    readable or not: a claim its own exit ended is finishing (§3)."""
+    with LocalLauncher(root=tmp_path) as launcher:
+        h = launcher.launch("finishing", child("badexit", "block"))
+        try:
+            ch = launcher.attach_channel("finishing")
+            until(lambda: ch.latest(Topic.LIFECYCLE_STOPPED))
+            assert peek_terminal(ch).tier == Tier.DIED  # its unreadable exit ended it
+            launcher.reap()
+            with pytest.raises(subprocess.TimeoutExpired):
+                h.wait(timeout=1)
+            assert h.is_alive()
+            ch.close()
+        finally:
+            if h.is_alive():
+                h._proc.kill()
+                h.wait(timeout=30)
 
 
 # ----- the deciders ----------------------------------------------------------------

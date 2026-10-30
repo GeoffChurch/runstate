@@ -47,23 +47,18 @@ from ..channel import Channel, Envelope, RunNotFound, attach_channel, create_cha
 from ..channel.base import SessionProbe
 from ..vocabulary.handle import local_handle, resolve
 from ..vocabulary.launch import LAUNCH_ID_ENV, launch_scope, new_launch_id
-from .observables import (
-    LiveDemand,
-    Tier,
-    claim_verdict,
-    latest_episode,
-    live_episode,
-)
+from .observables import LiveDemand, latest_episode, live_episode
 from .vocabulary.payloads import (
     Died,
     Launched,
     Outcome,
     Reap,
     Started,
+    Stopped,
     Terminated,
     Topic,
 )
-from .walk import verdict_parse
+from .walk import claim_window, ends, readable
 
 # ----- the helpers (§3, "The helpers") ---------------------------------------------
 
@@ -94,12 +89,20 @@ def report_death(
       (``Outcome.deaths()``: never a completion, never a presumption), or when
       ``evidence`` is empty. ``evidence`` says who reports and from what, prefixed
       by its kind (``slurm:``, ``reap:`` ...), since ``died`` has no author field;
-    - ``None`` when the claim has a readable exit: its self-report outranks every
-      report (§5). An unreadable exit is no self-report, so a report still lands;
-    - ``None`` for a ``lost`` report on a claim that has ended: evidence without a
+    - ``None`` when the claim has a readable exit: some readable
+      ``lifecycle.stopped`` names it. Its self-report outranks every report (§5).
+      An unreadable exit is no self-report, so a report still lands;
+    - ``None`` for a ``lost`` report on a claim that has ended, which some
+      ``stopped`` or ``died`` naming it, readable or not, says: evidence without a
       cause reports only while the claim is held;
     - ``ClaimAliveError`` when the claim's handle probes alive, unless ``force``.
-      A dead probe, or one that cannot tell (another host), does not refuse.
+      A dead probe, or one that cannot tell (another host), does not refuse, nor
+      does an unreadable claim, which has no handle to probe.
+
+    Its tests are presence-based and never raise (§3, "The helpers"), as the
+    answer fold's ``ended`` is (§5): a contradiction in the claim's window, two
+    readable exits say, is the verdict's to raise, never a reporter's, so a death
+    report lands on any log.
 
     A claim a death report already ended is reported again, so each holder of
     evidence records it once (review §12, item 14). ``t`` is this call's clock, when
@@ -118,15 +121,13 @@ def _report(ch: Channel, died: Died, *, force: bool) -> int | None:
     while True:
         w = ch.last_seq()
         claim = _claim_at(ch, died.claim_seq, w)
-        verdict = claim_verdict(ch, claim, w=w)
-        if verdict is not None and (
-            verdict.tier == Tier.EXIT or died.outcome == Outcome.LOST
-        ):
+        endings = _endings(ch, claim, w)
+        if _exits(endings) or (endings and died.outcome == Outcome.LOST):
             return None
         if not force:
-            handle = verdict_parse(Started, claim).handle
-            if resolve(handle) is True:
-                raise ClaimAliveError(died.claim_seq, handle)
+            started = readable(Started, claim)
+            if started is not None and resolve(started.handle) is True:
+                raise ClaimAliveError(died.claim_seq, started.handle)
         seq = ch.send(asdict(died), topic=Died.TOPIC, expected_seq=w)
         if seq is not None:
             return seq
@@ -139,6 +140,24 @@ def _claim_at(ch: Channel, claim_seq: int, w: int) -> Envelope:
     if not got or got[0].seq != claim_seq or got[0].topic != Topic.LIFECYCLE_STARTED:
         raise ValueError(f"no lifecycle.started at seq {claim_seq} of {w}")
     return got[0]
+
+
+def _endings(ch: Channel, claim: Envelope, w: int) -> list[Envelope]:
+    """The records at or below ``w`` that end ``claim``, by presence (§5, the
+    answer fold's ``ended``): each ``lifecycle.stopped`` and ``supervisor.died``
+    naming it, readable or not. Empty exactly while the claim is held; it never
+    raises."""
+    topics: list[str] = [Topic.LIFECYCLE_STOPPED, Topic.SUPERVISOR_DIED]
+    return [e for e in claim_window(ch, claim, w, topics) if ends(e) == claim.seq]
+
+
+def _exits(endings: list[Envelope]) -> bool:
+    """Has the claim a readable exit among ``endings``? Two of them are a
+    contradiction the verdict raises on; here they are one that exists."""
+    return any(
+        e.topic == Topic.LIFECYCLE_STOPPED and readable(Stopped, e) is not None
+        for e in endings
+    )
 
 
 def report_if_dead(ch: Channel) -> int | None:
@@ -158,9 +177,11 @@ def report_if_dead(ch: Channel) -> int | None:
       has been reused in between, which the report's ``ClaimAliveError`` says, it
       reports nothing: the second probe is the later evidence.
 
-    Staleness and a cross-host handle are never evidence (§3)."""
+    Held is presence-based (``_endings``), so a contradictory window never raises
+    here; an unreadable claim has no handle to probe, so only its session can
+    report it. Staleness and a cross-host handle are never evidence (§3)."""
     claim = latest_episode(ch)
-    if claim is None or claim_verdict(ch, claim, w=ch.last_seq()) is not None:
+    if claim is None or _endings(ch, claim, ch.last_seq()):
         return None
     if isinstance(ch, SessionProbe):
         session = ch.writer_session(claim.seq)
@@ -172,9 +193,10 @@ def report_if_dead(ch: Channel) -> int | None:
                 evidence=f"session: {session.server}/{session.key}",
                 force=True,
             )
-    handle = verdict_parse(Started, claim).handle
-    if resolve(handle) is not False:
+    started = readable(Started, claim)
+    if started is None or resolve(started.handle) is not False:
         return None
+    handle = started.handle
     try:
         return report_death(
             ch,
@@ -376,7 +398,14 @@ class ThreadLauncher:
 class _LocalHandle:
     """The handle ``LocalLauncher`` returns. It holds the child's ``Popen``, so its
     liveness, its reap and a kill go through it, with no pid-reuse window; the
-    portable ``handle`` string is for other observers, which hold no ``Popen``."""
+    portable ``handle`` string is for other observers, which hold no ``Popen``.
+
+    The reap's state is held here, since ``waitpid`` yields the exit status once:
+    the ``Popen`` keeps the status, ``_seen`` the reap's one ``t``, bound when it
+    first saw the death, and ``_wrote_end`` and ``_reaped`` what has landed, so a
+    write that failed is retried by the next ``poll`` or ``wait``. ``_killed``
+    says the launcher killed this child as an orphan, so its reap is no
+    evidence."""
 
     run_id: str
     channel: Channel
@@ -384,7 +413,10 @@ class _LocalHandle:
     _proc: subprocess.Popen[bytes]
     launch_id: str
     _floor: int  # the log's last seq before the spawn: the claim lands above it
+    _seen: float | None = field(default=None)
+    _wrote_end: bool = field(default=False)
     _reaped: bool = field(default=False)
+    _killed: bool = field(default=False)
 
     def is_alive(self) -> bool:
         """Pure: it reads the ``Popen``, and writes nothing, even when the child
@@ -406,50 +438,75 @@ class _LocalHandle:
         return rc
 
     def terminate(self) -> None:
-        """Send SIGTERM. The reap, and its records, follow on ``wait`` or ``poll``."""
+        """Send SIGTERM, the caller's request to stop. The reap, and its records,
+        follow on ``wait`` or ``poll``."""
         self._proc.terminate()
+
+    def _kill(self) -> None:
+        """Kill this child as an orphan (``SIGKILL``; §3, "A session probe"): a
+        graceful window buys the log nothing, since its session is gone and a
+        released worker is fenced, and a child that handles ``SIGTERM``, as a
+        requeue handler does, would live beside its successor. ``Popen`` signals
+        no child it has found exited, so ``_killed`` holds only when the signal
+        was sent: a child that ended on its own is reaped as its own end."""
+        self._proc.kill()
+        self._killed = self._proc.returncode is None
 
     def _own_claim(self) -> Envelope | None:
         """The newest claim naming this launch, if its claimant is this child: its
         handle is the launch's whole ``local://host/pid``, compared as the
         migration compares it (§7). A wrapper's grandchild that claims, as under
-        ``sbatch`` or ``sh -c``, is not: the child's end says nothing of it."""
+        ``sbatch`` or ``sh -c``, is not: the child's end says nothing of it. Nor is
+        a claim whose ``started`` is unreadable, which names no handle: it
+        establishes no claimant. It never raises on what the log holds."""
         claim = _launch_claim(self.channel, self.launch_id, after=self._floor)
-        if claim is None or verdict_parse(Started, claim).handle != self.handle:
+        started = None if claim is None else readable(Started, claim)
+        if started is None or started.handle != self.handle:
             return None
         return claim
 
     def _orphaned(self) -> bool:
-        """Is this child the claimant of a claim a death report ended (§3)? Its
-        session may be gone while it lives, so it can write nothing more, and a
-        successor would run beside it. Its own exit ending the claim is no orphan:
-        it is finishing."""
+        """Is this child an orphan (§3, "A session probe")? It is the claimant
+        (``_own_claim``) of a claim a ``supervisor.died`` names, readable or not,
+        and no ``lifecycle.stopped`` does, readable or not: its session may be gone
+        while it lives, so it can write nothing more, and a successor would run
+        beside it. A claim its own exit ended is finishing, not orphaned. Read by
+        presence, so it never raises on what the log holds."""
         claim = self._own_claim()
         if claim is None:
             return False
-        verdict = claim_verdict(self.channel, claim, w=self.channel.last_seq())
-        return verdict is not None and verdict.tier == Tier.DIED
+        endings = _endings(self.channel, claim, self.channel.last_seq())
+        topics = {e.topic for e in endings}
+        return Topic.SUPERVISOR_DIED in topics and Topic.LIFECYCLE_STOPPED not in topics
 
     def _reap(self) -> None:
         """Record this child's end, exactly once: its ``terminated``,
         unconditionally, since a launcher reports what its own child did and the
         launch id says whose end it is; then, when the child is the claimant
-        (``_own_claim``) and its claim has no readable exit, a death report, the
-        only place this launcher writes one (§3, "The writers"):
+        (``_own_claim``), its claim has no readable exit, and the launcher did not
+        kill it as an orphan, a death report, the only place this launcher writes
+        one (§3, "The writers"):
 
         - a signal is ``killed`` (``reap: signal <s>``) and a nonzero exit
           ``errored`` (``reap: exit <n>``), whether or not the claim has ended;
         - an exit 0 is ``lost`` (``reap: exit 0``), only while the claim is held: a
           worker a mistaken report released exits 0, and adds nothing to it.
 
+        The reap of a child killed as an orphan writes ``terminated`` only: its
+        signal is the launcher's, sent because the claim had already ended, so it
+        is no evidence of how the claim ended (§3).
+
         It passes ``force=True``: ``waitpid`` is definitive, and the freed pid may
-        already be reused. One reap, one ``t``, bound when the death is observed
-        (observer-clock §3), on both records."""
+        already be reused. One reap, one ``t``, bound when the death is first
+        observed (observer-clock §3), on both records. The reap is done once both
+        have landed, so a write that raises is retried by the next call, and a
+        record that landed is not written again."""
         rc = self._proc.returncode
         if self._reaped or rc is None:
             return
-        self._reaped = True
-        t = time.time()
+        if self._seen is None:
+            self._seen = time.time()
+        t = self._seen
         if rc < 0:  # died from signal -rc
             end = Terminated(reason=Reap.KILLED, exit_code=None, signal=-rc, t=t)
             outcome, evidence = Outcome.KILLED, f"reap: signal {-rc}"
@@ -457,13 +514,16 @@ class _LocalHandle:
             end = Terminated(reason=Reap.EXITED, exit_code=rc, signal=None, t=t)
             outcome = Outcome.ERRORED if rc else Outcome.LOST
             evidence = f"reap: exit {rc}"
-        self.channel.send(
-            asdict(end), topic=Terminated.TOPIC, request_id=self.launch_id
-        )
-        claim = self._own_claim()
+        if not self._wrote_end:
+            self.channel.send(
+                asdict(end), topic=Terminated.TOPIC, request_id=self.launch_id
+            )
+            self._wrote_end = True
+        claim = None if self._killed else self._own_claim()
         if claim is not None:
             died = Died(claim_seq=claim.seq, outcome=outcome, evidence=evidence, t=t)
             _report(self.channel, died, force=True)
+        self._reaped = True
 
 
 class LocalLauncher:
@@ -474,6 +534,15 @@ class LocalLauncher:
     backend must be shared across processes (sqlite by default: ``backend`` says
     where a log lives, not what it holds, so its default changes no result). As a
     context manager it reaps on exit (``reap``), and does not block on stragglers.
+
+    The limits of its orphan kill (§3, "A session probe"):
+
+    - a standing loop calls ``reap()`` before its decider, and tolerates one cycle
+      in which the successor runs beside an orphan that can no longer write: the
+      report that ends the claim may land after this cycle's reap;
+    - a wrapper's grandchild (``sh -c``, ``sbatch``) is no child of this
+      launcher's, and its claim is not the child's (``_own_claim``), so it kills
+      nothing there: that is the wrapper's to do, or a process group's.
     """
 
     def __init__(
@@ -520,18 +589,30 @@ class LocalLauncher:
 
     def reap(self) -> None:
         """Reap every finished child, each writing its records at most once, and
-        terminate, through its ``Popen``, a live child of its own whose claim a
-        death report ended: an orphan whose session is gone, which a successor
-        would otherwise run beside (§3, "A session probe"). Only this kills, and
-        never by pid, which pid reuse makes unsafe (§12; plan, open question 6);
-        the deciders never kill. The child's own reap, on a later call, records
-        the signal.
+        kill (``SIGKILL``), through its ``Popen``, a live child of its own that is
+        an orphan (``_orphaned``): its claim a death report ended, its session
+        perhaps gone, and a successor would otherwise run beside it (§3, "A
+        session probe"). Only this kills, and never by pid, which pid reuse makes
+        unsafe (§12; plan, open question 6); the deciders never kill. The child's
+        reap, on a later call, writes its ``terminated`` only.
+
+        Each handle is processed on its own: a run's backend that raises does not
+        keep another child from being reaped. The errors are raised together, as
+        an ``ExceptionGroup``, once every handle has been processed, and a reap a
+        failed write left undone is retried on the next call. What the log holds
+        never raises here: the tests are presence-based (§3, "The helpers").
 
         Load-bearing for a standing waker loop (specs/lazy-launch.md): an unreaped
         child is a zombie, its pid probes alive, and its death goes unreported."""
+        errors: list[Exception] = []
         for h in self._handles:
-            if h.poll() is None and h._orphaned():
-                h.terminate()
+            try:
+                if h.poll() is None and h._orphaned():
+                    h._kill()
+            except Exception as exc:  # raised below, once every handle is done
+                errors.append(exc)
+        if errors:
+            raise ExceptionGroup("LocalLauncher.reap: some handles failed", errors)
 
     def __enter__(self) -> LocalLauncher:
         return self

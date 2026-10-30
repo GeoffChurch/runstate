@@ -41,7 +41,7 @@ probes a handle and none writes.
 THE ANSWER FOLD (§2 "Requests", §5) is by name, for the whole log: a request is
 spent by what names it (a node's ``expired``, an exit's ``honored``, a withdrawal,
 a refusal), wherever that sits, and a lease is void once its bound claim ended.
-There ``ended`` is the presence of a record naming the claim (``_ends``), which
+There ``ended`` is the presence of a record naming the claim (``ends``), which
 never raises, so a malformed record in an old claim's window cannot poison the
 present: the verdict is where that contradiction raises.
 
@@ -91,20 +91,21 @@ from .walk import (
     Walked,
     check_node,
     check_reference,
+    claim_window,
     classified,
+    ends,
     kind,
     kind_at,
     members,
+    named_claim,
     no_claim,
     node_at,
     not_a_value,
+    readable,
     value_record,
     verdict_parse,
     walk,
 )
-
-_T = TypeVar("_T")
-
 
 # ----- the heads (§5) ---------------------------------------------------------------
 
@@ -469,7 +470,7 @@ def claim_verdict(ch: Channel, claim: Envelope, *, w: int) -> RunResult | None:
     has **ended** if and only if this is not ``None``, where it does not raise:
     the one predicate the folds, the Worker and the launchers use (§2, "How a
     claim ended"). The answer fold reads the same predicate as the presence of a
-    record that ends the claim (``_ends``), which never raises.
+    record that ends the claim (``ends``), which never raises.
 
     The claim's readable exit, its self-report, is the verdict (``Tier.EXIT``).
     Else the death reports naming it are (``Tier.DIED``): their outcomes as a set,
@@ -481,7 +482,7 @@ def claim_verdict(ch: Channel, claim: Envelope, *, w: int) -> RunResult | None:
     claim, which may have been the claim's own; one naming another claim is that
     claim's. While the claim is held, though, nameless junk is reported nowhere.
 
-    It reads only the claim's window (``_window``): a record cannot speak for a
+    It reads only the claim's window (``claim_window``): a record cannot speak for a
     claim it never saw, and a malformed record from a dead past cannot poison it.
     A second readable exit of the claim raises ``MalformedRecordError``, as the
     head fold does: §2 allows one per claim. A ``supervisor.terminated`` ends no
@@ -495,14 +496,16 @@ def claim_verdict(ch: Channel, claim: Envelope, *, w: int) -> RunResult | None:
     reports: list[DeathReport] = []
     ended_unread = False  # an unreadable record naming the claim ended it
     malformed: list[int] = []
-    for e in _window(ch, claim, w, [Topic.LIFECYCLE_STOPPED, Topic.SUPERVISOR_DIED]):
-        named = _named_claim(e)
+    for e in claim_window(
+        ch, claim, w, [Topic.LIFECYCLE_STOPPED, Topic.SUPERVISOR_DIED]
+    ):
+        named = named_claim(e)
         if named is not None and named != claim.seq:
             continue  # another claim's
         body: Stopped | Died | None = (
-            _readable(Stopped, e)
+            readable(Stopped, e)
             if e.topic == Topic.LIFECYCLE_STOPPED
-            else _readable(Died, e)
+            else readable(Died, e)
         )
         if body is None:
             malformed.append(e.seq)
@@ -659,7 +662,7 @@ def current_heartbeat(ch: Channel, claim: Envelope | None) -> Envelope | None:
     if not newest:
         return None
     top = max(newest, key=lambda e: e.seq)
-    if _named_claim(top) == claim.seq:
+    if named_claim(top) == claim.seq:
         return top
     hi, width = top.seq, FIRST_WINDOW
     while hi > claim.seq:
@@ -668,7 +671,7 @@ def current_heartbeat(ch: Channel, claim: Envelope | None) -> Envelope | None:
             after=lo, topics=[Topic.LIFECYCLE_COMMIT, Topic.LIFECYCLE_HEARTBEAT]
         )
         for e in reversed(window):
-            if e.seq <= hi and _named_claim(e) == claim.seq:
+            if e.seq <= hi and named_claim(e) == claim.seq:
                 return e
         hi, width = lo, width * 4
     return None
@@ -686,7 +689,7 @@ def live_demand(ch: Channel) -> list[Envelope]:
       ``control.withdraw`` or a ``lifecycle.nak`` does, wherever it sits; a spent
       id stays spent, so a later send reusing it is dead on arrival;
     - it is a **void** lease: a ``lifecycle.bound`` binds it to a claim that has
-      ended (``_ends``: the presence of an exit or a death report naming the
+      ended (``ends``: the presence of an exit or a death report naming the
       claim, which never raises, so a malformed record in an old claim's window
       cannot poison the present). A lease nothing bound yet is not void: no claim
       took it, so the next to drain it will;
@@ -790,7 +793,7 @@ class _Demand:
         if e.topic == Topic.LIFECYCLE_STARTED:
             self._claims.add(e.seq)
             return
-        ended = _ends(e)
+        ended = ends(e)
         if ended is not None and ended in self._claims and ended not in self._ended:
             # a record ends a claim below it, so whether it was a claim is known
             self._ended.add(ended)
@@ -807,7 +810,7 @@ class _Demand:
         elif e.topic == Topic.CONTROL_SUBSCRIBE:
             self._send(e.request_id, e)
         elif e.topic == Topic.LIFECYCLE_BOUND:
-            b = _readable(Bound, e)
+            b = readable(Bound, e)
             if b is not None:
                 self._bind(e.request_id, b.claim_seq)
         else:
@@ -860,7 +863,7 @@ class _Stops:
     def apply(self, e: Envelope) -> None:
         """Apply ``e``, one of ``_STOP_TOPICS``."""
         if e.topic == Topic.LIFECYCLE_STOPPED:
-            exit_ = _readable(Stopped, e)
+            exit_ = readable(Stopped, e)
             for r in () if exit_ is None else exit_.honored:
                 self._spend(r)
         elif e.request_id is None:
@@ -881,25 +884,13 @@ class _Stops:
         self._pending.pop(r, None)
 
 
-def _ends(e: Envelope) -> int | None:
-    """The claim ``e`` ends, if any (§2, "How a claim ended"; §5, "The answer
-    fold"): a ``lifecycle.stopped`` or a ``supervisor.died`` whose ``claim_seq``
-    names a seq below it, readable or not. Its presence is all it says, so it never
-    raises: ``claim_verdict`` is not ``None`` exactly where it ends the claim, and
-    is where a contradiction in the claim's window raises."""
-    if e.topic not in (Topic.LIFECYCLE_STOPPED, Topic.SUPERVISOR_DIED):
-        return None
-    claim = _named_claim(e)
-    return claim if claim is not None and claim < e.seq else None
-
-
 def _expired(e: Envelope) -> list[str]:
     """The subscriptions a node's ``expired`` names: none for an unreadable node,
     whose body no fold reads more of (§5)."""
     node: Commit | Stopped | None = (
-        _readable(Commit, e)
+        readable(Commit, e)
         if e.topic == Topic.LIFECYCLE_COMMIT
-        else _readable(Stopped, e)
+        else readable(Stopped, e)
     )
     return [] if node is None else node.expired
 
@@ -1272,7 +1263,7 @@ class LiveDemand:
     its ``report_if_dead`` reports, since a report may void the only lease.
 
     ``ended`` is the pure read's, the presence of a record naming the claim
-    (``_ends``), which never raises."""
+    (``ends``), which never raises."""
 
     def __init__(self) -> None:
         self._cursor = 0
@@ -1344,34 +1335,13 @@ def _newest(ch: Channel, topic: Topic, w: int) -> Envelope | None:
     return below[-1] if below else None
 
 
-def _window(ch: Channel, claim: Envelope, w: int, topics: list[str]) -> list[Envelope]:
-    """The records on ``topics`` after ``claim`` and at or below ``w``: the
-    claim's window, since a record cannot speak for a claim it never saw. The
-    read is capped at ``w``'s distance from the claim, and the filter is the
-    guard; it is never ``limit=0``."""
-    if w <= claim.seq:
-        return []
-    got = ch.read(after=claim.seq, topics=topics, limit=w - claim.seq)
-    return [e for e in got if e.seq <= w]
-
-
-def _named_claim(e: Envelope) -> int | None:
-    """The claim a record's ``claim_seq`` names, read on its own so that a record
-    whose other fields are unreadable still names its claim; ``None`` when it
-    names none."""
-    if "claim_seq" not in e.body:
-        return None
-    c = e.body["claim_seq"]
-    return c if isinstance(c, int) and not isinstance(c, bool) and c >= 1 else None
-
-
 # ----- the head fold ----------------------------------------------------------------
 
 
 def _latest_claim_head(ch: Channel, w: int) -> Head:
     """The newest claim's head at ``w``, the caller's W, taken first: the claim and
     the records after it applied to a ``_ClaimHead``. It reads nothing above ``w``
-    (``_window``), and below the claim only the nodes its ``resume_from``s name:
+    (``claim_window``), and below the claim only the nodes its ``resume_from``s name:
     the claim is a Markov boundary for its own position, so a malformed record
     from a dead past cannot poison it."""
     head = _ClaimHead()
@@ -1387,7 +1357,7 @@ def _latest_claim_head(ch: Channel, w: int) -> Head:
             Topic.LIFECYCLE_REWIND,
             Topic.LIFECYCLE_STOPPED,
         ]
-        for e in _window(ch, claim, w, topics):
+        for e in claim_window(ch, claim, w, topics):
             head.apply(e, point)
     return head.head(w)
 
@@ -1498,9 +1468,9 @@ def _claims(e: Envelope, claim: int) -> Commit | Rewind | Stopped | None:
     commit or a rewind that names ``claim`` must be readable, or the position is
     unknown."""
     if e.topic == Topic.LIFECYCLE_STOPPED:
-        stop = _readable(Stopped, e)
+        stop = readable(Stopped, e)
         return stop if stop is not None and stop.claim_seq == claim else None
-    if _named_claim(e) != claim:
+    if named_claim(e) != claim:
         return None
     if e.topic == Topic.LIFECYCLE_REWIND:
         return verdict_parse(Rewind, e)
@@ -1564,15 +1534,6 @@ def _subscription_target(ch: Channel, request_id: str, w: int) -> str | None:
 
 
 # ----- the verdict's folds ----------------------------------------------------------
-
-
-def _readable(cls: type[_T], e: Envelope) -> _T | None:
-    """``e``'s body parsed as ``cls``, or ``None`` when it is unreadable: a fold
-    that skips an unreadable record reads no more of it (§5)."""
-    try:
-        return verdict_parse(cls, e)
-    except MalformedRecordError:
-        return None
 
 
 class _Exit(NamedTuple):
