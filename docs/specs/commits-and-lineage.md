@@ -239,7 +239,8 @@ in v0.5; the request on `bound` and `nak`, as in v0.5; and null on `commit`, `he
   between them; item 10b's separate `lifecycle.expired` record is retired by item 13. *Prose:* a request in
   `expired` fires at no later node of that lineage.
 - **`honored`** (on `stopped`): an array of unique, non-empty strings, the stops the exit honoured. v0.5's
-  items could be empty, though an empty one names no stop, since no request id is empty.
+  items could be empty, though an empty one names no stop, since no request id is empty. It is a set, read by
+  name: its order means nothing, and no reader may depend on it (amended 2026-10-30, while implementing).
 - **An exit that discarded its iteration evaluates nothing:** `values: null` implies `fired: []` and `expired:
   []`, as an `if`/`then`, whether or not it completed.
 - **`consumed_seq`** is the control-drain watermark, as in v0.5. No 0.4.0 read uses it except
@@ -492,12 +493,18 @@ party, whatever else it does, an observer included, may write one for a death it
 - **`save`** takes the checkpoint save policy (§6), a `SavePolicy` such as `NoSave()` or `Every(k, fn)`.
 
 **The claim.** In order:
-1. read W, and fold the answers by name up to it (a stop's `honored`, withdrawals and refusals) and the
-   lease bindings;
+1. read W, and validate `resume_from` there, walking the lineage that ends at its node: that lineage is
+   settled at W, so a malformed one raises with nothing written, as a `rewind` does;
 2. if the latest claim is held, call `report_if_dead` (§3): if it reports, start again, and if not, lose the
    claim;
 3. CAS `started` at W;
-4. after winning, rebuild position-dependent state at `resume_from` (below).
+4. after winning, fold the answers by name up to that same W (a stop's `honored`, withdrawals and refusals)
+   and the lease bindings, and rebuild position-dependent state at `resume_from` (below). The CAS proves W was
+   the tail, and records at or below it never change (§5), so the fold is the one step 1 would have made, and
+   a loser reads nothing.
+
+Amended 2026-10-30, while implementing: the walk moved before the CAS, so a claim never lands that its own
+Worker cannot then serve, and the fold after it.
 
 The Worker's own fold drops a subscription only when a withdrawal or a refusal has spent it, or it is a void
 lease. Expiry it takes per lineage, from the rebuild, so that it re-arms a durable subscription another
@@ -539,6 +546,19 @@ request for good, where a racing commit costs one iteration:
 - **a refusal** would spend the id. A refusal that is judged against the claim's declaration (§3,
   subscription-v0.4, "Refusals") is the released claim's, which its successor may not share, and a `nak`
   names no claim, so the asker cannot tell it from the successor's.
+
+What a drain does with each control record, by its id (amended 2026-10-30, while implementing):
+- **A spent id is skipped silently,** on every control topic: dead on arrival (§2).
+- **A missing or empty id is nameless.** It is refused `malformed`, with a `nak` whose `request_id` is null,
+  once: a claim refuses a nameless record only above the previous claim's `started`, since nothing can spend
+  it and an earlier claim had its chance. An empty id is no name: a stop registered under it could never be
+  spent, and every claim's exit would hold it.
+- **A re-send of a stop's live id** follows §3's re-send rule: an accepted re-send of a pending stop replaces
+  its registration, its time `from` counted from the re-send; a re-send of a stop that has held is ignored,
+  since the decision is a level; a refused re-send spends the id and drops the registration, as for a
+  subscription.
+- **A stop's time `from` counts from its drain in each claim,** so a stop re-armed by a claim after a crash
+  restarts its clock there.
 
 **The stop decision** (review §12, item 14). A stop's `from` is evaluated wherever the decision is returned:
 at each node the claim writes, with the counts at the node being written, and at each `heartbeat()`, with the
@@ -624,6 +644,12 @@ The exit's other rules:
   It is extendable, so a woken successor that holds no state continues from it.
 - **`__exit__`** writes an error exit on an exception, and otherwise `stopped(completed=False, error=None)`,
   unless the worker has already stopped.
+
+**A worker after its own exit is fenced the same way** (amended 2026-10-30, while implementing): once its exit
+has landed, it writes nothing, `commit()` and `heartbeat()` return True, `stop_pending` is True, and its other
+calls do nothing, as 0.3.0's post-terminal latch did. A record of the claim after its exit would be malformed
+(§5), and silence matches the released fence; only `discard()` makes misuse raise, since that is the
+worker's own mid-iteration statement.
 
 **A released worker fences itself** (review §12, item 13). Every drain reads the death reports first (above).
 Once one names its own claim, the Worker latches, and every method that writes writes nothing: `commit()`,
