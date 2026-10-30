@@ -324,6 +324,10 @@ data-plane project.
   node's `expired`. One whose `until` already holds when it registers expires at the next node, firing
   nothing (review §12, item 14: 0.3.0 refused it as unsatisfiable, but whether it holds depends on the
   position). A withdrawn subscription is spent by the withdrawal, and no node names it.
+  - **A `{count: n}` atom counts the firings up to and including the node,** as `count(X, node)` counts its
+    elements there. So `until {count: n}` is named in the `expired` of the node of the nth firing, the last
+    node a firing could need, and a `serve()` worker does not run one more iteration for it (amended
+    2026-10-30, while implementing; 0.3.0 behaved so).
 - **A source fires once per node.** At a node where one or more subscriptions fire for a source, the Worker
   writes **one** sample of its register, before the node that commits it.
 - **A source with no value yet does not fire.** The subscription waits for the first `set`, as reading an
@@ -341,7 +345,10 @@ the request:
   subscribed;
 - a progress atom naming a name that claim declares a source: its count depends on who asked;
 - an empty window: a `from` that implies the `until` (on one X, `until`'s n at most `from`'s), restated in
-  counts from 0.3.0's check. It does not depend on the position.
+  counts from 0.3.0's check. It does not depend on the position. An absent `from` reads as `from` 0 on each X,
+  since a 0 in `from` re-spells an absent one, so `{until: {commits: 0}}` is refused as
+  `{from: {commits: 0}, until: {commits: 0}}` is: one schedule gets one answer (amended 2026-10-30, while
+  implementing).
 
 The request id is spent, so an asker resubscribes if the kind changes back. Revision 1's circularity refusal
 is deleted: circular demand can no longer be expressed.
