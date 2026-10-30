@@ -47,17 +47,24 @@ One shared server: worker (host A), dashboard (host B), BO (host C) all on one l
 
 ```sql
 CREATE TABLE IF NOT EXISTS log (
-    run_id     text   NOT NULL,
-    seq        bigint NOT NULL,
-    topic      text   NOT NULL,
-    name       text,
-    request_id text,
-    body       text   NOT NULL,          -- opaque JSON; see "body stays text"
-    created_at double precision NOT NULL,
+    run_id        text   NOT NULL,
+    seq           bigint NOT NULL,
+    topic         text   NOT NULL,
+    name          text,
+    request_id    text,
+    body          text   NOT NULL,       -- opaque JSON; see "body stays text"
+    created_at    double precision NOT NULL,
+    writer_key    bigint,                -- the session stamp; see "Liveness"
+    writer_server text,
     PRIMARY KEY (run_id, seq)            -- per-run contiguous seq + the arbiter
 );
 CREATE INDEX IF NOT EXISTS idx_log_run_topic_seq ON log (run_id, topic, seq);
 ```
+
+The table is the format's, not the channel's: its module (`runstate/formats/v0_3_0.py` and its
+siblings) states it (`pg_ddl()`), and every writer, `ensure_schema` or a migration's destination,
+runs the DDL of the format it writes ([`log-formats.md`](log-formats.md) §3). The stamp columns
+are the session probe's.
 
 The conformance suite's **contiguous-seq** tests force `seq = MAX(seq)+1` per run (a global
 `SERIAL` gaps on rollback and isn't per-run). The `PRIMARY KEY (run_id, seq)` is then the
@@ -98,7 +105,7 @@ named for the log format, `runstate_v<format>` with dots as underscores (today `
 `ensure_schema` creates that schema and the table inside it, under the same advisory lock. The channel
 runs `SET search_path` to the schema at open, so its unqualified SQL (and `to_regclass('log')`) resolves
 there. That is a session setting: **a transaction-mode pooler drops it**, the same reason the advisory
-lock needs a direct or session-pooled endpoint (see the *Liveness* caveat above). Opening also runs the
+lock needs a direct or session-pooled endpoint (see *Liveness* below). Opening also runs the
 format checks of [`channel-locators.md`](channel-locators.md#addresses-and-formats) across the schemas.
 
 ## The four operations (the conformant core)
@@ -154,96 +161,87 @@ unaddressed broadcasts, `limit`) + `WHERE run_id = %(run)s`; `latest` rides
 ### `close`
 Release this handle's connection (which drops any session advisory lock it holds).
 
-## Liveness — the lock as a Watcher-consumed signal (v1)
+## Liveness — the session probe
 
-**The claim path is untouched.** `Worker.__init__`'s pre-check and `relaunch_if_needed` /
-`ensure_served` keep using `live_episode`, which stays **conservative and backend-agnostic**
-(`resolve` → `os.kill`; a foreign host abstains → treated as live). Cross-host single-spawn
-is delivered by the *CAS* alone (two cross-host workers race the PK; one wins, one gets
-`None`). The lock adds **definitive cross-host death detection** in the Watcher — it does
-**not** arbitrate the claim, so it cannot produce the double-live that wiring it into the
-claim path would (the round-2 finding).
+*(Rewritten 2026-10-30 for log format 0.4.0: [`commits-and-lineage.md`](commits-and-lineage.md) §3
+and §11, review §12, item 15, ruling 12b. It replaces the episode-keyed lock taken after the claim
+CAS, and its birth grace.)*
 
-**Mechanism.** After winning the birth-CAS, the worker's channel connection takes a
-**session-scoped** `pg_advisory_lock(key(run_id, started_seq))` — *episode*-keyed, taken
-*after* the CAS (it's a signal, not a gate). Held for the episode's life by that one
-connection; worker death drops the connection → auto-release. An observer reads it
-**read-only via `pg_locks`** (`granted` on the key for the latest episode), never
-`pg_try_advisory_lock` (which would have observers contend and misread). Two capability
-Protocols, split by viewpoint (self-report vs external-report — so a pure observer's channel
-never advertises a method it must not call):
+**The principle, restated.** The probe yields **evidence for a record**, which `report_if_dead`
+writes as a death report (`lost`, with `session:` and the session as its evidence); the CAS stays
+the **only arbiter of a claim**. The probe never gates a claim and never decides a verdict by
+itself: it says that the session that wrote a claim has ended, and a party that reads that writes
+it down.
+
+**A key per connection, before its first write.** Every `PostgresChannel` connection, at its open
+and before any write, draws a **fresh random 64-bit key** and takes it with
+`pg_try_advisory_lock`, drawing again while another connection holds it (at most 16 draws, then a
+raise). The key is never derived from the run or the claim: every racing claimant shares those, so
+a derived key would turn the lock into a claim gate. Session-scoped, so the lock is released when
+the connection ends, by `close`, a crash or a server-side termination; and since an ending session
+aborts its unfinished write before it releases its locks, no row of that session becomes visible
+after the lock reads released (294 trials over kills, restarts, a lost commit acknowledgement and
+`idle_session_timeout`; review §12, item 15). Taken before the first write, so there is no window
+in which a claim's row exists and its session holds nothing.
+
+**The stamp.** The backend stamps every row it writes with its writer's key and the server's
+identity, in two nullable columns of the format's table (`writer_key bigint`, `writer_server
+text`), both written by the CAS and by the unconditional append. No wire field carries it: it is
+the backend's, carried losslessly beside the record. A row the migration store copies carries no
+stamp, and the probe abstains on it. The server's identity is its **system identifier** and its
+**timeline** (`pg_control_system()`, `pg_control_checkpoint()`), which a non-superuser can read:
+a physical standby shares the system identifier, and a promotion advances the timeline.
+
+**The probe.** `SessionProbe` (`channel/base.py`) is an opt-in capability, isinstance-dispatched;
+`PostgresChannel` satisfies it and the other backends do not:
 ```python
+class Session(NamedTuple):
+    server: str   # the writing server's identity
+    key: int      # the writer connection's advisory-lock key, a signed 64-bit integer
+
 @runtime_checkable
-class EpisodeHolder(Protocol):                       # worker side, after the claim
-    def hold_episode(self, started_seq: int) -> None: ...
-@runtime_checkable
-class EpisodeProbe(Protocol):                        # observer side
-    def episode_alive(self, started_seq: int) -> bool: ...   # is this episode's lock held?
+class SessionProbe(Protocol):
+    def writer_session(self, seq: int) -> Session | None: ...      # None: an unstamped row
+    def session_ended(self, session: Session) -> bool | None: ...  # None: cannot tell here
 ```
-The key is a deterministic **int8**, pinned as an interop constant: the key *material* is the
-length-prefixed string `f"{len(run_id)}:{run_id}:{started_seq}"` (distinct pairs never alias — a
-`:` inside `run_id` cannot shift the boundary), hashed **server-side** as
-`hashtextextended(material, 0)` (seed 0) — a second-language holder or observer sharing the DB
-must reproduce it bit-identically. **Not** a two-`int4` form (which collapses to a 32-bit collision
-domain on `hash(run_id)`, since first episodes share `started_seq` — colliding at ~65k
-concurrent runs on the very many-runs-one-server topology this targets) and **not** Python's
-salted `hash()` (the observer must recompute a bit-identical key cross-process).
+`session_ended` reads `pg_locks`, read-only, for the key in **this database** (`pg_locks` is
+cluster-wide, and advisory keys are per database). It reads **only the server that wrote the
+stamp, never a standby**: a connection on a server in recovery, or on a server whose identity
+differs from the stamp's, abstains (`None`), since a standby's `pg_locks` know nothing of the
+primary's sessions.
 
-`hold_episode(started_seq)` takes `started_seq` explicitly (the worker has its winning-CAS
-seq; the channel does not) and is the **one additive core touch**: `Worker.__init__`, after
-winning, calls `self._ch.hold_episode(claim)` iff `isinstance(self._ch, EpisodeHolder)`. No
-explicit release is needed — the connection lifecycle (death, or `close`) releases it, and a
-cleanly-stopped episode is caught by `peek_terminal`'s record tier (the Watcher's tiers 1-2)
-before the lock is ever probed.
+**Every record naming a claim travels on the claim's session, never re-established.** A channel
+never reconnects: a dropped connection makes its next `send` raise, and the launcher relaunches
+(a fresh claim on a fresh session). So once the claim's session has ended, nothing can commit a
+record in its name; a value sent through another handle can land after the report, but it names
+no claim. The probe's evidence is about the session, not the process, which may outlive its
+session until its next write raises: so it outranks a live pid on the same host.
 
-**Pooler self-check.** In `hold_episode`, after taking the lock, confirm it's visible in
-`pg_locks` for `pg_backend_pid()` on the *same* connection; if not, raise *"transaction-mode
-pooler detected; use a direct/session endpoint"* — turning a silent corruption into a loud
-startup failure.
+**A durable server.** The channel sets **`synchronous_commit = on`** on its own connection,
+whatever the database or role defaults to, and **refuses to open on a server with `fsync = off`**
+(`RuntimeError`). Under either, a crash loses rows that readers already saw and the log reuses
+their seqs: a crash experiment with `fsync = off` lost 14 to 2,386 already-visible rows in 40 of
+40 trials (review §12, item 15). A lost row a reader saw breaks every cursor, and a reused seq
+makes one name mean two records.
 
-**How the Watcher combines it (the poset, as a *description* of the tier logic).** The
-Watcher (which has a clock) consults `episode_alive(latest_started_seq)` in its probe tier — as
-a **sibling** to the handle probe, *independent of whether a handle is tracked* (the motivating
-`observe()`-d cross-host run has `handle=None`, so the lock is its only definitive probe):
-- lock **held** → alive (a definitive cross-host signal where `os.kill` abstains) → fall
-  through to the staleness check (which still catches a *hung*-but-connected worker).
-- lock **not held**, and the Watcher first saw this `started` **longer ago than a birth
-  grace** → dead → `presumed_dead` (fast, definitive).
-- lock **not held**, **within the grace** → inconclusive (the CAS-to-`hold_episode` window)
-  → fall through to staleness.
+**No transaction-mode pooler.** The key, the search path and the stamp are session state. A
+transaction-mode pooler (pgbouncer) reassigns the backend per statement, so the lock would be held
+by a session that is not the writer's. **Pooler self-check:** at the open, right after taking the
+key, the connection confirms in `pg_locks` that its own backend holds it, and raises *"a
+transaction-mode pooler is in the path"* otherwise. It runs before any write, so a pooler fails
+the open and can never strand a claim with no exit.
 
-So heartbeat-staleness remains the floor: its dead-vote is never overridden by an
-alive-probe (a held lock on a worker that stopped beating still goes `presumed_dead`).
-**Honest framing:** this is a *description* of the Watcher's cascade, **not** a lattice
-theorem — staleness itself needs a configured `heartbeat_timeout` (off by default), and the
-Watcher's two probes (`handle.is_alive` and the lock) are an antichain (incomparable
-preconditions), with `resolve`/`os.kill` a different-plane probe (the claim path's). The earlier
-"heartbeat is the unique minimum / the token composes for free" claim is retired; the
-combination is the Watcher's explicit tier logic with the grace and the floor-veto above.
+**Partition / idle-reap.** A clean death releases the lock at once; a hard network partition
+releases it only when the server's TCP keepalive fires, so set server-side
+`tcp_keepalives_idle/interval/count` in seconds, not the 2-hour default (release time under a true
+partition is not measured). An `idle_session_timeout` or a NAT idle-drop on a worker endpoint ends
+a healthy worker's session: the probe then reads it ended, which is true, since that worker can
+write nothing more; its next `send` raises and it is relaunched. Keep the heartbeat cadence below
+any idle-reap timeout, and set client-side libpq keepalives.
 
-**Why the lock (vs Postgres-native alternatives).** Purpose-built: a lock bound to a session
-that auto-releases on disconnect *is* connection-liveness. A heartbeat row is just staleness
-in a table (not definitive); `pg_stat_activity` is indirect; external presence (ZK/etcd/Redis
-TTLs) is a dependency the backend doesn't need.
-
-**Partition / reconnect.** Clean death releases the lock instantly; a hard *partition*
-releases it only when Postgres's TCP keepalive fires — so set server-side
-`tcp_keepalives_idle/interval/count` (seconds, not the 2-hour default); the Watcher's
-staleness backstops the gap. **Idle-reap (the inverse edge):** a long-step worker beats only
-once per `tick`, so a multi-minute step leaves its connection *idle* — an `idle_session_timeout`
-(common on managed PG) or a NAT idle-drop then reaps it → the lock false-releases → a healthy
-worker reads `presumed_dead` and its next `send` raises. So keep the heartbeat cadence below any
-idle-reap timeout, set **client-side** libpq keepalives, and avoid `idle_session_timeout` on the
-worker endpoint (cost: wasted compute + a false verdict, never a double-live — the lock isn't a
-claim gate). A dropped worker connection → the next `send` **raises** → the
-launcher relaunches (fresh episode, fresh lock), never a silent reconnect-and-re-claim; a
-fleet-wide blip therefore causes a relaunch storm (the honest single-instance failure mode).
-
-**What this delivers / doesn't.** Delivers: definitive, fast cross-host "is this trial
-dead?" for the dashboard/BO, plus a Watcher-driven cross-host death verdict. Does **not**
-deliver cross-host *auto-relaunch* (re-claiming a dead foreign run) — that needs clock-aware
-liveness *in the claim path*, which is the co-arbiter (deferred; not on the motivating
-critical path — a BO launches a fresh trial).
+**What it carries, and does not.** The probe carries no cause: a walltime kill seen only by it
+reads `lost`, which is a failure, where accounting would say `preempted`. A deployment that wants
+the cause keeps an accounting reporter beside it (`commits-and-lineage.md` §12).
 
 ## Locator + dependency
 
@@ -252,7 +250,8 @@ connection string (or `RUNSTATE_PG_DSN`), a **direct or session-pooled** endpoin
 `psycopg` v3 as an optional `runstate[postgres] = ["psycopg[binary]"]` extra; the locators'
 `"postgres"` branch imports it lazily and raises a clear *"pip install runstate[postgres]"* on
 absence.
-The `EpisodeHolder` / `EpisodeProbe` Protocols and the `isinstance`-dispatch sites live in a
+The `SessionProbe` Protocol (with `Session`), the `EpisodeHolder` / `EpisodeProbe` Protocols and
+the `isinstance`-dispatch sites live in a
 **psycopg-free module** (`channel/base.py`, `watcher`), so `import runstate` works without
 the extra (guarded by a CI job that imports without it).
 

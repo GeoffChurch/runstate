@@ -55,6 +55,7 @@ def test_importing_runstate_does_not_pull_in_psycopg():
         import runstate
         from runstate import Worker, Watcher
         from runstate.channel import Channel, EpisodeHolder, EpisodeProbe
+        from runstate.channel import Session, SessionProbe
         from runstate.channel import attach_channel, create_channel
 
         assert "psycopg" not in sys.modules, "importing runstate pulled in psycopg"

@@ -472,7 +472,7 @@ def test_episode_alive_ignores_a_lock_in_another_database(pg_ready):
     taken on the same key in any other database of the same cluster satisfies every
     other filter, so a run with no worker at all reads ALIVE.
 
-    The sibling probe `_EPISODE_HELD_BY_ME` is immune only incidentally -- it adds
+    The pooler self-check `_KEY_HELD_BY_ME` is immune only incidentally -- it adds
     `pid = pg_backend_pid()`, and a pid implies a session implies a database. This
     one had no such scoping (runstate#44).
 
@@ -519,3 +519,225 @@ def test_episode_alive_ignores_a_lock_in_another_database(pg_ready):
             admin.execute(f'DROP DATABASE IF EXISTS "{other_db}" WITH (FORCE)')
         finally:
             admin.close()
+
+
+# ===================== the session probe (commits-and-lineage.md §3, §11) =====================
+# Each connection takes a fresh random key by try-lock before its first write, and the
+# backend stamps every row with its writer's key and server. The probe asks whether the
+# key on a claim's row is still held: evidence for a death report (which
+# report_if_dead writes), never a claim arbiter -- the CAS stays the only one.
+
+
+def _held_keys(conn, pid):
+    """The advisory keys that backend ``pid`` holds, read from pg_locks: a bigint key
+    is stored split as (classid=high32, objid=low32, objsubid=1), and int8's ``<<``
+    wraps, so the reassembled value is the signed key itself."""
+    rows = conn.execute(
+        "SELECT ((classid::bigint << 32) | objid::bigint) FROM pg_locks"
+        " WHERE locktype = 'advisory' AND granted AND objsubid = 1 AND pid = %s",
+        [pid],
+    ).fetchall()
+    return {k for (k,) in rows}
+
+
+def _write_and_wait(dsn, run_id, ready):
+    """Child entrypoint: open a channel, write one record, report its seq, then block
+    until the parent SIGKILLs it. Top-level for the 'spawn' start method."""
+    from runstate.channel.postgres import PostgresChannel
+
+    ch = PostgresChannel(dsn, run_id=run_id)
+    ready.put(ch.send({}, topic="lifecycle.started", expected_seq=0))
+    while True:
+        time.sleep(3600)
+
+
+def test_postgres_channel_is_a_session_probe_and_the_others_are_not(pg_ready, tmp_path):
+    from runstate.channel import SessionProbe
+    from runstate.channel.memory import MemoryChannel
+    from runstate.channel.postgres import PostgresChannel
+    from runstate.channel.sqlite import SqliteChannel
+
+    with PostgresChannel(pg_ready, run_id=f"probe-{uuid.uuid4()}") as ch:
+        assert isinstance(ch, SessionProbe)
+    assert not isinstance(MemoryChannel(), SessionProbe)
+    with SqliteChannel(tmp_path / "r.db") as sch:
+        assert not isinstance(sch, SessionProbe)
+
+
+def test_every_row_carries_its_writers_session(pg_ready):
+    from runstate.channel.postgres import PostgresChannel
+
+    run_id = f"stamp-{uuid.uuid4()}"
+    a = PostgresChannel(pg_ready, run_id=run_id)
+    b = PostgresChannel(pg_ready, run_id=run_id)
+    try:
+        seqs = {
+            a: [a.send({"i": 1}, topic="value", name="x")],
+            b: [b.send({"i": 2}, topic="value", name="x")],
+        }
+        seqs[a].append(a.send({"i": 3}, topic="value", name="x", expected_seq=2))
+        sessions = {}
+        with psycopg.connect(pg_ready) as admin:
+            for ch, written in seqs.items():
+                (session,) = {a.writer_session(s) for s in written}
+                assert session is not None
+                assert session.key in _held_keys(admin, ch._conn.info.backend_pid)
+                sessions[ch] = session
+        assert sessions[a].key != sessions[b].key
+        assert sessions[a].server == sessions[b].server
+    finally:
+        a.close()
+        b.close()
+
+
+def test_a_connection_takes_its_key_before_its_first_write(pg_ready):
+    from runstate.channel.postgres import PostgresChannel
+
+    with PostgresChannel(pg_ready, run_id=f"pre-{uuid.uuid4()}") as ch:
+        with psycopg.connect(pg_ready) as admin:
+            assert len(_held_keys(admin, ch._conn.info.backend_pid)) == 1
+        assert ch.last_seq() == 0  # nothing written
+
+
+def test_session_ended_reads_held_then_ended_after_close(pg_ready):
+    from runstate.channel.postgres import PostgresChannel
+
+    run_id = f"ended-{uuid.uuid4()}"
+    writer = PostgresChannel(pg_ready, run_id=run_id)
+    probe = PostgresChannel(pg_ready, run_id=run_id)
+    try:
+        seq = writer.send({}, topic="lifecycle.started", expected_seq=0)
+        session = probe.writer_session(seq)
+        assert probe.session_ended(session) is False
+        writer.close()
+        assert _poll_until(lambda: probe.session_ended(session), True)
+    finally:
+        writer.close()
+        probe.close()
+
+
+def test_a_killed_writers_session_reads_ended(pg_ready):
+    from runstate.channel.postgres import PostgresChannel
+
+    run_id = f"killed-{uuid.uuid4()}"
+    ctx = mp.get_context("spawn")
+    ready = ctx.Queue()
+    proc = ctx.Process(target=_write_and_wait, args=(pg_ready, run_id, ready))
+    proc.start()
+    probe = PostgresChannel(pg_ready, run_id=run_id)
+    try:
+        seq = ready.get(timeout=30)
+        session = probe.writer_session(seq)
+        assert probe.session_ended(session) is False
+        proc.kill()  # SIGKILL: no clean disconnect
+        proc.join(timeout=10)
+        assert _poll_until(lambda: probe.session_ended(session), True)
+    finally:
+        if proc.is_alive():
+            proc.kill()
+            proc.join()
+        probe.close()
+
+
+def test_session_ended_abstains_on_another_servers_stamp_and_an_unstamped_row(
+    pg_ready,
+):
+    from runstate.channel import Session
+    from runstate.channel.postgres import PostgresChannel
+
+    run_id = f"abstain-{uuid.uuid4()}"
+    with PostgresChannel(pg_ready, run_id=run_id) as ch:
+        seq = ch.send({}, topic="lifecycle.started", expected_seq=0)
+        mine = ch.writer_session(seq)
+        # a row as the migration store inserts it: its columns named, no stamp
+        with psycopg.connect(pg_ready, autocommit=True) as c:
+            c.execute(
+                f"INSERT INTO {FORMATS[LOG_FORMAT].pg_schema()}.log"
+                " (run_id, seq, topic, name, request_id, body, created_at)"
+                " VALUES (%s, 2, 'value', 'x', NULL, '{}', 0)",
+                [run_id],
+            )
+        assert ch.writer_session(2) is None
+        assert ch.session_ended(Session(server="elsewhere", key=mine.key)) is None
+        assert ch.session_ended(mine) is False
+
+
+def test_session_ended_ignores_a_lock_in_another_database(pg_ready):
+    """`pg_locks` is cluster-wide, and advisory keys are per database: a stranger
+    holding the very same key in another database says nothing of this one's writer."""
+    from runstate.channel.postgres import PostgresChannel
+
+    other_db = f"rs_other_{uuid.uuid4().hex[:12]}"
+    with psycopg.connect(pg_ready, autocommit=True) as admin:
+        try:
+            admin.execute(f'CREATE DATABASE "{other_db}"')
+        except psycopg.errors.InsufficientPrivilege:
+            pytest.skip("test role cannot CREATEDB")
+    run_id = f"crossdb-{uuid.uuid4()}"
+    writer = PostgresChannel(pg_ready, run_id=run_id)
+    probe = PostgresChannel(pg_ready, run_id=run_id)
+    stranger = None
+    try:
+        session = probe.writer_session(
+            writer.send({}, topic="lifecycle.started", expected_seq=0)
+        )
+        other_dsn = psycopg.conninfo.make_conninfo(pg_ready, dbname=other_db)
+        stranger = psycopg.connect(other_dsn, autocommit=True)
+        writer.close()  # release the key here, so only the stranger holds it
+        assert stranger.execute(
+            "SELECT pg_try_advisory_lock(%s)", [session.key]
+        ).fetchone() == (True,)
+        assert _poll_until(lambda: probe.session_ended(session), True)
+    finally:
+        if stranger is not None:
+            stranger.close()
+        writer.close()
+        probe.close()
+        with psycopg.connect(pg_ready, autocommit=True) as admin:
+            admin.execute(f'DROP DATABASE IF EXISTS "{other_db}" WITH (FORCE)')
+
+
+def test_the_channel_sets_synchronous_commit_on(scratch_db):
+    """A database default of ``off`` acknowledges a commit before it is durable, and a
+    crash then loses rows readers saw and reuses their seqs. The channel sets it on its
+    own connection, whatever the database or role says."""
+    from runstate.channel.postgres import PostgresChannel, ensure_schema
+
+    with psycopg.connect(scratch_db, autocommit=True) as c:
+        dbname = c.execute("SELECT current_database()").fetchone()[0]
+        c.execute(f'ALTER DATABASE "{dbname}" SET synchronous_commit = off')
+    ensure_schema(scratch_db)
+    with psycopg.connect(scratch_db) as c:  # the default a plain connection gets
+        assert c.execute("SHOW synchronous_commit").fetchone() == ("off",)
+    with PostgresChannel(scratch_db, run_id="r1") as ch:
+        assert ch._conn.execute("SHOW synchronous_commit").fetchone() == ("on",)
+
+
+def _fsync_on_a_fresh_connection(dsn):
+    with psycopg.connect(dsn) as c:
+        return c.execute("SHOW fsync").fetchone()[0]
+
+
+def test_a_server_with_fsync_off_is_refused(pg_ready):
+    """With ``fsync = off`` a crash lost 14 to 2,386 already-visible rows in 40 of 40
+    trials and reused their seqs (review §12, item 15). The setting is the server's,
+    so the channel cannot fix it; it refuses to open. Restored in a ``finally``, and
+    waited for, so no later test inherits it."""
+    from runstate.channel.postgres import PostgresChannel
+
+    with psycopg.connect(pg_ready, autocommit=True) as admin:
+        try:
+            admin.execute("ALTER SYSTEM SET fsync = off")
+        except psycopg.errors.InsufficientPrivilege:
+            pytest.skip("test role cannot ALTER SYSTEM")
+    try:
+        with psycopg.connect(pg_ready, autocommit=True) as admin:
+            admin.execute("SELECT pg_reload_conf()")
+        assert _poll_until(lambda: _fsync_on_a_fresh_connection(pg_ready), "off")
+        with pytest.raises(RuntimeError, match="fsync"):
+            PostgresChannel(pg_ready, run_id=f"fsync-{uuid.uuid4()}")
+    finally:
+        with psycopg.connect(pg_ready, autocommit=True) as admin:
+            admin.execute("ALTER SYSTEM RESET fsync")
+            admin.execute("SELECT pg_reload_conf()")
+        assert _poll_until(lambda: _fsync_on_a_fresh_connection(pg_ready), "on")

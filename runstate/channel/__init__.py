@@ -24,7 +24,14 @@ from pathlib import Path
 
 from .. import formats
 from ..formats import LOG_FORMAT, FORMATS, LogFormatMismatch, LogFormatMissing
-from .base import Channel, EpisodeHolder, EpisodeProbe, RunNotFound
+from .base import (
+    Channel,
+    EpisodeHolder,
+    EpisodeProbe,
+    RunNotFound,
+    Session,
+    SessionProbe,
+)
 from .envelope import Body, Envelope
 from .memory import MemoryChannel, MemoryLog
 from .sqlite import SqliteChannel
@@ -199,6 +206,8 @@ __all__ = [
     "MemoryChannel",
     "MemoryLog",
     "RunNotFound",
+    "Session",
+    "SessionProbe",
     "SqliteChannel",
     "attach_channel",
     "create_channel",

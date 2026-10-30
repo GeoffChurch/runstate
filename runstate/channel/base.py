@@ -24,7 +24,7 @@ and design-v0.2.md §4.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Protocol, runtime_checkable
+from typing import NamedTuple, Protocol, runtime_checkable
 
 from .envelope import Body, Envelope
 
@@ -126,3 +126,32 @@ class EpisodeProbe(Protocol):
     isn't ours to read). ``started_seq`` identifies the episode on the run's log."""
 
     def episode_alive(self, started_seq: int) -> bool: ...
+
+
+# --- optional session capability: evidence for a death report ---
+# A backend whose every connection holds a lock of its own from before its first
+# write, and stamps every row with it, can say of a record whether the session that
+# wrote it has ended (commits-and-lineage.md §3; channel-postgres.md, "Liveness").
+# Its answer is EVIDENCE that the claim can write nothing more -- a channel never
+# reconnects, and every record naming a claim travels on the claim's session -- which
+# report_if_dead turns into a record. It never arbitrates a claim: the CAS stays the
+# only arbiter. Opt-in and backend-specific (PostgresChannel), isinstance-dispatched.
+
+
+class Session(NamedTuple):
+    """A writer connection's identity, as stamped on the rows it wrote."""
+
+    server: str  # the writing server's identity: its system identifier and timeline
+    key: int  # the connection's advisory-lock key, a signed 64-bit integer
+
+
+@runtime_checkable
+class SessionProbe(Protocol):
+    def writer_session(self, seq: int) -> Session | None:
+        """The stamp on the record at ``seq``, or None when it has none (a migrated row)."""
+        ...
+
+    def session_ended(self, session: Session) -> bool | None:
+        """True when no connection holds ``session.key``; False when one does; None when
+        this connection cannot tell: another server's stamp, or a standby."""
+        ...

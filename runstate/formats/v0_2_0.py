@@ -28,8 +28,7 @@ CREATE INDEX IF NOT EXISTS idx_log_topic_seq ON log (topic, seq);
 CREATE INDEX IF NOT EXISTS idx_log_topic_name_seq ON log (topic, name, seq);
 """
 
-PG_STATEMENTS = (
-    """
+PG_TABLE = """
 CREATE TABLE IF NOT EXISTS log (
     run_id     text   NOT NULL,
     seq        bigint NOT NULL,
@@ -40,25 +39,32 @@ CREATE TABLE IF NOT EXISTS log (
     created_at double precision NOT NULL,
     PRIMARY KEY (run_id, seq)
 )
-""",
-    "CREATE INDEX IF NOT EXISTS idx_log_run_topic_seq ON log (run_id, topic, seq)",
-    # latest(topic, name=) adds AND name=%s, which the index above cannot serve: it
-    # seeks on (run_id, topic) and then SORTS the partition to answer ORDER BY seq
-    # DESC (#19). Measured on 300k value records: 2504 shared buffers through a
-    # top-N heapsort, vs 4 through an Index Only Scan Backward with this index; an
-    # absent name costs the same 2504 today and 3 with it.
-    #
-    # An ADDITION, never a replacement -- `name` sits between the equality prefix
-    # and the sort key, so this index cannot answer the name-less latest(topic).
-    #
-    # Unlike sqlite, Postgres self-migrates: ensure_schema runs at orchestration
-    # startup and CREATE INDEX IF NOT EXISTS reaches every existing row. (Not
-    # CONCURRENTLY: it cannot run inside ensure_schema's advisory-lock
-    # transaction. On a large live deployment, build it out-of-band first -- the
-    # IF NOT EXISTS here then finds it and does nothing.)
-    "CREATE INDEX IF NOT EXISTS idx_log_run_topic_name_seq"
-    " ON log (run_id, topic, name, seq)",
+"""
+
+PG_TOPIC_INDEX = (
+    "CREATE INDEX IF NOT EXISTS idx_log_run_topic_seq ON log (run_id, topic, seq)"
 )
+
+# latest(topic, name=) adds AND name=%s, which the index above cannot serve: it
+# seeks on (run_id, topic) and then SORTS the partition to answer ORDER BY seq
+# DESC (#19). Measured on 300k value records: 2504 shared buffers through a
+# top-N heapsort, vs 4 through an Index Only Scan Backward with this index; an
+# absent name costs the same 2504 today and 3 with it.
+#
+# An ADDITION, never a replacement -- `name` sits between the equality prefix
+# and the sort key, so this index cannot answer the name-less latest(topic).
+#
+# Unlike sqlite, Postgres self-migrates: ensure_schema runs at orchestration
+# startup and CREATE INDEX IF NOT EXISTS reaches every existing row. (Not
+# CONCURRENTLY: it cannot run inside ensure_schema's advisory-lock
+# transaction. On a large live deployment, build it out-of-band first -- the
+# IF NOT EXISTS here then finds it and does nothing.)
+PG_NAME_INDEX = (
+    "CREATE INDEX IF NOT EXISTS idx_log_run_topic_name_seq"
+    " ON log (run_id, topic, name, seq)"
+)
+
+PG_STATEMENTS = (PG_TABLE, PG_TOPIC_INDEX, PG_NAME_INDEX)
 
 LAYOUT = DirectoryLayout(
     version="0.2.0", sqlite_script=SQLITE_SCRIPT, pg_statements=PG_STATEMENTS

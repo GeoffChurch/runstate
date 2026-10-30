@@ -6,16 +6,18 @@ arbiter (contiguous per-run seq, cross-host-reliable). ``body`` stays opaque
 ``text`` (``jsonb`` would mutate the immutable snapshot). The substrate never
 parses ``body``.
 
-The one design principle: **claim = the uniform CAS; liveness = a poset the
-Watcher combines.** A Postgres-specific liveness *signal* (a session advisory
-lock) is added in a later cycle as a Watcher-consumed capability -- never a claim
-arbiter.
+The one design principle: **claim = the uniform CAS; liveness = evidence.** Each
+connection holds an advisory lock under a fresh key from before its first write,
+and every row is stamped with its writer's key and server, so the session probe
+(``SessionProbe``) can say whether the session that wrote a claim has ended:
+evidence for a death report, never a claim arbiter.
 """
 
 from __future__ import annotations
 
 import json
 import random
+import secrets
 import threading
 import time
 from collections.abc import Callable
@@ -26,7 +28,7 @@ from psycopg import sql
 
 from .. import formats
 from ..formats import FORMATS, LOG_FORMAT, LogFormatMismatch, LogFormatMissing
-from .base import Channel, RunNotFound
+from .base import Channel, RunNotFound, Session
 from .envelope import Body, Envelope
 
 # A fixed key for the schema-provisioning advisory lock: the 8 ASCII bytes of
@@ -124,9 +126,10 @@ def check_format(conn: psycopg.Connection[Any], run_id: str) -> bool:
 # The PRIMARY KEY (run_id, seq) is the arbiter -- a rival that committed expected+1
 # first turns this into a UniqueViolation (a provable loss), not a corruption.
 _CAS = """
-INSERT INTO log (run_id, seq, topic, name, request_id, body, created_at)
+INSERT INTO log (run_id, seq, topic, name, request_id, body, created_at,
+                 writer_key, writer_server)
 SELECT %(run)s, %(expected)s + 1, %(topic)s, %(name)s, %(rid)s, %(body)s,
-       extract(epoch FROM clock_timestamp())
+       extract(epoch FROM clock_timestamp()), %(key)s, %(server)s
 WHERE (SELECT COALESCE(MAX(seq), 0) FROM log WHERE run_id = %(run)s) = %(expected)s
 RETURNING seq
 """
@@ -134,9 +137,10 @@ RETURNING seq
 # Unconditional append: max+1, optimistic; the PK is the sole arbiter, so a lost
 # race is a UniqueViolation we retry (a fresh max each round -> termination).
 _UNCONDITIONAL = """
-INSERT INTO log (run_id, seq, topic, name, request_id, body, created_at)
+INSERT INTO log (run_id, seq, topic, name, request_id, body, created_at,
+                 writer_key, writer_server)
 SELECT %(run)s, COALESCE(MAX(seq), 0) + 1, %(topic)s, %(name)s, %(rid)s, %(body)s,
-       extract(epoch FROM clock_timestamp())
+       extract(epoch FROM clock_timestamp()), %(key)s, %(server)s
 FROM log WHERE run_id = %(run)s
 RETURNING seq
 """
@@ -182,17 +186,48 @@ SELECT EXISTS (
 )
 """
 
-# The same probe scoped to THIS backend -- the pooler self-check: right after acquiring
-# we must see the lock held by our own pid, else a transaction-mode pooler reassigned
-# the backend and the session lock is worthless.
-_EPISODE_HELD_BY_ME = """
-WITH k(v) AS (SELECT hashtextextended(%(s)s, 0))
+# --- the session probe (commits-and-lineage.md §3; channel-postgres.md, "Liveness") ---
+
+# The server a stamp names: its system identifier, which a physical standby shares,
+# and its timeline, which a promotion advances. A probe reads pg_locks only on the
+# server that wrote the stamp, never a standby (whose pg_locks know nothing of the
+# primary's sessions), so a mismatch or a server in recovery abstains.
+_SERVER = """
+SELECT (SELECT system_identifier FROM pg_control_system())::text || ':' ||
+       (SELECT timeline_id FROM pg_control_checkpoint())::text,
+       pg_is_in_recovery()
+"""
+
+# Draws of a fresh key before the open gives up. A collision with a held key is a
+# 2^-64 event per live connection, so a second draw is already a sign of something
+# else (a key space someone fills on purpose); the bound makes that a loud failure.
+_KEY_DRAWS = 16
+
+# Whether a bigint advisory key is granted in THIS database (pg_locks is cluster-
+# wide, and advisory keys are per database), to any backend. The key is stored
+# split across pg_locks as (classid=high32, objid=low32, objsubid=1);
+# shift-then-mask is independent of >>'s sign extension.
+_KEY_HELD = """
 SELECT EXISTS (
-    SELECT 1 FROM pg_locks, k
+    SELECT 1 FROM pg_locks
+    WHERE locktype = 'advisory' AND granted AND objsubid = 1
+      AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+      AND classid = ((%(key)s::bigint >> 32) & 4294967295)::oid
+      AND objid   = (%(key)s::bigint & 4294967295)::oid
+)
+"""
+
+# The pooler self-check: right after taking its key, the connection must see the
+# lock held by its own backend, else a transaction-mode pooler reassigned the
+# backend between statements and the session lock is worthless. Run at the open,
+# before any write, so a pooler fails the open and can never strand a claim.
+_KEY_HELD_BY_ME = """
+SELECT EXISTS (
+    SELECT 1 FROM pg_locks
     WHERE locktype = 'advisory' AND granted AND objsubid = 1
       AND pid = pg_backend_pid()
-      AND classid = ((k.v >> 32) & 4294967295)::oid
-      AND objid   = (k.v & 4294967295)::oid
+      AND classid = ((%(key)s::bigint >> 32) & 4294967295)::oid
+      AND objid   = (%(key)s::bigint & 4294967295)::oid
 )
 """
 
@@ -229,6 +264,7 @@ class PostgresChannel(Channel):
         # lock_timeout is the busy_timeout analogue: a wedged conflicting writer
         # makes the CAS raise (indeterminate) rather than hang forever.
         self._conn.execute("SET lock_timeout = '5000ms'")
+        self._session = self._take_session()
         has_rows = check_format(self._conn, run_id)  # before the search path
         self._conn.execute(
             sql.SQL("SET search_path TO {}").format(
@@ -249,6 +285,55 @@ class PostgresChannel(Channel):
             if not has_rows:
                 raise RunNotFound(f"run {run_id!r} has no records (postgres backend)")
 
+    def _take_session(self) -> Session:
+        """Make this connection a durable writer with a session of its own, before any
+        write (channel-postgres.md, "Liveness"), in this order:
+
+        - ``synchronous_commit = on``: else a commit is acknowledged before it is
+          durable, and a crash loses rows readers saw and reuses their seqs. Set on
+          this connection, whatever the database or role defaults to.
+        - refuse ``fsync = off``: the same loss, server-wide, which a connection cannot
+          fix (14 to 2,386 visible rows lost in 40 of 40 crash trials; review §12,
+          item 15).
+        - the server's identity, read once, stamped on every row.
+        - a fresh random key, taken by try-lock: never derived from the run or the
+          claim, which every racing claimant shares and which would make the lock a
+          claim gate. Drawn again while another connection holds it.
+        - the pooler self-check."""
+        self._conn.execute("SET synchronous_commit = on")
+        fsync = self._conn.execute("SHOW fsync").fetchone()
+        assert fsync is not None  # SHOW always yields one row
+        if fsync[0] == "off":
+            raise RuntimeError(
+                "the postgres server runs with fsync = off, so a crash loses rows "
+                "readers already saw and reuses their seqs; runstate refuses it"
+            )
+        identity = self._conn.execute(_SERVER).fetchone()
+        assert identity is not None  # a scalar SELECT always yields one row
+        server = str(identity[0])
+        for _ in range(_KEY_DRAWS):
+            key = int.from_bytes(secrets.token_bytes(8), "big", signed=True)
+            taken = self._conn.execute(
+                "SELECT pg_try_advisory_lock(%s::bigint)", (key,)
+            ).fetchone()
+            assert taken is not None  # a scalar SELECT always yields one row
+            if taken[0]:
+                break
+        else:
+            raise RuntimeError(
+                f"no free advisory-lock key in {_KEY_DRAWS} random draws; another "
+                "party holds keys runstate draws from"
+            )
+        held = self._conn.execute(_KEY_HELD_BY_ME, {"key": key}).fetchone()
+        assert held is not None  # a scalar SELECT always yields one row
+        if not held[0]:
+            raise RuntimeError(
+                "session lock not visible for this backend right after taking it; a "
+                "transaction-mode pooler (e.g. pgbouncer) is in the path -- use a direct "
+                "or session-pooled endpoint"
+            )
+        return Session(server=server, key=key)
+
     def send(
         self,
         body: Body,
@@ -268,6 +353,8 @@ class PostgresChannel(Channel):
             "rid": request_id,
             "body": body_json,
             "expected": expected_seq,
+            "key": self._session.key,
+            "server": self._session.server,
         }
         with self._lock:
             if expected_seq is not None:
@@ -392,16 +479,9 @@ class PostgresChannel(Channel):
         the claim CAS). Session-scoped, so it auto-releases when the connection dies --
         the whole point. Taken *after* the claim: a signal, not a gate."""
         key_str = _episode_key_str(self._run_id, started_seq)
-        with self._lock:
+        with self._lock:  # the open's pooler self-check covers this connection
             self._conn.execute(
                 "SELECT pg_advisory_lock(hashtextextended(%s, 0))", (key_str,)
-            )
-            held = self._conn.execute(_EPISODE_HELD_BY_ME, {"s": key_str}).fetchone()
-        if not (held and held[0]):
-            raise RuntimeError(
-                "episode lock not visible for this backend right after acquiring it; a "
-                "transaction-mode pooler (e.g. pgbouncer) is in the path -- use a direct "
-                "or session-pooled endpoint"
             )
 
     def episode_alive(self, started_seq: int) -> bool:
@@ -413,3 +493,38 @@ class PostgresChannel(Channel):
         with self._lock:
             row = self._conn.execute(_EPISODE_ALIVE, {"s": key_str}).fetchone()
         return bool(row and row[0])
+
+    # --- the session probe (SessionProbe) ---
+    # Evidence for a death report, which report_if_dead writes; never a claim arbiter.
+
+    def writer_session(self, seq: int) -> Session | None:
+        """The stamp on the record at ``seq``, or None when it has none: a row the
+        migration store copied, which no live session wrote."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT writer_server, writer_key FROM log"
+                " WHERE run_id = %s AND seq = %s",
+                [self._run_id, seq],
+            ).fetchone()
+        if row is None:
+            raise LookupError(f"run {self._run_id!r} has no record at seq {seq}")
+        server, key = row
+        if server is None or key is None:
+            return None
+        return Session(server=server, key=key)
+
+    def session_ended(self, session: Session) -> bool | None:
+        """Whether no connection holds ``session.key``, read on the server that wrote
+        the stamp. None when this connection cannot tell: it is on another server (a
+        different system or timeline), or on a standby, whose pg_locks know nothing of
+        the primary's sessions. The identity is read at each probe, since a server
+        this connection reached as a standby may since have been promoted."""
+        with self._lock:
+            identity = self._conn.execute(_SERVER).fetchone()
+            assert identity is not None  # a scalar SELECT always yields one row
+            server, in_recovery = identity
+            if in_recovery or server != session.server:
+                return None
+            held = self._conn.execute(_KEY_HELD, {"key": session.key}).fetchone()
+        assert held is not None  # a scalar SELECT always yields one row
+        return not held[0]
