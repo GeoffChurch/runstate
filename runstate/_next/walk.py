@@ -65,55 +65,17 @@ def verdict_parse(cls: type[_T], e: Envelope) -> _T:
         raise MalformedRecordError(e.seq, e.topic, str(exc)) from exc
 
 
-# ----- a claim's window, by presence (§2 "How a claim ended", §5) ----------------
-#
-# What every reader of a claim's end shares: the reads, the folds and the launchers'
-# reporters. Presence never raises: a contradiction in a claim's window is the
-# verdict's to raise (``observables.claim_verdict``), never a reporter's (§3).
+# ----- a readable record ------------------------------------------------------------
 
 
 def readable(cls: type[_T], e: Envelope) -> _T | None:
     """``e``'s body parsed as ``cls``, or ``None`` when it is unreadable: a fold
-    that skips an unreadable record reads no more of it (§5)."""
+    that skips an unreadable record reads no more of it (§5). The claim plane's
+    presence predicates (``claims``) read with it."""
     try:
         return verdict_parse(cls, e)
     except MalformedRecordError:
         return None
-
-
-def named_claim(e: Envelope) -> int | None:
-    """The claim a record's ``claim_seq`` names, read on its own so that a record
-    whose other fields are unreadable still names its claim; ``None`` when it
-    names none."""
-    if "claim_seq" not in e.body:
-        return None
-    c = e.body["claim_seq"]
-    return c if isinstance(c, int) and not isinstance(c, bool) and c >= 1 else None
-
-
-def ends(e: Envelope) -> int | None:
-    """The claim ``e`` ends, if any (§2, "How a claim ended"; §5, "The answer
-    fold"): a ``lifecycle.stopped`` or a ``supervisor.died`` whose ``claim_seq``
-    names a seq below it, readable or not. Its presence is all it says, so it never
-    raises: ``claim_verdict`` is not ``None`` exactly where it ends the claim, and
-    is where a contradiction in the claim's window raises."""
-    if e.topic not in (Topic.LIFECYCLE_STOPPED, Topic.SUPERVISOR_DIED):
-        return None
-    claim = named_claim(e)
-    return claim if claim is not None and claim < e.seq else None
-
-
-def claim_window(
-    ch: Channel, claim: Envelope, w: int, topics: list[str]
-) -> list[Envelope]:
-    """The records on ``topics`` after ``claim`` and at or below ``w``: the
-    claim's window, since a record cannot speak for a claim it never saw. The
-    read is capped at ``w``'s distance from the claim, and the filter is the
-    guard; it is never ``limit=0``."""
-    if w <= claim.seq:
-        return []
-    got = ch.read(after=claim.seq, topics=topics, limit=w - claim.seq)
-    return [e for e in got if e.seq <= w]
 
 
 # ----- a node, its kind and its checks ----------------------------------------------

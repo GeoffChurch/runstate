@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from runstate._next import observables, walk
+from runstate._next import claims, observables, walk
 from runstate._next.launcher import (
     LocalLauncher,
     ThreadLauncher,
@@ -332,7 +332,7 @@ def test_interop_death_report_from_evidence(tmp_path):
         read(ch)
     assert ch.last_seq() == 3 and live_episode(ch) == handle
     # and structurally: the reads' modules never append
-    for module in (observables, walk):
+    for module in (observables, walk, claims):
         tree = ast.parse(Path(module.__file__).read_text())
         sends = [
             n.lineno

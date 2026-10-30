@@ -80,6 +80,7 @@ from .vocabulary.payloads import (
     Topic,
     Value,
 )
+from .claims import claim_window, ends, named_claim
 from .vocabulary.schedule import MalformedSchedule, is_lease, parse_schedule
 from .walk import (
     EVERY_NAME,
@@ -91,13 +92,10 @@ from .walk import (
     Walked,
     check_node,
     check_reference,
-    claim_window,
     classified,
-    ends,
     kind,
     kind_at,
     members,
-    named_claim,
     no_claim,
     node_at,
     not_a_value,

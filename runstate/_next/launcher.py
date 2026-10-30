@@ -34,19 +34,24 @@ CAS-appends at W follows every record at or below W").
 
 from __future__ import annotations
 
+import functools
 import os
-import socket
+import signal
 import subprocess
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
+from enum import Enum
+from types import TracebackType
 from typing import Any, Optional, Protocol
 
 from ..channel import Channel, Envelope, RunNotFound, attach_channel, create_channel
 from ..channel.base import SessionProbe
-from ..vocabulary.handle import local_handle, resolve
+from ..vocabulary.handle import local_handle, local_handle_of, resolve
 from ..vocabulary.launch import LAUNCH_ID_ENV, launch_scope, new_launch_id
+from .claims import endings, has_exit
 from .observables import LiveDemand, latest_episode, live_episode
 from .vocabulary.payloads import (
     Died,
@@ -54,13 +59,38 @@ from .vocabulary.payloads import (
     Outcome,
     Reap,
     Started,
-    Stopped,
     Terminated,
     Topic,
 )
-from .walk import claim_window, ends, readable
+from .walk import readable
 
 # ----- the helpers (§3, "The helpers") ---------------------------------------------
+
+
+# The attempts ``_report`` makes before it gives up. Its CAS loses only to a record
+# that landed inside one round trip of its loop (``last_seq``, the claim's point read,
+# its window's read, perhaps a probe, then the append): about a millisecond on SQLite
+# and a few on Postgres. Losing 256 in a row takes a log that grew by a record in each
+# of 256 round trips, a quarter of a second to a few seconds of out-writing every
+# read: no burst, but a writer outrunning its reporter, where more attempts change
+# nothing and the caller had better learn that its report has not landed.
+REPORT_ATTEMPTS = 256
+
+
+class ReportStarvedError(RuntimeError):
+    """A death report lost its CAS ``attempts`` times in a row (``REPORT_ATTEMPTS``):
+    the log grew faster than the report could read it, and nothing was appended.
+    It names the claim; a Channel carries no run identity, so the caller that knows
+    the run adds it (``LocalLauncher.reap`` notes it on every failure)."""
+
+    def __init__(self, claim_seq: int, attempts: int) -> None:
+        super().__init__(
+            f"the death report of claim {claim_seq} lost its CAS {attempts} times "
+            "in a row: the log grows faster than the report reads it, and nothing "
+            "was appended"
+        )
+        self.claim_seq = claim_seq
+        self.attempts = attempts
 
 
 class ClaimAliveError(Exception):
@@ -107,7 +137,8 @@ def report_death(
     A claim a death report already ended is reported again, so each holder of
     evidence records it once (review §12, item 14). ``t`` is this call's clock, when
     its caller saw the death. The append is a CAS at W, and a lost CAS reads again,
-    so each rule is checked at the W of the append."""
+    so each rule is checked at the W of the append. A report that loses
+    ``REPORT_ATTEMPTS`` CASes in a row raises ``ReportStarvedError``."""
     return _report(
         ch,
         Died(claim_seq=claim_seq, outcome=outcome, evidence=evidence, t=time.time()),
@@ -118,11 +149,11 @@ def report_death(
 def _report(ch: Channel, died: Died, *, force: bool) -> int | None:
     """``report_death`` of a body already built (and so already checked): a reap
     dates its report by the death it reaped, the ``t`` of its ``terminated``."""
-    while True:
+    for _ in range(REPORT_ATTEMPTS):
         w = ch.last_seq()
         claim = _claim_at(ch, died.claim_seq, w)
-        endings = _endings(ch, claim, w)
-        if _exits(endings) or (endings and died.outcome == Outcome.LOST):
+        ended = endings(ch, claim, w)
+        if has_exit(ended) or (ended and died.outcome == Outcome.LOST):
             return None
         if not force:
             started = readable(Started, claim)
@@ -131,6 +162,7 @@ def _report(ch: Channel, died: Died, *, force: bool) -> int | None:
         seq = ch.send(asdict(died), topic=Died.TOPIC, expected_seq=w)
         if seq is not None:
             return seq
+    raise ReportStarvedError(died.claim_seq, REPORT_ATTEMPTS)
 
 
 def _claim_at(ch: Channel, claim_seq: int, w: int) -> Envelope:
@@ -140,24 +172,6 @@ def _claim_at(ch: Channel, claim_seq: int, w: int) -> Envelope:
     if not got or got[0].seq != claim_seq or got[0].topic != Topic.LIFECYCLE_STARTED:
         raise ValueError(f"no lifecycle.started at seq {claim_seq} of {w}")
     return got[0]
-
-
-def _endings(ch: Channel, claim: Envelope, w: int) -> list[Envelope]:
-    """The records at or below ``w`` that end ``claim``, by presence (§5, the
-    answer fold's ``ended``): each ``lifecycle.stopped`` and ``supervisor.died``
-    naming it, readable or not. Empty exactly while the claim is held; it never
-    raises."""
-    topics: list[str] = [Topic.LIFECYCLE_STOPPED, Topic.SUPERVISOR_DIED]
-    return [e for e in claim_window(ch, claim, w, topics) if ends(e) == claim.seq]
-
-
-def _exits(endings: list[Envelope]) -> bool:
-    """Has the claim a readable exit among ``endings``? Two of them are a
-    contradiction the verdict raises on; here they are one that exists."""
-    return any(
-        e.topic == Topic.LIFECYCLE_STOPPED and readable(Stopped, e) is not None
-        for e in endings
-    )
 
 
 def report_if_dead(ch: Channel) -> int | None:
@@ -177,11 +191,11 @@ def report_if_dead(ch: Channel) -> int | None:
       has been reused in between, which the report's ``ClaimAliveError`` says, it
       reports nothing: the second probe is the later evidence.
 
-    Held is presence-based (``_endings``), so a contradictory window never raises
-    here; an unreadable claim has no handle to probe, so only its session can
-    report it. Staleness and a cross-host handle are never evidence (§3)."""
+    Held is presence-based (``claims.endings``), so a contradictory window never
+    raises here; an unreadable claim has no handle to probe, so only its session
+    can report it. Staleness and a cross-host handle are never evidence (§3)."""
     claim = latest_episode(ch)
-    if claim is None or _endings(ch, claim, ch.last_seq()):
+    if claim is None or endings(ch, claim, ch.last_seq()):
         return None
     if isinstance(ch, SessionProbe):
         session = ch.writer_session(claim.seq)
@@ -209,17 +223,20 @@ def report_if_dead(ch: Channel) -> int | None:
         return None
 
 
-def _launch_claim(ch: Channel, launch_id: str, *, after: int) -> Envelope | None:
-    """The newest claim naming the launch ``launch_id``, above ``after``: the log's
-    last seq before the launch began, since its claimant cannot claim before it is
-    spawned. The ``request_ids`` filter also admits records naming no request, so
-    the envelope's id is compared here (specs/launcher-record-identity.md)."""
+def _launch_claim(
+    ch: Channel, launch_id: str, *, after: int, w: int
+) -> Envelope | None:
+    """The newest claim naming the launch ``launch_id``, above ``after`` and at or
+    below ``w``. ``after`` is at least the log's last seq before the launch began,
+    since its claimant cannot claim before it is spawned. The ``request_ids`` filter
+    also admits records naming no request, so the envelope's id is compared here
+    (specs/launcher-record-identity.md)."""
     named = [
         e
         for e in ch.read(
             after=after, topics=[Topic.LIFECYCLE_STARTED], request_ids=[launch_id]
         )
-        if e.request_id == launch_id
+        if e.request_id == launch_id and e.seq <= w
     ]
     return named[-1] if named else None
 
@@ -312,8 +329,9 @@ class _ThreadHandle:
 class ThreadLauncher:
     """Run a worker target on a thread of this process (in-process reference).
 
-    ``backend`` defaults to the memory backend: it says where a log lives, not what
-    it holds, so its default changes no result (plan, "Exempt defaults")."""
+    ``backend`` defaults to the memory backend, and ``root`` to none, which is the
+    memory backend's: both say where a log lives, not what it holds, so their
+    defaults change no result (plan, "Exempt defaults")."""
 
     def __init__(
         self, *, root: str | os.PathLike[str] | None = None, backend: str = "memory"
@@ -338,7 +356,10 @@ class ThreadLauncher:
         """Run ``target(channel, *args, **kwargs)`` on a thread for ``run_id``,
         bracketed by ``supervisor.launched`` and ``supervisor.terminated``, both
         naming the launch. ``launch_scope`` binds the launch id for the target, so
-        the claim its Worker writes names the launch.
+        the claim its Worker writes names the launch. ``args`` and ``kwargs``
+        default to none: they pass the target's own arguments through, so an
+        absent list is the empty one, and the default chooses nothing for it
+        (exempt).
 
         When the thread finishes, the newest claim naming the launch, attributed by
         the id alone since a thread cannot be told apart by pid, gets a death
@@ -352,7 +373,7 @@ class ThreadLauncher:
 
         A raise's ``terminated`` carries exit code 1, a synthetic convention: a
         thread has no exit code."""
-        call_kwargs = kwargs or {}
+        call_kwargs = {} if kwargs is None else kwargs
         channel = self.create_channel(run_id)
         handle = local_handle()
         launch_id = new_launch_id()
@@ -361,10 +382,17 @@ class ThreadLauncher:
         state = _ThreadState()
 
         def _ended(exit_code: int, outcome: Outcome, evidence: str) -> None:
+            """The thread's records. A write that raises is not retried, unlike
+            a ``LocalLauncher`` reap's: it reaches ``threading.excepthook``. The
+            launcher keeps no handles and has no ``reap()`` to call again, and the
+            thread's end is observed once, by the thread itself, so there is no
+            later call to retry from; and its channel is this process's own
+            (memory by default), with no connection to drop."""
             t = time.time()
             end = Terminated(reason=Reap.EXITED, exit_code=exit_code, signal=None, t=t)
             channel.send(asdict(end), topic=Terminated.TOPIC, request_id=launch_id)
-            claim = _launch_claim(channel, launch_id, after=floor)
+            w = channel.last_seq()
+            claim = _launch_claim(channel, launch_id, after=floor, w=w)
             if claim is not None:
                 died = Died(
                     claim_seq=claim.seq, outcome=outcome, evidence=evidence, t=t
@@ -394,18 +422,45 @@ class ThreadLauncher:
         return h
 
 
-@dataclass
+class _Step(Enum):
+    """What of a reap has landed: nothing (``PENDING``), its ``terminated``
+    (``ENDED``), or every record it writes (``DONE``)."""
+
+    PENDING = "pending"
+    ENDED = "ended"
+    DONE = "done"
+
+
+@dataclass(frozen=True)
+class _Reaped:
+    """What a reap established, bound once, under the handle's lock, when the
+    death is first observed: ``t``, the reap's one time (observer-clock §3), on
+    every record it writes; the ``Popen``'s ``returncode``; and ``by_launcher``,
+    whether the death is the launcher's own orphan kill, a ``SIGKILL`` after it
+    sent one, and so no evidence of how the claim ended (§3)."""
+
+    t: float
+    returncode: int
+    by_launcher: bool
+
+
+@dataclass(eq=False)
 class _LocalHandle:
     """The handle ``LocalLauncher`` returns. It holds the child's ``Popen``, so its
     liveness, its reap and a kill go through it, with no pid-reuse window; the
     portable ``handle`` string is for other observers, which hold no ``Popen``.
 
-    The reap's state is held here, since ``waitpid`` yields the exit status once:
-    the ``Popen`` keeps the status, ``_seen`` the reap's one ``t``, bound when it
-    first saw the death, and ``_wrote_end`` and ``_reaped`` what has landed, so a
-    write that failed is retried by the next ``poll`` or ``wait``. ``_killed``
-    says the launcher killed this child as an orphan, so its reap is no
-    evidence."""
+    Its reap's state is held here, under ``_lock``, since ``waitpid`` yields the
+    exit status once and a ``wait()`` and a ``poll()`` may race on two threads:
+    ``_death``, what the reap established, bound once; ``_step``, what of it has
+    landed, so a write that failed is retried by the next ``poll`` or ``wait`` and a
+    record that landed is not written again; and ``_kill_sent``, latched once the
+    launcher has sent its orphan kill, never cleared.
+
+    ``channel`` is the handle's own, which the launcher opened for it and its
+    ``reap()`` closes once the reap is done. A channel never reconnects
+    (specs/channel-postgres.md), so once it has raised, the reap's next use opens
+    a fresh one for the run (``_reopen``)."""
 
     run_id: str
     channel: Channel
@@ -413,15 +468,30 @@ class _LocalHandle:
     _proc: subprocess.Popen[bytes]
     launch_id: str
     _floor: int  # the log's last seq before the spawn: the claim lands above it
-    _seen: float | None = field(default=None)
-    _wrote_end: bool = field(default=False)
-    _reaped: bool = field(default=False)
-    _killed: bool = field(default=False)
+    _reopen: Callable[[], Channel]  # attaches a fresh channel to this run
+    _lock: threading.Lock = field(init=False, default_factory=threading.Lock)
+    _death: _Reaped | None = field(init=False, default=None)
+    _step: _Step = field(init=False, default=_Step.PENDING)
+    _kill_sent: bool = field(init=False, default=False)
+    _failed: bool = field(init=False, default=False)  # ``channel`` has raised
+    # The newest claim naming the launch, read up to ``_claim_read``.
+    _claim: Envelope | None = field(init=False, default=None)
+    _claim_read: int = field(init=False)
+
+    def __post_init__(self) -> None:
+        self._claim_read = self._floor
 
     def is_alive(self) -> bool:
-        """Pure: it reads the ``Popen``, and writes nothing, even when the child
-        has exited; the reap of ``wait`` or ``poll`` writes."""
-        return self._proc.poll() is None
+        """Pure for the log: it reads the ``Popen``, and writes nothing, even when
+        the child has exited; the reap of ``wait`` or ``poll`` writes. When the
+        ``Popen`` reaps the exited child here, the death's ``t`` is bound
+        (``_death``), so the records a later reap writes are dated by when it was
+        first seen."""
+        if self._proc.poll() is None:
+            return True
+        with self._lock:
+            self._observed()
+        return False
 
     def wait(self, timeout: float | None = None) -> int:
         """Block until the child exits, reap it, and return its exit code."""
@@ -446,24 +516,69 @@ class _LocalHandle:
         """Kill this child as an orphan (``SIGKILL``; §3, "A session probe"): a
         graceful window buys the log nothing, since its session is gone and a
         released worker is fenced, and a child that handles ``SIGTERM``, as a
-        requeue handler does, would live beside its successor. ``Popen`` signals
-        no child it has found exited, so ``_killed`` holds only when the signal
-        was sent: a child that ended on its own is reaped as its own end."""
-        self._proc.kill()
-        self._killed = self._proc.returncode is None
+        requeue handler does, would live beside its successor.
 
-    def _own_claim(self) -> Envelope | None:
-        """The newest claim naming this launch, if its claimant is this child: its
-        handle is the launch's whole ``local://host/pid``, compared as the
+        ``_kill_sent`` is latched before the signal and never cleared, so a later
+        cycle's kill of a child still dying from the first cannot unmark it. Its
+        reap is the launcher's exactly when ``_kill_sent`` and the status is a
+        ``SIGKILL`` (``_observed``): a child that exits on its own between
+        ``Popen``'s check and the signal keeps its own status, and is reaped as
+        its own end. A child already reaped is sent nothing, and its end is its
+        own."""
+        with self._lock:
+            if self._proc.returncode is not None:
+                return
+            self._kill_sent = True
+            self._proc.kill()
+
+    def _observed(self) -> _Reaped | None:
+        """Under the lock: what the reap established, bound the first time the
+        ``Popen`` holds the exit status; ``None`` while the child runs."""
+        rc = self._proc.returncode
+        if self._death is None and rc is not None:
+            by_launcher = self._kill_sent and rc == -signal.SIGKILL
+            self._death = _Reaped(t=time.time(), returncode=rc, by_launcher=by_launcher)
+        return self._death
+
+    @contextmanager
+    def _io(self) -> Iterator[Channel]:
+        """Under the lock: the channel the reap reads and writes on. Once
+        ``channel`` has raised, a fresh one is opened for the run, and the old one
+        closed: a channel never reconnects, so every retry on it would raise
+        forever. A fresh channel is correct for every record here: a
+        ``terminated`` names the launch, and a ``died`` is a third party's, never
+        the claim's own session's (specs/channel-postgres.md)."""
+        if self._failed:
+            old, self.channel = self.channel, self._reopen()
+            self._failed = False
+            old.close()
+        try:
+            yield self.channel
+        except Exception:
+            self._failed = True
+            raise
+
+    def _own_claim(self, ch: Channel) -> Envelope | None:
+        """Under the lock: the newest claim naming this launch, if its claimant is
+        this child: its handle is the launch's whole ``local://host/pid``
+        (``local_handle_of``, the one build site of both), compared as the
         migration compares it (§7). A wrapper's grandchild that claims, as under
         ``sbatch`` or ``sh -c``, is not: the child's end says nothing of it. Nor is
         a claim whose ``started`` is unreadable, which names no handle: it
-        establishes no claimant. It never raises on what the log holds."""
-        claim = _launch_claim(self.channel, self.launch_id, after=self._floor)
-        started = None if claim is None else readable(Started, claim)
+        establishes no claimant. It never raises on what the log holds.
+
+        The newest claim found is cached (``_claim``), and each call reads only
+        above what the last read, so it stays the newest while each read stays
+        bounded by the records since."""
+        w = ch.last_seq()
+        newer = _launch_claim(ch, self.launch_id, after=self._claim_read, w=w)
+        if newer is not None:
+            self._claim = newer
+        self._claim_read = max(self._claim_read, w)
+        started = None if self._claim is None else readable(Started, self._claim)
         if started is None or started.handle != self.handle:
             return None
-        return claim
+        return self._claim
 
     def _orphaned(self) -> bool:
         """Is this child an orphan (§3, "A session probe")? It is the claimant
@@ -472,20 +587,20 @@ class _LocalHandle:
         while it lives, so it can write nothing more, and a successor would run
         beside it. A claim its own exit ended is finishing, not orphaned. Read by
         presence, so it never raises on what the log holds."""
-        claim = self._own_claim()
-        if claim is None:
-            return False
-        endings = _endings(self.channel, claim, self.channel.last_seq())
-        topics = {e.topic for e in endings}
+        with self._lock, self._io() as ch:
+            claim = self._own_claim(ch)
+            if claim is None:
+                return False
+            topics = {e.topic for e in endings(ch, claim, ch.last_seq())}
         return Topic.SUPERVISOR_DIED in topics and Topic.LIFECYCLE_STOPPED not in topics
 
     def _reap(self) -> None:
-        """Record this child's end, exactly once: its ``terminated``,
-        unconditionally, since a launcher reports what its own child did and the
-        launch id says whose end it is; then, when the child is the claimant
-        (``_own_claim``), its claim has no readable exit, and the launcher did not
-        kill it as an orphan, a death report, the only place this launcher writes
-        one (§3, "The writers"):
+        """Record this child's end, exactly once, under the lock: its
+        ``terminated``, unconditionally, since a launcher reports what its own
+        child did and the launch id says whose end it is; then, when the child is
+        the claimant (``_own_claim``), its claim has no readable exit, and its
+        death is not the launcher's orphan kill (``_Reaped.by_launcher``), a death
+        report, the only place this launcher writes one (§3, "The writers"):
 
         - a signal is ``killed`` (``reap: signal <s>``) and a nonzero exit
           ``errored`` (``reap: exit <n>``), whether or not the claim has ended;
@@ -497,33 +612,52 @@ class _LocalHandle:
         is no evidence of how the claim ended (§3).
 
         It passes ``force=True``: ``waitpid`` is definitive, and the freed pid may
-        already be reused. One reap, one ``t``, bound when the death is first
-        observed (observer-clock §3), on both records. The reap is done once both
-        have landed, so a write that raises is retried by the next call, and a
-        record that landed is not written again."""
-        rc = self._proc.returncode
-        if self._reaped or rc is None:
-            return
-        if self._seen is None:
-            self._seen = time.time()
-        t = self._seen
-        if rc < 0:  # died from signal -rc
-            end = Terminated(reason=Reap.KILLED, exit_code=None, signal=-rc, t=t)
-            outcome, evidence = Outcome.KILLED, f"reap: signal {-rc}"
-        else:
-            end = Terminated(reason=Reap.EXITED, exit_code=rc, signal=None, t=t)
-            outcome = Outcome.ERRORED if rc else Outcome.LOST
-            evidence = f"reap: exit {rc}"
-        if not self._wrote_end:
-            self.channel.send(
-                asdict(end), topic=Terminated.TOPIC, request_id=self.launch_id
-            )
-            self._wrote_end = True
-        claim = None if self._killed else self._own_claim()
-        if claim is not None:
-            died = Died(claim_seq=claim.seq, outcome=outcome, evidence=evidence, t=t)
-            _report(self.channel, died, force=True)
-        self._reaped = True
+        already be reused. One reap, one ``t`` (``_death``), on both records. A
+        write that raises leaves ``_step`` where it was, so the next call retries
+        what has not landed, on a fresh channel (``_io``)."""
+        with self._lock:
+            death = self._observed()
+            assert death is not None  # called once the Popen holds the status
+            if self._step is _Step.DONE:
+                return
+            rc, t = death.returncode, death.t
+            if rc < 0:  # died from signal -rc
+                end = Terminated(reason=Reap.KILLED, exit_code=None, signal=-rc, t=t)
+                outcome, evidence = Outcome.KILLED, f"reap: signal {-rc}"
+            else:
+                end = Terminated(reason=Reap.EXITED, exit_code=rc, signal=None, t=t)
+                outcome = Outcome.ERRORED if rc else Outcome.LOST
+                evidence = f"reap: exit {rc}"
+            with self._io() as ch:
+                if self._step is _Step.PENDING:
+                    ch.send(
+                        asdict(end), topic=Terminated.TOPIC, request_id=self.launch_id
+                    )
+                    self._step = _Step.ENDED
+                claim = None if death.by_launcher else self._own_claim(ch)
+                if claim is not None:
+                    died = Died(
+                        claim_seq=claim.seq, outcome=outcome, evidence=evidence, t=t
+                    )
+                    _report(ch, died, force=True)
+                self._step = _Step.DONE
+
+    def _done(self) -> bool:
+        """Has the reap landed every record it writes?"""
+        with self._lock:
+            return self._step is _Step.DONE
+
+    def _close(self) -> None:
+        """Close the handle's channel: its reap is done, and nothing writes on it
+        again."""
+        with self._lock:
+            self.channel.close()
+
+
+def _named(exc: Exception, h: _LocalHandle) -> Exception:
+    """``exc``, noted with the handle it failed on."""
+    exc.add_note(f"run {h.run_id!r}, launch {h.launch_id}, {h.handle}")
+    return exc
 
 
 class LocalLauncher:
@@ -574,7 +708,7 @@ class LocalLauncher:
             LAUNCH_ID_ENV: launch_id,
         }
         proc = subprocess.Popen(cmd, env=child_env)
-        handle = f"local://{socket.gethostname()}/{proc.pid}"
+        handle = local_handle_of(proc.pid)
         _launched(channel, handle, launch_id)
         h = _LocalHandle(
             run_id=run_id,
@@ -583,6 +717,8 @@ class LocalLauncher:
             _proc=proc,
             launch_id=launch_id,
             _floor=floor,
+            # the run exists: the launch birthed it
+            _reopen=functools.partial(self.attach_channel, run_id),
         )
         self._handles.append(h)
         return h
@@ -596,29 +732,64 @@ class LocalLauncher:
         unsafe (§12; plan, open question 6); the deciders never kill. The child's
         reap, on a later call, writes its ``terminated`` only.
 
+        A handle whose reap is done is dropped, and its channel closed, so a
+        standing loop holds a channel per live child, not per launch.
+
         Each handle is processed on its own: a run's backend that raises does not
-        keep another child from being reaped. The errors are raised together, as
-        an ``ExceptionGroup``, once every handle has been processed, and a reap a
-        failed write left undone is retried on the next call. What the log holds
-        never raises here: the tests are presence-based (§3, "The helpers").
+        keep another child from being reaped. The errors, each noted with the run,
+        the launch and the handle it failed on, are raised together, as an
+        ``ExceptionGroup``, once every handle has been processed, and a reap a
+        failed write left undone is retried on the next call, on a fresh channel.
+        What the log holds never raises here: the tests are presence-based (§3,
+        "The helpers").
 
         Load-bearing for a standing waker loop (specs/lazy-launch.md): an unreaped
         child is a zombie, its pid probes alive, and its death goes unreported."""
         errors: list[Exception] = []
+        kept: list[_LocalHandle] = []
         for h in self._handles:
             try:
                 if h.poll() is None and h._orphaned():
                     h._kill()
             except Exception as exc:  # raised below, once every handle is done
-                errors.append(exc)
+                errors.append(_named(exc, h))
+            if not h._done():
+                kept.append(h)
+                continue
+            try:
+                h._close()
+            except Exception as exc:  # its records landed: nothing to retry
+                errors.append(_named(exc, h))
+        self._handles = kept
         if errors:
             raise ExceptionGroup("LocalLauncher.reap: some handles failed", errors)
 
     def __enter__(self) -> LocalLauncher:
         return self
 
-    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-        self.reap()  # best-effort; don't block on stragglers
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        """Reap (``reap``), without blocking on stragglers.
+
+        When the body did not raise, the reap's ``ExceptionGroup`` propagates. When
+        it did, the body's exception propagates, and each reap failure is attached
+        to it as a note: raising the group would replace the cause with its
+        consequence (the reap often fails because of what made the body fail), and
+        a log line may land where nobody reads, while a note travels with the
+        traceback the caller sees."""
+        if exc is None:
+            self.reap()
+            return
+        try:
+            self.reap()
+        except ExceptionGroup as group:
+            for e in group.exceptions:
+                where = "; ".join(e.__notes__)
+                exc.add_note(f"LocalLauncher.reap also failed ({where}): {e!r}")
 
 
 # ----- the deciders (§3, §5) -------------------------------------------------------

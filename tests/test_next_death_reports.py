@@ -15,9 +15,9 @@ synchronize with a child by polling the log, or the child's handle, with a timeo
 
 import os
 import signal
-import socket
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from dataclasses import asdict
@@ -25,8 +25,10 @@ from dataclasses import asdict
 import pytest
 
 from runstate._next.launcher import (
+    REPORT_ATTEMPTS,
     ClaimAliveError,
     LocalLauncher,
+    ReportStarvedError,
     ThreadLauncher,
     ensure_served,
     relaunch_if_needed,
@@ -42,9 +44,14 @@ from runstate._next.observables import (
 )
 from runstate._next.vocabulary.payloads import Died, Outcome, Started, Topic
 from runstate.channel.memory import MemoryChannel
-from runstate.vocabulary.handle import local_handle
+from runstate.vocabulary.handle import local_handle, local_handle_of
 from runstate.vocabulary.launch import current_launch_id
 from tests.test_next_reads import Rec, append, bound, channel, died, stopped, subscribe
+
+# A launcher's thread that raises is a test failure, never a warning.
+pytestmark = pytest.mark.filterwarnings(
+    "error::pytest.PytestUnhandledThreadExceptionWarning"
+)
 
 K, E, L, P = Outcome.KILLED, Outcome.ERRORED, Outcome.LOST, Outcome.PREEMPTED
 
@@ -57,12 +64,24 @@ def dead_handle():
     (pid reuse could revive it, the limit §12 names; within a test it does not.)"""
     p = subprocess.Popen(["true"])
     p.wait()
-    return f"local://{socket.gethostname()}/{p.pid}"
+    return local_handle_of(p.pid)
 
 
 def claim(handle, *, launch=None, t=1.0):
     body = {"handle": handle, "t": t, "resume_from": None, "sources": []}
     return Rec("lifecycle.started", body, None, launch)
+
+
+def claim_launch(ch):
+    """A thread target's claim: a readable 0.4.0 ``lifecycle.started`` naming its
+    launch, CAS-appended; its seq."""
+    body = asdict(Started(handle=LIVE, t=1.0, resume_from=None, sources=[]))
+    return ch.send(
+        body,
+        topic=Topic.LIFECYCLE_STARTED,
+        request_id=current_launch_id(),
+        expected_seq=ch.last_seq(),
+    )
 
 
 def until(fn, *, timeout=30.0):
@@ -222,6 +241,38 @@ def test_report_death_retries_a_lost_cas():
     ch = _Interloper([(1, claim(FOREIGN))], stopped(1, None, []))
     assert report_death(ch, 1, outcome=K, evidence="slurm:x", force=True) is None
     assert ch.last_seq() == 2
+
+
+def test_a_report_that_never_wins_its_cas_raises_report_starved():
+    """A claimant that writes faster than the report's read, probe and append round
+    trip: the report's CAS loses every time, and it gives up, typed, after a
+    bounded number of attempts rather than spinning forever."""
+
+    class Outrun(MemoryChannel):
+        cas = 0
+
+        def send(self, body, *, topic, name=None, request_id=None, expected_seq=None):
+            if expected_seq is not None:
+                self.cas += 1
+                if self.cas > 10 * REPORT_ATTEMPTS:
+                    raise AssertionError("an unbounded CAS loop")
+                beat = {"claim_seq": 1, "consumed_seq": 0, "t": 2.0}
+                super().send(beat, topic=Topic.LIFECYCLE_HEARTBEAT)
+            return super().send(
+                body,
+                topic=topic,
+                name=name,
+                request_id=request_id,
+                expected_seq=expected_seq,
+            )
+
+    ch = Outrun()
+    append(ch, [(1, claim(FOREIGN))])
+    with pytest.raises(ReportStarvedError) as exc:
+        report_death(ch, 1, outcome=K, evidence="slurm:x", force=True)
+    assert (exc.value.claim_seq, exc.value.attempts) == (1, REPORT_ATTEMPTS)
+    assert ch.cas == REPORT_ATTEMPTS
+    assert deaths(ch) == []
 
 
 # ----- report_if_dead --------------------------------------------------------------
@@ -439,13 +490,13 @@ def test_local_launchers_reap_is_not_stopped_by_one_runs_unreadable_claim(tmp_pa
     with LocalLauncher(root=tmp_path) as launcher:
         bad = launcher.launch("bad", [sys.executable, str(script)])
         good = launcher.launch("good", child("exit", "2"))
+        bad_ch = launcher.attach_channel("bad")
+        ch = launcher.attach_channel("good")
         try:
-            bad_ch = launcher.attach_channel("bad")
             launched_claim(bad_ch)
             good._proc.wait(timeout=30)  # exited, and not yet reaped
             for _ in range(3):
                 launcher.reap()
-            ch = launcher.attach_channel("good")
             claim_seq = launched_claim(ch).seq
             assert terminated(ch) == [(good.launch_id, "exited", 2, None)]
             assert undated(deaths(ch)) == [died_body(claim_seq, E, "reap: exit 2")]
@@ -454,9 +505,9 @@ def test_local_launchers_reap_is_not_stopped_by_one_runs_unreadable_claim(tmp_pa
             assert bad.wait(timeout=30) == -signal.SIGTERM
             assert terminated(bad_ch) == [(bad.launch_id, "killed", None, 15)]
             assert deaths(bad_ch) == []
+        finally:
             ch.close()
             bad_ch.close()
-        finally:
             if bad.is_alive():
                 bad._proc.kill()
                 bad.wait(timeout=30)
@@ -489,27 +540,32 @@ def test_local_launchers_reap_retries_a_write_that_failed(
         assert h.poll() == 3
         h.wait()  # reaped: nothing more
         ch = launcher.attach_channel("run")
-        claim_seq = launched_claim(ch).seq
-        assert terminated(ch) == [(h.launch_id, "exited", 3, None)]
-        assert undated(deaths(ch)) == [died_body(claim_seq, E, "reap: exit 3")]
-        end, report = (
-            ch.latest(topic).body["t"]
-            for topic in (Topic.SUPERVISOR_TERMINATED, Topic.SUPERVISOR_DIED)
-        )
-        assert end == report  # one reap, one t
-        ch.close()
+        try:
+            claim_seq = launched_claim(ch).seq
+            assert terminated(ch) == [(h.launch_id, "exited", 3, None)]
+            assert undated(deaths(ch)) == [died_body(claim_seq, E, "reap: exit 3")]
+            end, report = (
+                ch.latest(topic).body["t"]
+                for topic in (Topic.SUPERVISOR_TERMINATED, Topic.SUPERVISOR_DIED)
+            )
+            assert end == report  # one reap, one t
+        finally:
+            ch.close()
 
 
 def test_local_launchers_reap_processes_every_handle_and_raises_what_failed_after(
     tmp_path, monkeypatch
 ):
     """The backstop: a handle whose backend raises does not keep ``reap()`` from
-    the others; the errors are raised together once every handle is processed."""
+    the others; the errors are raised together once every handle is processed,
+    each noted with the run, the launch and the handle it failed on."""
     with LocalLauncher(root=tmp_path) as launcher:
         broken = launcher.launch("broken", child("block"))
         good = launcher.launch("good", child("exit", "2"))
+        broken_ch = launcher.attach_channel("broken")
+        ch = launcher.attach_channel("good")
         try:
-            launched_claim(launcher.attach_channel("broken"))
+            launched_claim(broken_ch)
             good._proc.wait(timeout=30)
 
             def unreachable(*a, **kw):
@@ -519,26 +575,60 @@ def test_local_launchers_reap_processes_every_handle_and_raises_what_failed_afte
             with pytest.raises(ExceptionGroup) as group:
                 launcher.reap()
             assert [type(e) for e in group.value.exceptions] == [OSError]
-            ch = launcher.attach_channel("good")
+            assert group.value.exceptions[0].__notes__ == [
+                f"run 'broken', launch {broken.launch_id}, {broken.handle}"
+            ]
             assert terminated(ch) == [(good.launch_id, "exited", 2, None)]
             assert len(deaths(ch)) == 1
-            ch.close()
         finally:
+            ch.close()
+            broken_ch.close()
             monkeypatch.undo()
             if broken.is_alive():
                 broken._proc.kill()
                 broken.wait(timeout=30)
 
 
+def _broken_reap(launcher, monkeypatch):
+    """A launch whose reap raises: its child has exited, and its channel's every
+    send raises, as does every fresh channel's (the backend is gone)."""
+    h = launcher.launch("broken", child("exit", "0"))
+    h._proc.wait(timeout=30)
+
+    def gone(*a, **kw):
+        raise OSError("the backend went away")
+
+    monkeypatch.setattr(h.channel, "send", gone)
+    monkeypatch.setattr(h, "_reopen", gone)
+    return h
+
+
+def test_a_launchers_exit_notes_its_reaps_failures_on_the_bodys_exception(
+    tmp_path, monkeypatch
+):
+    """The body's exception propagates, never the reap's group, which would hide
+    the cause behind its consequence; the reap's failures ride on it as notes."""
+    with pytest.raises(KeyError) as body:
+        with LocalLauncher(root=tmp_path) as launcher:
+            h = _broken_reap(launcher, monkeypatch)
+            raise KeyError("the body")
+    [note] = body.value.__notes__
+    assert "OSError('the backend went away')" in note
+    assert f"run 'broken', launch {h.launch_id}, {h.handle}" in note
+
+
+def test_a_launchers_exit_raises_its_reaps_failures_when_the_body_did_not(
+    tmp_path, monkeypatch
+):
+    with pytest.raises(ExceptionGroup) as group:
+        with LocalLauncher(root=tmp_path) as launcher:
+            _broken_reap(launcher, monkeypatch)
+    assert [type(e) for e in group.value.exceptions] == [OSError]
+
+
 def test_thread_launcher_writes_died_when_its_thread_finishes_with_no_exit(tmp_path):
     def claims(ch, *, exits):
-        body = asdict(Started(handle=LIVE, t=1.0, resume_from=None, sources=[]))
-        seq = ch.send(
-            body,
-            topic=Topic.LIFECYCLE_STARTED,
-            request_id=current_launch_id(),
-            expected_seq=ch.last_seq(),
-        )
+        seq = claim_launch(ch)
         if exits:
             ch.send(
                 {
@@ -586,8 +676,6 @@ def test_thread_launchers_end_never_raises_on_an_unreadable_claim_or_two_exits(
     """The thread's end writes its records on any log: an unreadable claim naming
     the launch still ends by a report (no handle is probed, and none need be), and
     a claim with two readable exits has one, so the raise adds nothing."""
-    import threading
-
     raised = []
     monkeypatch.setattr(threading, "excepthook", raised.append)
 
@@ -597,10 +685,7 @@ def test_thread_launchers_end_never_raises_on_an_unreadable_claim_or_two_exits(
         )
 
     def exits_twice(ch):
-        body = asdict(Started(handle=LIVE, t=1.0, resume_from=None, sources=[]))
-        seq = ch.send(
-            body, topic=Topic.LIFECYCLE_STARTED, request_id=current_launch_id()
-        )
+        seq = claim_launch(ch)
         for _ in range(2):
             r = stopped(seq, None, [])
             ch.send(r.body, topic=r.topic)
@@ -642,13 +727,7 @@ def test_a_signal_reports_killed_and_a_nonzero_exit_or_a_raise_errored_whether_o
             ch.close()
 
     def raises(ch):
-        body = asdict(Started(handle=LIVE, t=1.0, resume_from=None, sources=[]))
-        seq = ch.send(
-            body,
-            topic=Topic.LIFECYCLE_STARTED,
-            request_id=current_launch_id(),
-            expected_seq=ch.last_seq(),
-        )
+        seq = claim_launch(ch)
         assert seq == 2
         if released:
             d = Died(claim_seq=seq, outcome=K, evidence="test: released", t=2.0)
@@ -686,13 +765,7 @@ def test_an_exit_0_or_a_return_reports_lost_while_held_and_nothing_after_a_relea
         ch.close()
 
     def returns(ch):
-        body = asdict(Started(handle=LIVE, t=1.0, resume_from=None, sources=[]))
-        seq = ch.send(
-            body,
-            topic=Topic.LIFECYCLE_STARTED,
-            request_id=current_launch_id(),
-            expected_seq=ch.last_seq(),
-        )
+        seq = claim_launch(ch)
         if released:
             d = Died(claim_seq=seq, outcome=K, evidence="test: released", t=2.0)
             ch.send(asdict(d), topic=Topic.SUPERVISOR_DIED)
@@ -718,10 +791,11 @@ def test_local_launcher_reap_kills_its_own_child_whose_claim_a_report_ended(
     with LocalLauncher(root=tmp_path) as launcher:
         orphan = launcher.launch("orphan", child("block"))
         held = launcher.launch("held", child("block"))
+        ch = launcher.attach_channel("orphan")
+        held_ch = launcher.attach_channel("held")
         try:
-            ch = launcher.attach_channel("orphan")
             claim_seq = launched_claim(ch).seq
-            launched_claim(launcher.attach_channel("held"))
+            launched_claim(held_ch)
             launcher.reap()
             assert orphan.is_alive() and held.is_alive()  # both claims are held
             report_death(ch, claim_seq, outcome=L, evidence="session: s/1", force=True)
@@ -733,8 +807,9 @@ def test_local_launcher_reap_kills_its_own_child_whose_claim_a_report_ended(
             ]
             assert undated(deaths(ch)) == [died_body(claim_seq, L, "session: s/1")]
             assert peek_terminal(ch).outcomes == {L}
-            ch.close()
         finally:
+            ch.close()
+            held_ch.close()
             for h in (orphan, held):
                 if h.is_alive():
                     h._proc.kill()
@@ -746,33 +821,36 @@ def test_local_launcher_kills_an_orphan_that_ignores_sigterm(tmp_path):
     beside its successor: the orphan is killed, not asked (§3)."""
     with LocalLauncher(root=tmp_path) as launcher:
         h = launcher.launch("orphan", child("ignoreterm", "release", "block"))
+        ch = launcher.attach_channel("orphan")
         try:
-            ch = launcher.attach_channel("orphan")
             until(lambda: deaths(ch) != [])
             launcher.reap()
             assert h.wait(timeout=10) == -signal.SIGKILL
-            ch.close()
         finally:
+            ch.close()
             if h.is_alive():
                 h._proc.kill()
                 h.wait(timeout=30)
 
 
-def test_local_launcher_does_not_kill_a_child_its_own_unreadable_exit_ended(tmp_path):
+def test_local_launcher_does_not_kill_a_child_its_own_unreadable_exit_ended(
+    tmp_path, monkeypatch
+):
     """An orphan is a child whose claim a ``died`` names and no ``stopped`` does,
     readable or not: a claim its own exit ended is finishing (§3)."""
     with LocalLauncher(root=tmp_path) as launcher:
         h = launcher.launch("finishing", child("badexit", "block"))
+        ch = launcher.attach_channel("finishing")
         try:
-            ch = launcher.attach_channel("finishing")
             until(lambda: ch.latest(Topic.LIFECYCLE_STOPPED))
             assert peek_terminal(ch).tier == Tier.DIED  # its unreadable exit ended it
-            launcher.reap()
-            with pytest.raises(subprocess.TimeoutExpired):
-                h.wait(timeout=1)
-            assert h.is_alive()
-            ch.close()
+            kills = []
+            with monkeypatch.context() as m:
+                m.setattr(h._proc, "kill", lambda: kills.append(h._proc.pid))
+                launcher.reap()
+            assert kills == [] and h.is_alive()
         finally:
+            ch.close()
             if h.is_alive():
                 h._proc.kill()
                 h.wait(timeout=30)
@@ -820,25 +898,35 @@ def test_relaunch_if_needed_and_ensure_served_report_a_dead_held_claim_then_laun
     assert h is not None
     h.wait()
     assert undated(deaths(ch)) == [died_body(2, L, f"probe: {handle}")]
-    # the only lease, bound to the dead claim: the report voids it, and the demand
-    # read again after the report finds nothing to serve (§5)
-    rows = [
-        (1, subscribe(None, "lease", until={"time_seconds": 60})),
-        (2, claim(handle)),
-        (3, bound(2, "lease")),
-    ]
-    ch = run_with("leased", rows)
-    demand = LiveDemand()
-    assert [e.request_id for e in demand.poll(ch)] == ["lease"]
-    assert ensure_served(launcher, "leased", target, demand=demand) is None
-    assert undated(deaths(ch)) == [died_body(2, L, f"probe: {handle}")]
-    assert demand.poll(ch) == [] and live_episode(ch) is None
     assert ran == ["durable", "served"]
     # a live held claim with demand: nothing reports, nothing launches
     rows = [(1, subscribe("lr", "d", every={"commits": 1})), (2, claim(LIVE))]
     ch = run_with("busy", rows)
     assert ensure_served(launcher, "busy", target, demand=LiveDemand()) is None
     assert ch.last_seq() == 2
+
+
+def test_ensure_served_reads_demand_again_after_a_report_voids_the_only_lease(
+    tmp_path,
+):
+    """The only lease is bound to the dead held claim: the report ends the claim,
+    which voids the lease (§2, a lease is per claim), and the demand read again
+    after the report finds nothing to serve, so nothing launches (§5)."""
+    launcher = ThreadLauncher(root=tmp_path)
+    handle = dead_handle()
+    rows = [
+        (1, subscribe(None, "lease", until={"time_seconds": 60})),
+        (2, claim(handle)),
+        (3, bound(2, "lease")),
+    ]
+    append(launcher.create_channel("leased"), rows)
+    ch = launcher.attach_channel("leased")
+    demand = LiveDemand()
+    assert [e.request_id for e in demand.poll(ch)] == ["lease"]
+    assert ensure_served(launcher, "leased", lambda ch: None, demand=demand) is None
+    assert undated(deaths(ch)) == [died_body(2, L, f"probe: {handle}")]
+    assert demand.poll(ch) == [] and live_episode(ch) is None
+    assert ch.read(topics=[Topic.SUPERVISOR_LAUNCHED]) == []
 
 
 def test_the_launchers_records_are_valid_0_4_0(tmp_path):
@@ -852,8 +940,7 @@ def test_the_launchers_records_are_valid_0_4_0(tmp_path):
     threads = ThreadLauncher(root=tmp_path)
 
     def raises(c):
-        body = asdict(Started(handle=LIVE, t=1.0, resume_from=None, sources=[]))
-        c.send(body, topic=Topic.LIFECYCLE_STARTED, request_id=current_launch_id())
+        claim_launch(c)
         raise ValueError("x")
 
     threads.launch("thread", raises).wait()
@@ -865,3 +952,142 @@ def test_the_launchers_records_are_valid_0_4_0(tmp_path):
         for e in records:
             assert record_errors(asdict(e)) == [], e
     ch.close()
+
+
+# ----- the local handle's reap: a latched kill, a locked reap, a fresh channel ------
+
+
+def exited_unreaped(h):
+    """Block until ``h``'s child has exited, leaving it unreaped (a zombie): its
+    ``Popen`` has not seen the exit."""
+    os.waitid(os.P_PID, h._proc.pid, os.WEXITED | os.WNOWAIT)
+
+
+def test_a_second_kill_of_a_dying_orphan_leaves_its_reap_the_launchers(tmp_path):
+    """The kill is latched: a later cycle's kill of a child already dying from the
+    first leaves its reap writing ``terminated`` only (§3, "A session probe")."""
+    with LocalLauncher(root=tmp_path) as launcher:
+        h = launcher.launch("orphan", child("block"))
+        ch = launcher.attach_channel("orphan")
+        try:
+            claim_seq = launched_claim(ch).seq
+            report_death(ch, claim_seq, outcome=L, evidence="session: s/1", force=True)
+            h._kill()
+            exited_unreaped(h)
+            h._kill()  # a later cycle's kill: the child is dead and unreaped
+            assert h.poll() == -signal.SIGKILL
+            assert terminated(ch) == [(h.launch_id, "killed", None, 9)]
+            assert undated(deaths(ch)) == [died_body(claim_seq, L, "session: s/1")]
+        finally:
+            ch.close()
+
+
+def test_a_natural_exit_racing_the_kill_is_the_childs_own_end(tmp_path, monkeypatch):
+    """The child exits between ``Popen``'s own check and its signal: the kill was
+    sent, but the exit status is the child's, not a ``SIGKILL``, so its reap is
+    evidence and reports it."""
+    with LocalLauncher(root=tmp_path) as launcher:
+        h = launcher.launch("run", child("exit", "3"))
+        ch = launcher.attach_channel("run")
+        try:
+            claim_seq = launched_claim(ch).seq
+            exited_unreaped(h)
+            with monkeypatch.context() as m:
+                m.setattr(h._proc, "poll", lambda: None)  # Popen's check: running
+                h._kill()
+            assert h.poll() == 3
+            assert terminated(ch) == [(h.launch_id, "exited", 3, None)]
+            assert undated(deaths(ch)) == [died_body(claim_seq, E, "reap: exit 3")]
+        finally:
+            ch.close()
+
+
+def test_concurrent_reaps_write_one_terminated_and_one_died(tmp_path, monkeypatch):
+    """``wait()`` on one thread and ``poll()`` on another reap one child: the reap
+    is locked, so each record lands once."""
+    with LocalLauncher(root=tmp_path) as launcher:
+        h = launcher.launch("run", child("exit", "3"))
+        h._proc.wait(timeout=30)
+        sent = h.channel.send
+
+        def slow(body, **kw):
+            time.sleep(0.1)  # a slow backend widens the window
+            return sent(body, **kw)
+
+        monkeypatch.setattr(h.channel, "send", slow)
+        reapers = [threading.Thread(target=h.wait), threading.Thread(target=h.poll)]
+        for t in reapers:
+            t.start()
+        for t in reapers:
+            t.join()
+        ch = launcher.attach_channel("run")
+        try:
+            assert terminated(ch) == [(h.launch_id, "exited", 3, None)]
+            assert len(deaths(ch)) == 1
+        finally:
+            ch.close()
+
+
+def test_a_reap_whose_write_raised_retries_on_a_fresh_channel(tmp_path, monkeypatch):
+    """A channel never reconnects (specs/channel-postgres.md): once its connection
+    has dropped, every send on it raises. The reap's retry opens a fresh channel
+    for the run, and lands there."""
+    with LocalLauncher(root=tmp_path) as launcher:
+        h = launcher.launch("run", child("exit", "3"))
+        h._proc.wait(timeout=30)
+        dropped = h.channel
+
+        def gone(*a, **kw):
+            raise OSError("the connection dropped")
+
+        monkeypatch.setattr(dropped, "send", gone)
+        with pytest.raises(OSError):
+            h.poll()
+        assert h.poll() == 3
+        assert h.channel is not dropped
+        ch = launcher.attach_channel("run")
+        try:
+            claim_seq = launched_claim(ch).seq
+            assert terminated(ch) == [(h.launch_id, "exited", 3, None)]
+            assert undated(deaths(ch)) == [died_body(claim_seq, E, "reap: exit 3")]
+        finally:
+            ch.close()
+
+
+def test_reap_drops_the_handles_it_has_reaped_and_closes_their_channels(
+    tmp_path, monkeypatch
+):
+    with LocalLauncher(root=tmp_path) as launcher:
+        done = launcher.launch("done", child("exit", "0"))
+        running = launcher.launch("running", child("block"))
+        try:
+            done._proc.wait(timeout=30)
+            closed = []
+            close = done.channel.close
+            monkeypatch.setattr(
+                done.channel, "close", lambda: (closed.append(True), close())
+            )
+            launcher.reap()
+            assert len(launcher._handles) == 1 and launcher._handles[0] is running
+            assert closed == [True]
+        finally:
+            running._proc.kill()
+            running.wait(timeout=30)
+
+
+def test_is_alive_binds_the_reaps_time_when_it_sees_the_death(tmp_path):
+    """``is_alive()`` writes nothing, but when the ``Popen`` reaps the exited child
+    there, the reap's one ``t`` is bound: the records a later reap writes are dated
+    by when the death was first seen (observer-clock §3)."""
+    with LocalLauncher(root=tmp_path) as launcher:
+        h = launcher.launch("run", child("exit", "0"))
+        until(lambda: not h.is_alive())
+        seen = h._death.t
+        time.sleep(0.05)
+        assert h.poll() == 0
+        ch = launcher.attach_channel("run")
+        try:
+            assert ch.latest(Topic.SUPERVISOR_TERMINATED).body["t"] == seen
+            assert ch.latest(Topic.SUPERVISOR_DIED).body["t"] == seen
+        finally:
+            ch.close()
