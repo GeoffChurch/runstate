@@ -24,10 +24,12 @@ class Layout(Protocol):
 
     def pg_schema(self) -> str: ...
 
+    @property
     def sqlite_ddl(self) -> str:
         """The format's log table and indexes, as one ``executescript``."""
         ...
 
+    @property
     def pg_ddl(self) -> tuple[str, ...]:
         """The format's log table and indexes, one statement each, unqualified:
         each runs under a search path set to the format's schema."""
@@ -43,17 +45,11 @@ class DirectoryLayout:
     another's by omission."""
 
     version: str
-    sqlite_script: str
-    pg_statements: tuple[str, ...]
+    sqlite_ddl: str
+    pg_ddl: tuple[str, ...]
 
     def sqlite_path(self, root: Path, run_id: str) -> Path:
         return root / f"v{self.version}" / f"{run_id}.db"
 
     def pg_schema(self) -> str:
         return "runstate_v" + self.version.replace(".", "_")
-
-    def sqlite_ddl(self) -> str:
-        return self.sqlite_script
-
-    def pg_ddl(self) -> tuple[str, ...]:
-        return self.pg_statements

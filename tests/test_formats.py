@@ -9,7 +9,7 @@ from runstate.formats import (
     LogFormatMissing,
     parse,
 )
-from tests.conftest import toy_layout
+from tests.format_helpers import toy_layout
 
 
 def test_parse_orders_versions_numerically():

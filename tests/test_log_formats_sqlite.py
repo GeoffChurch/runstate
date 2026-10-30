@@ -59,7 +59,7 @@ def test_a_newer_format_in_the_root_refuses_everything(tmp_path):
 
 def test_an_older_format_holding_the_run_says_migrate(tmp_path, monkeypatch):
     from runstate import formats
-    from tests.conftest import toy_layout
+    from tests.format_helpers import toy_layout
 
     monkeypatch.setitem(formats.FORMATS, "0.1.0", toy_layout("0.1.0"))
     old = toy_layout("0.1.0").sqlite_path(tmp_path, "r1")

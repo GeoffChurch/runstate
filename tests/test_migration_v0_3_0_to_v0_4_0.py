@@ -20,7 +20,7 @@ import runstate.migrations.v0_3_0_to_v0_4_0_engine as E
 from runstate import migrations
 from runstate.channel.sqlite import SqliteChannel
 from runstate.formats import FORMATS
-from tests.conftest import toy_layout
+from tests.format_helpers import toy_layout
 from runstate.migrations import RENUMBERING_FROM, STEPS, MigrationError, migrate
 from runstate.migrations.ambiguity import (
     Assumed,

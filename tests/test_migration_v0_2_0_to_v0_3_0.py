@@ -406,7 +406,7 @@ def _write(root: Path, rid: str, rows: list[Row]) -> Path:
     path.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript(FORMATS["0.2.0"].sqlite_ddl())
+    conn.executescript(FORMATS["0.2.0"].sqlite_ddl)
     conn.executemany(
         "INSERT INTO log (seq, topic, name, request_id, body, created_at)"
         " VALUES (?, ?, ?, ?, ?, ?)",
@@ -830,7 +830,7 @@ def _sqlite_reads(tmp_path, rid, rows):
     path = FORMATS["0.3.0"].sqlite_path(tmp_path, rid)
     path.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(path)
-    conn.executescript(FORMATS["0.3.0"].sqlite_ddl())
+    conn.executescript(FORMATS["0.3.0"].sqlite_ddl)
     conn.executemany(
         "INSERT INTO log (seq, topic, name, request_id, body, created_at)"
         " VALUES (?, ?, ?, ?, ?, ?)",
@@ -1143,7 +1143,7 @@ def pg_v0_2_0_run(pg_ready):
         c.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(old))
         with c.transaction():
             c.execute(sql.SQL("SET LOCAL search_path TO {}").format(old))
-            for ddl in FORMATS["0.2.0"].pg_ddl():
+            for ddl in FORMATS["0.2.0"].pg_ddl:
                 c.execute(ddl)
     try:
         yield pg_ready, rid

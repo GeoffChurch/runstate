@@ -13,7 +13,7 @@ from runstate import (
     create_channel,
 )
 from runstate.formats import FORMATS
-from tests.conftest import toy_layout
+from tests.format_helpers import toy_layout
 from runstate.migrations import STEPS, migrate
 from runstate.migrations.ambiguity import Limits, parse_choices
 

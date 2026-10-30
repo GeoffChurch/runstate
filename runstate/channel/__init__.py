@@ -123,7 +123,14 @@ def _locate(
     if backend == "memory":
         key = (None if root is None else os.path.abspath(str(root)), run_id)
         if create:
-            log = _MEMORY_LOGS.setdefault(key, MemoryLog([]))
+            # Build a log only for an absent key; setdefault, not an assignment,
+            # so two racing creates of one run still share the log that won.
+            existing = _MEMORY_LOGS.get(key)
+            log = (
+                existing
+                if existing is not None
+                else _MEMORY_LOGS.setdefault(key, MemoryLog([]))
+            )
         else:
             # Attach: look up WITHOUT setdefault (no phantom); an absent key or an
             # empty log is "no records" -> the run does not exist.

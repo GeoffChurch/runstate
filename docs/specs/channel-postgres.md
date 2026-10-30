@@ -59,12 +59,14 @@ CREATE TABLE IF NOT EXISTS log (
     PRIMARY KEY (run_id, seq)            -- per-run contiguous seq + the arbiter
 );
 CREATE INDEX IF NOT EXISTS idx_log_run_topic_seq ON log (run_id, topic, seq);
+CREATE INDEX IF NOT EXISTS idx_log_run_topic_name_seq
+    ON log (run_id, topic, name, seq);   -- latest(topic, name=); an addition (#19)
 ```
 
 The table is the format's, not the channel's: its module (`runstate/formats/v0_3_0.py` and its
-siblings) states it (`pg_ddl()`), and every writer, `ensure_schema` or a migration's destination,
-runs the DDL of the format it writes ([`log-formats.md`](log-formats.md) §3). The stamp columns
-are the session probe's.
+siblings) states it (its `pg_ddl` property), and every writer, `ensure_schema` or a migration's
+destination, runs the DDL of the format it writes ([`log-formats.md`](log-formats.md) §3). The
+stamp columns are the session probe's.
 
 The conformance suite's **contiguous-seq** tests force `seq = MAX(seq)+1` per run (a global
 `SERIAL` gaps on rollback and isn't per-run). The `PRIMARY KEY (run_id, seq)` is then the
@@ -204,8 +206,9 @@ recovery, where `pg_current_wal_lsn()` is defined). Only the key is per connecti
   reported the old identity, and `session_ended` returned `True` for a writer still alive on the old
   primary. A connection opened in that window would also have stamped the old timeline for its
   whole life, had the identity been read once at the open.
-- **PostgreSQL 16 is runstate's floor**, because `pg_split_walfile_name` arrived in 16. CI runs
-  `postgres:16`, and every known deployment is 16 or newer.
+- **PostgreSQL 16 is runstate's floor**, because `pg_split_walfile_name` arrived in 16. The open
+  enforces it, reading `server_version_num` before any write, so an older server fails the open
+  rather than the first claim. CI runs `postgres:16`, and every known deployment is 16 or newer.
 - **Revival trigger:** a consumer on PostgreSQL 15 or older. Then add a parse of the WAL file name's
   timeline (its first 8 hex digits) as a Strategy resolved at the open. The stamp's value is the
   same integer either way, so no log changes.

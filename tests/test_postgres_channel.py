@@ -8,6 +8,7 @@ Skipped wholesale when ``psycopg`` is absent; each test additionally skips when
 ``RUNSTATE_TEST_PG_DSN`` is unset (via the ``pg_dsn`` fixture)."""
 
 import multiprocessing as mp
+import os
 import threading
 import time
 import uuid
@@ -610,6 +611,60 @@ def test_a_connection_takes_its_key_before_its_first_write(pg_ready):
         assert ch.last_seq() == 0  # nothing written
 
 
+def _drawing(keys):
+    """A stand-in for the channel's ``secrets``, whose ``token_bytes`` yields ``keys``
+    in order, as the 8 signed big-endian bytes the open turns back into a key."""
+    from types import SimpleNamespace
+
+    draws = iter(keys)
+    return SimpleNamespace(
+        token_bytes=lambda n: next(draws).to_bytes(n, "big", signed=True)
+    )
+
+
+def test_a_key_another_connection_holds_is_drawn_again(pg_ready, monkeypatch):
+    """The try-lock fails on a key held elsewhere, and the open draws a fresh one; a
+    key space that stays held through every draw fails the open loudly."""
+    from itertools import repeat
+
+    from runstate.channel import postgres
+
+    held, fresh = (int.from_bytes(os.urandom(8), "big", signed=True) for _ in range(2))
+    with psycopg.connect(pg_ready, autocommit=True) as holder:
+        holder.execute("SELECT pg_advisory_lock(%s::bigint)", [held])
+        monkeypatch.setattr(postgres, "secrets", _drawing([held, fresh]))
+        with postgres.PostgresChannel(pg_ready, run_id=f"redraw-{uuid.uuid4()}") as ch:
+            assert ch._key == fresh
+        monkeypatch.setattr(postgres, "secrets", _drawing(repeat(held)))
+        with pytest.raises(RuntimeError, match="no free advisory-lock key"):
+            postgres.PostgresChannel(pg_ready, run_id=f"redraw-{uuid.uuid4()}")
+
+
+def test_writer_session_of_a_seq_with_no_record_raises(pg_ready):
+    """A seq the run has not reached names no record, which is not an unstamped one:
+    the probe raises rather than answer None, the copied row's abstention."""
+    from runstate.channel.postgres import PostgresChannel
+
+    with PostgresChannel(pg_ready, run_id=f"nosuch-{uuid.uuid4()}") as ch:
+        with pytest.raises(LookupError, match="no record at seq 1"):
+            ch.writer_session(1)
+        ch.send({}, topic="lifecycle.started", expected_seq=0)
+        with pytest.raises(LookupError, match="no record at seq 2"):
+            ch.writer_session(2)
+
+
+def test_a_server_below_the_version_floor_is_refused(pg_ready, monkeypatch):
+    """Every row's stamp calls pg_split_walfile_name, which PostgreSQL 16 introduced:
+    on an older server the open refuses, before any write, rather than letting the
+    first claim fail with UndefinedFunction. Simulated by raising the floor above this
+    server's version."""
+    from runstate.channel import postgres
+
+    monkeypatch.setattr(postgres, "_SERVER_VERSION_FLOOR", 990000)
+    with pytest.raises(RuntimeError, match="PostgreSQL 99 .*pg_split_walfile_name"):
+        postgres.PostgresChannel(pg_ready, run_id=f"floor-{uuid.uuid4()}")
+
+
 def test_session_ended_reads_held_then_ended_after_close(pg_ready):
     from runstate.channel.postgres import PostgresChannel
 
@@ -685,10 +740,10 @@ def test_session_ended_ignores_a_lock_in_another_database(pg_ready):
         except psycopg.errors.InsufficientPrivilege:
             pytest.skip("test role cannot CREATEDB")
     run_id = f"crossdb-{uuid.uuid4()}"
-    writer = PostgresChannel(pg_ready, run_id=run_id)
-    probe = PostgresChannel(pg_ready, run_id=run_id)
-    stranger = None
-    try:
+    writer = probe = stranger = None
+    try:  # the opens too, so a failed one still drops the database
+        writer = PostgresChannel(pg_ready, run_id=run_id)
+        probe = PostgresChannel(pg_ready, run_id=run_id)
         session = probe.writer_session(
             writer.send({}, topic="lifecycle.started", expected_seq=0)
         )
@@ -700,10 +755,9 @@ def test_session_ended_ignores_a_lock_in_another_database(pg_ready):
         ).fetchone() == (True,)
         assert _poll_until(lambda: probe.session_ended(session), True)
     finally:
-        if stranger is not None:
-            stranger.close()
-        writer.close()
-        probe.close()
+        for conn in (stranger, writer, probe):
+            if conn is not None:
+                conn.close()
         with psycopg.connect(pg_ready, autocommit=True) as admin:
             admin.execute(f'DROP DATABASE IF EXISTS "{other_db}" WITH (FORCE)')
 
@@ -732,17 +786,30 @@ def _fsync_on_a_fresh_connection(dsn):
 def test_a_server_with_fsync_off_is_refused(pg_ready):
     """With ``fsync = off`` a crash lost 14 to 2,386 already-visible rows in 40 of 40
     trials and reused their seqs (review §12, item 15). The setting is the server's,
-    so the channel cannot fix it; it refuses to open. Restored in a ``finally``, and
+    so the channel cannot fix it; it refuses to open.
+
+    Opt-in (``RUNSTATE_TEST_PG_ALTER_SYSTEM=1``), because it changes server-wide,
+    persisted config with ``ALTER SYSTEM``: while it runs, every open on the server
+    fails, a second suite's included, and a hard kill before the restore leaves
+    ``fsync = off`` for every later run on the cluster. Set it only for a throwaway
+    server, as CI's is. The restore is in a ``finally`` that covers the alter, and is
     waited for, so no later test inherits it."""
     from runstate.channel.postgres import PostgresChannel
 
-    with psycopg.connect(pg_ready, autocommit=True) as admin:
-        try:
-            admin.execute("ALTER SYSTEM SET fsync = off")
-        except psycopg.errors.InsufficientPrivilege:
-            pytest.skip("test role cannot ALTER SYSTEM")
+    if os.environ.get("RUNSTATE_TEST_PG_ALTER_SYSTEM") != "1":
+        pytest.skip(
+            "alters server-wide config; set RUNSTATE_TEST_PG_ALTER_SYSTEM=1 "
+            "on a throwaway server to run it"
+        )
+    with psycopg.connect(pg_ready) as c:  # asked, so a refusal alters nothing
+        (allowed,) = c.execute(
+            "SELECT has_parameter_privilege('fsync', 'ALTER SYSTEM')"
+        ).fetchone()
+    if not allowed:
+        pytest.skip("test role cannot ALTER SYSTEM")
     try:
         with psycopg.connect(pg_ready, autocommit=True) as admin:
+            admin.execute("ALTER SYSTEM SET fsync = off")
             admin.execute("SELECT pg_reload_conf()")
         assert _poll_until(lambda: _fsync_on_a_fresh_connection(pg_ready), "off")
         with pytest.raises(RuntimeError, match="fsync"):
@@ -763,9 +830,10 @@ def test_the_stamp_reads_the_live_wal_timeline_not_the_checkpoints():
     or reads the probe's identity reads the live WAL insertion point."""
     from runstate.channel import postgres
 
+    assert "pg_current_wal_lsn()" in postgres._IDENTITY
+    assert "pg_control_checkpoint" not in postgres._IDENTITY
     for stmt in (postgres._CAS, postgres._UNCONDITIONAL, postgres._SERVER):
-        assert "pg_current_wal_lsn()" in stmt
-        assert "pg_control_checkpoint" not in stmt
+        assert postgres._IDENTITY in stmt
 
 
 def test_session_ended_answers_where_resolve_abstains(pg_ready):

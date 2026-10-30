@@ -247,21 +247,6 @@ def crashed_journal_writer():
     return write
 
 
-# --- toy formats ---
-
-
-def toy_layout(version):
-    """A test-only format at ``version``'s address, with 0.2.0's tables: a format
-    states its tables, and a toy has no reason to differ from the oldest real one."""
-    from runstate.formats import DirectoryLayout, v0_2_0
-
-    return DirectoryLayout(
-        version=version,
-        sqlite_script=v0_2_0.SQLITE_SCRIPT,
-        pg_statements=v0_2_0.PG_STATEMENTS,
-    )
-
-
 @pytest.fixture
 def scratch_db(pg_ready):
     """A database of its own, dropped afterwards, for a test that needs a schema the

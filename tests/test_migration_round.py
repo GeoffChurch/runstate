@@ -65,7 +65,7 @@ def _write(path: Path, rows, *, fmt: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     try:
-        conn.executescript(FORMATS[fmt].sqlite_ddl())
+        conn.executescript(FORMATS[fmt].sqlite_ddl)
         conn.executemany(
             "INSERT INTO log (seq, topic, name, request_id, body, created_at)"
             " VALUES (?, ?, ?, ?, ?, ?)",

@@ -29,6 +29,6 @@ CREATE TABLE IF NOT EXISTS log (
 
 LAYOUT = DirectoryLayout(
     version="0.3.0",
-    sqlite_script=v0_2_0.SQLITE_SCRIPT,
-    pg_statements=(PG_TABLE, v0_2_0.PG_TOPIC_INDEX, v0_2_0.PG_NAME_INDEX),
+    sqlite_ddl=v0_2_0.SQLITE_SCRIPT,
+    pg_ddl=(PG_TABLE, v0_2_0.PG_TOPIC_INDEX, v0_2_0.PG_NAME_INDEX),
 )

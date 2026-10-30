@@ -58,7 +58,7 @@ def ensure_schema(dsn: str) -> None:
         conn.execute(
             sql.SQL("SET LOCAL search_path TO {}").format(sql.Identifier(schema))
         )
-        for ddl in FORMATS[LOG_FORMAT].pg_ddl():  # the tables of the format it writes
+        for ddl in FORMATS[LOG_FORMAT].pg_ddl:  # the tables of the format it writes
             conn.execute(ddl)
 
 
@@ -137,6 +137,11 @@ _IDENTITY = (
     " (pg_split_walfile_name(pg_walfile_name(pg_current_wal_lsn()))).timeline_id::text"
 )
 
+# The oldest server the stamp can be written on, as ``server_version_num``:
+# pg_split_walfile_name arrived in PostgreSQL 16. The open refuses an older server,
+# so it fails before any write rather than at its first claim with UndefinedFunction.
+_SERVER_VERSION_FLOOR = 160000
+
 # The CAS: insert at seq=expected+1 iff the run's current max is still expected.
 # The PRIMARY KEY (run_id, seq) is the arbiter -- a rival that committed expected+1
 # first turns this into a UniqueViolation (a provable loss), not a corruption.
@@ -214,17 +219,22 @@ _SERVER = f"SELECT CASE WHEN pg_is_in_recovery() THEN NULL ELSE {_IDENTITY} END"
 # else (a key space someone fills on purpose); the bound makes that a loud failure.
 _KEY_DRAWS = 16
 
-# Whether a bigint advisory key is granted in THIS database (pg_locks is cluster-
-# wide, and advisory keys are per database), to any backend. The key is stored
-# split across pg_locks as (classid=high32, objid=low32, objsubid=1);
-# shift-then-mask is independent of >>'s sign extension.
-_KEY_HELD = """
-SELECT EXISTS (
+# A granted lock on the bigint advisory key %(key)s, by any backend in any database;
+# the two queries below narrow it. The key is stored split across pg_locks as
+# (classid=high32, objid=low32, objsubid=1); shift-then-mask is independent of >>'s
+# sign extension.
+_KEY_GRANTED = """
     SELECT 1 FROM pg_locks
     WHERE locktype = 'advisory' AND granted AND objsubid = 1
-      AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
       AND classid = ((%(key)s::bigint >> 32) & 4294967295)::oid
       AND objid   = (%(key)s::bigint & 4294967295)::oid
+"""
+
+# Whether the key is granted in THIS database (pg_locks is cluster-wide, and
+# advisory keys are per database), to any backend.
+_KEY_HELD = f"""
+SELECT EXISTS ({_KEY_GRANTED}
+      AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
 )
 """
 
@@ -232,13 +242,9 @@ SELECT EXISTS (
 # lock held by its own backend, else a transaction-mode pooler reassigned the
 # backend between statements and the session lock is worthless. Run at the open,
 # before any write, so a pooler fails the open and can never strand a claim.
-_KEY_HELD_BY_ME = """
-SELECT EXISTS (
-    SELECT 1 FROM pg_locks
-    WHERE locktype = 'advisory' AND granted AND objsubid = 1
+_KEY_HELD_BY_ME = f"""
+SELECT EXISTS ({_KEY_GRANTED}
       AND pid = pg_backend_pid()
-      AND classid = ((%(key)s::bigint >> 32) & 4294967295)::oid
-      AND objid   = (%(key)s::bigint & 4294967295)::oid
 )
 """
 
@@ -266,16 +272,17 @@ class PostgresChannel(Channel):
         self._lock = threading.Lock()
         self._conn = psycopg.connect(dsn, autocommit=True)
         try:  # one guard: a failure anywhere in the open closes the connection
-            self._open(run_id, create=create)
+            self._key = self._open(run_id, create=create)
         except BaseException:
             self._conn.close()
             raise
 
-    def _open(self, run_id: str, *, create: bool) -> None:
+    def _open(self, run_id: str, *, create: bool) -> int:
+        """Open the connection on the run, and return its session key."""
         # lock_timeout is the busy_timeout analogue: a wedged conflicting writer
         # makes the CAS raise (indeterminate) rather than hang forever.
         self._conn.execute("SET lock_timeout = '5000ms'")
-        self._key = self._take_key()
+        key = self._become_writer()
         has_rows = check_format(self._conn, run_id)  # before the search path
         self._conn.execute(
             sql.SQL("SET search_path TO {}").format(
@@ -295,14 +302,18 @@ class PostgresChannel(Channel):
             # sqlite/memory now conform to -- postgres embodies it natively.
             if not has_rows:
                 raise RunNotFound(f"run {run_id!r} has no records (postgres backend)")
+        return key
 
-    def _take_key(self) -> int:
+    def _become_writer(self) -> int:
         """Make this connection a durable writer with a session key of its own, before
         any write (channel-postgres.md, "Liveness"), in this order:
 
         - ``synchronous_commit = on``: else a commit is acknowledged before it is
           durable, and a crash loses rows readers saw and reuses their seqs. Set on
           this connection, whatever the database or role defaults to.
+        - refuse a server older than PostgreSQL 16 (``_SERVER_VERSION_FLOOR``): every
+          row's stamp calls ``pg_split_walfile_name``, which it lacks, so its first
+          write would fail.
         - refuse ``fsync = off``: the same loss, server-wide, which a connection cannot
           fix (14 to 2,386 visible rows lost in 40 of 40 crash trials; review §12,
           item 15).
@@ -311,9 +322,19 @@ class PostgresChannel(Channel):
           claim gate. Drawn again while another connection holds it.
         - the pooler self-check.
 
-        The key is stamped on every row this connection writes. The server's identity
-        is not read here: each row's statement stamps the timeline it is written on."""
+        Returns the key, which is stamped on every row this connection writes. The
+        server's identity is not read here: each row's statement stamps the timeline it
+        is written on."""
         self._conn.execute("SET synchronous_commit = on")
+        version = self._conn.execute("SHOW server_version_num").fetchone()
+        assert version is not None  # SHOW always yields one row
+        if int(version[0]) < _SERVER_VERSION_FLOOR:
+            raise RuntimeError(
+                f"the postgres server is version {version[0]}, below runstate's floor "
+                f"of PostgreSQL {_SERVER_VERSION_FLOOR // 10000} "
+                f"(server_version_num {_SERVER_VERSION_FLOOR}): every row's stamp "
+                "calls pg_split_walfile_name, which PostgreSQL 16 introduced"
+            )
         fsync = self._conn.execute("SHOW fsync").fetchone()
         assert fsync is not None  # SHOW always yields one row
         if fsync[0] == "off":

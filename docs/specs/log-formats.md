@@ -59,9 +59,9 @@ because only the outermost component leaves every future layout free.
   underscores.
 - **Each format's layout lives in its own module,** `runstate/formats/v0_2_0.py` and so on. It is a
   function from (root, run id) to an address for each persistent backend, *and the format's tables* on
-  each: `sqlite_ddl()`, one script, and `pg_ddl()`, one statement each, run under the format's schema.
-  The runtime uses only the current format's module. The others exist for the opening checks and the
-  migration steps.
+  each: the properties `sqlite_ddl`, one script, and `pg_ddl`, one statement each, run under the
+  format's schema. The runtime uses only the current format's module. The others exist for the opening
+  checks and the migration steps.
 - **Every writer of a log takes its tables from the format it writes.** A channel's birth (SQLite's
   file, Postgres's `ensure_schema`) runs the current format's; a migration's destination runs its
   step's `TO` format's. The tables belong to the format, not to the channel: had the destination taken

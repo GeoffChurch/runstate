@@ -29,6 +29,9 @@ jobs:
       # a DIRECT endpoint (not a transaction-mode pooler): the session advisory
       # lock and the per-connection session state depend on one stable backend.
       RUNSTATE_TEST_PG_DSN: postgresql://postgres:postgres@localhost:5432/runstate_test
+      # the service is throwaway, so the fsync test may ALTER SYSTEM on it (an opt-in:
+      # server-wide, persisted config that no shared or long-lived server should take).
+      RUNSTATE_TEST_PG_ALTER_SYSTEM: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

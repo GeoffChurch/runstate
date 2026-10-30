@@ -67,5 +67,5 @@ PG_NAME_INDEX = (
 PG_STATEMENTS = (PG_TABLE, PG_TOPIC_INDEX, PG_NAME_INDEX)
 
 LAYOUT = DirectoryLayout(
-    version="0.2.0", sqlite_script=SQLITE_SCRIPT, pg_statements=PG_STATEMENTS
+    version="0.2.0", sqlite_ddl=SQLITE_SCRIPT, pg_ddl=PG_STATEMENTS
 )

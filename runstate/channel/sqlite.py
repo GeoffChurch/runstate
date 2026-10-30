@@ -108,7 +108,7 @@ class SqliteChannel(Channel):
         # norm, so outside a genuine multi-claimant race this never engages.
         self._conn.execute("PRAGMA busy_timeout=5000")
         # the tables of the format this channel writes (log-formats.md §3)
-        self._conn.executescript(FORMATS[LOG_FORMAT].sqlite_ddl())
+        self._conn.executescript(FORMATS[LOG_FORMAT].sqlite_ddl)
 
     def _open_existing(self, path: str | os.PathLike[str]) -> None:
         """Attach to an EXISTING file (``create=False``): open read-write but

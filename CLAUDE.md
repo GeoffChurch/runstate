@@ -299,6 +299,8 @@ export RUNSTATE_TEST_PG_DSN="postgresql:///runstate_test?host=/tmp/rs-pgsock&por
 The socket directory **must be a short path** -- the sun_path limit is 107 bytes and a scratchpad
 path blows it (`Unix-domain socket path ... is too long`). 3,254 passed / 282 skipped without the DSN
 and 3,535 passed / 1 skipped with it, the oracle's 25 deselected (2026-10-28); 3,561 collected in all.
+The `fsync = off` refusal's test also needs `RUNSTATE_TEST_PG_ALTER_SYSTEM=1`, since it alters the
+server's persisted config: set it only on a throwaway server like this one (CI's job sets it).
 
 The pre-commit hook runs CI's default gate set -- `black --check`,
 `mypy --strict`, `pytest` -- in ~100 s, almost all of it the suite. It exists
@@ -363,7 +365,8 @@ add or change a convention body.
    checks are part of the protocol):
    - **a layout per format** — an address method on the `Layout` Protocol
      (`runstate/formats/_layout.py`) and, beside it, the backend's table DDL
-     (as `sqlite_ddl` and `pg_ddl` are), defined for every registered format;
+     as a read-only property (as `sqlite_ddl` and `pg_ddl` are), defined for
+     every registered format;
      every writer of a log (the channel's birth, a migration's destination)
      runs the DDL of the format it writes;
    - **the five opening checks** (§4), in order, in its `_locate` branch: a newer

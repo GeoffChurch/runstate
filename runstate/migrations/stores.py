@@ -236,7 +236,7 @@ class SqliteStore:
         try:
             conn = sqlite3.connect(tmp, isolation_level=None)
             try:
-                conn.executescript(formats.FORMATS[step.TO].sqlite_ddl())
+                conn.executescript(formats.FORMATS[step.TO].sqlite_ddl)
                 conn.execute("BEGIN")
                 conn.executemany(
                     "INSERT INTO log (seq, topic, name, request_id, body, created_at)"
@@ -371,7 +371,7 @@ class PostgresStore:
             migrated = planned.run(rows, history)
             conn.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(dst))
             conn.execute(sql.SQL("SET LOCAL search_path TO {}").format(dst))
-            for ddl in formats.FORMATS[step.TO].pg_ddl():
+            for ddl in formats.FORMATS[step.TO].pg_ddl:
                 conn.execute(ddl)
             with conn.cursor() as cur:
                 cur.executemany(

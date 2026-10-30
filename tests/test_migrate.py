@@ -28,7 +28,7 @@ from runstate.migrations.ambiguity import (
     resolutions,
 )
 from runstate.migrations.stores import PostgresStore, SqliteStore
-from tests.conftest import toy_layout
+from tests.format_helpers import toy_layout
 from tests.migration_helpers import NO_HISTORY
 from tests.migration_consumer import ASKED, UNSETTLED, ToyFacts
 
@@ -359,7 +359,7 @@ def pg_toy(pg_ready, monkeypatch):
         conn.execute(sql.SQL("CREATE SCHEMA {}").format(old))
         with conn.transaction():
             conn.execute(sql.SQL("SET LOCAL search_path TO {}").format(old))
-            for ddl in toy_layout("8.0.0").pg_ddl():
+            for ddl in toy_layout("8.0.0").pg_ddl:
                 conn.execute(ddl)
             for i in range(3):
                 conn.execute(
@@ -1436,8 +1436,8 @@ def test_a_destination_takes_its_formats_ddl(backend, request, tmp_path, monkeyp
     v020 = formats.FORMATS["0.2.0"]
     v030 = dataclasses.replace(
         formats.FORMATS["0.3.0"],
-        sqlite_script=v020.sqlite_ddl() + _MARK_SQLITE,
-        pg_statements=v020.pg_ddl() + (_MARK_PG,),
+        sqlite_ddl=v020.sqlite_ddl + _MARK_SQLITE,
+        pg_ddl=v020.pg_ddl + (_MARK_PG,),
     )
     monkeypatch.setitem(formats.FORMATS, "0.3.0", v030)
     assert formats.LOG_FORMAT == "0.3.0"
@@ -1450,13 +1450,13 @@ def test_a_destination_takes_its_formats_ddl(backend, request, tmp_path, monkeyp
         src = v020.sqlite_path(tmp_path, "r1")
         src.parent.mkdir()
         conn = sqlite3.connect(src)
-        conn.executescript(v020.sqlite_ddl())
+        conn.executescript(v020.sqlite_ddl)
         conn.executemany("INSERT INTO log VALUES (?, ?, ?, ?, ?, ?)", rows)
         conn.commit()
         conn.close()
         reference = tmp_path / "reference.db"
         conn = sqlite3.connect(reference)
-        conn.executescript(v030.sqlite_ddl())
+        conn.executescript(v030.sqlite_ddl)
         conn.close()
 
         assert migrate(SqliteStore(tmp_path), None, to="0.3.0", choices=nothing).moved
@@ -1473,7 +1473,7 @@ def test_a_destination_takes_its_formats_ddl(backend, request, tmp_path, monkeyp
 
     from runstate.channel.postgres import ensure_schema
 
-    reference = _pg_reference(dsn, v030.pg_ddl())
+    reference = _pg_reference(dsn, v030.pg_ddl)
     ensure_schema(dsn)  # the birth of every channel on the database
     assert _pg_catalog(dsn, v030.pg_schema()) == reference
     with psycopg.connect(dsn, autocommit=True) as c:
@@ -1481,7 +1481,7 @@ def test_a_destination_takes_its_formats_ddl(backend, request, tmp_path, monkeyp
         c.execute(f"CREATE SCHEMA {v020.pg_schema()}")
         with c.transaction():
             c.execute(f"SET LOCAL search_path TO {v020.pg_schema()}")
-            for stmt in v020.pg_ddl():
+            for stmt in v020.pg_ddl:
                 c.execute(stmt)
             for row in rows:
                 c.execute("INSERT INTO log VALUES ('r1', %s, %s, %s, %s, %s, %s)", row)
@@ -1505,8 +1505,8 @@ def test_a_destination_of_an_older_format_takes_its_own_ddl(
 
     to = dataclasses.replace(
         toy_layout("8.1.0"),
-        sqlite_script=toy_layout("8.1.0").sqlite_ddl() + _MARK_SQLITE,
-        pg_statements=toy_layout("8.1.0").pg_ddl() + (_MARK_PG,),
+        sqlite_ddl=toy_layout("8.1.0").sqlite_ddl + _MARK_SQLITE,
+        pg_ddl=toy_layout("8.1.0").pg_ddl + (_MARK_PG,),
     )
     monkeypatch.setitem(formats.FORMATS, "8.0.0", toy_layout("8.0.0"))
     monkeypatch.setitem(formats.FORMATS, "8.1.0", to)
@@ -1518,13 +1518,13 @@ def test_a_destination_of_an_older_format_takes_its_own_ddl(
         src = toy_layout("8.0.0").sqlite_path(tmp_path, "r1")
         src.parent.mkdir()
         conn = sqlite3.connect(src)
-        conn.executescript(toy_layout("8.0.0").sqlite_ddl())
+        conn.executescript(toy_layout("8.0.0").sqlite_ddl)
         conn.executemany("INSERT INTO log VALUES (?, ?, ?, ?, ?, ?)", rows)
         conn.commit()
         conn.close()
         reference = tmp_path / "reference.db"
         conn = sqlite3.connect(reference)
-        conn.executescript(to.sqlite_ddl())
+        conn.executescript(to.sqlite_ddl)
         conn.close()
         assert migrate(SqliteStore(tmp_path), None, to="8.1.0", choices=NONE).moved
         dst = to.sqlite_path(tmp_path, "r1")
@@ -1535,13 +1535,13 @@ def test_a_destination_of_an_older_format_takes_its_own_ddl(
     import psycopg
 
     dsn = request.getfixturevalue("scratch_db")  # SKIPs without a DSN
-    reference = _pg_reference(dsn, to.pg_ddl())
+    reference = _pg_reference(dsn, to.pg_ddl)
     old = toy_layout("8.0.0").pg_schema()
     with psycopg.connect(dsn, autocommit=True) as c:
         c.execute(f"CREATE SCHEMA {old}")
         with c.transaction():
             c.execute(f"SET LOCAL search_path TO {old}")
-            for stmt in toy_layout("8.0.0").pg_ddl():
+            for stmt in toy_layout("8.0.0").pg_ddl:
                 c.execute(stmt)
             for row in rows:
                 c.execute("INSERT INTO log VALUES ('r1', %s, %s, %s, %s, %s, %s)", row)
