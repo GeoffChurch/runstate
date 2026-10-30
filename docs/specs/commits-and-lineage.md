@@ -549,10 +549,12 @@ request for good, where a racing commit costs one iteration:
 
 What a drain does with each control record, by its id (amended 2026-10-30, while implementing):
 - **A spent id is skipped silently,** on every control topic: dead on arrival (§2).
-- **A missing or empty id is nameless.** It is refused `malformed`, with a `nak` whose `request_id` is null,
-  once: a claim refuses a nameless record only above the previous claim's `started`, since nothing can spend
-  it and an earlier claim had its chance. An empty id is no name: a stop registered under it could never be
-  spent, and every claim's exit would hold it.
+- **A missing or empty id is nameless,** on every control topic and in every fold. It is refused `malformed`,
+  with a `nak` whose `request_id` is null, once: a claim refuses a nameless record only above the previous
+  claim's watermark (the newest `consumed_seq` it wrote, or its exit's seq), since nothing can spend it and
+  the previous claim drained and refused what lies below. A claim that crashed between a refusal and its next
+  watermark leaves that record to be refused again, once more. An empty id is no name: a stop registered under
+  it could never be spent, and every claim's exit would hold it.
 - **A re-send of a stop's live id** follows §3's re-send rule: an accepted re-send of a pending stop replaces
   its registration, its time `from` counted from the re-send; a re-send of a stop that has held is ignored,
   since the decision is a level; a refused re-send spends the id and drops the registration, as for a
