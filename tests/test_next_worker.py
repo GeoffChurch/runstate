@@ -834,13 +834,13 @@ class Interloping(Channel):
         self._inner, self._other, self._armed = inner, other, None
         self.fired = False
 
-    def arm(self, body, *, topic):
-        self._armed = (body, topic)
+    def arm(self, body, *, topic, request_id=None):
+        self._armed = (body, topic, request_id)
 
     def send(self, body, *, topic, name=None, request_id=None, expected_seq=None):
         if expected_seq is not None and self._armed is not None:
-            (armed, armed_topic), self._armed = self._armed, None
-            self._other.send(armed, topic=armed_topic)
+            (armed, armed_topic, armed_id), self._armed = self._armed, None
+            self._other.send(armed, topic=armed_topic, request_id=armed_id)
             self.fired = True
         return self._inner.send(
             body,

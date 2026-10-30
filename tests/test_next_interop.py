@@ -363,3 +363,35 @@ def test_interop_death_report_from_evidence(tmp_path):
         h.wait()
         assert undated(deaths(ch)) == [died_body(claim_seq, L, "reap: exit 0")]
         ch.close()
+
+
+def test_interop_stop_from_latch_and_honored(open_run):
+    """§9 item 8: a stop's ``from`` is evaluated at each node, with the counts at
+    the node being written, and at each heartbeat, with the counts at the position
+    and the heartbeat's clock; the decision, once a stop holds, is latched for the
+    rest of the claim, a rewind included; and the exit's ``honored`` names every
+    stop that held at a node or a heartbeat of the claim, even one withdrawn
+    since, and every stop pending at the exit. A stop withdrawn before it held is
+    spent, and named nowhere."""
+    from runstate._next.vocabulary.payloads import Topic as T
+    from tests.test_next_worker import Clock, send_stop, send_withdraw, worker
+
+    ch, obs, clock = open_run(), open_run(), Clock()
+    send_stop(obs, "at_node", **{"from": {"commits": 2}})
+    send_stop(obs, "at_beat", **{"from": {"time_seconds": 10}})
+    send_stop(obs, "pending", **{"from": {"commits": 99}})
+    send_stop(obs, "withdrawn", **{"from": {"commits": 99}})
+    with worker(ch, now=clock) as w:
+        assert w.commit() is False  # count 1 at the node; t 0
+        send_withdraw(obs, "withdrawn")
+        clock.t = 10.0
+        w.emit("loss", 1.0)
+        assert w.heartbeat() is True  # due at the heartbeat, inside the iteration
+        assert w.commit() is True  # count 2 at the node being written
+        send_withdraw(obs, "at_beat")  # too late: it held
+        w.rewind(None)
+        assert w.stop_pending is True  # latched across the rewind
+        assert w.heartbeat() is True
+    body = obs.latest(T.LIFECYCLE_STOPPED).body
+    assert body["honored"] == ["at_beat", "at_node", "pending"]
+    assert undischarged_stops(obs) == []

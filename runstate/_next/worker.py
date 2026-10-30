@@ -38,9 +38,18 @@ claim writes, with the counts at the node being written, and at each heartbeat,
 with the counts at the position. Once one holds, the decision is True for the rest
 of the claim: a monotone level, which a rewind does not lower.
 
+THE EXIT (§4, "The exit"). ``stopped()`` writes the claim's last node by a
+compare-and-append at a tail its drain has fully read, so no stop lands between the
+last drain and the exit unseen: ``honored`` names every stop pending at the exit
+and every stop that held during the claim. A completed exit is closed; an exit
+that discarded its iteration (an error, or after ``discard()``) is torn; any other
+is extendable, and the next claim may resume from it.
+
 THE FENCE (§4, "A released worker fences itself"). Once a drain reads a death
 report naming its claim, the worker writes nothing more: a worker released by
-mistake costs at most the iteration in flight.
+mistake costs at most the iteration in flight. A worker writes nothing after its
+own exit either: a record of its claim after the exit would be malformed (§5), and
+a value then is outside every lineage.
 """
 
 from __future__ import annotations
@@ -50,7 +59,7 @@ from collections.abc import Callable, Iterator, Sequence
 from dataclasses import asdict
 from enum import Enum
 from types import MappingProxyType
-from typing import NamedTuple
+from typing import NamedTuple, Self
 
 from ..channel import Channel, Envelope
 from ..vocabulary.handle import local_handle
@@ -92,10 +101,20 @@ _ROOT = Coordinates(streams=MappingProxyType({}), commits=0)
 
 
 class _Phase(Enum):
-    """Where the worker is in its claim's life. Only a ``LIVE`` worker writes."""
+    """Where the worker is in its claim's life. Only a ``LIVE`` worker commits; a
+    ``DISCARDED`` one still writes its exit; the rest write nothing.
+
+    ``LIVE`` -> ``DISCARDED`` (``discard()``) -> ``STOPPED`` (its exit landed) or
+    ``RELEASED`` (a drain read a death report naming its claim), from either of
+    the first two; ``LOST`` from the start."""
 
     LIVE = "live"
     """It won the claim, and computes."""
+    DISCARDED = "discarded"
+    """It declared its open iteration torn: it commits nothing more, and its exit
+    is torn (§4, "discard()")."""
+    STOPPED = "stopped"
+    """Its exit landed: the claim's last node is on the log."""
     LOST = "lost"
     """It lost the claim race: it never claimed, and writes nothing (§4)."""
     RELEASED = "released"
@@ -222,7 +241,9 @@ class Worker:
       the clock source, which tests freeze.
 
     Constructing it claims the run: a worker that loses the claim race writes
-    nothing, ever, and its ``commit()`` returns True (``claimed`` says why)."""
+    nothing, ever, and its ``commit()`` returns True (``claimed`` says why). Use it
+    as a context manager, so that leaving the block writes the exit: errored on an
+    exception, preempted otherwise, unless the worker already stopped."""
 
     def __init__(
         self,
@@ -377,9 +398,9 @@ class Worker:
     def stop_pending(self) -> bool:
         """The stop decision, read without side effects (§4): the level
         ``commit()`` and ``heartbeat()`` last returned, for a callback guest whose
-        host loop cannot act on a return value. True for a worker that writes
-        nothing, a claim-race loser or a released worker included, whose every
-        safe point is a stop."""
+        host loop cannot act on a return value. True for a worker that commits
+        nothing more, a claim-race loser, a released or a stopped worker, or one
+        after ``discard()``, whose every safe point is a stop."""
         return self._phase is not _Phase.LIVE or bool(self._held)
 
     @property
@@ -389,6 +410,20 @@ class Worker:
         compares (§6)."""
         return self._resume_node
 
+    def _acts(self) -> bool:
+        """Whether ``emit``, ``set``, ``include`` and ``rewind`` act: only for a
+        live worker. A lost, released or stopped worker's do nothing, since a
+        released one cannot know when its report landed; after ``discard()`` they
+        raise ``RuntimeError``: the worker discarded the iteration itself, so a
+        later write is its own bug, and could never be committed (§4)."""
+        if self._phase is _Phase.DISCARDED:
+            raise RuntimeError(
+                "the worker discarded its open iteration: nothing it writes now "
+                "can be committed (rewind to a checkpoint instead of discarding "
+                "to redo an iteration)"
+            )
+        return self._phase is _Phase.LIVE
+
     # ----- values (§4, "Values") ---------------------------------------------------
 
     def emit(self, name: str, value: object) -> None:
@@ -396,7 +431,7 @@ class Worker:
         for the next node to commit. ``ValueError`` on a declared source, which is
         sampled on demand, never emitted. A value that does not serialize raises
         ``TypeError`` naming it: a broken reporting path stops the run."""
-        if self._phase is not _Phase.LIVE:
+        if not self._acts():
             return
         if name in self._sources:
             raise ValueError(
@@ -420,7 +455,7 @@ class Worker:
         """Update the source ``name``'s register, which a subscription samples only
         when it fires. ``ValueError`` on an undeclared name: an eager stream is
         emitted."""
-        if self._phase is not _Phase.LIVE:
+        if not self._acts():
             return
         if name not in self._sources:
             raise ValueError(
@@ -434,7 +469,7 @@ class Worker:
         name and no ``request_id``, above the claim, neither pending, nor committed
         on the current lineage, nor discarded by this claim at a rewind, and its name
         is not a declared source. Authorship stays unprovable: an honor system."""
-        if self._phase is not _Phase.LIVE:
+        if not self._acts():
             return
         e = _record_at(self._ch, seq, self._ch.last_seq())
         if e is None or e.topic != Topic.VALUE:
@@ -476,11 +511,8 @@ class Worker:
 
         A save that raises propagates, and the node stands (§6): the claim ends,
         and its exit, errored and torn, names that node as its ``parent``."""
-        if self._phase is not _Phase.LIVE:
-            return True
-        self._drain()
-        if self._phase is not _Phase.LIVE:
-            return True  # released by a report the drain read
+        if self._phase is not _Phase.LIVE or self._drain() is None:
+            return True  # writes nothing, or released by a report the drain read
         at = self._written(iterations=1)
         decision = self._decide(at)
         values = [p.seq for p in self._pending]
@@ -506,10 +538,7 @@ class Worker:
         It commits nothing and evaluates no subscription. It returns the stop
         decision, so a stop drained mid-iteration whose ``from`` holds, or one whose
         time ``from`` comes due inside the iteration, lands here."""
-        if self._phase is not _Phase.LIVE:
-            return True
-        self._drain()
-        if self._phase is not _Phase.LIVE:
+        if self._phase is not _Phase.LIVE or self._drain() is None:
             return True
         decision = self._decide(self._lineage.tip)
         body = Heartbeat(
@@ -520,11 +549,11 @@ class Worker:
 
     # ----- the drain (§4, "A drain") -------------------------------------------------
 
-    def _drain(self) -> int:
+    def _drain(self) -> int | None:
         """Read W; read the death reports naming the claim at or below W, and latch
-        ``released`` on one; then handle each ``control.*`` record above the
-        watermark. Return the tail the drain last read, its own writes included,
-        which the exit compare-and-appends at.
+        ``released`` on one, returning ``None``; else handle each ``control.*``
+        record above the watermark, and return the tail the drain last read, its
+        own writes included, which the exit compare-and-appends at.
 
         Each refusal is a ``nak`` compare-and-appended at that tail. A lost CAS
         means a record landed unread, perhaps a death report, so the drain runs
@@ -534,7 +563,7 @@ class Worker:
             w = self._ch.last_seq()
             if self._reported(w):
                 self._phase = _Phase.RELEASED
-                return w
+                return None
             tail = self._drain_control(w)
             if tail is not None:
                 return tail
@@ -681,7 +710,7 @@ class Worker:
 
         The new lineage is walked before the record is written, so a target whose
         lineage is malformed raises with nothing written."""
-        if self._phase is not _Phase.LIVE:
+        if not self._acts():
             return
         node = None if target is None else target.node
         if node is not None:
@@ -694,3 +723,92 @@ class Worker:
         self._lineage = lineage
         self._registers = {}
         self._resume_node = node
+
+    # ----- the end of the claim (§4, "discard()", "The exit") ----------------------
+
+    def discard(self) -> None:
+        """Declare the open iteration torn (§4): its pending values stay on the log
+        outside every lineage. Afterwards ``commit()`` and ``heartbeat()`` write
+        nothing, not even a drain, and return True, so every driver ends; ``emit``,
+        ``set``, ``include`` and ``rewind`` raise; and the exit writes ``values:
+        null`` and evaluates nothing. A torn iteration to be redone is a ``rewind``
+        to a checkpoint instead.
+
+        Call it from the worker's own flow, never from inside a signal handler,
+        which may interrupt a ``commit()`` between its steps: a handler sets a flag
+        the loop reads at its next safe point. A released or stopped worker's, and a
+        second, do nothing."""
+        if self._phase is not _Phase.LIVE:
+            return
+        self._phase = _Phase.DISCARDED
+        self._discarded.update(p.seq for p in self._pending)
+        self._pending = []
+
+    def stopped(self, *, completed: bool, error: str | None) -> None:
+        """Write the exit node, the claim's last, in order (§4, "The exit"):
+
+        1. read W and drain up to it: the death reports naming the claim, stops and
+           withdrawals. No subscription is registered: one that arrives after the
+           last commit stays live for the next claim;
+        2. (plan Task 12: evaluate the subscriptions once, and write their samples);
+        3. read W again, drain as in step 1, and compare-and-append ``stopped`` at
+           the drain's tail, with ``parent`` the position, ``values`` the pending
+           values, or null when the exit discards its iteration (an error, or after
+           ``discard()``), and ``honored`` every stop that held during the claim and
+           every stop pending now. A lost CAS repeats this step only, so a stop
+           first drained here is honored;
+        4. if the exit is extendable, run the save policy (§6).
+
+        ``completed`` is the worker's claim of intrinsic completion, which closes
+        the lineage; a completed exit carries no ``error`` (``ValueError``). A
+        second call does nothing, and so does a lost or released worker's.
+
+        A save that raises propagates (§6, "A save that raises"). The exit has
+        landed and stands with its own verdict, and the worker is stopped, so
+        nothing more is written: the failure is the process's, on the external
+        plane. The save is never run before the CAS, which would name a seq the exit
+        may not get."""
+        if self._phase not in (_Phase.LIVE, _Phase.DISCARDED):
+            return
+        if completed and error is not None:
+            raise ValueError("a completed exit carries no error")
+        discards = error is not None or self._phase is _Phase.DISCARDED
+        if self._drain() is None:  # step 1
+            return
+        while True:  # step 3, until its CAS lands
+            tail = self._drain()
+            if tail is None:
+                return
+            values = None if discards else [p.seq for p in self._pending]
+            body = Stopped(
+                completed=completed,
+                error=error,
+                claim_seq=self._claim,
+                honored=[*self._held, *self._stops],
+                parent=self._lineage.node,
+                values=values,
+                fired=[],
+                expired=[],
+                t=self._now(),
+            )
+            seq = self._ch.send(asdict(body), topic=Stopped.TOPIC, expected_seq=tail)
+            if seq is None:
+                continue  # a record landed unread: drain it, and try again
+            self._phase = _Phase.STOPPED
+            if body.extendable:
+                commits = self._lineage.tip.commits  # an exit adds no iteration
+                self._save.after(seq, commits=commits, exit=True)
+            return
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        """Write the exit unless the worker already stopped (§4): errored, and so
+        torn, on an exception, whose message is its ``error``; otherwise preempted,
+        ``stopped(completed=False, error=None)``. A lost or released worker writes
+        nothing. The exception, if any, propagates."""
+        if exc_type is not None:
+            self.stopped(completed=False, error=str(exc))
+        else:
+            self.stopped(completed=False, error=None)
