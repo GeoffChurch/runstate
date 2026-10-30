@@ -116,7 +116,7 @@ def test_interop_closed_torn_extendable():
     A preempted exit that kept its values is extendable: a claim resumes from it,
     and it adds no iteration."""
     # closed, with values and without
-    assert head(UNCOMMITTED).settled
+    assert head(UNCOMMITTED) == Head(8, True, 9)
     ch = channel(CLOSED_DISCARDED)
     assert AtNode(4).resolve(ch).settled
     _raises_at(lambda: head(CLOSED_DISCARDED), 5)
@@ -232,8 +232,11 @@ def test_interop_answer_fold_by_name():
     by an exit's ``honored`` (a displaced worker's included), a withdrawal or a
     refusal, never by a death report; a subscription by a node's ``expired``, on
     any lineage, a withdrawal or a refusal. A spent id stays spent, and a
-    subscription whose schedule does not parse is never live."""
+    subscription whose schedule does not parse is live until a refusal names it,
+    as a malformed stop is pending until its refusal."""
     assert pending(channel(STOPS)) == [5]
     assert pending(channel(HONORED_BY_A_DISPLACED_EXIT)) == []
+    live = live_demand(_LateW(DEMAND, 12))
+    assert [(e.seq, e.request_id) for e in live] == [(5, "live"), (6, "malformed")]
     live = live_demand(channel(DEMAND))
     assert [(e.seq, e.request_id) for e in live] == [(5, "live")]

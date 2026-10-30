@@ -158,10 +158,8 @@ def withdraw(request_id, *, t=4.5):
     return Rec("control.withdraw", {"t": t}, None, request_id)
 
 
-def nak(request_id):
-    return Rec(
-        "lifecycle.nak", {"reason": "unsupported", "message": "no"}, None, request_id
-    )
+def nak(request_id, *, reason="unsupported"):
+    return Rec("lifecycle.nak", {"reason": reason, "message": "no"}, None, request_id)
 
 
 def junk(r, **body):
@@ -780,7 +778,8 @@ CLOSED_DISCARDED = _log(
 # --- the answer fold (§2 "Requests", §5)
 
 # Each subscription is spent by what names it, wherever that sits: "expires" by
-# the expired of a node a rewind then leaves off the lineage.
+# the expired of a node a rewind then leaves off the lineage; "malformed", whose
+# body does not parse, is live until its nak.
 DEMAND = _log(
     "subscriptions answered by name",
     (1, started(None, sources=["lr"])),
@@ -788,13 +787,14 @@ DEMAND = _log(
     (3, subscribe("lr", "withdrawn", every={"commits": 1})),
     (4, subscribe("lr", "refused", every={"commits": 1})),
     (5, subscribe("lr", "live", every={"commits": 1})),
-    (6, subscribe("lr", "malformed", every={"step": 1})),  # the retired atom
+    (6, subscribe("lr", "malformed", every={"step": 1})),  # the retired atom: live
     (7, withdraw("withdrawn")),
     (8, nak("refused")),
     (9, value("lr", 0.1)),
     (10, commit(1, None, [9], fired=["live"], expired=["expires"])),
     (11, rewind(1, None)),
     (12, subscribe("lr", "withdrawn", every={"commits": 1})),  # a spent id
+    (13, nak("malformed", reason="malformed")),  # the worker refuses it at last
 )
 
 # A lease bound to a claim that only an unreadable report ends.
@@ -872,19 +872,13 @@ def test_an_empty_log_and_a_fresh_claim_hold_the_empty_lineage():
     assert head(RESUMED[:1]) == Head(None, False, 1)
 
 
-def test_a_commitless_claims_head_is_its_resume_from_an_older_claims_node():
-    assert head(COMMITLESS) == Head(3, False, 8)
-
-
 def test_a_trailing_rewind_moves_the_head_to_its_target():
-    assert head(RESUMED[:11]) == Head(5, False, 11)
     assert head(TO_THE_ROOT) == Head(None, False, 4)
     assert head(FROM_THE_ROOT) == Head(6, False, 6)
 
 
 def test_an_exits_parent_after_a_rewind_is_the_target():
     assert head(EXIT_AFTER_A_REWIND) == Head(5, False, 5)
-    assert lineage(channel(EXIT_AFTER_A_REWIND), head=LatestClaimHead()) == [2, 5]
 
 
 def test_the_head_reads_nothing_above_its_w():
@@ -949,19 +943,7 @@ def test_a_head_holds_its_invariants():
 # ----- settledness ------------------------------------------------------------------
 
 
-def test_a_completed_exit_closes_its_lineage():
-    assert head(RESUMED).settled
-    assert head(UNCOMMITTED) == Head(8, True, 9)
-
-
-def test_a_preempted_or_errored_exit_does_not():
-    assert not head(RESUMED[:7]).settled
-    assert not head(COMMITLESS_ERRORED).settled
-
-
 def test_a_displaced_workers_completed_exit_does_not_settle_the_newest_claims_read():
-    assert not head(DISPLACED).settled
-    assert AtNode(7).resolve(channel(DISPLACED)) == Head(7, True, 7)
     assert lineage(channel(DISPLACED), head=AtNode(7)) == [3, 6, 7]
 
 
@@ -1042,7 +1024,6 @@ def test_a_value_no_node_names_is_excluded():
 def test_order_within_a_node_follows_values():
     ch = channel(IN_LINEAGE_ORDER)
     assert [e.seq for e in series(ch, "loss", head=AtNode(5))] == [4, 2]
-    assert [e.seq for e in series(ch, "loss", head=LatestClaimHead())] == [4, 2, 3]
 
 
 def test_last_element_is_the_last_in_lineage_order_not_the_newest_by_seq():
@@ -1073,7 +1054,6 @@ def test_counts_and_indices_are_len_and_range_of_one_convention():
 
 def test_membership_is_by_the_committing_claims_declaration():
     ch = channel(KIND_CHANGED)
-    assert series(ch, "lr", head=LatestClaimHead()) == [Element(9, 8, 0.05, 1.5)]
     assert count(ch, "lr", node=9) == 1
     assert count(ch, "loss", node=9) == 1
 
@@ -1106,18 +1086,14 @@ def test_the_coordinates_at_each_node_are_the_counts_there():
 @pytest.mark.parametrize(
     "rows, at, bad",
     [
-        (LATER_VALUE, AtNode(4), 2),
         (LATER_VALUE, LatestClaimHead(), 2),
-        (LATER_PARENT, AtNode(5), 3),
         (PARENT_A_VALUE, AtNode(3), 3),
-        (PARENT_CLOSED, AtNode(5), 5),
-        (PARENT_TORN, AtNode(5), 5),
-        (TWICE, LatestClaimHead(), 4),
     ],
 )
 def test_a_walk_checks_every_node_it_walks(rows, at, bad):
-    """A parent or a values seq at or above its node's own, a parent that is
-    not an extendable node, and a seq committed twice along one lineage."""
+    """A values seq at or above its node's own, met from the newest claim's head,
+    and a parent naming a value. The node rule's other cases, each read once, are
+    ``test_interop_node_rule``'s and ``test_interop_closed_torn_extendable``'s."""
     ch = channel(rows)
     for read in (
         lambda: lineage(ch, head=at),
@@ -1134,18 +1110,16 @@ def test_a_walk_checks_every_node_it_walks(rows, at, bad):
     [
         (RESUME_LATER, 3),
         (REWIND_LATER, 3),
-        (RESUME_CLOSED, 4),
-        (RESUME_TORN, 4),
-        (RESUME_A_HEARTBEAT, 3),
         (REWIND_TO_A_VALUE, 3),
-        (ROLLBACK, 4),
         (EXIT_BEFORE_THE_REWIND, 5),
         (PARENT_CLOSED, 5),
     ],
 )
 def test_the_head_fold_checks_the_newest_claims_records(rows, bad):
     """A resume_from at or above its own seq or naming no extendable node, and
-    a node whose parent is not its claim's position before it."""
+    a node whose parent is not its claim's position before it. A resume from a
+    closed, a torn or a heartbeat, and a rollback written as a commit, are
+    ``test_interop_node_rule``'s and ``test_interop_closed_torn_extendable``'s."""
     with pytest.raises(MalformedRecordError) as exc:
         head(rows)
     assert exc.value.seq == bad
@@ -1179,11 +1153,7 @@ def test_a_values_seq_naming_a_non_value_raises_only_when_resolved():
 
 def test_a_malformed_value_body_raises_on_read_never_on_count():
     ch = channel(BAD_BODY)
-    assert prefix_len(ch, "loss", head=LatestClaimHead()) == 2
     assert last_element(ch, "loss", head=LatestClaimHead()) == Element(4, 3, 0.8, 1.5)
-    with pytest.raises(MalformedRecordError) as exc:
-        series(ch, "loss", head=LatestClaimHead())
-    assert exc.value.seq == 2
     ch = channel(BAD_BODY_LAST)
     assert count(ch, "loss", node=4) == 2
     with pytest.raises(MalformedRecordError) as exc:
@@ -1530,13 +1500,9 @@ def test_two_readable_exits_of_one_claim_refuse_to_guess():
     assert exc.value.seq == 4
 
 
-def test_terminated_ends_nothing_for_a_claimed_run():
-    assert verdict_of(A_CLAIMS_LAUNCH_ENDED) is None
-
-
 @pytest.mark.parametrize(
     "rows, outcome",
-    [(UNCLAIMED, E), (UNCLAIMED_CLEAN, C), (UNCLAIMED_KILLED, K)],
+    [(UNCLAIMED_CLEAN, C), (UNCLAIMED_KILLED, K)],
 )
 def test_terminated_stays_the_verdict_of_an_unclaimed_run(rows, outcome):
     """As today's null-worker startup crash: a signal is killed, an exit 0

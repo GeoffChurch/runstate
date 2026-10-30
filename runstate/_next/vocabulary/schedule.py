@@ -362,9 +362,10 @@ def is_lease(schedule: Schedule) -> bool:
     other schedule's atoms are lineage coordinates, and it is durable.
 
     A fold that meets a logged ``control.subscribe`` parses its body first. A body
-    that does not parse is malformed: it is never a lease, nor durable demand, and
-    the worker's ``nak`` spends its id. So a junk record cannot poison a fold, which
-    an append-only log could never retract."""
+    that does not parse is malformed: it is never a lease, so no claim's end voids
+    it, and it is live demand until the worker's ``nak`` spends its id, so a worker
+    is launched to refuse it. A junk record cannot poison a fold, which an
+    append-only log could never retract."""
     return any(isinstance(a, (Elapsed, Fired)) for a in schedule.atoms())
 
 
@@ -390,7 +391,8 @@ def parse_schedule(body: Condition, *, pure_demand: bool) -> Schedule:
     review §12, item 14). The worker's drain parses first, and its refusal is a
     ``nak`` of reason ``malformed``, decided before any refusal as
     ``unsatisfiable``. A fold that meets a logged body parses it too, and reads a
-    body that does not parse as malformed, spent by that ``nak`` (``is_lease``)."""
+    body that does not parse as malformed demand, live until that ``nak`` spends
+    it (``is_lease``)."""
     unknown = _unknown_keys(body, {"from", "every", "until"})
     if unknown:
         raise MalformedSchedule(

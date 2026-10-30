@@ -12,6 +12,7 @@ import socket
 import pytest
 
 from runstate._next.observables import (
+    LiveDemand,
     MalformedRecordError,
     RunResult,
     Tier,
@@ -131,6 +132,11 @@ def stop(ch, rid, **trigger):
 
 def demand(ch):
     return [e.request_id for e in live_demand(ch)]
+
+
+def held(fold, ch):
+    """A held ``LiveDemand``'s answer, polled now."""
+    return [e.request_id for e in fold.poll(ch)]
 
 
 def stops(ch):
@@ -583,14 +589,63 @@ def test_live_demand_keeps_count_keyed_subs_across_claims(ch):
     assert demand(ch) == ["r1"]
 
 
-def test_a_malformed_subscribe_is_never_live_demand(ch):
-    """A body that does not parse as a schedule is malformed: the worker's nak
-    spends its id, and no fold reads it as demand meanwhile. A pure demand parses
-    as one: a ``from`` makes it malformed."""
+def test_a_malformed_subscribe_is_live_until_its_nak(ch):
+    """A body that does not parse as a schedule is live demand until a ``nak``
+    names it, as a malformed stop is pending until its ``nak``: no fold judges a
+    body the worker has not refused, and a waker must launch a worker to refuse
+    it. A pure demand parses as one, so a ``from`` or an ``every`` makes it
+    malformed. No claim binds one, so a claim's end never voids it."""
+    fold = LiveDemand()
     subscribe(ch, "junk", frm={"commits": 1})
     subscribe(ch, "pure", None, **{"from": {"commits": 1}})
+    subscribe(ch, "every", None, every={"commits": 1})
     subscribe(ch, "ok", None, until={"commits": 3})
-    assert demand(ch) == ["ok"]
+    assert demand(ch) == ["junk", "pure", "every", "ok"] == held(fold, ch)
+    c = claim(ch)
+    bound(ch, c, "junk")  # a binding no worker writes for one: it still voids nothing
+    died(ch, c, "killed")
+    assert demand(ch) == ["junk", "pure", "every", "ok"] == held(fold, ch)
+    for rid in ("junk", "pure", "every"):
+        nak(ch, rid, reason="malformed")
+    assert demand(ch) == ["ok"] == held(fold, ch)
+
+
+def test_an_old_claims_contradictory_exits_do_not_poison_live_demand(ch):
+    """``ended`` is the presence of an exit or a death report naming the claim,
+    which never raises: claim A binds a lease and writes two readable exits, a
+    malformed past; claim B posts a durable subscription. The lease is void and the
+    durable one live, in the pure read and its fold alike. Two exits of the newest
+    claim are the present's contradiction, and raise in both."""
+    fold = LiveDemand()
+    a = claim(ch)
+    subscribe(ch, "lease", None, until={"time_seconds": 60})
+    bound(ch, a, "lease")
+    exit_(ch, a, None)
+    exit_(ch, a, None)  # a second readable exit of A
+    claim(ch, "local://h/2", t=2.0)
+    subscribe(ch, "durable", None, until={"commits": 100})
+    assert demand(ch) == ["durable"] == held(fold, ch)
+    b = claim(ch, "local://h/3", t=3.0)
+    exit_(ch, b, None)
+    second = exit_(ch, b, None, completed=True)
+    for read in (lambda: live_demand(ch), lambda: fold.poll(ch)):
+        with pytest.raises(MalformedRecordError) as exc:
+            read()
+        assert exc.value.seq == second
+
+
+def test_a_void_lease_resent_as_durable_stays_void(ch):
+    """A subscription's class and target are its first send's (§3: a re-send that
+    changes either is refused), so a lease voided by its claim's death does not
+    come back as demand by being sent again as durable."""
+    fold = LiveDemand()
+    c = claim(ch, src=["lr"])
+    subscribe(ch, "r", "lr", every={"commits": 1}, until={"time_seconds": 60})
+    bound(ch, c, "r")
+    died(ch, c, "killed")
+    assert demand(ch) == [] == held(fold, ch)
+    subscribe(ch, "r", "lr", every={"commits": 1})  # the class changed: durable
+    assert demand(ch) == [] == held(fold, ch)
 
 
 def test_live_demand_is_by_name_and_empty_on_a_closed_head(ch):

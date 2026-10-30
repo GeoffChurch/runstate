@@ -32,44 +32,15 @@ from tests.lineage_logs import OUTPUT as LINEAGE_LOGS
 from tests.test_migration_goldens import OUTPUT as GOLDEN_LOGS
 from tests.test_next_reads import (
     ANSWERED,
-    COMMITLESS_ERRORED,
-    DEMAND,
-    DISPLACED,
-    EXIT_AFTER_A_REWIND,
-    FROM_THE_ROOT,
-    IN_LINEAGE_ORDER,
-    KIND_CHANGED,
-    LEASED,
-    METRICS,
-    RESENT,
-    RESUMED,
-    STOPS,
-    TWO_BRANCHES,
-    UNCOMMITTED,
+    LOGS as READS_LOGS,
+    TWICE,
     commit,
     started,
     stop,
     subscribe,
     value,
+    withdraw,
 )
-
-_READS_LOGS = {
-    "resumed": RESUMED,
-    "commitless, then errored": COMMITLESS_ERRORED,
-    "displaced": DISPLACED,
-    "a commit after a rewind to the root": FROM_THE_ROOT,
-    "an exit after a rewind": EXIT_AFTER_A_REWIND,
-    "uncommitted values": UNCOMMITTED,
-    "in lineage order": IN_LINEAGE_ORDER,
-    "a name that changed kind": KIND_CHANGED,
-    "one value on two branches": TWO_BRANCHES,
-    "metrics, sparse and late": METRICS,
-    "answers on two branches": ANSWERED,
-    "subscriptions answered by name": DEMAND,
-    "a lease bound to a claim an unreadable report ends": LEASED,
-    "stops answered by name": STOPS,
-    "stops re-sent": RESENT,
-}
 
 
 def _logs():
@@ -79,7 +50,7 @@ def _logs():
         out[f"lineage:{label}"] = rows
     for label, rows in GOLDEN_LOGS.items():
         out[f"golden:{label}"] = rows
-    for label, rows in _READS_LOGS.items():
+    for label, rows in READS_LOGS.items():
         out[f"reads:{label}"] = [
             (seq, r.topic, r.name, r.request_id, r.body) for seq, r in rows
         ]
@@ -87,6 +58,14 @@ def _logs():
 
 
 LOGS = _logs()
+
+# The one check a fold does not make (§5, "Well-formedness": "Checked by the pure
+# walk only: a seq committed twice along one lineage. In a fold it would cost
+# O(depth) per value."). On this log alone the pure reads through the duplicate
+# raise where the folds answer.
+_PURE_WALK_ONLY = {
+    f"reads:{label}" for label, rows in READS_LOGS.items() if rows is TWICE
+}
 
 
 def _outcome(read):
@@ -98,6 +77,20 @@ def _outcome(read):
         return ("raised", exc.seq)
 
 
+def _agree(label, fold, pure):
+    """A fold equals its pure read, values and raises alike (§5: "a fold raises
+    wherever its pure read raises"), but where the pure walk's own check raises
+    on the log ``_PURE_WALK_ONLY`` exempts."""
+    held = _outcome(fold)
+    try:
+        wanted = ("value", pure())
+    except MalformedRecordError as exc:
+        if label in _PURE_WALK_ONLY and "committed twice" in exc.detail:
+            return True
+        wanted = ("raised", exc.seq)
+    return held == wanted
+
+
 @pytest.mark.parametrize("label", list(LOGS))
 def test_every_fold_equals_its_pure_read_after_every_record(label):
     """Replayed record by record, each held fold, polled after each record, equals
@@ -105,9 +98,15 @@ def test_every_fold_equals_its_pure_read_after_every_record(label):
     ``prefix_len``, ``LastElement`` and ``last_element``, ``Answers`` and
     ``answers`` (at the newest claim's head and at every node, so a head that does
     not descend from the last re-derives), ``LiveDemand`` and ``live_demand``,
-    ``PendingStops`` and ``undischarged_stops``."""
+    ``PendingStops`` and ``undischarged_stops``. Every log, the malformed ones
+    included: where the pure read raises, the fold raises at the same record,
+    but for the pure walk's own check (``_PURE_WALK_ONLY``). Each stream fold is
+    also asked about ``loss``, so a log that commits a non-value and no value of
+    any name is still read for one."""
     rows = LOGS[label]
-    names = sorted({name for _, topic, name, _, _ in rows if topic == "value" and name})
+    names = sorted(
+        {"loss"} | {name for _, topic, name, _, _ in rows if topic == "value" and name}
+    )
     rids = sorted(
         {rid for _, topic, _, rid, _ in rows if topic == "control.subscribe" and rid}
     )
@@ -131,16 +130,21 @@ def test_every_fold_equals_its_pure_read_after_every_record(label):
                 heads.append(at[1])
         for h in heads:
             for x, fold in counts.items():
-                got = _outcome(lambda: fold.poll(ch, h))
-                assert got == _outcome(lambda: prefix_len(ch, x, head=h)), (seq, h, x)
+                assert _agree(
+                    label, lambda: fold.poll(ch, h), lambda: prefix_len(ch, x, head=h)
+                ), (seq, h, x)
             for name, fold in lasts.items():
-                got = _outcome(lambda: fold.poll(ch, h))
-                assert got == _outcome(lambda: last_element(ch, name, head=h))
+                assert _agree(
+                    label,
+                    lambda: fold.poll(ch, h),
+                    lambda: last_element(ch, name, head=h),
+                ), (seq, h, name)
             for r, fold in answered.items():
-                got = _outcome(lambda: fold.poll(ch, h))
-                assert got == _outcome(lambda: answers(ch, r, head=h)), (seq, h, r)
-        assert demand.poll(ch) == live_demand(ch), seq
-        assert stops.poll(ch) == undischarged_stops(ch), seq
+                assert _agree(
+                    label, lambda: fold.poll(ch, h), lambda: answers(ch, r, head=h)
+                ), (seq, h, r)
+        assert _agree(label, lambda: demand.poll(ch), lambda: live_demand(ch)), seq
+        assert _agree(label, lambda: stops.poll(ch), lambda: undischarged_stops(ch))
 
 
 class _Counting(MemoryChannel):
@@ -174,17 +178,20 @@ def _iteration(ch, claim, parent):
 @pytest.mark.parametrize("commits", [10, 10_000])
 def test_polled_reads_stay_within_a_bound_as_the_lineage_grows(commits):
     """§5's criterion for a polled read: its cost is independent of lineage length
-    and log age, given held state. After 10 and after 10,000 commits, a poll of
-    every fold after one more iteration (three records) reads a few rows, the same
-    few, where any pure read would read the lineage."""
+    and log age, given held state. After 10 and after 10,000 commits, each with a
+    stop and its withdrawal, a poll of every fold after one more iteration (three
+    records) reads a few rows, the same few, where any pure read would read the
+    lineage, and a rescan of the stop fold would read every stop."""
     ch = _Counting()
     claim = _send(ch, started(None, sources=["lr"]))
     _send(ch, subscribe("lr", "q", every={"commits": 1}))
     _send(ch, subscribe(None, "p", until={"time_seconds": 3600}))
     _send(ch, stop("halt"))
     parent = None
-    for _ in range(commits):
+    for i in range(commits):
         parent = _iteration(ch, claim, parent)
+        _send(ch, stop(f"s{i}"))  # many stops, each spent: a rescan reads them all
+        _send(ch, withdraw(f"s{i}"))
     head_fold = HeadFold()
     folds = [PrefixLen("loss"), PrefixLen(Commits()), LastElement("loss"), Answers("q")]
     demand, stops = LiveDemand(), PendingStops()

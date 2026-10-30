@@ -31,16 +31,20 @@ walks (§5, "Well-formedness"). These are one-shot reads, never polled. Nothing 
 cached between calls.
 
 THE CLAIM PLANE (§2, §5). A claim has ended once its exit, or a death report
-naming it, is on the log: ``claim_verdict`` is not ``None``, the one predicate the
-gate, lease voiding, the verdict and the Watcher share. The verdict is the claim's
-readable exit, else the death reports naming it, whose outcomes are kept as a set.
-It reads only the claim's window, the records after it, since a record cannot
-speak for a claim it never saw. A run nothing claimed takes its launch's
-``supervisor.terminated``. No read probes a handle and none writes.
+naming it, is on the log, readable or not: the one predicate the gate, lease
+voiding, the verdict and the Watcher share. ``claim_verdict`` is not ``None``
+exactly where it holds. The verdict is the claim's readable exit, else the death
+reports naming it, whose outcomes are kept as a set. It reads only the claim's
+window, the records after it, since a record cannot speak for a claim it never
+saw. A run nothing claimed takes its launch's ``supervisor.terminated``. No read
+probes a handle and none writes.
 
 THE ANSWER FOLD (§2 "Requests", §5) is by name, for the whole log: a request is
 spent by what names it (a node's ``expired``, an exit's ``honored``, a withdrawal,
 a refusal), wherever that sits, and a lease is void once its bound claim ended.
+There ``ended`` is the presence of a record naming the claim (``_ends``), which
+never raises, so a malformed record in an old claim's window cannot poison the
+present: the verdict is where that contradiction raises.
 
 THE INCREMENTAL FOLDS (§5, "Bounded reads") are the polled forms, public and
 standalone, since ``ensure``'s loop has no Watcher and the TUI may use public API
@@ -78,7 +82,6 @@ from .vocabulary.payloads import (
 from .vocabulary.schedule import (
     Coordinates,
     MalformedSchedule,
-    Schedule,
     is_lease,
     parse_schedule,
 )
@@ -156,7 +159,7 @@ class LatestClaimHead:
     The read is settled if and only if the head is closed."""
 
     def resolve(self, ch: Channel) -> Head:
-        return _latest_claim_head(ch)
+        return _latest_claim_head(ch, ch.last_seq())
 
 
 @dataclass(frozen=True)
@@ -458,8 +461,10 @@ class RunResult:
 
 def claim_verdict(ch: Channel, claim: Envelope, *, w: int) -> RunResult | None:
     """How ``claim`` ended, at ``w``, or ``None`` while it is held (§2, §5). A claim
-    has **ended** if and only if this is not ``None``: the one predicate the
-    folds, the Worker and the launchers use (§2, "How a claim ended").
+    has **ended** if and only if this is not ``None``, where it does not raise:
+    the one predicate the folds, the Worker and the launchers use (§2, "How a
+    claim ended"). The answer fold reads the same predicate as the presence of a
+    record that ends the claim (``_ends``), which never raises.
 
     The claim's readable exit, its self-report, is the verdict (``Tier.EXIT``).
     Else the death reports naming it are (``Tier.DIED``): their outcomes as a set,
@@ -547,7 +552,11 @@ def peek_terminal(ch: Channel) -> RunResult | None:
     at or below W, whichever launch it names, a backstop's that no ``launched``
     names included. A signal reads ``killed``, an exit 0 ``completed`` and any
     other exit ``errored``. The verdict rests on that one record, so an
-    unreadable one, or one naming no launch, raises ``MalformedRecordError``."""
+    unreadable one, or one naming no launch, raises ``MalformedRecordError``.
+    §5 defines readability for ``stopped`` and ``died`` only, and this raise is
+    carried over from 0.3.0: that ``terminated`` is the run's present verdict,
+    not a record from a dead past, so the read refuses to guess rather than skip
+    it."""
     w = ch.last_seq()
     claim = _newest(ch, Topic.LIFECYCLE_STARTED, w)
     if claim is None:
@@ -671,16 +680,24 @@ def live_demand(ch: Channel) -> list[Envelope]:
     - it is **spent**: a node's ``expired`` names it, on any lineage, or a
       ``control.withdraw`` or a ``lifecycle.nak`` does, wherever it sits; a spent
       id stays spent, so a later send reusing it is dead on arrival;
-    - it is **malformed**: its body does not parse as a schedule
-      (``parse_schedule``, a pure demand's as one), which the worker's ``nak``
-      spends; never a lease, never live demand;
     - it is a **void** lease: a ``lifecycle.bound`` binds it to a claim that has
-      ended (``claim_verdict``). A lease nothing bound yet is not void: no claim
+      ended (``_ends``: the presence of an exit or a death report naming the
+      claim, which never raises, so a malformed record in an old claim's window
+      cannot poison the present). A lease nothing bound yet is not void: no claim
       took it, so the next to drain it will;
     - or **the head is closed**: nothing is demanded of a completed run, so the
-      whole read is empty while the newest claim's readable exit completed (§2: a
-      claim's head is its readable exit). A subscription posted to one is never
-      answered and never refused.
+      whole read is empty while ``LatestClaimHead`` is closed. A subscription
+      posted to one is never answered and never refused. The head is the
+      present's, so a contradiction in the newest claim's records raises
+      ``MalformedRecordError``, as the head does.
+
+    A subscription's class, lease or durable, is its first send's (§3: a re-send
+    that changes it is refused), so a void lease does not come back by being sent
+    again as durable. A body that does not parse as a schedule (``parse_schedule``,
+    a pure demand's as one) is live until a ``nak`` names it, as a malformed stop
+    is pending until its ``nak``: no fold judges a body the worker has not
+    refused, and a waker must launch a worker to refuse it. No claim binds one, so
+    it is never void.
 
     So a claim that dies before its first commit revives no answered demand: an
     answer is by name, not per lineage. One-shot: expiry sits inside node bodies,
@@ -688,50 +705,12 @@ def live_demand(ch: Channel) -> list[Envelope]:
     w = ch.last_seq()
     if w == 0:
         return []
-    subs: dict[str, Envelope] = {}
-    schedules: dict[str, Schedule | None] = {}
-    spent: set[str] = set()
-    bound: dict[str, set[int]] = {}
+    demand = _Demand()
     for e in ch.read(topics=list(_DEMAND_TOPICS), limit=w):
         if e.seq > w:
             break
-        if e.topic in (Topic.LIFECYCLE_COMMIT, Topic.LIFECYCLE_STOPPED):
-            spent.update(_expired(e))
-        elif e.request_id is None:
-            continue
-        elif e.topic == Topic.CONTROL_SUBSCRIBE:
-            subs[e.request_id] = e
-            schedules[e.request_id] = _schedule(e)
-        elif e.topic == Topic.LIFECYCLE_BOUND:
-            b = _readable(Bound, e)
-            if b is not None:
-                bound.setdefault(e.request_id, set()).add(b.claim_seq)
-        else:
-            spent.add(e.request_id)
-    claim = _newest(ch, Topic.LIFECYCLE_STARTED, w)
-    if claim is not None and worker_completed(claim_verdict(ch, claim, w=w)):
-        return []
-    ended: dict[int, bool] = {}
-
-    def has_ended(c: int) -> bool:
-        if c not in ended:
-            e = _point(ch, w, c)
-            ended[c] = (
-                e is not None
-                and e.topic == Topic.LIFECYCLE_STARTED
-                and claim_verdict(ch, e, w=w) is not None
-            )
-        return ended[c]
-
-    live: list[Envelope] = []
-    for r, e in subs.items():
-        sched = schedules[r]
-        if r in spent or sched is None:
-            continue
-        if is_lease(sched) and any(has_ended(c) for c in bound.get(r, ())):
-            continue
-        live.append(e)
-    return sorted(live, key=lambda e: e.seq)
+        demand.apply(e)
+    return demand.live(closed=_latest_claim_head(ch, w).settled)
 
 
 def undischarged_stops(ch: Channel) -> list[Envelope]:
@@ -769,7 +748,8 @@ def undischarged_stops(ch: Channel) -> list[Envelope]:
     return sorted((e for r, e in stops.items() if r not in spent), key=lambda e: e.seq)
 
 
-# What the answer fold reads: the requests, and the records that spend or bind them.
+# What the answer fold reads: the requests, the records that spend or bind them,
+# and the claims and the records that end them.
 _DEMAND_TOPICS = (
     Topic.CONTROL_SUBSCRIBE,
     Topic.CONTROL_WITHDRAW,
@@ -777,6 +757,8 @@ _DEMAND_TOPICS = (
     Topic.LIFECYCLE_COMMIT,
     Topic.LIFECYCLE_STOPPED,
     Topic.LIFECYCLE_BOUND,
+    Topic.LIFECYCLE_STARTED,
+    Topic.SUPERVISOR_DIED,
 )
 _STOP_TOPICS = (
     Topic.CONTROL_STOP,
@@ -784,6 +766,78 @@ _STOP_TOPICS = (
     Topic.CONTROL_WITHDRAW,
     Topic.LIFECYCLE_NAK,
 )
+
+
+class _Demand:
+    """The answer fold's subscriptions (§5, "The answer fold"), applied record by
+    record in seq order: ``live_demand`` applies the whole log in one pass, and
+    ``LiveDemand`` holds one and applies each poll's new records. It holds each
+    id's newest send, its class by its first send, the spent ids, the bindings,
+    the claims, and the claims a record has ended."""
+
+    def __init__(self) -> None:
+        self._subs: dict[str, Envelope] = {}
+        self._lease: dict[str, bool] = {}
+        self._spent: set[str] = set()
+        self._bound: dict[str, set[int]] = {}
+        self._claims: set[int] = set()
+        self._ended: set[int] = set()
+
+    def apply(self, e: Envelope) -> None:
+        """Apply ``e``, one of ``_DEMAND_TOPICS``."""
+        if e.topic == Topic.LIFECYCLE_STARTED:
+            self._claims.add(e.seq)
+            return
+        ended = _ends(e)
+        if ended is not None:
+            self._ended.add(ended)
+        if e.topic in (Topic.LIFECYCLE_COMMIT, Topic.LIFECYCLE_STOPPED):
+            self._spent.update(_expired(e))
+        elif e.topic == Topic.SUPERVISOR_DIED or e.request_id is None:
+            return
+        elif e.topic == Topic.CONTROL_SUBSCRIBE:
+            self._subs[e.request_id] = e
+            if e.request_id not in self._lease:
+                self._lease[e.request_id] = _is_lease(e)
+        elif e.topic == Topic.LIFECYCLE_BOUND:
+            b = _readable(Bound, e)
+            if b is not None:
+                self._bound.setdefault(e.request_id, set()).add(b.claim_seq)
+        else:
+            self._spent.add(e.request_id)
+
+    def live(self, *, closed: bool) -> list[Envelope]:
+        """The live subscriptions, ascending by seq; none when the head is
+        ``closed``."""
+        if closed:
+            return []
+        return sorted(
+            (
+                e
+                for r, e in self._subs.items()
+                if r not in self._spent and not self._void(r)
+            ),
+            key=lambda e: e.seq,
+        )
+
+    def _void(self, request_id: str) -> bool:
+        """Is it a lease bound to a claim that has ended?"""
+        return self._lease[request_id] and any(
+            c in self._claims and c in self._ended
+            for c in self._bound.get(request_id, ())
+        )
+
+
+def _ends(e: Envelope) -> int | None:
+    """The claim ``e`` ends, if any (§2, "How a claim ended"; §5, "The answer
+    fold"): a ``lifecycle.stopped`` or a ``supervisor.died`` whose ``claim_seq``
+    names a seq below it, readable or not. Its presence is all it says, so it never
+    raises: ``claim_verdict`` is not ``None`` exactly where it ends the claim, and
+    is where a contradiction in the claim's window raises."""
+    if e.topic not in (Topic.LIFECYCLE_STOPPED, Topic.SUPERVISOR_DIED):
+        return None
+    claim = _named_claim(e)
+    return claim if claim is not None and claim < e.seq else None
 
 
 def _expired(e: Envelope) -> list[str]:
@@ -797,14 +851,15 @@ def _expired(e: Envelope) -> list[str]:
     return [] if node is None else node.expired
 
 
-def _schedule(e: Envelope) -> Schedule | None:
-    """A ``control.subscribe``'s schedule, parsed once at the boundary
-    (``parse_schedule``, a pure demand's as one), or ``None`` when its body is
-    malformed: the worker naks it, which spends the id."""
+def _is_lease(e: Envelope) -> bool:
+    """Does a ``control.subscribe``'s send make its subscription a lease? Its
+    schedule parsed at the boundary (``parse_schedule``, a pure demand's as one).
+    A body that does not parse is no lease: no claim binds it, so nothing voids
+    it, and it is live until the worker's ``nak`` spends its id."""
     try:
-        return parse_schedule(e.body, pure_demand=e.name is None)
+        return is_lease(parse_schedule(e.body, pure_demand=e.name is None))
     except MalformedSchedule:
-        return None
+        return False
 
 
 # ----- the incremental folds (§5, "Bounded reads") ---------------------------------
@@ -817,11 +872,15 @@ def _schedule(e: Envelope) -> Schedule | None:
 # ``Head`` (``HeadFold``'s, or ``AtNode``'s), and read up to its ``w``; the folds by
 # name, for the whole log (§2), are polled ``fold.poll(ch)`` (plan, open question 4).
 #
-# A fold checks what it holds: each node's ``values`` and ``parent`` below its own
-# seq, its ``parent`` an extendable node, and membership's claim (§5,
-# "Well-formedness"). The pure walk's other checks cost O(depth) per poll and stay
-# the pure reads': a seq committed twice along one lineage, and a ``values`` seq
-# naming a record that is no ``value`` (a fold holds only the values it counts).
+# A fold raises wherever its pure read raises (§5, "Bounded reads"): each node's
+# ``values`` and ``parent`` below its own seq, its ``parent`` an extendable node,
+# membership's claim, and, where the pure read resolves them, its ``values`` seqs
+# naming ``value`` records. A fold reads every ``value`` record, so it holds their
+# seqs and checks each node's against them as the node lands, at O(new records). A
+# node's check that fails is held as the node's state and raised by any read of a
+# lineage through it. The one check left to the pure walk is a seq committed twice
+# along one lineage, which in a fold would cost O(depth) per value (§5,
+# "Well-formedness": "Checked by the pure walk only").
 
 
 def _tail(ch: Channel, cursor: int, w: int, topics: Sequence[str]) -> list[Envelope]:
@@ -832,6 +891,17 @@ def _tail(ch: Channel, cursor: int, w: int, topics: Sequence[str]) -> list[Envel
         return []
     got = ch.read(after=cursor, topics=list(topics), limit=w - cursor)
     return [e for e in got if e.seq <= w]
+
+
+def _non_values(at: _At, value_seqs: set[int]) -> MalformedRecordError | None:
+    """The error of a node whose ``values`` names a seq that is no ``value``
+    record (§5, "Membership"), as ``_value_record`` raises it, or ``None``."""
+    for s in at.node.committed:
+        if s not in value_seqs:
+            return MalformedRecordError(
+                at.env.seq, at.env.topic, f"values names {s}, which is not a value"
+            )
+    return None
 
 
 class HeadFold:
@@ -854,6 +924,10 @@ class HeadFold:
         for e in _tail(ch, self._cursor, w, _HEAD_TOPICS):
             self._apply(ch, w, e)
         self._cursor = max(self._cursor, w)
+        return self._resolved(w)
+
+    def _resolved(self, w: int) -> Head:
+        """The head held, at ``w``: the error that holds for the claim raised."""
         if self._error is not None:
             raise self._error
         if self._claim is None:
@@ -863,6 +937,8 @@ class HeadFold:
         return Head(self._position, False, w)
 
     def _apply(self, ch: Channel, w: int, e: Envelope) -> None:
+        """Apply ``e``, one of ``_HEAD_TOPICS``, read at ``w``."""
+
         def lookup(seq: int) -> Envelope | None:
             return _point(ch, w, seq)
 
@@ -926,7 +1002,10 @@ class _NodeFold(ABC, Generic[_S]):
     state, ``_S``, from its parent's and the elements of the stream it commits, or
     the ``MalformedRecordError`` a read of a lineage through it raises. Membership
     is decided per committing claim, from the claims' declared sources, and the
-    stream's value records are held as they pass (§5, "The stream-prefix fold")."""
+    stream's value records are held as they pass (§5, "The stream-prefix fold"),
+    with every value's seq, so a node naming a non-value raises as the pure read
+    that resolves it does. The ``Commits()`` count resolves no value, and holds
+    none."""
 
     def __init__(self, stream: str | None) -> None:
         self._stream = stream  # None: no stream, the Commits() count
@@ -935,6 +1014,7 @@ class _NodeFold(ABC, Generic[_S]):
         self._extendable: dict[int, bool] = {}
         self._sources: dict[int, frozenset[str] | MalformedRecordError] = {}
         self._values: dict[int, Envelope] = {}  # the stream's, by seq
+        self._value_seqs: set[int] = set()  # every value's, for a stream
 
     def _held(self, ch: Channel, head: Head) -> _S | None:
         """The state at ``head.node`` after reading up to ``head.w``; ``None`` for
@@ -953,8 +1033,10 @@ class _NodeFold(ABC, Generic[_S]):
 
     def _apply(self, e: Envelope) -> None:
         if e.topic == Topic.VALUE:
-            if self._stream is not None and e.name == self._stream:
-                self._values[e.seq] = e
+            if self._stream is not None:
+                self._value_seqs.add(e.seq)
+                if e.name == self._stream:
+                    self._values[e.seq] = e
             return
         if e.topic == Topic.LIFECYCLE_STARTED:
             try:
@@ -1001,6 +1083,10 @@ class _NodeFold(ABC, Generic[_S]):
                     f"parent {node.parent} names no extendable node",
                 )
             base = parent
+        if self._stream is not None:
+            error = _non_values(at, self._value_seqs)
+            if error is not None:
+                return error
         members = [s for s in node.committed if s in self._values]
         if members and self._declares(at):
             members = []
@@ -1081,7 +1167,8 @@ class Answers:
     head that descends from that one extends the list by the new nodes' answers;
     at one that does not, it re-derives the list along the new head's lineage, and
     returns it whole. A caller that streams answers diffs the lists, since a
-    callback cannot retract an answer."""
+    callback cannot retract an answer. Its reads are O(new records); returning
+    the list is O(answers)."""
 
     def __init__(self, request_id: str) -> None:
         self._request_id = request_id
@@ -1091,6 +1178,7 @@ class Answers:
         self._nodes: dict[int, _AnswerNode | MalformedRecordError] = {}
         self._extendable: dict[int, bool] = {}
         self._samples: dict[int, Envelope] = {}  # the target's values, by seq
+        self._value_seqs: set[int] = set()  # every value's
         self._at: int | None = None  # the head its list is along
         self._list: list[Element] = []
 
@@ -1099,7 +1187,8 @@ class Answers:
             self._apply(e)
         self._cursor = max(self._cursor, head.w)
         # parents decrease, so the walk back from the head meets the held head,
-        # if it descends from it, before it passes below it
+        # if it descends from it, before it passes below it. That the extend path
+        # visits only the new nodes is pinned by review only: it reads no channel.
         path: list[int] = []
         node = head.node
         while node is not None and (self._at is None or node > self._at):
@@ -1134,6 +1223,7 @@ class Answers:
                 self._subscribed, self._target = True, e.name
             return
         if e.topic == Topic.VALUE:
+            self._value_seqs.add(e.seq)
             if self._target is not None and e.name == self._target:
                 self._samples[e.seq] = e
             return
@@ -1178,6 +1268,9 @@ class Answers:
                 f"fired names {self._request_id!r}, which no source subscription names",
             )
             return _AnswerNode(node.parent, error)
+        non_value = _non_values(at, self._value_seqs)
+        if non_value is not None:
+            return _AnswerNode(node.parent, non_value)
         samples = [s for s in node.committed if s in self._samples]
         if len(samples) != 1:
             error = MalformedRecordError(
@@ -1199,80 +1292,33 @@ _ANSWER_TOPICS = (
 
 
 class LiveDemand:
-    """``live_demand`` held (§5): the subscriptions, each id's newest send and its
-    schedule parsed once; the spent ids; the bindings; the claims, and those a
-    record has ended; and whether the newest claim's readable exit completed. By
-    name, for the whole log, so it takes no head (plan, open question 4): it reads
-    the newest head's closedness itself. ``ensure_served``'s standing form holds
-    one per run, and polls it again after its ``report_if_dead`` reports, since a
-    report may void the only lease.
+    """``live_demand`` held (§5): the answer fold's subscriptions (``_Demand``)
+    and the newest claim's head (``HeadFold``), applied from one cursor at one W.
+    By name, for the whole log, so it takes no head (plan, open question 4): it
+    reads the newest head's closedness itself, and raises where that head does.
+    ``ensure_served``'s standing form holds one per run, and polls it again after
+    its ``report_if_dead`` reports, since a report may void the only lease.
 
-    ``ended`` is ``claim_verdict``'s predicate, held: a ``stopped`` or a ``died``
-    above a claim whose ``claim_seq`` names it, readable or not."""
+    ``ended`` is the pure read's, the presence of a record naming the claim
+    (``_ends``), which never raises."""
 
     def __init__(self) -> None:
         self._cursor = 0
-        self._subs: dict[str, Envelope] = {}
-        self._schedules: dict[str, Schedule | None] = {}
-        self._spent: set[str] = set()
-        self._bound: dict[str, set[int]] = {}
-        self._claims: set[int] = set()
-        self._ended: set[int] = set()
-        self._newest: int | None = None
-        self._closed = False
+        self._demand = _Demand()
+        self._head = HeadFold()
 
     def poll(self, ch: Channel) -> list[Envelope]:
         w = ch.last_seq()
         for e in _tail(ch, self._cursor, w, _LIVE_DEMAND_TOPICS):
-            self._apply(e)
+            if e.topic in _HEAD_TOPICS:
+                self._head._apply(ch, w, e)
+            if e.topic in _DEMAND_TOPICS:
+                self._demand.apply(e)
         self._cursor = max(self._cursor, w)
-        if self._closed:
-            return []
-        live: list[Envelope] = []
-        for r, e in self._subs.items():
-            sched = self._schedules[r]
-            if r in self._spent or sched is None:
-                continue
-            if is_lease(sched) and any(
-                c in self._claims and c in self._ended for c in self._bound.get(r, ())
-            ):
-                continue
-            live.append(e)
-        return sorted(live, key=lambda e: e.seq)
-
-    def _apply(self, e: Envelope) -> None:
-        if e.topic == Topic.LIFECYCLE_STARTED:
-            self._claims.add(e.seq)
-            self._newest, self._closed = e.seq, False
-            return
-        if e.topic in (Topic.LIFECYCLE_STOPPED, Topic.SUPERVISOR_DIED):
-            named = _named_claim(e)
-            if named is not None and named < e.seq:
-                self._ended.add(named)
-        if e.topic == Topic.LIFECYCLE_STOPPED:
-            exit_ = _readable(Stopped, e)
-            if exit_ is not None and exit_.claim_seq == self._newest:
-                self._closed = self._closed or exit_.completed
-        if e.topic in (Topic.LIFECYCLE_COMMIT, Topic.LIFECYCLE_STOPPED):
-            self._spent.update(_expired(e))
-        elif e.topic == Topic.SUPERVISOR_DIED or e.request_id is None:
-            return
-        elif e.topic == Topic.CONTROL_SUBSCRIBE:
-            self._subs[e.request_id] = e
-            self._schedules[e.request_id] = _schedule(e)
-        elif e.topic == Topic.LIFECYCLE_BOUND:
-            b = _readable(Bound, e)
-            if b is not None:
-                self._bound.setdefault(e.request_id, set()).add(b.claim_seq)
-        else:
-            self._spent.add(e.request_id)
+        return self._demand.live(closed=self._head._resolved(w).settled)
 
 
-_LIVE_DEMAND_TOPICS = (
-    *_DEMAND_TOPICS,
-    Topic.LIFECYCLE_STARTED,
-    Topic.SUPERVISOR_DIED,
-)
+_LIVE_DEMAND_TOPICS = tuple(dict.fromkeys((*_DEMAND_TOPICS, *_HEAD_TOPICS)))
 
 
 class PendingStops:
@@ -1356,8 +1402,8 @@ def _named_claim(e: Envelope) -> int | None:
 # ----- the head fold ----------------------------------------------------------------
 
 
-def _latest_claim_head(ch: Channel) -> Head:
-    """The newest claim's head, at a W taken first.
+def _latest_claim_head(ch: Channel, w: int) -> Head:
+    """The newest claim's head at ``w``, the caller's W, taken first.
 
     It folds the claim and the records after it, and below the claim reads only
     the nodes its ``resume_from``s name: the claim is a Markov boundary for its
@@ -1378,7 +1424,6 @@ def _latest_claim_head(ch: Channel) -> Head:
     being its last node, raises, a second exit included.
 
     It reads nothing above ``w`` (``_window``)."""
-    w = ch.last_seq()
     claim = _newest(ch, Topic.LIFECYCLE_STARTED, w)
     if claim is None:
         return Head(None, False, w)
