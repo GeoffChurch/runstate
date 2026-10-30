@@ -1181,9 +1181,9 @@ def test_p1_records_a_lineage_read_that_raises(monkeypatch):
     def boom(*args, **kw):
         raise ValueError("boom")
 
-    monkeypatch.setattr(mr.reads, "prefix_len", boom)
+    monkeypatch.setattr(mr.reads, "series", boom)
     assert mr.lineage_check(ch, env) == mr.LineageCheck(["loss: ValueError: boom"], [])
-    monkeypatch.setattr(mr.reads, "lineage", boom)
+    monkeypatch.setattr(mr.reads, "prefix_len", boom)
     assert mr.lineage_check(ch, env) == mr.LineageCheck(
         ["lineage: ValueError: boom"], []
     )

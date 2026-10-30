@@ -1,46 +1,61 @@
-"""The pure 0.4.0 reads: the head, the lineage, counts and series, the verdict
-and the stop fold (commits-and-lineage.md §2, §5; §10's "Nodes and commits",
-"Position", "Settledness", "Reads", "Death reports" and "The verdict", the pure
-subset).
+"""The pure 0.4.0 reads, staged: the head, the lineage, counts and series, the
+verdict and the stop fold, and the reads §5 adds (commits-and-lineage.md §2, §5;
+§10's "Nodes and commits", "Position", "Settledness", "Reads", "Death reports" and
+"The verdict", the pure subset). Moved from ``tests/test_lineage.py`` with the
+reads it tests (plan Task 6).
 
 Every log here is hand-written 0.4.0 (lifecycle-v0.6, subscription-v0.4,
 supervisor-v0.5, value-v0.3) in a MemoryChannel, and goes through ``_log``, so
 ``test_every_log_is_valid_0_4_0`` checks each against the 0.4.0 schemas: every
 row is valid except the rows ``UNREADABLE`` names, which a test makes
 unreadable on purpose. The migration step's goldens are real 0.4.0 logs too,
-and the last tests read some as the corpus runner will."""
+and the last tests read some as the corpus runner does."""
 
 from typing import Any, NamedTuple
 
 import pytest
 
-from runstate.channel.memory import MemoryChannel
-from runstate.lineage import (
+from runstate._next.observables import (
+    AlignedRow,
     AtNode,
-    Commits,
+    Complete,
     DeathReport,
     Element,
     Head,
     LatestClaimHead,
-    Outcome04,
+    MalformedRecordError,
+    Pending,
     RunResult04,
+    SettledShort,
+    Streams,
     Tier,
-    _Commit,
-    _Died,
-    _Rewind,
-    _Started,
-    _Stopped,
-    _Terminated,
-    _Value,
-    count,
+    _coordinates,
+    _walk,
+    aligned,
+    answers,
     last_element,
-    lineage,
+    prefix,
     prefix_len,
     series,
+    streams,
     undischarged_stops,
     verdict,
 )
-from runstate.observables import MalformedRecordError
+from runstate._next.vocabulary.coordinate import Commits
+from runstate._next.vocabulary.payloads import Commit, Outcome
+from runstate.channel.memory import MemoryChannel
+
+
+def lineage(ch, *, head):
+    """The node seqs from the root to the head: the private walk's nodes (§5
+    names no public lineage read; plan, open question 11)."""
+    return [at.env.seq for at in _walk(ch, head.resolve(ch)).nodes]
+
+
+def count(ch, x, *, node):
+    """``count(x, node)`` (§2): ``prefix_len`` at ``AtNode(node)``, and 0 for the
+    empty lineage."""
+    return 0 if node is None else prefix_len(ch, x, head=AtNode(node))
 
 
 class Rec(NamedTuple):
@@ -102,8 +117,8 @@ def value(name, v, *, t=1.5):
     return Rec("value", {"value": v, "t": t}, name, None)
 
 
-def subscribe(source, request_id):
-    return Rec("control.subscribe", {}, source, request_id)
+def subscribe(source, request_id, **schedule):
+    return Rec("control.subscribe", schedule, source, request_id)
 
 
 def died(claim, outcome, *, evidence="slurm:TIMEOUT", t=5.0):
@@ -681,6 +696,78 @@ A_STOP_NAMING_NOTHING = _log(
     "a stop with no request_id", (1, stop(None)), (2, nak(None))
 )
 
+# --- the reads §5 adds: prefix, aligned, answers, streams
+
+# Every third iteration commits acc; eval is emitted late in its iteration, and is
+# a JSON array; hist is never emitted.
+METRICS = _log(
+    "metrics, sparse and late",
+    (1, started(None)),
+    (2, value("loss", 1.0)),
+    (3, commit(1, None, [2])),  # iteration 1
+    (4, value("loss", 0.9)),
+    (5, value("eval", [0.5, 0.6])),
+    (6, commit(1, 3, [4, 5])),  # iteration 2
+    (7, value("loss", 0.8)),
+    (8, value("acc", 0.1)),
+    (9, commit(1, 6, [7, 8])),  # iteration 3
+    (10, commit(1, 9, [])),  # iteration 4: nothing
+    (11, value("loss", 0.7)),
+    (12, value("eval", [0.4])),
+    (13, commit(1, 10, [11, 12])),  # iteration 5
+    (14, value("acc", 0.2)),
+    (15, value("loss", 0.6)),
+    (16, commit(1, 13, [15, 14])),  # iteration 6: loss, then acc
+)
+
+# q samples the source lr every second commit; p is a pure demand. A rewind below
+# the second firing leaves it on an abandoned branch.
+ANSWERED = _log(
+    "answers on two branches",
+    (1, started(None, sources=["lr"])),
+    (2, subscribe("lr", "q", every={"commits": 2})),
+    (3, subscribe(None, "p", until={"commits": 10})),
+    (4, value("lr", 0.1)),  # q's sample
+    (5, value("loss", 0.9)),
+    (6, commit(1, None, [5, 4], fired=["q"])),  # the pending values, then samples
+    (7, value("loss", 0.8)),
+    (8, commit(1, 6, [7])),
+    (9, value("lr", 0.05)),
+    (10, value("loss", 0.7)),
+    (11, commit(1, 8, [10, 9], fired=["q"])),
+    (12, rewind(1, 8)),
+    (13, value("lr", 0.07)),
+    (14, value("loss", 0.75)),
+    (15, commit(1, 8, [14, 13], fired=["q"])),
+)
+NO_SAMPLE = _log(
+    "a node that fires and commits no sample",
+    *ANSWERED[:3],
+    (4, value("loss", 0.9)),
+    (5, commit(1, None, [4], fired=["q"])),
+)
+TWO_SAMPLES = _log(
+    "a node that fires and commits two samples",
+    *ANSWERED[:4],
+    (5, value("lr", 0.2)),
+    (6, commit(1, None, [4, 5], fired=["q"])),
+)
+FIRES_A_PURE_DEMAND = _log(
+    "a node whose fired names a pure demand",
+    *ANSWERED[:3],
+    (4, commit(1, None, [], fired=["p"])),
+)
+
+# A completed exit that discarded its open iteration: closed, whatever its values.
+CLOSED_DISCARDED = _log(
+    "a completed exit that discarded its iteration",
+    (1, started(None)),
+    (2, commit(1, None, [])),
+    (3, value("loss", 0.9)),  # pending at the exit, discarded
+    (4, stopped(1, 2, None, completed=True)),
+    (5, started(4)),
+)
+
 UNREADABLE = {
     "a malformed value body": {2},
     "a malformed value body, last": {2},
@@ -744,22 +831,8 @@ def test_an_empty_log_and_a_fresh_claim_hold_the_empty_lineage():
     assert head(RESUMED[:1]) == Head(None, False, 1)
 
 
-def test_the_head_follows_the_newest_claims_commits():
-    assert head(RESUMED[:5]) == Head(5, False, 5)
-
-
 def test_a_commitless_claims_head_is_its_resume_from_an_older_claims_node():
     assert head(COMMITLESS) == Head(3, False, 8)
-
-
-def test_a_claims_readable_exit_is_its_head():
-    assert head(COMMITLESS_ERRORED) == Head(9, False, 9)  # torn
-    assert head(RESUMED[:7]) == Head(7, False, 7)  # preempted
-
-
-def test_a_resume_from_the_previous_claims_exit_is_the_head_until_a_commit():
-    assert head(RESUMED[:9]) == Head(7, False, 9)
-    assert head(RESUMED[:10]) == Head(10, False, 10)
 
 
 def test_a_trailing_rewind_moves_the_head_to_its_target():
@@ -771,10 +844,6 @@ def test_a_trailing_rewind_moves_the_head_to_its_target():
 def test_an_exits_parent_after_a_rewind_is_the_target():
     assert head(EXIT_AFTER_A_REWIND) == Head(5, False, 5)
     assert lineage(channel(EXIT_AFTER_A_REWIND), head=LatestClaimHead()) == [2, 5]
-
-
-def test_a_displaced_workers_records_do_not_move_the_newest_claims_head():
-    assert head(DISPLACED) == Head(3, False, 7)
 
 
 def test_the_head_reads_nothing_above_its_w():
@@ -929,12 +998,6 @@ def test_a_value_no_node_names_is_excluded():
     assert prefix_len(ch, "status", head=LatestClaimHead()) == 0
 
 
-def test_a_value_committed_on_two_lineages_is_one_element_of_each():
-    ch = channel(TWO_BRANCHES)
-    assert series(ch, "loss", head=LatestClaimHead()) == [Element(5, 2, 0.9, 1.5)]
-    assert series(ch, "loss", head=AtNode(3)) == [Element(3, 2, 0.9, 1.5)]
-
-
 def test_order_within_a_node_follows_values():
     ch = channel(IN_LINEAGE_ORDER)
     assert [e.seq for e in series(ch, "loss", head=AtNode(5))] == [4, 2]
@@ -979,6 +1042,21 @@ def test_a_name_that_was_a_source_throughout_counts_0():
     assert count(ch, "lr", node=5) == 0
     assert series(ch, "lr", head=AtNode(6)) == []
     assert last_element(ch, "lr", head=AtNode(6)) is None
+
+
+def test_the_coordinates_at_each_node_are_the_counts_there():
+    """``_coordinates``, the counts the Worker and ``history`` evaluate a schedule
+    at, agree with ``prefix_len`` at every node, by the committing claim's
+    declaration."""
+    for rows, names in ((RESUMED, ["loss"]), (KIND_CHANGED, ["loss", "lr"])):
+        ch = channel(rows)
+        for h in (LatestClaimHead(), AtNode(10 if rows is RESUMED else 6)):
+            walked = _walk(ch, h.resolve(ch))
+            for at, c in zip(walked.nodes, _coordinates(walked), strict=True):
+                n = at.env.seq
+                assert c.commits == count(ch, Commits(), node=n)
+                for name in names:
+                    assert c.of(name) == count(ch, name, node=n)
 
 
 # ----- well-formedness, each at its stated check -------------------------------------
@@ -1087,150 +1165,175 @@ def test_membership_resolves_the_committing_claim_which_must_be_a_claim_below_it
 
 # ----- readable means the schema's ---------------------------------------------------
 
-_DEFINITIONS = {
-    "lifecycle.started": ("lifecycle-v0.6", "Started", _Started),
-    "lifecycle.commit": ("lifecycle-v0.6", "Commit", _Commit),
-    "lifecycle.rewind": ("lifecycle-v0.6", "Rewind", _Rewind),
-    "lifecycle.stopped": ("lifecycle-v0.6", "Stopped", _Stopped),
-    "supervisor.died": ("supervisor-v0.5", "Died", _Died),
-    "supervisor.terminated": ("supervisor-v0.5", "Terminated", _Terminated),
-    "value": ("value-v0.3", "Value", _Value),
-}
-
-
-def _edges():
-    """Bodies one field off a valid one, at the edges the parse mirrors, and
-    with a key added or the first removed."""
-    off = {
-        "lifecycle.started": [
-            ("handle", 5),
-            ("t", -1.0),
-            ("t", True),
-            ("resume_from", True),
-            ("resume_from", 0),
-            ("sources", "lr"),
-            ("sources", ["lr", "lr"]),
-        ],
-        "lifecycle.commit": [
-            ("claim_seq", True),
-            ("claim_seq", None),
-            ("consumed_seq", -1),
-            ("consumed_seq", True),
-            ("parent", 0),
-            ("values", "x"),
-            ("values", [True]),
-            ("fired", ["q", "q"]),
-            ("expired", [""]),
-            ("t", "1"),
-        ],
-        "lifecycle.rewind": [
-            ("claim_seq", None),
-            ("resume_from", -3),
-            ("t", None),
-        ],
-        "lifecycle.stopped": [
-            ("completed", "yes"),
-            ("error", 5),
-            ("claim_seq", True),
-            ("honored", ["s", "s"]),
-            ("parent", 0),
-            ("values", [2, 2]),
-            ("values", None),
-            ("fired", [""]),
-            ("t", -1.0),
-        ],
-        "supervisor.died": [
-            ("claim_seq", 0),
-            ("claim_seq", True),
-            ("claim_seq", None),
-            ("outcome", "completed"),
-            ("outcome", "presumed_dead"),
-            ("outcome", 3),
-            ("evidence", ""),
-            ("evidence", 5),
-            ("t", -1.0),
-            ("t", None),
-        ],
-        "supervisor.terminated": [
-            ("reason", "crashed"),
-            ("reason", None),
-            ("exit_code", -1),
-            ("exit_code", None),
-            ("exit_code", True),
-            ("signal", 9),
-            ("t", -1.0),
-        ],
-        "value": [("t", -1.0), ("t", "x"), ("t", True), ("t", None)],
-    }
-    bodies = {
-        "lifecycle.started": started(None, sources=["lr"]).body,
-        "lifecycle.commit": commit(1, 2, [3], fired=["q"]).body,
-        "lifecycle.rewind": rewind(1, 2).body,
-        "lifecycle.stopped": stopped(1, 2, [3]).body,
-        "supervisor.died": died(1, "killed").body,
-        "supervisor.terminated": exited("L", 0).body,
-        "value": value("loss", 0.9).body,
-    }
-    for topic, changes in off.items():
-        for field, v in changes:
-            yield topic, {**bodies[topic], field: v}
-        yield topic, {**bodies[topic], "extra": 1}
-        yield topic, {k: v for k, v in list(bodies[topic].items())[1:]}
-    torn = {**bodies["lifecycle.stopped"], "values": None}
-    yield "lifecycle.stopped", {**torn, "completed": True}  # closed, not torn
-    yield "lifecycle.stopped", {**torn, "error": "boom"}
-    yield "lifecycle.stopped", {**torn, "completed": True, "error": "boom"}
-    yield "lifecycle.stopped", {**torn, "expired": ["q"]}
-    by_signal = killed("L", 9).body
-    yield "supervisor.terminated", by_signal
-    yield "supervisor.terminated", {**by_signal, "signal": 0}
-    yield "supervisor.terminated", {**by_signal, "signal": None}
-    yield "supervisor.terminated", {**by_signal, "signal": True}
-    yield "supervisor.terminated", {**by_signal, "exit_code": 0}
-
-
-def _bodies():
-    from test_schema_v0_4_0 import NEGATIVE, VALID
-
-    for r in [*VALID.values(), *NEGATIVE.values()]:
-        if r["topic"] in _DEFINITIONS:
-            yield r["topic"], r["body"]
-    yield from _edges()
-
-
-def test_a_body_is_readable_here_if_and_only_if_its_schema_definition_admits_it():
-    """``MalformedRecordError`` and "absent for the head" rest on one meaning of
-    readable: the 0.4.0 schema's, body by body."""
-    pytest.importorskip("jsonschema")
-    import json
-    from pathlib import Path
-
-    from jsonschema import Draft202012Validator
-
-    protocol = Path(__file__).resolve().parent.parent / "protocol"
-    disagree = []
-    for topic, body in _bodies():
-        schema, definition, cls = _DEFINITIONS[topic]
-        defs = json.loads((protocol / f"{schema}.schema.json").read_text())["$defs"]
-        admits = Draft202012Validator(
-            {"$defs": defs, "$ref": f"#/$defs/{definition}"}
-        ).is_valid(body)
-        try:
-            cls(**body)
-            parses = True
-        except (TypeError, ValueError):
-            parses = False
-        if parses != admits:
-            disagree.append((topic, body, admits))
-    assert disagree == []
-
 
 def test_a_whole_number_float_is_no_seq_here_though_json_schema_admits_it():
-    """JSON Schema's ``integer`` admits 3.0; these reads, like
-    ``vocabulary.payloads`` and the migration step, refuse it. No writer of a
-    0.4.0 log writes one: Python's ``json`` writes an int as an int."""
+    """JSON Schema's ``integer`` admits 3.0; the bodies these reads parse with
+    refuse it, as the migration step does. No writer of a 0.4.0 log writes one:
+    Python's ``json`` writes an int as an int."""
     with pytest.raises(ValueError):
-        _Commit(**{**commit(1, 2, [3]).body, "parent": 2.0})
+        Commit(**{**commit(1, 2, [3]).body, "parent": 2.0})
+
+
+# ----- the reads §5 adds: prefix, aligned, answers, streams -------------------------
+
+
+def loss(node):
+    """``rows``' loss elements, as ``series`` reads them at ``AtNode``."""
+    return tuple(series(channel(RESUMED), "loss", head=AtNode(node)))
+
+
+def test_prefix_returns_complete_pending_and_settled_short():
+    """Each carries the elements it found and the head node it evaluated."""
+    held = channel(RESUMED[:10])  # B's claim is held at node 10, four losses
+    four = loss(10)
+    assert prefix(held, "loss", 3, head=LatestClaimHead()) == Complete(four[:3], 10)
+    assert prefix(held, "loss", 4, head=LatestClaimHead()) == Complete(four, 10)
+    assert prefix(held, "loss", 5, head=LatestClaimHead()) == Pending(four, 10)
+    closed = channel(RESUMED)  # closed at 14, three losses on its lineage
+    three = loss(14)
+    assert prefix(closed, "loss", 4, head=LatestClaimHead()) == SettledShort(three, 14)
+    assert prefix(closed, "loss", 5, head=AtNode(10)) == SettledShort(four, 10)
+    assert prefix(closed, "loss", 2, head=AtNode(10)) == Complete(four[:2], 10)
+
+
+def test_prefix_at_zero_is_complete_and_empty():
+    assert prefix(channel(RESUMED), "loss", 0, head=LatestClaimHead()) == Complete(
+        (), 14
+    )
+    for rows in ([], TO_THE_ROOT):  # the empty lineage, which is not settled
+        ch = channel(rows)
+        assert prefix(ch, "loss", 0, head=LatestClaimHead()) == Complete((), None)
+        assert prefix(ch, "loss", 1, head=LatestClaimHead()) == Pending((), None)
+    with pytest.raises(ValueError):
+        prefix(channel(RESUMED), "loss", -1, head=LatestClaimHead())
+
+
+def test_only_complete_has_elements():
+    """A short read cannot pass for a complete one (review §12, item 14)."""
+    for short in (Pending((), None), SettledShort((), 3)):
+        assert not hasattr(short, "elements")
+        assert short.partial == ()
+    assert not hasattr(Complete((), None), "partial")
+
+
+def test_aligned_cells_are_tuples_and_late_or_gappy_metrics_align_by_node():
+    ch = channel(METRICS)
+    rows = aligned(ch, ["acc", "eval", "hist"], head=LatestClaimHead(), axis=Commits())
+    assert rows == [
+        AlignedRow(
+            2, 6, {"acc": (), "eval": (Element(6, 5, [0.5, 0.6], 1.5),), "hist": ()}
+        ),
+        AlignedRow(3, 9, {"acc": (Element(9, 8, 0.1, 1.5),), "eval": (), "hist": ()}),
+        AlignedRow(
+            5, 13, {"acc": (), "eval": (Element(13, 12, [0.4], 1.5),), "hist": ()}
+        ),
+        AlignedRow(
+            6, 16, {"acc": (Element(16, 14, 0.2, 1.5),), "eval": (), "hist": ()}
+        ),
+    ]
+    # x is the sparse axis's count, 0 before its first element, shared by the rows
+    # between its elements
+    by_acc = aligned(ch, ["loss", "eval"], head=LatestClaimHead(), axis="acc")
+    assert [(r.x, r.node) for r in by_acc] == [(0, 3), (0, 6), (1, 9), (1, 13), (2, 16)]
+    assert by_acc[4].cells["loss"] == (Element(16, 15, 0.6, 1.5),)
+    # a source's samples appear, keyed by node, beside a later claim's elements
+    kinds = aligned(
+        channel(KIND_CHANGED), ["lr"], head=LatestClaimHead(), axis=Commits()
+    )
+    assert kinds == [
+        AlignedRow(1, 5, {"lr": (Element(5, 3, 0.1, 1.5),)}),
+        AlignedRow(2, 9, {"lr": (Element(9, 8, 0.05, 1.5),)}),
+    ]
+    assert (
+        aligned(channel(TO_THE_ROOT), ["loss"], head=LatestClaimHead(), axis=Commits())
+        == []
+    )
+
+
+def test_streams_returns_the_two_sets_by_the_committing_claims_declaration():
+    """lr was A's source and is B's eager stream: on B's lineage it is in both."""
+    ch = channel(KIND_CHANGED)
+    assert streams(ch, head=LatestClaimHead()) == Streams(
+        frozenset({"loss", "lr"}), frozenset({"lr"})
+    )
+    assert streams(ch, head=AtNode(6)) == Streams(
+        frozenset({"loss"}), frozenset({"lr"})
+    )
+    assert streams(channel(METRICS), head=LatestClaimHead()) == Streams(
+        frozenset({"loss", "eval", "acc"}), frozenset()
+    )
+    assert streams(channel(TO_THE_ROOT), head=LatestClaimHead()) == Streams(
+        frozenset(), frozenset()
+    )
+
+
+def test_answers_are_the_samples_at_nodes_whose_fired_names_the_request():
+    """One per firing, on the head's lineage only; a pure demand has none."""
+    ch = channel(ANSWERED)
+    first = Element(6, 4, 0.1, 1.5)
+    assert answers(ch, "q", head=LatestClaimHead()) == [
+        first,
+        Element(15, 13, 0.07, 1.5),
+    ]
+    assert answers(ch, "q", head=AtNode(11)) == [first, Element(11, 9, 0.05, 1.5)]
+    assert answers(ch, "q", head=AtNode(8)) == [first]
+    assert answers(ch, "p", head=LatestClaimHead()) == []  # a pure demand
+    assert answers(ch, "nobody", head=LatestClaimHead()) == []
+    assert answers(channel([]), "q", head=LatestClaimHead()) == []
+    for rows, bad in ((NO_SAMPLE, 5), (TWO_SAMPLES, 6), (FIRES_A_PURE_DEMAND, 4)):
+        rid = "p" if rows is FIRES_A_PURE_DEMAND else "q"
+        with pytest.raises(MalformedRecordError) as exc:
+            answers(channel(rows), rid, head=LatestClaimHead())
+        assert exc.value.seq == bad
+
+
+class _Counting(MemoryChannel):
+    """A channel that counts the rows its reads return, and its read calls."""
+
+    def __init__(self):
+        super().__init__()
+        self.rows = 0
+        self.reads = 0
+
+    def read(self, after=0, **kw):
+        got = super().read(after, **kw)
+        self.rows += len(got)
+        self.reads += 1
+        return got
+
+    def latest(self, topic, name=None):
+        self.reads += 1
+        self.rows += 1
+        return super().latest(topic, name)
+
+
+def test_the_walk_reads_backwards_in_windows():
+    """§5, "The pure walk": windowed bulk reads backward from the head, never the
+    whole prefix in one read and never a point read per node. A 3-node lineage at
+    the tail of a 10,000-record log reads a window, not the log; a 5,000-node
+    lineage reads its records in a few reads, not one per node."""
+    ch = _Counting()
+    ch.send(started(None).body, topic="lifecycle.started")  # claim A, long
+    parent = None
+    while ch.last_seq() < 10_000:
+        v = ch.send(value("loss", 0.5).body, topic="value", name="loss")
+        parent = ch.send(commit(1, parent, [v]).body, topic="lifecycle.commit")
+    a_last = parent
+    b = ch.send(started(None).body, topic="lifecycle.started")  # claim B, fresh
+    parent = None
+    for _ in range(3):
+        v = ch.send(value("loss", 0.4).body, topic="value", name="loss")
+        parent = ch.send(commit(b, parent, [v]).body, topic="lifecycle.commit")
+
+    ch.rows = ch.reads = 0
+    assert prefix_len(ch, "loss", head=LatestClaimHead()) == 3
+    assert len(series(ch, "loss", head=LatestClaimHead())) == 3
+    assert ch.rows < 200
+
+    ch.rows = ch.reads = 0
+    assert prefix_len(ch, Commits(), head=AtNode(a_last)) == 5_000
+    assert ch.reads < 12  # windows of 64, 256, ... back over 10,000 rows
+    assert ch.rows < 2 * 10_000
 
 
 # ----- the head fold's decisions -----------------------------------------------------
@@ -1281,11 +1384,11 @@ def test_the_claims_own_nameless_commit_is_caught_by_its_next_nodes_parent():
 # ----- the verdict (§5, "The verdict") ----------------------------------------------
 
 C, P, E, K, L = (
-    Outcome04.COMPLETED,
-    Outcome04.PREEMPTED,
-    Outcome04.ERRORED,
-    Outcome04.KILLED,
-    Outcome04.LOST,
+    Outcome.COMPLETED,
+    Outcome.PREEMPTED,
+    Outcome.ERRORED,
+    Outcome.KILLED,
+    Outcome.LOST,
 )
 
 

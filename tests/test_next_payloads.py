@@ -393,9 +393,9 @@ def test_a_body_parses_if_and_only_if_its_schema_definition_admits_it():
 
 
 def test_a_whole_number_float_is_no_integer_here_though_json_schema_admits_it():
-    """JSON Schema's ``integer`` admits 3.0; the bodies refuse it, as
-    ``runstate/lineage.py`` and the migration step do. No writer of a 0.4.0 log
-    writes one: Python's ``json`` writes an int as an int."""
+    """JSON Schema's ``integer`` admits 3.0; the bodies refuse it, as the
+    migration step does. No writer of a 0.4.0 log writes one: Python's ``json``
+    writes an int as an int."""
     with pytest.raises(ValueError):
         Bound(claim_seq=2.0)  # type: ignore[arg-type]
     with pytest.raises(ValueError):

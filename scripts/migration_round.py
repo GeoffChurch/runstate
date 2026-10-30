@@ -61,17 +61,20 @@ EACH RUN, as ``runstate migrate``'s detection pass takes it, in memory:
 3. THE READS. The 0.3.0 reads, ``value_series``, ``peek_terminal`` and
    ``undischarged_stops`` as 0.3.0 defined them (``scripts/reads_v0_3_0.py``),
    over a ``MemoryChannel`` of the 0.3.0 rows; the 0.4.0 reads,
-   ``runstate.lineage``'s ``series`` per name at ``LatestClaimHead``, its
-   ``verdict`` and ``undischarged_stops``, over one of the 0.4.0 rows. Each
+   the staged observer plane's (``runstate._next.observables``) ``series`` per
+   name at ``LatestClaimHead``, its ``verdict`` and ``undischarged_stops``, over
+   one of the 0.4.0 rows. Each
    difference is attributed to the divergences that fired there (``Reads``), or
    ``unattributed``: an unattributed difference is a read-changing rule the step
    does not declare. A read that raises ``MalformedRecordError`` is a value: a
    0.3.0 verdict that raises is compared as one, and a 0.4.0 series that raises
    leaves the series uncompared, with the error.
 
-4. P1's reads (``LineageCheck``): ``runstate.lineage``'s ``lineage``, ``count``,
-   ``prefix_len`` and ``last_element`` over the 0.4.0 log, each of which must
-   hold (not raise), the last element agreeing with the series' last.
+4. P1's reads (``LineageCheck``): the staged observer plane's ``prefix_len`` of
+   ``Commits()`` at ``LatestClaimHead`` (the walk of the whole lineage), then its
+   ``prefix_len``, ``series`` and ``last_element`` per name over the 0.4.0 log,
+   each of which must hold (not raise), the last element agreeing with the
+   series' last.
 5. THE CENSUS (``Census``), from the candidates the 0.3.0 step's ``detect`` built
    (the step keeps them for its transform): each commit's end-time fork, split by
    what is open, a tick or undated (dating) and the places an undated end may
@@ -113,7 +116,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from jsonschema import Draft202012Validator  # type: ignore[import-untyped]  # noqa: E402
 
 from runstate import formats  # noqa: E402
-from runstate import lineage as reads  # noqa: E402
+from runstate._next import observables as reads  # noqa: E402
+from runstate._next.vocabulary.coordinate import Commits  # noqa: E402
 from runstate.channel import Envelope, MemoryChannel, MemoryLog  # noqa: E402
 from runstate.migrations import (  # noqa: E402
     Memo,
@@ -857,15 +861,9 @@ def _new_cells(
     """The 0.4.0 series at ``LatestClaimHead``, each element at its cell,
     ``(name, count(Commits(), node) - 1)``, by its 0.3.0 seq: the step writes
     every value where it stood, in order, so the k-th value of each log is one
-    record."""
+    record. The counts are ``aligned``'s x over ``Commits()``, read in one walk:
+    every node that commits an element of a name is one of its rows."""
     head = reads.LatestClaimHead().resolve(ch04)
-    nodes = reads.lineage(ch04, head=head)
-    commits = {e.seq for e in env04 if e.topic == _COMMIT}
-    count: dict[int, int] = {}
-    running = 0
-    for n in nodes:
-        running += n in commits
-        count[n] = running
     old_of = dict(
         zip(
             (e.seq for e in env04 if e.topic == _VALUE),
@@ -874,6 +872,10 @@ def _new_cells(
         )
     )
     names = {e.name for e in env04 if e.topic == _VALUE and e.name is not None}
+    count = {
+        row.node: row.x
+        for row in reads.aligned(ch04, sorted(names), head=head, axis=Commits())
+    }
     cells: dict[tuple[str, int], list[Element]] = {}
     for name in sorted(names):
         for el in reads.series(ch04, name, head=head):
@@ -1200,8 +1202,7 @@ def lineage_check(ch04: MemoryChannel, env04: Sequence[Envelope]) -> LineageChec
     disagree: list[str] = []
     try:
         head = reads.LatestClaimHead().resolve(ch04)
-        reads.lineage(ch04, head=head)
-        reads.count(ch04, reads.Commits(), node=None)
+        reads.prefix_len(ch04, Commits(), head=head)
     except Exception as exc:
         return LineageCheck([f"lineage: {_raised(exc)}"], [])
     names = sorted({e.name for e in env04 if e.topic == _VALUE and e.name is not None})
