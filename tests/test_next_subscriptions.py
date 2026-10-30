@@ -121,7 +121,10 @@ def test_live_demand_agrees_with_the_worker(open_run):
     holds live for its claim: a time lease until its ``until``, a durable one until
     its own, a one-shot until it fires, a pure demand until its ``until``, one on a
     source with no value yet throughout; a refused one and a withdrawn one never
-    after their answer."""
+    after their answer. Both are per the head's lineage for a durable subscription
+    (§2, amended 2026-10-30): after a rewind to the root, and in a claim resuming
+    from an older node, each durable one is live again until the new lineage
+    expires it, and a lease stays spent."""
     ch, obs, clock = open_run(), open_run(), Clock()
     sub(obs, "lease", every={"commits": 1}, until={"time_seconds": 10})
     sub(obs, "durable", every={"commits": 2}, until={"commits": 3})
@@ -131,6 +134,11 @@ def test_live_demand_agrees_with_the_worker(open_run):
     sub(obs, "refused", source="acc")
     sub(obs, "withdrawn", every={"commits": 1})
     seen = []
+
+    def agree(w):
+        assert w._live() == set(demand(obs)), len(seen)
+        seen.append(sorted(w._live()))
+
     with worker(ch, sources=["loss", "lr"], now=clock) as w:
         w.set("loss", 1.0)
         for i in range(5):
@@ -138,10 +146,36 @@ def test_live_demand_agrees_with_the_worker(open_run):
             if i == 2:
                 send_withdraw(obs, "withdrawn")
             w.commit()
-            assert w._live() == set(demand(obs)), i
-            seen.append(sorted(w._live()))
-    assert seen[0] == ["dry", "durable", "lease", "pure", "withdrawn"]
-    assert seen[-1] == ["dry"]
+            agree(w)
+        assert seen[0] == ["dry", "durable", "lease", "pure", "withdrawn"]
+        assert seen[-1] == ["dry"]
+        c = [e.seq for e in obs.read(topics=[Topic.LIFECYCLE_COMMIT])]
+        # A rewind (§2, "Per lineage"): the durable subscriptions lineage A expired
+        # ("once" at c0, "pure" at c1, "durable" at c2) are live on B, the root's;
+        # the lease's expiry was its claim's.
+        w.rewind(None)
+        agree(w)
+        assert seen[-1] == ["dry", "durable", "once", "pure"]
+        w.set("loss", 1.0)
+        for _ in range(3):
+            w.commit()
+            agree(w)
+        assert seen[-3:] == [
+            ["dry", "durable", "pure"],  # B1: "once" fired and expired
+            ["dry", "durable"],  # B2: commits 2, "pure" expired
+            ["dry"],  # B3: commits 3, "durable" expired on B too
+        ]
+    # A claim that resumes from an older node, c0: its lineage expired "once"
+    # only, so "durable" and "pure" are live there again.
+    w2 = worker(open_run(), resume_from=AtNode(c[0]), sources=["loss", "lr"])
+    w2.heartbeat()  # a drain: the claim registers what it serves
+    agree(w2)
+    assert seen[-1] == ["dry", "durable", "pure"]
+    w2.set("loss", 1.0)
+    for _ in range(2):
+        w2.commit()
+        agree(w2)
+    assert seen[-2:] == [["dry", "durable"], ["dry"]]  # commits 2, then 3
 
 
 # ----- registration (§3, subscription-v0.4; §4, "A drain") -------------------------
@@ -626,7 +660,8 @@ def test_a_durable_subscription_is_answered_once_per_lineage_and_not_on_a_lineag
 ):
     """A one-shot durable subscription answered on a branch a rewind abandons is
     answered again on the new one, once; on a lineage that expired it, never, a
-    later claim continuing it included. ``live_demand`` counts it spent, by name."""
+    later claim continuing it included. ``live_demand`` agrees: live while the
+    head's lineage has not expired it."""
     ch, obs = open_run(), open_run()
     sub(obs, "once")
     w = worker(ch, sources=["loss"])
@@ -635,6 +670,7 @@ def test_a_durable_subscription_is_answered_once_per_lineage_and_not_on_a_lineag
     c1 = last_commit(obs)
     w.commit()
     w.rewind(None)
+    assert demand(obs) == ["once"]  # the root's lineage has not expired it
     w.set("loss", 2.0)
     w.commit()
     c3 = last_commit(obs)
@@ -645,7 +681,7 @@ def test_a_durable_subscription_is_answered_once_per_lineage_and_not_on_a_lineag
     assert samples(obs) == [1.0, 2.0]
     assert answered(obs, "once", head=AtNode(c3)) == [2.0]
     assert answered(obs, "once") == [1.0]
-    assert demand(obs) == []  # spent by name, wherever it expired
+    assert demand(obs) == []  # spent: c1, on the head's lineage, expired it
     w.stopped(completed=False, error=None)
     w2 = worker(open_run(), resume_from=LatestClaimHead(), sources=["loss"])
     w2.set("loss", 4.0)

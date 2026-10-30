@@ -271,8 +271,10 @@ def test_interop_ended_and_the_verdict_by_viewpoint():
 def test_interop_answer_fold_by_name():
     """§9 item 13: a request is spent by what names it, wherever that sits: a stop
     by an exit's ``honored`` (a displaced worker's included), a withdrawal or a
-    refusal, never by a death report; a subscription by a node's ``expired``, on
-    any lineage, a withdrawal or a refusal. A spent id stays spent, and a
+    refusal, never by a death report; a subscription by a withdrawal or a
+    refusal, a lease also by a node's ``expired`` on any lineage, its claim's, and
+    a durable subscription by one on the head's lineage (§2, amended 2026-10-30).
+    A spent id stays spent, and a
     subscription whose schedule does not parse is live until a refusal names it,
     as a malformed stop is pending until its refusal."""
     assert pending(channel(STOPS)) == [5]
@@ -446,9 +448,11 @@ def test_interop_leases_durables_and_demand(open_run):
     """§9 item 7: a lease is per claim, bound by ``lifecycle.bound``, its fire
     count kept across a rewind and void once its claim has ended, while its
     lineage atoms' baselines are read on the lineage; a durable subscription is per
-    lineage, re-armed on a lineage that did not expire it; and demand is by name,
-    for the whole log, and empty on a closed head, where a subscription is never
-    answered and never refused."""
+    lineage, re-armed on a lineage that did not expire it; and demand reads the
+    same scopes, a lease spent by its claim's expiry and a durable subscription
+    live while the head's lineage has not expired it (§2, amended 2026-10-30), and
+    is empty on a closed head, where a subscription is never answered and never
+    refused."""
     from runstate._next.vocabulary.payloads import Topic as T
     from tests.test_next_subscriptions import bindings, claim_of, demand, sub
     from tests.test_next_worker import naks, worker
@@ -476,9 +480,11 @@ def test_interop_leases_durables_and_demand(open_run):
         (["durable", "held", "lease"], ["durable", "lease"]),  # the third firing
     ]
     assert bindings(obs) == [("lease", claim_of(obs)), ("held", claim_of(obs))]
-    assert demand(obs) == ["held"]  # the others are spent by name
+    # the lease is spent by its claim's expiry; the durable one is live on the
+    # root's lineage, which the last rewind left the head on
+    assert demand(obs) == ["durable", "held"] and w.pinned is True
     w.stopped(completed=False, error=None)
-    assert demand(obs) == []  # held is void with its claim
+    assert demand(obs) == ["durable"]  # held is void with its claim
     w2 = worker(open_run(), resume_from=None, sources=["loss"])
     w2.set("loss", 4.0)
     w2.commit()  # the root, which expires nothing: the durable one fires again
@@ -501,13 +507,15 @@ def test_interop_atoms(open_run):
 
     ch, obs = open_run(), open_run()
     sub(obs, "from_c1", **{"from": {"commits": 1}})
-    sub(obs, "from_x2", **{"from": {"stream": "x", "n": 2}})
+    sub(obs, "from_x3", **{"from": {"stream": "x", "n": 3}})
     sub(obs, "every_x3", every={"stream": "x", "n": 3})
     sub(obs, "until_c2", every={"commits": 1}, until={"commits": 2})
     sub(obs, "zero", every={"commits": 0})
     with worker(ch, sources=["loss"]) as w:
         w.set("loss", 1.0)
-        for batch in (1, 1, 2, 1):  # x counts 1, 2, 4, 5 at the nodes
+        # x counts 1, 3, 4, 5 at the nodes: from 1 to 3 crosses a multiple of 3
+        # with a delta of 2, so "every 3" tells the delta rule from rounding
+        for batch in (1, 2, 1, 1):
             for _ in range(batch):
                 w.emit("x", 0)
             w.commit()
@@ -521,8 +529,9 @@ def test_interop_atoms(open_run):
         return [i for i, b in enumerate(nodes) if r in b["fired"]]
 
     assert at("from_c1") == [0]  # commits 1 at the first node being written
-    assert at("from_x2") == [1]  # x counts 2 there, its own pending value included
-    assert at("every_x3") == [0, 2, 5]  # 1, then 4 (+3), then 7 (+3) at the exit
+    assert at("from_x3") == [1]  # x counts 3 there, its own pending values included
+    # 1, then 4 (+3), then 7 (+3) at the exit; not 3, a multiple only 2 past 1
+    assert at("every_x3") == [0, 2, 5]
     assert at("until_c2") == [0] and "until_c2" in nodes[1]["expired"]
     assert at("zero") == [0, 1, 2, 3, 4, 5]  # the exit included
     assert at("held") == [] and nodes[4]["expired"] == ["held"]
@@ -584,14 +593,16 @@ def test_interop_pure_demand_lifetime(open_run):
     sub(obs, "refused", source=None, every={"commits": 1})
     w = worker(ch, sources=[])
     w.commit()
-    assert w._live() == {"until", "withdrawn", "lease"} == set(demand(obs))
+    assert w.pinned is True
+    assert set(demand(obs)) == {"until", "withdrawn", "lease"}
     send_withdraw(obs, "withdrawn")
     w.commit()  # until holds at this node
     nodes = [e.body for e in obs.read(topics=[T.LIFECYCLE_COMMIT])]
     assert [(b["fired"], b["expired"]) for b in nodes] == [([], []), ([], ["until"])]
-    assert w._live() == {"lease"} == set(demand(obs))
+    assert w.pinned is True and demand(obs) == ["lease"]
     w.stopped(completed=False, error=None)
     assert demand(obs) == []  # the lease is void with its claim
+    assert w.pinned is False
     assert obs.read(topics=[T.VALUE]) == []
 
 

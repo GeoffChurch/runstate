@@ -41,6 +41,7 @@ from tests.test_next_reads import (
     channel,
     commit,
     died,
+    rewind,
     started,
     stop,
     stopped,
@@ -222,6 +223,47 @@ def test_polled_reads_stay_within_a_bound_as_the_lineage_grows(commits):
     assert len(sampled) == commits + 1 and sampled[-1].node == h.node
     assert [e.request_id for e in wanted] == ["q", "p"]
     assert [e.request_id for e in pending] == ["halt"]
+
+
+# The rows the poll after a head move read, and the poll after it, by the lineage's
+# length.
+_ROWS_AFTER_A_MOVE: dict[int, tuple[int, int]] = {}
+
+
+@pytest.mark.parametrize("commits", [16, 1024])
+def test_live_demand_rederives_the_heads_lineage_once_on_a_move_then_reads_new_records(
+    commits,
+):
+    """§5, "The answer fold": a durable subscription is spent by an ``expired`` on
+    the head's lineage, so ``LiveDemand`` holds that lineage, extends it as the
+    head descends, and re-derives it when the head moves off it, at O(L) once; a
+    poll after that reads O(new records) again. A claim commits ``commits`` nodes
+    and the last expires d; a rewind to the middle node revives d, and costs the
+    walk from there; one more commit, which descends, costs its own records."""
+    ch = _Counting()
+    claim = _send(ch, started(None, sources=["lr"]))
+    _send(ch, subscribe("lr", "d", every={"commits": 1}, until={"commits": commits}))
+    parent, nodes = None, []
+    for i in range(commits):
+        expired = ["d"] if i == commits - 1 else []
+        parent = _send(ch, commit(claim, parent, [], expired=expired))
+        nodes.append(parent)
+    fold = LiveDemand()
+    assert fold.poll(ch) == []  # the first poll reads everything once
+    middle = nodes[commits // 2 - 1]
+    _send(ch, rewind(claim, middle))
+    ch.rows = 0
+    assert [e.request_id for e in fold.poll(ch)] == ["d"]  # off the expiring branch
+    moved = ch.rows
+    _send(ch, commit(claim, middle, []))
+    ch.rows = 0
+    assert [e.request_id for e in fold.poll(ch)] == ["d"]
+    after = ch.rows
+    assert [e.request_id for e in live_demand(ch)] == ["d"]
+    _ROWS_AFTER_A_MOVE[commits] = (moved, after)
+    assert commits // 2 <= moved <= 4 * commits  # the walk from the middle node
+    assert after <= 4  # the new commit, the newest claim, W: the same few
+    assert len({a for _, a in _ROWS_AFTER_A_MOVE.values()}) == 1, _ROWS_AFTER_A_MOVE
 
 
 def test_the_answers_fold_rederives_on_a_head_that_does_not_descend():

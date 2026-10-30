@@ -38,12 +38,14 @@ window, the records after it, since a record cannot speak for a claim it never
 saw. A run nothing claimed takes its launch's ``supervisor.terminated``. No read
 probes a handle and none writes.
 
-THE ANSWER FOLD (§2 "Requests", §5) is by name, for the whole log: a request is
-spent by what names it (a node's ``expired``, an exit's ``honored``, a withdrawal,
-a refusal), wherever that sits, and a lease is void once its bound claim ended.
-There ``ended`` is the presence of a record naming the claim (``ends``), which
-never raises, so a malformed record in an old claim's window cannot poison the
-present: the verdict is where that contradiction raises.
+THE ANSWER FOLD (§2 "Requests", §5) reads each request kind in its own scope: a
+request is spent by what names it (an exit's ``honored``, a withdrawal, a
+refusal), wherever that sits; a lease also by any node's ``expired``, its claim's,
+and it is void once its bound claim ended; a durable subscription by an
+``expired`` on the head's lineage only. There ``ended`` is the presence of a
+record naming the claim (``ends``), which never raises, so a malformed record in
+an old claim's window cannot poison the present: the verdict is where that
+contradiction raises.
 
 THE INCREMENTAL FOLDS (§5, "Bounded reads") are the polled forms, public and
 standalone, since ``ensure``'s loop has no Watcher and the TUI may use public API
@@ -59,7 +61,7 @@ from __future__ import annotations
 
 import sys
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence, Set as AbstractSet
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
@@ -79,7 +81,14 @@ from .vocabulary.payloads import (
     Topic,
     Value,
 )
-from .claims import Bindings, claim_window, named_claim, request_name, spent_by
+from .claims import (
+    Bindings,
+    backward,
+    claim_window,
+    named_claim,
+    request_name,
+    spent_by,
+)
 from .vocabulary.schedule import MalformedSchedule, is_lease, parse_schedule
 from .walk import (
     EVERY_NAME,
@@ -679,17 +688,23 @@ def current_heartbeat(ch: Channel, claim: Envelope | None) -> Envelope | None:
 
 
 def live_demand(ch: Channel) -> list[Envelope]:
-    """The live subscriptions, by name, for the whole log, at a W taken first
-    (§2, §5, "The answer fold"): each ``control.subscribe`` id's newest send,
-    ascending by seq, unless
+    """The live subscriptions at a W taken first (§2, §5, "The answer fold"): each
+    ``control.subscribe`` id's newest send, ascending by seq, unless
 
-    - it is **spent**: a node's ``expired`` names it, on any lineage, or a
-      ``control.withdraw``, a ``lifecycle.nak`` or an exit's ``honored`` does,
-      wherever it sits (``claims.spent_by``). Request ids are one namespace, so a
+    - it is **spent by name**: a ``control.withdraw``, a ``lifecycle.nak`` or an
+      exit's ``honored`` names it, wherever it sits (``claims.spent_by``). Request
+      ids are one namespace, so a
       subscribe reusing a stop's honored id is dead on arrival, as the Worker
       skips it; a spent id stays spent, so a later send reusing it is dead on
       arrival. A subscribe with a missing or empty id is nameless, and never
       live;
+    - it is **expired** in its class's scope: a lease once any node's
+      ``expired`` names it, since its expiry is its claim's; a durable
+      subscription once a node on the head's lineage (``LatestClaimHead``'s node
+      and its ancestors) does, so one another lineage expired is live demand
+      again while the head stands on a lineage that has not (§2, "Per lineage",
+      amended 2026-10-30: the decision to launch a worker and the decision to keep
+      serving read demand by the same rules);
     - it is a **void** lease: a ``lifecycle.bound`` binds it to a claim that has
       ended (``ends``: the presence of an exit or a death report naming the
       claim, which never raises, so a malformed record in an old claim's window
@@ -709,18 +724,30 @@ def live_demand(ch: Channel) -> list[Envelope]:
     refused, and a waker must launch a worker to refuse it. No claim binds one, so
     it is never void.
 
-    So a claim that dies before its first commit revives no answered demand: an
-    answer is by name, not per lineage. One-shot: expiry sits inside node bodies,
-    so the read is the whole log, never polled (``LiveDemand`` is its fold)."""
+    Which durable expiries lie on the head's lineage is read by one walk of it
+    (``_lineage``), and only when a live durable subscription has an expiry to
+    place: the question is the head's lineage, so the walk is inside its window
+    (CLAUDE.md, "Bound a fold to the window its question is about"), and a
+    lineage it finds malformed raises ``MalformedRecordError``, as the head does.
+    One-shot: expiry sits inside node bodies, so the read is the whole log, never
+    polled (``LiveDemand`` is its fold)."""
     w = ch.last_seq()
     if w == 0:
         return []
     demand = _Demand()
+    nodes: list[Envelope] = []
     for e in ch.read(topics=list(_DEMAND_TOPICS), limit=w):
         if e.seq > w:
             break
         demand.apply(e)
-    return demand.live(closed=_latest_claim_head(ch, w).settled)
+        if e.topic in _NODE_TOPICS:
+            nodes.append(e)
+    head = _latest_claim_head(ch, w)
+
+    def lineage() -> AbstractSet[int]:
+        return _lineage(head.node, reversed(nodes)).seqs
+
+    return demand.live(closed=head.settled, lineage=lineage)
 
 
 def undischarged_stops(ch: Channel) -> list[Envelope]:
@@ -776,17 +803,23 @@ class _Demand:
     ``LiveDemand`` holds one and applies each poll's new records.
 
     It holds each live id's newest send, in send order, so the live list is read
-    off in seq order; each such id's class, by its first send; and the bindings
-    (``claims.Bindings``, which the Worker's claim shares). A spent id, or a void
-    lease, is **dead**: never live again, since a spent id stays spent and void
-    never reverts (a void lease's class and its ended claim are fixed). So its
-    send and its bindings are dropped, only its id is kept, and a send reusing it
-    is skipped: a poll costs O(new records) and the live list O(live)."""
+    off in seq order; each such id's class, by its first send; the bindings
+    (``claims.Bindings``, which the Worker's claim shares); and, for each id not
+    known to be a lease, the nodes whose ``expired`` name it, which spend a
+    durable subscription only on a lineage through one of them (§2, "Per
+    lineage"). A spent id, a void lease or an expired one is **dead**: never live
+    again, since a spent id stays spent, void never reverts (a void lease's class
+    and its ended claim are fixed), and a lease's expiry is its claim's. So its
+    send, its bindings and its expiries are dropped, only its id is kept, and a
+    send reusing it is skipped: a poll costs O(new records), and the live list
+    O(live) plus, while a live durable subscription has an expiry, the head's
+    lineage (``live``)."""
 
     def __init__(self) -> None:
         self._live: dict[str, Envelope] = {}
         self._lease: dict[str, bool] = {}
         self._dead: set[str] = set()
+        self._expiries: dict[str, set[int]] = {}  # the nodes expiring each id
         self._bindings = Bindings()
 
     def apply(self, e: Envelope) -> None:
@@ -796,9 +829,9 @@ class _Demand:
         for r in list(self._bindings.apply(e)):
             if self._lease.get(r, False):
                 self._kill(r)
-        if e.topic in (Topic.LIFECYCLE_COMMIT, Topic.LIFECYCLE_STOPPED):
+        if e.topic in _NODE_TOPICS:
             for r in _expired(e):
-                self._kill(r)
+                self._expire(r, e.seq)
         for r in spent_by(e):  # one namespace: a stop's honored id is spent too
             self._kill(r)
         name = request_name(e)
@@ -806,16 +839,38 @@ class _Demand:
             if name not in self._dead:  # else dead on arrival
                 self._send(name, e)
 
-    def live(self, *, closed: bool) -> list[Envelope]:
+    def live(
+        self, *, closed: bool, lineage: Callable[[], AbstractSet[int]]
+    ) -> list[Envelope]:
         """The live subscriptions, ascending by seq; none when the head is
-        ``closed``."""
-        return [] if closed else list(self._live.values())
+        ``closed``. ``lineage`` gives the node seqs on the head's lineage, and is
+        called only when a live durable subscription has an expiry to place, at
+        most once."""
+        if closed:
+            return []
+        expiring = [r for r in self._live if r in self._expiries]
+        if not expiring:
+            return list(self._live.values())
+        on = lineage()
+        spent = {r for r in expiring if not self._expiries[r].isdisjoint(on)}
+        return [e for r, e in self._live.items() if r not in spent]
+
+    def _expire(self, r: str, node: int) -> None:
+        """A node's ``expired`` names ``r``: a lease is spent, since its expiry is
+        its claim's; a durable subscription, or an id with no send yet, is held
+        expired at ``node``, which spends it on a lineage through it only."""
+        if r in self._dead:
+            return
+        if r in self._lease and self._lease[r]:
+            self._kill(r)
+        else:
+            self._expiries.setdefault(r, set()).add(node)
 
     def _send(self, r: str, e: Envelope) -> None:
         if r not in self._lease:  # the first send fixes the class
             self._lease[r] = _is_lease(e)
-            if self._lease[r] and self._bindings.void(r):
-                self._kill(r)  # bound before its first send, to an ended claim
+            if self._lease[r] and (self._bindings.void(r) or r in self._expiries):
+                self._kill(r)  # bound to an ended claim, or expired, before it
                 return
         self._live.pop(r, None)  # the newest send, last
         self._live[r] = e
@@ -824,6 +879,7 @@ class _Demand:
         self._dead.add(r)
         self._live.pop(r, None)
         self._lease.pop(r, None)
+        self._expiries.pop(r, None)
         self._bindings.forget(r)
 
 
@@ -858,6 +914,52 @@ class _Stops:
     def _spend(self, r: str) -> None:
         self._spent.add(r)
         self._pending.pop(r, None)
+
+
+class _Lineage(NamedTuple):
+    """The lineage ending at a node, as the answer fold reads it: its node seqs,
+    and the kind of its newest node, ``None`` for the empty lineage, which says
+    whether a node may extend it."""
+
+    seqs: frozenset[int]
+    tip: NodeKind | None
+
+
+_EMPTY = _Lineage(frozenset(), None)
+
+
+def _lineage(node: int | None, below: Iterable[Envelope]) -> _Lineage:
+    """The lineage ending at ``node`` (§2), from ``below``, the node records at or
+    below it, newest first: ``node``, then each ``parent`` in turn, so it reads
+    back only as far as the lineage's root. ``live_demand`` and ``LiveDemand``
+    share it, so they read one lineage and raise alike.
+
+    It checks what it follows (§5, "Well-formedness"): each node on it readable,
+    and each ``parent`` below its node and naming an extendable node
+    (``check_reference``); a failure raises ``MalformedRecordError``. A ``node``
+    that is not a node raises ``ValueError``, as ``walk`` does: a resolved head's
+    is one."""
+    if node is None:
+        return _EMPTY
+    records = iter(below)
+    seqs: set[int] = set()
+    child: Envelope | None = None
+    tip: NodeKind | None = None
+    want: int | None = node
+    while want is not None:
+        found = next((e for e in records if e.seq <= want), None)
+        at = node_at(found) if found is not None and found.seq == want else None
+        if child is None:
+            if at is None:
+                raise ValueError(f"head node {node} is not a node")
+            tip = kind(at.node)
+        else:
+            found_kind = None if at is None else kind(at.node)
+            check_reference(child, "parent", want, lambda _: found_kind)
+        assert at is not None  # check_reference found a node there
+        seqs.add(want)
+        child, want = at.env, at.node.parent
+    return _Lineage(frozenset(seqs), tip)
 
 
 def _expired(e: Envelope) -> list[str]:
@@ -1230,11 +1332,12 @@ class Answers(_NodeFold[_AnswerNode]):
 
 
 class LiveDemand:
-    """``live_demand`` held (§5): the answer fold's subscriptions (``_Demand``)
-    and the newest claim's head (``_ClaimHead``), applied from one cursor at one W.
-    By name, for the whole log, so it takes no head (plan, open question 4): it
-    reads the newest head's closedness itself, and raises where that head does.
-    Of each poll's records, the head takes those from the newest claim among them.
+    """``live_demand`` held (§5): the answer fold's subscriptions (``_Demand``),
+    the newest claim's head (``_ClaimHead``) and the head's lineage
+    (``_HeldLineage``), applied from one cursor at one W. It takes no head from its
+    caller (plan, open question 4): it reads the newest head itself, its
+    closedness and its lineage, and raises where that head does. Of each poll's
+    records, the head takes those from the newest claim among them.
     ``ensure_served``'s standing form holds one per run, and polls it again after
     its ``report_if_dead`` reports, since a report may void the only lease.
 
@@ -1245,6 +1348,7 @@ class LiveDemand:
         self._cursor = 0
         self._demand = _Demand()
         self._head = _ClaimHead()
+        self._lineage = _HeldLineage()
 
     def poll(self, ch: Channel) -> list[Envelope]:
         w = ch.last_seq()
@@ -1255,14 +1359,112 @@ class LiveDemand:
         batch = _tail(ch, self._cursor, w, _LIVE_DEMAND_TOPICS)
         claims = [e.seq for e in batch if e.topic == Topic.LIFECYCLE_STARTED]
         newest = claims[-1] if claims else 0
+        self._lineage.new_poll()
         for e in batch:
             if e.topic in _HEAD_TOPICS and e.seq >= newest:
                 self._head.apply(e, read_at)
             if e.topic in _DEMAND_TOPICS:
                 self._demand.apply(e)
+            if e.topic in _NODE_TOPICS:
+                self._lineage.saw(e)
             self._cursor = e.seq
         self._cursor = max(self._cursor, w)
-        return self._demand.live(closed=self._head.head(w).settled)
+        head = self._head.head(w)
+
+        def lineage() -> AbstractSet[int]:
+            return self._lineage.at(ch, head.node)
+
+        return self._demand.live(closed=head.settled, lineage=lineage)
+
+
+class _Seen(NamedTuple):
+    """A node a poll applied: its ``parent`` and its kind."""
+
+    parent: int | None
+    kind: NodeKind
+
+
+class _HeldLineage:
+    """The head's lineage, held for ``LiveDemand`` (§5, "The answer fold"): the
+    lineage ending at ``tip``, and the nodes the current poll applied. A head that
+    descends from ``tip`` through those nodes extends it, at O(new records); one
+    that does not (a rewind, a resume from an older node, a new claim's position
+    elsewhere, or a head ``LiveDemand`` last asked about polls ago) re-derives it
+    by one walk back from the head (``_lineage``), at O(L), as the Worker's
+    rebuild does. A lineage is fixed by its newest node, so the held one stays
+    true of ``tip`` for as long as it is held.
+
+    An extension checks each node it adds as ``_lineage`` would, and walks
+    instead when one fails, so the walk raises what the pure read raises; a walk
+    that raises leaves the held lineage as it was."""
+
+    def __init__(self) -> None:
+        self._tip: int | None = None  # the held lineage's newest node
+        self._tip_kind: NodeKind | None = None  # its kind; None for the empty one
+        self._seqs: set[int] = set()  # its node seqs, extended in place
+        self._seen: dict[int, _Seen | None] = {}  # None: an unreadable node
+
+    def new_poll(self) -> None:
+        """Forget the nodes the last poll applied."""
+        self._seen = {}
+
+    def saw(self, e: Envelope) -> None:
+        """A node record the current poll applied."""
+        try:
+            at = node_at(e)
+        except MalformedRecordError:
+            self._seen[e.seq] = None
+            return
+        assert at is not None  # a node's topic
+        self._seen[e.seq] = _Seen(at.node.parent, kind(at.node))
+
+    def at(self, ch: Channel, node: int | None) -> AbstractSet[int]:
+        """The node seqs on the lineage ending at ``node``."""
+        if node == self._tip:
+            return self._seqs
+        if node is None:
+            self._tip, self._tip_kind, self._seqs = None, None, set()
+            return self._seqs
+        descent = self._descent(node)
+        if descent is None:
+            topics: list[str] = list(_NODE_TOPICS)
+            walked = _lineage(node, backward(ch, after=0, hi=node, topics=topics))
+            self._seqs, self._tip_kind = set(walked.seqs), walked.tip
+        else:
+            added, self._tip_kind = descent
+            self._seqs.update(added)
+        self._tip = node
+        return self._seqs
+
+    def _descent(self, node: int) -> tuple[list[int], NodeKind] | None:
+        """The nodes from ``node`` back to ``tip``, exclusive, and ``node``'s kind,
+        when ``node`` descends from ``tip`` through nodes this poll applied, each
+        checked as ``_lineage`` checks it; else ``None``."""
+        added: list[int] = []
+        want: int | None = node
+        while want != self._tip:
+            if want is None:
+                return None  # the root, and tip is not the empty lineage
+            seen = self._seen.get(want)
+            if seen is None:
+                return None  # not one of the poll's nodes, or an unreadable one
+            if seen.parent is not None:
+                if seen.parent >= want:
+                    return None
+                above = self._seen.get(seen.parent)
+                if above is not None:
+                    parent_kind: NodeKind | None = above.kind
+                elif seen.parent == self._tip:
+                    parent_kind = self._tip_kind
+                else:
+                    return None
+                if parent_kind is not NodeKind.EXTENDABLE:
+                    return None
+            added.append(want)
+            want = seen.parent
+        top = self._seen[node]
+        assert top is not None  # node is not tip, so the loop added it
+        return added, top.kind
 
 
 _LIVE_DEMAND_TOPICS = tuple(dict.fromkeys((*_DEMAND_TOPICS, *_HEAD_TOPICS)))

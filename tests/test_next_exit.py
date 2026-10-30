@@ -293,6 +293,54 @@ def test_an_exit_whose_cas_never_wins_raises_worker_starved_and_the_claim_stays_
     assert endings(obs, claim, obs.last_seq()) == []
 
 
+def test_a_starved_exit_fences_every_call_but_a_retried_stopped(open_run):
+    """§4, "An exit that starves": the exit's drain passed over a subscribe, and its
+    CAS then starved. Every call but ``stopped()`` is fenced, writing nothing, so no
+    watermark of the claim (a commit's or a heartbeat's ``consumed_seq``) claims the
+    subscribe the failed exit passed over; a retried ``stopped()``, on a channel
+    gone quiet, lands the exit, and the subscribe stays live for the next claim."""
+    obs = open_run()
+    ch = Interloping(open_run(), obs)
+    w = worker(ch, sources=["loss"])
+    w.set("loss", 1.0)
+    w.commit()
+    late = obs.send(
+        {"every": {"commits": 1}},
+        topic=Topic.CONTROL_SUBSCRIBE,
+        name="loss",
+        request_id="late",
+    )
+    v = obs.send({"value": 2.0, "t": 0.0}, topic=Topic.VALUE, name="x")
+    noise = {"value": 1.0, "t": 1.0}
+    ch.arm(noise, topic=Topic.VALUE, name="noise", times=CAS_ATTEMPTS)
+    with pytest.raises(WorkerStarvedError) as exc:
+        w.stopped(completed=False, error=None)
+    assert exc.value.step == "exit" and exits(obs) == []
+    before = obs.last_seq()
+    assert w.commit() is True and w.heartbeat() is True
+    w.emit("x", 3.0)
+    w.set("loss", 4.0)
+    w.include(v)
+    w.rewind(None)
+    w.discard()
+    assert list(w.serve()) == [] and w.retire() is True
+    assert obs.last_seq() == before  # fenced: nothing written
+    assert w.stop_pending is True and w.pinned is False
+    w.stopped(completed=False, error=None)  # the retry, on a quiet channel
+    (exit_,) = exits(obs)
+    claim = obs.latest(Topic.LIFECYCLE_STARTED).seq
+    assert exit_.body["claim_seq"] == claim and exit_.body["values"] == []
+    assert exit_.body["parent"] == obs.latest(Topic.LIFECYCLE_COMMIT).seq
+    beats = obs.read(topics=[Topic.LIFECYCLE_COMMIT, Topic.LIFECYCLE_HEARTBEAT])
+    assert all(e.body["consumed_seq"] < late for e in beats)
+    w.stopped(completed=False, error=None)  # a second call does nothing
+    assert len(exits(obs)) == 1
+    w2 = worker(open_run(), resume_from=LatestClaimHead(), sources=["loss"])
+    w2.set("loss", 5.0)
+    w2.commit()  # the next claim serves the subscribe the exit passed over
+    assert obs.latest(Topic.LIFECYCLE_COMMIT).body["fired"] == ["late"]
+
+
 @pytest.mark.parametrize(
     "exc", [KeyboardInterrupt(), SystemExit(), RuntimeError()], ids=repr
 )

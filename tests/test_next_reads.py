@@ -786,13 +786,14 @@ CLOSED_DISCARDED = _log(
 
 # --- the answer fold (§2 "Requests", §5)
 
-# Each subscription is spent by what names it, wherever that sits: "expires" by
-# the expired of a node a rewind then leaves off the lineage; "malformed", whose
-# body does not parse, is live until its nak.
+# Each subscription is spent by what names it, wherever that sits: "expires", a
+# lease, by the expired of a node a rewind then leaves off the lineage, since a
+# lease's expiry is its claim's; "malformed", whose body does not parse, is live
+# until its nak.
 DEMAND = _log(
     "subscriptions answered by name",
     (1, started(None, sources=["lr"])),
-    (2, subscribe("lr", "expires", until={"commits": 1})),
+    (2, subscribe("lr", "expires", until={"count": 1})),
     (3, subscribe("lr", "withdrawn", every={"commits": 1})),
     (4, subscribe("lr", "refused", every={"commits": 1})),
     (5, subscribe("lr", "live", every={"commits": 1})),
@@ -804,6 +805,31 @@ DEMAND = _log(
     (11, rewind(1, None)),
     (12, subscribe("lr", "withdrawn", every={"commits": 1})),  # a spent id
     (13, nak("malformed", reason="malformed")),  # the worker refuses it at last
+)
+
+# A durable subscription is spent per the head's lineage (§2, "Per lineage"): d
+# expires at 8, is live again at the rewind to 6, expires on that branch at 11,
+# and is live again at the rewind to the root and at the exit there; a claim
+# resuming from 8 stands on a lineage that expired it, and one from 6 on one that
+# has not. The lease's expiry, at 8, is its claim's, and holds on every lineage.
+DURABLE_ON_A_BRANCH = _log(
+    "a durable subscription expired on a branch, then a rewind",
+    (1, started(None, sources=["lr"])),
+    (2, subscribe("lr", "d", every={"commits": 1}, until={"commits": 2})),
+    (3, subscribe("lr", "lease", every={"commits": 1}, until={"count": 2})),
+    (4, bound(1, "lease")),
+    (5, value("lr", 0.1)),
+    (6, commit(1, None, [5], fired=["d", "lease"])),
+    (7, value("lr", 0.2)),
+    (8, commit(1, 6, [7], fired=["d", "lease"], expired=["d", "lease"])),
+    (9, rewind(1, 6)),
+    (10, value("lr", 0.3)),
+    (11, commit(1, 6, [10], fired=["d"], expired=["d"])),
+    (12, rewind(1, None)),
+    (13, stopped(1, None, [])),
+    (14, started(8, sources=["lr"])),
+    (15, died(14, "killed")),
+    (16, started(6, sources=["lr"])),
 )
 
 # A lease bound to a claim that only an unreadable report ends.

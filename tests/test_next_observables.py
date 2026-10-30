@@ -612,38 +612,95 @@ def test_a_void_lease_resent_as_durable_stays_void(ch):
     assert demand(ch) == [] == held(fold, ch)
 
 
-def test_live_demand_is_by_name_and_empty_on_a_closed_head(ch):
-    """An ``expired`` spends its subscription by name, on any lineage, so a rewind
-    off the node that expired it does not revive it; and nothing is demanded of a
-    closed head, until a new claim."""
+def test_live_demand_is_per_the_heads_lineage_and_empty_on_a_closed_head(ch):
+    """A durable subscription's ``expired`` spends it on the head's lineage only
+    (§2, "Per lineage"), so a rewind off the node that expired it revives it; and
+    nothing is demanded of a closed head, until a new claim."""
     subscribe(ch, "once", every={"commits": 1}, until={"commits": 1})
     subscribe(ch, "live", every={"commits": 1})
     c = claim(ch, src=["loss"])
     commit(ch, c, None, [value(ch, "loss", 1.0)], fired=["live"], expired=["once"])
-    rewind(ch, c, None)  # back to the root, where "once" never expired
     assert demand(ch) == ["live"]
+    rewind(ch, c, None)  # back to the root, where "once" never expired
+    assert demand(ch) == ["once", "live"]
     exit_(ch, c, None, completed=True)
     assert live_demand(ch) == []  # closed
     subscribe(ch, "late", every={"commits": 1})
     assert live_demand(ch) == []  # never answered, never refused
     claim(ch, "local://h/2", src=["loss"], t=2.0)
-    assert demand(ch) == ["live", "late"]
+    assert demand(ch) == ["once", "live", "late"]
 
 
-def test_a_claim_that_dies_before_its_first_commit_revives_no_answered_demand(ch):
+def test_a_claim_that_resumes_below_an_expiry_revives_its_durable_demand(ch):
     """A answers "once" at its second node and exits; B resumes from A's first
-    node, where "once" is unanswered, and dies before committing. Demand is by
-    name, so "once" stays answered, and the launch decision does not relaunch for
-    it; an unanswered subscription is still demand."""
+    node, where "once" is unanswered, and dies before committing. Durable demand is
+    per the head's lineage (§2, amended 2026-10-30), and the head is B's position,
+    whose lineage has not expired "once": so the launch decision relaunches for
+    it, as a running worker on that lineage would serve it, and the head's answers
+    are not left truncated. A lease is the claim's, and stays spent."""
     subscribe(ch, "once", every={"commits": 1}, until={"commits": 2})
     subscribe(ch, "open", every={"commits": 1})
+    subscribe(ch, "lease", every={"commits": 1}, until={"count": 1})
     a = claim(ch, src=["loss"])
-    n1 = commit(ch, a, None, [value(ch, "loss", 1.0)], fired=["once", "open"])
+    bound(ch, a, "lease")
+    n1 = commit(
+        ch,
+        a,
+        None,
+        [value(ch, "loss", 1.0)],
+        fired=["once", "open", "lease"],
+        expired=["lease"],
+    )
     n2 = commit(ch, a, n1, [value(ch, "loss", 0.9)], fired=["open"], expired=["once"])
     exit_(ch, a, n2)
+    assert demand(ch) == ["open"]
     b = claim(ch, "local://h/2", resume_from=n1, src=["loss"], t=3.0)
     died(ch, b, "lost", evidence="reap: exit 0")
-    assert demand(ch) == ["open"]
+    assert demand(ch) == ["once", "open"]
+
+
+def test_a_durable_subscription_another_lineage_expired_is_live_demand_on_the_head(
+    ch,
+):
+    """§2 "Per lineage", §5 "The answer fold" (owner, 2026-10-30): a durable
+    subscription is spent only by an ``expired`` on the head's lineage, so one
+    another lineage expired is live demand again while the head stands on a
+    lineage that has not; a lease is spent by any node's ``expired``, its claim's.
+    The pure read and its held fold agree after every move: a rewind below the
+    expiry, an expiry on the new branch, a rewind to the root, an exit, a claim
+    resuming on the lineage that expired it, and one resuming below it."""
+    fold = LiveDemand()
+
+    def both():
+        got = demand(ch)
+        assert held(fold, ch) == got
+        assert held(LiveDemand(), ch) == got  # a fresh fold, from its first poll
+        return got
+
+    subscribe(ch, "d", every={"commits": 1}, until={"commits": 2})
+    subscribe(ch, "lease", every={"commits": 1}, until={"count": 2})
+    c = claim(ch, src=["loss"])
+    bound(ch, c, "lease")
+    n1 = commit(ch, c, None, [value(ch, "loss", 1.0)], fired=["d", "lease"])
+    assert both() == ["d", "lease"]
+    lost = ["d", "lease"]
+    n2 = commit(ch, c, n1, [value(ch, "loss", 0.9)], fired=lost, expired=lost)
+    assert both() == []
+    rewind(
+        ch, c, n1
+    )  # n1's lineage has not expired d; the lease's expiry is its claim's
+    assert both() == ["d"]
+    commit(ch, c, n1, [value(ch, "loss", 0.8)], fired=["d"], expired=["d"])
+    assert both() == []
+    rewind(ch, c, None)
+    assert both() == ["d"]
+    exit_(ch, c, None)  # the head is the exit, on the root: it expires nothing
+    assert both() == ["d"]
+    c2 = claim(ch, "local://h/2", resume_from=n2, src=["loss"], t=2.0)
+    assert both() == []  # n2's lineage expired it
+    died(ch, c2, "killed")
+    claim(ch, "local://h/3", resume_from=n1, src=["loss"], t=3.0)
+    assert both() == ["d"]
 
 
 def test_a_withdrawn_subscription_lease_or_stop_is_spent(ch):

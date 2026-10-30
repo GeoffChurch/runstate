@@ -163,11 +163,14 @@ class WorkerStarvedError(RuntimeError):
 
 class _Phase(Enum):
     """Where the worker is in its claim's life. Only a ``LIVE`` worker commits; a
-    ``DISCARDED`` one still writes its exit; the rest write nothing.
+    ``DISCARDED`` one still writes its exit, and a ``STARVED`` one retries it; the
+    rest write nothing.
 
-    ``LIVE`` -> ``DISCARDED`` (``discard()``) -> ``STOPPED`` (its exit landed) or
-    ``RELEASED`` (a drain read a death report naming its claim), from either of
-    the first two; ``LOST`` from the start."""
+    ``LIVE`` -> ``DISCARDED`` (``discard()``) -> ``STOPPED`` (its exit landed),
+    ``RELEASED`` (a drain read a death report naming its claim) or ``STARVED`` (its
+    exit's CAS starved), from either of the first two, and ``STARVED`` ->
+    ``STOPPED`` or ``RELEASED`` on a retried ``stopped()``; ``LOST`` from the
+    start."""
 
     LIVE = "live"
     """It won the claim, and computes."""
@@ -180,6 +183,11 @@ class _Phase(Enum):
     """It lost the claim race: it never claimed, and writes nothing (§4)."""
     RELEASED = "released"
     """It read a death report naming its claim, and writes nothing more (§4)."""
+    STARVED = "starved"
+    """Its exit's CAS lost past the bound (§4, "An exit that starves"): the claim is
+    held, and every call but a retried ``stopped()`` is fenced, writing nothing,
+    since the exit's drains passed over requests no watermark of the claim may
+    claim."""
 
 
 # ----- the lineage at the position --------------------------------------------------
@@ -429,6 +437,18 @@ _NOTHING = _Evaluation(fired=[], expired=[], sources=[])
 """"An exit that discarded its iteration evaluates nothing" (§3)."""
 
 
+class _ExitNode(NamedTuple):
+    """What step 4 of the exit writes, decided by steps 1 to 3 (§4, "The exit"),
+    held so that a lost CAS, or the retry of an exit that starved, writes it again
+    without evaluating again: its verdict, its ``values`` (null when it discards
+    its iteration), and its evaluation."""
+
+    completed: bool
+    error: str | None
+    values: list[int] | None
+    evaluation: _Evaluation
+
+
 class _Stop(NamedTuple):
     """A drained, pending ``control.stop``: its ``from``, parsed at the drain
     (``None`` holds once drained), and the claim's clock when it registered, which
@@ -494,7 +514,8 @@ class _Requests:
           held is dropped, and one that held is too late, since the claim stops
           and ``honored`` names it (§4, "The exit").
         - **A subscription** (``_subscribe``) registers, in ``ITERATION`` mode; the
-          exit passes it over, for the next claim.
+          exit passes over every named one, its body unparsed, so a malformed one
+          too, for the next claim to register or refuse (§4, "The exit", step 1).
         - **Any other ``control.*`` topic** is refused ``unsupported``."""
         r = request_name(e)
         if r is None:
@@ -556,9 +577,11 @@ class _Requests:
           ``unsatisfiable`` against the claim's sources, is refused
           ``unsatisfiable``;
         - otherwise it registers afresh, as a new ``Subscription``, so a lease's
-          time atoms count from ``now`` and its fire count is 0, while what the
-          lineage holds stays. A lease not yet bound to this claim registers only
-          once its ``lifecycle.bound`` lands."""
+          time atoms count from ``now``, the clock of this drain in this claim (§3,
+          "An accepted re-send": a ``control.subscribe`` carries no clock of the
+          asker's), and its fire count is 0, while what the lineage holds stays. A
+          lease not yet bound to this claim registers only once its
+          ``lifecycle.bound`` lands."""
         try:
             schedule = parse_schedule(e.body, pure_demand=e.name is None)
         except MalformedSchedule as exc:
@@ -767,6 +790,7 @@ class Worker:
         self._iteration = _Iteration(pending=[], discarded=set())
         self._drained = _Drain(drained_to=0, watermark=0, reports_read=0)
         self._requests = _Requests(self._sources, claim=0)
+        self._starved: _ExitNode | None = None  # the exit a STARVED worker retries
         self._claim_run(resume_from)
 
     # ----- the claim (§4, "The claim") -------------------------------------------
@@ -958,7 +982,8 @@ class Worker:
         live worker. A lost, released or stopped worker's do nothing, since a
         released one cannot know when its report landed, and a stopped one is
         fenced the same way (§4, "A worker after its own exit is fenced the same
-        way"); after ``discard()``, until the exit, they raise ``RuntimeError``:
+        way"), and so is one whose exit starved (§4, "An exit that starves");
+        after ``discard()``, until the exit, they raise ``RuntimeError``:
         the worker discarded the iteration itself, so a later write is its own
         bug, and could never be committed (§4)."""
         if self._phase is _Phase.DISCARDED:
@@ -1287,15 +1312,17 @@ class Worker:
         """Write the exit node, the claim's last, in order (§4, "The exit"):
 
         1. read W and drain up to it: the death reports naming the claim, stops and
-           withdrawals. No subscription is registered: one that arrives after the
-           last commit stays live for the next claim;
+           withdrawals. No subscription is registered, and every named
+           ``control.subscribe`` is passed over, a malformed one included: one that
+           arrives after the last commit stays live for the next claim, which
+           registers or refuses it;
         2. unless the exit discards its iteration (an error, or after
            ``discard()``), evaluate the registered subscriptions once, at the exit
            node, which adds no iteration;
         3. write their samples once. A failure while writing them makes the exit an
            error exit, torn, with the failure as its ``error``; the samples already
-           written stay outside every lineage, and the failure is raised once the
-           exit has landed;
+           written stay outside every lineage, and the failure propagates once the
+           exit has landed, as a save's does (§4, "The exit", step 3; §6);
         4. read W again, drain as in step 1, and compare-and-append ``stopped`` at
            the drain's tail, with ``parent`` the position, ``values`` the pending
            values then the samples, or null when the exit discards its iteration,
@@ -1313,7 +1340,13 @@ class Worker:
         After ``CAS_ATTEMPTS`` lost CASes in a row, step 4 raises
         ``WorkerStarvedError``, out of ``stopped()`` and so out of ``__exit__``: no
         exit was written, the claim is still held, and a death report is what ends
-        it. The worker keeps its phase, so a later call may try again.
+        it (§4, "An exit that starves"). Every call but ``stopped()`` is then
+        fenced, writing nothing and returning as a stopped worker's does, since the
+        exit's drains passed over requests, a subscribe among them, that no
+        watermark of the claim may claim. A retried ``stopped()`` repeats step 4 of
+        the exit that starved, as a lost CAS does: it does not evaluate again, its
+        samples being on the log already, and it writes that exit's verdict and
+        ``values``, whatever its own arguments say.
 
         A save that raises propagates (§6, "A save that raises"). The exit has
         landed and stands with its own verdict, and the worker is stopped, so
@@ -1325,16 +1358,21 @@ class Worker:
         self._exit(completed=completed, error=error, mode=_Mode.EXIT)
 
     def retire(self) -> bool:
-        """``serve()``'s careful death (§4, "The exit"): the exit, preempted, with
-        every control verb drained at both of its reads, subscriptions included.
-        False, writing no exit, if a subscription is live after either read: one
-        arrived, and the worker serves it. Otherwise True, its exit landed: it
-        fires nothing, since nothing is live when it is written, and it is
-        extendable, so a woken successor that holds no state continues from it.
+        """``serve()``'s careful death (§4, "The exit", ``retire()``): the exit,
+        preempted, with every control verb drained at both of its reads,
+        subscriptions included. False, writing no exit, if any subscription is live
+        for the claim (``pinned``) after either read, whenever it arrived: the
+        worker serves it. Otherwise True, its exit landed: it fires nothing, since
+        nothing is live when it is written, and it is extendable, so a woken
+        successor that holds no state continues from it.
 
         True, writing nothing, for a worker that commits nothing more: a lost, a
-        released or a stopped one; and after ``discard()``, True once its torn exit
-        has landed."""
+        released or a stopped one, or one whose exit starved, which only
+        ``stopped()`` retries (§4, "An exit that starves"); and after
+        ``discard()``, True once its torn exit has landed, as ``stopped()`` would
+        write it (§4, ``retire()``)."""
+        if self._phase is _Phase.STARVED:
+            return True
         if self._phase is not _Phase.LIVE:
             self.stopped(completed=False, error=None)
             return True
@@ -1344,7 +1382,12 @@ class Worker:
         """``stopped()``'s steps, its drains in ``mode``: ``EXIT``'s, or for
         ``retire()`` ``ITERATION``'s, whose registrations make it return False,
         having written no exit, when a subscription is live after a drain. True
-        once the exit has landed, or when there is nothing to write."""
+        once the exit has landed, or when there is nothing to write. A starved
+        exit's retry repeats step 4 only, in ``EXIT`` mode, since only
+        ``stopped()`` retries it."""
+        if self._phase is _Phase.STARVED:
+            assert self._starved is not None  # set where the phase is
+            return self._after(self._exit_cas(self._starved, mode=_Mode.EXIT))
         if self._phase not in (_Phase.LIVE, _Phase.DISCARDED):
             return True
         retiring = mode is _Mode.ITERATION
@@ -1364,15 +1407,20 @@ class Worker:
                 failure = exc
                 completed, error, discards = False, _described(exc), True
                 evaluation, samples = _NOTHING, []
-        landed = self._exit_cas(
+        node = _ExitNode(
             completed=completed,
             error=error,
             values=None if discards else [*self._pending(), *samples],
             evaluation=evaluation,
-            mode=mode,
         )
+        landed = self._exit_cas(node, mode=mode)
         if failure is not None:
-            raise failure
+            raise failure  # once the exit has landed (§4, "The exit", step 3)
+        return self._after(landed)
+
+    def _after(self, landed: _Landed | _Unwritten) -> bool:
+        """Step 5, once step 4 has returned: the save policy after an extendable
+        exit (§6); whether the worker is done, False only when it serves."""
         match landed:
             case _Unwritten.SERVING:
                 return False
@@ -1389,41 +1437,36 @@ class Worker:
     def _pending(self) -> list[int]:
         return [p.seq for p in self._iteration.pending]
 
-    def _exit_cas(
-        self,
-        *,
-        completed: bool,
-        error: str | None,
-        values: list[int] | None,
-        evaluation: _Evaluation,
-        mode: _Mode,
-    ) -> _Landed | _Unwritten:
-        """Step 4: drain in ``mode``, then compare-and-append the exit at the
+    def _exit_cas(self, node: _ExitNode, *, mode: _Mode) -> _Landed | _Unwritten:
+        """Step 4: drain in ``mode``, then compare-and-append ``node`` at the
         drain's tail, until it lands; the exit that landed, or why none was
-        written."""
+        written. After ``CAS_ATTEMPTS`` lost CASes it holds ``node`` and fences the
+        worker (``_Phase.STARVED``) before it raises ``WorkerStarvedError``."""
         for _ in range(CAS_ATTEMPTS):
             now = self._now()
             tail = self._drain(mode, now)
             if tail is None:
+                self._starved = None
                 return _Unwritten.RELEASED
             if mode is _Mode.ITERATION and self.pinned:
                 return _Unwritten.SERVING
             body = Stopped(
-                completed=completed,
-                error=error,
+                completed=node.completed,
+                error=node.error,
                 claim_seq=self._claim.seq,
                 honored=self._requests.honored(),
                 parent=self._position.lineage.node,
-                values=values,
-                fired=evaluation.fired,
-                expired=evaluation.expired,
+                values=node.values,
+                fired=node.evaluation.fired,
+                expired=node.evaluation.expired,
                 t=now,
             )
             seq = self._ch.send(asdict(body), topic=Stopped.TOPIC, expected_seq=tail)
             if seq is None:
                 continue  # a record landed unread: drain it, and try again
-            self._phase = _Phase.STOPPED
+            self._phase, self._starved = _Phase.STOPPED, None
             return _Landed(seq=seq, extendable=body.extendable)
+        self._phase, self._starved = _Phase.STARVED, node
         raise WorkerStarvedError("exit", self._claim.seq, CAS_ATTEMPTS)
 
     def __enter__(self) -> Self:
@@ -1433,8 +1476,9 @@ class Worker:
         """Write the exit unless the worker already stopped (§4): errored, and so
         torn, on an exception, whose message is its ``error`` (its type's name when
         the message is empty); otherwise preempted, ``stopped(completed=False,
-        error=None)``. A lost or released worker writes nothing. The exception, if
-        any, propagates."""
+        error=None)``. A lost or released worker writes nothing, and one whose exit
+        starved retries that exit (``stopped()``). The exception, if any,
+        propagates."""
         if isinstance(exc, BaseException):
             self.stopped(completed=False, error=_described(exc))
         else:

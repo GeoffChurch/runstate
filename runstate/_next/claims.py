@@ -53,10 +53,11 @@ def spent_by(e: Envelope) -> Iterable[str]:
     Request ids are one namespace: an id spent here is dead on arrival on every
     control topic, whatever kind of request first bore it.
 
-    A node's ``expired`` is not here, since its two readers take it differently
-    (§4, "The claim"): the folds (``live_demand``) take it from any node, as spent
-    by name, while the Worker takes it per lineage, from the rebuild, so that it
-    re-arms a durable subscription another lineage expired. Each site reads it."""
+    A node's ``expired`` is not here, since it spends by class, not by name (§2,
+    "Requests"; §5, "The answer fold"): a lease's from any node, its claim's, and
+    a durable subscription's only on the head's lineage, so a durable subscription
+    another lineage expired is live again. The folds (``live_demand``) and the
+    Worker (its rebuild, and each node it lands) each read it so."""
     if e.topic == Topic.LIFECYCLE_STOPPED:
         exit_ = readable(Stopped, e)
         return () if exit_ is None else [r for r in exit_.honored if r]
