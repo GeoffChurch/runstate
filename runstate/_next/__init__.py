@@ -106,7 +106,6 @@ from .observables import (
     undischarged_stops,
     worker_completed,
 )
-from .sweep import Variant, sweep
 from .vocabulary.coordinate import Commits, NodeRef, Target
 from .vocabulary.payloads import (
     Bound,
@@ -231,7 +230,7 @@ __all__ = [
     "LiveDemand",
     "PendingStops",
     "handle_pid",
-    # the memoizer and the sweep
+    # the memoizer
     "history",
     "ensure",
     "Reached",
@@ -240,8 +239,6 @@ __all__ = [
     "LiveHandle",
     "launch_producer",
     "foreign_episode",
-    "sweep",
-    "Variant",
     # the errors public calls raise
     "RunNotFound",
     "LogFormatError",

@@ -81,3 +81,12 @@ the summary — enough to recognize the idea when it comes back wearing a new ha
   *disagrees with append order* is worse than an honestly partial one, and the real defect it found is
   fixed by **correlation, not segmentation** (`../backlog/episode-aim.md`).
 
+- [sweep](sweep.md) — **DELETED 2026-10-30** (owner ruling; census of every repo under `~/src`). `sweep` and
+  `Variant`: the batch persona's "launch each variant, then `watcher.wait`" loop as library surface. Died
+  because **a persona's entry point is not a primitive**: it is about ten lines over the public `Launcher` and
+  `Watcher` that no protocol rule recognizes, and each of its parameters is workload policy — what `resume`
+  skips (completed only, or preempted too?), stop-on-failure, sequential against parallel — so every library
+  rule change had to be re-threaded through it. No consumer called it, and `Variant`'s one user built one only
+  because `launch_producer` took it; `launch_producer(launcher, run_id, target)` now takes the run directly. The
+  loop survives as a recipe in the file. Revival trigger: a consumer whose sweep the protocol itself must
+  recognize. This reverses `window-closed.md`'s "do NOT re-flag as sugar" for `sweep`.

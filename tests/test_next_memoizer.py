@@ -39,7 +39,6 @@ from runstate._next.observables import (
     series,
     streams,
 )
-from runstate._next.sweep import Variant
 from runstate._next.vocabulary.coordinate import Commits, Target
 from runstate._next.vocabulary.payloads import Outcome, Topic
 from runstate._next.vocabulary.schedule import MalformedSchedule
@@ -711,7 +710,7 @@ def loss_worker(ch, *, until):
 
 
 def producer(launcher, run_id="exp", fn=loss_worker, **kwargs):
-    return launch_producer(launcher, Variant(run_id, thread(fn, **kwargs)))
+    return launch_producer(launcher, run_id, thread(fn, **kwargs))
 
 
 def losses(ch):
@@ -719,8 +718,8 @@ def losses(ch):
 
 
 def test_launch_producer_drives_its_target_with_until():
-    """``launch_producer``'s ``extend(target)`` launches ``variant.target.driven(
-    target)``: the worker receives the drive's ``Target`` as ``until`` (plan, open
+    """``launch_producer(launcher, run_id, target)``'s ``extend(t)`` launches
+    ``target.driven(t)``: the worker receives the drive's ``Target`` as ``until`` (plan, open
     question 18), and the handle carries the launch its claim names."""
     launcher = ThreadLauncher()
     seen = {}

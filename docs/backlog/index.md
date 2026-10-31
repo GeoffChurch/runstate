@@ -481,8 +481,6 @@ reasoning, listed here so they're discoverable as work (cross-ref, not moved):
 - **Protocol versioning** — v0.2 versions each convention schema on its own timeline
   (version-suffixed `$id`). Still open: v0.1↔v0.2 coexistence semantics on one
   channel, and how a reader negotiates the convention version.
-- **`sweep` under placement** — `sweep`'s one-root assumption needs a per-rid
-  wrapper under content-addressed placement (`../specs/run-id-recipe.md`).
 - **[memoizer-index-algebra](memoizer-index-algebra.md)** — a derived, rebuildable,
   never-authoritative membership index over the value log; **dormant** until a
   consumer needs cross-run enumeration faster than a scan (the named trigger;

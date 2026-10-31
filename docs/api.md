@@ -750,7 +750,8 @@ The names the 0.4.0 live layer adds to the public surface, staged as
 [`specs/commits-and-lineage.md`](specs/commits-and-lineage.md); the section each
 entry cites is where the name is defined. The entries above describe 0.3.0 and are
 rewritten for 0.4.0 in the plan's Task 23; `progress` and `value_series` are
-removed (§5).
+removed (§5), and `sweep` and `Variant` are deleted
+([`dead_ends/sweep.md`](dead_ends/sweep.md)).
 
 ### The checkpoint recipe (§6)
 
@@ -1208,6 +1209,22 @@ A readable `supervisor.died` naming the claim, in `RunResult.reports`.
 
 `launch_producer` and `foreign_episode` return these Protocols; their concrete
 classes are private.
+
+#### `launch_producer`
+
+```python
+D = TypeVar("D", bound=Drivable)
+launch_producer(launcher: Launcher[D], run_id: str, target: D) -> Producer
+```
+
+The default producer: `launcher` relaunching `target` into `run_id`, each
+argument required. Each `extend(until)` launches `target.driven(until)` through
+`relaunch_if_needed`, so the worker receives the drive's `Target` as `until`,
+which it passes to `steps(until)`; while a claim is held, it hands back
+`foreign_episode`. For a launcher whose target is `Drivable`, a `ThreadLauncher`
+and a `ThreadTarget`. A `Command` is not `Drivable`, so a subprocess, ray or
+service producer is the consumer's own object of the same shape (the seam).
+`target_key` and `Variant` are gone.
 
 #### `Producer`
 

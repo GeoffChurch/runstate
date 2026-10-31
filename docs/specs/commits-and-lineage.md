@@ -942,8 +942,8 @@ It takes no `control.withdraw`, which needs no worker. `_verdict_record`'s singl
 
 **A Watcher that holds a launch's handle reads that launch's verdict** (amended 2026-10-30, while
 implementing): the claims naming the handle's launch id, and while none has landed, the run is `Running`,
-subject to the probe and staleness tiers. Otherwise a relaunch of a run that already has an exit, `sweep`'s
-resume over an extendable head included, would read the previous claim's verdict before its own worker claims.
+subject to the probe and staleness tiers. Otherwise a relaunch of a run that already has an exit, an extendable
+one included, would read the previous claim's verdict before its own worker claims.
 A Watcher observing a run it holds no handle for reads the latest claim's, as `peek_terminal` does.
 
 ## 6. The checkpoint recipe
@@ -1835,9 +1835,11 @@ These extend [`reference-by-name.md`](reference-by-name.md) §7. File and line r
 - **A stranded claim is released by a death report,** through `report_death`, never by a forged `stopped`.
 - **A launch takes its launcher's target record** (`Launcher[T]`; plan, open question 18):
   `launch(run_id, fn, args=, kwargs=)` becomes `launch(run_id, ThreadTarget(fn, args=, kwargs=))`, and
-  `launch(run_id, cmd, env=)` becomes `launch(run_id, Command(argv, env=))`, each field required. A `Variant`'s
-  `launch_kwargs` move into its `target`. `launch_producer`'s `target_key` is gone: the drive's `Target` arrives
-  as `until`, which the worker passes to `steps(until)`.
+  `launch(run_id, cmd, env=)` becomes `launch(run_id, Command(argv, env=))`, each field required.
+  `launch_producer(launcher, variant)` becomes `launch_producer(launcher, run_id, target)`, each argument
+  required: `Variant` is gone, with `sweep` ([`../dead_ends/sweep.md`](../dead_ends/sweep.md)), and its
+  `launch_kwargs` move into the target record. `launch_producer`'s `target_key` is gone: the drive's `Target`
+  arrives as `until`, which the worker passes to `steps(until)`.
 - **A same-host crash that nobody reports reads as held,** where 0.3.0's probe released it at once. A
   claimant, a launcher's reap or a reclaim tool reports it.
 - **Registers stay raw sends,** outside every lineage, read by
@@ -1918,10 +1920,10 @@ These extend [`reference-by-name.md`](reference-by-name.md) §7. File and line r
   `save=NoSave()`, and re-emits; its tests at tests/test_workers.py:40–75 pin resume.
 - **Declare `sources=[]`.**
 - **Its producer drives by `until`:** translation/runner.py:32's `launch_producer(launcher, variant,
-  target_key="up_to")` becomes `launch_producer(launcher, variant)`, its `Variant` (runner.py:31) carrying
-  `ThreadTarget(worker, args=(), kwargs=cfg)`. Each worker takes `until` where it took `up_to` (workers.py:16,
-  :37, :52, :71, :99), reading `until.n` where it slices by the integer, and runner.py:29's reservation of
-  `up_to` becomes `ThreadTarget.driven`'s own refusal.
+  target_key="up_to")` becomes `launch_producer(launcher, rid, ThreadTarget(worker, args=(), kwargs=cfg))`,
+  built directly: runner.py:31's `Variant` goes, and with it the `Variant` import at runner.py:11. Each worker
+  takes `until` where it took `up_to` (workers.py:16, :37, :52, :71, :99), reading `until.n` where it slices by
+  the integer, and runner.py:29's reservation of `up_to` becomes `ThreadTarget.driven`'s own refusal.
 
 **runstate-tui:**
 - use `Commits()` for its frontier, and `last_element` for its live value;
@@ -2173,7 +2175,7 @@ On every backend:
   `worker_completed`; `_DATED_TOPICS`; `current_heartbeat`; `is_step` renamed; `progress` and `value_series`
   out; the reads and folds in; `Outcome` gains `LOST`; `Tier` is new, and `RunResult` takes `outcomes`,
   `reports`, `node`, `claim_seq`, `malformed` and `tier`.
-- **`sweep.py`:** `stop_on_failure` tests the set.
+- **`sweep.py`** is deleted ([`../dead_ends/sweep.md`](../dead_ends/sweep.md)).
 - **`watcher.py`:** `_RunState`'s held head and count; `broadcast`; `_refuse_a_void_lease`; `await_consumed`;
   the inference tiers' `Tier` members.
 - **`memoizer.py`:** the error classes, and `_FAILURES` as a test on the set; `ensure`'s `Reached` and

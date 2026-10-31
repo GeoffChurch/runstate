@@ -75,7 +75,7 @@ class Outcome(StrEnum):
     @classmethod
     def failures(cls) -> frozenset[Outcome]:
         """The outcomes in which the worker died, rather than finished or was
-        preempted cleanly: what ``sweep`` and ``ensure`` stop on."""
+        preempted cleanly: what ``ensure`` stops on."""
         return frozenset({cls.ERRORED, cls.KILLED, cls.LOST, cls.PRESUMED_DEAD})
 
     @classmethod

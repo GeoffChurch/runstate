@@ -31,7 +31,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Generic, NamedTuple, Protocol, TypeVar
+from typing import Generic, NamedTuple, Protocol, TypeVar
 
 from ..channel import Channel, Envelope
 from .claims import backward, endings, named_claim
@@ -60,9 +60,6 @@ from .vocabulary.schedule import (
     parse_schedule,
 )
 from .walk import Element, coordinates, element, members, verdict_parse, walk
-
-if TYPE_CHECKING:
-    from .sweep import Variant
 
 # ----- what ensure returns, and its errors (§5) -------------------------------------
 
@@ -209,16 +206,16 @@ D = TypeVar("D", bound=Drivable)
 
 
 class _LaunchProducer(Generic[D]):
-    """The default producer: a ``Launcher[D]`` relaunching ``variant``'s target,
-    driven to each ``extend``'s target. A producer over a ``Command``, a ray actor or
-    a service is the consumer's own object of the same shape (the seam): a
-    ``Command`` is not ``Drivable``, since a subprocess has no defined way to
-    receive a ``Target`` (plan, open question 18)."""
+    """The default producer: a ``Launcher[D]`` relaunching ``target`` into
+    ``run_id``, driven to each ``extend``'s target. A producer over a ``Command``, a
+    ray actor or a service is the consumer's own object of the same shape (the
+    seam): a ``Command`` is not ``Drivable``, since a subprocess has no defined way
+    to receive a ``Target`` (plan, open question 18)."""
 
-    def __init__(self, launcher: Launcher[D], variant: Variant[D]) -> None:
+    def __init__(self, launcher: Launcher[D], run_id: str, target: D) -> None:
         self._launcher = launcher
-        self._variant = variant
-        self.run_id = variant.run_id
+        self._target = target
+        self.run_id = run_id
         self._channel: Channel | None = None  # opened on first access, then held
 
     @property
@@ -234,23 +231,26 @@ class _LaunchProducer(Generic[D]):
         return self._channel
 
     def extend(self, target: Target) -> LiveHandle:
-        """Launch ``variant.target.driven(target)`` unless the run's newest claim is
-        held (``relaunch_if_needed``, which reports a dead one first), so the worker
-        receives the drive's ``Target`` as ``until``, which it passes to
+        """Launch the producer's ``target.driven(target)`` unless the run's newest
+        claim is held (``relaunch_if_needed``, which reports a dead one first), so the
+        worker receives the drive's ``Target`` as ``until``, which it passes to
         ``steps(until)``, and exits preempted there, an extendable exit a larger
         target continues from. While a claim is held, hand back its
         ``foreign_episode``."""
-        driven = self._variant.target.driven(target)
+        driven = self._target.driven(target)
         handle = relaunch_if_needed(self._launcher, self.run_id, driven)
         return handle if handle is not None else foreign_episode(self.channel)
 
 
-def launch_producer(launcher: Launcher[D], variant: Variant[D]) -> Producer:
-    """A producer backed by ``launcher`` relaunching ``variant`` (§5, "The producer
-    seam"), for a launcher whose target is ``Drivable``: a ``ThreadLauncher`` and a
-    ``ThreadTarget``, whose ``driven(until)`` passes the target as the worker's
-    ``until`` keyword."""
-    return _LaunchProducer(launcher, variant)
+def launch_producer(launcher: Launcher[D], run_id: str, target: D) -> Producer:
+    """A producer backed by ``launcher`` relaunching ``target`` into ``run_id`` (§5,
+    "The producer seam"), for a launcher whose target is ``Drivable``: a
+    ``ThreadLauncher`` and a ``ThreadTarget``, whose ``driven(until)`` passes the
+    drive's target as the worker's ``until`` keyword. Each extend launches
+    ``target.driven(until)``; ``target`` carries everything that changes the
+    worker's result, so there are no launch keywords beside it (plan, open question
+    18)."""
+    return _LaunchProducer(launcher, run_id, target)
 
 
 # ----- history (§5) ------------------------------------------------------------------

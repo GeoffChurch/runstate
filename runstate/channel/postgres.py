@@ -47,7 +47,7 @@ def ensure_schema(dsn: str) -> None:
     ``pg_advisory_xact_lock``: two orchestrators cold-starting against a fresh DB
     serialize on the one key instead of racing. This is why DDL is here, not in
     ``__init__`` -- the channel constructor only probes for the table. Idempotent;
-    the orchestration helpers (sweep, the launchers) call it at startup so
+    the orchestration helpers (the launchers) call it at startup so
     cold-start-many-workers is self-sufficient."""
     schema = FORMATS[LOG_FORMAT].pg_schema()
     with psycopg.connect(dsn) as conn, conn.transaction():

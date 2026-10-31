@@ -1,4 +1,4 @@
-"""The Watcher, ``await_consumed`` and ``sweep``, staged (docs/specs/commits-and-lineage.md
+"""The Watcher and ``await_consumed``, staged (docs/specs/commits-and-lineage.md
 §5, "The verdict", "Bounded reads", "``await_consumed``", "Sites that change"; §3, "A
 read never writes", "A session probe"; observer-clock.md §5; §10, "``await_consumed``",
 "Liveness", "Bounded reads", "Death reports"; plan Task 15).
@@ -10,7 +10,6 @@ test holds or closes, and an observer, as two hosts would.
 """
 
 import sys
-import threading
 import time
 import uuid
 from dataclasses import asdict
@@ -32,7 +31,6 @@ from runstate._next.observables import (
     prefix_len,
     undischarged_stops,
 )
-from runstate._next.sweep import Variant, sweep
 from runstate._next.vocabulary.coordinate import Commits, Target
 from runstate._next.vocabulary.payloads import (
     Heartbeat,
@@ -45,11 +43,10 @@ from runstate._next.vocabulary.payloads import (
 from runstate._next.vocabulary.schedule import MalformedSchedule
 from runstate._next.watcher import Running, Watcher, await_consumed
 from runstate._next.worker import Worker
-from runstate.channel import RunNotFound
 from runstate.channel.base import Session
 from runstate.channel.memory import MemoryChannel
 from runstate.vocabulary.handle import local_handle
-from tests.next_helpers import Wrapping, bounded_sleep, thread
+from tests.next_helpers import Wrapping, thread
 from tests.test_next_reads import (
     Rec,
     append,
@@ -1177,171 +1174,3 @@ def test_await_consumed_by_backend(open_run):
     s = at(ch, stop("halt"))
     at(ch, watermark(c, s))
     assert await_consumed(open_run(), s, timeout=1.0) is None
-
-
-# ----- sweep ----------------------------------------------------------------------
-
-
-def fast(*, sleep=None):
-    """A Watcher polling fast, whose waits fail past 30 s in all."""
-    return Watcher(
-        heartbeat_timeout=None, poll_interval=0.005, sleep=sleep or bounded_sleep()
-    )
-
-
-def boom(ch):
-    with Worker(ch, resume_from=None, sources=[], save=NoSave()) as w:
-        for _ in w.steps(Target(Commits(), 1)):
-            raise RuntimeError("boom")
-
-
-def sweep_of(launcher, variants, **kw):
-    kw = {"watcher": fast(), "resume": True, "stop_on_failure": False, **kw}
-    return sweep(variants, launcher, **kw)
-
-
-def test_sweep_runs_all_variants_and_returns_results(tmp_path):
-    launcher = ThreadLauncher(root=tmp_path)
-    results = sweep_of(
-        launcher, [Variant(f"run-{i}", thread(done_worker)) for i in range(3)]
-    )
-    assert [r.run_id for r in results] == ["run-0", "run-1", "run-2"]
-    assert all(r.outcomes == {Outcome.COMPLETED} for r in results)
-
-
-def test_sweep_streams_events_via_on_event(tmp_path):
-    seen = []
-    sweep_of(
-        ThreadLauncher(root=tmp_path),
-        [Variant("r", thread(done_worker))],
-        on_event=lambda rid, e: seen.append((rid, e.topic)),
-    )
-    assert ("r", "lifecycle.stopped") in seen
-
-
-def test_sweep_resume_skips_a_run_with_a_verdict(tmp_path):
-    launcher = ThreadLauncher(root=tmp_path, backend="sqlite")
-    calls = []
-
-    def counted(ch):
-        calls.append(1)
-        done_worker(ch)
-
-    variants = [Variant("r", thread(counted))]
-    sweep_of(launcher, variants)
-    results = sweep_of(launcher, variants)
-    assert calls == [1]
-    assert results[0].outcomes == {Outcome.COMPLETED} and results[0].run_id == "r"
-    sweep_of(launcher, variants, resume=False)
-    assert calls == [1, 1]
-
-
-def test_sweep_stop_on_failure_tests_the_set(tmp_path):
-    """``stop_on_failure`` halts once a verdict has any outcome in
-    ``Outcome.failures()``, the set tested whole (§5): a run whose death reports say
-    ``{killed, preempted}`` halts, and so does an errored exit; a clean preempted exit
-    does not. A variant after the halt is never launched."""
-    launcher = ThreadLauncher(root=tmp_path, backend="sqlite")
-    # b's log already holds two death reports: resumed, its verdict is their set
-    append(
-        launcher.create_channel("b"),
-        [(1, claim()), (2, died(1, "preempted")), (3, died(1, "killed"))],
-    )
-
-    def preempted(ch):
-        with Worker(ch, resume_from=None, sources=[], save=NoSave()) as w:
-            w.commit()
-
-    results = sweep_of(
-        launcher,
-        [
-            Variant("a", thread(preempted)),
-            Variant("b", thread(done_worker)),
-            Variant("c", thread(done_worker)),
-        ],
-        stop_on_failure=True,
-    )
-    assert [r.run_id for r in results] == ["a", "b"]
-    assert results[0].outcomes == {Outcome.PREEMPTED}
-    assert results[1].outcomes == {Outcome.KILLED, Outcome.PREEMPTED}
-    with pytest.raises(RunNotFound):
-        launcher.attach_channel("c")
-    results = sweep_of(
-        launcher,
-        [Variant("d", thread(boom)), Variant("e", thread(done_worker))],
-        stop_on_failure=True,
-    )
-    assert [r.outcomes for r in results] == [{Outcome.ERRORED}]
-
-
-def test_sweep_does_not_halt_on_a_clean_commanded_stop(tmp_path):
-    launcher = ThreadLauncher(root=tmp_path)
-
-    def commanded(ch):
-        ch.send({}, topic=Topic.CONTROL_STOP, request_id="x")
-        with Worker(ch, resume_from=None, sources=[], save=NoSave()) as w:
-            for _ in w.steps(Target(Commits(), 5)):
-                pass
-
-    results = sweep_of(
-        launcher,
-        [Variant("a", thread(commanded)), Variant("b", thread(done_worker))],
-        stop_on_failure=True,
-    )
-    assert results[0].outcomes == {Outcome.PREEMPTED}
-    assert [r.run_id for r in results] == ["a", "b"]
-
-
-def test_sweep_does_not_hang_on_a_worker_stuck_before_it_claims():
-    """A worker that hangs before it claims is presumed dead once the Watcher's
-    ``heartbeat_timeout`` passes (the startup-death catch), so the sweep returns."""
-    gate = threading.Event()
-    clock = Clock(0.0)
-
-    def hung(ch):
-        gate.wait(30)
-
-    def sleep(seconds):  # the Watcher's clock, advanced by its own waits
-        clock.t += seconds
-        if clock.t > 30.0:
-            raise AssertionError("sweep hung on a worker stuck before it claims")
-
-    w = Watcher(heartbeat_timeout=0.2, now=clock, sleep=sleep, poll_interval=0.01)
-    try:
-        (r,) = sweep_of(ThreadLauncher(), [Variant("h", thread(hung))], watcher=w)
-    finally:
-        gate.set()
-    assert (r.outcomes, r.tier, r.claim_seq) == (
-        {Outcome.PRESUMED_DEAD},
-        Tier.HEARTBEAT_STALE,
-        None,
-    )
-
-
-def test_a_relaunching_sweep_waits_for_the_new_launchs_own_verdict(tmp_path):
-    """A sweep that relaunches a run whose claim exited extendable (``resume=False``:
-    ``resume`` skips a run with any verdict) watches the new launch's handle, so it
-    returns that launch's verdict, never the previous claim's."""
-    launcher = ThreadLauncher(root=tmp_path, backend="sqlite")
-    polled = threading.Event()  # the Watcher has read the new launch as running
-
-    def preempted(ch):
-        with Worker(ch, resume_from=None, sources=[], save=NoSave()) as w:
-            w.commit()
-
-    def late(ch):
-        assert polled.wait(30), "the Watcher never waited on the new launch"
-        done_worker(ch)
-
-    bounded = bounded_sleep()
-
-    def sleep(seconds):
-        polled.set()
-        bounded(seconds)
-
-    (first,) = sweep_of(launcher, [Variant("r", thread(preempted))])
-    assert first.outcomes == {Outcome.PREEMPTED}
-    (r,) = sweep_of(
-        launcher, [Variant("r", thread(late))], resume=False, watcher=fast(sleep=sleep)
-    )
-    assert r.outcomes == {Outcome.COMPLETED} and r.claim_seq > first.claim_seq

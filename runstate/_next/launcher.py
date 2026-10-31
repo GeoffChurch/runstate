@@ -10,7 +10,7 @@ A LAUNCHER IS TYPED BY ITS TARGET (plan, open question 18). ``Launcher[T]`` is a
 Strategy resolved where the caller reads its configuration: ``ThreadLauncher``
 launches a ``ThreadTarget`` and ``LocalLauncher`` a ``Command``, each a frozen
 record of everything that changes the worker's result. The deciders, and the
-producer and the sweep built on them, take a ``Launcher[T]`` and its ``T``, so a
+producer built on them, take a ``Launcher[T]`` and its ``T``, so a
 target the launcher does not run is a type error. A target a drive can aim is
 ``Drivable``.
 
@@ -354,8 +354,8 @@ class Launcher(Protocol[T_contra]):
     A Strategy typed by its target record: ``ThreadLauncher`` is a
     ``Launcher[ThreadTarget]`` and ``LocalLauncher`` a ``Launcher[Command]``. The
     caller resolves the launcher where it reads its configuration, builds the
-    target record that launcher takes, and passes both down; a decider, a producer
-    or a sweep that takes ``Launcher[T]`` and a ``T`` cannot be handed a target its
+    target record that launcher takes, and passes both down; a decider or a producer
+    that takes ``Launcher[T]`` and a ``T`` cannot be handed a target its
     launcher does not run (``_proof`` below). Contravariant: a launcher of a wider
     target type launches any narrower one."""
 

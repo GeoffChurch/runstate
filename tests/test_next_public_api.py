@@ -80,7 +80,7 @@ EXPECTED = {
     "LiveDemand",
     "PendingStops",
     "handle_pid",
-    # the memoizer and the sweep
+    # the memoizer
     "history",
     "ensure",
     "Reached",
@@ -89,8 +89,6 @@ EXPECTED = {
     "LiveHandle",
     "launch_producer",
     "foreign_episode",
-    "sweep",
-    "Variant",
     # the errors public calls raise
     "RunNotFound",
     "LogFormatError",
