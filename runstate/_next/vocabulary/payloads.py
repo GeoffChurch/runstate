@@ -252,6 +252,12 @@ class Node(Protocol):
     @property
     def closed(self) -> bool: ...
 
+    @property
+    def t(self) -> float:
+        """Its writer's clock when it landed, which a replay's time atoms read
+        (§5, ``history``)."""
+        ...
+
 
 @dataclass(frozen=True)
 class Commit:

@@ -222,9 +222,7 @@ def report_if_dead(ch: Channel) -> int | None:
         return None
 
 
-def _launch_claim(
-    ch: Channel, launch_id: str, *, after: int, w: int
-) -> Envelope | None:
+def launch_claim(ch: Channel, launch_id: str, *, after: int, w: int) -> Envelope | None:
     """The newest claim naming the launch ``launch_id``, above ``after`` and at or
     below ``w``. ``after`` is at least the log's last seq before the launch began,
     since its claimant cannot claim before it is spawned. The ``request_ids`` filter
@@ -469,7 +467,7 @@ class ThreadLauncher:
             end = Terminated(reason=Reap.EXITED, exit_code=exit_code, signal=None, t=t)
             channel.send(asdict(end), topic=Terminated.TOPIC, request_id=launch_id)
             w = channel.last_seq()
-            claim = _launch_claim(channel, launch_id, after=floor, w=w)
+            claim = launch_claim(channel, launch_id, after=floor, w=w)
             if claim is not None:
                 died = Died(
                     claim_seq=claim.seq, outcome=outcome, evidence=evidence, t=t
@@ -648,7 +646,7 @@ class _LocalHandle:
         above what the last read, so it stays the newest while each read stays
         bounded by the records since."""
         w = ch.last_seq()
-        newer = _launch_claim(ch, self.launch_id, after=self._claim_read, w=w)
+        newer = launch_claim(ch, self.launch_id, after=self._claim_read, w=w)
         if newer is not None:
             self._claim = newer
         self._claim_read = max(self._claim_read, w)
