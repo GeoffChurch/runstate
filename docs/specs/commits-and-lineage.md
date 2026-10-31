@@ -805,7 +805,10 @@ envelope (topic `value`, and the name), which keeps tolerant readers' counts ali
       `report_if_dead`;
     - `RecordlessExitError` when a drive's process has died with no claim naming its launch, at the fixed
       point only (a re-drive reproduces it) and never while another claim is unended, as today's
-      claim-aware, own-spawn-scoped guard does.
+      claim-aware, own-spawn-scoped guard does. A drive whose handle has ended, with no claim naming it and
+      none held, counts toward that fixed point whether or not it names a launch, so a foreign handle that
+      drove nothing cannot make `ensure` re-drive without bound; the error's `launch_id` is then `None`
+      (amended 2026-10-30, while implementing).
 
     The errors carry the target and the count, where they carried `progress` and `until`.
   - **The producer seam:** a `Producer` has `.channel`, `.run_id` and `.extend(target)`, which returns a
@@ -863,7 +866,11 @@ null-worker startup crash does.
   - `reports: tuple[DeathReport, ...]` is new: the readable death reports naming the claim, in seq order,
     each `DeathReport(seq, outcome, evidence, t)`, and empty under every other viewpoint;
   - `final_step` becomes `node`: the exit node's seq under a self-report, `None` otherwise;
-  - `claim_seq` is new: the claim the verdict is about, `None` for a run nothing claimed;
+  - `claim_seq` is new: the claim the verdict is about, `None` for a run nothing claimed. By tier (amended
+    2026-10-30, while implementing): required under `exit`, `died` and `session_ended`, which read or probe a
+    claim's window, stamp or session; `None` under `terminated`; and either under `heartbeat_stale` and
+    `probed_dead`, since a launch can stale or its handle probe dead before anything claims, which is the
+    never-beaconed startup death observer-clock §5 keeps;
   - `malformed: tuple[int, ...]` is new: the seqs of the unreadable records the verdict skipped, so they are
     reported, not raised;
   - `reason: str` becomes `tier: Tier`, a closed enum naming the viewpoint the verdict rests on (review §12,
@@ -932,6 +939,12 @@ It takes no `control.withdraw`, which needs no worker. `_verdict_record`'s singl
 - Every fold that routes on `launcher.*` follows the rename.
 
 **Unchanged:** `latest_episode`, and the Watcher's staleness by witnessed arrival.
+
+**A Watcher that holds a launch's handle reads that launch's verdict** (amended 2026-10-30, while
+implementing): the claims naming the handle's launch id, and while none has landed, the run is `Running`,
+subject to the probe and staleness tiers. Otherwise a relaunch of a run that already has an exit, `sweep`'s
+resume over an extendable head included, would read the previous claim's verdict before its own worker claims.
+A Watcher observing a run it holds no handle for reads the latest claim's, as `peek_terminal` does.
 
 ## 6. The checkpoint recipe
 
