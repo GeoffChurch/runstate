@@ -11,6 +11,18 @@ migration (§8). This is the implementable spec. Item 1 of
 `../backlog/third-party-observer.md`; full A-vs-B judgment and adversarial findings in git
 (`3ce77b1`, `3ce9eab`).
 
+**Log format 0.4.0** (2026-10-30, [`commits-and-lineage.md`](commits-and-lineage.md) §3, §5). The design
+stands; its record set changes. `launcher.*` is renamed `supervisor.*`, and the dated topics of §6 are
+now the worker's own `started`, `commit`, `heartbeat`, `rewind` and `stopped`, and `supervisor.launched`:
+they lose `terminated`, gain `commit` and `rewind`, and date no `supervisor.died`. A `died` or a
+`terminated` is dated when its writer saw an end, which may be hours after the run last did anything, and
+counting it would make a dead run look fresh (`../backlog/claim-eviction.md` §3). §5's witnessed clock is
+reset by a new `started`, or a new `commit`, `heartbeat` or `rewind` naming the latest claim, and seeded
+from the newest of the claim's `started`, commits, heartbeats and rewinds; `Running` carries the head and
+its `Commits()` count where it carried a `step`. The never-beaconed startup death is kept: a staleness or a
+dead-probe inference may concern a run nothing has claimed yet (`RunResult.claim_seq` `None`). The
+`Heartbeat(step, …)`, `Value(value, step, t)` and `step=41` shapes below are 0.3.0's.
+
 ---
 
 ## 1. The problem: the beacon carries no clock
@@ -211,7 +223,9 @@ where the basis would matter, so it is not load-bearing now.
 ## 6. `freshness` needs no new op
 
 `last_activity(channel)` = **`max(t)` over the ≤5 finalists** `latest(started)`,
-`latest(heartbeat)`, `latest(stopped)`, `latest(launched)`, `latest(terminated)` — a handful
+`latest(heartbeat)`, `latest(stopped)`, `latest(launched)`, `latest(terminated)` (log format
+0.4.0: the six finalists `started`, `commit`, `heartbeat`, `rewind`, `stopped` and
+`supervisor.launched`; see the note at the top) — a handful
 of O(1) `latest()` reads, no full scan, no sixth substrate op. *Pin the definition
 precisely* (the two phrasings in earlier drafts were not equivalent under skew): it is the
 max-`t` **among the latest-by-seq record of each of those topics**, not "the `t` of the

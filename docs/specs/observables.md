@@ -15,6 +15,30 @@ must collapse to a call into this module (the mycooc-side checklist:
 format 0.3.0): the folds read the records that **name** what they ask about, not the ones that sit next to
 it. "The named reads" below states them; the stop fold gained an incremental form on the Watcher.
 
+**Superseded in part by log format 0.4.0** (2026-10-30, [`commits-and-lineage.md`](commits-and-lineage.md) §5).
+What this spec says of the verdict, the claim gate and the measurement folds is 0.3.0's. The current rules:
+- **The verdict is read by viewpoint** (§5, "The verdict"): the latest claim's readable exit, else the death
+  reports (`supervisor.died`) naming it, all kept, their outcomes a set; a run nothing claimed takes its launch's
+  `supervisor.terminated`, which no longer enters a claimed run's verdict. `RunResult` carries `outcomes`,
+  `tier`, `reports`, `node`, `claim_seq` and `malformed`; `reason` and `final_step` are gone, and two terminals
+  naming one claim no longer resolve newest-wins.
+- **`ended`** is one predicate, by presence, that never raises: a claim has ended once its exit or a death
+  report naming it is on the log, readable or not. It serves the claim gate, lease voiding, the verdict and the
+  Watcher.
+- **`live_episode` no longer probes a handle:** it is the newest claim's handle unless that claim has ended. Its
+  probe moved to `report_if_dead`, which the actors call before they act, so a same-host crash that nobody
+  reports reads as held until someone reports it.
+- **`last_activity`'s dated topics** are the worker's `started`, `commit`, `heartbeat`, `rewind` and `stopped`,
+  and `supervisor.launched`: never a `died` or a `terminated`, each dated when its writer saw an end.
+- **`progress` and `value_series` are removed.** The lineage reads replace them (`prefix_len`, `prefix`,
+  `series`, `last_element`, `aligned`, `answers`, `streams`), each taking a required `head`, with held folds
+  for a polled path (`HeadFold`, `PrefixLen`, `LastElement`, `Answers`, `LiveDemand`, `PendingStops`), each
+  equal to its pure read after every record. The answer folds gain `control.withdraw` and a node's `expired`,
+  and lose `control.unsubscribe`; a durable subscription's expiry is read on the head's lineage only.
+
+The Surface below is current. The sections on `progress` and `value_series` are kept as the record of what
+0.3.0 built.
+
 ## The model
 
 A new convention-layer module **`runstate/observables.py`** — the **stateless
@@ -54,24 +78,28 @@ name a lie.
 ## Surface
 
 ```python
-# moved verbatim (semantics unchanged), live_episode refactored through latest_episode
-RunResult; peek_terminal(channel) -> RunResult | None
-live_episode(channel) -> str | None          # newly re-exported at package root
-
-# new
+# the verdict and the claim plane (log format 0.4.0: commits-and-lineage.md §5)
+RunResult; Tier; DeathReport; peek_terminal(channel) -> RunResult | None
+worker_completed(result: RunResult | None) -> bool   # the head is closed
+live_episode(channel) -> str | None          # the newest claim's handle unless it has ended; no probe
 latest_episode(channel) -> Envelope | None   # the latest lifecycle.started envelope
-progress(channel) -> int | None              # max step the trajectory reached
-value_series(channel) -> dict[str, dict[int, Any]]   # {name: {step: value}}
+last_activity(channel) -> float | None       # the newest t among the dated topics
+
+# the lineage reads, each taking a required head: HeadStrategy (LatestClaimHead() | AtNode(x))
+prefix_len, prefix, series, last_element, aligned, answers, streams
 
 # the answer folds' public homes (reference by name)
-live_demand(channel) -> list[Envelope]       # the subscribes no answer names
+live_demand(channel) -> list[Envelope]       # the live subscriptions: not spent, nor a void lease
 undischarged_stops(channel) -> list[Envelope]  # the stops no answer names
+
+# the held folds, O(new records) per poll
+HeadFold, PrefixLen, LastElement, Answers, LiveDemand, PendingStops
 
 # vocabulary/handle.py (NOT this module — handle grammar, not a log fold)
 handle_pid(handle: str) -> int | None
 
 # watcher.py (NOT this module — it keeps a cursor)
-Watcher.pending_stops(run_id) -> list[Envelope]  # undischarged_stops, incrementally
+Watcher.pending_stops(run_id) -> list[Envelope]  # undischarged_stops, held (PendingStops)
 ```
 
 All exported from the package root.
@@ -136,7 +164,7 @@ Both tiers obey one rule — **a terminal stands until a new episode claims** �
 and `_verdict_record` names the single record `peek_terminal` speaks for (the
 Watcher reads its seq rather than re-deriving which terminal counts).
 
-### `progress` — publishing `memoizer._progress`
+### `progress` — publishing `memoizer._progress` (removed in log format 0.4.0)
 
 `max(current heartbeat.step, current terminal's final_step)`, **`None` if
 neither axis has a value** — both records **naming the latest claim**, so it is
@@ -148,7 +176,7 @@ sentinel (the repo's own convention — `peek_terminal`/`latest` return `None`;
 the `-1` was private arithmetic convenience, and stays *inside* the memoizer
 as a local adaptation).
 
-### `value_series` — the register projection on the (name, step) plane
+### `value_series` — the register projection on the (name, step) plane (removed in log format 0.4.0)
 
 A `value` event is a *sample* of the worker's current-value function
 (`set(name, value)` + `tick(step)`: one value per (name, step); concurrent

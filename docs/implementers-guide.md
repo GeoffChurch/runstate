@@ -6,8 +6,7 @@ This guide restates the wire contract for someone building a **second
 implementation** (Rust, Go, TypeScript, …). It is a reading of the binding
 artifacts, never the tiebreaker. It was written from the spec and the schemas
 alone, then checked against the reference code. The reference modules it names
-are at their final paths; until the layer-2 cutover they are staged under
-`runstate/_next/`, and their tests under `tests/test_next_*.py`.
+are the live ones under `runstate/` since the layer-2 cutover.
 
 **Authority order** (when this guide disagrees with any of them, they win):
 

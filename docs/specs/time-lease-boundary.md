@@ -12,6 +12,26 @@ cadence-knob all rejected as waker-side compensation for a log gap) and amends
 `specs/service-worker.md`'s bounded-hysteresis row and its recorded
 lazy-launch constraint.
 
+**Log format 0.4.0** (2026-10-30, [`commits-and-lineage.md`](commits-and-lineage.md) §2, §3).
+The boundary stands, and three things around it change:
+- **`{commits: n}` replaces the step atom** `{step: N}` as the run-absolute
+  atom: a position coordinate counting the lineage's iterations. With
+  `{stream, n}` it makes a schedule **durable**, live per lineage. "Pure
+  step schedules" below now read "schedules of lineage counts".
+- **The count lease stays, with its cost.** A schedule with any
+  `time_seconds` or `count` atom is a lease, per claim: its clock, fire
+  count and expiry are the claim's, kept across a rewind, and its lineage
+  atoms' baselines are read on the lineage. Rebuilding a count from the
+  lineage was rejected again, since a service that dies at its first
+  firing would then loop the waker (§12); "Who pays" below states the cost.
+- **Lease voiding reads `ended`.** A lease is void once its claim has
+  ended: an exit or a death report (`supervisor.died`) naming the claim is
+  on the log. `launcher.terminated` no longer voids anything, so a reaped
+  crash voids its leases through the `died` its launcher writes beside the
+  `terminated`. The `lifecycle.bound` binding is CAS-appended at the tail
+  the drain read, so a death report that lands first leaves the lease
+  unbound, for a successor to bind.
+
 ## The disease (why backoff felt janky)
 
 Every other piece of standing protocol state re-derives from the log across
@@ -56,6 +76,8 @@ drainer_ended)`), shared by the worker and the observers, in two forms:
   claim, ended iff a terminal names it (a `stopped` naming it, or a
   `launcher.terminated` naming the launch it answered). Void iff the lease is
   bound to any other claim, or bound to the latest claim once it has ended.
+  (0.4.0: the predicate is per lease, void once its own claim has ended,
+  by an exit or a `supervisor.died` naming it; `commits-and-lineage.md` §5.)
 
 The two forms agree because a live drainer is always the latest claim.
 

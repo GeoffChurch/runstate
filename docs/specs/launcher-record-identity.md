@@ -9,6 +9,21 @@ beaconing**. `ensure` returned a truncated series *silently*; a forged `killed`
 raised a spurious failure. Both forgeries were reproduced against the shipped
 launchers, and both are now regression-pinned.
 
+**Log format 0.4.0** (2026-10-30, [`commits-and-lineage.md`](commits-and-lineage.md)
+§3, §5). The launch identity stands; three things around it change.
+`launcher.*` is renamed **`supervisor.*`** (`supervisor`-`v0.5`), the prefix only,
+and the launch id rides `supervisor.launched` and `supervisor.terminated` as
+before. **`supervisor.died`** is new: the death report, naming a *claim* by
+`claim_seq` (its `request_id` null), with an `outcome` and its `evidence`. And
+**`terminated` leaves a claimed run's verdict**: the verdict is the claim's
+readable exit, else the death reports naming it, so §2's "`terminated` stays a
+record in `peek_terminal`" and §3(b)'s pairing now hold only for a run nothing
+claimed, the null-worker startup crash. A launcher whose reap finds the newest
+claim naming its launch without a readable exit writes the `died` beside the
+`terminated` (`LocalLauncher` when the claim's handle is the child's, compared
+whole; `ThreadLauncher` by the launch id alone), so a reaped crash still ends its
+claim, now by name. `sweep`, named below, is deleted (`../dead_ends/sweep.md`).
+
 ## 1. The problem
 
 `launcher.launched` / `launcher.terminated` carried **no launch identity**, and

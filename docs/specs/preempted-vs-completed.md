@@ -4,6 +4,16 @@
 **Origin:** surfaced by the mycooc dogfood (the runstate-adoption migration, Phase 4 —
 orchestration via the memoizer). The validating use case did its job: it exposed a
 real gap in a shipped primitive.
+**Log format 0.4.0** (2026-10-30, [`commits-and-lineage.md`](commits-and-lineage.md) §2, §4, §5). The
+distinction below now lives on the exit node itself. A **completed** exit is **closed**: it closes its
+lineage, so a read of it is settled, `ensure` returns `Unreachable(closed_at)` there without producing, and
+nothing resumes from or rewinds to it ("train more" resumes from an ancestor checkpoint, a new branch). A
+**non-completed** exit is **extendable**: it commits its pending values, so the next claim resumes from it
+and a chunk's post-loop values stay on the lineage the next chunk extends. The worker marks a **torn** exit,
+one whose open iteration cannot be committed, with `w.discard()` (or by raising: every error exit is torn),
+which writes `values: null` and evaluates nothing. `RunResult.outcome` became `outcomes`, a set, and a death
+report's outcome is never `completed`. The `up_to` and `_progress` below are 0.3.0's (`ensure(producer,
+target)` takes a `Target` now); the list of files touched is history.
 
 ## The gap
 

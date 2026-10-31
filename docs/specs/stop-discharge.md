@@ -20,6 +20,17 @@ fully read control tail. The sections below state the converted rule. The case f
 pair, the level and the OR-join is unchanged, and A3 below records why the explicit field it once
 rejected is right after all.
 
+**Log format 0.4.0** (2026-10-30, [`commits-and-lineage.md`](commits-and-lineage.md) §2, §4). The pair
+stands; the answer fold gains two records and loses one. A stop is also spent by a **`control.withdraw`**
+naming it, the asker's own cancellation; a subscription by a withdrawal, a nak, or a node's **`expired`**
+(a lease's on any node of its claim, a durable subscription's on the head's lineage only). The worker no
+longer writes `control.unsubscribe`, which is **retired**. `honored` is a **set**, read by name: every
+stop pending at the exit, and every stop whose own condition held at a node or a heartbeat of the claim,
+even one withdrawn since, so a withdrawal after `commit()` or `heartbeat()` has returned True is too late.
+A stop's `from` is evaluated at each node and at each `heartbeat()`, and the decision latches for the rest
+of the claim, a rewind included. A stop is a request about the process: one honoured on one branch is not
+re-armed on another. The "`tick()`" below is 0.3.0's; it is `commit()` now.
+
 ## The problem: three symptoms, one type error
 
 1. **Cross-episode replay (the failing test).** The worker drains `control.>`

@@ -2,9 +2,11 @@
 
 **Status:** SHIPPED — `runstate/channel/postgres.py` (tests: `tests/test_postgres_channel.py`
 + the backend-parametrized conformance/concurrency suites; CI runs them against a Postgres
-service). Shipped core: the four ops + the CAS over one shared `log` table, and the advisory
-lock as a Watcher-consumed liveness signal (the `EpisodeHolder`/`EpisodeProbe` capability,
-resolved at the Watcher's boundary into a per-run probe). Still deferred: low-latency push,
+service). Shipped core: the four ops + the CAS over one shared `log` table, and the
+**session probe** (2026-10-30, log format 0.4.0; *Liveness* below): a fresh advisory-lock key per
+connection, taken before its first write, a writer stamp on every row, and the `SessionProbe`
+capability that `report_if_dead` and the Watcher's `session_ended` tier read. It replaced the
+episode lock (the `EpisodeHolder`/`EpisodeProbe` capability, deleted with it). Still deferred: low-latency push,
 cross-host auto-relaunch, sharding, HA (see *Deferred / rejected-for-now*). Motivating use
 case: a controller on *another
 host* (a viz dashboard, a Bayesian-optimizer) that both **reads** run state and **writes
@@ -272,7 +274,7 @@ connection string (or `RUNSTATE_PG_DSN`), a **direct or session-pooled** endpoin
 `"postgres"` branch imports it lazily and raises a clear *"pip install runstate[postgres]"* on
 absence.
 The server must be **PostgreSQL 16 or newer** (see *Liveness*, the server's identity). The
-`SessionProbe` Protocol (with `Session`), the `EpisodeHolder` / `EpisodeProbe` Protocols and the
+`SessionProbe` Protocol (with `Session`) and the
 `isinstance`-dispatch sites live in a **psycopg-free module** (`channel/base.py`, `watcher`), so `import runstate` works without
 the extra (guarded by a CI job that imports without it).
 
@@ -339,6 +341,13 @@ and the instance is a fleet-wide SPOF — the honest cost of one shared total or
 
 ## Tests
 
+*(2026-10-30: the liveness tests this section describes, of the episode lock — `episode_alive`,
+`hold_episode`, the Watcher's grace and floor — went with it; the session probe's tests are the
+ones *Liveness* names. The suite now starts a throwaway PostgreSQL server of its own on every run
+(`tests/pg_bootstrap.py`, from `conftest.py`'s `pytest_configure`), so the Postgres tests no longer
+skip without a DSN: an explicit `RUNSTATE_TEST_PG_DSN` wins, and the tests skip only when no server
+binaries of version 16 or newer are found. The isolation rules below stand.)*
+
 **Isolation is real fixture work, not "almost all tests already exist."** A shared `log`
 table has none of `tmp_path`'s per-test freshness. The Postgres `ch` / `open_run`
 fixtures mint a **unique uuid `run_id` per test** (transparent to test *bodies*, which don't
@@ -381,6 +390,10 @@ plus the import-without-psycopg job. All `mypy --strict` + `py.typed` clean.
 - **CAS / seq** — no new primitive: the `PRIMARY KEY (run_id, seq)` *is* the contiguous-seq
   invariant, reused as the sole arbiter for the CAS and the unconditional append. Canonical,
   and sharper than SQLite (no busy re-check).
+*(The two liveness bullets below describe the episode lock, kept as the record of its design.
+The session probe keeps their principle — evidence for a record, never a claim arbiter — and moves
+the consumer: `report_if_dead` writes the evidence, and the Watcher reads it as `session_ended`.)*
+
 - **the liveness lock** — *not* a claim primitive and *not* a new tier: a **new probe signal
   in the Watcher's liveness combination**, where `os.kill` abstains. Independence holds
   (definitive cross-host liveness isn't derivable from the four ops — the log gives only

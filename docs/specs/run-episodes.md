@@ -8,6 +8,15 @@ service/lifeline policy (lazy-launch-on-subscribe + reap-at-zero-subs) — a
 separate consumer (on-demand metric/inference servers), built later on the same
 primitive.
 
+**Log format 0.4.0** (2026-10-30, [`commits-and-lineage.md`](commits-and-lineage.md) §2, §4, §5). The
+episode primitive below is 0.3.0's. The claim is still `lifecycle.started`, CAS'd at the tail, and now
+also states where it starts (`resume_from`, a node of the run) and its `sources`; "step" is the lineage's
+`Commits()` count, so `steps(total, start=)` became `steps(until)`, continuing from the log. **The
+live-episode test no longer probes a handle:** a claim is live until it has *ended*, its exit or a death
+report (`supervisor.died`) naming it on the log, so a started-then-crashed episode reads as held until
+someone reports it (the claim path's `report_if_dead`, a launcher's reap, a reclaim tool). `launcher.*`
+is `supervisor.*`.
+
 ## Model
 
 A `run_id` is a **durable log hosting multiple worker *episodes*.** Episode 1
