@@ -17,7 +17,6 @@ from typing import NamedTuple
 
 import pytest
 
-from runstate import LOG_FORMAT
 from runstate.channel.sqlite import SqliteChannel
 from runstate.formats import FORMATS
 from runstate.migrations import STEPS, MigrationError, Row, chain, migrate
@@ -27,6 +26,7 @@ from runstate.migrations.ambiguity import Limits, parse_choices, resolutions
 ONE = Limits(cap=1, budget=1, run_on=0)
 from runstate.migrations.stores import SqliteStore
 from runstate.migrations.v0_2_0_to_v0_3_0 import V0_2_0_to_V0_3_0
+from runstate.migrations.v0_3_0_to_v0_4_0 import V0_3_0_to_V0_4_0
 from scripts.reads_v0_3_0 import (
     MalformedRecordError,
     live_demand,
@@ -35,6 +35,7 @@ from scripts.reads_v0_3_0 import (
     progress,
     undischarged_stops,
 )
+from tests.format_helpers import provision_pg
 from tests.migration_helpers import NO_HISTORY
 
 step = V0_2_0_to_V0_3_0()
@@ -905,7 +906,7 @@ def test_the_cli_asks_for_each_fork_and_each_divergence(tmp_path, capsys):
     from runstate.cli import main
 
     write_v0_2_0(tmp_path)
-    assert main(["migrate", str(tmp_path)]) == 1
+    assert main(["migrate", str(tmp_path), "--to", "0.3.0"]) == 1
     err = capsys.readouterr().err
     assert "stop-honored (0.2.0 -> 0.3.0)" in err and "lease-bound (0.2.0" in err
     assert "record-claim (0.2.0" not in err  # no golden log forks there
@@ -914,7 +915,8 @@ def test_the_cli_asks_for_each_fork_and_each_divergence(tmp_path, capsys):
         in err
     )
     assert not (tmp_path / "v0.3.0").exists()
-    argv = ["migrate", str(tmp_path), *(f"--resolve={x}" for x in TODAY_RESOLVE)]
+    argv = ["migrate", str(tmp_path), "--to", "0.3.0"]
+    argv += [f"--resolve={x}" for x in TODAY_RESOLVE]
     assert main(argv) == 1  # the divergences are questions too: nothing migrates
     out = capsys.readouterr()
     assert out.out == "" and not (tmp_path / "v0.3.0").exists()
@@ -1128,23 +1130,17 @@ def test_a_refused_sqlite_run_is_refused_before_the_seal(tmp_path):
 
 @pytest.fixture
 def pg_v0_2_0_run(pg_ready):
-    """A run id for the shared postgres test database's 0.2.0 schema, which the
-    fixture provisions with 0.2.0's tables: no channel writes 0.2.0 now.
-    The 0.3.0 schema is the current one, shared by every postgres test, so the
-    fixture removes only its own run from either."""
+    """A run id for the shared postgres test database's 0.2.0 and 0.3.0 schemas,
+    which the fixture provisions with their formats' tables: no channel writes
+    either now. Both are shared by every postgres test, so the fixture removes
+    only its own run from either."""
     import uuid
 
     import psycopg
-    from psycopg import sql
 
     rid = f"t12-{uuid.uuid4().hex}"
-    old = sql.Identifier(FORMATS["0.2.0"].pg_schema())
-    with psycopg.connect(pg_ready, autocommit=True) as c:
-        c.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(old))
-        with c.transaction():
-            c.execute(sql.SQL("SET LOCAL search_path TO {}").format(old))
-            for ddl in FORMATS["0.2.0"].pg_ddl:
-                c.execute(ddl)
+    for version in ("0.2.0", "0.3.0"):
+        provision_pg(pg_ready, FORMATS[version])
     try:
         yield pg_ready, rid
     finally:
@@ -1339,23 +1335,6 @@ def test_the_step_and_format_are_registered():
     assert fmt.version == "0.3.0"
     assert fmt.sqlite_path(Path("/r"), "x") == Path("/r/v0.3.0/x.db")
     assert fmt.pg_schema() == "runstate_v0_3_0"
-    assert LOG_FORMAT == "0.3.0"  # the release that introduced it
-    assert [type(s) for s in STEPS] == [V0_2_0_to_V0_3_0]
-    assert chain("0.2.0", "0.3.0") == list(STEPS)
-
-
-def test_the_cli_migrates_to_the_current_format_by_default(tmp_path, capsys):
-    """`runstate migrate` without --to targets LOG_FORMAT: a run the locators
-    refuse at 0.2.0 opens at its 0.3.0 address afterwards, its old log sealed."""
-    from runstate import LogFormatMismatch, attach_channel
-    from runstate.cli import main
-
-    old = _write(tmp_path, "episodes", GOLDEN["episodes"])
-    with pytest.raises(LogFormatMismatch, match="runstate migrate"):
-        attach_channel("episodes", root=tmp_path)
-    assert main(["migrate", str(tmp_path), "--accept", "stale-beat"]) == 0
-    assert capsys.readouterr().out.split() == ["episodes"]
-    assert not os.stat(old).st_mode & 0o200  # sealed
-    with attach_channel("episodes", root=tmp_path) as ch:
-        beats = ch.read(topics=["lifecycle.heartbeat"])
-        assert beats and all(e.body["claim_seq"] >= 1 for e in beats)
+    assert [type(s) for s in STEPS] == [V0_2_0_to_V0_3_0, V0_3_0_to_V0_4_0]
+    assert chain("0.2.0", "0.3.0") == [STEPS[0]]
+    assert chain("0.2.0", "0.4.0") == list(STEPS)

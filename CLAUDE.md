@@ -59,26 +59,27 @@ The substrate + opt-in conventions + reference orchestration, in
   **topic log** of envelopes `{seq, topic, name?, request_id?, body}`; the
   substrate routes/indexes on the envelope and never parses `body`.
 - **`formats/`** — the log format registry (`docs/specs/log-formats.md`): a log's
-  format is the outermost part of its address (`<root>/v0.3.0/<rid>.db`; schema
-  `runstate_v0_3_0` on Postgres), `LOG_FORMAT` is the one this release reads and
-  writes, one module per format holds its layout, and the locators raise
+  format is the outermost part of its address (`<root>/v0.4.0/<rid>.db`; schema
+  `runstate_v0_4_0` on Postgres), `LOG_FORMAT` is the one this release reads and
+  writes (0.4.0; `FORMATS` holds 0.2.0, 0.3.0 and 0.4.0), one module per format
+  holds its layout and its tables, and the locators raise
   `LogFormatMismatch` / `LogFormatMissing` on any other.
 - **`migrations/`** + **`cli.py`** — `runstate migrate`: retained, chained steps
   that copy a run's log to the next format and seal the old one, refusing a
   live run or a run the step refuses before sealing it. One module per step
-  (`v0_2_0_to_v0_3_0.py`, the names the positional rule implied), each carrying
+  (`v0_2_0_to_v0_3_0.py`, `v0_3_0_to_v0_4_0.py`), each carrying
   its own copy of the old format's semantics. `ambiguity.py` is what every step
   shares for what a log leaves open (`log-formats.md` §6, "Ambiguity"): the
   declarations (`Facts`, `Projection`, `Divergence`), the `Chooser` Protocol and
   `refuse`, the command line's `Choices`, a run's `History` (its manifest entries
   and the store's traces of it) and the manifest's `Entry`, and the detection
   pass's report. `stores.py` holds the per-backend `Store` Strategy, the manifest
-  and its content-addressed facts statements. The 0.3.0 → 0.4.0 step
-  (`v0_3_0_to_v0_4_0.py`, with its candidate engine `..._engine.py` and its writer
-  facts `..._facts.py`; `commits-and-lineage.md` §7) is written and tested but
-  **not registered**: `STEPS` and `FORMATS` stop at 0.3.0 until layer 2's writer
-  ships 0.4.0, so it runs only in process (its tests, the corpus runner
-  `scripts/migration_round.py`).
+  and its content-addressed facts statements. `STEPS` is 0.2.0 → 0.3.0 and the
+  0.3.0 → 0.4.0 step (`v0_3_0_to_v0_4_0.py`, with its candidate engine
+  `..._engine.py` and its writer facts `..._facts.py`; `commits-and-lineage.md`
+  §7), the one that renumbers; both are registered, so `runstate migrate` moves a
+  0.2.0 or a 0.3.0 log to 0.4.0. The corpus runner `scripts/migration_round.py`
+  measures both steps over a consumer's logs without writing any.
 - **`vocabulary/`** — the L2 **convention vocabulary** (the typed terms another
   language reimplements to interop): `payloads.py` (`Topic`; the enums
   `Outcome`, `NakReason`, `Reap`; frozen body dataclasses mirroring the
@@ -301,7 +302,8 @@ The procedure (`docs/specs/log-formats.md` §8): stop the consumer's old process
 jobs; bump its pin; onboard any legacy logs (`<root>/<rid>.db`) exactly as the `LogFormatMissing`
 message instructs, which leaves a tombstone at each old address so a stale writer fails loudly; then
 `runstate migrate <root>`
-(add `--backend postgres` for a DSN), which moves format-0.2.0 logs to the current format, 0.3.0.
+(add `--backend postgres` for a DSN), which moves format-0.2.0 and format-0.3.0 logs to the current
+format, 0.4.0, one retained step at a time.
 It first runs a detection pass that writes nothing, and refuses the whole invocation, printing one summary
 per question, until each projection that forks has a `--resolve <projection>=<chooser>` and each divergence
 that fires an `--accept <divergence>`; a consumer's facts about its writers go in `--assume <module:attr>`
@@ -361,7 +363,7 @@ suite's `note:` line, since green there does not imply green in CI.
 default job alike). `tests/test_migration_oracle.py` runs the 0.3.0 -> 0.4.0 step's
 engine against the simulator (`tests/migration_sim/`). Its exhaustive families,
 marked `oracle`, are the ones the mutation test needs (about 7 minutes), and the
-step is frozen once it ships. Its named histories, named pairs, narrowing check and
+step is frozen now that it ships. Its named histories, named pairs, narrowing check and
 direct checks stay in the default run (about 30 s). CI's `oracle` job runs the families
 when the step, its engine or facts module, the simulator or the oracle changes, and
 on demand (`workflow_dispatch`). Before committing to any of those, run
@@ -485,9 +487,8 @@ plan as the remaining work; and the deferred design-§12 items mirrored there).
   nodes (`lifecycle.commit`, `lifecycle.rewind`, the exit a node), `Commits()`
   and `Target`, the lineage reads and held folds, `control.withdraw`, the
   `supervisor.*` rename with `supervisor.died` and the presence-based `ended`,
-  the checkpoint recipe, `Launcher[T]`. The live layer is `runstate/`; the
-  format flip (`LOG_FORMAT = "0.4.0"`, the step registered, package
-  0.4.0.dev0) is the plan's last commit.
+  the checkpoint recipe, `Launcher[T]`. `LOG_FORMAT` is 0.4.0, the
+  0.3.0 → 0.4.0 step is registered, and the package is 0.4.0.dev0.
 
 **Deferred (v0.3+)** (see `docs/backlog/index.md`):
 - ~~Store Protocol + backends~~ — **DISSOLVED 2026-06-11**

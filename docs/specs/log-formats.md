@@ -2,8 +2,10 @@
 
 **Status:** IMPLEMENTED 2026-10-03: format 0.2.0, the addresses, the opening checks, sealing, and
 `runstate migrate`, which refuses a run before sealing it (§6). Designed with the owner section by section.
-Its first user is [`reference-by-name.md`](reference-by-name.md), which introduced format 0.3.0, the
-current one, with the first retained step (0.2.0 → 0.3.0) the same day.
+Its first user is [`reference-by-name.md`](reference-by-name.md), which introduced format 0.3.0, with the
+first retained step (0.2.0 → 0.3.0) the same day. The current format is 0.4.0, which
+[`commits-and-lineage.md`](commits-and-lineage.md) introduced with the second step (0.3.0 → 0.4.0) on
+2026-10-31.
 
 **What it gives:** every log has exactly one format, and every log can say which. A runstate release opens
 only logs of its own format and raises on any other. Logs move between formats only through retained,
@@ -49,11 +51,11 @@ because only the outermost component leaves every future layout free.
 
 ## 3. Addresses
 
-| backend | format 0.2.0 | format 0.3.0 | legacy (unversioned) |
-|---|---|---|---|
-| SQLite | `<root>/v0.2.0/<rid>.db` | `<root>/v0.3.0/<rid>.db` | `<root>/<rid>.db` |
-| Postgres | schema `runstate_v0_2_0`, table `log` | schema `runstate_v0_3_0`, table `log` | table `log` outside any `runstate_v…` schema |
-| Memory | — | — | — |
+| backend | format 0.2.0 | format 0.3.0 | format 0.4.0 | legacy (unversioned) |
+|---|---|---|---|---|
+| SQLite | `<root>/v0.2.0/<rid>.db` | `<root>/v0.3.0/<rid>.db` | `<root>/v0.4.0/<rid>.db` | `<root>/<rid>.db` |
+| Postgres | schema `runstate_v0_2_0`, table `log` | schema `runstate_v0_3_0`, table `log` | schema `runstate_v0_4_0`, table `log` | table `log` outside any `runstate_v…` schema |
+| Memory | — | — | — | — |
 
 - **Directory and schema names** are `v` plus the version, and `runstate_v` plus the version with dots as
   underscores.
@@ -66,9 +68,10 @@ because only the outermost component leaves every future layout free.
   file, Postgres's `ensure_schema`) runs the current format's; a migration's destination runs its
   step's `TO` format's. The tables belong to the format, not to the channel: had the destination taken
   the live channel's, the first change to the current format's table would have reached every older
-  format's destination. A format states its tables even when they share another's: 0.3.0's SQLite
-  table and its Postgres indexes are 0.2.0's, and its Postgres table is 0.2.0's plus the session stamp
-  (`writer_key`, `writer_server`; [`channel-postgres.md`](channel-postgres.md), "Liveness").
+  format's destination. A format states its tables even when they share another's: 0.3.0's tables are
+  0.2.0's, and 0.4.0's SQLite table and its Postgres indexes are 0.3.0's, while its Postgres table is
+  0.3.0's plus the session stamp (`writer_key`, `writer_server`;
+  [`channel-postgres.md`](channel-postgres.md), "Liveness").
 - **Memory logs are in-process and ephemeral,** so they are always in the current format and carry no
   address.
 - **The legacy Postgres table** is the `log` that an unqualified name resolves to under the connection's

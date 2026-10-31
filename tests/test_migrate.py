@@ -272,7 +272,7 @@ def test_wal_frames_of_a_crashed_writer_survive(toy, tmp_path, crashed_wal_write
     crashed_wal_writer(path, 50)
     migrate(SqliteStore(tmp_path), ["r1"], to="8.1.0", choices=NONE)
     new = toy_layout("8.1.0").sqlite_path(tmp_path, "r1")
-    assert [b["i"] for b in _bodies(new)] == list(range(50))
+    assert [b["value"] for b in _bodies(new)] == list(range(50))
 
 
 def test_a_hot_journal_of_a_crashed_writer_is_rolled_back(
@@ -287,7 +287,7 @@ def test_a_hot_journal_of_a_crashed_writer_is_rolled_back(
         "r1",
     )
     new = toy_layout("8.1.0").sqlite_path(tmp_path, "r1")
-    assert [b["i"] for b in _bodies(new)] == list(range(5))
+    assert [b["value"] for b in _bodies(new)] == list(range(5))
     assert not path.with_name("r1.db-journal").exists()
 
 
@@ -1360,8 +1360,8 @@ def test_one_memo_serves_every_step_of_an_invocation(toy, monkeypatch, tmp_path)
 
 # ----- a destination takes its format's tables (log-formats.md §3) -----------------
 
-# An index only the patched 0.3.0 states, so the destination can be told apart from
-# one created with the live channel's tables, which are 0.2.0's today.
+# An index only the patched format states, so the destination can be told apart
+# from one created with another format's tables.
 _MARK_SQLITE = "CREATE INDEX IF NOT EXISTS idx_mark ON log (created_at);"
 _MARK_PG = "CREATE INDEX IF NOT EXISTS idx_mark ON log (created_at)"
 
@@ -1419,11 +1419,11 @@ def _pg_reference(dsn, ddl):
 
 @pytest.mark.parametrize("backend", ["sqlite", "postgres"])
 def test_a_destination_takes_its_formats_ddl(backend, request, tmp_path, monkeypatch):
-    """Open question 9, where the destination is the current format: a 0.2.0 ->
-    0.3.0 migration's destination has exactly the tables and indexes of
-    FORMATS["0.3.0"]'s DDL for its backend, and a channel's birth creates
-    FORMATS[LOG_FORMAT]'s. The patched 0.3.0 states one index more than 0.2.0, so a
-    writer that took 0.2.0's tables, or tables of its own, fails. 0.3.0 is both the
+    """Open question 9, where the destination is the current format: a 0.3.0 ->
+    0.4.0 migration's destination, by a toy step, has exactly the tables and indexes
+    of FORMATS["0.4.0"]'s DDL for its backend, and a channel's birth creates
+    FORMATS[LOG_FORMAT]'s. The patched 0.4.0 states one index more than it does, so
+    a writer that took 0.3.0's tables, or tables of its own, fails. 0.4.0 is both the
     step's TO and LOG_FORMAT here, so this case cannot tell a destination that takes
     FORMATS[LOG_FORMAT]'s tables from one that takes its own: the next test does."""
     import dataclasses
@@ -1433,38 +1433,36 @@ def test_a_destination_takes_its_formats_ddl(backend, request, tmp_path, monkeyp
 
     if backend == "postgres":
         dsn = request.getfixturevalue("scratch_db")  # SKIPs without a DSN
-    v020 = formats.FORMATS["0.2.0"]
-    v030 = dataclasses.replace(
-        formats.FORMATS["0.3.0"],
-        sqlite_ddl=v020.sqlite_ddl + _MARK_SQLITE,
-        pg_ddl=v020.pg_ddl + (_MARK_PG,),
+    v030 = formats.FORMATS["0.3.0"]
+    v040 = dataclasses.replace(
+        formats.FORMATS["0.4.0"],
+        sqlite_ddl=formats.FORMATS["0.4.0"].sqlite_ddl + _MARK_SQLITE,
+        pg_ddl=formats.FORMATS["0.4.0"].pg_ddl + (_MARK_PG,),
     )
-    monkeypatch.setitem(formats.FORMATS, "0.3.0", v030)
-    assert formats.LOG_FORMAT == "0.3.0"
-    nothing = parse_choices(
-        migrations.STEPS, assume=[], resolve=[], accept=[], limits=ONE
-    )
+    monkeypatch.setitem(formats.FORMATS, "0.4.0", v040)
+    monkeypatch.setattr(migrations, "STEPS", (Tag("0.3.0", "0.4.0"),))
+    assert formats.LOG_FORMAT == "0.4.0"
     rows = [(i, "value", "x", None, json.dumps({"i": i}), float(i)) for i in (1, 2, 3)]
 
     if backend == "sqlite":
-        src = v020.sqlite_path(tmp_path, "r1")
+        src = v030.sqlite_path(tmp_path, "r1")
         src.parent.mkdir()
         conn = sqlite3.connect(src)
-        conn.executescript(v020.sqlite_ddl)
+        conn.executescript(v030.sqlite_ddl)
         conn.executemany("INSERT INTO log VALUES (?, ?, ?, ?, ?, ?)", rows)
         conn.commit()
         conn.close()
         reference = tmp_path / "reference.db"
         conn = sqlite3.connect(reference)
-        conn.executescript(v030.sqlite_ddl)
+        conn.executescript(v040.sqlite_ddl)
         conn.close()
 
-        assert migrate(SqliteStore(tmp_path), None, to="0.3.0", choices=nothing).moved
-        assert _sqlite_catalog(v030.sqlite_path(tmp_path, "r1")) == _sqlite_catalog(
+        assert migrate(SqliteStore(tmp_path), None, to="0.4.0", choices=NONE).moved
+        assert _sqlite_catalog(v040.sqlite_path(tmp_path, "r1")) == _sqlite_catalog(
             reference
         )
         create_channel("r2", root=tmp_path).close()
-        assert _sqlite_catalog(v030.sqlite_path(tmp_path, "r2")) == _sqlite_catalog(
+        assert _sqlite_catalog(v040.sqlite_path(tmp_path, "r2")) == _sqlite_catalog(
             reference
         )
         return
@@ -1473,21 +1471,75 @@ def test_a_destination_takes_its_formats_ddl(backend, request, tmp_path, monkeyp
 
     from runstate.channel.postgres import ensure_schema
 
-    reference = _pg_reference(dsn, v030.pg_ddl)
+    reference = _pg_reference(dsn, v040.pg_ddl)
     ensure_schema(dsn)  # the birth of every channel on the database
-    assert _pg_catalog(dsn, v030.pg_schema()) == reference
+    assert _pg_catalog(dsn, v040.pg_schema()) == reference
     with psycopg.connect(dsn, autocommit=True) as c:
-        c.execute(f"DROP SCHEMA {v030.pg_schema()} CASCADE")
+        c.execute(f"DROP SCHEMA {v040.pg_schema()} CASCADE")
+        c.execute(f"CREATE SCHEMA {v030.pg_schema()}")
+        with c.transaction():
+            c.execute(f"SET LOCAL search_path TO {v030.pg_schema()}")
+            for stmt in v030.pg_ddl:
+                c.execute(stmt)
+            for row in rows:
+                c.execute("INSERT INTO log VALUES ('r1', %s, %s, %s, %s, %s, %s)", row)
+    assert migrate(PostgresStore(dsn), None, to="0.4.0", choices=NONE).moved
+    assert _pg_catalog(dsn, v040.pg_schema()) == reference
+    with attach_channel("r1", root=dsn, backend="postgres") as ch:
+        assert ch.last_seq() == 3
+
+
+_STAMP = {"writer_key", "writer_server"}
+
+
+def test_a_chain_to_0_4_0_stamps_only_0_4_0s_table(scratch_db):
+    """The stamp is 0.4.0's alone (open question 9): a 0.2.0 -> 0.4.0 chain, by the
+    registered steps, leaves a 0.3.0 table without the stamp columns, as master wrote
+    0.3.0's, and a 0.4.0 table with them, each exactly its format's tables."""
+    import psycopg
+
+    from runstate import attach_channel
+
+    v020, v030, v040 = (formats.FORMATS[v] for v in ("0.2.0", "0.3.0", "0.4.0"))
+    with psycopg.connect(scratch_db, autocommit=True) as c:
         c.execute(f"CREATE SCHEMA {v020.pg_schema()}")
         with c.transaction():
             c.execute(f"SET LOCAL search_path TO {v020.pg_schema()}")
             for stmt in v020.pg_ddl:
                 c.execute(stmt)
-            for row in rows:
-                c.execute("INSERT INTO log VALUES ('r1', %s, %s, %s, %s, %s, %s)", row)
-    assert migrate(PostgresStore(dsn), None, to="0.3.0", choices=nothing).moved
-    assert _pg_catalog(dsn, v030.pg_schema()) == reference
-    with attach_channel("r1", root=dsn, backend="postgres") as ch:
+            for i in (1, 2, 3):  # values as 0.2.0 wrote them: no fork, no divergence
+                body = json.dumps({"value": i, "step": None, "t": None})
+                c.execute(
+                    "INSERT INTO log VALUES ('r1', %s, 'value', 'x', NULL, %s, %s)",
+                    [i, body, float(i)],
+                )
+    from runstate.cli import BUDGET, CAP, RUN_ON
+
+    nothing = parse_choices(  # the command line's, which the 0.3.0 -> 0.4.0 step reads
+        migrations.STEPS,
+        assume=[],
+        resolve=[],
+        accept=[],
+        limits=Limits(cap=CAP, budget=BUDGET, run_on=RUN_ON),
+    )
+    assert migrate(PostgresStore(scratch_db), None, to="0.4.0", choices=nothing).moved
+
+    def log_table(catalog):
+        """The ``log`` table's columns and indexes: the seal adds a table of its own
+        beside it, in the sealed format's schema."""
+        cols, idx = catalog
+        return [c for c in cols if c[0] == "log"], [
+            i for i in idx if " ON log " in i[1]
+        ]
+
+    columns = {}
+    for layout in (v030, v040):
+        got = log_table(_pg_catalog(scratch_db, layout.pg_schema()))
+        assert got == log_table(_pg_reference(scratch_db, layout.pg_ddl))
+        columns[layout.version] = {col for _, col, *_ in got[0]}
+    assert not columns["0.3.0"] & _STAMP
+    assert columns["0.4.0"] >= _STAMP
+    with attach_channel("r1", root=scratch_db, backend="postgres") as ch:
         assert ch.last_seq() == 3
 
 
@@ -1498,8 +1550,8 @@ def test_a_destination_of_an_older_format_takes_its_own_ddl(
     """Open question 9's mistake itself: a migration whose destination is NOT the
     current format must still take the destination's tables, never LOG_FORMAT's,
     since a change to the current format's table (the session stamp) would otherwise
-    reach an older format's destination. A toy 8.0.0 -> 8.1.0 step, LOG_FORMAT still
-    0.3.0, and 8.1.0 states a marker index no other format has."""
+    reach an older format's destination. A toy 8.0.0 -> 8.1.0 step, LOG_FORMAT
+    0.4.0, and 8.1.0 states a marker index no other format has."""
     import dataclasses
     import sqlite3
 

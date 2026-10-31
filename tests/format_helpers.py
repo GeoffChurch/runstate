@@ -12,3 +12,18 @@ def toy_layout(version):
         sqlite_ddl=v0_2_0.SQLITE_SCRIPT,
         pg_ddl=v0_2_0.PG_STATEMENTS,
     )
+
+
+def provision_pg(dsn, layout):
+    """``layout``'s schema on the database at ``dsn``, with its tables, as a format
+    no channel writes needs: a channel's birth creates only the current format's."""
+    import psycopg
+    from psycopg import sql
+
+    schema = sql.Identifier(layout.pg_schema())
+    with psycopg.connect(dsn, autocommit=True) as c:
+        c.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(schema))
+        with c.transaction():
+            c.execute(sql.SQL("SET LOCAL search_path TO {}").format(schema))
+            for ddl in layout.pg_ddl:
+                c.execute(ddl)

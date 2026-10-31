@@ -35,11 +35,11 @@ contract becomes *at* the release boundary.
 
 Definitions used throughout:
 
-- **package version** — the `pyproject.toml` `version` (today `0.3.0.dev0`),
+- **package version** — the `pyproject.toml` `version` (today `0.4.0.dev0`),
   what `pip` resolves and PyPI orders.
 - **convention version** — the per-schema `-vX.Y` in `protocol/` (envelope
-  `v0.2`; value `v0.2`; subscription `v0.3`; launcher `v0.4`; lifecycle `v0.5`,
-  since log format 0.3.0), each on its own timeline. These are **not** the
+  `v0.2`; value `v0.3`; subscription `v0.4`; supervisor `v0.5`; lifecycle
+  `v0.6`, since log format 0.4.0), each on its own timeline. These are **not** the
   package version and never have been.
 
 ---
@@ -191,6 +191,12 @@ is the smallest change that makes all three sources honest simultaneously. The
 package is now `0.3.0.dev0`, bumped with log format 0.3.0 (a format change bumps
 the package in the same commit), which is Option 1's number; cutting the release
 is still this decision, and it is the owner's.
+
+*Amended 2026-10-31:* log format 0.4.0 bumped the package to `0.4.0.dev0` by
+the same rule, so the package no longer matches the docs' "v0.3", and Option 1's
+number is no longer the package's; the wire now runs up to `v0.6` (lifecycle).
+The tension above is restated by that, not resolved; the decision stays the
+owner's.
 
 ---
 

@@ -24,7 +24,8 @@ THE FILES. Every ``*.db`` under each ROOT, following symlinks (a symlink cycle i
 cut), resolved and counted once per inode: a consumer's cell->home symlinks reach
 each log twice. A file is skipped, and counted by why (``SkipWhy``), when it is
 a broken symlink, unreadable, empty (a tombstone), at an address of a format this
-runstate does not register, beside the same run's log in a newer registered
+runstate does not register, already in the format the round migrates to (0.4.0,
+which no step leaves), beside the same run's log in a newer registered
 format (superseded when it is sealed, as ``runstate migrate`` leaves the log it
 moves, and a conflict when not), not a SQLite database, too corrupt to read its
 schema, another SQLite error (named), or one with no runstate ``log`` table. Its
@@ -168,6 +169,7 @@ class SkipWhy(StrEnum):
     BROKEN_LINK = "a broken symlink"
     EMPTY = "an empty file (a tombstone)"
     UNREGISTERED_FORMAT = "an address of a format this runstate does not register"
+    CURRENT = "already in the format the round migrates to"
     SUPERSEDED = "superseded by the run's log in a newer format, and sealed"
     CONFLICT = "beside the run's log in a newer format, and not sealed"
     UNREADABLE = "unreadable: the OS refused a stat or a listing, named in detail"
@@ -659,6 +661,8 @@ def _classify(
     if isinstance(where, SkipWhy):
         return Skipped(real, where, None)
     address, version = where
+    if version == _STEP_0_3_0.TO:
+        return Skipped(real, SkipWhy.CURRENT, None)
     newer = _newer(real, version, address)
     if newer is not None:
         return Skipped(real, newer, None)

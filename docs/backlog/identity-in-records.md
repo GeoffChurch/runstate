@@ -2,7 +2,9 @@
 
 **Status:** DESIGN, not converged (opened 2026-10-03). Every layer was measured in a throwaway spike on
 2026-10-02. Layer 1 is IMPLEMENTED (2026-10-03, as log format 0.3.0:
-[`../specs/reference-by-name.md`](../specs/reference-by-name.md)); the others are not adopted.
+[`../specs/reference-by-name.md`](../specs/reference-by-name.md)), and layer 2 is IMPLEMENTED (2026-10-31, as
+log format 0.4.0: [`../specs/commits-and-lineage.md`](../specs/commits-and-lineage.md)); the others are not
+adopted.
 
 **Evidence:** the spike branches are retired. What each layer's case rests on — the mechanism's shape,
 how each experiment was set up, and its numbers — is inlined in that layer's section below, enough to
@@ -39,7 +41,7 @@ try*.
 | # | layer | what it buys | evidence | status |
 |---|---|---|---|---|
 | 1 | **Reference by name** on control and lifecycle records | order-independent control folds; #39, the cascade and the stale-beat leak fixed | [the spec](../specs/reference-by-name.md) and its tests | IMPLEMENTED (log format 0.3.0) |
-| 2 | **Names on values** | a displaced worker's values cannot splice the series | §2 | design open: encoding |
+| 2 | **Names on values** | a displaced worker's values cannot splice the series | §2 and [the spec](../specs/commits-and-lineage.md) | IMPLEMENTED (log format 0.4.0) |
 | 3 | **Episode-keyed artefacts**, resumed through the log's vouching | a displaced worker cannot regress a checkpoint | §3 | sound without layer 5: V1, or V2 with layer 2 |
 | 4 | **Time as a trigger** (a staleness `ClaimGate`) | the cross-host wedge dissolves | §4 | holds, with conditions |
 | 5 | **Fenced worker writes** | the displaced worker learns at once; its writes never land | §5 | **optional for correctness** given 1, 2 and V1; efficiency only |
@@ -825,7 +827,9 @@ a displaced worker's unnamed values splice the series under every vouching rule 
 
 1. **Layer 1: IMPLEMENTED 2026-10-03** (`../specs/log-formats.md`, `../specs/reference-by-name.md`).
    The consumers stay on their pins; each migrates and makes its stop-writer changes when it upgrades.
-2. **Layer 2:** the encoding experiment, then value names and the stamping helper.
+2. **Layer 2: IMPLEMENTED 2026-10-31** (`../specs/commits-and-lineage.md`, log format 0.4.0): values
+   committed to a lineage of nodes. The consumers stay on their pins; each migrates when it upgrades
+   (`../specs/log-formats.md` §8).
 3. **Layer 3:** MEASURED (2026-10-04). Without the fence, V1 is sound. V2 with named values and a lineage
    manifest is equally correct, recomputes less, and is free of log position apart from the order among
    claims, provided the lineage key is finer than the claim. **V2 is the target**, built with layer 2.

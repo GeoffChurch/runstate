@@ -1,5 +1,6 @@
 """log-formats.md §4 on postgres: a schema per format."""
 
+import json
 import uuid
 
 import pytest
@@ -15,10 +16,12 @@ from runstate import (
 from runstate.formats import FORMATS
 from tests.format_helpers import toy_layout
 from runstate.migrations import STEPS, migrate
+from runstate.cli import BUDGET, CAP, RUN_ON
 from runstate.migrations.ambiguity import Limits, parse_choices
 
-# the limits of a step that reads none of them
-ONE = Limits(cap=1, budget=1, run_on=0)
+# The command line's limits: the 0.3.0 -> 0.4.0 step reads them, and under no stated
+# facts it follows more than one history even through a log of values alone.
+LIMITS = Limits(cap=CAP, budget=BUDGET, run_on=RUN_ON)
 
 
 @pytest.fixture
@@ -151,7 +154,9 @@ RETURNING seq
 
 def _master_log(dsn, run_id, n):
     """A log as master wrote it: its DDL and appends, unqualified, so they land
-    in the schema the connection's search path resolves."""
+    in the schema the connection's search path resolves. Each record is a value as
+    master wrote one (value-v0.2), since migrating the log to the current format
+    passes it through the 0.3.0 -> 0.4.0 step, which refuses any other."""
     import psycopg
 
     with psycopg.connect(dsn, autocommit=True) as c:
@@ -165,7 +170,7 @@ def _master_log(dsn, run_id, n):
                     "topic": "value",
                     "name": "n",
                     "rid": None,
-                    "body": "{}",
+                    "body": json.dumps({"value": i, "step": None, "t": None}),
                 },
             )
 
@@ -224,7 +229,7 @@ def test_onboarding_leaves_a_tombstone_an_old_writer_cannot_use(scratch_db, sche
         with pytest.raises(LogFormatMismatch, match="runstate migrate"):
             locate("r1", root=dsn, backend="postgres")
     # the log holds values only: no fork, and no divergence fires
-    nothing = parse_choices(STEPS, assume=[], resolve=[], accept=[], limits=ONE)
+    nothing = parse_choices(STEPS, assume=[], resolve=[], accept=[], limits=LIMITS)
     assert migrate(PostgresStore(dsn), None, to=LOG_FORMAT, choices=nothing).moved == (
         "r1",
     )

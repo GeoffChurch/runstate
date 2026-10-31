@@ -73,7 +73,7 @@ run has no records, so a nonexistent and an empty run are identically "no run"
 
 ### Log formats
 
-- `LOG_FORMAT`: the log format this release reads and writes.
+- `LOG_FORMAT`: the log format this release reads and writes, `"0.4.0"`.
 - `LogFormatError`, `LogFormatMismatch` and `LogFormatMissing`: see
   `docs/specs/log-formats.md` §4.
 

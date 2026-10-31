@@ -643,7 +643,7 @@ def test_files_that_are_not_logs_are_skipped_and_counted(tmp_path):
     conn.execute("CREATE TABLE things (x)")
     conn.commit()
     conn.close()
-    _write(root / "v0.4.0" / "future.db", EXIT, fmt="0.3.0")
+    _write(root / "v0.5.0" / "future.db", EXIT, fmt="0.3.0")
     (root / "cell" / "gone.db").symlink_to(root / "nowhere.db")
     out = tmp_path / "out"
     assert _main(root, out, max_rows=100) == 0
@@ -661,6 +661,26 @@ def test_files_that_are_not_logs_are_skipped_and_counted(tmp_path):
     skipped = [json.loads(x) for x in (out / "skipped.jsonl").read_text().splitlines()]
     assert len(skipped) == 6
     assert {x["why"]: x["detail"] for x in skipped}[W.NOT_SQLITE] == "SQLITE_NOTADB"
+
+
+def test_a_log_already_at_0_4_0_is_skipped_as_current(tmp_path):
+    """A log at the 0.4.0 address is in the format the round migrates to: no step
+    leaves it, so it is skipped and counted, never measured. The run's sealed 0.3.0
+    log beside it is superseded by it, as ``runstate migrate`` leaves the two."""
+    root = tmp_path / "root"
+    _write(root / "v0.4.0" / "run.db", EXIT, fmt="0.4.0")
+    _write(root / "v0.3.0" / "run.db", EXIT, fmt="0.3.0")
+    (root / "v0.3.0" / "run.db").chmod(0o444)
+    _write(root / "v0.3.0" / "other.db", EXIT, fmt="0.3.0")
+    out = tmp_path / "out"
+    assert _main(root, out, max_rows=100) == 0
+    runs, summary = _outputs(out)
+    assert list(runs) == ["other"]
+    W = mr.SkipWhy
+    assert summary["files"]["skipped"] == {W.CURRENT: 1, W.SUPERSEDED: 1}
+    skipped = [json.loads(x) for x in (out / "skipped.jsonl").read_text().splitlines()]
+    (current,) = [x for x in skipped if x["why"] == W.CURRENT]
+    assert current["path"].endswith("v0.4.0/run.db")
 
 
 def test_an_unsealed_log_beside_a_newer_one_is_a_conflict(tmp_path):

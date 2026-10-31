@@ -17,11 +17,17 @@ from pathlib import Path
 import pytest
 
 import runstate.migrations.v0_3_0_to_v0_4_0_engine as E
-from runstate import migrations
 from runstate.channel.sqlite import SqliteChannel
 from runstate.formats import FORMATS
-from tests.format_helpers import toy_layout
-from runstate.migrations import RENUMBERING_FROM, STEPS, MigrationError, migrate
+from tests.format_helpers import provision_pg
+from runstate import LOG_FORMAT
+from runstate.migrations import (
+    RENUMBERING_FROM,
+    STEPS,
+    MigrationError,
+    chain,
+    migrate,
+)
 from runstate.migrations.ambiguity import (
     Assumed,
     Assumptions,
@@ -714,14 +720,6 @@ def test_a_launchs_second_terminated_is_refused_whatever_the_claims(case):
 # claim's handle is dead, so is_live lets the step decide.
 
 
-@pytest.fixture
-def registered(monkeypatch):
-    """The step registered for the test only, as tests/test_migrate.py's toy
-    fixture registers its steps: the format does not change in this round."""
-    monkeypatch.setitem(FORMATS, "0.4.0", toy_layout("0.4.0"))
-    monkeypatch.setattr(migrations, "STEPS", (V0_3_0_to_V0_4_0(),))
-
-
 def _seed_0_3_0(root, rid, rows):
     """A 0.3.0 sqlite log at its address holding ``rows``, sent through a
     channel, which numbers them from 1."""
@@ -793,9 +791,7 @@ REFUSED = {
 
 
 @pytest.mark.parametrize("case", list(REFUSED))
-def test_a_refusal_comes_before_the_seal_and_names_the_run_and_the_seq(
-    registered, tmp_path, case
-):
+def test_a_refusal_comes_before_the_seal_and_names_the_run_and_the_seq(tmp_path, case):
     rows = REFUSED[case]
     old = _seed_0_3_0(tmp_path, "r1", rows)
     last = rows[-1]
@@ -892,12 +888,50 @@ def test_a_claim_without_a_handle_cannot_be_judged(body):
 # ----- the step's place in the chain ----------------------------------------------------
 
 
-def test_the_step_renumbers_and_is_not_registered_yet():
-    """The format changes only at the end of layer 2 (log-formats §2, rule 3)."""
+def test_the_step_renumbers_and_is_registered():
+    """The step is the one that renumbers, and the last in the chain: it leaves
+    0.3.0 for the current format, 0.4.0, at its own address (log-formats §2, §6)."""
     assert (step.FROM, step.TO, step.RENUMBERS) == ("0.3.0", "0.4.0", True)
     assert step.FROM == RENUMBERING_FROM
-    assert not any(isinstance(s, V0_3_0_to_V0_4_0) for s in STEPS)
-    assert "0.4.0" not in FORMATS
+    (registered,) = [s for s in STEPS if isinstance(s, V0_3_0_to_V0_4_0)]
+    assert STEPS[-1] is registered and chain("0.3.0", "0.4.0") == [registered]
+    assert LOG_FORMAT == "0.4.0"
+    fmt = FORMATS["0.4.0"]
+    assert fmt.sqlite_path(Path("/r"), "x") == Path("/r/v0.4.0/x.db")
+    assert fmt.pg_schema() == "runstate_v0_4_0"
+
+
+def test_the_cli_migrates_to_the_current_format_by_default(tmp_path, capsys):
+    """`runstate migrate` without --to targets LOG_FORMAT: a reference Worker's run
+    the locators refuse at 0.3.0 opens at its 0.4.0 address afterwards, its old log
+    sealed. The refusal names what to state, and the call states it: the preset and
+    the choosers that ``test_the_reference_workers_own_logs_migrate_under_the_preset``
+    proves sufficient."""
+    from runstate import LogFormatMismatch, attach_channel
+    from runstate.cli import main
+
+    old = _seed_0_3_0(tmp_path, "done", reference_worker_log("reference-done"))
+    with pytest.raises(LogFormatMismatch, match="runstate migrate"):
+        attach_channel("done", root=tmp_path)
+    argv = [
+        "migrate",
+        str(tmp_path),
+        "--assume",
+        "tests.test_migration_v0_3_0_to_v0_4_0:PRESET_CHECKPOINTED",
+        "--resolve",
+        "span=fewest",
+        "--resolve",
+        "origin=newest",
+        "--resolve",
+        "end-time=lower",
+    ]
+    assert main(argv) == 0
+    assert capsys.readouterr().out.split() == ["done"]
+    assert not os.stat(old).st_mode & 0o200  # sealed
+    assert FORMATS["0.4.0"].sqlite_path(tmp_path, "done").exists()
+    with attach_channel("done", root=tmp_path) as ch:
+        topics = [e.topic for e in ch.read()]
+    assert topics[0] == "lifecycle.started" and "lifecycle.commit" in topics
 
 
 # ----- a retained step carries its formats' semantics ------------------------------------
@@ -1764,7 +1798,7 @@ def _choices_stating(configuration):
 
 
 def test_a_sqlite_store_s_sealed_v0_2_0_log_dates_a_birth_the_manifest_does_not(
-    registered, tmp_path
+    tmp_path,
 ):
     """No manifest entry, but the root holds the run's sealed v0.2.0 log: the store's
     trace dates the birth, so the detection pass finds the writer forks, as an entry
@@ -1822,13 +1856,12 @@ def test_a_postgres_store_s_sealed_runs_row_dates_a_birth_the_manifest_does_not(
     import psycopg
     from psycopg import sql
 
-    from runstate.channel.postgres import ensure_schema
     from runstate.migrations.seal import seal_postgres
     from runstate.migrations.stores import PostgresStore
 
     rows, live = _dead_workers_beat()
     rid = f"born-{uuid.uuid4().hex}"
-    ensure_schema(pg_ready)
+    provision_pg(pg_ready, FORMATS["0.3.0"])  # no channel writes 0.3.0 now
     new = FORMATS["0.3.0"].pg_schema()
     with psycopg.connect(pg_ready) as c, c.transaction():
         for x in rows:

@@ -70,7 +70,7 @@ clusters that unlock each other, with a sequencing — see
   release + what SemVer means against per-convention wire versions; the public
   form of the migration doctrine (retain scripts once strangers hold logs); the
   end-of-schema-file-deletion trigger; deprecation policy; the version-naming
-  tension (`0.3.0.dev0` vs the docs' "v0.3" vs wire-`v0.5`); and the schemas-
+  tension (`0.4.0.dev0` vs the docs' "v0.3" vs wire-`v0.6`); and the schemas-
   not-in-the-wheel question. Six decision points, each with a recommendation;
   nothing ruled. Blocks the first `pip install runstate`.
 
@@ -165,9 +165,9 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
   1. reference by name on control and lifecycle records (order-independent folds; fixes #39, the
      cascade and the stale-beat leak; the startless run answered) — **IMPLEMENTED 2026-10-03** as log
      format 0.3.0 ([`../specs/reference-by-name.md`](../specs/reference-by-name.md));
-  2. names on values: commits and lineage, log format 0.4.0 — **SPEC REVISION 2 APPROVED** 2026-10-28
-     ([`../specs/commits-and-lineage.md`](../specs/commits-and-lineage.md)); its migration is implemented,
-     its live layer next;
+  2. names on values: commits and lineage — **IMPLEMENTED 2026-10-31** as log format 0.4.0
+     ([`../specs/commits-and-lineage.md`](../specs/commits-and-lineage.md)), its live layer and its
+     registered migration step;
   3. episode-keyed artefacts read through the log's vouching;
   4. time as a *trigger* for claims, which dissolves the cross-host wedge;
   5. fenced worker writes, possibly optional given 1.

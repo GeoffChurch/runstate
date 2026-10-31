@@ -1,9 +1,10 @@
 # Spec: commits and lineage — values committed to a lineage of nodes (log format 0.4.0)
 
 **Status:** APPROVED, revision 2, 2026-10-14; its drafting choices settled 2026-10-23 (review §12, item 14),
-and the owner approved it at ruling 12a (2026-10-28, review §12, item 16). Its migration (§7) and §5's pure
-reads are implemented, and the step was run over every runstate log the consumers hold; it stays unregistered
-until layer 2's last commit. The rest, the live layer (§3–§6), is not implemented yet.
+and the owner approved it at ruling 12a (2026-10-28, review §12, item 16). **IMPLEMENTED** 2026-10-31, as log
+format 0.4.0 (package 0.4.0.dev0), by [`../plans/2026-10-28-layer2-live.md`](../plans/2026-10-28-layer2-live.md):
+the live layer (§3–§6), §5's reads, and the migration (§7), whose step was run over every runstate log the
+consumers hold and is registered, so `runstate migrate` moves a 0.2.0 or a 0.3.0 log to 0.4.0.
 
 This is layer 2 of [`../backlog/identity-in-records.md`](../backlog/identity-in-records.md). It introduces
 **log format 0.4.0** under [`log-formats.md`](log-formats.md), and builds on
@@ -222,8 +223,7 @@ These are the convention bumps. The envelope is unchanged.
 0.3.0's, unchanged. Only its Postgres table changes: it is 0.3.0's plus the session stamp, the nullable
 `writer_key` and `writer_server` columns ([`channel-postgres.md`](channel-postgres.md); §3, "Who writes a
 death report"), which the backend writes beside each record and no envelope carries; its indexes are 0.3.0's.
-Until the format flip, this branch's 0.3.0 layout holds the stamped table, and the flip gives 0.3.0 back its
-own.
+0.3.0's tables are 0.2.0's, as master wrote them: the stamp is 0.4.0's alone.
 
 ### lifecycle-v0.6
 
