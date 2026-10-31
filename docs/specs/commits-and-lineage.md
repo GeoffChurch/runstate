@@ -20,6 +20,13 @@ This is layer 2 of [`../backlog/identity-in-records.md`](../backlog/identity-in-
   or self-contradicting: a target naming a declared source (§4, §5); the folds polled without a head (§5);
   who kills an orphan (§3); the Watcher's session tier (§5); a save that raises (§6). The plan,
   [`../plans/2026-10-28-layer2-live.md`](../plans/2026-10-28-layer2-live.md), records why.
+- **Amendments from the implementers guide** (2026-10-30) state eleven rules that
+  [`../implementers-guide.md`](../implementers-guide.md), written from this spec alone, could find only in the
+  reference code: `consumed_seq`'s value and the claim's first drain (§3, §4); `unsupported` and a stop's
+  progress-atom refusal (§3); a malformed withdrawal and the claim-race loser (§4); the order among a node's
+  samples (§2); the 0.4.0 tables (§3); the evidence strings, `report_death`'s refusals and `RunResult.run_id`
+  (§3, §5); and what "its `claim_seq` parses" means and an unclaimed run's verdict (§5). Each is marked "from
+  the implementers guide".
 
 **What it gives:**
 - **A reader can project one lineage of a run's values.** A displaced worker, a rewind or a recomputed step
@@ -98,6 +105,10 @@ Today's value reads keep the latest value per (name, step).
 - **A node follows what it names.** Every seq in `values` is lower than the node's own, and so is `parent`.
 - **Order within a node** is the order of its `values` list: the writer's own order, which no reordering of
   the log can move. Two `emit`s of one name in one iteration are two elements.
+- **Order among a node's samples is unspecified** (amended 2026-10-30, from the implementers guide). The
+  samples of different sources at one node may be written in any order, and `values` may list them in any
+  order after the pending values. No read depends on it, since each source has one sample per node (§3) and
+  every read is per name.
 - **A seq named twice along one lineage** is malformed.
 
 **Position: who and where.** The episode did two jobs, and layer 2 gives each its own record (review §12,
@@ -206,6 +217,14 @@ These are the convention bumps. The envelope is unchanged.
 | subscription-v0.4 | subscription-v0.3 | `control.subscribe`, `control.stop`, `control.withdraw` (new); `control.unsubscribe` retired |
 | supervisor-v0.5 | launcher-v0.4 | `supervisor.launched`, `supervisor.terminated`, `supervisor.died` (new); the `launcher.*` prefix retired |
 
+**The tables** (amended 2026-10-30, from the implementers guide). A format holds its tables
+([`log-formats.md`](log-formats.md) §3), and `formats/v0_4_0.py` states both. Format 0.4.0's SQLite table is
+0.3.0's, unchanged. Only its Postgres table changes: it is 0.3.0's plus the session stamp, the nullable
+`writer_key` and `writer_server` columns ([`channel-postgres.md`](channel-postgres.md); §3, "Who writes a
+death report"), which the backend writes beside each record and no envelope carries; its indexes are 0.3.0's.
+Until the format flip, this branch's 0.3.0 layout holds the stamped table, and the flip gives 0.3.0 back its
+own.
+
 ### lifecycle-v0.6
 
 | record | body | change from v0.5 |
@@ -246,8 +265,12 @@ in v0.5; the request on `bound` and `nak`, as in v0.5; and null on `commit`, `he
   name: its order means nothing, and no reader may depend on it (amended 2026-10-30, while implementing).
 - **An exit that discarded its iteration evaluates nothing:** `values: null` implies `fired: []` and `expired:
   []`, as an `if`/`then`, whether or not it completed.
-- **`consumed_seq`** is the control-drain watermark, as in v0.5. No 0.4.0 read uses it except
-  `await_consumed` (§5), which takes it from the claim's commits and heartbeats.
+- **`consumed_seq`** is the control-drain watermark, as in v0.5: the seq of the newest `control.*` record the
+  claim's drains have handled, a skipped one included, or 0 while they have handled none (amended 2026-10-30,
+  from the implementers guide). A drain moves it past a record only once what that record needed, a `bound` or
+  a `nak`, has landed, so a watermark at or above a request's seq says that the claim handled it: registered
+  it, refused it, or skipped it as spent. No 0.4.0 read uses it except `await_consumed` (§5), which takes it
+  from the claim's commits and heartbeats.
 - **`t`** is the writer's wall clock when it wrote the record, as in v0.5. A commit is written when its
   iteration ends, after the values it holds (§4, `commit()`). *Prose:* a commit's `t` is at or after the `t`
   of every value it holds that its writer stamped.
@@ -325,6 +348,9 @@ data-plane project.
   - **A time atom's baseline** is the wall clock at the lease's last firing, kept by the claim, which a rewind
     does not move.
   - **An atom with no baseline holds,** which makes the first firing immediate (below).
+  - **An exit adds no commit** (amended 2026-10-30, from the implementers guide): `count(Commits(), exit)` is
+    `count(Commits(), parent)`. So an `every {commits: 1}` that fired at the exit's parent does not fire at
+    the exit, unlike `every {commits: 0}`: the delta rule reads counts, never the number of evaluations.
 - **Expiry.** A subscription whose `until` holds at a node, or a one-shot that fires there, is named in that
   node's `expired`. One whose `until` already holds when it registers expires at the next node, firing
   nothing (review §12, item 14: 0.3.0 refused it as unsatisfiable, but whether it holds depends on the
@@ -348,7 +374,9 @@ data-plane project.
 the request:
 - a subscription targeting a name that claim does not declare a source: eager streams are read, not
   subscribed;
-- a progress atom naming a name that claim declares a source: its count depends on who asked;
+- a progress atom naming a name that claim declares a source, in a subscription's schedule or in a stop's
+  `from`, which is refused as a subscription's is (amended 2026-10-30, from the implementers guide): its count
+  depends on who asked;
 - an empty window: a `from` that implies the `until` (on one X, `until`'s n at most `from`'s), restated in
   counts from 0.3.0's check. It does not depend on the position. An absent `from` reads as `from` 0 on each X,
   since a 0 in `from` re-spells an absent one, so `{until: {commits: 0}}` is refused as
@@ -357,6 +385,11 @@ the request:
 
 The request id is spent, so an asker resubscribes if the kind changes back. Revision 1's circularity refusal
 is deleted: circular demand can no longer be expressed.
+
+**`unsupported`** (amended 2026-10-30, from the implementers guide) refuses a `control.*` topic the worker
+does not know, with a `nak` that spends its id, as in 0.3.0. It is judged after the id, as every control
+record is (§4, "A drain"): a nameless one is refused `malformed`, and a spent one is skipped.
+subscription-v0.4 defines no other control topic, so only a writer that does not conform produces one.
 
 **What the refusals keep.** A registered source subscription can fire in future, with two exceptions no
 refusal can see: one waiting on a source that is never `set`, and a `{stream}` atom naming a stream that is
@@ -439,6 +472,10 @@ party, whatever else it does, an observer included, may write one for a death it
     ended" that some `stopped` or `died` does. A contradiction in the claim's window is the verdict's to raise,
     never a reporter's, so a death report and a reap land on any log. A claim whose `started` is unreadable has
     no handle to probe, which does not refuse, as an unknown probe does not.
+  - **It raises `ValueError`,** writing nothing (amended 2026-10-30, from the implementers guide), when the
+    record at `claim_seq`, at the W it reads, is not a `lifecycle.started`; when `outcome` is not a death's
+    (`preempted`, `errored`, `killed` or `lost`: never `completed`, nor the Watcher's `presumed_dead`, an
+    inference); or when `evidence` is empty.
 - **`report_if_dead(ch) -> int | None`** is the probe's report (working name): when the latest claim is held,
   and its handle is on this host and probes dead, or the channel's session probe finds the claim's session
   ended, it reports `lost` through `report_death`, with `probe:` and the handle, or `session:` and the
@@ -470,6 +507,11 @@ party, whatever else it does, an observer included, may write one for a death it
     `errored`;
   - an exit 0, a thread that returned and a dead probe are `lost`, by the rule above. A worker released by a
     mistaken report exits 0 so (§4), and its reap adds nothing to the report that released it.
+  - **The reference's evidence strings** (amended 2026-10-30, from the implementers guide) are `reap: exit
+    <n>` for an exit code, `reap: exit 0` among them; `reap: signal <s>` for a signal; `reap: returned` for a
+    thread that returned; `reap: <ExceptionType>: <message>` for one that raised; `probe: <handle>`, with the
+    claim's `started.handle`; and `session: <server>/<key>`, with the session stamp on the claim's row. They
+    are the reference's convention, not interop: no fold parses evidence, and another writer spells its own.
 
 ## 4. The Worker
 
@@ -510,9 +552,20 @@ party, whatever else it does, an observer included, may write one for a death it
 Amended 2026-10-30, while implementing: the walk moved before the CAS, so a claim never lands that its own
 Worker cannot then serve, and the fold after it.
 
+**A claim-race loser writes nothing** (amended 2026-10-30, from the implementers guide). A worker that loses
+at step 2 holds no claim, so any record it wrote would land on the winner's log: `commit()`, `heartbeat()` and
+`retire()` return True, `stop_pending` is True, its other calls do nothing, its `__exit__` writes no exit, and
+`claimed` is False, which tells a lost claim from a commanded stop, as in 0.3.0.
+
 The Worker's own fold drops a subscription only when a withdrawal or a refusal has spent it, or it is a void
 lease. Expiry it takes per lineage, from the rebuild, so that it re-arms a durable subscription another
 lineage expired.
+
+**Requests that landed before the claim** (amended 2026-10-30, from the implementers guide). Step 4's fold
+settles only what is spent and what is void, by name, up to W. The claim's first drain then reads every
+control record from the start of the log, those at or below W included, so a request that landed before the
+claim is registered or refused by that first drain, by the rules of "A drain" below, as one that lands later
+is by the drain after it.
 
 **Values:**
 - **`emit(name, value)`** sends a `value` record at once and adds its seq to the pending values. It raises on
@@ -567,6 +620,9 @@ What a drain does with each control record, by its id (amended 2026-10-30, while
   past. A claim that crashed between a refusal and its next
   watermark leaves that record to be refused again, once more. An empty id is no name: a stop registered under
   it could never be spent, and every claim's exit would hold it.
+- **A `control.withdraw` spends what its `request_id` names, and its body is never read** (amended 2026-10-30,
+  from the implementers guide), by a drain or by any fold: one whose body is malformed spends it too. A
+  nameless one is refused as above, and spends nothing.
 - **A re-send of a stop's live id** follows §3's re-send rule: an accepted re-send of a pending stop replaces
   its registration, its time `from` counted from the re-send; a re-send of a stop that has held is ignored,
   since the decision is a level; a refused re-send spends the id and drops the registration, as for a
@@ -648,7 +704,9 @@ The exit's other rules:
 - **`honored`** names every stop pending at the exit, and every stop whose own condition held at a node or a
   heartbeat of the claim, even one withdrawn since (review §12, item 14, amending item 10b's "honours only
   stops still pending"). So what the exit says about why it stopped does not depend on when another writer's
-  `withdraw` arrived. The answer fold is unchanged, since `honored` and `withdraw` both spend a stop.
+  `withdraw` arrived. The answer fold is unchanged, since `honored` and `withdraw` both spend a stop. A stop
+  is pending from its drain until it is spent, whether or not its `from` has held, so `honored` is not only
+  the stops whose `from` held (amended 2026-10-30, from the implementers guide).
 - **A withdrawal after `commit()` or `heartbeat()` has returned True for a stop is too late.** The claim
   stops, and `honored` names the stop.
 - **`stopped()` takes no node argument.** A caller-supplied one would be a lineage lie.
@@ -854,11 +912,22 @@ null-worker startup crash does.
   strand the claim, and it counts as a `lost` among the death reports' outcomes (review §12, item 14): it
   says only that the claim ended, which is all `lost` says. No fold reads more of its body, since a lenient
   parse is a second reader that another implementation need not share; its seq is in `RunResult.malformed`.
+  - **Its `claim_seq` parses** (amended 2026-10-30, from the implementers guide) when the body has a
+    `claim_seq` whose value is an integer, not a boolean, at least 1 and below the record's own seq, since a
+    record follows what it names. It is read from that key alone, so a record whose other fields are
+    unreadable still names its claim.
 - **Several death reports are all kept** (review §12, item 14). Under death reports, the verdict's outcomes
   are the set of the reports' outcomes, less `lost` when another is present, since `lost` says only what
   every death report says. Nothing is chosen among them: the reports need no order of precedence, the
   verdict does not depend on their order, and it only grows as reports arrive. A consumer's policy tests the
   set, as `ensure` does with "any of its outcomes in `Outcome.failures()`".
+- **An unclaimed run's verdict** (amended 2026-10-30, from the implementers guide) is the newest
+  `supervisor.terminated` at or below W, whichever launch it names, one that no `launched` names included,
+  under the tier `terminated`. A `reason` of `killed` reads `killed`, an exit 0 `completed`, and any other
+  exit `errored`. The verdict rests on that one record, so an unreadable one, or one with no launch id, raises
+  `MalformedRecordError`: it is the run's present verdict, not a record from a dead past, and the read refuses
+  to guess rather than skip it. Its `completed` is a fact about a process, and `worker_completed` is False for
+  it.
 - **`RunResult`:**
   - `outcome` becomes `outcomes: frozenset[Outcome]`, never empty: one element under a self-report, a
     launch's `terminated` or an inference, and the set above under death reports. `Outcome` gains `lost`,
@@ -877,6 +946,10 @@ null-worker startup crash does.
     item 14): `exit`, the claim's own exit; `died`, the death reports and unreadable records that ended it;
     `terminated`, an unclaimed run's launch; and the Watcher's `probed_dead`, `heartbeat_stale` and
     `session_ended`, the session probe's. Under `died`, `error` is `None`, and the evidence is in `reports`.
+  - `run_id: str | None` is, as in 0.3.0, the run's id, which no record carries (amended 2026-10-30, from the
+    implementers guide). A pure read of a channel cannot know it and returns `None`; a reader that knows the
+    run stamps it: the `Watcher` on every verdict its polls return, and `ensure` on the one its
+    `RunFailedError` carries, with the producer's `run_id`.
 - **`worker_completed`** is "the head is closed". Its reading of an exit-0 `terminated` goes, since
   `terminated` no longer enters a claimed run's verdict.
 
