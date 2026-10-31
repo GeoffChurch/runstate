@@ -114,7 +114,8 @@ strongest possible evidence of a missing primitive.
   already are worker-stamped wall-clock. Cost: it is the *worker's* clock, so
   cross-host staleness inherits clock skew.
 - **(c) An opt-in backend capability** — `freshness()` / `last_activity()`, the
-  `EpisodeHolder`/`EpisodeProbe` pattern in `channel/base.py`: isinstance-detected,
+  `EpisodeHolder`/`EpisodeProbe` pattern in `channel/base.py` (since 2026-10-30, the
+  episode lock deleted, its one instance is `SessionProbe`): isinstance-detected,
   resolved at the Watcher's boundary. Reads the substrate's *own* append clock (no
   skew, one writer of truth), needs **no convention bump at all**, and is what the
   2026-07 review already predicted ("`created_at`: don't lift; future = a
@@ -284,7 +285,8 @@ Recipe 1; discovery must be a pluggable resolver, and the app — not runstate �
 own the layout adapters.
 
 **Likely core shape:** an opt-in capability Protocol (`list_runs()`), the *third*
-instance of the `EpisodeHolder`/`EpisodeProbe` pattern — which is itself a signal that
+instance of the `EpisodeHolder`/`EpisodeProbe` pattern (today `SessionProbe`, the
+episode lock's replacement) — which is itself a signal that
 "opt-in, isinstance-detected backend capability" is a basis vector worth naming
 explicitly rather than re-deriving each time.
 

@@ -315,7 +315,12 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
   ([value-plane-divergence-resolution](value-plane-divergence-resolution.md)) so a
   residual double-live can't sticky-poison the log. sqlite-NFS stays conservative
   single-host; the heartbeat ◊P detector remains the floor for *observation* (the
-  `Watcher`), not the claim.
+  `Watcher`), not the claim. *(Log format 0.4.0, 2026-10-30: `live_episode` no longer
+  probes; it reads `ended`, an exit or a death report naming the claim, so a crashed
+  foreign episode blocks until someone with evidence reports it. The episode lock is gone;
+  the Postgres **session probe** is evidence `report_if_dead` records as a death report,
+  which the claim path, the deciders and `ensure` call before they act — never a claim
+  arbiter. `../specs/commits-and-lineage.md` §3.)*
 - **Watcher boundary-aware re-broadcast** — a time-keyed `broadcast` barrier
   subscription is a lease, so on a run that *resumes* it is void for the new
   episode (`../specs/time-lease-boundary.md`); today's steering is "spell
@@ -366,7 +371,8 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
 
 - **channel-postgres — SHIPPED** (`../specs/channel-postgres.md`): the cross-host backend.
   Claim = the uniform shared-log CAS (cross-host single-spawn + control fall out of it);
-  liveness = the advisory lock as a Watcher-consumed signal, *not* a claim arbiter. Still
+  liveness = the session probe (since 2026-10-30; it replaced the episode lock), evidence
+  for a death report and the Watcher's `session_ended` tier, *not* a claim arbiter. Still
   open (deferred in the spec): low-latency push (LISTEN/NOTIFY — issue #16), cross-host auto-relaunch
   (the rejected co-arbiter — see "Cross-host liveness for the claim gate" above), sharding,
   HA.
@@ -463,11 +469,10 @@ reasoning, listed here so they're discoverable as work (cross-ref, not moved):
 
 ## Tactical
 
-- **`hold_episode` runs after the claim CAS** (`runstate/worker.py:144`), so a raise inside it, such as the
-  pooler self-check, leaves a claim on the log that no exit will ever end. Found by mycooc's 12b attack
-  ([review](../review-2026-10-04-commits-and-lineage.md) §12, item 15). Layer 2's session probe fixes it by
-  taking the lock before the connection's first write; until then, a claimant that raises there should end
-  its own claim.
+- **A `Channel` names no run**, so a held fold cannot refuse a poll of another run's channel: it reads that
+  run's records past its cursor and skips the rest in silence. A run identity on the channel would let every
+  fold bind to its run at its first poll and raise on a mismatch. Found by batch 5's review of
+  [`../plans/2026-10-28-layer2-live.md`](../plans/2026-10-28-layer2-live.md).
 - **Windows support** — untested, unclaimed. The old rationale ("uses
   `fcntl.flock`") died with the v0.1 file backend — v0.2 holds no file locks
   (sqlite serializes internally; memory uses a threading lock). The actual

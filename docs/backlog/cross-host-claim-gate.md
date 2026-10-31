@@ -7,6 +7,28 @@ adversarial pass, per [`../specs/channel-postgres.md`](../specs/channel-postgres
 the claim gate" inline entry into a living document. It **prepares** an owner
 ruling; it does not make one. No code changes accompany it.
 
+**Log format 0.4.0 changes the landscape again** (2026-10-30,
+[`../specs/commits-and-lineage.md`](../specs/commits-and-lineage.md) §3, §5;
+[`../specs/channel-postgres.md`](../specs/channel-postgres.md) "Liveness"). The
+episode lock this file builds on (§3) is **deleted**, with its `EpisodeHolder` /
+`EpisodeProbe` capability and the Watcher's birth grace. In its place:
+- `live_episode` **no longer probes**: a claim is held until it has *ended*, its
+  exit or a death report (`supervisor.died`) naming it on the log. §1's "reads
+  live forever" now holds of any unreported crash, on any host, until a party
+  with evidence reports it.
+- The Postgres **session probe**: a fresh advisory-lock key per connection, taken
+  before its first write, a stamp on every row, and `SessionProbe`, which says
+  whether the session that wrote a claim has ended. It is evidence for a record:
+  `report_if_dead` writes it as a `lost` death report, and the claim path, the
+  deciders and `ensure` call `report_if_dead` before they act. So a crashed
+  foreign-host claim on Postgres is released through the log, by any actor,
+  without the claim gate itself consulting a lock; the CAS stays the only
+  arbiter.
+
+What that leaves of this deliberation — whether the claim gate needs anything
+beyond the death report — is open. The sections below describe the episode lock
+as it stood in 2026-07.
+
 ---
 
 ## 1. The problem, precisely

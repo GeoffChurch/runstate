@@ -23,12 +23,16 @@ with opt-in **conventions** on top. The design rationale lives in
 
 1. **The JSON Schema stack in `protocol/`** — `envelope-v0.2.schema.json`
    (the substrate record: structure only, opaque body) plus the
-   per-convention schemas (`value`-`v0.2`, `subscription`-`v0.3`,
-   `launcher`-`v0.4`, `lifecycle`-`v0.5`), each `additionalProperties: false` and
-   independently versioned. Authoritative for the wire format.
+   per-convention schemas (`value`-`v0.3`, `subscription`-`v0.4`,
+   `supervisor`-`v0.5`, `lifecycle`-`v0.6`; log format 0.4.0,
+   `docs/specs/commits-and-lineage.md` §3), each `additionalProperties: false`
+   and independently versioned. Authoritative for the wire format. (The 0.3.0
+   schemas are the migration's test fixtures, `tests/fixtures/log-format-0.3.0/`.)
 2. **`docs/design-v0.2.md`** — prose. Defines the two-layer model and
    semantics: the topic-log substrate, the conventions, the liveness
-   tiers, the subscription condition-algebra, the three clocks.
+   tiers, the subscription condition-algebra, the three clocks. Its 0.4.0
+   rules (commits and lineage, the two viewpoints of a claim's end, the
+   reads) are specified in full in `docs/specs/commits-and-lineage.md`.
 
 When in doubt about "is this protocol-conformant?", check both. The
 Python library MUST produce messages that pass the schema validators;
@@ -46,9 +50,12 @@ The substrate + opt-in conventions + reference orchestration, in
   (existing-only; raises `RunNotFound`, never creates or mutates) + `create_channel`
   (open-or-create birth) splitting on creation policy so observing a run never
   mutates it (`docs/specs/channel-locators.md`), and the opt-in capability
-  Protocols `EpisodeHolder`/`EpisodeProbe` in
-  `channel/base.py` (a backend's connection-bound liveness signal off the five-op
-  base, isinstance-detected; the Watcher consumes it). A per-run append-only
+  Protocol `SessionProbe` (with `Session`) in `channel/base.py`: the session
+  probe, a backend's evidence that the session that wrote a claim has ended,
+  off the five-op base and isinstance-detected (Postgres offers it: a fresh
+  advisory-lock key per connection and a writer stamp on every row);
+  `report_if_dead` records it as a death report and the Watcher reads it as
+  `session_ended`, never a claim arbiter. A per-run append-only
   **topic log** of envelopes `{seq, topic, name?, request_id?, body}`; the
   substrate routes/indexes on the envelope and never parses `body`.
 - **`formats/`** — the log format registry (`docs/specs/log-formats.md`): a log's
@@ -72,69 +79,99 @@ The substrate + opt-in conventions + reference orchestration, in
   **not registered**: `STEPS` and `FORMATS` stop at 0.3.0 until layer 2's writer
   ships 0.4.0, so it runs only in process (its tests, the corpus runner
   `scripts/migration_round.py`).
-- **`lineage.py`** — PROVISIONAL: the pure 0.4.0 reads (the head, the lineage,
-  counts and series, the verdict and the stop fold; `commits-and-lineage.md` §2,
-  §5), which the corpus runner reads migrated logs with until the format flip
-  moves them into `vocabulary/` and `observables`.
 - **`vocabulary/`** — the L2 **convention vocabulary** (the typed terms another
-  language reimplements to interop): `payloads.py` (frozen body dataclasses
-  mirroring the schemas — `Value`/`Started`/`Heartbeat`/`Stopped`/`Nak`/
-  `Bound`/`Launched`/`Terminated`; serialize via `asdict`, parse via
-  `Cls(**body)`. Records name what they speak for: `Heartbeat.claim_seq` and
-  `Stopped.claim_seq` the episode, `Stopped.honored` the stops it answers, and
-  `Bound` (`lifecycle.bound`) the episode a lease is bound to —
-  `docs/specs/reference-by-name.md`),
-  `schedule.py` (the subscription **condition-algebra**: `satisfied()`,
-  `Subscription`, `is_unsatisfiable()` — `from`/`every`/`until` over
-  `step`/time/count), `handle.py` (portable liveness handles `local://host/pid`;
-  `handle_pid` owns the parse, `resolve` the liveness probe), `launch.py` (the
-  launch's correlation id: minted per launch, stamped on both `launcher.*`
-  records and re-emitted on the worker's `lifecycle.started`, so a death names
+  language reimplements to interop): `payloads.py` (`Topic`; the enums
+  `Outcome`, `NakReason`, `Reap`; frozen body dataclasses mirroring the
+  schemas — `Value`/`Started`/`Commit`/`Heartbeat`/`Rewind`/`Stopped`/`Bound`/
+  `Nak`/`Withdraw`/`Launched`/`Terminated`/`Died`, serialized via `asdict`,
+  parsed via `Cls(**body)`; and the `Node` Protocol a `Commit` and a `Stopped`
+  satisfy. Records name what they speak for: `claim_seq` the claim, a node's
+  `parent` and `values` what it extends and commits, `fired`/`expired` the
+  subscriptions, `Stopped.honored` the set of stops it answers, `Bound` the
+  claim a lease is bound to, `Died` the claim a death report ends —
+  `docs/specs/reference-by-name.md`, `docs/specs/commits-and-lineage.md` §3),
+  `coordinate.py` (`Commits`, the lineage's own clock; `Target(x, n)`, "the
+  first n of x", one type for `steps(until)`, `ensure` and the producer seam;
+  the `NodeRef` Protocol), `schedule.py` (the subscription
+  **condition-algebra** over counts: `Term`, `Schedule`, `parse_schedule`,
+  `satisfied`, `Subscription`, `is_lease`, `unsatisfiable` —
+  `from`/`every`/`until` over `{commits}`/`{stream, n}`/time/count, a lease
+  per claim or durable per lineage), `handle.py` (portable liveness handles
+  `local://host/pid`; `handle_pid` owns the parse, `resolve` the liveness
+  probe), `launch.py` (the launch's correlation id: minted per launch, stamped
+  on both its `supervisor.launched` and `supervisor.terminated` and re-emitted
+  on the worker's `lifecycle.started`, so a death names
   the launch it ended rather than forging the run's verdict —
   `docs/specs/launcher-record-identity.md`; transported ambiently via
   `RUNSTATE_LAUNCH_ID` / a ContextVar).
-- **`worker.py`** — the reference `Worker` loop (context manager + the two
-  drivers: `steps(total)` runs on the launch contract's target, `serve()` on
-  leased demand): drains `control.*` (the answer fold by name: a spent id is
-  skipped, a lease is bound to its episode by `lifecycle.bound`; expiry
-  counter-records), services subscriptions into `value` events (`set`, the
-  demand-sampled register) beside the unconditional `emit` (the broadcast
-  point the memoizer reads), emits `lifecycle.*` naming its claim
-  (`claim_seq`), exposes the levels (`stop_pending`, `pinned`), and dies by a
-  CAS over a fully read control tail whose `stopped` names the stops it
-  honored (`honored`): `retire()` the careful death (specs/service-worker.md),
-  `stopped()` the plain one (specs/stop-discharge.md).
+- **`worker.py`** — the reference `Worker` (`commits-and-lineage.md` §4):
+  `Worker(channel, *, resume_from, sources, save)` claims the run from a node
+  (a `NodeRef`, `LatestClaimHead()` or `None`); `emit` (an eager stream's
+  element), `set` (a declared source's register) and `include`; `commit()`
+  ends an iteration (drain, evaluate, one sample per fired source, one
+  `lifecycle.commit`, the save policy, the stop decision), and one that
+  raises before its node lands tears the iteration; `heartbeat()` (liveness
+  only), `rewind(target)` and `discard()`; the drivers `steps(until)` and
+  `serve()`; the exit `stopped(*, completed, error)` and `retire()`, the
+  careful death, each a node CAS'd over a fully read control tail, `honored`
+  the set of stops it answers. Every drain reads the death reports first,
+  and CAS-appends its `bound` and `nak`; a released worker, a claim-race
+  loser and a worker after its exit are fenced. The levels: `claimed`,
+  `released`, `stop_pending`, `pinned`, `resume_node`.
+- **`checkpoint.py`** — the checkpoint recipe (`commits-and-lineage.md` §6):
+  the `SavePolicy` Strategy (`Every(k, fn)`, `NoSave()`), which the Worker
+  runs after each commit and each extendable exit, and the `CheckpointChoice`
+  Strategy (`OnHeadLineage()`, `MostProgress(stream)`) over the caller's
+  checkpoints.
+- **`walk.py`** and **`claims.py`** — internal, not in `runstate.__all__`:
+  the lineage walk the reads, the Worker and `ensure` share
+  (`MalformedRecordError`, the node checks, `walk`), and the claim plane's
+  presence predicates the reads, the folds and the launchers' reporters
+  share (`ends`, `endings`, `has_exit`), which never raise on what the log
+  holds.
 - **`observables.py`** — the **stateless observer plane**: pure body-aware
   folds log → derived view (`docs/specs/observables.md`), each reading the
   records that NAME what it asks about, so its answer does not depend on
-  arrival order. `peek_terminal` → `RunResult` (the terminal verdict: the
-  `stopped` naming the latest claim; closed `outcome`, verbatim `reason`, no
-  `success`), `live_episode`, `latest_episode` (the episode-boundary rule),
-  `progress` (the current episode's step frontier), `value_series` (the
-  per-(name, step) register projection), `live_demand` (the answer fold by
-  name — subscribes no answer names, leases not voided by their binding),
-  `undischarged_stops` (stops no `stopped.honored` or nak names),
+  arrival order. The claim plane: `peek_terminal` → `RunResult` (the verdict
+  by viewpoint: the latest claim's readable exit, else the death reports
+  naming it, else an unclaimed run's `terminated`; a set of `outcomes`, a
+  closed `tier`, no `success`), the presence-based `ended` behind
+  `live_episode` (no probe), `latest_episode`, `worker_completed`. The
+  lineage reads, each with a required `head` (`LatestClaimHead`, `AtNode`):
+  `prefix_len`, `prefix`, `series`, `last_element`, `aligned`, `answers`,
+  `streams`. The answer folds `live_demand` (a stop by name, a lease per
+  claim, a durable subscription per the head's lineage) and
+  `undischarged_stops`. The held folds for a polled path, each equal to its
+  pure read after every record: `HeadFold`, `PrefixLen`, `LastElement`,
+  `Answers`, `LiveDemand`, `PendingStops`. And
   `last_activity` (max-`t` among the dated finalists — freshness off
   the log, so a third party can age a run it never launched;
   `docs/specs/observer-clock.md`). Membership test: needs a cursor or clock → it's the
   `Watcher`'s; parses a handle string → it's `vocabulary/`'s.
-- **`launcher.py`** — `Launcher` / `LaunchHandle` Protocols +
-  `ThreadLauncher` (in-process) + `LocalLauncher` (subprocess + `attach`;
-  `reap()` + the foreign-claim-scoped reap discipline) + the two deciders:
-  `relaunch_if_needed` (durable demand) and `ensure_served` (leased demand —
-  lazy-launch, specs/lazy-launch.md).
-- **`memoizer.py`** — `history` (replay the subscription algebra over the
-  logged `value` points) + `ensure` (read-first / produce-on-miss over the
-  duck-typed producer seam: `.channel`/`.run_id`/`.extend(until)` returning
-  a liveness handle, never None) + `launch_producer` (the callable-worker
-  factory) + `foreign_episode` (the gate's foreign half — specs/store.md
-  Recipe 2; the no-progress guard is own-spawn-scoped).
+- **`launcher.py`** — the `Launcher[T]` Protocol, contravariant in its
+  target record (`ThreadTarget`, `Command`; `Drivable`), and `LaunchHandle` +
+  `ThreadLauncher` (in-process) + `LocalLauncher` (subprocess; `reap()`, which
+  kills an orphan of its own through its `Popen`) + the death reports
+  (`report_death`, `report_if_dead`, `ClaimAliveError`, `ReportStarvedError`;
+  a launcher's reap writes the `supervisor.died` beside its `terminated`) +
+  the two deciders, which call `report_if_dead` before they launch:
+  `relaunch_if_needed` (durable demand) and `ensure_served` (leased demand,
+  held in a `LiveDemand` — lazy-launch, specs/lazy-launch.md).
+- **`memoizer.py`** — `history` (replay a schedule over a lineage's nodes)
+  + `ensure(producer, target)` → `Reached | Unreachable` (read-first /
+  produce-on-miss over the `Producer` seam: `.channel`/`.run_id`/
+  `.extend(target)` returning a `LiveHandle`, never None; `report_if_dead` on
+  each poll; the per-drive failure exits `RunFailedError`, `NoProgressError`,
+  `RecordlessExitError`) + `launch_producer(launcher, run_id, target)` (the
+  `Drivable`-target factory) + `foreign_episode` (the gate's foreign half, a
+  pure read of `ended` — specs/store.md Recipe 2).
 - **`watcher.py`** — `Watcher`, the stateful failure detector
   (`poll`/`wait`/`wait_all`/`iter_events`/`broadcast`, and `pending_stops`,
-  the incremental `undischarged_stops`) + `RunStatus` (`Running | RunResult`)
-  + `await_consumed` (did my control request land: a `Nak`, the terminal
-  `RunResult`, or `None` for accepted; a reused spent id raises).
-- **`sweep.py`** — sequential multi-run helper (`sweep` + `Variant`).
+  the held `undischarged_stops`; a required `heartbeat_timeout`; the inference
+  tiers `probed_dead`, `heartbeat_stale`, `session_ended`) + `RunStatus`
+  (`Running(head, commits, beacon_age) | RunResult`) + `await_consumed` (did my
+  control request land: a `Nak`, the terminal `RunResult`, or `None` for
+  accepted; a spent id, a nameless request or a void lease raises).
 - **`__init__.py`** — `current_channel()` (worker-side Channel factory reading
   `RUNSTATE_RUN_ID` / `RUNSTATE_CHANNEL_ROOT` / `RUNSTATE_CHANNEL_BACKEND`
   from env, delegating to `create_channel` so a launcher-less direct run still
@@ -151,13 +188,13 @@ launchers, but they're opt-in helpers — users can spawn however they want
 "loss", "phase", "experiment") belongs in user code or in opt-in helpers
 that document themselves as "one recipe; you can build your own." The
 substrate never imposes message shapes — `channel.send` takes an arbitrary
-`body` dict. The conventions (`control.*`, `lifecycle.*`, `launcher.*`,
+`body` dict. The conventions (`control.*`, `lifecycle.*`, `supervisor.*`,
 `value`) are opt-in typed shapes pinned by the schemas; a worker that opts
 out composes its own loop from `send`/`read`/`latest` + the liveness tiers.
 
 **Helpers earn their place.** Before adding a new typed convention message,
 ask: does the protocol itself need to recognize it (the way
-`lifecycle.stopped` / `launcher.terminated` drive `peek_terminal`, or
+`lifecycle.stopped` / `supervisor.died` drive `peek_terminal`, or
 `control.*` drives the worker loop)? If not, it's a user-defined dict under
 `topic="value"` — keep it out of the conventions.
 
@@ -277,7 +314,7 @@ them. The pre-commit hook prefers `./.conda/bin/python` when it exists.
 conda activate ./.conda             # the dev env: editable install + test + postgres extras
 conda create -p ./.conda -c conda-forge python=3.12 postgresql \
   && ./.conda/bin/pip install -e .[test,postgres]  # (re)create it; postgresql: the test server
-pytest tests/ -m "not oracle"       # what the hook runs (~4,495, ~110 s, Postgres included)
+pytest tests/ -m "not oracle"       # what the hook runs (~4,060, ~115 s, Postgres included)
 pytest tests/ -m oracle             # the migration oracle's families (below)
 pytest tests/test_channel.py -v     # one module
 pytest tests/test_schema.py -v      # emitted messages conform to the schema stack
@@ -290,9 +327,11 @@ git config core.hooksPath scripts/githooks   # opt in to the local gates (per cl
 exported as `RUNSTATE_TEST_PG_DSN` before collection, stopped and deleted at session end. It also sets
 `RUNSTATE_TEST_PG_ALTER_SYSTEM=1`, since `ALTER SYSTEM` on that cluster touches nothing else. The
 binaries are looked for next to the interpreter (`./.conda/bin`), then on `PATH`. Without them
-(`conda install -p ./.conda -c conda-forge postgresql`) about 280 tests skip -- every test of the CAS
-under real cross-process contention, the advisory-lock probe, and the shared-table paths -- and the
-session ends with a `note:` line saying so.
+(`conda install -p ./.conda -c conda-forge postgresql`) about 310 tests skip -- every test of the CAS
+under real cross-process contention, the session probe, and the shared-table paths -- and the
+session ends with a `note:` line saying so. Measured 2026-10-30: 4,056 passed / 4 skipped with the
+session's server, 3,747 passed / 313 skipped without one, the oracle's 25 deselected; 4,085
+collected in all.
 
 **An explicit `RUNSTATE_TEST_PG_DSN` wins**, and then nothing starts: CI's service, or a server of
 your own:
@@ -311,7 +350,7 @@ path blows it (`Unix-domain socket path ... is too long`). The `fsync = off` ref
 set it only on a throwaway one (CI's job sets it).
 
 The pre-commit hook runs CI's default gate set -- `black --check`,
-`mypy --strict`, `pytest` -- in ~110 s, almost all of it the suite. It exists
+`mypy --strict`, `pytest` -- in ~115 s, almost all of it the suite. It exists
 because the formatter gate is the one that gets skipped: run the checks, add
 code, commit, and CI goes red on a branch that looked green. `--no-verify`
 bypasses it. It runs the Postgres suite too, on the session's own server; only
@@ -418,17 +457,21 @@ plan as the remaining work; and the deferred design-§12 items mirrored there).
 - The reference `Worker` loop + `current_channel()`.
 - Orchestration (Layer 3): `Launcher`/`LaunchHandle` Protocols,
   `ThreadLauncher`, `LocalLauncher`, `Watcher` (4 liveness tiers,
-  `RunStatus`), `peek_terminal`/`RunResult`, `sweep`.
+  `RunStatus`), `peek_terminal`/`RunResult`. (`sweep` shipped too, and was
+  deleted 2026-10-30 as a workload helper no consumer called:
+  `docs/dead_ends/sweep.md`.)
 - The JSON Schema stack + conformance tests.
 
 **Shipped since v0.2:**
 - The cross-host **`PostgresChannel`** backend (`docs/specs/channel-postgres.md`):
   one shared `log` table, the CAS (`PRIMARY KEY (run_id, seq)`) as the cross-host
   claim arbiter (cross-host single-spawn + control fall out of it, claim model
-  unchanged), and a session advisory lock as a Watcher-consumed liveness capability
-  (`EpisodeHolder`/`EpisodeProbe`, resolved at the Watcher's boundary into a per-run
-  probe — never a claim arbiter). Optional `[postgres]` extra; the repo's first CI
-  workflow runs it against a Postgres service.
+  unchanged), and the session probe (`SessionProbe`: a fresh advisory-lock key per
+  connection taken before its first write, a writer stamp on every row, PostgreSQL
+  16 or newer) as evidence for a death report — never a claim arbiter. It replaced
+  the episode lock (`EpisodeHolder`/`EpisodeProbe`) on 2026-10-30. Optional
+  `[postgres]` extra; the repo's first CI workflow runs it against a Postgres
+  service, and the local suite starts a throwaway server of its own.
 - **Log formats** (`docs/specs/log-formats.md`): a log's format is part of its
   address, every open checks it, and `runstate migrate` moves logs forward
   through retained, sealing steps.
@@ -436,6 +479,15 @@ plan as the remaining work; and the deferred design-§12 items mirrored there).
   records name what they answer, end or concern (`claim_seq`, `honored`,
   `lifecycle.bound`, a required stop `request_id`), so the control-plane folds
   do not depend on arrival order; `Watcher.pending_stops`. Package 0.3.0.dev0.
+- **Commits and lineage**, the live layer of log format 0.4.0
+  (`docs/specs/commits-and-lineage.md`, layer 2 of
+  `docs/backlog/identity-in-records.md`): values committed to a lineage of
+  nodes (`lifecycle.commit`, `lifecycle.rewind`, the exit a node), `Commits()`
+  and `Target`, the lineage reads and held folds, `control.withdraw`, the
+  `supervisor.*` rename with `supervisor.died` and the presence-based `ended`,
+  the checkpoint recipe, `Launcher[T]`. The live layer is `runstate/`; the
+  format flip (`LOG_FORMAT = "0.4.0"`, the step registered, package
+  0.4.0.dev0) is the plan's last commit.
 
 **Deferred (v0.3+)** (see `docs/backlog/index.md`):
 - ~~Store Protocol + backends~~ — **DISSOLVED 2026-06-11**

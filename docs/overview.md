@@ -159,7 +159,7 @@ convention:
 |---|---|---|
 | `control.subscribe` / `control.unsubscribe` / `control.stop` | orchestrator¹ | worker |
 | `lifecycle.*` (started / heartbeat / stopped / nak) | worker | observers |
-| `launcher.*` (launched / terminated) | launcher | observers |
+| `supervisor.*` (launched / terminated / died) | launcher; `died` by any party with evidence of a death | observers |
 | `value` (user metrics; `name` says which) | worker | observers |
 
 ¹ with one completion case: the worker itself appends `control.unsubscribe`
@@ -309,7 +309,10 @@ or orchestrator can ignore it and compose `send`/`read`/`latest` directly.
   schedule)` fans one subscription across all tracked runs under a shared
   `request_id` — the **cross-run barrier**, and the reason there is no Experiment
   class.
-- **`sweep`** — sequential multi-run helper.
+- **`ensure`, the deciders** — `ensure(producer, target)` reads first and produces
+  on a miss; `relaunch_if_needed` and `ensure_served` launch for durable and leased
+  demand. (`sweep`, a sequential multi-run helper, was deleted on 2026-10-30:
+  `dead_ends/sweep.md`.)
 
 ## Cross-cutting: liveness as a layered failure detector
 
@@ -317,9 +320,10 @@ or orchestrator can ignore it and compose `send`/`read`/`latest` directly.
 best to worst. None is substrate state — liveness is *emitted messages* +
 *observer-side probing*, never a mutable TTL lease:
 
-1. **Clean completion** — a `lifecycle.stopped` record exists.
-2. **Reaped death** — a `launcher.terminated` record (the manner of death; needs a
-   reaper).
+1. **The exit** — the claim's `lifecycle.stopped` record exists.
+2. **A death report** — a `supervisor.died` naming the claim, from a reap, a probe,
+   a session probe or accounting (for a run nothing claimed, its launch's
+   `supervisor.terminated`).
 3. **Probe the handle** — resolve it (`kill -0`) for the *fact* of death — same-host only (a foreign host's handle is *not locally resolvable* and falls to tier 4, never a false verdict) — even if
    the launcher is gone.
 4. **Heartbeat staleness** — newest heartbeat older than a threshold ⟹ hung or
@@ -327,11 +331,13 @@ best to worst. None is substrate state — liveness is *emitted messages* +
 
 `peek_terminal(channel)` is the record-based verdict (tiers 1–2 — a pure, stateless
 log read); the `Watcher` adds the inference tiers (3–4), which need state (arrival
-times). All of it folds to one **`RunResult`**: a *closed* `outcome ∈ {completed,
-preempted, errored, killed, presumed_dead}` plus a verbatim `reason`. There is
-deliberately **no `success` boolean** — whether a clean preemption "succeeded" is a
-policy the *consumer* owns (e.g. `sweep` fails on the bottom three), not something
-the producer should bake in.
+times). All of it folds to one **`RunResult`**: a *closed* set of `outcomes` (from
+`{completed, preempted, errored, killed, lost, presumed_dead}`) plus the closed `tier`
+it rests on. There is deliberately **no `success` boolean** — whether a clean
+preemption "succeeded" is a policy the *consumer* owns (e.g. `ensure` fails on any
+outcome in `Outcome.failures()`), not something the producer should bake in. (Log
+format 0.4.0, `specs/commits-and-lineage.md` §5: a read never writes, so the probe
+tiers stay the Watcher's inferences until `report_if_dead` records one.)
 
 Tier 4 carries an irreducible tension: a worker in a legitimately long single step
 (a 20-minute epoch) stops beaconing and *looks* dead. That's the **dead-vs-busy**

@@ -102,8 +102,9 @@ false. mycooc's `graph_adapter.py` `input_provenance` register already reads uns
 **Two corrections to the previous revision, and one non-correction.**
 
 - *"Every spawn is the consumer's"* was **false as written**: `LocalLauncher.launch` calls
-  `subprocess.Popen`, `ThreadLauncher` starts a thread, and `sweep.py` runs a
-  read-the-log-then-`launch()` loop **inside** runstate. The narrower claim survives and is what the
+  `subprocess.Popen`, `ThreadLauncher` starts a thread, and `sweep.py` ran a
+  read-the-log-then-`launch()` loop **inside** runstate (deleted 2026-10-30,
+  `../dead_ends/sweep.md`; the deciders and `ensure` still launch from a log read). The narrower claim survives and is what the
   boundary argument needs: *runstate never **originates** a spawn — every spawn traces to a
   consumer-initiated call, and the consumer chooses the launcher.*
 - The pollution worry was **overstated in the safe direction**: a stepless register does *not* appear
