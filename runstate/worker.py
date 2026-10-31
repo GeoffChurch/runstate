@@ -1185,7 +1185,6 @@ class Worker:
                 "JSON-serializable; pass json_default to "
                 "current_channel()/create_channel() to coerce it"
             ) from exc
-        assert seq is not None  # an unconditional send always lands
         return seq
 
     def set(self, name: str, value: object) -> None:
@@ -1282,7 +1281,6 @@ class Worker:
         except BaseException:
             self._tear()
             raise
-        assert seq is not None  # an unconditional send always lands
         node = _Node(
             seq, at, tuple(values), tuple(evaluation.fired), tuple(evaluation.expired)
         )

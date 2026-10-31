@@ -32,7 +32,6 @@ import os
 import sys
 import tempfile
 import time
-import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import KW_ONLY, asdict, dataclass, field
 from typing import Any, Optional
@@ -82,7 +81,7 @@ def _entrypoint(
     os.environ["RUNSTATE_RUN_ID"] = run_id
     os.environ["RUNSTATE_CHANNEL_ROOT"] = root
     os.environ["RUNSTATE_CHANNEL_BACKEND"] = backend
-    os.environ["RUNSTATE_LAUNCH_ID"] = launch_id
+    os.environ[runstate.LAUNCH_ID_ENV] = launch_id
     # os.environ["RUNSTATE_SQLITE_JOURNAL_MODE"] = "DELETE"  # <-- on a real cluster (NFS)
     fn(**kwargs)
 
@@ -158,16 +157,11 @@ class SubmititHandle:
             topic=runstate.Topic.SUPERVISOR_TERMINATED,
             request_id=self.launch_id,
         )
-        # The claim naming this launch (a request_ids filter also admits records
-        # naming no request, so compare the id).
-        claims = [
-            e
-            for e in self.channel.read(
-                topics=[runstate.Topic.LIFECYCLE_STARTED], request_ids=[self.launch_id]
-            )
-            if e.request_id == self.launch_id
-        ]
-        if claims:
+        # The claim naming this launch, in the log as read now.
+        claim = runstate.launch_claim(
+            self.channel, self.launch_id, after=0, w=self.channel.last_seq()
+        )
+        if claim is not None:
             # A raise is errored; a return with the claim still held is lost
             # (which lands only while it is held).
             outcome = runstate.Outcome.ERRORED if raised else runstate.Outcome.LOST
@@ -176,7 +170,7 @@ class SubmititHandle:
             )
             runstate.report_death(
                 self.channel,
-                claims[-1].seq,
+                claim.seq,
                 outcome=outcome,
                 evidence=evidence,
                 force=True,
@@ -204,9 +198,9 @@ class SubmititLauncher:
         return runstate.attach_channel(run_id, root=self._root, backend=self._backend)
 
     def launch(self, run_id: str, target: Job) -> SubmititHandle:
-        # One opaque id per launch, never derived from a pid or a position
-        # (specs/launcher-record-identity.md): its records and its claim carry it.
-        launch_id = uuid.uuid4().hex
+        # One opaque id per launch (specs/launcher-record-identity.md): its records
+        # and its claim carry it.
+        launch_id = runstate.new_launch_id()
         job = self._executor.submit(
             _entrypoint,
             target.fn,

@@ -21,7 +21,7 @@ import secrets
 import threading
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, overload
 
 import psycopg
 from psycopg import sql
@@ -337,6 +337,27 @@ class PostgresChannel(Channel):
                 "or session-pooled endpoint"
             )
         return key
+
+    @overload
+    def send(
+        self,
+        body: Body,
+        *,
+        topic: str,
+        name: str | None = None,
+        request_id: str | None = None,
+    ) -> int: ...
+
+    @overload
+    def send(
+        self,
+        body: Body,
+        *,
+        topic: str,
+        name: str | None = None,
+        request_id: str | None = None,
+        expected_seq: int | None,
+    ) -> int | None: ...
 
     def send(
         self,

@@ -13,7 +13,7 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, overload
 from urllib.request import pathname2url
 
 from ..formats import FORMATS, LOG_FORMAT
@@ -155,6 +155,27 @@ class SqliteChannel(Channel):
         if n == 0:
             self._conn.close()
             raise RunNotFound(f"run has no records at {path}")
+
+    @overload
+    def send(
+        self,
+        body: Body,
+        *,
+        topic: str,
+        name: str | None = None,
+        request_id: str | None = None,
+    ) -> int: ...
+
+    @overload
+    def send(
+        self,
+        body: Body,
+        *,
+        topic: str,
+        name: str | None = None,
+        request_id: str | None = None,
+        expected_seq: int | None,
+    ) -> int | None: ...
 
     def send(
         self,

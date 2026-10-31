@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import threading
 from collections.abc import Callable, Sequence
+from typing import overload
 
 from .base import Channel
 from .envelope import Body, Envelope
@@ -100,6 +101,27 @@ class MemoryChannel(Channel):
         # records live), never a different answer about the records.
         self._log = log if log is not None else MemoryLog([])
         self._json_default = json_default
+
+    @overload
+    def send(
+        self,
+        body: Body,
+        *,
+        topic: str,
+        name: str | None = None,
+        request_id: str | None = None,
+    ) -> int: ...
+
+    @overload
+    def send(
+        self,
+        body: Body,
+        *,
+        topic: str,
+        name: str | None = None,
+        request_id: str | None = None,
+        expected_seq: int | None,
+    ) -> int | None: ...
 
     def send(
         self,

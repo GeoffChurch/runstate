@@ -11,6 +11,7 @@ reached if and only if the count is at least ``n``.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Mapping
 from typing import Any, Protocol
 
 # subscription-v0.4's ``Count``: a threshold the wire can carry is at most 2^53 - 1.
@@ -61,6 +62,29 @@ class Target:
         if isinstance(self.x, Commits):
             return {"commits": self.n}
         return {"stream": self.x, "n": self.n}
+
+    @classmethod
+    def from_atom(cls, atom: Mapping[str, object]) -> Target:
+        """The inverse of ``atom()``: ``Target.from_atom(t.atom()) == t``. For a
+        target that crossed a boundary as data (an environment variable, a job's
+        arguments), so the caller converts it here, once, rather than by hand.
+
+        ``ValueError`` on anything else: a mapping that is not exactly one of the
+        two shapes, or a number or name the constructor refuses (a bool, a
+        whole-number float, an n out of range, an empty stream name). A condition
+        that is not a lone progress atom is ``parse_schedule``'s to read."""
+        keys = set(atom)
+        if keys == {"commits"}:
+            x: object = Commits()
+        elif keys == {"stream", "n"}:
+            x = atom["stream"]
+        else:
+            raise ValueError(
+                'a target atom is {"stream": x, "n": n} or {"commits": n}, '
+                f"got keys {sorted(map(str, keys))}"
+            )
+        n = atom["commits"] if isinstance(x, Commits) else atom["n"]
+        return cls(x, n)  # type: ignore[arg-type]  # __post_init__ checks both
 
 
 class NodeRef(Protocol):

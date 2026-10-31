@@ -24,6 +24,7 @@ from .channel import (
 )
 from .formats import LOG_FORMAT, LogFormatError, LogFormatMismatch, LogFormatMissing
 from .vocabulary.handle import handle_pid
+from .vocabulary.launch import LAUNCH_ID_ENV, new_launch_id
 from .checkpoint import (
     CheckpointChoice,
     Every,
@@ -43,6 +44,7 @@ from .launcher import (
     ThreadLauncher,
     ThreadTarget,
     ensure_served,
+    launch_claim,
     relaunch_if_needed,
     report_death,
     report_if_dead,
@@ -180,6 +182,9 @@ __all__ = [
     "ensure_served",
     "report_death",
     "report_if_dead",
+    "new_launch_id",
+    "LAUNCH_ID_ENV",
+    "launch_claim",
     # the observer plane and orchestration
     "Watcher",
     "await_consumed",

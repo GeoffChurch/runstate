@@ -80,7 +80,6 @@ def main() -> None:
             name="job_seconds",
             request_id="driver",
         )
-        assert sub_seq is not None  # only a compare-and-append (expected_seq=) loses
 
         # heartbeat_timeout arms the staleness tier; safe even under a long
         # queue wait because the worker heartbeats every VQE_POLL_SECONDS while

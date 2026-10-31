@@ -506,6 +506,46 @@ def test_a_target_checks_its_count_once():
     assert Target("loss", 2**53 - 1).n == 2**53 - 1
 
 
+def test_a_target_round_trips_through_its_atom():
+    """``Target.from_atom`` inverts ``atom()``, so a target can cross a boundary as
+    data (an environment variable, a job's arguments) and come back equal."""
+    for t in [
+        Target(Commits(), 0),
+        Target(Commits(), 7),
+        Target("loss", 0),
+        Target("loss", 2**53 - 1),
+        Target("commits", 3),  # a stream that happens to be named "commits"
+    ]:
+        assert Target.from_atom(t.atom()) == t
+        assert Target.from_atom(json.loads(json.dumps(t.atom()))) == t
+
+
+def test_from_atom_refuses_what_is_not_a_target_atom():
+    """The boundary checks once: a mapping that is not exactly one of the two atom
+    shapes, or a number or name ``Target`` itself refuses, raises ``ValueError``."""
+    for atom in [
+        {},
+        {"commits": 1, "n": 1},  # extra key
+        {"stream": "loss", "n": 1, "every": 2},  # extra key
+        {"stream": "loss"},  # missing n
+        {"n": 1},  # missing stream
+        {"time_seconds": 5},  # an atom, but not a progress one
+        {"any": [{"commits": 1}]},  # a condition, not an atom
+        {"commits": True},  # a bool
+        {"stream": "loss", "n": False},
+        {"commits": 3.0},  # a whole-number float
+        {"stream": "loss", "n": 3.0},
+        {"commits": -1},  # out of range
+        {"stream": "loss", "n": 2**53},
+        {"stream": "", "n": 1},  # an empty stream name
+        {"stream": 3, "n": 1},
+        {"stream": None, "n": 1},
+        {"commits": None},
+    ]:
+        with pytest.raises(ValueError):
+            Target.from_atom(atom)
+
+
 def test_commits_is_a_singleton_marker_no_stream_name_collides_with():
     assert Commits() == Commits()
     assert hash(Commits()) == hash(Commits())

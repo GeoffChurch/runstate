@@ -24,7 +24,7 @@ and design-v0.2.md §4.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import NamedTuple, Protocol, runtime_checkable
+from typing import NamedTuple, Protocol, overload, runtime_checkable
 
 from .envelope import Body, Envelope
 
@@ -45,6 +45,30 @@ class RunNotFound(LookupError):
 class Channel(ABC):
     """A handle on one run's append-only topic log (see the module docstring)."""
 
+    # Typed by its mode: an unconditional append always lands or raises, so it is
+    # ``int``, and only a compare-and-append can return ``None``. Every backend
+    # repeats these two overloads.
+    @overload
+    def send(
+        self,
+        body: Body,
+        *,
+        topic: str,
+        name: str | None = None,
+        request_id: str | None = None,
+    ) -> int: ...
+
+    @overload
+    def send(
+        self,
+        body: Body,
+        *,
+        topic: str,
+        name: str | None = None,
+        request_id: str | None = None,
+        expected_seq: int | None,
+    ) -> int | None: ...
+
     @abstractmethod
     def send(
         self,
@@ -59,7 +83,8 @@ class Channel(ABC):
         returning the new ``seq``. With ``expected_seq`` it is a compare-and-append:
         the record lands iff the log's max seq still equals ``expected_seq``; ``None``
         means the claim was provably lost (the log moved), a raise means the outcome
-        was indeterminate (a backend fault) — never a silent loss."""
+        was indeterminate (a backend fault) — never a silent loss. Without it the
+        append always lands or raises, so its type is ``int``."""
 
     @abstractmethod
     def read(

@@ -223,11 +223,18 @@ def report_if_dead(ch: Channel) -> int | None:
 
 
 def launch_claim(ch: Channel, launch_id: str, *, after: int, w: int) -> Envelope | None:
-    """The newest claim naming the launch ``launch_id``, above ``after`` and at or
-    below ``w``. ``after`` is at least the log's last seq before the launch began,
-    since its claimant cannot claim before it is spawned. The ``request_ids`` filter
-    also admits records naming no request, so the envelope's id is compared here
-    (specs/launcher-record-identity.md)."""
+    """The newest claim naming the launch ``launch_id`` (the ``lifecycle.started``
+    whose ``request_id`` is it), above ``after`` and at or below ``w``, or ``None``.
+    Public because ``Launcher`` is: a launcher's reap reports a death against the
+    claim its own launch made (``report_death``), never a later launch's.
+
+    Both bounds change the answer, so both are required. ``w`` is the seq the caller
+    has read to (``ch.last_seq()`` at the reap, or a fold's watermark), so a claim
+    landing during the read cannot move it. ``after`` may skip the log before the
+    launch began, since its claimant cannot claim before it is spawned: the log's
+    last seq when the launch was minted, or 0 to read it all. The ``request_ids``
+    filter also admits records naming no request, so the envelope's id is compared
+    here (specs/launcher-record-identity.md)."""
     named = [
         e
         for e in ch.read(

@@ -44,19 +44,11 @@ def write(path: Path, payload: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
-def target_of(atom: dict[str, Any]) -> runstate.Target:
-    """The inverse of ``Target.atom()``: ``{"stream": x, "n": n}`` or
-    ``{"commits": n}``. The environment contract is this example's own: a
-    subprocess has no defined way to receive a ``Target`` (``Command`` is not
-    ``Drivable``)."""
-    if "commits" in atom:
-        return runstate.Target(runstate.Commits(), atom["commits"])
-    return runstate.Target(atom["stream"], atom["n"])
-
-
 def main() -> None:
-    # The drive's target, plumbed by the producer.
-    until = target_of(json.loads(os.environ["REDRIVE_UNTIL"]))
+    # The drive's target, plumbed by the producer. The environment contract is this
+    # example's own: a subprocess has no defined way to receive a ``Target``
+    # (``Command`` is not ``Drivable``), so it crosses as its atom.
+    until = runstate.Target.from_atom(json.loads(os.environ["REDRIVE_UNTIL"]))
     state_dir = Path(os.environ["REDRIVE_STATE"])  # checkpoint + crash-marker dir
     rid = os.environ["RUNSTATE_RUN_ID"]
     crashed = state_dir / f"{rid}.crashed"

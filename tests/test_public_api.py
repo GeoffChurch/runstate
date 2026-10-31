@@ -40,6 +40,9 @@ EXPECTED = {
     "ensure_served",
     "report_death",
     "report_if_dead",
+    "new_launch_id",
+    "LAUNCH_ID_ENV",
+    "launch_claim",
     # the observer plane and orchestration
     "Watcher",
     "await_consumed",

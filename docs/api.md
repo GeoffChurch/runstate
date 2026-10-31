@@ -79,7 +79,8 @@ run has no records, so a nonexistent and an empty run are identically "no run"
 ### `Channel`
 
 ```python
-send(body, *, topic, name=None, request_id=None, expected_seq=None) -> int | None
+send(body, *, topic, name=None, request_id=None) -> int
+send(body, *, topic, name=None, request_id=None, expected_seq: int | None) -> int | None
 read(after=0, *, topics=None, name=None, request_ids=None, limit=None) -> list[Envelope]
 latest(topic, name=None) -> Envelope | None
 last_seq() -> int
@@ -90,7 +91,8 @@ A handle on one run's append-only topic log (the ABC every backend implements).
 `send` appends and returns the new `seq`; with `expected_seq` it is a
 **compare-and-append** (append only if the log head is still `expected_seq`;
 returns `None` if it lost — the primitive behind the single-spawn / episode
-self-claim). `read` takes a caller-owned cursor (`after`); the substrate keeps no
+self-claim). Its two overloads type it by that mode: only a compare-and-append can
+return `None`. `read` takes a caller-owned cursor (`after`); the substrate keeps no
 per-reader state. `latest(topic, name)` reads the current value of a
 register-like topic. `last_seq()` is the CAS's read half (the log's last `seq`,
 `0` = empty), O(1) on every backend.
@@ -830,11 +832,15 @@ marker, so `str | Commits` names either kind of progress axis.
 
 ```python
 Target(x: str | Commits, n: int)
+Target.from_atom(atom: Mapping[str, object]) -> Target
 ```
 
 "The first `n` of `x`": one type for `steps(until)`, `ensure` and the producer
 seam. `n >= 0`, checked once; a target of 0 is reached at once. `atom()` is its
-wire spelling, `{stream: x, n}` or `{commits: n}`.
+wire spelling, `{stream: x, n}` or `{commits: n}`, and the classmethod
+`Target.from_atom(atom)` its inverse (`Target.from_atom(t.atom()) == t`), raising
+`ValueError` on any mapping that is not exactly one of those shapes with a number
+and name `Target` accepts.
 
 #### `NodeRef`
 
@@ -897,6 +903,41 @@ report_if_dead(ch) -> int | None
 The probe's report: when the latest claim is held and its session probe finds its
 session ended, or its handle is on this host and probes dead, it reports `lost`.
 The Worker's claim path, the deciders and `ensure` call it before they act.
+
+#### `new_launch_id`
+
+```python
+new_launch_id() -> str
+```
+
+Mints the correlation id for one launch
+([`specs/launcher-record-identity.md`](specs/launcher-record-identity.md)), opaque
+and unique: never derived from a pid (a thread launcher's spawns share one) or a
+log position (a slow claim can land after a later launch). A launcher stamps it as
+the `request_id` of its `supervisor.*` records and hands it to the worker, whose
+`lifecycle.started` re-emits it. Public because `Launcher` is: a custom launcher
+mints its ids here.
+
+#### `LAUNCH_ID_ENV`
+
+```python
+LAUNCH_ID_ENV = "RUNSTATE_LAUNCH_ID"
+```
+
+The variable a launcher sets in its worker's environment to hand it the launch id
+(the cross-process transport; see [Environment variables](#environment-variables)).
+
+#### `launch_claim`
+
+```python
+launch_claim(ch, launch_id: str, *, after: int, w: int) -> Envelope | None
+```
+
+The newest claim (`lifecycle.started`) whose `request_id` is `launch_id`, above
+`after` and at or below `w`, or `None`: the claim a launcher's reap reports a death
+against with `report_death`, never a later launch's. `w` is the seq the caller has
+read to (`ch.last_seq()` at the reap); `after` may skip the log before the launch
+began, or be 0. Both change the answer, so both are required.
 
 ### The errors public calls raise
 
