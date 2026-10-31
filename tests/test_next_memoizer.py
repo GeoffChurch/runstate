@@ -33,6 +33,7 @@ from runstate._next.observables import (
     AtNode,
     Element,
     LatestClaimHead,
+    MalformedRecordError,
     Tier,
     prefix_len,
     series,
@@ -143,6 +144,19 @@ def after(n, fn):
 
 def never(_):
     raise AssertionError("ensure waited")
+
+
+class Paced:
+    """A ``sleep`` hook for a test whose only waits are the re-drives' pacing: it
+    records each wait with the drives made by then, so a test asserts every wait
+    precedes a re-drive, and none is a wait on a held claim."""
+
+    def __init__(self, producer):
+        self._producer = producer
+        self.waits = []
+
+    def __call__(self, seconds):
+        self.waits.append((seconds, len(self._producer.extends)))
 
 
 LOSS3 = Target("loss", 3)
@@ -428,8 +442,10 @@ def test_no_progress_is_measured_by_commits_per_drive():
         return Handle("L3", alive=True)
 
     p = Fake(ch, sparse, older, reaches)
-    assert ensure(p, LOSS3, sleep=never) == Reached(ch.last_seq())
+    paced = Paced(p)
+    assert ensure(p, LOSS3, sleep=paced) == Reached(ch.last_seq())
     assert len(p.extends) == 3
+    assert paced.waits == [(0.01, 1), (0.01, 2)]  # one before each re-drive
 
 
 def test_ensure_raises_recordless_exit_at_the_fixed_point():
@@ -457,11 +473,13 @@ def test_ensure_raises_recordless_exit_at_the_fixed_point():
         return drive
 
     p = Fake(ch, recordless("L1"), recordless("L2"), run_id="r")
+    paced = Paced(p)
     with pytest.raises(RecordlessExitError) as ei:
-        ensure(p, LOSS3, sleep=never)
+        ensure(p, LOSS3, sleep=paced)
     e = ei.value
     assert (e.run_id, e.launch_id, e.target, e.count) == ("r", "L2", LOSS3, 1)
     assert len(p.extends) == 2
+    assert paced.waits == [(0.01, 1)]  # the re-drive's
 
     ch = channel(
         [
@@ -484,7 +502,33 @@ def test_ensure_raises_recordless_exit_at_the_fixed_point():
         return Handle("L2")
 
     p = Fake(ch, recordless("L1"), delivers)
-    assert ensure(p, LOSS3, sleep=never) == Reached(ch.last_seq())
+    paced = Paced(p)
+    assert ensure(p, LOSS3, sleep=paced) == Reached(ch.last_seq())
+    assert paced.waits == [(0.01, 1)]
+
+
+def test_a_foreign_drive_that_drove_nothing_is_bounded_and_paced():
+    """A foreign handle (no launch) that has ended, with no claim naming it and none
+    held, counts toward ``RecordlessExitError``'s fixed point (§5, amended
+    2026-10-30), its ``launch_id`` then ``None``: a producer handing back
+    ``foreign_episode`` over an ended claim cannot make ``ensure`` re-drive without
+    bound. Every re-drive waits ``poll_interval`` first."""
+    ch = channel([(1, claim()), (2, commit(1, None, [])), (3, stopped(1, 2, []))])
+    calls = []
+
+    def over_an_ended_claim(ch, target):
+        calls.append(len(slept))
+        return foreign_episode(ch)
+
+    slept = []
+    p = Fake(ch, *[over_an_ended_claim] * 50, run_id="r")
+    target = Target(Commits(), 5)
+    with pytest.raises(RecordlessExitError) as ei:
+        ensure(p, target, sleep=slept.append, poll_interval=0.25)
+    e = ei.value
+    assert (e.run_id, e.launch_id, e.target, e.count) == ("r", None, target, 1)
+    assert calls == [0, 1]  # two drives, the second after one paced wait
+    assert slept == [0.25]
 
 
 def test_a_drive_whose_handle_ended_while_its_claim_runs_waits_and_reports_nothing():
@@ -974,3 +1018,27 @@ def test_history_parses_its_schedule_at_its_boundary():
         history(ch, "loss", {"every": {"step": 1}}, head=LatestClaimHead())
     with pytest.raises(MalformedSchedule):
         history(ch, "loss", {"sometimes": {}}, head=LatestClaimHead())
+
+
+def test_history_reads_the_epoch_only_for_a_time_atom():
+    """The epoch, the earliest ``started.t``, is read only for a schedule with a time
+    atom (``references_time``): an unreadable first claim from a dead past poisons no
+    count-only read, which still returns its elements, while a time atom, which
+    needs that ``t``, raises ``MalformedRecordError``."""
+    ch = channel(
+        [
+            (1, junk(claim(), t="junk")),  # a dead past's claim, unreadable
+            (2, claim()),
+            (3, value("loss", 0.3)),
+            (4, commit(2, None, [3])),
+            (5, value("loss", 0.2)),
+            (6, commit(2, 4, [5])),
+        ]
+    )
+    h = LatestClaimHead()
+    assert loss_values(history(ch, "loss", {"every": {"commits": 1}}, head=h)) == [
+        0.3,
+        0.2,
+    ]
+    with pytest.raises(MalformedRecordError):
+        history(ch, "loss", {"every": {"time_seconds": 1}}, head=h)

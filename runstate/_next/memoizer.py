@@ -58,6 +58,7 @@ from .vocabulary.schedule import (
     Coordinates,
     Subscription,
     parse_schedule,
+    references_time,
 )
 from .walk import coordinates, members, verdict_parse, walk
 
@@ -124,20 +125,23 @@ class NoProgressError(Exception):
 
 
 class RecordlessExitError(Exception):
-    """A drive's handle ended with no claim naming its launch, and no other claim
-    held, a second time in a row at an unchanged head and ``Commits()`` count (§5;
-    plan, open question 15): the re-drive reproduced it, so another can only do so
+    """A drive's handle ended with no claim naming it, and no other claim held, a
+    second time in a row at an unchanged head and ``Commits()`` count (§5; plan,
+    open question 15): the re-drive reproduced it, so another can only do so
     again. Its launch exited before claiming, as an ``sbatch`` does at submit
-    time, or a worker that dies before it constructs its ``Worker``.
+    time, or a worker that dies before it constructs its ``Worker``; or a foreign
+    handle drove nothing, a claim that had already ended (§5, amended 2026-10-30).
 
     A sibling of ``RunFailedError``, not a subclass: no claim ended, so there is no
-    verdict to carry. ``launch_id`` is the second drive's."""
+    verdict to carry. ``launch_id`` is the second drive's, ``None`` for a foreign
+    handle, which names no launch."""
 
     def __init__(
-        self, run_id: str, *, launch_id: str, target: Target, count: int
+        self, run_id: str, *, launch_id: str | None, target: Target, count: int
     ) -> None:
+        drive = "a foreign drive" if launch_id is None else f"launch {launch_id}"
         super().__init__(
-            f"run {run_id!r}: launch {launch_id} ended with no claim naming it, "
+            f"run {run_id!r}: {drive} ended with no claim naming it and none held, "
             f"twice at an unchanged head, at {count} of {target}"
         )
         self.run_id = run_id
@@ -261,19 +265,22 @@ def history(
     (``valued={stream}``): an eager stream always samples. Time atoms read each
     node's ``t``, from the epoch, the earliest ``started.t``. ``every``'s baseline
     is the coordinates at the last node it fired at, as on a live lineage. It stops
-    at the node where the schedule expires.
+    at the node where the schedule expires. The epoch is read only for a schedule
+    with a time atom (``references_time``), so an unreadable first claim from a
+    dead past poisons no other read.
 
     A node where it fires contributes every element of ``stream`` it commits, in its
     order, none when it commits none: the take-the-latest-per-step collapse is
     gone, since an element's index is unique along a lineage. One-shot: it walks
-    the whole lineage, and the earliest claim's ``started`` (an unreadable one
-    raises ``MalformedRecordError``)."""
+    the whole lineage, and for a time atom the earliest claim's ``started`` (an
+    unreadable one raises ``MalformedRecordError``)."""
     parsed = parse_schedule(schedule, pure_demand=False)
     walked = walk(ch, head.resolve(ch).node)
     if not walked.nodes:
         return []
-    first = ch.read(topics=[Topic.LIFECYCLE_STARTED], limit=1)[0]
-    epoch = verdict_parse(Started, first).t
+    # Without an Elapsed atom nothing reads the epoch (``evaluate`` reads
+    # ``registered_at`` only through one), so 0.0 changes no firing.
+    epoch = _epoch(ch) if references_time(parsed) else 0.0
     sub = Subscription(parsed, registered_at=epoch, target=stream)
     valued = frozenset({stream})
     elements: dict[int, list[int]] = {}
@@ -293,6 +300,14 @@ def history(
         if decision.expired:
             break
     return out
+
+
+def _epoch(ch: Channel) -> float:
+    """The run's epoch, the earliest claim's ``started.t``, which a time atom counts
+    from; an unreadable one raises ``MalformedRecordError``. A lineage's first
+    node is a claim's, so one is on the log."""
+    first = ch.read(topics=[Topic.LIFECYCLE_STARTED], limit=1)[0]
+    return verdict_parse(Started, first).t
 
 
 # ----- ensure (§5) -------------------------------------------------------------------
@@ -358,9 +373,11 @@ def ensure(
       no commit, and otherwise another drive.
     - **A drive with no claim:** while its handle is alive, or another claim is
       held, as a claim race's winner's is, it waits. Otherwise the drive is
-      recordless, and a foreign handle's (no launch) drives again; the second
-      recordless drive in a row at an unchanged head and ``Commits()`` count raises
-      ``RecordlessExitError``, and the first drives again.
+      recordless, whether or not it names a launch (a foreign handle names none):
+      the second recordless drive in a row at an unchanged head and ``Commits()``
+      count raises ``RecordlessExitError``, and the first drives again.
+    - **Every re-drive** waits ``poll_interval`` first, so no path extends again
+      unpaced.
 
     A handle seen dead is reaped once (``wait()``), so a launcher's reap writes its
     records. ``poll_interval`` and ``sleep`` are exempt defaults (plan, "Exempt
@@ -409,21 +426,22 @@ def ensure(
                 if not _committed(ch, claim, head.w):
                     raise NoProgressError(producer.run_id, target=target, count=count)
                 recordless = None
+                sleep(poll_interval)
                 break  # it ended having committed: drive again
             if alive or _held(ch):
                 sleep(poll_interval)
                 continue
-            launch = drive.handle.launch_id
-            if launch is None:
-                recordless = None  # a foreign drive is no recordless one
-                break
             here = _At(head.node, commits.poll(ch, head))
             if recordless == here:
                 raise RecordlessExitError(
-                    producer.run_id, launch_id=launch, target=target, count=count
+                    producer.run_id,
+                    launch_id=drive.handle.launch_id,
+                    target=target,
+                    count=count,
                 )
             recordless = here
-            break
+            sleep(poll_interval)
+            break  # recordless, once here: drive again
 
 
 def _refuse_a_source(claim: Envelope, target: Target) -> None:

@@ -10,6 +10,8 @@ test holds or closes, and an observer, as two hosts would.
 """
 
 import sys
+import threading
+import time
 import uuid
 from dataclasses import asdict
 
@@ -58,6 +60,7 @@ from tests.test_next_reads import (
     died,
     exited,
     junk,
+    launched,
     nak,
     rewind,
     started,
@@ -216,7 +219,7 @@ def test_a_verdict_on_the_log_beats_every_inference():
     """Even when the handle probes dead, the session has ended and the beacon is
     stale, a verdict on the log is the poll's."""
     ch = SessionChannel(MemoryChannel())
-    at(ch, claim(t=0.0), stopped(1, None, [], completed=True))
+    at(ch, claim(t=0.0, launch="L1"), stopped(1, None, [], completed=True))
     ch.ended = True
     w = Watcher(heartbeat_timeout=1.0, now=Clock(1e6))
     w.add(FakeHandle("r", ch, alive=False))
@@ -233,7 +236,7 @@ def test_the_watchers_inferred_verdicts_carry_their_tier():
     has ended, with no grace; ``heartbeat_stale`` past ``heartbeat_timeout``. Each
     satisfies ``RunResult``'s tier invariants: one outcome, its claim named, nothing a
     record would carry."""
-    ch = channel([(1, claim(t=1000.0))])
+    ch = channel([(1, claim(t=1000.0, launch="L1"))])
     w = Watcher(heartbeat_timeout=None, now=Clock())
     h = FakeHandle("r", ch, alive=False)
     w.add(h)
@@ -254,14 +257,35 @@ def test_the_watchers_inferred_verdicts_carry_their_tier():
     assert w.poll("r") == presumed(1, Tier.HEARTBEAT_STALE)
 
 
-def test_a_run_nothing_claimed_is_presumed_nothing():
-    """An inference names its claim (``RunResult``: ``claim_seq`` is ``None`` only for
-    a launch's ``terminated``), so a run nothing has claimed is never presumed dead:
-    its verdict is its launch's ``terminated``, once its reap writes one."""
+def test_a_worker_hung_before_it_claims_is_presumed_dead_past_the_timeout():
+    """The startup-death catch (observer-clock §5; §5, ``claim_seq`` by tier): a run
+    nothing has claimed is seeded at the Watcher's ``now``, as a beacon it never
+    witnessed, so a worker that hangs before it claims goes ``heartbeat_stale``,
+    naming no claim, once ``heartbeat_timeout`` passes: held and alive, or observed.
+    A launch's ``launched`` is no beacon."""
+    clock = Clock(1000.0)
+    held, observed = MemoryChannel(), channel([(1, launched("L0"))])
+    w = Watcher(heartbeat_timeout=30, now=clock)
+    w.add(FakeHandle("h", held, alive=True))
+    w.observe("o", observed)
+    clock.t = 1030.0
+    assert all(isinstance(w.poll(r), Running) for r in ("h", "o"))
+    clock.t = 1031.0
+    assert w.poll("h") == presumed(None, Tier.HEARTBEAT_STALE, run_id="h")
+    assert w.poll("o") == presumed(None, Tier.HEARTBEAT_STALE, run_id="o")
+
+
+def test_a_held_handle_dead_before_it_claims_is_probed_dead_until_its_reap_writes():
+    """A held handle that probes dead before anything claims is ``probed_dead``,
+    naming no claim, once its reap leaves no verdict (§5): the poll order, the
+    verdict the log holds first. Its launch's ``terminated``, once one lands, is the
+    verdict, ``terminated``, as an unclaimed run's is."""
     ch = MemoryChannel()
-    w = Watcher(heartbeat_timeout=1.0, now=Clock(1e6))
-    w.add(FakeHandle("r", ch, alive=False))
-    assert isinstance(w.poll("r"), Running)
+    w = Watcher(heartbeat_timeout=None, now=Clock(1e6))
+    h = FakeHandle("r", ch, alive=False)
+    w.add(h)
+    assert w.poll("r") == presumed(None, Tier.PROBED_DEAD)
+    assert h.waited == 1
     at(ch, exited("L1", 3))
     r = w.poll("r")
     assert (r.outcomes, r.tier, r.claim_seq) == (
@@ -269,6 +293,31 @@ def test_a_run_nothing_claimed_is_presumed_nothing():
         Tier.TERMINATED,
         None,
     )
+
+
+def test_a_held_handle_reads_its_launchs_verdict_not_the_previous_claims():
+    """A Watcher holding a launch's handle reads that launch's verdict (§5): the run
+    already has an extendable exit, and the relaunch is ``Running`` until a claim
+    naming its launch ends, a foreign claim's exit included. A Watcher observing the
+    run with no handle reads the latest claim's, as ``peek_terminal`` does."""
+    rows = [(1, claim(launch="L0")), (2, commit(1, None, [])), (3, stopped(1, 2, []))]
+    ch = channel(rows)
+    w = Watcher(heartbeat_timeout=30, now=Clock(1000.0))
+    w.add(FakeHandle("r", ch, alive=True))  # launch L1
+    assert isinstance(w.poll("r"), Running)
+    foreign = at(ch, claim(launch="L9", t=1000.0))
+    at(ch, stopped(foreign, None, [], completed=True))
+    assert isinstance(w.poll("r"), Running)
+    c = at(ch, claim(launch="L1", resume_from=3, t=1000.0))
+    at(ch, commit(c, 3, [], t=1000.0))
+    assert isinstance(w.poll("r"), Running)
+    at(ch, stopped(c, c + 1, [], completed=True))
+    r = w.poll("r")
+    assert (r.claim_seq, r.tier, r.outcomes) == (c, Tier.EXIT, {Outcome.COMPLETED})
+
+    w = watching(channel(rows))
+    r = w.poll("r")
+    assert (r.claim_seq, r.tier, r.outcomes) == (1, Tier.EXIT, {Outcome.PREEMPTED})
 
 
 def test_the_session_tier_reads_a_claims_stamp_once():
@@ -364,6 +413,48 @@ def test_a_junk_record_earns_no_liveness_credit():
     )
     w = watching(ch, timeout=None, clock=Clock(1000.0))
     assert w.poll("r").beacon_age == 100.0  # from seq 2, not the junk at 3
+
+
+class LandsAClaimMidRead(MemoryChannel):
+    """Once ``armed``, lands a claim right after its next read of claims returns,
+    ``latest`` or ``read`` alike, as a claim CAS'd between a reader's two reads."""
+
+    armed = False
+
+    def _land(self):
+        if self.armed:
+            self.armed = False
+            append(self, [(self.last_seq() + 1, claim(t=1000.0))])
+
+    def latest(self, topic, name=None):
+        e = super().latest(topic, name)
+        if topic == Topic.LIFECYCLE_STARTED:
+            self._land()
+        return e
+
+    def read(self, after=0, *, topics=None, name=None, request_ids=None, limit=None):
+        got = super().read(
+            after, topics=topics, name=name, request_ids=request_ids, limit=limit
+        )
+        if topics is not None and Topic.LIFECYCLE_STARTED in topics:
+            self._land()
+        return got
+
+
+def test_a_claim_landing_during_registration_is_witnessed():
+    """Registration reads W first, then the newest claim at or below it, so a claim
+    CAS'd between the two reads lands above the cursor and the first poll witnesses
+    it: a claim that heartbeats is never presumed stale."""
+    ch = LandsAClaimMidRead()
+    at(ch, claim(t=1000.0))
+    ch.armed = True
+    clock = Clock(1000.0)
+    w = watching(ch, timeout=5.0, clock=clock)
+    assert ch.armed is False  # the claim at seq 2 landed during registration
+    for _ in range(5):
+        clock.t += 3.0
+        at(ch, beat(2, t=clock.t))
+        assert isinstance(w.poll("r"), Running)
 
 
 def test_staleness_counts_from_the_claims_started():
@@ -1114,3 +1205,53 @@ def test_sweep_does_not_halt_on_a_clean_commanded_stop(tmp_path):
     )
     assert results[0].outcomes == {Outcome.PREEMPTED}
     assert [r.run_id for r in results] == ["a", "b"]
+
+
+def test_sweep_does_not_hang_on_a_worker_stuck_before_it_claims():
+    """A worker that hangs before it claims is presumed dead once the Watcher's
+    ``heartbeat_timeout`` passes (the startup-death catch), so the sweep returns."""
+    gate = threading.Event()
+    results = []
+
+    def hung(ch):
+        gate.wait(30)
+
+    def run():
+        w = Watcher(heartbeat_timeout=0.2, poll_interval=0.01)
+        results.extend(
+            sweep_of(ThreadLauncher(), [Variant("h", thread(hung))], watcher=w)
+        )
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(10)
+    hanging = t.is_alive()
+    gate.set()
+    t.join(10)
+    assert not hanging, "sweep hung on a worker stuck before it claims"
+    (r,) = results
+    assert (r.outcomes, r.tier, r.claim_seq) == (
+        {Outcome.PRESUMED_DEAD},
+        Tier.HEARTBEAT_STALE,
+        None,
+    )
+
+
+def test_a_relaunching_sweep_waits_for_the_new_launchs_own_verdict(tmp_path):
+    """A sweep that relaunches a run whose claim exited extendable (``resume=False``:
+    ``resume`` skips a run with any verdict) watches the new launch's handle, so it
+    returns that launch's verdict, never the previous claim's."""
+    launcher = ThreadLauncher(root=tmp_path, backend="sqlite")
+
+    def preempted(ch):
+        with Worker(ch, resume_from=None, sources=[], save=NoSave()) as w:
+            w.commit()
+
+    def late(ch):
+        time.sleep(0.2)
+        done_worker(ch)
+
+    (first,) = sweep_of(launcher, [Variant("r", thread(preempted))])
+    assert first.outcomes == {Outcome.PREEMPTED}
+    (r,) = sweep_of(launcher, [Variant("r", thread(late))], resume=False)
+    assert r.outcomes == {Outcome.COMPLETED} and r.claim_seq > first.claim_seq

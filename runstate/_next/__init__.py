@@ -49,6 +49,7 @@ from .launcher import (
     Launcher,
     LaunchHandle,
     LocalLauncher,
+    ReportStarvedError,
     ThreadLauncher,
     ThreadTarget,
     ensure_served,
@@ -122,9 +123,9 @@ from .vocabulary.payloads import (
     Value,
     Withdraw,
 )
-from .vocabulary.schedule import Condition
+from .vocabulary.schedule import Condition, MalformedSchedule
 from .watcher import Running, RunStatus, Watcher, await_consumed
-from .worker import Worker
+from .worker import Worker, WorkerStarvedError
 
 
 def current_channel(
@@ -244,6 +245,10 @@ __all__ = [
     "RecordlessExitError",
     "sweep",
     "Variant",
+    # the errors public calls raise (ClaimAliveError, above, among them)
+    "ReportStarvedError",
+    "WorkerStarvedError",
+    "MalformedSchedule",
     # the convention vocabulary and its typed bodies (serialize via
     # dataclasses.asdict, parse via Cls(**body))
     "Topic",

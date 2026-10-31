@@ -98,6 +98,10 @@ EXPECTED = {
     "RecordlessExitError",
     "sweep",
     "Variant",
+    # the errors public calls raise (ClaimAliveError, above, among them)
+    "ReportStarvedError",
+    "WorkerStarvedError",
+    "MalformedSchedule",
     # the convention vocabulary and its bodies
     "Topic",
     "Condition",

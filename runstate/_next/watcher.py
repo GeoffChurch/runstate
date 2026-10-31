@@ -7,27 +7,40 @@ STAGED. Task 19 of docs/plans/2026-10-28-layer2-live.md moves this module over
 
 THE WATCHER is the stateful failure detector. ``peek_terminal`` is the verdict the
 log holds; the Watcher adds the inferences a single read cannot make, each a
-``presumed_dead`` naming the latest claim, with its tier:
+``presumed_dead`` naming the run's claim, or none while nothing has claimed for it,
+with its tier:
 
 - ``PROBED_DEAD``: a handle it holds probes dead, and its reap, which the Watcher
   runs (the one write a poll makes, §3), left no verdict;
 - ``SESSION_ENDED``: the channel's session probe finds ended the session that wrote
-  the held latest claim (``SessionProbe``, resolved once at registration). No grace:
-  a channel takes its key before its first write, so the claim's row is stamped
-  with a session that was held when it landed (channel-postgres.md);
-- ``HEARTBEAT_STALE``: no witnessed liveness for longer than ``heartbeat_timeout``.
+  the held claim (``SessionProbe``, resolved once at registration). No grace: a
+  channel takes its key before its first write, so the claim's row is stamped with
+  a session that was held when it landed (channel-postgres.md). It needs a claim;
+- ``HEARTBEAT_STALE``: no witnessed liveness for longer than ``heartbeat_timeout``,
+  of a claim, or of a run nothing has claimed for, which is the never-beaconed
+  startup death (observer-clock §5).
+
+WHOSE VERDICT (§5, "A Watcher that holds a launch's handle reads that launch's
+verdict"), a Strategy resolved at registration (``_Subject``). A run tracked by its
+handle (``add``) is that launch's: the claims naming its launch id, and while none
+has landed its launch's ``terminated``, as an unclaimed run's verdict is its
+launch's; so a relaunch of a run that already has an exit is ``Running`` until its
+own launch ends. A run observed with no handle (``observe``) is the latest claim's,
+as ``peek_terminal`` reads it.
 
 A tier can only vote dead or abstain, so none vetoes the staleness floor: a worker
 whose session is held but which has stopped writing still goes stale.
 
 WITNESSED LIVENESS (observer-clock.md §5; §3, "Liveness"). A poll witnesses the
-records it reads that show the claim alive: a new ``lifecycle.started``, or a
-``commit``, ``heartbeat`` or ``rewind`` naming the latest claim, each readable (a junk
+records it reads that show the claim alive: a new claim of the run's subject, or a
+``commit``, ``heartbeat`` or ``rewind`` naming its claim, each readable (a junk
 record earns no credit). A witnessed arrival restarts the staleness clock at the
 Watcher's own ``now``, which is skew-immune. At registration the clock is seeded
-from the record's own ``t``, the newest of the latest claim's ``started``, commits,
+from the record's own ``t``, the newest of the claim's ``started``, commits,
 heartbeats and rewinds, so a cold attach to a run that went quiet long ago reads its
-true age at once; with no claim, from ``now``.
+true age at once; with no claim, from ``now``, as a beacon never witnessed.
+Registration reads W before the claim, so a claim CAS'd between the two lands above
+the cursor, and the first poll witnesses it.
 
 HELD STATE, BOUNDED POLLS (§5, "Bounded reads"). Each run holds a ``HeadFold``, a
 ``PrefixLen(Commits())``, a ``PendingStops`` and its witness cursor, so a poll reads
@@ -45,8 +58,15 @@ from typing import Protocol
 
 from ..channel import Channel, Envelope
 from ..channel.base import Session, SessionProbe
-from .claims import backward, endings, named_claim, request_name, spent_by
-from .launcher import LaunchHandle
+from .claims import (
+    backward,
+    claim_before,
+    endings,
+    named_claim,
+    request_name,
+    spent_by,
+)
+from .launcher import LaunchHandle, launch_claim
 from .observables import (
     Head,
     HeadFold,
@@ -54,7 +74,9 @@ from .observables import (
     PrefixLen,
     RunResult,
     Tier,
+    claim_verdict,
     latest_episode,
+    launch_verdict,
     peek_terminal,
 )
 from .vocabulary.coordinate import Commits
@@ -151,38 +173,98 @@ _BODIES: dict[str, type[Commit] | type[Heartbeat] | type[Rewind]] = {
 }
 
 
-class _Witness:
-    """A run's witnessed liveness: the latest claim it has read, when it last
-    witnessed the claim alive (``at``, the Watcher's clock, or the seed's ``t``), and a
-    cursor, so each poll reads only the records since."""
+class _Subject(Protocol):
+    """Whose verdict a tracked run's is (§5): a Strategy, resolved at registration,
+    so a poll never asks whether it holds a handle."""
 
-    def __init__(self, ch: Channel, now: float) -> None:
-        claim = latest_episode(ch)
-        w = ch.last_seq()  # after the claim, so the claim is at or below it
-        self._claim = None if claim is None else claim.seq
-        self._cursor = w
-        self.at = now if claim is None else _seed(ch, claim, w, now)
+    def owns(self, e: Envelope) -> bool:
+        """Is ``e``, a ``lifecycle.started`` or a ``supervisor.terminated``, the
+        subject's: a claim its verdict may be about, or its launch's end?"""
+        ...
+
+    def claim(self, ch: Channel, w: int) -> Envelope | None:
+        """The subject's newest claim at or below ``w``: registration's one read,
+        which the witness then keeps from the records since."""
+        ...
+
+
+class _LatestClaim:
+    """An observed run's subject: every claim and every launch's end, the newest of
+    each, as ``peek_terminal`` reads them."""
+
+    def owns(self, e: Envelope) -> bool:
+        return True
+
+    def claim(self, ch: Channel, w: int) -> Envelope | None:
+        return claim_before(ch, w + 1)
+
+
+@dataclass(frozen=True)
+class _HeldLaunch:
+    """A held handle's subject: the claims naming its launch (``launch_claim``) and
+    its launch's ``terminated``, so a relaunch is never read as an earlier claim's
+    end. A record's ``request_id`` names its launch (launcher-record-identity.md)."""
+
+    launch_id: str
+
+    def owns(self, e: Envelope) -> bool:
+        return e.request_id == self.launch_id
+
+    def claim(self, ch: Channel, w: int) -> Envelope | None:
+        return launch_claim(ch, self.launch_id, after=0, w=w)
+
+
+class _Witness:
+    """A run's claim, the newest its subject owns, its witnessed liveness (``at``,
+    the Watcher's clock, or the seed's ``t``), and a cursor (``w``), so each poll
+    reads only the records since. While nothing has claimed for the subject, it
+    also keeps the newest launch's end the subject owns, read from its own cursor."""
+
+    def __init__(self, ch: Channel, subject: _Subject, now: float) -> None:
+        w = ch.last_seq()  # first: a claim CAS'd after it lands above the cursor
+        self._subject = subject
+        self.claim = subject.claim(ch, w)
+        self.w = w
+        self.at = now if self.claim is None else _seed(ch, self.claim, w, now)
+        self._end: Envelope | None = None
+        self._end_read = 0
 
     def poll(self, ch: Channel, now: float) -> None:
         """Read the records since the cursor, and restart the clock at ``now`` if
-        any witnesses the latest claim alive."""
+        any witnesses the claim alive."""
         w = ch.last_seq()
-        if w <= self._cursor:
+        if w <= self.w:
             return
-        got = ch.read(
-            after=self._cursor, topics=_WITNESS_TOPICS, limit=w - self._cursor
-        )
+        got = ch.read(after=self.w, topics=_WITNESS_TOPICS, limit=w - self.w)
         for e in got:
             if e.seq > w:
                 break
             if e.topic == Topic.LIFECYCLE_STARTED:
-                self._claim = e.seq
-                if readable(Started, e) is not None:
-                    self.at = now
-            elif named_claim(e) == self._claim:
+                if self._subject.owns(e):
+                    self.claim = e
+                    if readable(Started, e) is not None:
+                        self.at = now
+            elif self.claim is not None and named_claim(e) == self.claim.seq:
                 if readable(_BODIES[e.topic], e) is not None:
                     self.at = now
-        self._cursor = w
+        self.w = w
+
+    def verdict(self, ch: Channel) -> RunResult | None:
+        """The verdict the log holds at the cursor: the claim's (``claim_verdict``),
+        or while there is none, the newest launch's end the subject owns
+        (``launch_verdict``), as ``peek_terminal`` reads an unclaimed run's."""
+        if self.claim is not None:
+            return claim_verdict(ch, self.claim, w=self.w)
+        if self.w > self._end_read:
+            topics: list[str] = [Topic.SUPERVISOR_TERMINATED]
+            got = ch.read(
+                after=self._end_read, topics=topics, limit=self.w - self._end_read
+            )
+            for e in got:
+                if e.seq <= self.w and self._subject.owns(e):
+                    self._end = e
+            self._end_read = self.w
+        return None if self._end is None else launch_verdict(self._end)
 
 
 def _seed(ch: Channel, claim: Envelope, w: int, now: float) -> float:
@@ -219,14 +301,15 @@ class _RunState:
     witness: _Witness
 
 
-def _presumed(run_id: str, claim: int, tier: Tier) -> RunResult:
-    """An inferred verdict: ``presumed_dead``, naming the claim it presumes of, with
-    nothing a record would carry (no node, no reports, no error, no malformed)."""
+def _presumed(run_id: str, claim: Envelope | None, tier: Tier) -> RunResult:
+    """An inferred verdict: ``presumed_dead``, naming the claim it presumes of, or
+    none for a run nothing has claimed for, with nothing a record would carry (no
+    node, no reports, no error, no malformed)."""
     return RunResult(
         outcomes=frozenset({Outcome.PRESUMED_DEAD}),
         reports=(),
         node=None,
-        claim_seq=claim,
+        claim_seq=None if claim is None else claim.seq,
         malformed=(),
         tier=tier,
         error=None,
@@ -262,19 +345,28 @@ class Watcher:
 
     def add(self, handle: LaunchHandle) -> None:
         """Track a launched run by its handle, which enables the probe tier and the
-        reap."""
-        self._track(handle.run_id, handle.channel, handle)
+        reap: its verdict is its launch's (§5), the claims naming the handle's
+        ``launch_id``."""
+        self._track(
+            handle.run_id, handle.channel, handle, _HeldLaunch(handle.launch_id)
+        )
 
     def observe(self, run_id: str, channel: Channel) -> None:
         """Track a run by its id and a channel, with no handle: the probe tier is
-        off; the session and staleness tiers still apply."""
-        self._track(run_id, channel, None)
+        off; the session and staleness tiers still apply, and its verdict is the
+        latest claim's, as ``peek_terminal`` reads it."""
+        self._track(run_id, channel, None, _LatestClaim())
 
     def _track(
-        self, run_id: str, channel: Channel, handle: LaunchHandle | None
+        self,
+        run_id: str,
+        channel: Channel,
+        handle: LaunchHandle | None,
+        subject: _Subject,
     ) -> None:
         """Resolve the session tier once, here at the boundary: the channel's probe
-        if it is a ``SessionProbe``, else none; a poll never asks the type again."""
+        if it is a ``SessionProbe``, else none; a poll never asks the type again.
+        The subject comes resolved from ``add`` or ``observe``."""
         sessions: _SessionTier = (
             _Sessions(channel) if isinstance(channel, SessionProbe) else _NO_SESSIONS
         )
@@ -286,45 +378,43 @@ class Watcher:
             commits=PrefixLen(Commits()),
             stops=PendingStops(),
             sessions=sessions,
-            witness=_Witness(channel, self._now()),
+            witness=_Witness(channel, subject, self._now()),
         )
 
     def poll(self, run_id: str) -> RunStatus:
-        """One non-blocking status (§5): the verdict the log holds, stamped with the
-        run; else an inference about the held latest claim; else ``Running``.
+        """One non-blocking status (§5): the verdict the log holds for the run's
+        subject, stamped with the run; else an inference; else ``Running``.
 
         It writes nothing, but for a reap of a handle it holds (§3, "A read never
         writes"): once that handle probes dead it is reaped (``wait()``), which writes
         the launch's ``terminated`` and, where its process was the claimant, the
         ``died`` that ends the claim, so the verdict is the precise one. Only when the
-        reap leaves the claim held is it ``probed_dead``. A run nothing has claimed is
-        presumed nothing: an inference names its claim, and an unclaimed run's verdict
-        is its launch's ``terminated``."""
+        reap leaves no verdict is it ``probed_dead``, naming the launch's claim, or
+        none when nothing claimed for it. The session tier needs a claim; staleness
+        does not, so a worker that hangs before it claims is presumed dead once
+        ``heartbeat_timeout`` passes from its registration (observer-clock §5)."""
         st = self._runs[run_id]
-        st.witness.poll(st.channel, self._now())
-        head = st.heads.poll(st.channel)
-        commits = st.commits.poll(st.channel, head)
-        result = peek_terminal(st.channel)
+        ch, witness = st.channel, st.witness
+        now = self._now()
+        witness.poll(ch, now)
+        head = st.heads.poll(ch)
+        commits = st.commits.poll(ch, head)
+        result = witness.verdict(ch)
         if result is not None:
             return replace(result, run_id=run_id)
-        claim = latest_episode(st.channel)
         if st.handle is not None and not st.handle.is_alive():
             st.handle.wait()  # the reap: the one write a poll makes
-            result = peek_terminal(st.channel)
+            witness.poll(ch, now)
+            result = witness.verdict(ch)
             if result is not None:
                 return replace(result, run_id=run_id)
-            claim = latest_episode(st.channel)
-            if claim is not None:
-                return _presumed(run_id, claim.seq, Tier.PROBED_DEAD)
+            return _presumed(run_id, witness.claim, Tier.PROBED_DEAD)
+        claim = witness.claim
         if claim is not None and st.sessions.ended(claim.seq):
-            return _presumed(run_id, claim.seq, Tier.SESSION_ENDED)
-        age = self._now() - st.witness.at
-        if (
-            claim is not None
-            and self._hb_timeout is not None
-            and age > self._hb_timeout
-        ):
-            return _presumed(run_id, claim.seq, Tier.HEARTBEAT_STALE)
+            return _presumed(run_id, claim, Tier.SESSION_ENDED)
+        age = now - witness.at
+        if self._hb_timeout is not None and age > self._hb_timeout:
+            return _presumed(run_id, claim, Tier.HEARTBEAT_STALE)
         return Running(head=head, commits=commits, beacon_age=age)
 
     def wait(

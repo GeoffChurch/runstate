@@ -1593,14 +1593,14 @@ def test_the_verdict_reads_nothing_above_its_w(rows, w, expected):
     assert peek_terminal(_LateW(rows, w)) == expected
 
 
-def by_inference(tier):
+def by_inference(tier, *, claim_seq=3):
     """A Watcher's inferred verdict (``Tier.PROBED_DEAD``, ``HEARTBEAT_STALE`` or
-    ``SESSION_ENDED``)."""
+    ``SESSION_ENDED``), naming ``claim_seq``."""
     return RunResult(
         outcomes=frozenset({Outcome.PRESUMED_DEAD}),
         reports=(),
         node=None,
-        claim_seq=3,
+        claim_seq=claim_seq,
         malformed=(),
         tier=tier,
         error=None,
@@ -1609,6 +1609,9 @@ def by_inference(tier):
 
 
 _INFERRED = (Tier.PROBED_DEAD, Tier.HEARTBEAT_STALE, Tier.SESSION_ENDED)
+# the inferences that may concern a run nothing claimed (§5, ``claim_seq`` by tier):
+# a launch can stale, or its handle probe dead, before anything claims
+_UNCLAIMED_INFERRED = (Tier.PROBED_DEAD, Tier.HEARTBEAT_STALE)
 
 
 @pytest.mark.parametrize(
@@ -1619,6 +1622,7 @@ _INFERRED = (Tier.PROBED_DEAD, Tier.HEARTBEAT_STALE, Tier.SESSION_ENDED)
         by_deaths(1, {K, E}, [DeathReport(3, K, "signal 9", 5.0)], malformed=(4,)),
         by_launch(K),
         *(by_inference(t) for t in _INFERRED),
+        *(by_inference(t, claim_seq=None) for t in _UNCLAIMED_INFERRED),
     ],
 )
 def test_a_run_result_of_each_tier_is_the_terminal_arm(result):
@@ -1635,10 +1639,12 @@ def test_a_run_result_of_each_tier_is_the_terminal_arm(result):
         (by_exit(3, 1, P), {"node": None}),
         (by_deaths(1, {K}, []), {"node": 3}),
         (by_inference(Tier.SESSION_ENDED), {"node": 4}),
-        # every tier but a launch's names its claim, and a launch's names none
+        # a claim under an exit, death reports and a session's end, which read or
+        # probe a claim's window, stamp or session; none under a launch's; either
+        # under staleness and a dead probe (accepted above)
         (by_exit(3, 1, P), {"claim_seq": None}),
         (by_deaths(1, {K}, []), {"claim_seq": None}),
-        *((by_inference(t), {"claim_seq": None}) for t in _INFERRED),
+        (by_inference(Tier.SESSION_ENDED), {"claim_seq": None}),
         (by_launch(K), {"claim_seq": 1}),
         # one outcome under every tier but death reports'
         (by_exit(3, 1, P), {"outcomes": frozenset({P, E})}),

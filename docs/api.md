@@ -906,6 +906,46 @@ ClaimAliveError(claim_seq: int, handle: str)
 `report_death` refused: the claim's handle probes alive, and the caller did not
 pass `force=True`.
 
+### The errors public calls raise
+
+Beside `ClaimAliveError` (above) and `ensure`'s errors, three more reach the
+caller of a public call, and so are on the surface (plan Task 16).
+
+#### `ReportStarvedError`
+
+```python
+ReportStarvedError(claim_seq: int, attempts: int)  # a RuntimeError
+```
+
+A death report lost its CAS `attempts` times in a row (`CAS_ATTEMPTS`): the log
+grew faster than the report could read it, and nothing was appended. It names the
+claim; the caller that knows the run adds it (`LocalLauncher.reap` notes it).
+`report_death`, `report_if_dead` and a launcher's reap raise it.
+
+#### `WorkerStarvedError`
+
+```python
+WorkerStarvedError(step: Literal["claim", "drain", "exit"], claim_seq: int | None, attempts: int)
+```
+
+One of the `Worker`'s compare-and-append loops lost its CAS `attempts` times in a
+row: the log grew faster than the worker could read it, and that loop appended
+nothing. `step` names the loop: the `claim` (`claim_seq` is then `None`), a
+drain's refusal, or the `exit`, after which the claim is still held, for a death
+report to end; after a starved exit only `stopped()` may be retried.
+
+#### `MalformedSchedule`
+
+```python
+class MalformedSchedule(ValueError): ...
+```
+
+A schedule subscription-v0.4 refuses, or a pure demand with a `from`, an `every`
+or a `count` atom. Its message names the offending key by its path in the body
+(`from.any[1].time_seconds`), and is the worker's `malformed` nak message.
+`history` and `Watcher.broadcast` parse their schedule first and raise it to the
+caller, writing nothing.
+
 ### The reads (§5)
 
 #### `Head`

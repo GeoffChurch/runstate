@@ -390,10 +390,11 @@ class Tier(StrEnum):
     """The viewpoint a verdict rests on (§5), a closed enum. A pure read's three,
     one per record kind: ``EXIT``, the claim's own exit; ``DIED``, the death
     reports and unreadable records that ended it; ``TERMINATED``, an unclaimed
-    run's launch. The Watcher's inferences: ``PROBED_DEAD``, the claim's handle
-    probed dead; ``HEARTBEAT_STALE``, its witnessed liveness went stale; and
-    ``SESSION_ENDED``, the session that wrote the claim ended (named for its
-    evidence, the session probe; plan, open question 16)."""
+    run's launch. The Watcher's inferences: ``PROBED_DEAD``, the handle it holds
+    probed dead; ``HEARTBEAT_STALE``, the run's witnessed liveness went stale, each
+    of a claim or of a launch nothing claimed for yet; and ``SESSION_ENDED``, the
+    session that wrote the claim ended (named for its evidence, the session probe;
+    plan, open question 16)."""
 
     EXIT = "exit"
     DIED = "died"
@@ -401,6 +402,11 @@ class Tier(StrEnum):
     PROBED_DEAD = "probed_dead"
     HEARTBEAT_STALE = "heartbeat_stale"
     SESSION_ENDED = "session_ended"
+
+
+_CLAIMED_TIERS = frozenset({Tier.EXIT, Tier.DIED, Tier.SESSION_ENDED})
+"""The tiers whose verdict is about a claim it read or probed (§5, ``claim_seq`` by
+tier): the inferences of staleness and of a dead probe are not among them."""
 
 
 @dataclass(frozen=True)
@@ -427,8 +433,12 @@ class RunResult:
     - ``reports``: the readable death reports naming the claim, in seq order,
       under ``DIED`` only;
     - ``node``: the exit node's seq under ``EXIT``, else ``None``;
-    - ``claim_seq``: the claim the verdict is about: required under every tier
-      but ``TERMINATED``, a run nothing claimed, where it is ``None``;
+    - ``claim_seq``: the claim the verdict is about, ``None`` for a run nothing
+      claimed. Required under ``EXIT``, ``DIED`` and ``SESSION_ENDED``, which read
+      or probe a claim's window, stamp or session; ``None`` under ``TERMINATED``, a
+      launch's; either under ``HEARTBEAT_STALE`` and ``PROBED_DEAD``, since a launch
+      can stale or its handle probe dead before anything claims, the never-beaconed
+      startup death (observer-clock §5);
     - ``malformed``: the seqs of the unreadable records the verdict skipped, so
       they are reported, not raised: under ``EXIT`` and ``DIED`` only, the tiers
       that read a claim's window;
@@ -454,10 +464,13 @@ class RunResult:
             raise ValueError("a verdict has one outcome, but under death reports")
         if (self.node is not None) != (self.tier == Tier.EXIT):
             raise ValueError("a verdict names its node under an exit, and only there")
-        if (self.claim_seq is None) != (self.tier == Tier.TERMINATED):
+        if self.claim_seq is None and self.tier in _CLAIMED_TIERS:
             raise ValueError(
-                "a verdict names its claim, but a launch's: an unclaimed run's"
+                f"a verdict under {self.tier} names its claim, whose window, stamp "
+                "or session it reads"
             )
+        if self.claim_seq is not None and self.tier == Tier.TERMINATED:
+            raise ValueError("a launch's verdict names no claim: an unclaimed run's")
         if self.malformed and self.tier not in (Tier.EXIT, Tier.DIED):
             raise ValueError(
                 "a verdict reports malformed records under an exit or death "
@@ -1753,8 +1766,16 @@ def _launch_end(ch: Channel, w: int) -> RunResult | None:
     """An unclaimed run's verdict: its newest ``terminated`` at or below ``w``
     (``peek_terminal``)."""
     e = _newest(ch, Topic.SUPERVISOR_TERMINATED, w)
-    if e is None:
-        return None
+    return None if e is None else launch_verdict(e)
+
+
+def launch_verdict(e: Envelope) -> RunResult:
+    """The verdict a ``supervisor.terminated`` gives the launch it names, when
+    nothing claimed for it (``Tier.TERMINATED``): a signal reads ``killed``, an exit
+    0 ``completed`` and any other exit ``errored``. ``peek_terminal`` reads an
+    unclaimed run's newest; a Watcher holding a launch's handle, that launch's
+    (§5). The verdict rests on this one record, so an unreadable one, or one naming
+    no launch, raises ``MalformedRecordError``."""
     end = verdict_parse(Terminated, e)
     if not e.request_id:
         raise MalformedRecordError(
