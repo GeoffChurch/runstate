@@ -742,6 +742,465 @@ wall-clock at the reaped death. Only a `wait()`-ing parent can produce it.
 
 ---
 
+## Log format 0.4.0: the new names (staged)
+
+The names the 0.4.0 live layer adds to the public surface, staged as
+`runstate._next.__all__` (plan Task 16) until the cutover makes it
+`runstate.__all__`. The spec is
+[`specs/commits-and-lineage.md`](specs/commits-and-lineage.md); the section each
+entry cites is where the name is defined. The entries above describe 0.3.0 and are
+rewritten for 0.4.0 in the plan's Task 23; `progress` and `value_series` are
+removed (§5).
+
+### The checkpoint recipe (§6)
+
+#### `SavePolicy`
+
+```python
+class SavePolicy(Protocol):
+    def after(self, node: int, *, commits: int, exit: bool) -> None: ...
+```
+
+Whether to save at a moment the Worker chose: after each commit lands, and after
+an extendable exit. `node` is the node that just landed, `commits` its
+`count(Commits(), node)`.
+
+#### `NoSave`
+
+```python
+NoSave()
+```
+
+Never saves. Passed explicitly, since a chunked run without checkpoints restarts at
+the root every claim.
+
+#### `Every`
+
+```python
+Every(k: int, fn: Callable[[int], None])
+```
+
+Calls `fn(node)` at each commit whose `commits` is a multiple of `k`, and at every
+extendable exit, so a preempted chunk always leaves a checkpoint of where it
+stopped. `k >= 1`.
+
+#### `CheckpointChoice`
+
+```python
+class CheckpointChoice(Protocol):
+    def choose(self, ch, candidates: Sequence[C], *, head: HeadStrategy) -> C | None: ...
+```
+
+Which of the caller's checkpoints to resume from: one of `candidates`, the very
+object, or `None`. A candidate is complete when its node is at or below the
+head's `w`; only complete ones qualify.
+
+#### `OnHeadLineage`
+
+```python
+OnHeadLineage()
+```
+
+The complete candidate on the head's lineage nearest the head: the suggested
+preset, consistent with the reads, and respecting a rewind.
+
+#### `MostProgress`
+
+```python
+MostProgress(stream: str)
+```
+
+The complete candidate with the largest `count(stream, node)`, which may lie on a
+branch a rewind abandoned. Ties go to the higher node seq.
+
+### Coordinates (§2, §4)
+
+#### `Commits`
+
+```python
+Commits()
+```
+
+The lineage's own clock: `count(Commits(), node)` is the number of
+`lifecycle.commit` nodes on the lineage up to and including `node`. A singleton
+marker, so `str | Commits` names either kind of progress axis.
+
+#### `Target`
+
+```python
+Target(x: str | Commits, n: int)
+```
+
+"The first `n` of `x`": one type for `steps(until)`, `ensure` and the producer
+seam. `n >= 0`, checked once; a target of 0 is reached at once. `atom()` is its
+wire spelling, `{stream: x, n}` or `{commits: n}`.
+
+#### `NodeRef`
+
+```python
+class NodeRef(Protocol):
+    @property
+    def node(self) -> int: ...
+```
+
+A fixed node, which `Worker(resume_from=)` and `rewind()` take: a checkpoint
+object, or `AtNode(x)`.
+
+### Launchers and death reports (§3)
+
+#### `ThreadTarget`
+
+```python
+ThreadTarget(fn, *, args: tuple, kwargs: Mapping[str, object])
+```
+
+What `ThreadLauncher` runs: `fn(channel, *args, **kwargs)` on a thread. Frozen;
+`args` and `kwargs` required. `Drivable`: `driven(until)` is the copy whose
+`kwargs` carry `until`.
+
+#### `Command`
+
+```python
+Command(argv: Sequence[str], *, env: Mapping[str, str])
+```
+
+What `LocalLauncher` runs: `argv`, with `env` over `os.environ` and under the
+launcher's `RUNSTATE_*` variables. Frozen; `env` required. Not `Drivable`.
+
+#### `Drivable`
+
+```python
+class Drivable(Protocol):
+    def driven(self, until: Target) -> Self: ...
+```
+
+A target a drive can aim: `launch_producer` launches `variant.target.driven(target)`.
+
+#### `report_death`
+
+```python
+report_death(ch, claim_seq: int, *, outcome: Outcome, evidence: str, force: bool) -> int | None
+```
+
+Appends a `supervisor.died` for the claim, by a CAS at the W it reads, and returns
+its seq: `None` when the claim has a readable exit, or for a `lost` report on a
+claim that has ended. Raises `ClaimAliveError` when the claim's handle probes alive,
+unless `force`. Evidence, never inference.
+
+#### `report_if_dead`
+
+```python
+report_if_dead(ch) -> int | None
+```
+
+The probe's report: when the latest claim is held and its session probe finds its
+session ended, or its handle is on this host and probes dead, it reports `lost`.
+The Worker's claim path, the deciders and `ensure` call it before they act.
+
+#### `ClaimAliveError`
+
+```python
+ClaimAliveError(claim_seq: int, handle: str)
+```
+
+`report_death` refused: the claim's handle probes alive, and the caller did not
+pass `force=True`.
+
+### The reads (§5)
+
+#### `Head`
+
+```python
+Head(node: int | None, settled: bool, w: int)
+```
+
+A resolved head: the head node (`None` for the empty lineage), whether the read's
+subject can no longer grow, and the `last_seq()` it was resolved at. A `Head` is
+itself a `HeadStrategy` that resolves to itself.
+
+#### `HeadStrategy`
+
+```python
+class HeadStrategy(Protocol):
+    def resolve(self, ch) -> Head: ...
+```
+
+How a read chooses its head, chosen once at the edge: every read that depends on
+a branch takes a required, keyword-only `head`.
+
+#### `LatestClaimHead`
+
+```python
+LatestClaimHead()
+```
+
+The newest claim's head: the order among claims, then that writer's own order.
+Settled if and only if the head is closed.
+
+#### `AtNode`
+
+```python
+AtNode(node: int)
+```
+
+That node (forensics; an abandoned branch). Always settled; also a `NodeRef`.
+
+#### `Element`
+
+```python
+Element(node: int, seq: int, value: Any, t: float | None)
+```
+
+One element of an eager stream, or one sample of a source: the committing node,
+the value's seq, its `value` and `t`.
+
+#### `Complete`
+
+```python
+Complete(elements: tuple[Element, ...], node: int | None)
+```
+
+`prefix`'s first `n` elements. Only this outcome has `elements`.
+
+#### `Pending`
+
+```python
+Pending(partial: tuple[Element, ...], node: int | None)
+```
+
+Fewer than `n` elements, and the read is not settled: more may come.
+
+#### `SettledShort`
+
+```python
+SettledShort(partial: tuple[Element, ...], node: int | None)
+```
+
+Fewer than `n` elements, and the read is settled: no more will ever come.
+
+#### `AlignedRow`
+
+```python
+AlignedRow(x: int, node: int, cells: Mapping[str, tuple[Element, ...]])
+```
+
+One row of `aligned`: the axis's count at the node, the node, and per name its
+elements there.
+
+#### `Streams`
+
+```python
+Streams(eager: frozenset[str], sources: frozenset[str])
+```
+
+The names with a committed value on a lineage, each by the committing claim's
+declaration; a name that changed kind is in both.
+
+#### `prefix_len`
+
+```python
+prefix_len(ch, x: str | Commits, *, head: HeadStrategy) -> int
+```
+
+`count(x, head)`: what `progress` was, as a count. A name that was a source
+throughout counts 0.
+
+#### `prefix`
+
+```python
+prefix(ch, stream: str, n: int, *, head: HeadStrategy) -> Complete | Pending | SettledShort
+```
+
+The threshold read: the first `n` elements, or what was found, told apart by
+settledness.
+
+#### `series`
+
+```python
+series(ch, stream: str, *, head: HeadStrategy) -> list[Element]
+```
+
+One eager stream's elements, in lineage order.
+
+#### `last_element`
+
+```python
+last_element(ch, stream: str, *, head: HeadStrategy) -> Element | None
+```
+
+The last element in lineage order, which is not always the newest by seq.
+
+#### `aligned`
+
+```python
+aligned(ch, names: Sequence[str], *, head: HeadStrategy, axis: str | Commits) -> list[AlignedRow]
+```
+
+Values aligned by node: one row per node committing any of `names`, its x the
+axis's count there. Cells are tuples, so a value that is a JSON array stays one
+element.
+
+#### `answers`
+
+```python
+answers(ch, request_id: str, *, head: HeadStrategy) -> list[Element]
+```
+
+The answers to a subscription on the head's lineage: at each node whose `fired`
+names it, the sample of its target. A pure demand has none.
+
+#### `streams`
+
+```python
+streams(ch, *, head: HeadStrategy) -> Streams
+```
+
+The eager and source names with a committed value on the lineage.
+
+### The held folds (§5, "Bounded reads")
+
+Each holds its state and reads only the records since its last poll, and equals its
+pure read after every record.
+
+#### `HeadFold`
+
+```python
+HeadFold().poll(ch) -> Head
+```
+
+`LatestClaimHead`, held.
+
+#### `PrefixLen`
+
+```python
+PrefixLen(x: str | Commits).poll(ch, head: Head) -> int
+```
+
+`prefix_len`, held; `.at(ch, node, *, w)` looks up any node's count.
+
+#### `LastElement`
+
+```python
+LastElement(stream: str).poll(ch, head: Head) -> Element | None
+```
+
+`last_element`, held.
+
+#### `Answers`
+
+```python
+Answers(request_id: str).poll(ch, head: Head) -> list[Element]
+```
+
+`answers`, held: it re-derives the list on a head that does not descend from its
+last one, so a caller that streams answers diffs the lists.
+
+#### `LiveDemand`
+
+```python
+LiveDemand().poll(ch) -> list[Envelope]
+```
+
+`live_demand`, held: by name, for the whole log, reading the newest head itself.
+`ensure_served` takes one per run.
+
+#### `PendingStops`
+
+```python
+PendingStops().poll(ch) -> list[Envelope]
+```
+
+`undischarged_stops`, held; the Watcher's `pending_stops` holds one per run.
+
+### The verdict (§5)
+
+#### `Tier`
+
+```python
+Tier  # StrEnum: EXIT, DIED, TERMINATED, PROBED_DEAD, HEARTBEAT_STALE, SESSION_ENDED
+```
+
+The viewpoint a verdict rests on: the claim's exit, the death reports, an
+unclaimed run's launch, or one of the Watcher's inferences (a handle probed dead,
+witnessed liveness gone stale, the claim's session ended).
+
+#### `DeathReport`
+
+```python
+DeathReport(seq: int, outcome: Outcome, evidence: str, t: float)
+```
+
+A readable `supervisor.died` naming the claim, in `RunResult.reports`.
+
+### `ensure`'s outcomes (§5)
+
+#### `Reached`
+
+```python
+Reached(node: int | None)
+```
+
+The newest claim's lineage holds the target, at `node`: read anything there at
+`AtNode(node)`. `None` only for a target of 0 on the empty lineage.
+
+#### `Unreachable`
+
+```python
+Unreachable(closed_at: int)
+```
+
+The head is closed below the target: nothing more can be committed.
+
+### The 0.4.0 bodies (§3)
+
+#### `Commit`
+
+```python
+Commit(claim_seq, consumed_seq, parent, values, fired, expired, t)  # lifecycle.commit
+```
+
+A lineage node, one per `commit()`: the claim it speaks for, the drain's
+watermark, the node it extends, the value seqs it commits, and the subscriptions
+that fired and expired there.
+
+#### `Rewind`
+
+```python
+Rewind(claim_seq, resume_from, t)  # lifecycle.rewind
+```
+
+Restates the claim's position, never who: an extendable node of the run, or null
+for the root.
+
+#### `Withdraw`
+
+```python
+Withdraw(t)  # control.withdraw; request_id names what it spends
+```
+
+The asker's cancellation of a stop or a subscription.
+
+#### `Died`
+
+```python
+Died(claim_seq, outcome, evidence, t)  # supervisor.died
+```
+
+The death report: a third party's account of how the claim ended, `outcome` a
+death's (`preempted`, `errored`, `killed`, `lost`), never a completion.
+
+#### `Node`
+
+```python
+class Node(Protocol): ...  # a Commit or a Stopped
+```
+
+A lineage node: `claim_seq`, `parent`, `fired`, `expired`, `committed`,
+`iterations`, `extendable`, `closed`, `t`. Closed if and only if a completed exit;
+torn if and only if an exit that discarded its iteration; extendable otherwise.
+
+---
+
 ## Wire topics
 
 The reserved topics, their body shape, producer/consumer, and the schema file
