@@ -447,7 +447,7 @@ def _stack_0_3_0():
     """Format 0.3.0's validators: the envelope, and each convention by the
     prefix of the topics it owns; ``value`` is a topic, not a prefix."""
     jsonschema = pytest.importorskip("jsonschema")
-    root = Path(__file__).resolve().parent.parent / "protocol"
+    root = Path(__file__).resolve().parent / "fixtures" / "log-format-0.3.0"
 
     def load(name):
         schema = json.loads((root / f"{name}.schema.json").read_text())

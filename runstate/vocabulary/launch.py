@@ -1,8 +1,9 @@
 """Launch identity (docs/specs/launcher-record-identity.md).
 
 A launcher mints ONE correlation id per launch and stamps it on the envelope's
-``request_id`` for both of its records — ``launcher.launched`` (the spawn) and
-``launcher.terminated`` (that spawn's death) — and the worker it spawns
+``request_id`` for both of its records — ``supervisor.launched`` (the spawn) and
+``supervisor.terminated`` (that spawn's death; supervisor-v0.5 renamed
+``launcher.*``) — and the worker it spawns
 re-emits the same id on its ``lifecycle.started``. So the claim that answers a
 launch names the launch it answers, and a death names the launch that died.
 

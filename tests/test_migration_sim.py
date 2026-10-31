@@ -275,7 +275,7 @@ def test_released_workers_work_after_their_release() -> None:
 
 # ----- 1. schema-valid logs ----------------------------------------------------------
 
-_PROTO = Path(__file__).resolve().parent.parent / "protocol"
+_PROTO = Path(__file__).resolve().parent / "fixtures" / "log-format-0.3.0"
 
 
 @pytest.fixture(scope="module")

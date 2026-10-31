@@ -1246,7 +1246,7 @@ STACK_0_2_0 = SchemaStack(
     value="value-v0.2",
 )
 STACK_0_3_0 = SchemaStack(
-    root=_HERE.parent / "protocol",
+    root=_HERE / "fixtures" / "log-format-0.3.0",
     envelope="envelope-v0.2",
     control="subscription-v0.3",
     lifecycle="lifecycle-v0.5",
