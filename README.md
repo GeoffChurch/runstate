@@ -8,7 +8,7 @@ A protocol + reference Python implementation for **cooperative bidirectional con
 
 `runstate` provides:
 
-1. **A protocol** — a per-run, append-only **topic log** of envelopes `{seq, topic, name?, request_id?, body}`, with opt-in **conventions** layered on top (cooperative-control, subscription, lifecycle, launcher, value). Wire format: the JSON Schema stack in `protocol/` (`envelope-v0.2.schema.json` + the per-convention schemas). Semantics: `docs/design-v0.2.md`.
+1. **A protocol** — a per-run, append-only **topic log** of envelopes `{seq, topic, name?, request_id?, body}`, with opt-in **conventions** layered on top (cooperative-control, subscription, lifecycle, supervisor, value). A worker's values are **committed** to the nodes of a **lineage**, so every read follows one chain of nodes from a chosen head. Wire format: the JSON Schema stack in `protocol/` (`envelope-v0.2.schema.json` + the per-convention schemas). Semantics: `docs/design-v0.2.md`, and `docs/specs/commits-and-lineage.md` for log format 0.4.0.
 
 2. **A reference Python implementation** — the `runstate.channel` substrate (`MemoryChannel` + `SqliteChannel` + the cross-host `PostgresChannel`, the optional `[postgres]` extra), the reference `Worker` loop, and opt-in orchestration helpers (`ThreadLauncher` / `LocalLauncher`, `Watcher`, the deciders, `ensure`). (On NFS, export `RUNSTATE_SQLITE_JOURNAL_MODE=DELETE` — the default WAL journal needs shared memory a network filesystem can't back.)
 
@@ -18,79 +18,170 @@ The protocol is language-agnostic: any implementation that produces conforming m
 
 Install: `pip install -e .` (Python ≥ 3.11, stdlib-only core; add `.[postgres]` for the cross-host backend, `.[test]` for the suite).
 
-**Upgrading with existing logs.** A log's format is part of its address (`<root>/v0.3.0/<rid>.db`; schema `runstate_v0_3_0` on Postgres), and opening a log of any other format raises instead of reading it: `LogFormatMismatch` for an older or newer format, `LogFormatMissing` for a log written before versioned addresses (`<root>/<rid>.db`). To upgrade, first stop every process that writes the logs and drain any queued jobs; then onboard legacy logs (written at or after `4729fcd`) exactly as the `LogFormatMissing` message instructs. On SQLite its loop moves each `<root>/<rid>.db` into `<root>/v0.2.0/` together with its `<rid>.db-wal`, `<rid>.db-shm` and `<rid>.db-journal` files, and leaves a **tombstone**, an empty read-only file, at the old address; on Postgres it moves the `log` table into schema `runstate_v0_2_0` and leaves an empty insert-refusing `log`. Either way a writer still on an older runstate fails loudly instead of starting the run over. Then run `runstate migrate <root>` (add `--backend postgres` for a DSN), which seals each old log and writes its 0.3.0 copy. Details: `docs/specs/log-formats.md`.
+**The code below runs.** As in the guide, a block fenced ` ```python ` is a complete program, and `tests/test_guide.py` runs each one against the current `runstate/`; a block fenced ` ```python fragment ` is a sketch, most often of a runnable example under `examples/` (named beside it, and run by `tests/test_examples.py`).
 
-The worker drives a normal loop; `runstate.Worker` drains control, services subscriptions, and emits the lifecycle beacons:
+**Upgrading with existing logs.** A log's format is part of its address (`<root>/v<format>/<rid>.db`; schema `runstate_v<format>` on Postgres, with the dots as underscores), and opening a log of any other format than `runstate.LOG_FORMAT` raises instead of reading it: `LogFormatMismatch` for an older or newer format, `LogFormatMissing` for a log written before versioned addresses (`<root>/<rid>.db`). To upgrade, first stop every process that writes the logs and drain any queued jobs; then onboard legacy logs (written at or after `4729fcd`) exactly as the `LogFormatMissing` message instructs. On SQLite its loop moves each `<root>/<rid>.db` into `<root>/v0.2.0/` together with its `<rid>.db-wal`, `<rid>.db-shm` and `<rid>.db-journal` files, and leaves a **tombstone**, an empty read-only file, at the old address; on Postgres it moves the `log` table into schema `runstate_v0_2_0` and leaves an empty insert-refusing `log`. Either way a writer still on an older runstate fails loudly instead of starting the run over. Then run `runstate migrate <root>` (add `--backend postgres` for a DSN), which seals each old log and writes its copy in the current format, one retained step at a time. It first runs a detection pass that writes nothing, and refuses until you have stated what an old log leaves open (`--assume`, `--resolve`, `--accept`). Details: `docs/specs/log-formats.md` §6 and §8, and for the step to format 0.4.0, `docs/specs/commits-and-lineage.md` §7–§8.
+
+The worker drives a normal loop; `runstate.Worker` claims the run, drains control, answers subscriptions, and writes the lifecycle records:
 
 ```python
-# worker.py — launched into a run; current_channel() reads RUNSTATE_* from the env
+# worker.py -- launched into a run: current_channel() reads the launcher's RUNSTATE_*
 import runstate
 
-with runstate.Worker(runstate.current_channel()) as w:
-    for step in w.steps(total=1000):
-        w.set("loss", train_one_step())   # reported to whoever subscribed
-    w.stopped(completed=True)   # finished the whole budget -> claim completion
+with runstate.Worker(
+    runstate.current_channel(),
+    resume_from=None,  # a fresh start (a checkpoint object resumes from its node)
+    sources=["lr"],  # sampled on demand; every other name is an eager stream
+    save=runstate.NoSave(),  # no checkpoints (docs/guide.md section 4 adds them)
+) as w:
+    for step in w.steps(runstate.Target(runstate.Commits(), 1000)):
+        w.emit("loss", 1.0 / (step + 1))  # your training step: always logged
+        w.set("lr", 0.1 * 0.99**step)  # the current value, logged only when subscribed
+    if not w.stop_pending:  # ran the whole budget, rather than being stopped
+        w.stopped(completed=True, error=None)  # claim completion
 ```
 
-(Falling off the `with` block *without* the claim also emits a clean `lifecycle.stopped`, but as the resumable default — `outcome` reads `preempted`. `completed` is the worker's opt-in claim of *intrinsic, permanent* completion; a resumable or chunked worker deliberately never claims it.)
+`steps(target)` yields each iteration's index and **commits** the iteration after its body: one node per iteration, committing the values emitted in it. `emit` reports an element of an eager stream, which `series`, `ensure` and `history` read; `set` updates a declared source, which reaches the log only when a subscription fires. (Leaving the `with` block *without* the claim writes a clean, **extendable** exit whose outcome reads `preempted`, and a later claim can continue it. `completed=True` is the worker's opt-in claim of *intrinsic, permanent* completion, which closes the lineage; a resumable or chunked worker deliberately never claims it.)
 
-The orchestrator spawns it, subscribes, and watches it to a terminal result:
+The orchestrator spawns it, subscribes, and watches it to a terminal result (the skeleton of `examples/minimal/driver.py`):
 
-```python
+```python fragment
+import sys
+
 import runstate
 
-with runstate.LocalLauncher(root="/tmp/runs") as launcher, \
-        launcher.create_channel("run-1") as ch:   # birth the run's channel (a context manager)
-    ch.send({"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="me")
-    handle = launcher.launch("run-1", ["python", "worker.py"])
+with runstate.LocalLauncher(root="/tmp/runs") as launcher:
+    ch = launcher.create_channel("run-1")  # birth the run's log
+    # Subscribe BEFORE the launch: the log holds the request until a worker drains it.
+    ch.send(
+        {"every": {"commits": 10}},  # sample the `lr` source at every 10th commit
+        topic=runstate.Topic.CONTROL_SUBSCRIBE,
+        name="lr",
+        request_id="me",  # the name its answers bear
+    )
+    cmd = runstate.Command([sys.executable, "worker.py"], env={})  # the parent's env
+    handle = launcher.launch("run-1", cmd)
 
-    watcher = runstate.Watcher(); watcher.add(handle)
+    watcher = runstate.Watcher(heartbeat_timeout=30.0)  # required: it changes a verdict
+    watcher.add(handle)
     result = watcher.wait("run-1", on_event=lambda rid, e: print(e.topic, e.body))
-    print(result.outcome)   # "completed" | "preempted" | "errored" | "killed" | "presumed_dead"
+    print(result.outcomes)  # a set of Outcome: completed, preempted, errored, ...
+
+    head = runstate.LatestClaimHead()  # a read follows one lineage, from this head
+    print(len(runstate.series(ch, "loss", head=head)))  # 1000 eager losses
+    print(len(runstate.answers(ch, "me", head=head)))  # 100 lr samples, one per firing
 ```
 
 A runnable version is in `examples/minimal/` (`python examples/minimal/driver.py`).
 
-**Runs are episodic.** A `run_id` names a durable log, not a process: a worker *episode* (`started … stopped`) can end, and a later episode can attach to the **same** log and resume — which is how relaunch-to-extend, launch-on-demand, and reconnect all fall out. Two rules every consumer needs: episode-scoped state (the live handle/pid, current status) is read from the **latest** `lifecycle.started`, never the first — `runstate.latest_episode` / `live_episode` own that rule — and a terminal verdict stands only until a new episode claims (`peek_terminal` is episode-aware). The full model: [docs/overview.md](docs/overview.md).
+**Runs are claims on a durable log.** A `run_id` names a durable log, not a process: a worker's *claim* (`started … stopped`) can end, and a later claim can continue the **same** log from a node of it — which is how relaunch-to-extend, launch-on-demand, and reconnect all fall out. Three rules every consumer needs: claim-scoped state (the live handle, the current status) is read from the **latest** `lifecycle.started`, never the first — `runstate.latest_episode` / `live_episode` own that rule; a terminal verdict stands only until a new claim (`peek_terminal` reads the newest claim's); and a branch is never spliced — a rewind, a resume from an older checkpoint or a displaced worker commits on its own branch, and every lineage read takes a required `head=` (`LatestClaimHead()`, or `AtNode(node)` for a fixed one). A claim ends by **record**, its exit or a death report naming it, never by a probe's silence. The full model: [docs/overview.md](docs/overview.md).
 
 ## Recipes
 
 Three common patterns; each has a runnable twin under `examples/`.
 
-**Reuse + extend** — `ensure` serves the logged prefix on a cache hit, else relaunches-to-extend and waits. Content-addressed by `run_id`, so re-asking is free and asking for *more* steps resumes:
+**Reuse + extend** — `ensure` answers from the log when the newest claim's lineage already holds the target (`Reached(node)`, no worker), else relaunches-to-extend and waits. Content-addressed by `run_id`, so re-asking is free and asking for *more* resumes the same lineage:
 
 ```python
-runstate.ensure(producer, "loss", until={"step": 8})    # cold: produce 0..7
-runstate.ensure(producer, "loss", until={"step": 8})    # warm: served from the log, no worker
-runstate.ensure(producer, "loss", until={"step": 20})   # extend: resume 8..19, one series
+import hashlib
+import json
+import math
+
+import runstate
+
+
+def train(channel: runstate.Channel, *, until: runstate.Target, lr: float) -> None:
+    # A pure function of the index holds no state, so it continues the head's lineage.
+    with runstate.Worker(
+        channel,
+        resume_from=runstate.LatestClaimHead(),
+        sources=[],
+        save=runstate.NoSave(),
+    ) as w:
+        for step in w.steps(until):  # `until` is the drive's Target
+            w.emit("loss", 5.0 * math.exp(-lr * step))
+    # no completed claim: an extendable exit at the target, which the next drive extends
+
+
+inputs = {"lr": 0.3}  # the run_id is the inputs' hash, never the target's
+rid = hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()[:16]
+target = runstate.ThreadTarget(train, args=(), kwargs=inputs)
+producer = runstate.launch_producer(runstate.ThreadLauncher(), rid, target)
+
+runstate.ensure(producer, runstate.Target("loss", 8))  # cold: produce 0..7
+runstate.ensure(producer, runstate.Target("loss", 8))  # warm: from the log, no worker
+r = runstate.ensure(producer, runstate.Target("loss", 20))  # extend: resume 8..19
+assert isinstance(r, runstate.Reached) and r.node is not None
+
+losses = runstate.series(producer.channel, "loss", head=runstate.AtNode(r.node))
+assert len(losses) == 20  # one lineage, nothing to collapse
+claims = producer.channel.read(topics=[runstate.Topic.LIFECYCLE_STARTED])
+assert len(claims) == 2  # the warm call launched nothing
 ```
-→ `examples/reuse/`
+→ `examples/reuse/` (the same, with checkpoints)
 
-**Divergence-preempt** — watch the value stream and send a cooperative `control.stop` when you've seen enough (divergence, a plateau, a budget); the worker stops cleanly at its next tick (`outcome` → `preempted`):
+**Divergence-preempt** — watch the run and send a cooperative `control.stop` when you've seen enough (divergence, a plateau, a budget); the worker stops cleanly at its next commit or heartbeat, and the verdict's `outcomes` holds `preempted`. A stop's `request_id` is required and never reused:
 
 ```python
-def on_event(rid, e):
-    if e.topic == "value" and e.body["value"] > THRESHOLD:
-        ch.send({"from": {"step": 0}}, topic="control.stop", request_id=uuid.uuid4().hex)
+import time
+import uuid
 
-watcher.wait("run-1", on_event=on_event)
+import runstate
+
+THRESHOLD = 100.0
+
+
+def train(channel: runstate.Channel) -> None:
+    with runstate.Worker(
+        channel, resume_from=None, sources=[], save=runstate.NoSave()
+    ) as w:
+        for step in w.steps(None):  # no bound: it runs until it is stopped
+            w.emit("loss", 1.5**step)  # a loss that diverges
+            time.sleep(0.005)
+
+
+launcher = runstate.ThreadLauncher()
+ch = launcher.create_channel("run-1")
+handle = launcher.launch("run-1", runstate.ThreadTarget(train, args=(), kwargs={}))
+
+heads, last = runstate.HeadFold(), runstate.LastElement("loss")  # held folds
+stops: list[int] = []
+
+
+def on_event(rid: str, e: runstate.Envelope) -> None:
+    if e.topic != runstate.Topic.LIFECYCLE_COMMIT or stops:
+        return  # a value lands with its node: read the fold only then
+    loss = last.poll(ch, heads.poll(ch))
+    if loss is not None and loss.value > THRESHOLD:
+        # no `from`: the stop holds as soon as the worker drains it
+        stop_id = uuid.uuid4().hex  # one per stop, never reused
+        stop = ch.send({}, topic=runstate.Topic.CONTROL_STOP, request_id=stop_id)
+        stops.append(stop)
+
+
+watcher = runstate.Watcher(heartbeat_timeout=30.0)
+watcher.add(handle)
+result = watcher.wait("run-1", on_event=on_event)
+assert result.outcomes == {runstate.Outcome.PREEMPTED}  # clean, and resumable
+assert runstate.await_consumed(ch, stops[0]) is None  # the exit honoured the stop
 ```
 → `examples/minimal/`
 
-**Killed-redrive (caller pattern)** — `ensure` auto-continues clean `preempted` stops but **fails fast on a death**; the retry decision is yours. `RunFailedError` hands you the verdict observed at raise time — decide if it's resumable (the worker didn't self-diagnose a fatal `error`) and re-call `ensure` to resume from the checkpoint; take-the-latest absorbs the re-emitted overlap:
+**Killed-redrive (caller pattern)** — `ensure` auto-continues clean `preempted` stops but **fails fast on a death**; the retry decision is yours. `RunFailedError` hands you the verdict observed at raise time — decide if it's resumable (the worker didn't self-diagnose a fatal `error`) and re-call `ensure` to resume from the checkpoint. The crashed claim's commits past that checkpoint stay on the log, on a branch the new lineage does not include, so the series is one lineage with nothing to collapse:
 
-```python
-for _ in range(budget):                          # the retry budget lives here, with you
+```python fragment
+for _ in range(budget):  # the retry budget lives here, with you
     try:
-        series = runstate.ensure(producer, "loss", until={"step": N}); break
+        reached = runstate.ensure(producer, runstate.Target("loss", n))
+        break
     except runstate.RunFailedError as e:
-        if e.result.error is not None:           # worker self-diagnosed fatal -> don't retry
+        if e.result.error is not None:  # the worker self-diagnosed fatal: don't retry
             raise
-        # killed without a self-diagnosis -> the re-call resumes from the checkpoint
+        # a death it did not diagnose (killed, lost): the re-call resumes
 ```
 → `examples/redrive/`
 
-The patterns compose: `examples/vqe/` is a full domain workload (a variational quantum eigensolver, qiskit + optional IonQ Cloud — `pip install runstate[examples]`) whose step is **long, expensive, and cancelable** — the worker keeps ticking *while it waits* on a queued job (the heartbeat stays fresh; a `control.stop` lands mid-queue and cancels the in-flight job), the run is content-addressed so re-running is a cache hit, and the driver's plateau policy steers it. `examples/monitor/` is the on-demand service worker (leased demand, lazy-launch).
+The patterns compose: `examples/vqe/` is a full domain workload (a variational quantum eigensolver, qiskit + optional IonQ Cloud — `pip install runstate[examples]`) whose iteration is **long, expensive, and cancelable** — the worker calls `w.heartbeat()` *while it waits* on a queued job, which keeps it witnessed without writing a node, and a `control.stop` lands mid-queue and cancels the in-flight job; it emits the eager `energy` stream beside a demand-sampled `job_seconds` source, resumes by the checkpoint recipe, and is content-addressed so re-running is a cache hit, while the driver's plateau policy steers it. `examples/monitor/` is the on-demand service worker (leased demand: `serve()` while a subscription is live, retiring when its lease expires; `ensure_served` wakes it again on fresh demand, read through the `LiveDemand` fold).
 
 ## What it is not
 
@@ -125,8 +216,11 @@ The substrate is the `Channel` (a durable per-run topic log). The protocol defin
 
 ## Status
 
-**v0.2 is implemented** in `runstate/` — the topic-log substrate, the conventions, the orchestration helpers, and the JSON Schema stack with conformance tests. See `docs/design-v0.2.md` for the rationale and `docs/design-v0.2-exploration.md` for the decision trail. (The earlier v0.1 pull-first command/event model was superseded by this redesign.)
+**Current: layer 2, commits and lineage — log format 0.4.0** (registered by the plan's last commit, which sets `LOG_FORMAT`; `docs/specs/commits-and-lineage.md`, executed by `docs/plans/2026-10-28-layer2-live.md`), implemented on the `impl/layer2-live` branch. What it gives:
 
-**v0.3 (in progress, on `master`):** the convention bodies are typed frozen dataclasses in `runstate/vocabulary/`; `value` events carry an absolute wall-clock `value.t`; a `run_id()` *recipe* documents reuse-by-content-hash (`docs/specs/run-id-recipe.md`); the **run-episodes** scoped primitive landed — a `run_id` hosts multiple resumable episodes (relaunch-to-extend), with the single-spawn guard implemented as a worker self-claim (`docs/specs/run-episodes.md`); and the **memoizer** that consumes it shipped — `history()` replays a schedule over the logged `value` points (passive, channel-only), and `ensure(producer, name, until={"step": N})` serves the logged prefix on a hit or relaunches-to-extend and waits on a miss, with the `launch_producer` seam + the `relaunch_if_needed` helper (`docs/specs/memoizer.md`). The **service worker** shipped next (`docs/specs/service-worker.md`): leased demand — `serve()`/`retire()`/`pinned`, the careful death (episodes CAS-claimed at both ends), expiry counter-records under the answer fold (`live_demand`; by name since log format 0.3.0); `examples/monitor/` is the on-demand dogfood. **Lazy-launch** shipped next (`docs/specs/lazy-launch.md`): `ensure_served`, the leased-demand waker — demand-first, no flap policy, loser corpses disciplined; `examples/monitor/` now runs the whole loop twice (demand → wake → serve → lapse → retire → re-demand → re-wake). Then the two dissolutions that closed the arc (`docs/specs/derived-runs.md`, `docs/specs/store.md`): the *function producer* needs no new surface (a derived run is an ordinary one-step run behind `ensure`; the named `Producer` Protocol stays deferred on evidence), and the relational-layer **Store** ships as recipes over the existing basis — the rid is the run's *address* (content-addressed placement; reuse-by-hash dissolves into `ensure` against the one home), membership is a cell pointer, provenance is the child's birth record — plus one helper, `foreign_episode` (the producer gate's foreign half). See `docs/backlog/index.md` "Start here". Full v0.3 trail: `docs/design-v0.3-exploration.md`.
+- **One lineage of a run's values, nodes and commits.** Each iteration's `commit()` writes a node that names the values it commits; every read (`series`, `prefix`, `aligned`, `answers`, `ensure`) follows one lineage from a head chosen at the edge, so a rewind, a resume from an older checkpoint or a displaced worker branches instead of splicing. Progress is a count along the lineage (`Commits()`, or an eager stream's length), the subscription algebra counts the same way (`{commits: n}`, `{stream: name, n: n}`), and the checkpoint recipe makes a resumed state the state its node committed (`Every(k, fn)`, `OnHeadLineage`).
+- **Death reports from evidence.** A claim ends by its exit or by a `supervisor.died` naming it — written by a launcher's reap, by `report_if_dead`, or by any party with evidence through `report_death` — never by an inference from silence; a worker that reads a report naming its claim is released. Verdicts are by viewpoint: `RunResult.outcomes` (a set of the closed `Outcome` enum) and `tier`.
+- **The session probe on Postgres.** Every `PostgresChannel` connection holds a fresh advisory-lock key, and each row carries its writer's; a claim whose session has ended is evidence, which `report_if_dead` records as a death report (`docs/specs/channel-postgres.md`). The CAS stays the only claim arbiter.
+- **The format migration under `runstate migrate`:** the retained 0.3.0 → 0.4.0 step (`commits-and-lineage.md` §7), with its detection pass and the consumer's stated choices, beside the 0.2.0 → 0.3.0 one. It is written and tested, and the same last commit registers it with the format.
 
-**Shipped since (June–July 2026):** the cross-host **`PostgresChannel`** backend (`docs/specs/channel-postgres.md`) — one shared `log` table with `PRIMARY KEY (run_id, seq)` as the cross-host CAS arbiter (cross-host single-spawn + control fall out of it, claim model unchanged), a session advisory lock as a Watcher-consumed liveness capability (since 2026-10-30 the per-connection session probe, which `report_if_dead` records as a death report), and the repo's first CI workflow running the suite against a real server. The 2026-07 holistic review then landed: `last_seq()` — the substrate's fifth op, the CAS's read half (worker attach on a 10⁶-envelope log: 3.4 s → 1.5 ms); `Worker.emit` — the unconditional broadcast-value verb beside the demand-sampled `set`; typed `RunFailedError` / `NoProgressError`; `undischarged_stops` — the stop fold's observer home; `lifecycle`-v0.3 (the dead `hostname` field dropped); and **launch identity** (`docs/specs/launcher-record-identity.md`) — one correlation id per launch, on `launched` + `terminated` and re-emitted on the worker's `started`, anchoring the verdict to the *claimed* episode so a late reap or a claim-race loser's clean exit can no longer forge it. Then the **observer clock** shipped (`docs/specs/observer-clock.md`; `lifecycle`-/`launcher`-v0.4): a required wall-clock `t` dates every `lifecycle.*` / `launcher.*` record, a cold-attaching `Watcher` seeds its staleness clock from the beacon already on the log, and `last_activity` dates a run from the log alone — the first item of the standing third-party-observer thread (`docs/backlog/third-party-observer.md`: what the log doesn't tell a party that didn't launch the run).
+**Earlier history, briefly.** v0.2 replaced the original pull-first command/event model with the two-layer design: the topic-log substrate plus opt-in conventions (`docs/design-v0.2.md`; the decision trail in `docs/design-v0.2-exploration.md`). v0.3 added run episodes, the memoizer (`ensure`), the service worker and lazy-launch, and dissolved the relational Store into recipes (`docs/design-v0.3-exploration.md`). Since then: the cross-host `PostgresChannel`, the 2026-07 holistic review, launch identity, the observer clock, versioned log formats with `runstate migrate`, and reference by name (log format 0.3.0). The specs are under `docs/specs/`; what is next starts at `docs/backlog/index.md` ("Start here").
