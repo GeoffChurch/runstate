@@ -15,7 +15,6 @@ import sys
 
 import pytest
 
-from runstate.checkpoint import Every
 from runstate.claims import CAS_ATTEMPTS, endings
 from runstate.launcher import Command, LocalLauncher, report_death
 from runstate.observables import (
