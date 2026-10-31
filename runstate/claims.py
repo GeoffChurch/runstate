@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 
-from ..channel import Channel, Envelope
+from .channel import Channel, Envelope
 from .vocabulary.payloads import Bound, Stopped, Topic
 from .walk import FIRST_WINDOW, readable
 

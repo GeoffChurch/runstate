@@ -1,473 +1,480 @@
-"""The memoizer: reuse-by-run_id with a schedule-shaped read (docs/specs/memoizer.md).
+"""The memoizer of log format 0.4.0, staged (docs/specs/commits-and-lineage.md §5,
+"The reads": ``history`` and ``ensure``; §3, "The writers").
 
-Two free functions over the topic log: `history` replays the subscription
-condition-algebra over the LOGGED `value` points (passive; channel-only;
-worker-invisible), and `ensure` adds read-first/produce-on-miss on top (active;
-needs a producer). The layers join *through the log*, never by piping values.
+STAGED. Task 19 of docs/plans/2026-10-28-layer2-live.md moves this module over
+``runstate/memoizer.py``.
+
+Two functions over the topic log, which join through the log, never by piping
+values. ``history`` replays a schedule over a lineage's nodes, as live evaluation
+evaluates it, and returns the elements of a stream at the nodes where it fires: a
+one-shot read. ``ensure`` reads first, and drives a producer on a miss until the
+newest claim's lineage holds a ``Target``: it returns ``Reached`` or ``Unreachable``,
+never elements, since a target may count ``Commits()``, which has none, and the
+caller reads anything at ``AtNode(node)``, which is permanent.
+
+THE SEAM. A ``Producer`` is anything with ``.channel``, ``.run_id`` and
+``.extend(target)``, which returns a liveness handle, never ``None``, carrying the
+launch id of the drive it launched, or ``None`` for a foreign handle, whose drives
+are attributed to no claim. ``launch_producer`` is the default, over a
+``Launcher[D]`` whose target is ``Drivable``; ``foreign_episode`` is the handle of a
+claim the producer did not launch.
+
+A DRIVE'S CLAIM is the newest claim naming its launch (``launcher.launch_claim``).
+While it is held, ``ensure`` waits, whatever the handle says: an ended handle may be
+a wrapper's, and the claimant's launcher reports its death (§3), as ``ensure`` itself
+does through ``report_if_dead`` on each poll. It never reports on the strength of a
+handle.
 """
 
 from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, Protocol
+from dataclasses import dataclass, replace
+from typing import Generic, NamedTuple, Protocol, TypeVar
 
-from .channel import Body, Channel
-from .vocabulary.payloads import Topic
-from .vocabulary.schedule import Condition, Subscription, references_time, satisfied
-from .launcher import Launcher, relaunch_if_needed
-from .observables import (
-    Outcome,
-    RunResult,
-    is_step,
-    live_episode,
-    peek_terminal,
-    worker_completed,
-    progress,
+from .channel import Channel, Envelope
+from .claims import backward, endings, named_claim
+from .launcher import (
+    Drivable,
+    Launcher,
+    launch_claim,
+    relaunch_if_needed,
+    report_if_dead,
 )
+from .observables import (
+    HeadFold,
+    HeadStrategy,
+    PrefixLen,
+    RunResult,
+    claim_verdict,
+    latest_episode,
+)
+from .vocabulary.coordinate import Commits, Target
+from .vocabulary.payloads import Outcome, Started, Topic
+from .vocabulary.schedule import (
+    Condition,
+    Coordinates,
+    Subscription,
+    needs_epoch,
+    parse_schedule,
+)
+from .walk import Element, coordinates, element, members, verdict_parse, walk
 
-if TYPE_CHECKING:
-    from .sweep import Variant
+# ----- what ensure returns, and its errors (§5) -------------------------------------
+
+
+@dataclass(frozen=True)
+class Reached:
+    """The newest claim's lineage holds the target, at ``node``: read anything there
+    at ``AtNode(node)``, which is permanent. ``None`` only where a target of 0 meets
+    the empty lineage, which holds nothing to read. ``Unreachable`` names its node
+    otherwise (``closed_at``), so on the union ``.node`` is a type error, and a run
+    that ended short of the target cannot be read as one that reached it."""
+
+    node: int | None
+
+
+@dataclass(frozen=True)
+class Unreachable:
+    """The head is closed, at ``closed_at``, below the target: nothing more can be
+    committed on a completed run, so no drive could reach it."""
+
+    closed_at: int
 
 
 class RunFailedError(Exception):
-    """``ensure``'s producer run died with a failure verdict (``errored`` /
-    ``killed`` / ``presumed_dead``). ``result`` is the ``RunResult`` observed
-    AT RAISE TIME — the retry decision's input, handed over rather than
-    racily re-read (the log may have moved by the time a catcher looks)."""
-
-    def __init__(self, run_id: str, result: RunResult) -> None:
-        super().__init__(f"run {run_id!r} failed: {result.outcome}/{result.reason}")
-        self.run_id = run_id
-        self.result = result
-
-
-class RecordlessExitError(Exception):
-    """``ensure``'s run was reaped with a clean exit code but left no worker
-    verdict, and a full drive cycle did not move the frontier.
-
-    A ``launcher.terminated(exited, exit_code=0)`` is a fact about a PROCESS,
-    not about the work: an ``sbatch`` exits 0 at *submit* time, and a worker
-    that skips its context manager exits 0 mid-series. Short-circuiting on it
-    returns whatever happens to be logged -- an empty series for the first, a
-    truncated one for the second, silently in both cases. So ``ensure``
-    re-drives instead, and raises at the FIXED POINT: one full cycle against
-    the same recordless death that left ``progress`` where it was. Identical
-    inputs, identical outputs -- another lap can only reproduce them, so this
-    is the log's own arithmetic and not a lap count or a clock.
-
-    SIBLING of ``RunFailedError``, deliberately not a subclass:
-    ``result.outcome`` here is ``COMPLETED``, and ``RunFailedError.result`` is
-    documented as a *failure* verdict -- subclassing would make that field lie.
-    Callers catching only ``(NoProgressError, RunFailedError)`` must add this
-    name. ``result`` is the observation at raise time."""
+    """A drive's claim ended with an outcome in ``Outcome.failures()`` (§5).
+    ``result`` is its verdict at raise time, stamped with the run, the retry
+    decision's input, handed over rather than re-read; ``count`` is the target's
+    count at the head then."""
 
     def __init__(
-        self,
-        run_id: str,
-        result: RunResult,
-        *,
-        progress: int | None,
-        until: Condition,
+        self, run_id: str, result: RunResult, *, target: Target, count: int
     ) -> None:
+        outcomes = ", ".join(sorted(result.outcomes))
+        detail = "" if result.error is None else f": {result.error}"
         super().__init__(
-            f"run {run_id!r} was reaped {result.reason!r} with no worker verdict "
-            f"and made no progress toward {until} (progress={progress}); the "
-            f"exit code describes the process, not the work"
+            f"run {run_id!r} failed ({outcomes}, by {result.tier}{detail}) at "
+            f"{count} of {target}"
         )
         self.run_id = run_id
         self.result = result
-        self.progress = progress
-        self.until = until
+        self.target = target
+        self.count = count
 
 
 class NoProgressError(Exception):
-    """``ensure``'s OWN spawn died without advancing the step frontier, and no
-    live episode owns the run — relaunching would spin, so refuse. ``progress``
-    is the frontier at raise (None = no stepped record yet); ``until`` the
-    target. A foreign episode's no-progress death re-drives instead (the
-    guard is own-spawn-scoped), and a live foreign claim skips the raise
-    (claim-aware)."""
+    """A drive's claim ended, not failing, having written no commit (§5): a
+    re-drive would spin. Progress is measured per drive by ``Commits()``, not by the
+    target's stream: a chunk may commit no element of a sparse stream, and a claim
+    that resumes from an older checkpoint legitimately lowers every count."""
 
-    def __init__(self, run_id: str, *, progress: int | None, until: Condition) -> None:
+    def __init__(self, run_id: str, *, target: Target, count: int) -> None:
         super().__init__(
-            f"run {run_id!r} made no progress toward {until} "
-            f"(progress={progress}); cannot extend"
+            f"run {run_id!r}: a drive's claim ended having written no commit, at "
+            f"{count} of {target}"
         )
         self.run_id = run_id
-        self.progress = progress
-        self.until = until
+        self.target = target
+        self.count = count
+
+
+class RecordlessExitError(Exception):
+    """A drive's handle ended with no claim naming it, and no other claim held, a
+    second time in a row at an unchanged head and ``Commits()`` count (§5; plan,
+    open question 15): the re-drive reproduced it, so another can only do so
+    again. Its launch exited before claiming, as an ``sbatch`` does at submit
+    time, or a worker that dies before it constructs its ``Worker``; or a foreign
+    handle drove nothing, a claim that had already ended (§5, amended 2026-10-30).
+
+    A sibling of ``RunFailedError``, not a subclass: no claim ended, so there is no
+    verdict to carry. ``launch_id`` is the second drive's, ``None`` for a foreign
+    handle, which names no launch."""
+
+    def __init__(
+        self, run_id: str, *, launch_id: str | None, target: Target, count: int
+    ) -> None:
+        drive = "a foreign drive" if launch_id is None else f"launch {launch_id}"
+        super().__init__(
+            f"run {run_id!r}: {drive} ended with no claim naming it and none held, "
+            f"twice at an unchanged head, at {count} of {target}"
+        )
+        self.run_id = run_id
+        self.launch_id = launch_id
+        self.target = target
+        self.count = count
+
+
+# ----- the producer seam (§5) --------------------------------------------------------
 
 
 class LiveHandle(Protocol):
-    """The minimal liveness handle `ensure` drives: is it still running, and
-    block until it isn't. Satisfied by a launcher's `LaunchHandle` and by the
-    `_ForeignEpisode` gate (specs/store.md Recipe 2)."""
+    """What ``ensure`` drives: the drive's ``launch_id``, which its claim names, or
+    ``None`` for a foreign handle, whose drives name no claim; ``is_alive``, which
+    writes nothing; and ``wait``, which blocks until it is not and reaps it.
+    A launcher's ``LaunchHandle`` is one, and so is ``foreign_episode``'s."""
+
+    @property
+    def launch_id(self) -> str | None: ...
 
     def is_alive(self) -> bool: ...
+
     def wait(self) -> object: ...
 
 
 class Producer(Protocol):
-    """The producer seam (specs/memoizer.md): a run `ensure` can read and extend.
-    `channel` / `run_id` locate the log; `extend(until)` drives toward `until`
-    and returns a liveness handle (never None -- the seam contract)."""
+    """A run ``ensure`` can read and extend (§5): ``channel`` and ``run_id`` locate
+    its log, and ``extend(target)`` drives toward ``target``, returning a liveness
+    handle, never ``None``."""
 
     run_id: str
 
     @property
     def channel(self) -> Channel: ...
 
-    def extend(self, until: Condition) -> LiveHandle: ...
+    def extend(self, target: Target) -> LiveHandle: ...
 
 
 class _ForeignEpisode:
-    """The gate's foreign half (specs/store.md Recipe 2): a liveness handle
-    for an episode this producer did NOT spawn. ``is_alive()`` re-reads
-    ``live_episode`` on every poll (verify-at-use: a recordless winner death
-    is noticed, never waited on forever); ``wait()`` is a no-op (not our
-    child; nothing to reap). ``ensure`` recognizes these handles and exempts
-    them from the no-progress guard: a foreign episode that stops without
-    progress is re-driven (the lazy-launch re-wake posture), never raised on
-    -- the guard remains for OWN spawns that burn without progress."""
+    """The handle of a claim the producer did not launch (specs/store.md Recipe 2):
+    ``is_alive()`` is a pure read, "the newest claim has not ended", by presence
+    (``claims.endings``: an exit or a death report naming it, readable or not), so
+    it probes nothing, writes nothing and never raises on what the log holds (§3,
+    "The writers"). It names no launch, and ``wait()`` reaps nothing."""
 
-    def __init__(self, channel: Channel):
-        self._channel = channel
+    launch_id: None = None
+
+    def __init__(self, ch: Channel) -> None:
+        self._ch = ch
 
     def is_alive(self) -> bool:
-        return live_episode(self._channel) is not None
+        claim = latest_episode(self._ch)
+        return claim is not None and not endings(self._ch, claim, self._ch.last_seq())
 
     def wait(self) -> None:
         return None
 
 
-def foreign_episode(channel: Channel) -> _ForeignEpisode:
-    """The one public copy of the producer gate's foreign-episode handle (the
-    F7 doctrine: one boundary rule, one implementation). Compose a producer's
-    ``extend`` as ``relaunch_if_needed(...) or foreign_episode(channel)``."""
-    return _ForeignEpisode(channel)
+def foreign_episode(ch: Channel) -> LiveHandle:
+    """The one public copy of the producer gate's foreign half: compose a
+    producer's ``extend`` as ``relaunch_if_needed(...) or foreign_episode(ch)``."""
+    return _ForeignEpisode(ch)
 
 
-class _LaunchProducer:
-    """The default producer: wraps a launcher + a Variant so the memoizer can
-    treat one run as an extendable, worker-shaped thing. ``extend(until)``
-    extracts the scalar step target from ``until`` and injects it into the
-    worker kwargs, then relaunches iff not already live. Only the common
-    in-process callable-worker case (target via a kwarg); a subprocess / ray /
-    service producer is the user's own object with the same ``.channel`` /
-    ``.run_id`` / ``.extend`` shape (the seam)."""
+D = TypeVar("D", bound=Drivable)
 
-    def __init__(
-        self, launcher: Any, variant: Variant, target_key: str = "up_to"
-    ) -> None:
-        self._launcher: Launcher = launcher
-        self._variant = variant
-        self._target_key = target_key
-        self.run_id = variant.run_id
+
+class _LaunchProducer(Generic[D]):
+    """The default producer: a ``Launcher[D]`` relaunching ``target`` into
+    ``run_id``, driven to each ``extend``'s target. A producer over a ``Command``, a
+    ray actor or a service is the consumer's own object of the same shape (the
+    seam): a ``Command`` is not ``Drivable``, since a subprocess has no defined way
+    to receive a ``Target`` (plan, open question 18)."""
+
+    def __init__(self, launcher: Launcher[D], run_id: str, target: D) -> None:
+        self._launcher = launcher
+        self._target = target
+        self.run_id = run_id
+        self._channel: Channel | None = None  # opened on first access, then held
 
     @property
     def channel(self) -> Channel:
-        # cheap: the backends share the backing store, so a fresh read view per
-        # access is fine (and is what `ensure` wants as the log grows). The
-        # producer BIRTHS/extends the run, so this is create_channel (not attach):
-        # the first access may precede any record.
-        return self._launcher.create_channel(self._variant.run_id)
+        """The producer's one handle on the run, opened on first access and held:
+        the producer births the run (``create_channel``), so the first access may
+        precede any record. A producer has no lifecycle (the seam is
+        ``channel``, ``run_id`` and ``extend``), so it never closes the handle: the
+        caller that made the producer closes ``producer.channel`` once done with
+        it, or leaves it to be released with the producer."""
+        if self._channel is None:
+            self._channel = self._launcher.create_channel(self.run_id)
+        return self._channel
 
-    def extend(self, until: Condition) -> LiveHandle:
-        """Trigger production toward `until`: relaunch iff not already live,
-        else hand back the live episode's foreign handle (the Recipe-2 gate --
-        never ``None``, whose record-only wait strands the latecomer on a
-        recordless winner death). The default producer translates ONLY a step
-        condition -- it injects the scalar `until["step"]` under `target_key`.
-        Any other shape (time_seconds, count, any/all) needs a launcher whose
-        worker accepts that bound, i.e. the user's own producer
-        (.channel/.run_id/.extend(until)); reject it loudly rather than inject
-        a dict the worker can't consume."""
-        if list(until.keys()) != ["step"]:
-            raise ValueError(
-                f"the default launch-producer translates only {{'step': N}}; got "
-                f"{until!r}. Bring your own producer (.channel/.run_id/.extend(until)) "
-                f"for time/compound milestones."
-            )
-        target = until["step"]
-        launch_kwargs = dict(self._variant.launch_kwargs)
-        worker_kwargs = dict(launch_kwargs.get("kwargs") or {})
-        worker_kwargs[self._target_key] = target
-        launch_kwargs["kwargs"] = worker_kwargs
-        return relaunch_if_needed(
-            self._launcher, self._variant.run_id, self._variant.target, **launch_kwargs
-        ) or foreign_episode(self.channel)
+    def extend(self, target: Target) -> LiveHandle:
+        """Launch the producer's ``target.driven(target)`` unless the run's newest
+        claim is held (``relaunch_if_needed``, which reports a dead one first), so the
+        worker receives the drive's ``Target`` as ``until``, which it passes to
+        ``steps(until)``, and exits preempted there, an extendable exit a larger
+        target continues from. While a claim is held, hand back its
+        ``foreign_episode``."""
+        driven = self._target.driven(target)
+        handle = relaunch_if_needed(self._launcher, self.run_id, driven)
+        return handle if handle is not None else foreign_episode(self.channel)
 
 
-def launch_producer(
-    launcher: Any, variant: Variant, *, target_key: str = "up_to"
-) -> _LaunchProducer:
-    """A producer backed by ``launcher`` relaunching ``variant``, injecting the
-    target into the worker kwargs under ``target_key`` (the loop bound).
-
-    For a **callable-worker** launcher (e.g. ``ThreadLauncher``) whose worker
-    receives its config -- and the injected target -- as ``kwargs``. A
-    subprocess (``LocalLauncher``), ray, or service worker plumbs the target
-    differently (env / CLI), so it gets its **own** producer implementing
-    ``.channel`` / ``.run_id`` / ``.extend`` (the seam), not this factory."""
-    return _LaunchProducer(launcher, variant, target_key)
+def launch_producer(launcher: Launcher[D], run_id: str, target: D) -> Producer:
+    """A producer backed by ``launcher`` relaunching ``target`` into ``run_id`` (§5,
+    "The producer seam"), for a launcher whose target is ``Drivable``: a
+    ``ThreadLauncher`` and a ``ThreadTarget``, whose ``driven(until)`` passes the
+    drive's target as the worker's ``until`` keyword. Each extend launches
+    ``target.driven(until)``; ``target`` carries everything that changes the
+    worker's result, so there are no launch keywords beside it (plan, open question
+    18)."""
+    return _LaunchProducer(launcher, run_id, target)
 
 
-def _conforming_point(b: Body) -> bool:
-    """A conforming stepped-value body: ``value``/``step``/``t`` present,
-    ``step`` int-or-None and ``t`` number-or-None (bool excluded -- the
-    ``is_step`` rule). Junk fails here and is skipped (the observables'
-    tolerance split: the substrate admits foreign bodies on any topic); a
-    conforming *stepless* point passes and is ``history``'s own domain error."""
-    if any(k not in b for k in ("value", "step", "t")):
-        return False
-    if b["step"] is not None and not is_step(b["step"]):
-        return False
-    t = b["t"]
-    return t is None or (isinstance(t, (int, float)) and not isinstance(t, bool))
+# ----- history (§5) ------------------------------------------------------------------
 
 
-def _epoch(channel: Channel) -> float | None:
-    """The run epoch -- the earliest ``lifecycle.started.t`` -- or None when the
-    run has none (never started, or a junk-typed ``t`` on a hand-composed/foreign
-    started: junk earns no epoch, the measurement rule). ``t`` is required non-null
-    on a reference-Worker started (observer-clock), so the None path is now only the
-    no-started and foreign-junk cases -- but the guard STAYS: the substrate admits
-    foreign bodies on any topic, and the epoch reader must degrade, not crash.
-    The ONE epoch reader ``history`` and ``_elapsed`` share; their null-epoch
-    responses differ (raise vs. inert) but the epoch itself cannot."""
-    started = channel.read(topics=[Topic.LIFECYCLE_STARTED], limit=1)
-    at = started[0].body.get("t") if started else None
-    if not isinstance(at, (int, float)) or isinstance(at, bool):
-        return None
-    return float(at)
+def history(
+    ch: Channel, stream: str, schedule: Condition, *, head: HeadStrategy
+) -> list[Element]:
+    """Replay ``schedule`` over the lineage's nodes, root first, and return the
+    elements of ``stream`` committed at the nodes where it fires (§5).
 
+    The wire schedule is parsed here, at the read's boundary
+    (``parse_schedule(schedule, pure_demand=False)``): a malformed one raises
+    ``MalformedSchedule`` to the caller. It is evaluated with
+    ``Subscription.evaluate`` once per node, as live evaluation evaluates it, since
+    the call is the firing: a ``count`` until counts nodes that fired, not calls.
+    The subscription targets ``stream``, which always holds a value
+    (``valued={stream}``): an eager stream always samples. Time atoms read each
+    node's ``t``, from the epoch, the earliest ``started.t``. ``every``'s baseline
+    is the coordinates at the last node it fired at, as on a live lineage. It stops
+    at the node where the schedule expires. The epoch is read only for a schedule
+    with a time atom in ``from`` or ``until`` (``needs_epoch``), the slots that
+    count from registration, so an unreadable first claim from a dead past poisons
+    no other read.
 
-def history(channel: Channel, name: str, schedule: Condition) -> list[Body]:
-    """Replay ``schedule`` (the Subscription algebra) over the logged ``value``
-    points for ``name``; return the bodies it fires on, in step order.
-
-    Collapses by step (a resumed episode re-emits the checkpoint overlap),
-    taking the latest record by ``seq`` -- the as-resumed / continuing branch
-    (see docs/backlog/value-plane-divergence-resolution.md). Time-based
-    conditions are evaluated run-relative: ``now`` is the point's absolute
-    ``value.t`` and ``registered_at`` is the run epoch (earliest
-    ``lifecycle.started``), so ``t - epoch`` is seconds since the run began.
-    A time-referencing schedule therefore requires an epoch: with none on the
-    log it raises (anchoring at 0.0 would evaluate absolute ``value.t`` as
-    elapsed). Step-only schedules never touch the epoch.
-
-    Domain rules: a NONCONFORMING record -- missing any of ``value``/``step``/
-    ``t``, or wrong-typed ``step``/``t`` -- is foreign junk, skipped as the
-    observables' measurement folds skip it; a CONFORMING point with ``step``
-    null raises (this is a stepped-trajectory reader). For a point with ``t is
-    None`` the run-relative clock cannot advance, so *time*-keyed conditions
-    are inert for it (``step`` conditions are unaffected)."""
-    by_step: dict[Any, Body] = {}
-    for e in channel.read(topics=[Topic.VALUE], name=name):
-        b = e.body
-        if not _conforming_point(b):
-            continue
-        by_step[b["step"]] = (
-            b  #  take-the-latest: a resumed episode's re-emission (higher seq) supersedes
+    A node where it fires contributes every element of ``stream`` it commits, in its
+    order, none when it commits none: the take-the-latest-per-step collapse is
+    gone, since an element's index is unique along a lineage. One-shot: it walks
+    the whole lineage, and for a time atom the earliest claim's ``started`` (an
+    unreadable one raises ``MalformedRecordError``)."""
+    parsed = parse_schedule(schedule, pure_demand=False)
+    walked = walk(ch, head.resolve(ch).node)
+    if not walked.nodes:
+        return []
+    # Without an Elapsed atom in from or until nothing reads the epoch (``evaluate``
+    # reads ``registered_at`` only through one), so 0.0 changes no firing.
+    epoch = _epoch(ch) if needs_epoch(parsed) else 0.0
+    sub = Subscription(parsed, registered_at=epoch, target=stream)
+    valued = frozenset({stream})
+    elements: dict[int, list[int]] = {}
+    for at, s in members(walked, stream):
+        elements.setdefault(at.env.seq, []).append(s)
+    out: list[Element] = []
+    baseline: Coordinates | None = None
+    for at, coords in zip(walked.nodes, coordinates(walked), strict=True):
+        decision = sub.evaluate(
+            at=coords, baseline=baseline, now=at.node.t, valued=valued
         )
-    if any(s is None for s in by_step):
-        raise ValueError(
-            "history() requires stepped emission; a value point has step=None"
-        )
-    points = [by_step[s] for s in sorted(by_step)]
-
-    epoch = _epoch(channel)
-    if epoch is None:
-        if references_time(schedule):
-            raise ValueError("time-referencing replay requires a run epoch (started.t)")
-        epoch = 0.0
-    sub = Subscription(schedule, registered_at=epoch)
-    out: list[Body] = []
-    for b in points:
-        now = b["t"] if b["t"] is not None else epoch
-        decision = sub.tick(step=b["step"], now=now)
         if decision.fire:
-            out.append(b)
+            baseline = coords
+            out.extend(element(walked, at, s) for s in elements.get(at.env.seq, ()))
         if decision.expired:
             break
     return out
 
 
-# outcomes that mean the worker died, not finished -- stop re-driving and surface.
-# (presumed_dead is inert here: ensure's only verdict source is peek_terminal,
-# which never returns it -- it's the Watcher's inference tier. The death subset is
-# the closed Outcome vocabulary's, spelled once on the enum, shared with sweep.)
-_FAILURES = Outcome.failures()
+def _epoch(ch: Channel) -> float:
+    """The run's epoch, the earliest claim's ``started.t``, which a time atom counts
+    from; an unreadable one raises ``MalformedRecordError``. A lineage's first
+    node is a claim's, so one is on the log."""
+    first = ch.read(topics=[Topic.LIFECYCLE_STARTED], limit=1)[0]
+    return verdict_parse(Started, first).t
 
 
-def _progress(channel: Channel) -> int:
-    """The public ``observables.progress`` with None mapped to -1 — a local
-    arithmetic convenience so `_window_step = _progress + 1` starts at 0 on an
-    empty log (the in-band sentinel stays private; the public observable
-    returns None for absence)."""
-    p = progress(channel)
-    return -1 if p is None else p
+# ----- ensure (§5) -------------------------------------------------------------------
 
 
-def _elapsed(channel: Channel, clock: Callable[[], float]) -> float:
-    """Run-relative seconds on the consumer's OWN poll-clock (dense, monotone,
-    gap-inclusive; no wire dependency -- see the spec's clock rationale).
-    Returns 0.0 with no epoch yet -- honestly correct for its transient case
-    (the run hasn't started during ensure's wait), so time conditions are
-    inert until the run begins."""
-    epoch = _epoch(channel)
-    return 0.0 if epoch is None else float(clock() - epoch)
+class _At(NamedTuple):
+    """Where a recordless drive left the run: the head's node and its
+    ``Commits()`` count, the fixed point's coordinates (plan, open question 15)."""
+
+    node: int | None
+    commits: int
 
 
-def _window_step(channel: Channel) -> int:
-    """The step coordinate for window-close satisfaction: `_progress + 1`.
+class _Drive:
+    """One ``extend`` toward ``target``: its handle, the log's last seq before it
+    (``floor``: its claim lands above it), and the newest claim naming its launch,
+    read incrementally above what the last poll read, so a poll costs the records
+    since. ``reaped`` latches the one ``wait()`` once the handle is seen dead."""
 
-    `ensure(until={step:N})` drives the half-open window `[0, N)` -- the
-    worker's exclusive target (steps `0..N-1`, reaching `progress = N-1`).
-    `_progress + 1 >= N` <=> `_progress >= N-1` is exactly the old `up_to-1`
-    hit, and agrees with the read-side `Subscription` expiry gate (which
-    excludes the boundary point `N`). The `+1` is applied HERE, in the
-    coordinate -- never by rewriting the condition (`{step:N}`->`{step:N-1}`
-    would break `any`/`all`, which evaluates every atom against the same
-    passed coordinates). `[0,N)` <-> `range(N)`/`up_to` <-> read-side expiry
-    is the triple that makes this exact."""
-    return _progress(channel) + 1
+    def __init__(self, handle: LiveHandle, floor: int, target: Target) -> None:
+        self.handle = handle
+        self.reaped = False
+        self._target = target
+        self._read = floor
+        self._claim: Envelope | None = None
+
+    def claim(self, ch: Channel, w: int) -> Envelope | None:
+        """The newest claim at or below ``w`` naming the drive's launch, or
+        ``None``: always ``None`` for a foreign handle, which names none. Each claim
+        is checked once, as it is first found: one declaring the target a source
+        raises (``_refuse_a_source``)."""
+        launch = self.handle.launch_id
+        if launch is None:
+            return None
+        newer = launch_claim(ch, launch, after=self._read, w=w)
+        if newer is not None:
+            _refuse_a_source(newer, self._target)
+            self._claim = newer
+        self._read = max(self._read, w)
+        return self._claim
 
 
-def _reject_count(cond: Condition) -> None:
-    """ensure does not drive the count axis (no use case; an un-driven count atom
-    would never satisfy -> livelock). Reject at entry, walking any/all. (count
-    stays legal in a *subscription* until -- only the ensure drive-target rejects it.)
-    """
-    if "count" in cond:
+def ensure(
+    producer: Producer,
+    target: Target,
+    *,
+    poll_interval: float = 0.01,
+    sleep: Callable[[float], None] = time.sleep,
+) -> Reached | Unreachable:
+    """Drive ``producer`` until the newest claim's lineage holds ``target`` (§5).
+
+    - **Read first:** ``count(x, head) >= n`` at ``LatestClaimHead`` returns
+      ``Reached`` at the head; a closed head below ``n`` returns ``Unreachable`` at
+      it, without producing. There is no ``head`` parameter: under ``AtNode``
+      nothing could be produced, and the produce branch follows the newest claim.
+    - **Otherwise it produces:** ``producer.extend(target)``, then polls, each poll
+      calling ``report_if_dead`` (§3, "The writers") and then reading the newest
+      claim's head and the target's count through held folds (``HeadFold``,
+      ``PrefixLen``), at O(new records). It tests ``Reached`` and ``Unreachable``
+      before the failure exits, so a drive that resumes from a node already holding
+      the target is ``Reached``.
+    - **A drive's claim** is the newest claim naming the handle's launch. Once one
+      is on the log, a target it declares a source raises ``ValueError``: its count
+      is 0 forever (plan, open question 1). While it is held, ``ensure`` waits,
+      whatever the handle says. Once it has ended: ``RunFailedError`` when any of
+      its outcomes is in ``Outcome.failures()``, ``NoProgressError`` when it wrote
+      no commit, and otherwise another drive.
+    - **A drive with no claim:** while its handle is alive, or another claim is
+      held, as a claim race's winner's is, it waits. Otherwise the drive is
+      recordless, whether or not it names a launch (a foreign handle names none):
+      the second recordless drive in a row at an unchanged head and ``Commits()``
+      count raises ``RecordlessExitError``, and the first drives again.
+    - **Every re-drive** waits ``poll_interval`` first, so no path extends again
+      unpaced.
+
+    A handle seen dead is reaped once (``wait()``), so a launcher's reap writes its
+    records. ``poll_interval`` and ``sleep`` are exempt defaults (plan, "Exempt
+    defaults"): they pace the waits, and a test replaces ``sleep`` with a hook,
+    but neither changes what ``ensure`` returns. No timeout: a held claim is waited
+    on for as long as it is held."""
+    ch = producer.channel
+    heads, counts = HeadFold(), PrefixLen(target.x)
+    commits = PrefixLen(Commits())
+    head = heads.poll(ch)
+    count = counts.poll(ch, head)
+    if count >= target.n:
+        return Reached(head.node)
+    if head.settled:
+        assert head.node is not None  # a settled head is a node
+        return Unreachable(head.node)
+    recordless: _At | None = None  # where the last drive, if recordless, left it
+    while True:
+        floor = ch.last_seq()  # before the launch: its claim lands above it
+        drive = _Drive(producer.extend(target), floor, target)
+        redrive = False
+        while not redrive:
+            alive = drive.handle.is_alive()
+            if not alive and not drive.reaped:
+                drive.handle.wait()
+                drive.reaped = True
+            report_if_dead(ch)
+            head = heads.poll(ch)
+            count = counts.poll(ch, head)
+            if count >= target.n:
+                return Reached(head.node)
+            if head.settled:
+                assert head.node is not None  # a settled head is a node
+                return Unreachable(head.node)
+            claim = drive.claim(ch, head.w)
+            if claim is not None:
+                # held: wait, whatever the handle says; ended: fail, or drive again
+                result = claim_verdict(ch, claim, w=head.w)
+                if result is not None:
+                    if result.outcomes & Outcome.failures():
+                        stamped = replace(result, run_id=producer.run_id)
+                        raise RunFailedError(
+                            producer.run_id, stamped, target=target, count=count
+                        )
+                    if not _committed(ch, claim, head.w):
+                        raise NoProgressError(
+                            producer.run_id, target=target, count=count
+                        )
+                    recordless, redrive = None, True
+            elif not (alive or _held(ch)):
+                here = _At(head.node, commits.poll(ch, head))
+                if recordless == here:
+                    raise RecordlessExitError(
+                        producer.run_id,
+                        launch_id=drive.handle.launch_id,
+                        target=target,
+                        count=count,
+                    )
+                recordless, redrive = here, True  # recordless, once here
+            sleep(poll_interval)  # a wait, or the pacing of the re-drive
+
+
+def _refuse_a_source(claim: Envelope, target: Target) -> None:
+    """``ValueError`` when the drive's claim declares ``target.x`` a source, which
+    counts 0 forever (§5; plan, open question 1). An unreadable claim raises
+    ``MalformedRecordError``, as the head does."""
+    if isinstance(target.x, Commits):
+        return
+    if target.x in verdict_parse(Started, claim).sources:
         raise ValueError(
-            "ensure(until=...) does not support a 'count' condition (no driven "
-            "count axis); use step / time_seconds"
+            f"the target {target.x!r} is a source of the drive's claim "
+            f"{claim.seq}, which counts 0 forever: drive to an eager stream or "
+            "Commits()"
         )
-    for key in ("any", "all"):
-        for c in cond.get(key, ()):
-            _reject_count(c)
 
 
-def _satisfied(
-    channel: Channel, until: Condition, *, clock: Callable[[], float]
-) -> bool:
-    """Has the run closed the `until` window? Coordinates read live: step from
-    the dense axis (`_window_step`), time from the consumer's poll-clock
-    (`_elapsed`). `count=0` -- the count drive-axis is rejected at entry."""
-    return satisfied(
-        until,
-        step=_window_step(channel),
-        time_seconds=_elapsed(channel, clock),
-        count=0,
+def _committed(ch: Channel, claim: Envelope, w: int) -> bool:
+    """Did ``claim`` write a commit at or below ``w``? Its newest commit, searched
+    back from ``w`` within its window (``claims.backward``), so the read costs the
+    distance back to it, and the whole window only for a claim that wrote none."""
+    topics: list[str] = [Topic.LIFECYCLE_COMMIT]
+    return any(
+        named_claim(e) == claim.seq
+        for e in backward(ch, after=claim.seq, hi=w, topics=topics)
     )
 
 
-# `until` is the run *bound*; the emission *filter* (`from`/`every`, the
-# ensure(I) strided case) is deferred -- docs/backlog/memoizer-index-algebra.md.
-def ensure(
-    producer: Producer,
-    name: str,
-    *,
-    until: Condition,
-    poll_interval: float = 0.01,
-    sleep: Callable[[float], None] = time.sleep,
-    clock: Callable[[], float] = time.time,
-) -> list[Body]:
-    """Return ``name``'s series for the window ``until`` (a Condition from the
-    subscription algebra: ``{"step":N} | {"time_seconds":S} | any/all``),
-    producing the missing suffix on a miss. Window-closed (or worker-declared
-    ``completed``) -> a pure log read; else ``producer.extend(until)`` and wait,
-    re-driving ``preempted`` and raising on a failure outcome or no progress.
-    The worker contract rides on that split: a resumable/chunked producer stops
-    ``preempted`` (the default) per chunk -- a per-chunk ``completed`` claim
-    ends the drive early with the truncated series
-    (specs/preempted-vs-completed.md).
-
-    `up_to=N` is `until={"step":N}` (the half-open window `[0, N)`). Time is the
-    consumer's poll-clock; the generalization to the emission filter
-    (`from`/`every`) is deferred -- see docs/backlog/memoizer-index-algebra.md.
-    No hang timeout (unchanged)."""
-    _reject_count(until)
-    channel = producer.channel
-    dense: Condition = {"every": {"step": 1}, "until": until}
-    result = peek_terminal(channel)
-    if _satisfied(channel, until, clock=clock) or worker_completed(result):
-        return history(channel, name, dense)
-
-    while not _satisfied(channel, until, clock=clock):
-        before = _progress(channel)
-        handle = producer.extend(until)
-        if handle is None:
-            raise TypeError(
-                "producer.extend returned None -- the seam contract requires a "
-                "liveness handle: your own spawn's, or foreign_episode(channel) "
-                "when an episode is already live (specs/store.md Recipe 2)"
-            )
-        while not _satisfied(channel, until, clock=clock):
-            if not handle.is_alive() or peek_terminal(channel) is not None:
-                handle.wait()
-                break
-            sleep(poll_interval)
-        else:
-            return history(channel, name, dense)
-        result = peek_terminal(channel)
-        if result is not None and result.outcome in _FAILURES:
-            raise RunFailedError(producer.run_id, result)
-        if worker_completed(result):
-            return history(channel, name, dense)
-        if (
-            result is not None
-            and result.outcome == Outcome.COMPLETED
-            and _progress(channel) <= before
-        ):
-            raise RecordlessExitError(
-                producer.run_id, result, progress=progress(channel), until=until
-            )
-        # The no-progress guard is OWN-SPAWN-scoped: a foreign episode ending
-        # without progress is no evidence a relaunch would spin (we never
-        # launched) -- re-drive it, the lazy-launch re-wake posture. And it is
-        # CLAIM-AWARE: at this site the own spawn is dead, so a LIVE episode
-        # means someone else holds the claim -- the claim-window collision
-        # (two dispatchers spawned; ours lost the birth-CAS recordless while
-        # the winner is still mid-load) -- not "stuck": skip the raise, and
-        # the next extend waits on the winner (the foreign_episode posture).
-        # A genuinely stuck own spawn has no live episode and still raises; a
-        # false-live handle degrades to the conservative wait.
-        #
-        # It is also AXIS-AWARE, and that is what `time_seconds=float("inf")`
-        # below encodes: it asks "could waiting alone satisfy `until` from
-        # here?". If yes, a stalled STEP frontier is not evidence of a stuck
-        # run -- a {time_seconds} chunk legitimately advances 0 steps -- so the
-        # guard stands down rather than false-raise (52f9c49; pinned by
-        # test_ensure_time_milestone_does_not_false_raise_on_zero_step_progress).
-        # The consequence is structural, not incidental: on the time axis
-        # "stuck" is not expressible (time always advances toward a time
-        # target), so **a time-keyed `until` has no no-progress protection at
-        # all** -- neither a bare {time_seconds} nor an `any` containing one.
-        #
-        # THE UNSTATED INVARIANT THAT MAKES THAT SAFE (promoted to prose
-        # 2026-07-16; it had never been written down): *a worker that exits
-        # CLEANLY has made progress, or has left a failure verdict.* An errored
-        # spawn is caught above by RunFailedError; a completed one returns. So
-        # only a clean-preempted-zero-progress loop could spin here, and no
-        # shipped driver produces one -- `steps(total)` exhausting means it ran.
-        # Any future design that makes "clean exit at zero progress" ROUTINE
-        # breaks the invariant and turns this branch into an unbounded relaunch
-        # loop at poll cadence. A worker that halts on a target being met is
-        # exactly such a design: measured at 373 spawns in 3s when one was
-        # prototyped (docs/specs/control-target.md, R5). Re-examine this guard
-        # before shipping any such halt condition.
-        if (
-            not isinstance(handle, _ForeignEpisode)
-            and _progress(channel) <= before
-            and not satisfied(
-                until, step=_progress(channel) + 1, time_seconds=float("inf"), count=0
-            )
-            and live_episode(channel) is None
-        ):
-            raise NoProgressError(
-                producer.run_id, progress=progress(channel), until=until
-            )
-    return history(channel, name, dense)
+def _held(ch: Channel) -> bool:
+    """Is the newest claim held: no exit and no death report names it, readable or
+    not (``claims.endings``, which never raises)? ``foreign_episode``'s test."""
+    return foreign_episode(ch).is_alive()

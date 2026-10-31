@@ -3,7 +3,7 @@ item another implementation must match, each named ``test_interop_<item>``, and 
 the §10 test for its item, never a second copy of one (plan, "Interop").
 
 The substrate contract, item 5's first half, is ``tests/test_concurrency.py``'s.
-These read the hand-written 0.4.0 logs of ``tests/test_next_reads.py``, which
+These read the hand-written 0.4.0 logs of ``tests/test_reads.py``, which
 checks each against the 0.4.0 schemas.
 """
 
@@ -13,14 +13,14 @@ from pathlib import Path
 
 import pytest
 
-from runstate._next import claims, observables, walk
-from runstate._next.launcher import (
+from runstate import claims, observables, walk
+from runstate.launcher import (
     LocalLauncher,
     ThreadLauncher,
     report_death,
     report_if_dead,
 )
-from runstate._next.observables import (
+from runstate.observables import (
     Answers,
     AtNode,
     DeathReport,
@@ -48,9 +48,9 @@ from runstate._next.observables import (
     streams,
     undischarged_stops,
 )
-from runstate._next.vocabulary.coordinate import Commits
-from runstate._next.vocabulary.payloads import Topic
-from tests.test_next_death_reports import (
+from runstate.vocabulary.coordinate import Commits
+from runstate.vocabulary.payloads import Topic
+from tests.test_death_reports import (
     FOREIGN,
     LIVE,
     child,
@@ -62,7 +62,7 @@ from tests.test_next_death_reports import (
     undated,
     until,
 )
-from tests.test_next_reads import (
+from tests.test_reads import (
     A_CLAIMS_LAUNCH_ENDED,
     BAD_BODY,
     C,
@@ -375,8 +375,8 @@ def test_interop_stop_from_latch_and_honored(open_run):
     stop that held at a node or a heartbeat of the claim, even one withdrawn
     since, and every stop pending at the exit. A stop withdrawn before it held is
     spent, and named nowhere."""
-    from runstate._next.vocabulary.payloads import Topic as T
-    from tests.test_next_worker import Clock, send_stop, send_withdraw, worker
+    from runstate.vocabulary.payloads import Topic as T
+    from tests.test_worker import Clock, send_stop, send_withdraw, worker
 
     ch, obs, clock = open_run(), open_run(), Clock()
     send_stop(obs, "at_node", **{"from": {"commits": 2}})
@@ -406,9 +406,9 @@ def test_interop_fired_expired_and_one_sample(open_run):
     of its register (``name`` the source, ``request_id`` null), written before the
     node, committed after the node's pending values, however many of its
     subscriptions fire there. ``answers`` reads ``fired``."""
-    from runstate._next.vocabulary.payloads import Topic as T
-    from tests.test_next_subscriptions import samples, sub
-    from tests.test_next_worker import worker
+    from runstate.vocabulary.payloads import Topic as T
+    from tests.test_subscriptions import samples, sub
+    from tests.test_worker import worker
 
     ch, obs = open_run(), open_run()
     sub(obs, "a")  # a one-shot
@@ -453,9 +453,9 @@ def test_interop_leases_durables_and_demand(open_run):
     live while the head's lineage has not expired it (§2, amended 2026-10-30), and
     is empty on a closed head, where a subscription is never answered and never
     refused."""
-    from runstate._next.vocabulary.payloads import Topic as T
-    from tests.test_next_subscriptions import bindings, claim_of, demand, sub
-    from tests.test_next_worker import naks, worker
+    from runstate.vocabulary.payloads import Topic as T
+    from tests.test_subscriptions import bindings, claim_of, demand, sub
+    from tests.test_worker import naks, worker
 
     ch, obs = open_run(), open_run()
     sub(obs, "lease", every={"commits": 2}, until={"count": 3})
@@ -501,9 +501,9 @@ def test_interop_atoms(open_run):
     n}`` counts iterations; a 0 in ``every`` fires at every evaluation, the exit
     included; and an ``until`` that holds at registration expires at the next
     node, unrefused, firing nothing."""
-    from runstate._next.vocabulary.payloads import Topic as T
-    from tests.test_next_subscriptions import sub
-    from tests.test_next_worker import naks, worker
+    from runstate.vocabulary.payloads import Topic as T
+    from tests.test_subscriptions import sub
+    from tests.test_worker import naks, worker
 
     ch, obs = open_run(), open_run()
     sub(obs, "from_c1", **{"from": {"commits": 1}})
@@ -545,8 +545,8 @@ def test_interop_refusals(open_run):
     as ``from`` 0); and the ``malformed`` refusals of a re-send that changes its
     target or its class, and of a pure demand with a ``from``, an ``every`` or a
     ``count`` atom. Each refusal is a ``nak`` naming the id, which spends it."""
-    from tests.test_next_subscriptions import demand, sub
-    from tests.test_next_worker import naks, worker
+    from tests.test_subscriptions import demand, sub
+    from tests.test_worker import naks, worker
 
     ch, obs = open_run(), open_run()
     sub(obs, "not_a_source", source="acc")
@@ -582,9 +582,9 @@ def test_interop_pure_demand_lifetime(open_run):
     ``fired`` names it, and it writes no sample. It lives until its ``until``
     holds at a node, which names it in ``expired``; or a withdrawal or a refusal
     names it; or, as a lease (a time ``until``), its claim ends."""
-    from runstate._next.vocabulary.payloads import Topic as T
-    from tests.test_next_subscriptions import demand, sub
-    from tests.test_next_worker import send_withdraw, worker
+    from runstate.vocabulary.payloads import Topic as T
+    from tests.test_subscriptions import demand, sub
+    from tests.test_worker import send_withdraw, worker
 
     ch, obs = open_run(), open_run()
     sub(obs, "until", source=None, until={"commits": 2})
@@ -612,11 +612,11 @@ def test_interop_fence_and_cas_drain(open_run):
     own writes included; so a death report that lands first is read on the re-run,
     and the worker, released, writes nothing more: no binding, no refusal, no
     sample, no commit, no exit."""
-    from runstate._next.vocabulary.payloads import Topic as T
-    from tests.next_helpers import Interloping, Wrapping
-    from tests.test_next_reads import died
-    from tests.test_next_subscriptions import claim_of, sub
-    from tests.test_next_worker import worker
+    from runstate.vocabulary.payloads import Topic as T
+    from tests.live_helpers import Interloping, Wrapping
+    from tests.test_reads import died
+    from tests.test_subscriptions import claim_of, sub
+    from tests.test_worker import worker
 
     class Recording(Wrapping):
         """Records each bound's and nak's ``expected_seq``, and the tail then."""

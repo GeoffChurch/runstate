@@ -132,71 +132,6 @@ def _claim_then_emit(i, root, run_id, backend, claimed_barrier, results):
             )  #             only the winner runs; the loser's steps() is a no-op
 
 
-@pytest.mark.tier("in_process")
-def test_two_workers_racing_the_claim_muzzle_the_loser(conc_backend):
-    """Two Worker constructors contend for one run -> exactly one claims a live episode;
-    the loser is muzzled (no second lifecycle.started, no loser value, no loser stopped).
-    The barrier holds the winner live across the loser's claim, so this pins the
-    single-live-episode guard + the loser muzzle under a *real* claim race (read ->
-    live_episode -> CAS -> retry), not the pre-seeded short-circuit the sequential muzzle
-    test (test_worker.py) exercises."""
-    n = 2
-    old = sys.getswitchinterval()
-    sys.setswitchinterval(
-        1e-9
-    )  #                 fine interleaving so the claim's internal race is real
-    try:
-        for trial in range(5):
-            run_id = f"{conc_backend.namespace}-claim-{trial}"
-            seed = locate(run_id, root=conc_backend.root, backend=conc_backend.backend)
-            seed.send(
-                {"every": {"step": 1}},
-                topic="control.subscribe",
-                name="loss",
-                request_id="obs",
-            )
-            seed.close()
-            claimed_barrier = threading.Barrier(n)
-            results = [None] * n
-            threads = [
-                threading.Thread(
-                    target=_claim_then_emit,
-                    args=(
-                        i,
-                        conc_backend.root,
-                        run_id,
-                        conc_backend.backend,
-                        claimed_barrier,
-                        results,
-                    ),
-                )
-                for i in range(n)
-            ]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join(timeout=15)
-
-            check = locate(run_id, root=conc_backend.root, backend=conc_backend.backend)
-            try:
-                started = check.read(topics=["lifecycle.started"])
-                values = check.read(topics=["value"], name="loss")
-            finally:
-                check.close()
-            assert (
-                results.count(True) == 1
-            ), f"[trial {trial}] expected one claimant, got {results}"
-            assert (
-                len(started) == 1
-            ), f"[trial {trial}] {len(started)} lifecycle.started rows (double-live claim)"
-            assert len(values) == 1, (
-                f"[trial {trial}] {len(values)} loss values (the loser was not muzzled): "
-                f"{[v.body for v in values]}"
-            )
-    finally:
-        sys.setswitchinterval(old)
-
-
 def _claim_then_commit_0_4_0(i, root, run_id, backend, claimed_barrier, results):
     """Thread body, for the staged 0.4.0 Worker: construct it (the claim races
     here), record the verdict, then HOLD at a barrier so the winner's claim stays
@@ -204,8 +139,8 @@ def _claim_then_commit_0_4_0(i, root, run_id, backend, claimed_barrier, results)
     writes its exit, so its claim stays held, and its channel stays open until the
     loser has claimed, so a backend's session probe finds the winner's session
     alive."""
-    from runstate._next.checkpoint import NoSave
-    from runstate._next.worker import Worker as Worker0_4_0
+    from runstate.checkpoint import NoSave
+    from runstate.worker import Worker as Worker0_4_0
 
     ch = locate(run_id, root=root, backend=backend)
     try:

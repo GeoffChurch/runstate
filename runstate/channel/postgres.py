@@ -179,33 +179,6 @@ def _escape_like(s: str) -> str:
     return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-def _episode_key_str(run_id: str, started_seq: int) -> str:
-    """The episode advisory-lock key MATERIAL: a length-prefixed encoding of the full
-    ``(run_id, started_seq)`` pair, so distinct pairs never alias (a ``:`` inside
-    run_id can't shift the boundary). ``hashtextextended`` turns this into the int8
-    lock key *server-side*, so the holder and an independent observer derive a
-    bit-identical key cross-process -- NOT a two-``int4`` key (which collapses to a
-    32-bit collision domain since first episodes share ``started_seq``) and NOT
-    Python's salted ``hash()`` (unstable across processes)."""
-    return f"{len(run_id)}:{run_id}:{started_seq}"
-
-
-# Whether the episode's session advisory lock is granted (to anyone). The bigint key
-# is stored split across pg_locks as (classid=high32, objid=low32, objsubid=1); we
-# reconstruct the halves by shift-then-mask -- mask-after-shift is independent of
-# >>'s sign-extension, and sidesteps the bigint overflow a (classid<<32 | objid)
-# reconstruction hits for high-bit-set (negative) keys.
-_EPISODE_ALIVE = """
-WITH k(v) AS (SELECT hashtextextended(%(s)s, 0))
-SELECT EXISTS (
-    SELECT 1 FROM pg_locks, k
-    WHERE locktype = 'advisory' AND granted AND objsubid = 1
-      AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
-      AND classid = ((k.v >> 32) & 4294967295)::oid
-      AND objid   = (k.v & 4294967295)::oid
-)
-"""
-
 # --- the session probe (commits-and-lineage.md §3; channel-postgres.md, "Liveness") ---
 
 # The server this connection is on, as a stamp names it, or NULL in recovery. A probe
@@ -500,29 +473,6 @@ class PostgresChannel(Channel):
     def close(self) -> None:
         with self._lock:
             self._conn.close()
-
-    # --- liveness capability (EpisodeHolder / EpisodeProbe) ---
-    # claim = the uniform CAS; the lock is a Watcher-consumed liveness SIGNAL only.
-
-    def hold_episode(self, started_seq: int) -> None:
-        """Pin this episode's liveness on THIS channel's connection (worker side, after
-        the claim CAS). Session-scoped, so it auto-releases when the connection dies --
-        the whole point. Taken *after* the claim: a signal, not a gate."""
-        key_str = _episode_key_str(self._run_id, started_seq)
-        with self._lock:  # the open's pooler self-check covers this connection
-            self._conn.execute(
-                "SELECT pg_advisory_lock(hashtextextended(%s, 0))", (key_str,)
-            )
-
-    def episode_alive(self, started_seq: int) -> bool:
-        """Whether this episode's lock is still held by *someone* (observer side). True
-        is a definitive cross-host liveness signal -- where a foreign-host handle probe
-        abstains; False past a birth grace is a definitive death (the Watcher applies
-        the grace + the staleness floor)."""
-        key_str = _episode_key_str(self._run_id, started_seq)
-        with self._lock:
-            row = self._conn.execute(_EPISODE_ALIVE, {"s": key_str}).fetchone()
-        return bool(row and row[0])
 
     # --- the session probe (SessionProbe) ---
     # Evidence for a death report, which report_if_dead writes; never a claim arbiter.

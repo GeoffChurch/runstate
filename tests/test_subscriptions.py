@@ -11,7 +11,7 @@ The tests that involve a compare-and-append are parametrized over the backends b
 the ``open_run`` factory, whose handles share one run.
 
 The §9 interop tests for items 6, 7, 9, 10, 11 and 14 are
-``tests/test_next_interop.py``'s.
+``tests/test_interop.py``'s.
 """
 
 import threading
@@ -19,14 +19,14 @@ import time
 
 import pytest
 
-from runstate._next.checkpoint import NoSave
-from runstate._next.launcher import (
+from runstate.checkpoint import NoSave
+from runstate.launcher import (
     ThreadLauncher,
     ThreadTarget,
     ensure_served,
     report_death,
 )
-from runstate._next.observables import (
+from runstate.observables import (
     AtNode,
     LatestClaimHead,
     LiveDemand,
@@ -34,13 +34,13 @@ from runstate._next.observables import (
     live_demand,
     peek_terminal,
 )
-from runstate._next.vocabulary.coordinate import Commits, Target
-from runstate._next.vocabulary.payloads import Outcome, Topic
-from runstate._next.worker import Worker
-from tests.next_helpers import Interloping
-from tests.test_next_death_reports import claim, dead_handle
-from tests.test_next_reads import append, died
-from tests.test_next_worker import (
+from runstate.vocabulary.coordinate import Commits, Target
+from runstate.vocabulary.payloads import Outcome, Topic
+from runstate.worker import Worker
+from tests.live_helpers import Interloping
+from tests.test_death_reports import claim, dead_handle
+from tests.test_reads import append, died
+from tests.test_worker import (
     Clock,
     conforms,
     naks,
@@ -1227,7 +1227,7 @@ def test_a_commits_cost_does_not_grow_with_the_durables_expired_on_its_lineage()
     takes the same steps after 10 such as after 1,000: the claim holds the live
     ones, and changes them by what each node and each move changes."""
     from runstate.channel.memory import MemoryChannel
-    from tests.test_next_folds import _steps
+    from tests.test_folds import _steps
 
     steps = []
     for n in (10, 1_000):

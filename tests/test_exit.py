@@ -8,17 +8,17 @@ compare-and-append at a tail its drain has fully read, and names in ``honored``
 every stop pending at the exit and every stop that held during the claim.
 
 ``test_interop_stop_from_latch_and_honored`` (§9 item 8) is in
-``tests/test_next_interop.py``.
+``tests/test_interop.py``.
 """
 
 import sys
 
 import pytest
 
-from runstate._next.checkpoint import Every
-from runstate._next.claims import CAS_ATTEMPTS, endings
-from runstate._next.launcher import Command, LocalLauncher, report_death
-from runstate._next.observables import (
+from runstate.checkpoint import Every
+from runstate.claims import CAS_ATTEMPTS, endings
+from runstate.launcher import Command, LocalLauncher, report_death
+from runstate.observables import (
     AtNode,
     LatestClaimHead,
     Tier,
@@ -28,13 +28,13 @@ from runstate._next.observables import (
     series,
     undischarged_stops,
 )
-from runstate._next.vocabulary.coordinate import Commits, Target
-from runstate._next.vocabulary.payloads import Outcome, Topic
-from runstate._next.walk import NodeKind, kind_at
-from runstate._next.worker import WorkerStarvedError
-from tests.next_helpers import Interloping, Wrapping
-from tests.test_next_death_reports import dead_handle
-from tests.test_next_worker import (
+from runstate.vocabulary.coordinate import Commits, Target
+from runstate.vocabulary.payloads import Outcome, Topic
+from runstate.walk import NodeKind, kind_at
+from runstate.worker import WorkerStarvedError
+from tests.live_helpers import Interloping, Wrapping
+from tests.test_death_reports import dead_handle
+from tests.test_worker import (
     Clock,
     Recording,
     conforms,
@@ -509,10 +509,10 @@ def test_a_save_policy_that_raises_leaves_its_node_committed_and_the_exit_torn(
 SAVE_RAISES_AT_THE_EXIT = """
 import sys
 from runstate import current_channel
-from runstate._next.checkpoint import Every
-from runstate._next.claims import CAS_ATTEMPTS, endings
-from runstate._next.vocabulary.coordinate import Commits, Target
-from runstate._next.worker import Worker
+from runstate.checkpoint import Every
+from runstate.claims import CAS_ATTEMPTS, endings
+from runstate.vocabulary.coordinate import Commits, Target
+from runstate.worker import Worker
 
 store, exiting = sys.argv[1], []
 

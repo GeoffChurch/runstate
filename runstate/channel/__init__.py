@@ -26,8 +26,6 @@ from .. import formats
 from ..formats import LOG_FORMAT, FORMATS, LogFormatMismatch, LogFormatMissing
 from .base import (
     Channel,
-    EpisodeHolder,
-    EpisodeProbe,
     RunNotFound,
     Session,
     SessionProbe,
@@ -207,8 +205,6 @@ def create_channel(
 __all__ = [
     "Body",
     "Channel",
-    "EpisodeHolder",
-    "EpisodeProbe",
     "Envelope",
     "MemoryChannel",
     "MemoryLog",

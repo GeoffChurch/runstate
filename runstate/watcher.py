@@ -1,22 +1,51 @@
-"""The Watcher: the stateful, inference-based failure detector (§8-9).
+"""The Watcher of log format 0.4.0, staged (docs/specs/commits-and-lineage.md §5, "The
+verdict", "Bounded reads", "``await_consumed``", "Sites that change"; §3, "A read never
+writes"; observer-clock.md §5).
 
-``peek_terminal`` is the *record-based* verdict — it answers only when a terminal
-envelope already exists (a clean ``lifecycle.stopped`` or a reaped
-``launcher.terminated``). The Watcher adds the two *inference-based* tiers that
-need state a single log read can't have:
+STAGED. Task 19 of docs/plans/2026-10-28-layer2-live.md moves this module over
+``runstate/watcher.py``.
 
-  3. **probe the handle** — if a tracked handle resolves dead and the log has no
-     terminal record, the worker died without reporting → ``presumed_dead``;
-  4. **heartbeat staleness** — if the current episode's newest heartbeat (the
-     newest ``lifecycle.heartbeat`` naming the latest claim) is older than
-     ``heartbeat_timeout`` (wall-clock since it *arrived*), the worker is hung or
-     crashed → ``presumed_dead``. Off unless a timeout is given (the dead-vs-busy
-     threshold is per-workload, §8). The clock seeds at registration (so a
-     never-beaconing startup death is caught), resets only when a poll observes a
-     NEW heartbeat seq, and the boundary is strict: age == timeout is still alive.
+THE WATCHER is the stateful failure detector. ``peek_terminal`` is the verdict the
+log holds; the Watcher adds the inferences a single read cannot make, each a
+``presumed_dead`` naming the run's claim, or none while nothing has claimed for it,
+with its tier:
 
-``poll(run_id)`` is the single non-blocking verdict across all tiers; ``wait``
-loops it until terminal. ``now``/``sleep`` are injectable for deterministic tests.
+- ``PROBED_DEAD``: a handle it holds probes dead, and its reap, which the Watcher
+  runs (the one write a poll makes, §3), left no verdict;
+- ``SESSION_ENDED``: the channel's session probe finds ended the session that wrote
+  the held claim (``SessionProbe``, resolved once at registration). No grace: a
+  channel takes its key before its first write, so the claim's row is stamped with
+  a session that was held when it landed (channel-postgres.md). It needs a claim;
+- ``HEARTBEAT_STALE``: no witnessed liveness for longer than ``heartbeat_timeout``,
+  of a claim, or of a run nothing has claimed for, which is the never-beaconed
+  startup death (observer-clock §5).
+
+WHOSE VERDICT (§5, "A Watcher that holds a launch's handle reads that launch's
+verdict"), a Strategy resolved at registration (``_Subject``). A run tracked by its
+handle (``add``) is that launch's: the claims naming its launch id, and while none
+has landed its launch's ``terminated``, as an unclaimed run's verdict is its
+launch's; so a relaunch of a run that already has an exit is ``Running`` until its
+own launch ends. A run observed with no handle (``observe``) is the latest claim's,
+as ``peek_terminal`` reads it.
+
+A tier can only vote dead or abstain, so none vetoes the staleness floor: a worker
+whose session is held but which has stopped writing still goes stale.
+
+WITNESSED LIVENESS (observer-clock.md §5; §3, "Liveness"). A poll witnesses the
+records it reads that show the claim alive: a new claim of the run's subject, or a
+``commit``, ``heartbeat`` or ``rewind`` naming its claim, each readable (a junk
+record earns no credit). A witnessed arrival restarts the staleness clock at the
+Watcher's own ``now``, which is skew-immune. At registration the clock is seeded
+from the record's own ``t``, the newest of the claim's ``started``, commits,
+heartbeats and rewinds, so a cold attach to a run that went quiet long ago reads its
+true age at once; with no claim, from ``now``, as a beacon never witnessed.
+Registration reads W before the claim, so a claim CAS'd between the two lands above
+the cursor, and the first poll witnesses it.
+
+HELD STATE, BOUNDED POLLS (§5, "Bounded reads"). Each run holds a ``HeadFold``, a
+``PrefixLen(Commits())``, a ``PendingStops`` and its witness cursor, so a poll reads
+O(new records), and ``Running``'s head and count equal the pure reads after every
+poll.
 """
 
 from __future__ import annotations
@@ -24,331 +53,385 @@ from __future__ import annotations
 import time
 import uuid
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field, replace
-from typing import Optional, Protocol, Union
+from dataclasses import dataclass, replace
+from typing import Protocol
 
-from .channel import Channel, EpisodeProbe, Envelope
-from .launcher import LaunchHandle
-from .observables import (
-    _STOP_ANSWERS,
-    _SUBSCRIBE_ANSWERS,
-    Outcome,
-    RunResult,
-    _answer_names,
-    _claim_name,
-    _episode_ended,
-    _verdict_record,
-    lease_void,
-    current_heartbeat,
-    latest_episode,
-    verdict_parse,
-    peek_terminal,
+from .channel import Channel, Envelope
+from .channel.base import Session, SessionProbe
+from .claims import (
+    backward,
+    endings,
+    named_claim,
+    request_name,
+    spent_by,
 )
-from .vocabulary.payloads import Heartbeat, Nak, Topic
-from .vocabulary.schedule import Condition
+from .launcher import LaunchHandle, launch_claim
+from .observables import (
+    Head,
+    HeadFold,
+    PendingStops,
+    PrefixLen,
+    RunResult,
+    Tier,
+    claim_verdict,
+    launch_verdict,
+    newest_claim,
+)
+from .vocabulary.coordinate import Commits
+from .vocabulary.payloads import (
+    Bound,
+    Commit,
+    Heartbeat,
+    Nak,
+    Outcome,
+    Rewind,
+    Started,
+    Stopped,
+    Topic,
+)
+from .vocabulary.schedule import Condition, parse_schedule
+from .walk import point, readable, verdict_parse
+
+# ----- Running and RunStatus ---------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class Running:
-    """The non-terminal arm of RunStatus: a run that's still in flight, with the
-    Watcher's live snapshot — ``step`` from the latest heartbeat, and
-    ``beacon_age`` (seconds since that heartbeat *arrived*, the gradient toward
-    presumed-dead) which is watcher-computed and not on the raw event stream."""
+    """The non-terminal arm of ``RunStatus`` (§5): the newest claim's ``head`` and its
+    ``count(Commits(), head)``, ``commits``, from folds held per run, and
+    ``beacon_age``, the seconds since the Watcher last witnessed the run alive (or the
+    seeded record's ``t``), the gradient toward ``heartbeat_stale``. A future-dated
+    seed makes it negative, which reads alive: the safe direction (observer-clock §5).
+    """
 
-    step: Optional[int] = None
-    beacon_age: Optional[float] = None
+    head: Head
+    commits: int
+    beacon_age: float
 
     @property
     def done(self) -> bool:
         return False
 
 
-# A run's current status is either still-running or a terminal verdict.
-RunStatus = Union[Running, RunResult]
+RunStatus = Running | RunResult
+"""A run's status: still running, or its terminal verdict."""
 
 
-# --- per-run liveness probe (resolved once at registration) ---
-# The episode-lock signal is a backend CAPABILITY (channel/base.py), so the Watcher
-# resolves it ONCE when a run is registered -- to a real probe for an EpisodeProbe
-# channel, or a null probe otherwise -- and poll() just folds the verdict. This keeps
-# the lock's state (which episode; when first seen) and its birth-grace logic OUT of
-# the Watcher's general _RunState/poll: capability detection lives at the boundary,
-# the hot path stays linear, and the substrate Channel keeps its four pure ops.
+# ----- the session tier, resolved at registration -------------------------------------
 
 
-class _LockChannel(Protocol):
-    """What the episode-lock probe needs of a channel: read the log AND probe the
-    lock. A real ``EpisodeProbe`` backend (PostgresChannel) satisfies both."""
+class _SessionTier(Protocol):
+    """Whether the session that wrote a held claim has ended: the session probe's
+    evidence (§3), a ``SessionProbe`` channel's, or nothing (``_NoSessions``)."""
 
-    def latest(self, topic: str, name: str | None = None) -> Optional[Envelope]: ...
-    def episode_alive(self, started_seq: int) -> bool: ...
-
-
-class _LivenessProbe(Protocol):
-    """A per-run liveness contributor the Watcher folds into its cascade: a definitive
-    death verdict, or None to abstain (fall through to the staleness floor)."""
-
-    def verdict(self, now: float) -> Optional[RunResult]: ...
+    def ended(self, claim: int) -> bool: ...
 
 
-class _EpisodeLockProbe:
-    """Liveness via the channel's episode lock. Owns the episode-tracking + birth-grace
-    state so the Watcher's _RunState/poll don't carry it. The lock is a Watcher-consumed
-    SIGNAL, never a claim arbiter; it can only vote DEAD (past the grace) or abstain, so
-    it never vetoes the staleness floor."""
+class _Sessions:
+    """The tier of a ``SessionProbe`` channel. A claim's writer is fixed, so its
+    stamp is read once per claim; ``session_ended`` is asked on each poll. A probe
+    that cannot tell (``None``: another server, a standby) and a row with no stamp (a
+    migrated one) abstain."""
 
-    def __init__(self, run_id: str, channel: _LockChannel, grace: float) -> None:
-        self._run_id = run_id
-        self._channel = channel
-        self._grace = grace
-        self._episode_seq: Optional[int] = None
-        self._seen_at = 0.0
+    def __init__(self, ch: SessionProbe) -> None:
+        self._ch = ch
+        self._claim: int | None = None  # the claim whose stamp is held
+        self._session: Session | None = None
 
-    def verdict(self, now: float) -> Optional[RunResult]:
-        started = self._channel.latest(Topic.LIFECYCLE_STARTED)
-        if started is None:
-            return None  #                         no episode yet -> abstain
-        if started.seq != self._episode_seq:  #    a new (or first-seen) episode
-            self._episode_seq = started.seq
-            self._seen_at = now  #                 the birth grace runs from first-sight
-        if self._channel.episode_alive(started.seq):
-            return None  #                         alive -> abstain (fall to staleness)
-        if now - self._seen_at > self._grace:
-            # lock released past the birth grace -> a definitive cross-host death,
-            # where os.kill abstains on a foreign host.
-            return RunResult(
-                outcome=Outcome.PRESUMED_DEAD,
-                reason="episode_lock_released",
-                run_id=self._run_id,
-            )
-        return None  #                             within the grace (CAS->hold window)
+    def ended(self, claim: int) -> bool:
+        if claim != self._claim:
+            self._claim, self._session = claim, self._ch.writer_session(claim)
+        return (
+            self._session is not None and self._ch.session_ended(self._session) is True
+        )
 
 
-class _NoLivenessProbe:
-    """Null object: a channel without the lock capability contributes no liveness
-    signal, so the Watcher falls through to its other tiers."""
+class _NoSessions:
+    """The tier of a channel with no session probe: it always abstains."""
 
-    def verdict(self, now: float) -> Optional[RunResult]:
-        return None
+    def ended(self, claim: int) -> bool:
+        return False
 
 
-_NO_LIVENESS = _NoLivenessProbe()
+_NO_SESSIONS = _NoSessions()
+
+
+# ----- witnessed liveness (observer-clock §5) -----------------------------------------
+
+_WITNESS_TOPICS: list[str] = [
+    Topic.LIFECYCLE_STARTED,
+    Topic.LIFECYCLE_COMMIT,
+    Topic.LIFECYCLE_HEARTBEAT,
+    Topic.LIFECYCLE_REWIND,
+]
+_BODIES: dict[str, type[Commit] | type[Heartbeat] | type[Rewind]] = {
+    Topic.LIFECYCLE_COMMIT: Commit,
+    Topic.LIFECYCLE_HEARTBEAT: Heartbeat,
+    Topic.LIFECYCLE_REWIND: Rewind,
+}
+
+
+class _Subject(Protocol):
+    """Whose verdict a tracked run's is (§5): a Strategy, resolved at registration,
+    so a poll never asks whether it holds a handle."""
+
+    def owns(self, e: Envelope) -> bool:
+        """Is ``e``, a ``lifecycle.started`` or a ``supervisor.terminated``, the
+        subject's: a claim its verdict may be about, or its launch's end?"""
+        ...
+
+    def claim(self, ch: Channel, w: int) -> Envelope | None:
+        """The subject's newest claim at or below ``w``: registration's one read,
+        which the witness then keeps from the records since."""
+        ...
+
+
+class _LatestClaim:
+    """An observed run's subject: every claim and every launch's end, the newest of
+    each, as ``peek_terminal`` reads them."""
+
+    def owns(self, e: Envelope) -> bool:
+        return True
+
+    def claim(self, ch: Channel, w: int) -> Envelope | None:
+        return newest_claim(ch, w=w)
 
 
 @dataclass(frozen=True)
-class _HeartbeatSeed:
-    """The three staleness fields seeded from the beacon already on the log at
-    registration (observer-clock §5). Seeded together so poll()'s first
-    _note_heartbeat does not mistake the pre-existing beacon for a fresh arrival."""
+class _HeldLaunch:
+    """A held handle's subject: the claims naming its launch (``launch_claim``) and
+    its launch's ``terminated``, so a relaunch is never read as an earlier claim's
+    end. A record's ``request_id`` names its launch (launcher-record-identity.md)."""
 
-    at: float
-    seq: int
-    step: Optional[int]
+    launch_id: str
 
+    def owns(self, e: Envelope) -> bool:
+        return e.request_id == self.launch_id
 
-def _is_beacon_step(step: object) -> bool:
-    """A conforming heartbeat step: None (stepless) or a real int (bool excluded).
-    The one definition of the step-junk rule the beacon seed (``_heartbeat_seed``)
-    and the witnessed-beacon upgrade (``_note_heartbeat``) both apply -- two
-    inlined spellings of one rule is how they drift apart."""
-    return step is None or (isinstance(step, int) and not isinstance(step, bool))
+    def claim(self, ch: Channel, w: int) -> Envelope | None:
+        return launch_claim(ch, self.launch_id, after=0, w=w)
 
 
-def _heartbeat_seed(hb: Optional[Envelope], now: float) -> _HeartbeatSeed:
-    """Seed from the latest heartbeat, else from ``now``. A missing `t` (an
-    un-migrated old beacon) or a junk-typed `t`/`step` degrades to ``now`` with no
-    step — the same measurement-plane tolerance _note_heartbeat applies: a beacon we
-    cannot date is treated as unwitnessed (fresh now; let the timeout catch a real
-    death), never as a false verdict."""
-    if hb is None:
-        return _HeartbeatSeed(at=now, seq=0, step=None)
-    try:
-        beat = Heartbeat(**hb.body)
-    except (
-        TypeError
-    ):  #                   missing/extra keys (e.g. pre-migration, no `t`)
-        return _HeartbeatSeed(at=now, seq=hb.seq, step=None)
-    at = (
-        beat.t
-        if isinstance(beat.t, (int, float)) and not isinstance(beat.t, bool)
-        else now
-    )
-    step = beat.step if _is_beacon_step(beat.step) else None
-    return _HeartbeatSeed(at=float(at), seq=hb.seq, step=step)
+class _Witness:
+    """A run's claim, the newest its subject owns, its witnessed liveness (``at``,
+    the Watcher's clock, or the seed's ``t``), and a cursor (``w``), so each poll
+    reads only the records since. While nothing has claimed for the subject, it
+    also keeps the newest launch's end the subject owns, read from its own cursor."""
+
+    def __init__(self, ch: Channel, subject: _Subject, now: float) -> None:
+        w = ch.last_seq()  # first: a claim CAS'd after it lands above the cursor
+        self._subject = subject
+        self.claim = subject.claim(ch, w)
+        self.w = w
+        self.at = now if self.claim is None else _seed(ch, self.claim, w, now)
+        self._end: Envelope | None = None
+        self._end_read = 0
+
+    def poll(self, ch: Channel, *, w: int, now: float) -> None:
+        """Read the records since the cursor up to ``w``, the caller's W, and
+        restart the clock at ``now`` if any witnesses the claim alive."""
+        if w <= self.w:
+            return
+        got = ch.read(after=self.w, topics=_WITNESS_TOPICS, limit=w - self.w)
+        for e in got:
+            if e.seq > w:
+                break
+            if e.topic == Topic.LIFECYCLE_STARTED:
+                if self._subject.owns(e):
+                    self.claim = e
+                    if readable(Started, e) is not None:
+                        self.at = now
+            elif self.claim is not None and named_claim(e) == self.claim.seq:
+                if readable(_BODIES[e.topic], e) is not None:
+                    self.at = now
+        self.w = w
+
+    def verdict(self, ch: Channel) -> RunResult | None:
+        """The verdict the log holds at the cursor: the claim's (``claim_verdict``),
+        or while there is none, the newest launch's end the subject owns
+        (``launch_verdict``), as ``peek_terminal`` reads an unclaimed run's."""
+        if self.claim is not None:
+            return claim_verdict(ch, self.claim, w=self.w)
+        if self.w > self._end_read:
+            topics: list[str] = [Topic.SUPERVISOR_TERMINATED]
+            got = ch.read(
+                after=self._end_read, topics=topics, limit=self.w - self._end_read
+            )
+            for e in got:
+                if e.seq <= self.w and self._subject.owns(e):
+                    self._end = e
+            self._end_read = self.w
+        return None if self._end is None else launch_verdict(self._end)
 
 
-@dataclass
-class _PendingStops:
-    """Incremental ``undischarged_stops`` for one run (reference-by-name §5).
+def _seed(ch: Channel, claim: Envelope, w: int, now: float) -> float:
+    """The ``t`` of the newest readable record naming ``claim`` among its commits,
+    heartbeats and rewinds, searched back from ``w`` to the claim (``backward``), else
+    of its ``started``; ``now`` when the claim is unreadable too, as a beacon the
+    Watcher cannot date is treated as unwitnessed (observer-clock §5)."""
+    topics = _WITNESS_TOPICS[1:]
+    for e in backward(ch, after=claim.seq, hi=w, topics=topics):
+        if named_claim(e) == claim.seq:
+            body = readable(_BODIES[e.topic], e)
+            if body is not None:
+                return body.t
+    started = readable(Started, claim)
+    return now if started is None else started.t
 
-    The unanswered stops by id, every id an answer has named (spent: a later
-    stop reusing one is dead on arrival, exactly as the pure fold treats it),
-    and a read cursor of its own, never the event cursor. Each call reads only
-    what is new, so a long run costs O(new records) per poll, not O(log)."""
 
-    cursor: int = 0
-    pending: dict[str, Envelope] = field(default_factory=dict)
-    spent: set[str] = field(default_factory=set)
-
-    def update(self, channel: Channel) -> list[Envelope]:
-        for e in channel.read(
-            after=self.cursor, topics=[Topic.CONTROL_STOP, *_STOP_ANSWERS]
-        ):
-            self.cursor = e.seq
-            if e.topic == Topic.CONTROL_STOP:
-                if e.request_id is not None and e.request_id not in self.spent:
-                    self.pending[e.request_id] = e
-            else:  # a stopped's honored, or a nak's own id: spent
-                for rid in _answer_names(e):
-                    self.spent.add(rid)
-                    self.pending.pop(rid, None)
-        return sorted(self.pending.values(), key=lambda e: e.seq)
+# ----- the per-run state --------------------------------------------------------------
 
 
 @dataclass
 class _RunState:
+    """What the Watcher holds per run: its channel and handle, the folds a poll
+    reads (§5, "Bounded reads"), the session tier resolved at registration, its
+    witnessed liveness, and the cursor of its event drain."""
+
     run_id: str
     channel: Channel
-    handle: Optional[LaunchHandle]
-    last_heartbeat_at: float
-    liveness: _LivenessProbe
-    last_hb_seq: int = field(default=0)
-    last_step: Optional[int] = field(default=None)
-    stops: _PendingStops = field(default_factory=_PendingStops)
+    handle: LaunchHandle | None
+    heads: HeadFold
+    commits: PrefixLen
+    stops: PendingStops
+    sessions: _SessionTier
+    witness: _Witness
+    event_cursor: int  # the last seq ``_drain`` handed on
+
+
+def _presumed(run_id: str, claim: Envelope | None, tier: Tier) -> RunResult:
+    """An inferred verdict: ``presumed_dead``, naming the claim it presumes of, or
+    none for a run nothing has claimed for, with nothing a record would carry (no
+    node, no reports, no error, no malformed)."""
+    return RunResult(
+        outcomes=frozenset({Outcome.PRESUMED_DEAD}),
+        reports=(),
+        node=None,
+        claim_seq=None if claim is None else claim.seq,
+        malformed=(),
+        tier=tier,
+        error=None,
+        run_id=run_id,
+    )
 
 
 class Watcher:
+    """The stateful failure detector (§5). ``poll(run_id)`` is one non-blocking
+    status across every tier; ``wait`` loops it until terminal.
+
+    - ``heartbeat_timeout`` is required (plan, open question 13): how long a run may
+      go unwitnessed before ``heartbeat_stale``, a per-workload threshold, or
+      ``None`` for no staleness tier. It changes a verdict, so it has no default.
+    - ``now``, ``sleep`` and ``poll_interval`` are exempt defaults (plan, "Exempt
+      defaults"): the clock and the pacing of the waits, which tests replace, and
+      which change when a verdict is seen, never what it is."""
+
     def __init__(
         self,
         *,
+        heartbeat_timeout: float | None,
         now: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
         poll_interval: float = 0.05,
-        heartbeat_timeout: Optional[float] = None,
-        episode_grace: float = 5.0,
-    ):
+    ) -> None:
+        self._hb_timeout = heartbeat_timeout
         self._now = now
         self._sleep = sleep
         self._poll_interval = poll_interval
-        self._hb_timeout = heartbeat_timeout
-        # The birth grace for the episode-lock probe: a not-held lock within this
-        # window of first-sight is the CAS->hold_episode gap (inconclusive), not a
-        # death. Only consulted for a backend whose channel is an EpisodeProbe.
-        self._episode_grace = episode_grace
         self._runs: dict[str, _RunState] = {}
-        self._event_cursors: dict[str, int] = {}
 
     def add(self, handle: LaunchHandle) -> None:
-        """Track a launched run by its handle (enables the probe tier)."""
-        self._track(handle.run_id, handle.channel, handle)
+        """Track a launched run by its handle, which enables the probe tier and the
+        reap: its verdict is its launch's (§5), the claims naming the handle's
+        ``launch_id``."""
+        self._track(
+            handle.run_id, handle.channel, handle, _HeldLaunch(handle.launch_id)
+        )
 
     def observe(self, run_id: str, channel: Channel) -> None:
-        """Track a run by run_id + channel, handle-free (late-attach or
-        observe-only). The probe tier is unavailable; staleness still applies."""
-        self._track(run_id, channel, None)
+        """Track a run by its id and a channel, with no handle: the probe tier is
+        off; the session and staleness tiers still apply, and its verdict is the
+        latest claim's, as ``peek_terminal`` reads it."""
+        self._track(run_id, channel, None, _LatestClaim())
 
     def _track(
-        self, run_id: str, channel: Channel, handle: Optional[LaunchHandle]
+        self,
+        run_id: str,
+        channel: Channel,
+        handle: LaunchHandle | None,
+        subject: _Subject,
     ) -> None:
-        # Resolve the liveness capability ONCE, here at the boundary: a real probe for a
-        # lock-capable channel, else the null probe. poll() never re-checks the type.
-        liveness: _LivenessProbe = (
-            _EpisodeLockProbe(run_id, channel, self._episode_grace)
-            if isinstance(channel, EpisodeProbe)
-            else _NO_LIVENESS
+        """Resolve the session tier once, here at the boundary: the channel's probe
+        if it is a ``SessionProbe``, else none; a poll never asks the type again.
+        The subject comes resolved from ``add`` or ``observe``."""
+        sessions: _SessionTier = (
+            _Sessions(channel) if isinstance(channel, SessionProbe) else _NO_SESSIONS
         )
-        # Seed the staleness clock from the beacon ALREADY on the log, so a cold
-        # attach to a run that went quiet long ago reads its true age at once
-        # (observer-clock §5). Three fields must be seeded together, not one: poll()
-        # runs _note_heartbeat FIRST, which upgrades last_heartbeat_at -> now() when
-        # `hb.seq > last_hb_seq` -- so seeding last_heartbeat_at alone (leaving
-        # last_hb_seq=0) lets the pre-existing beacon be mistaken for a fresh arrival
-        # and clobbered, a silent no-op. Seeding last_hb_seq too makes only a GENUINELY
-        # newer beacon upgrade to now() (witnessed, skew-immune). No heartbeat on the
-        # log -> seed now() (the never-beaconed-startup-death catch tier 4 exists for).
-        hb = current_heartbeat(channel, latest_episode(channel))
-        seed = _heartbeat_seed(hb, self._now())
         self._runs[run_id] = _RunState(
             run_id=run_id,
             channel=channel,
             handle=handle,
-            last_heartbeat_at=seed.at,
-            last_hb_seq=seed.seq,
-            last_step=seed.step,
-            liveness=liveness,
+            heads=HeadFold(),
+            commits=PrefixLen(Commits()),
+            stops=PendingStops(),
+            sessions=sessions,
+            witness=_Witness(channel, subject, self._now()),
+            event_cursor=0,
         )
 
     def poll(self, run_id: str) -> RunStatus:
-        """One non-blocking status for ``run_id`` across all tiers: a terminal
-        RunResult, or the Running snapshot if it still looks alive. (Never None —
-        the running case is the Running arm, carrying the gradient poll already
-        computed for the staleness check, rather than discarding it.)"""
+        """One non-blocking status (§5): the verdict the log holds for the run's
+        subject, stamped with the run; else an inference; else ``Running``.
+
+        It writes nothing, but for a reap of a handle it holds (§3, "A read never
+        writes"): once that handle probes dead it is reaped (``wait()``), which writes
+        the launch's ``terminated`` and, where its process was the claimant, the
+        ``died`` that ends the claim, so the verdict is the precise one. Only when the
+        reap leaves no verdict is it ``probed_dead``, naming the launch's claim, or
+        none when nothing claimed for it. The session tier needs a claim; staleness
+        does not, so a worker that hangs before it claims is presumed dead once
+        ``heartbeat_timeout`` passes from its registration (observer-clock §5).
+
+        A poll reads at one W, taken first: the verdict, then the inferences, and
+        only for ``Running`` the held folds, so a ``Running`` never carries a head
+        the verdict would have closed, and a head the fold cannot read never hides a
+        verdict. The reap is a write, so its verdict is read at a W taken after it."""
         st = self._runs[run_id]
-        self._note_heartbeat(st)
-
-        # tiers 1-2: a terminal record always wins.
-        r = peek_terminal(st.channel)
-        if r is not None:
-            return replace(r, run_id=run_id)
-
-        # tier 3: probe the handle. If it's dead, reap it first (wait() returns
-        # at once for an already-exited handle and records launcher.terminated),
-        # so we report the precise manner of death rather than a bare
-        # presumed_dead that discards the exit code. presumed_dead remains only
-        # for a handle whose death leaves no record at all.
+        ch, witness = st.channel, st.witness
+        now = self._now()
+        w = ch.last_seq()
+        witness.poll(ch, w=w, now=now)
+        result = witness.verdict(ch)
+        if result is not None:
+            return replace(result, run_id=run_id)
         if st.handle is not None and not st.handle.is_alive():
-            st.handle.wait()
-            r = peek_terminal(st.channel)
-            if r is not None:
-                return replace(r, run_id=run_id)
-            return RunResult(
-                outcome=Outcome.PRESUMED_DEAD, reason="probed_dead", run_id=run_id
-            )
-
-        # tier 3b: the episode-liveness signal (resolved per run at registration; a null
-        # probe for backends without the capability). poll() folds an OPAQUE verdict --
-        # the lock's episode-tracking and birth-grace state live in the probe, not here.
-        # It can only vote DEAD (a definitive cross-host death, where os.kill abstains)
-        # or abstain (None -> fall through), so a held lock never vetoes the staleness
-        # floor below. A SIBLING to the handle probe, independent of a tracked handle.
-        verdict = st.liveness.verdict(self._now())
-        if verdict is not None:
-            return verdict
-
-        # tier 4: heartbeat staleness. The clock runs from when we began watching
-        # (last_heartbeat_at seeds at registration, then tracks the latest beacon),
-        # so a worker that never beacons — crashed or hung during *startup* — is
-        # caught too, not just a mid-run hang. Legit-slow startup is the caller's
-        # policy: pick heartbeat_timeout >= worst-case startup, or start watching
-        # only after the first beacon. NB this fires even for a handle that probed
-        # *alive* (tier 3 didn't return): that's the hang case (beaconing stopped
-        # though the process lives), which §8 wants caught — don't "fix" it to
-        # veto on alive.
-        beacon_age = self._now() - st.last_heartbeat_at
-        if self._hb_timeout is not None and beacon_age > self._hb_timeout:
-            return RunResult(
-                outcome=Outcome.PRESUMED_DEAD, reason="heartbeat_stale", run_id=run_id
-            )
-
-        return Running(step=st.last_step, beacon_age=beacon_age)
+            st.handle.wait()  # the reap: the one write a poll makes
+            witness.poll(ch, w=ch.last_seq(), now=now)
+            result = witness.verdict(ch)
+            if result is not None:
+                return replace(result, run_id=run_id)
+            return _presumed(run_id, witness.claim, Tier.PROBED_DEAD)
+        claim = witness.claim
+        if claim is not None and st.sessions.ended(claim.seq):
+            return _presumed(run_id, claim, Tier.SESSION_ENDED)
+        age = now - witness.at
+        if self._hb_timeout is not None and age > self._hb_timeout:
+            return _presumed(run_id, claim, Tier.HEARTBEAT_STALE)
+        head = st.heads.poll_at(ch, w=w)
+        return Running(head=head, commits=st.commits.poll(ch, head), beacon_age=age)
 
     def wait(
         self,
         run_id: str,
         *,
         on_event: Callable[[str, Envelope], object] | None = None,
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> RunResult:
-        """Block until ``run_id`` is terminal (any tier), polling at
-        ``poll_interval``. If ``on_event`` is given, drain envelopes across all
-        tracked runs to it as ``(run_id, Envelope)`` while waiting (the same
-        stream ``iter_events`` exposes — cursor from 0, so the first drain
-        replays logged history), with one final drain after the terminal
-        verdict so no event under the verdict is lost. Raises TimeoutError if
-        ``timeout`` elapses first — the caller's patience running out is not a
-        death verdict (the run may be a healthy slow one). An uninterpretable
-        record on the verdict plane raises ``MalformedRecordError``
-        (observables) — propagated, not swallowed."""
+        """Block until ``run_id`` is terminal, polling at ``poll_interval``. With
+        ``on_event``, drain every tracked run's records to it as ``(run_id,
+        Envelope)`` while waiting, from seq 0, with one final drain after the verdict
+        so no record under it is lost. ``TimeoutError`` when ``timeout`` elapses
+        first: the caller's patience is no verdict."""
         deadline = None if timeout is None else self._now() + timeout
         while True:
             if on_event is not None:
@@ -356,7 +439,7 @@ class Watcher:
                     on_event(rid, e)
             s = self.poll(run_id)
             if isinstance(s, RunResult):
-                if on_event is not None:  # deliver any envelopes up to the verdict
+                if on_event is not None:
                     for rid, e in self._drain():
                         on_event(rid, e)
                 return s
@@ -368,19 +451,13 @@ class Watcher:
         self,
         *,
         on_event: Callable[[str, Envelope], object] | None = None,
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> dict[str, RunStatus]:
-        """Block until every tracked run is terminal, returning ``{run_id:
-        RunStatus}`` total over the tracked set. Uncapped this is a pure
-        synchronization (a slow-but-healthy run delays it, by design). With
-        ``timeout`` it returns at the deadline with the still-running runs as
-        their Running status — so pending is explicit (which runs, and how stale),
-        not absence.
-
-        Caveat: a run that can reach *no* terminal tier — ``observe``-d (no
-        handle) with no ``heartbeat_timeout`` — can never resolve, so an uncapped
-        ``wait_all`` over such a run blocks forever. Give those a timeout, a
-        handle, or a heartbeat_timeout."""
+        """Block until every tracked run is terminal: ``{run_id: RunStatus}``, total
+        over the tracked set. With ``timeout`` it returns at the deadline with the
+        still-running runs as their ``Running`` status. A run no tier can end (an
+        ``observe``-d run on a channel with no session probe, with no
+        ``heartbeat_timeout``) blocks an uncapped call forever."""
         deadline = None if timeout is None else self._now() + timeout
         results: dict[str, RunStatus] = {}
         pending = set(self._runs)
@@ -388,30 +465,39 @@ class Watcher:
             if on_event is not None:
                 for rid, e in self._drain():
                     on_event(rid, e)
+            running: dict[str, Running] = {}
             for run_id in list(pending):
                 s = self.poll(run_id)
-                if s.done:
+                if isinstance(s, RunResult):
                     results[run_id] = s
                     pending.discard(run_id)
+                else:
+                    running[run_id] = s
             if not pending:
-                if on_event is not None:  # deliver envelopes up to the last verdict
+                if on_event is not None:
                     for rid, e in self._drain():
                         on_event(rid, e)
                 break
             if deadline is not None and self._now() >= deadline:
-                for run_id in pending:  # report the laggards as Running
-                    results[run_id] = self.poll(run_id)
+                results.update(running)  # this round's statuses: no second poll
                 break
             self._sleep(self._poll_interval)
         return results
 
     def broadcast(
-        self, name: str, schedule: Condition, *, request_id: str | None = None
+        self, name: str | None, schedule: Condition, *, request_id: str | None = None
     ) -> str:
-        """Fan one ``control.subscribe`` across every tracked run under a single
-        shared ``request_id`` (returned). The run_id disambiguates the responses;
-        this is the cross-run barrier primitive — no Experiment class. The caller
-        then collects responses via iter_events / wait_all filtered on the id."""
+        """Send one ``control.subscribe`` to every tracked run under one shared
+        ``request_id``, returned (a fresh one when ``None``): the cross-run barrier
+        primitive. ``name`` is the source it samples, or ``None`` for pure demand (§5).
+
+        The schedule is parsed first (``parse_schedule(schedule, pure_demand=name is
+        None)``), so a malformed broadcast raises ``MalformedSchedule`` here and
+        writes nothing, rather than a ``nak`` per run. An empty ``request_id`` is
+        nameless, which every worker refuses, so it raises ``ValueError``."""
+        parse_schedule(schedule, pure_demand=name is None)
+        if request_id == "":
+            raise ValueError("an empty request_id names nothing: pass None or an id")
         rid = request_id if request_id is not None else f"broadcast-{uuid.uuid4().hex}"
         for st in self._runs.values():
             st.channel.send(
@@ -420,253 +506,224 @@ class Watcher:
         return rid
 
     def pending_stops(self, run_id: str) -> list[Envelope]:
-        """The run's stops no answer names -- ``undischarged_stops``, kept
-        incrementally: each call reads only records new since the last."""
+        """The run's pending stops, ``undischarged_stops`` held (``PendingStops``):
+        each call reads only the records since the last."""
         st = self._runs[run_id]
-        return st.stops.update(st.channel)
+        return st.stops.poll(st.channel)
 
     def iter_events(
-        self, timeout: Optional[float] = None
+        self, timeout: float | None = None
     ) -> Iterator[tuple[str, Envelope]]:
-        """Yield ``(run_id, Envelope)`` for envelopes across all tracked runs,
-        advancing a per-run cursor independent of the verdict polling. The
-        cursor starts at 0: the first drain replays each run's ENTIRE logged
-        history — not "new since tracking" — then later drains yield only new
-        arrivals. Without ``timeout`` this is an endless stream (the caller
-        breaks out, e.g. on a terminal envelope); with ``timeout`` it returns
-        once the wall-clock deadline passes with nothing new left to drain.
-        """
+        """Yield ``(run_id, Envelope)`` across every tracked run, from seq 0 on each
+        run's own cursor, independent of the polling. Endless without ``timeout``;
+        with it, it returns once the deadline passes with nothing left to drain."""
         deadline = None if timeout is None else self._now() + timeout
         while True:
             batch = self._drain()
-            for item in batch:
-                yield item
+            yield from batch
             if deadline is not None and self._now() >= deadline:
                 return
             if not batch:
                 self._sleep(self._poll_interval)
 
     def _drain(self) -> list[tuple[str, Envelope]]:
-        """Pull all envelopes new since the last drain across every tracked run,
-        advancing the per-run event cursor. Shared by iter_events and wait's
-        on_event streaming."""
+        """Every record since the last drain, across every tracked run."""
         out: list[tuple[str, Envelope]] = []
         for run_id, st in list(self._runs.items()):
-            cur = self._event_cursors.get(run_id, 0)
-            for e in st.channel.read(after=cur):
-                self._event_cursors[run_id] = e.seq
+            for e in st.channel.read(after=st.event_cursor):
+                st.event_cursor = e.seq
                 out.append((run_id, e))
         return out
 
-    def _note_heartbeat(self, st: _RunState) -> None:
-        # Only a beat NAMING the latest claim is liveness evidence for the run: a
-        # displaced worker's beacon names its own old claim (lifecycle-v0.5).
-        hb = current_heartbeat(st.channel, latest_episode(st.channel))
-        if hb is not None and hb.seq > st.last_hb_seq:
-            st.last_hb_seq = hb.seq
-            try:
-                step = Heartbeat(**hb.body).step
-            except TypeError:
-                # measurement-plane tolerance: a junk beacon isn't a
-                # measurement — it earns no liveness credit and is skipped
-                # (the next conforming beacon supersedes it).
-                return
-            if not _is_beacon_step(step):
-                return  # wrong-typed step: the same junk-beacon rule
-            st.last_heartbeat_at = self._now()
-            st.last_step = step
 
+# ----- await_consumed (§5) ------------------------------------------------------------
 
-def _request_at(channel: Channel, seq: int) -> Envelope:
-    """The record at ``seq``, or ``ValueError``: an empty seq names no request,
-    so no watermark passing it could mean "accepted"."""
-    found = channel.read(after=seq - 1, limit=1)
-    if not found or found[0].seq != seq:
-        raise ValueError(f"no record at seq {seq}: there is no request to await")
-    return found[0]
-
-
-def _refuse_a_spent_id(channel: Channel, request: Envelope, request_id: str) -> None:
-    """Raise ``ValueError`` if ``request_id`` was spent before ``request``: it
-    reuses an answered id, so it is dead on arrival (reference-by-name §2: an
-    id is never reused; §3: a reuse is dead wherever the answer sits). The
-    request's own topic decides which answers count, by the one answer rule the
-    worker's drain folds with (``_SUBSCRIBE_ANSWERS``, ``_STOP_ANSWERS``,
-    ``_answer_names``). The prefix before the request is append-only and
-    complete, so this is decided once, never polled."""
-    seq, topic = request.seq, request.topic
-    if topic == Topic.CONTROL_SUBSCRIBE:
-        answers = _SUBSCRIBE_ANSWERS
-    elif topic == Topic.CONTROL_STOP:
-        answers = _STOP_ANSWERS
-    else:
-        return  #       only a subscribe or a stop is answered, so only they spend
-    # request_ids= keeps this id's own answers plus the null-id broadcasts --
-    # the stoppeds, whose `honored` lists name stops.
-    for e in channel.read(topics=[*answers], request_ids=[request_id]):
-        if e.seq >= seq:
-            break
-        if request_id in _answer_names(e):
-            raise ValueError(
-                f"request_id {request_id!r} at seq {seq} is dead on arrival: the "
-                f"{e.topic} at seq {e.seq} already answered it, and an answered "
-                f"id is spent (reference-by-name §3) -- send a fresh request_id"
-            )
-
-
-def _refuse_a_void_lease(channel: Channel, request: Envelope, request_id: str) -> None:
-    """Raise ``ValueError`` if ``request`` is a ``control.subscribe`` whose id is
-    a VOID lease: bound (``lifecycle.bound``) to an episode that can no longer
-    serve it, by the one predicate (``lease_void``, observer form: the drainer
-    is the latest claim, ended iff a terminal names it). A re-send of such an id
-    is never served -- the lease is one id = one lease = one episode
-    (specs/reference-by-name.md, Episode-local subscriptions) -- so ``None``
-    would be a false "accepted". A lease nobody bound yet is not void. Bounded
-    reads: this id's bound records, the latest claim, its terminal."""
-    if request.topic != Topic.CONTROL_SUBSCRIBE:
-        return
-    bound: set[int] = set()
-    for e in channel.read(topics=[Topic.LIFECYCLE_BOUND], request_ids=[request_id]):
-        ok, k = _claim_name(e)
-        if ok and k is not None and e.request_id == request_id:
-            bound.add(k)
-    if not bound:
-        return
-    claim = latest_episode(channel)
-    current = claim.seq if claim is not None else None
-    ended = claim is not None and _episode_ended(channel, claim)
-    if lease_void(bound, current, ended):
-        raise ValueError(
-            f"the lease {request_id!r} at seq {request.seq} is bound to "
-            f"episode {sorted(bound)[0]}, which can no longer serve it: a "
-            f"lease is one id, one episode -- resubscribe under a fresh request_id"
-        )
+_REQUESTS = (Topic.CONTROL_SUBSCRIBE, Topic.CONTROL_STOP)
+_ANSWER_TOPICS: list[str] = [
+    Topic.LIFECYCLE_NAK,
+    Topic.LIFECYCLE_COMMIT,
+    Topic.LIFECYCLE_HEARTBEAT,
+    Topic.LIFECYCLE_STOPPED,
+]
 
 
 def await_consumed(
-    channel: Channel,
+    ch: Channel,
     seq: int,
     *,
     timeout: float | None = None,
     poll_interval: float = 0.05,
     now: Callable[[], float] = time.time,
     sleep: Callable[[float], None] = time.sleep,
-) -> "Nak | RunResult | None":
-    """Block until the control request at ``seq`` is ANSWERED or drained. The
-    request is the record at ``seq``, and its ``request_id`` is the name its
-    answers bear: the one source of truth, so the caller passes no id.
+) -> Nak | RunResult | None:
+    """Did the control request at ``seq`` land (§5)? The request is the record at
+    ``seq``, and its ``request_id`` is the name its answers bear.
 
-    Answer-first (specs/service-worker.md): the first answer naming the request
-    that *follows* ``seq`` resolves it at once, whatever the watermark says. A
-    ``lifecycle.nak`` is a refusal (returns the ``Nak``); for a stop, a
-    ``lifecycle.stopped`` whose ``honored`` lists it is acceptance (returns
-    ``None``): the worker carried the stop out, in its dying breath. With no
-    answer yet, the watermark (the current heartbeat's ``consumed_seq >= seq``,
-    §6) is the probe for acceptance (returns ``None``). If a terminal record
-    *follows* the request with no later episode, no worker will ever drain it:
-    returns the terminal ``RunResult`` (refused-by-death) instead of blocking,
-    while a request sent *after* a death correctly waits for the next episode.
+    - a ``Nak``, when a refusal names it;
+    - ``None``, accepted, when a watermark of a claim reaches it (a commit's or a
+      heartbeat's ``consumed_seq``), or an answer names it: a node's ``fired`` or
+      ``expired``, on any lineage, or an exit's ``honored``;
+    - the terminal ``RunResult``, when the latest claim ended by its own exit above
+      the request and no watermark of it reaches the request: the exit was
+      CAS-appended at a tail its writer had read, so the claim saw the request and
+      ended without taking it; and when the head is closed, since nothing will ever
+      take it;
+    - otherwise it waits for the next claim: so does a request posted after the
+      latest claim ended, and one above the last watermark of a claim death reports
+      ended (a report shows that its writer read the request, not that the claim
+      did).
 
-    Raises ``ValueError``, before waiting at all, for a request that names no
-    request the worker could answer, since ``None`` would then be a false
-    "accepted": no record at ``seq`` (an empty seq names no request); a record
-    there that is not a ``control.*`` request; a ``control.*`` record with no
-    ``request_id`` (subscription-v0.3 closes the topic set to subscribe,
-    unsubscribe and stop, each naming its request, and the worker refuses any
-    other under no id); and a request whose id an answer already SPENT before ``seq``
-    (reference-by-name §3: for a subscribe an unsubscribe, the worker's expiry
-    record included, or a nak; for a stop a stopped's ``honored`` or a nak),
-    which the worker drops unanswered. Raises ``TimeoutError`` if ``timeout``
-    elapses (not-yet-drained is not a refusal), and ``MalformedRecordError`` on
-    a nak body it cannot parse (the answer is on the verdict plane). So the full
-    codomain is the answer space: ``Nak`` (refused) | ``RunResult`` (the run
-    died under the request) | ``None`` (accepted).
+    Each answer follows the request, so only the records above ``seq`` are read, in a
+    cursor, at O(new records) per poll. A poll reads at one W, taken first: its
+    answers, its head and its newest claim, so an answer landing mid-poll is either
+    this poll's or the next's, never read as the verdict of a run that took it.
 
-    Raises ``ValueError`` too for a ``control.subscribe`` whose id is a VOID
-    lease (``lease_void``): bound to an episode that has since ended or been
-    superseded, so no episode will ever serve a re-send of it, and ``None``
-    would be a false "accepted". The message names the bound episode and the
-    remedy: resubscribe under a fresh ``request_id``. A lease nobody has bound
-    yet is not void; it waits as usual. Evaluated at entry and again before any
-    ``None``, so a lease voided while the caller waits is never accepted."""
+    It refuses up front, with ``ValueError``, what no worker could answer, since
+    ``None`` would be a false "accepted": no record at ``seq``; a record that is not
+    a ``control.subscribe`` or ``control.stop`` (a ``control.withdraw`` needs no
+    worker); a request with a missing or empty id, which is nameless; an id an
+    exit's ``honored``, a withdrawal or a refusal spent before ``seq``, since request
+    ids are one namespace and a spent id is dead on arrival; and a subscription whose
+    id is a void lease, bound to a claim that has ended. A lease voided while it
+    waits, by a later claim's watermark passing a resend its claim dropped, raises
+    too. ``TimeoutError`` when ``timeout`` elapses; ``MalformedRecordError`` for a
+    refusal whose body does not parse. ``poll_interval``, ``now`` and ``sleep`` are
+    exempt defaults: they pace the waits, and tests replace them."""
     deadline = None if timeout is None else now() + timeout
-    request = _request_at(channel, seq)
-    request_id = request.request_id
-    if not request.topic.startswith("control."):
+    request = point(ch, seq, w=ch.last_seq())
+    if request is None:
+        raise ValueError(f"no record at seq {seq}: there is no request to await")
+    if request.topic not in _REQUESTS:
         raise ValueError(
-            f"the record at seq {seq} is a {request.topic}, not a control request: "
-            f"there is no request to await"
+            f"the record at seq {seq} is a {request.topic}, not a control request "
+            "a worker answers (a subscribe or a stop)"
         )
-    if request_id is None:
-        # subscription-v0.3 closes control.* to three verbs, each naming its
-        # request; the worker refuses an id-less one (or an unknown verb) under
-        # no id, so nothing can answer it.
+    rid = request_name(request)
+    if rid is None:
         raise ValueError(
-            f"the {request.topic} at seq {seq} carries no request_id: it is "
-            f"malformed under subscription-v0.3, so the worker refuses it "
-            f"under no id and nothing can answer it -- send it with one"
+            f"the {request.topic} at seq {seq} names no request (a missing or empty "
+            "request_id): the worker refuses it nameless, and nothing can answer it"
         )
-    _refuse_a_spent_id(channel, request, request_id)
-    _refuse_a_void_lease(channel, request, request_id)
-    answers = (
-        _STOP_ANSWERS if request.topic == Topic.CONTROL_STOP else (Topic.LIFECYCLE_NAK,)
+    _refuse_a_spent_id(ch, request, rid)
+    leases = _Leases(ch, request, rid)
+    leases.refuse_void(taken_by=None, w=ch.last_seq())
+    heads = HeadFold()
+    exits: set[int] = set()  # the claims with a readable exit above the request
+    cursor = seq
+    while True:
+        w = ch.last_seq()
+        answer: Nak | None = None
+        accepted: int | None = None  # the claim whose record took the request
+        got = (
+            []
+            if w <= cursor
+            else ch.read(after=cursor, topics=_ANSWER_TOPICS, limit=w - cursor)
+        )
+        for e in got:
+            if e.seq > w:
+                break
+            if e.topic == Topic.LIFECYCLE_NAK:
+                if request_name(e) == rid:
+                    answer = verdict_parse(Nak, e)
+                    break
+                continue
+            took = _takes(e, rid, seq)
+            exit_ = readable(Stopped, e) if e.topic == Topic.LIFECYCLE_STOPPED else None
+            if exit_ is not None:
+                exits.add(exit_.claim_seq)
+            if took and accepted is None:
+                accepted = named_claim(e)
+        cursor = max(cursor, w)
+        if answer is not None:
+            return answer
+        if accepted is not None:
+            leases.refuse_void(taken_by=accepted, w=w)
+            return None
+        head = heads.poll_at(ch, w=w)
+        claim = newest_claim(ch, w=w)
+        if claim is not None and (head.settled or claim.seq in exits):
+            # the newest claim's readable exit is at or below w: its verdict
+            result = claim_verdict(ch, claim, w=w)
+            if result is not None:
+                return result
+        if deadline is not None and now() >= deadline:
+            raise TimeoutError(
+                f"the request at seq {seq} not consumed within {timeout}s"
+            )
+        sleep(poll_interval)
+
+
+def _takes(e: Envelope, rid: str, seq: int) -> bool:
+    """Does ``e``, a readable commit, heartbeat or exit above the request, show the
+    request taken: a watermark reaching ``seq``, or a ``fired``, ``expired`` or
+    ``honored`` naming ``rid``? An exit's seq is no watermark here: it is what the
+    verdict case reads."""
+    if e.topic == Topic.LIFECYCLE_HEARTBEAT:
+        beat = readable(Heartbeat, e)
+        return beat is not None and beat.consumed_seq >= seq
+    if e.topic == Topic.LIFECYCLE_COMMIT:
+        node = readable(Commit, e)
+        return node is not None and (
+            node.consumed_seq >= seq or rid in node.fired or rid in node.expired
+        )
+    exit_ = readable(Stopped, e)
+    return exit_ is not None and (
+        rid in exit_.honored or rid in exit_.fired or rid in exit_.expired
     )
 
-    def _answer() -> Envelope | None:
-        # The window after the request is causal: an answer to THIS request
-        # follows it. One before it would have spent the id, refused above.
-        if request_id is None:
-            return None
-        # request_ids= pushes the id filter into the backend (audit F9: no
-        # per-poll rescan of every nak); it also admits null-id records -- the
-        # stoppeds, whose honored lists name stops, and broadcasts that name
-        # nothing, which the name check drops.
-        for e in channel.read(after=seq, topics=[*answers], request_ids=[request_id]):
-            if request_id in _answer_names(e):
-                return e
-        return None
 
-    def _resolved(answer: Envelope) -> "Nak | None":
-        if answer.topic == Topic.LIFECYCLE_STOPPED:
-            return None  #               honored: the worker carried it out
-        return verdict_parse(Nak, answer)
+def _refuse_a_spent_id(ch: Channel, request: Envelope, rid: str) -> None:
+    """``ValueError`` if a record below the request spends ``rid`` by name
+    (``claims.spent_by``: an exit's ``honored``, a withdrawal, a refusal): request
+    ids are one namespace, and a spent id is dead on arrival on every control topic,
+    so the worker skips the request unanswered. The log below the request is
+    complete, so this is decided once. The ``request_ids`` filter also admits the
+    exits, which name no request."""
+    topics: list[str] = [
+        Topic.LIFECYCLE_STOPPED,
+        Topic.CONTROL_WITHDRAW,
+        Topic.LIFECYCLE_NAK,
+    ]
+    for e in ch.read(topics=topics, request_ids=[rid], limit=request.seq):
+        if e.seq >= request.seq:
+            break
+        if rid in spent_by(e):
+            raise ValueError(
+                f"request_id {rid!r} at seq {request.seq} is dead on arrival: the "
+                f"{e.topic} at seq {e.seq} already spent it, and a spent id is "
+                "never answered again: send a fresh request_id"
+            )
 
-    while True:
-        # Answer-first (specs/service-worker.md): an answer IS the answer; the
-        # watermark is only the no-answer-yet probe. A request answered inside
-        # a winning retire() drain gets its nak but never a later heartbeat —
-        # watermark-first would deadlock its waiter.
-        answer = _answer()
-        if answer is not None:
-            return _resolved(answer)
-        hb = current_heartbeat(channel, latest_episode(channel))
-        if hb is not None:
-            try:
-                consumed = Heartbeat(**hb.body).consumed_seq >= seq
-            except TypeError:
-                consumed = False  # a junk beacon is no watermark evidence
-            if consumed:
-                # Re-check once: the answer and its heartbeat may both have
-                # landed between this iteration's two reads.
-                answer = _answer()
-                if answer is not None:
-                    return _resolved(answer)
-                # A lease voided while we waited is not accepted: the later
-                # episode's beat passed it without serving it.
-                _refuse_a_void_lease(channel, request, request_id)
-                return None
-        # Refused-by-death: the terminal record FOLLOWING the request means no
-        # worker will ever drain it — return the terminal verdict. A terminal
-        # that PRECEDES the request leaves it waiting for the next episode. The
-        # record is the one peek_terminal speaks for (_verdict_record), not the
-        # latest terminal-topic envelope: an unrelated launch's death (a
-        # claim-race loser's) is not this request's refusal. A terminal that
-        # honored the request was its answer, taken above.
-        record = _verdict_record(channel)
-        if record is not None and record.seq > seq:
-            term = peek_terminal(channel)
-            if term is not None:
-                return term
-        if deadline is not None and now() >= deadline:
-            raise TimeoutError(f"control seq {seq} not consumed within {timeout}s")
-        sleep(poll_interval)
+
+class _Leases:
+    """The claims a ``lifecycle.bound`` binds ``rid`` to, for a subscribe: a lease is
+    void once its claim has ended (§2, "Per claim"), so a resend of it is dropped by
+    every later claim, unanswered."""
+
+    def __init__(self, ch: Channel, request: Envelope, rid: str) -> None:
+        self._ch = ch
+        self._request = request
+        self._rid = rid
+
+    def refuse_void(self, *, taken_by: int | None, w: int) -> None:
+        """``ValueError`` if ``rid`` is bound, at or below ``w``, the caller's W, to
+        a claim that has ended, other than ``taken_by``, the claim whose record took
+        the request: a claim the lease is bound to accepts its resend while it
+        holds it."""
+        if self._request.topic != Topic.CONTROL_SUBSCRIBE:
+            return
+        ch, rid = self._ch, self._rid
+        topics: list[str] = [Topic.LIFECYCLE_BOUND]
+        for e in ch.read(topics=topics, request_ids=[rid], limit=w):
+            bound = readable(Bound, e)
+            if e.seq > w or e.request_id != rid or bound is None:
+                continue
+            if bound.claim_seq == taken_by:
+                continue
+            claim = point(ch, bound.claim_seq, w=w)
+            if claim is not None and endings(ch, claim, w):
+                raise ValueError(
+                    f"the lease {rid!r} at seq {self._request.seq} is bound to claim "
+                    f"{bound.claim_seq}, which has ended: a lease is one claim's, so "
+                    "no claim will serve it again: resubscribe under a fresh request_id"
+                )

@@ -35,7 +35,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, TypeVar
 
-from ..channel import Channel
+from .channel import Channel
 from .observables import HeadStrategy, PrefixLen
 from .vocabulary.coordinate import NodeRef
 from .walk import walk

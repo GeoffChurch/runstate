@@ -33,7 +33,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, NamedTuple, TypeVar
 
-from ..channel import Channel, Envelope
+from .channel import Channel, Envelope
 from .vocabulary.payloads import Commit, Node, Started, Stopped, Topic, Value
 from .vocabulary.schedule import Coordinates
 

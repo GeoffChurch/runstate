@@ -15,7 +15,7 @@ from typing import Any, NamedTuple
 
 import pytest
 
-from runstate._next.observables import (
+from runstate.observables import (
     AlignedRow,
     AtNode,
     Complete,
@@ -39,9 +39,9 @@ from runstate._next.observables import (
     streams,
     undischarged_stops,
 )
-from runstate._next.vocabulary.coordinate import Commits
-from runstate._next.walk import coordinates, walk
-from runstate._next.vocabulary.payloads import Commit, Outcome
+from runstate.vocabulary.coordinate import Commits
+from runstate.walk import coordinates, walk
+from runstate.vocabulary.payloads import Commit, Outcome
 from runstate.channel.memory import MemoryChannel
 
 

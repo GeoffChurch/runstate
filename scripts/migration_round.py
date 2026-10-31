@@ -61,7 +61,7 @@ EACH RUN, as ``runstate migrate``'s detection pass takes it, in memory:
 3. THE READS. The 0.3.0 reads, ``value_series``, ``peek_terminal`` and
    ``undischarged_stops`` as 0.3.0 defined them (``scripts/reads_v0_3_0.py``),
    over a ``MemoryChannel`` of the 0.3.0 rows; the 0.4.0 reads,
-   the staged observer plane's (``runstate._next.observables``) ``series`` per
+   the staged observer plane's (``runstate.observables``) ``series`` per
    name at ``LatestClaimHead``, its ``peek_terminal`` and ``undischarged_stops``, over
    one of the 0.4.0 rows. Each
    difference is attributed to the divergences that fired there (``Reads``), or
@@ -116,8 +116,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from jsonschema import Draft202012Validator  # type: ignore[import-untyped]  # noqa: E402
 
 from runstate import formats  # noqa: E402
-from runstate._next import observables as reads  # noqa: E402
-from runstate._next.vocabulary.coordinate import Commits  # noqa: E402
+from runstate import observables as reads  # noqa: E402
+from runstate.vocabulary.coordinate import Commits  # noqa: E402
 from runstate.channel import Envelope, MemoryChannel, MemoryLog  # noqa: E402
 from runstate.migrations import (  # noqa: E402
     Memo,

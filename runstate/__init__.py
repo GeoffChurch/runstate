@@ -1,11 +1,14 @@
-"""runstate — cooperative control protocol for long-running scientific workers.
+"""runstate: cooperative bidirectional control between an orchestrator and a
+long-running worker, over a per-run append-only topic log
+(docs/specs/commits-and-lineage.md, log format 0.4.0), and its public surface.
 
-v0.2: a per-run topic-log **substrate** with opt-in **conventions** (cooperative-
-control, subscription, lifecycle, launcher) and reference **orchestration**
-helpers (launchers, Watcher, sweep). See docs/design-v0.2.md.
-
-The names re-exported here are the public surface; everything else lives under
-the submodules (runstate.channel, runstate.vocabulary, ...).
+THE SURFACE. The substrate is unchanged. Against 0.3.0: the Worker takes
+``resume_from``, ``sources`` and ``save``, with the checkpoint recipe beside it;
+a launch takes its launcher's target record; the observer plane reads a lineage by
+a ``head``, with ``prefix_len``, ``prefix``, ``series``, ``last_element``,
+``aligned``, ``answers`` and ``streams``, and their held folds; the verdict's
+``Tier`` and ``DeathReport``; ``ensure`` returns ``Reached`` or ``Unreachable``.
+``progress`` and ``value_series`` are removed (§5).
 """
 
 import os
@@ -20,53 +23,102 @@ from .channel import (
     create_channel,
 )
 from .formats import LOG_FORMAT, LogFormatError, LogFormatMismatch, LogFormatMissing
+from .vocabulary.handle import handle_pid
+from .checkpoint import (
+    CheckpointChoice,
+    Every,
+    MostProgress,
+    NoSave,
+    OnHeadLineage,
+    SavePolicy,
+)
 from .launcher import (
+    ClaimAliveError,
+    Command,
+    Drivable,
     Launcher,
     LaunchHandle,
     LocalLauncher,
+    ReportStarvedError,
     ThreadLauncher,
+    ThreadTarget,
     ensure_served,
     relaunch_if_needed,
+    report_death,
+    report_if_dead,
 )
 from .memoizer import (
+    LiveHandle,
     NoProgressError,
+    Producer,
+    Reached,
     RecordlessExitError,
     RunFailedError,
+    Unreachable,
     ensure,
     foreign_episode,
     history,
     launch_producer,
 )
 from .observables import (
+    AlignedRow,
+    Answers,
+    AtNode,
+    Complete,
+    DeathReport,
+    Element,
+    Head,
+    HeadFold,
+    HeadStrategy,
+    LastElement,
+    LatestClaimHead,
+    LiveDemand,
     MalformedRecordError,
-    Outcome,
+    Pending,
+    PendingStops,
+    PrefixLen,
     RunResult,
+    SettledShort,
+    Streams,
+    Tier,
+    aligned,
+    answers,
     last_activity,
+    last_element,
     latest_episode,
     live_demand,
     live_episode,
     peek_terminal,
-    worker_completed,
-    progress,
+    prefix,
+    prefix_len,
+    series,
+    streams,
     undischarged_stops,
-    value_series,
+    worker_completed,
 )
-from .vocabulary.handle import handle_pid
-from .vocabulary.schedule import Condition
+from .vocabulary.coordinate import Commits, NodeRef, Target
 from .vocabulary.payloads import (
     Bound,
+    Commit,
+    Died,
     Heartbeat,
     Launched,
     Nak,
+    NakReason,
+    Node,
+    Outcome,
+    Reap,
+    Rewind,
     Started,
     Stopped,
     Terminated,
     Topic,
     Value,
+    Withdraw,
 )
-from .sweep import Variant, sweep
+from .vocabulary.schedule import Condition, MalformedSchedule
 from .watcher import Running, RunStatus, Watcher, await_consumed
-from .worker import Worker
+from .worker import Worker, WorkerStarvedError
 
 
 def current_channel(
@@ -81,12 +133,14 @@ def current_channel(
     launcher-less direct run still births its own log). Mirrors how the
     orchestrator named the run, so both ends meet on the same log.
     ``json_default`` is a sender-side ``json.dumps`` hook for coercing exotic
-    value payloads (e.g. numpy scalars / tensors) the worker reports.
+    value payloads (e.g. numpy scalars / tensors) the worker reports: an exempt
+    default (plan, "Exempt defaults"), since it encodes, and changes no record a
+    plain value would write.
 
     A launcher also sets ``RUNSTATE_LAUNCH_ID`` (the launch's correlation id);
     the ``Worker`` re-emits it on its ``lifecycle.started`` so its claim names
-    the launch it answers — read by ``vocabulary/launch.py``, not here, since it
-    identifies the *episode*, not the channel.
+    the launch it answers: read by ``vocabulary/launch.py``, not here, since it
+    identifies the claim, not the channel.
     """
     run_id = os.environ["RUNSTATE_RUN_ID"]
     root = os.environ.get("RUNSTATE_CHANNEL_ROOT")
@@ -95,64 +149,116 @@ def current_channel(
 
 
 __all__ = [
-    # substrate
+    # substrate, unchanged
     "attach_channel",
     "create_channel",
     "current_channel",
-    "RunNotFound",
     "LOG_FORMAT",
-    "LogFormatError",
-    "LogFormatMismatch",
-    "LogFormatMissing",
     "Channel",
     "Body",
     "Envelope",
-    # worker
+    # the worker and the checkpoint recipe
     "Worker",
-    # launchers
+    "SavePolicy",
+    "Every",
+    "NoSave",
+    "CheckpointChoice",
+    "OnHeadLineage",
+    "MostProgress",
+    "Commits",
+    "Target",
+    "NodeRef",
+    # launchers and death reports
     "Launcher",
     "LaunchHandle",
     "ThreadLauncher",
     "LocalLauncher",
-    # observables (the stateless observer plane) / orchestration
+    "ThreadTarget",
+    "Command",
+    "Drivable",
+    "relaunch_if_needed",
+    "ensure_served",
+    "report_death",
+    "report_if_dead",
+    # the observer plane and orchestration
     "Watcher",
     "await_consumed",
     "RunStatus",
     "Running",
     "RunResult",
     "Outcome",
-    "MalformedRecordError",
+    "Tier",
+    "DeathReport",
     "peek_terminal",
     "worker_completed",
     "last_activity",
     "latest_episode",
     "live_demand",
     "live_episode",
-    "progress",
     "undischarged_stops",
-    "value_series",
+    "Head",
+    "HeadStrategy",
+    "LatestClaimHead",
+    "AtNode",
+    "Element",
+    "Complete",
+    "Pending",
+    "SettledShort",
+    "AlignedRow",
+    "Streams",
+    "prefix_len",
+    "prefix",
+    "series",
+    "last_element",
+    "aligned",
+    "answers",
+    "streams",
+    "HeadFold",
+    "PrefixLen",
+    "LastElement",
+    "Answers",
+    "LiveDemand",
+    "PendingStops",
     "handle_pid",
-    "sweep",
-    "Variant",
+    # the memoizer
     "history",
     "ensure",
+    "Reached",
+    "Unreachable",
+    "Producer",
+    "LiveHandle",
     "launch_producer",
     "foreign_episode",
+    # the errors public calls raise
+    "RunNotFound",
+    "LogFormatError",
+    "LogFormatMismatch",
+    "LogFormatMissing",
+    "MalformedRecordError",
+    "MalformedSchedule",
+    "ClaimAliveError",
+    "ReportStarvedError",
+    "WorkerStarvedError",
     "RunFailedError",
     "NoProgressError",
     "RecordlessExitError",
-    "relaunch_if_needed",
-    "ensure_served",
-    # convention vocabulary
+    # the convention vocabulary and its typed bodies (serialize via
+    # dataclasses.asdict, parse via Cls(**body)), with their fields' enums
     "Topic",
     "Condition",
-    # convention bodies (typed; serialize via dataclasses.asdict, parse via Cls(**body))
     "Value",
     "Started",
+    "Commit",
     "Heartbeat",
+    "Rewind",
     "Stopped",
     "Bound",
     "Nak",
+    "NakReason",
+    "Withdraw",
     "Launched",
     "Terminated",
+    "Reap",
+    "Died",
+    "Node",
 ]

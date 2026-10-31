@@ -1,716 +1,475 @@
-"""Schema conformance (docs/design-v0.2.md §10).
+"""Schema conformance of what the staged live layer writes (docs/specs/commits-and-lineage.md
+§3, §10, "The schemas"; plan Task 16).
 
-Two guarantees:
-1. Every envelope the reference implementation emits validates against the
-   envelope schema AND its convention schema. We drive a scenario that exercises
-   *every* reserved topic, harvest the log, and validate each record.
-2. The constraints are load-bearing: representative malformed bodies are
-   rejected (additionalProperties, closed enums, count-only-in-until).
+Two guarantees, ported from ``tests/test_schema.py`` to log format 0.4.0:
+
+1. Every record the reference implementation writes validates against the 0.4.0
+   stack: the envelope schema and its topic's convention (``STACK_0_4_0``). A
+   scenario drives the staged Worker, the launchers and the death-report helper
+   through every reserved topic, harvests the logs, and validates each record; the
+   topics seen must be ``Topic``, or "everything validated" is hollow.
+2. The constraints are load-bearing. The 0.4.0 negative cases of §10 are
+   ``tests/test_schema_v0_4_0.py``'s (``test_malformed_record_is_refused``,
+   ``test_threshold_refuses_n_outside_the_range``); the 0.3.0 constraints its table
+   does not carry are ported here, in 0.4.0 terms.
 """
 
-import json
+import sys
 from dataclasses import asdict
-from pathlib import Path
 
 import pytest
 
-jsonschema = pytest.importorskip("jsonschema")
-from jsonschema import Draft202012Validator  # noqa: E402
+pytest.importorskip("jsonschema")
 
-from runstate import Topic  # noqa: E402
-from runstate.launcher import ThreadLauncher  # noqa: E402
+from runstate.checkpoint import NoSave  # noqa: E402
+from runstate.launcher import (  # noqa: E402
+    Command,
+    LocalLauncher,
+    ThreadLauncher,
+    ThreadTarget,
+    report_death,
+)
+from runstate.vocabulary.coordinate import Commits, Target  # noqa: E402
+from runstate.vocabulary.payloads import (  # noqa: E402
+    Bound,
+    Commit,
+    Died,
+    Heartbeat,
+    Launched,
+    Nak,
+    NakReason,
+    Outcome,
+    Reap,
+    Rewind,
+    Started,
+    Stopped,
+    Terminated,
+    Topic,
+    Value,
+    Withdraw,
+)
 from runstate.worker import Worker  # noqa: E402
-
-_PROTO = Path(__file__).resolve().parent.parent / "protocol"
-
-
-def _validator(name, version="v0.2"):
-    schema = json.loads((_PROTO / f"{name}-{version}.schema.json").read_text())
-    Draft202012Validator.check_schema(schema)
-    return Draft202012Validator(schema)
+from tests.test_schema_v0_4_0 import STACK_0_4_0, rec, record_errors  # noqa: E402
 
 
-ENVELOPE = _validator("envelope")
-CONVENTIONS = {
-    "control.": _validator("subscription", "v0.3"),
-    "lifecycle.": _validator("lifecycle", "v0.5"),  #  independently versioned
-    "launcher.": _validator(
-        "launcher", "v0.4"
-    ),  #    (each convention on its own timeline)
-    "value": _validator("value"),
-}
-
-ALL_RESERVED_TOPICS = {
-    "control.subscribe",
-    "control.unsubscribe",
-    "control.stop",
-    "lifecycle.started",
-    "lifecycle.heartbeat",
-    "lifecycle.stopped",
-    "lifecycle.nak",
-    "lifecycle.bound",
-    "launcher.launched",
-    "launcher.terminated",
-    "value",
-}
-
-
-def test_topic_enum_matches_reserved_set():
-    """Topic is the single source of the reserved routing keys: it must equal the
-    set the schema scenario emits (ALL_RESERVED_TOPICS), or the two drift."""
-    assert set(map(str, Topic)) == ALL_RESERVED_TOPICS
-
-
-def _convention_for(topic):
-    for prefix, v in CONVENTIONS.items():
-        if topic == prefix or topic.startswith(prefix):
-            return v
-    raise AssertionError(f"no convention schema for topic {topic!r}")
-
-
-def _worker_main(channel):
-    with Worker(channel) as w:
-        for step in w.steps(total=10):
-            w.set("loss", 1.0 / (step + 1))
-
-
-def test_every_emitted_envelope_conforms(tmp_path):
-    launcher = ThreadLauncher(root=tmp_path)
-    obs = launcher.create_channel("run")
-    # pre-stage control so the worker drains it on its first tick:
-    obs.send(
-        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="ok"
-    )
-    obs.send(
-        {"until": {"count": 0}},
-        topic="control.subscribe",
-        name="loss",
-        request_id="bad",
-    )  # -> nak
-    obs.send(
-        {"every": {"step": 1}, "until": {"count": 2}},
-        topic="control.subscribe",
-        name="loss",
-        request_id="lease",
-    )  # episode-local (a count atom) -> the worker binds it: lifecycle.bound
-    obs.send(
-        {}, topic="control.subscribe", name="loss", request_id="once"
-    )  # one-shot ->
-    # the worker writes its expiry counter-record (a WORKER-authored
-    # control.unsubscribe -- specs/service-worker.md), validated like any other
-    obs.send({}, topic="control.unsubscribe", request_id="gone")
-    obs.send({"from": {"step": 2}}, topic="control.stop", request_id="stop")
-
-    launcher.launch("run", _worker_main).wait()
-
-    envelopes = obs.read()
-    assert any(
-        e.topic == "control.unsubscribe" and e.request_id == "once" for e in envelopes
-    )  #  the worker-written expiry record is on the log
-    seen = set()
-    for e in envelopes:
-        record = asdict(e)
-        ENVELOPE.validate(record)
-        _convention_for(e.topic).validate(record)
-        seen.add(e.topic)
-
-    # the scenario must actually exercise the whole reserved vocabulary,
-    # else "everything validated" is hollow
-    assert seen == ALL_RESERVED_TOPICS
-
-
-# ----- emitted-bytes positives the scenario doesn't reach -----
-# (focused: some need a log the validate-everything harvest can't hold, e.g. a
-# deliberately malformed orchestrator record to provoke the nak)
-
-
-def _open_memory(run_id):
-    from runstate.channel import create_channel
-
-    return create_channel(run_id, root=None, backend="memory")
-
-
-def _validate(envelope):
-    record = asdict(envelope)
-    ENVELOPE.validate(record)
-    _convention_for(envelope.topic).validate(record)
-
-
-def test_emitted_killed_terminated_conforms(tmp_path):
-    # the real reap path: SIGTERM a child -> Terminated(killed, signal=15)
-    import sys
-
-    from runstate.launcher import LocalLauncher
-
-    launcher = LocalLauncher(root=tmp_path)
-    h = launcher.launch("victim", [sys.executable, "-c", "import time; time.sleep(60)"])
-    h.terminate()
-    h.wait()
-    term = h.channel.latest("launcher.terminated")
-    assert term.body["reason"] == "killed"
-    _validate(term)
-
-
-def test_emitted_stepless_heartbeat_and_value_conform():
-    # the serve() stepless path: a null-step heartbeat and a null-step value
-    ch = _open_memory("stepless")
-    ch.send({}, topic="control.subscribe", name="loss", request_id="r")
-    w = Worker(ch, now=lambda: 0.0)
-    w.set("loss", 1.0)
-    w.tick(step=None)
-    hb = ch.latest("lifecycle.heartbeat")
-    val = ch.latest("value", "loss")
-    assert hb.body["step"] is None and val.body["step"] is None
-    _validate(hb)
-    _validate(val)
-
-
-def test_emitted_broadcast_value_via_emit_conforms():
-    # Worker.emit: the unconditional broadcast point -- request_id=None,
-    # stamped with the worker's current step and clock.
-    ch = _open_memory("emit")
-    w = Worker(ch, now=lambda: 1.5)
-    w.tick(step=2)
-    w.emit("loss", 0.25)
-    val = ch.latest("value", "loss")
-    assert val.request_id is None
-    assert val.body == {"value": 0.25, "step": 2, "t": 1.5}
-    _validate(val)
-
-
-def test_emitted_completed_stopped_conforms():
-    ch = _open_memory("done")
-    w = Worker(ch, now=lambda: 0.0)
-    w.stopped(completed=True, final_step=3)
-    stopped = ch.latest("lifecycle.stopped")
-    assert stopped.body["completed"] is True
-    _validate(stopped)
-
-
-def test_emitted_malformed_and_unsupported_naks_conform():
-    # the two nak reasons the scenario doesn't reach (its "bad" subscribe is
-    # unsatisfiable): the structural gate's refusal and the unknown verb
-    ch = _open_memory("naks")
-    ch.send(
-        {"frm": {"step": 1}}, topic="control.subscribe", name="loss", request_id="bad"
-    )
-    ch.send({}, topic="control.frobnicate", request_id="odd")
-    w = Worker(ch, now=lambda: 0.0)
-    w.tick(step=0)
-    naks = ch.read(topics=["lifecycle.nak"])
-    assert {e.body["reason"] for e in naks} == {"malformed", "unsupported"}
-    for e in naks:
-        _validate(e)
-
-
-# ----- the constraints are load-bearing -----
-
-
-def _env(topic, body, **extra):
+def _record(e):
     return {
-        "seq": 1,
-        "topic": topic,
-        "name": None,
-        "request_id": None,
-        "body": body,
-        **extra,
+        "seq": e.seq,
+        "topic": e.topic,
+        "name": e.name,
+        "request_id": e.request_id,
+        "body": e.body,
     }
 
 
-def test_envelope_rejects_unknown_top_level_field():
-    with pytest.raises(jsonschema.ValidationError):
-        ENVELOPE.validate(_env("value", {"value": 1}, surprise=True))
+def _thread(fn):
+    return ThreadTarget(fn, args=(), kwargs={})
 
 
-def test_envelope_requires_seq_topic_body():
-    for missing in ("seq", "topic", "body"):
-        record = _env("value", {"value": 1})
-        del record[missing]
-        with pytest.raises(jsonschema.ValidationError):
-            ENVELOPE.validate(record)
+def _send(ch, topic, body, *, name=None, request_id=None):
+    ch.send(body, topic=topic, name=name, request_id=request_id)
 
 
-def test_envelope_structural_constraints():
-    with pytest.raises(jsonschema.ValidationError):
-        ENVELOPE.validate({**_env("value", {"value": 1}), "seq": 0})  # seq starts at 1
-    with pytest.raises(jsonschema.ValidationError):
-        ENVELOPE.validate(
-            _env("", {"value": 1})
-        )  #                    empty-string topic
-    with pytest.raises(jsonschema.ValidationError):
-        ENVELOPE.validate({**_env("value", {}), "body": [1]})  #        non-object body
+# ----- the scenario -------------------------------------------------------------------
 
 
-def test_lifecycle_stopped_rejects_extra_body_field():
-    bad = _env(
-        "lifecycle.stopped",
-        {
-            "completed": True,
-            "error": None,
-            "final_step": None,
-            "claim_seq": None,
-            "honored": [],
-            "oops": 1,
-            "t": 0.0,
-        },
+def _main(ch):
+    """Emits, sets, commits, heartbeats, rewinds once, and exits preempted when the
+    pre-staged stop's ``from`` holds, honoring it."""
+    with Worker(ch, resume_from=None, sources=["lr"], save=NoSave()) as w:
+        w.set("lr", 0.1)
+        rewound = False
+        for i in w.steps(None):
+            w.emit("loss", 1.0 / (i + 1))
+            w.set("lr", 0.1 / (i + 1))
+            if i == 1:
+                w.heartbeat()
+            if i == 2 and not rewound:
+                rewound = True
+                w.rewind(None)
+
+
+def _errors(ch):
+    with Worker(ch, resume_from=None, sources=[], save=NoSave()) as w:
+        for _ in w.steps(Target(Commits(), 2)):
+            raise RuntimeError("boom")
+
+
+def _discards(ch):
+    with Worker(ch, resume_from=None, sources=[], save=NoSave()) as w:
+        w.commit()
+        w.emit("loss", 0.5)
+        w.discard()
+
+
+def _completes(ch):
+    with Worker(ch, resume_from=None, sources=[], save=NoSave()) as w:
+        for i in w.steps(Target(Commits(), 2)):
+            w.emit("loss", float(i))
+        w.stopped(completed=True, error=None)
+
+
+def test_the_scenario_emits_every_reserved_topic_and_each_record_conforms():
+    """A ``ThreadLauncher`` run of the staged Worker, pre-staged with a source
+    subscription, a malformed one the schema admits (a pure demand with an
+    ``every``, which §3 refuses: ``nak``), a lease (``bound``), a pure demand, a
+    stop with a ``from`` and a withdrawal; the target emits, sets, commits,
+    heartbeats, rewinds and exits. A second run errors, a third discards and exits,
+    a fourth completes, and ``report_death`` ends a fifth's held claim
+    (``died``). Every record validates against ``STACK_0_4_0``, and the topics seen
+    are ``Topic``."""
+    launcher = ThreadLauncher()
+    main = launcher.create_channel("main")
+    _send(
+        main,
+        Topic.CONTROL_SUBSCRIBE,
+        {"every": {"commits": 1}},
+        name="lr",
+        request_id="src",
     )
-    with pytest.raises(jsonschema.ValidationError):
-        CONVENTIONS["lifecycle."].validate(bad)
-
-
-# ----- present-nullable: incidentally-optional fields are required (nullable),
-# never omittable (a uniform key set for consumers) -----
-
-
-def test_value_step_is_present_nullable():
-    V = CONVENTIONS["value"]
-    V.validate(_env("value", {"value": 1, "step": 5, "t": 0.0}))
-    V.validate(
-        _env("value", {"value": 1, "step": None, "t": 0.0})
-    )  # null when stepless
-    with pytest.raises(jsonschema.ValidationError):
-        V.validate(_env("value", {"value": 1}))  # step omitted -> rejected
-
-
-def test_value_t_is_present_nullable():
-    V = CONVENTIONS["value"]
-    V.validate(
-        _env("value", {"value": 1, "step": 0, "t": 2.5})
-    )  #  a stamped wall-clock value
-    V.validate(
-        _env("value", {"value": 1, "step": 0, "t": None})
-    )  # unstamped (real-time axis off)
-    with pytest.raises(jsonschema.ValidationError):
-        V.validate(_env("value", {"value": 1, "step": 0}))  # t omitted -> rejected
-
-
-def test_value_wrapper_is_closed_and_requires_value():
-    V = CONVENTIONS["value"]
-    for bad in (
-        {"value": 1, "step": 0, "t": 0.0, "oops": 1},  # extra field
-        {"step": 0, "t": 0.0},
-    ):  #                       "value" key missing
-        with pytest.raises(jsonschema.ValidationError):
-            V.validate(_env("value", bad))
-
-
-def test_heartbeat_body_is_pinned():
-    L = CONVENTIONS["lifecycle."]
-    L.validate(
-        _env(
-            "lifecycle.heartbeat",
-            {"step": None, "consumed_seq": 0, "claim_seq": 1, "t": 0.0},
-        )
-    )  # stepless
-    for bad in (
-        {"step": 1},  #                                 consumed_seq missing
-        {
-            "consumed_seq": 0,
-            "claim_seq": 1,
-            "t": 0.0,
-        },  #                         step omitted (present-nullable)
-        {"step": 1, "consumed_seq": -1, "claim_seq": 1, "t": 0.0},  # negative watermark
-        {"step": 1, "consumed_seq": 0, "t": 0.0},  #              claim_seq omitted
-        {"step": 1, "consumed_seq": 0, "claim_seq": None, "t": 0.0},  # never null
-        {"step": 1, "consumed_seq": 0, "claim_seq": 0, "t": 0.0},  # seqs start at 1
-        {"step": 1, "consumed_seq": 0, "claim_seq": 1, "extra": 1, "t": 0.0},
-    ):  # extra field
-        with pytest.raises(jsonschema.ValidationError):
-            L.validate(_env("lifecycle.heartbeat", bad))
-
-
-def test_stopped_error_and_final_step_present_nullable():
-    L = CONVENTIONS["lifecycle."]
-    L.validate(
-        _env(
-            "lifecycle.stopped",
-            {
-                "completed": True,
-                "error": None,
-                "final_step": None,
-                "claim_seq": None,
-                "honored": [],
-                "t": 0.0,
-            },
-        )
+    # a pure demand with an every: the schema admits it, and §3 refuses it (nak)
+    _send(main, Topic.CONTROL_SUBSCRIBE, {"every": {"commits": 1}}, request_id="bad")
+    lease = {"every": {"commits": 2}, "until": {"time_seconds": 3600}}
+    _send(main, Topic.CONTROL_SUBSCRIBE, lease, name="lr", request_id="lease")
+    _send(main, Topic.CONTROL_SUBSCRIBE, {"until": {"commits": 100}}, request_id="pure")
+    _send(
+        main,
+        Topic.CONTROL_SUBSCRIBE,
+        {"every": {"commits": 1}},
+        name="lr",
+        request_id="gone",
     )
-    L.validate(
-        _env(
-            "lifecycle.stopped",
-            {
-                "completed": False,
-                "error": "boom",
-                "final_step": 5,
-                "claim_seq": 2,
-                "honored": ["s1"],
-                "t": 0.0,
-            },
-        )
-    )
-    base = {
-        "completed": True,
-        "error": None,
-        "final_step": None,
-        "claim_seq": None,
-        "honored": [],
-        "t": 0.0,
-    }
-    for omitted in ("error", "final_step", "claim_seq", "honored"):
-        missing = {k: v for k, v in base.items() if k != omitted}
-        with pytest.raises(jsonschema.ValidationError):
-            L.validate(_env("lifecycle.stopped", missing))
-    for bad in (
-        {"honored": ["s1", "s1"]},  #  unique request_ids
-        {"honored": [1]},  #           strings only
-        {"honored": None},  #          an array, never null
-        {"claim_seq": 0},  #           seqs start at 1
+    _send(main, Topic.CONTROL_WITHDRAW, asdict(Withdraw(t=1.0)), request_id="gone")
+    _send(main, Topic.CONTROL_STOP, {"from": {"commits": 3}}, request_id="halt")
+    for run_id, fn in (
+        ("main", _main),
+        ("errors", _errors),
+        ("discards", _discards),
+        ("completes", _completes),
     ):
-        with pytest.raises(jsonschema.ValidationError):
-            L.validate(_env("lifecycle.stopped", {**base, **bad}))
+        launcher.launch(run_id, _thread(fn)).wait()
 
+    reported = launcher.create_channel("reported")
+    w = Worker(reported, resume_from=None, sources=[], save=NoSave())
+    claim = reported.latest(Topic.LIFECYCLE_STARTED).seq
+    assert report_death(
+        reported, claim, outcome=Outcome.KILLED, evidence="slurm:TIMEOUT", force=True
+    )
+    assert w.commit() is True and w.released  # it reads the report and fences
 
-def test_stopped_rejects_completed_with_error():
-    # The if-then schema constraint: completed=true => error must be null
-    L = CONVENTIONS["lifecycle."]
-    with pytest.raises(jsonschema.ValidationError):
-        L.validate(
-            _env(
-                "lifecycle.stopped",
-                {
-                    "completed": True,
-                    "error": "x",
-                    "final_step": None,
-                    "claim_seq": None,
-                    "honored": [],
-                    "t": 0.0,
-                },
-            )
-        )
-
-
-def test_started_t_required_non_null_and_hostname_gone():
-    # observer-clock: attached_at renamed to t, made REQUIRED NON-NULL (harmonized
-    # with the other lifecycle event records). A null or omitted t is rejected; a
-    # hostname key stays an unknown field (additionalProperties pins the old removal).
-    L = CONVENTIONS["lifecycle."]
-    L.validate(_env("lifecycle.started", {"handle": "local://h/1", "t": 1.5}))
-    for bad in (
-        {"handle": "local://h/1", "t": None},  #          t null -> now invalid
-        {"handle": "local://h/1"},  #                     t omitted
-        {"handle": "local://h/1", "hostname": None, "t": 0.0},
-    ):  #                                   the removed field
-        with pytest.raises(jsonschema.ValidationError):
-            L.validate(_env("lifecycle.started", bad))
-
-
-def test_started_requires_handle():
-    with pytest.raises(jsonschema.ValidationError):
-        CONVENTIONS["lifecycle."].validate(_env("lifecycle.started", {"t": 0.0}))
-
-
-def test_nak_requires_reason_and_message():
-    L = CONVENTIONS["lifecycle."]
-    for bad in ({"reason": "malformed"}, {"message": "x"}):
-        with pytest.raises(jsonschema.ValidationError):
-            L.validate(_env("lifecycle.nak", bad))
-
-
-def test_convention_dataclasses_serialize_to_schema_valid_bodies():
-    # the frozen body dataclasses are the Python mirror of the schemas; their
-    # asdict() must validate, so the two encodings can't drift.
-    from dataclasses import asdict
-
-    from runstate.vocabulary import payloads
-
-    bodies = [
-        payloads.Value(value=0.5, step=10, t=0.0),
-        payloads.Started(handle="local://h/1", t=0.0),
-        payloads.Heartbeat(step=7, consumed_seq=3, claim_seq=1, t=0.0),
-        payloads.Stopped(
-            completed=True,
-            error=None,
-            final_step=9,
-            claim_seq=1,
-            honored=["s1"],
-            t=0.0,
-        ),
-        payloads.Bound(claim_seq=1),
-        payloads.Nak(reason="malformed", message="x"),
-        payloads.Launched(handle="local://h/1", t=0.0),
-        payloads.Terminated(reason="exited", exit_code=0, signal=None, t=0.0),
-        payloads.Terminated(reason="killed", signal=9, exit_code=None, t=0.0),
+    records = []
+    for run_id in ("main", "errors", "discards", "completes", "reported"):
+        records += launcher.attach_channel(run_id).read()
+    bad = {
+        (e.topic, e.seq): errs for e in records if (errs := record_errors(_record(e)))
+    }
+    assert bad == {}
+    assert {e.topic for e in records} == set(Topic)
+    naks = [e for e in records if e.topic == Topic.LIFECYCLE_NAK]
+    assert [(e.request_id, e.body["reason"]) for e in naks] == [("bad", "malformed")]
+    stops = [
+        e.body
+        for e in launcher.attach_channel("main").read(topics=[Topic.LIFECYCLE_STOPPED])
     ]
-    for body in bodies:
-        topic = type(body).TOPIC
-        # launcher-v0.3 requires the launch's correlation id on the envelope
-        extra = (
-            {"request_id": "L1"}
-            if topic.startswith("launcher.") or topic == "lifecycle.bound"
-            else {}
-        )
-        _convention_for(topic).validate(_env(topic, asdict(body), **extra))
+    assert [s["honored"] for s in stops] == [["halt"]]
 
 
-def test_launcher_launched_rejects_unknown_status():
-    bad = _env(
-        "launcher.launched",
-        {"handle": "local://h/1", "status": "intended"},
-        request_id="L1",
+# ----- what the scenario does not reach ------------------------------------------------
+
+
+def test_an_emitted_killed_terminated_conforms(tmp_path):
+    """The real reap path: a child killed by ``SIGTERM`` writes ``terminated`` with
+    its signal."""
+    with LocalLauncher(root=tmp_path) as launcher:
+        cmd = Command([sys.executable, "-c", "import time; time.sleep(60)"], env={})
+        h = launcher.launch("victim", cmd)
+        h.terminate()
+        h.wait()
+    term = launcher.attach_channel("victim").latest(Topic.SUPERVISOR_TERMINATED)
+    assert term.body["reason"] == "killed"
+    assert record_errors(_record(term)) == []
+
+
+def test_every_nak_reason_the_worker_writes_conforms(tmp_path):
+    """The Worker's three refusals: a malformed schedule, an unsatisfiable one (a
+    target that is no source), and an unknown control verb."""
+    ch = ThreadLauncher(root=tmp_path).create_channel("naks")
+    _send(
+        ch, Topic.CONTROL_SUBSCRIBE, {"frm": {"commits": 1}}, name="lr", request_id="a"
     )
-    with pytest.raises(jsonschema.ValidationError):
-        CONVENTIONS["launcher."].validate(bad)
-
-
-def test_subscription_rejects_count_outside_until():
-    # `count` is a fire budget, valid only in `until` (§6) -- not in `from`
-    bad = _env("control.subscribe", {"from": {"count": 5}}, request_id="r")
-    with pytest.raises(jsonschema.ValidationError):
-        CONVENTIONS["control."].validate(bad)
-    # but count IS allowed in until
-    CONVENTIONS["control."].validate(
-        _env("control.subscribe", {"until": {"count": 5}}, request_id="r")
+    _send(
+        ch,
+        Topic.CONTROL_SUBSCRIBE,
+        {"every": {"commits": 1}},
+        name="nope",
+        request_id="b",
     )
+    _send(ch, "control.frobnicate", {}, request_id="c")
+    w = Worker(ch, resume_from=None, sources=["lr"], save=NoSave())
+    w.commit()
+    naks = ch.read(topics=[Topic.LIFECYCLE_NAK])
+    assert {e.body["reason"] for e in naks} == set(NakReason)
+    assert [record_errors(_record(e)) for e in naks] == [[], [], []]
 
 
-def test_count_grammar_recurses_with_its_slot():
-    # UntilCondition's any/all recurse into UntilCondition, so a nested count
-    # is grammatical in `until` -- while Condition's recurse count-free.
-    C = CONVENTIONS["control."]
-    C.validate(
-        _env(
-            "control.subscribe",
-            {"until": {"any": [{"count": 3}, {"step": 10}]}},
-            request_id="r",
-        )
-    )
-    with pytest.raises(jsonschema.ValidationError):
-        C.validate(
-            _env(
-                "control.subscribe",
-                {"from": {"any": [{"count": 3}, {"step": 10}]}},
-                request_id="r",
-            )
-        )
-    with pytest.raises(jsonschema.ValidationError):
-        C.validate(_env("control.subscribe", {"every": {"count": 2}}, request_id="r"))
-
-
-def test_condition_grammar_rejects_junk():
-    C = CONVENTIONS["control."]
-    for bad in (
-        {"from": {"frobnicate": 1}},  #       unknown atom
-        {"every": {"any": []}},  #            minItems 1
-        {"every": {"all": []}},
-        {"from": {"step": -1}},  #            thresholds are >= 0
-        {"from": {"time_seconds": -1}},
-    ):
-        with pytest.raises(jsonschema.ValidationError):
-            C.validate(_env("control.subscribe", bad, request_id="r"))
-
-
-def test_lifecycle_rejects_unknown_subtopic():
-    with pytest.raises(jsonschema.ValidationError):
-        CONVENTIONS["lifecycle."].validate(_env("lifecycle.bogus", {}))
-
-
-def test_control_and_launcher_reject_unknown_subtopics():
-    with pytest.raises(jsonschema.ValidationError):
-        CONVENTIONS["control."].validate(_env("control.bogus", {}))
-    with pytest.raises(jsonschema.ValidationError):
-        CONVENTIONS["launcher."].validate(_env("launcher.bogus", {}, request_id="L1"))
-
-
-def test_control_stop_takes_only_from():
-    C = CONVENTIONS["control."]
-    C.validate(_env("control.stop", {}, request_id="s"))  # stop now
-    C.validate(
-        _env("control.stop", {"from": {"step": 100}}, request_id="s")
-    )  # stop at step 100
-    for bad in ({"every": {"step": 1}}, {"until": {"count": 5}}):
-        with pytest.raises(jsonschema.ValidationError):
-            C.validate(_env("control.stop", bad, request_id="s"))
-
-
-def test_well_known_body_shapes_validate():
-    # positive coverage for shapes the emitted-bytes scenario doesn't reach
-    CONVENTIONS["launcher."].validate(
-        _env(
-            "launcher.terminated",
-            {"reason": "killed", "signal": 9, "exit_code": None, "t": 0.0},
-            request_id="L1",
-        )
-    )
-    for reason in ("malformed", "unsatisfiable", "unsupported"):
-        CONVENTIONS["lifecycle."].validate(
-            _env("lifecycle.nak", {"reason": reason, "message": "x"}, request_id="r")
-        )
-
-
-def test_nak_reason_is_a_closed_enum():
-    ok = _env("lifecycle.nak", {"reason": "unsupported", "message": "x"})
-    CONVENTIONS["lifecycle."].validate(ok)
-    bad = _env("lifecycle.nak", {"reason": "whatever", "message": "x"})
-    with pytest.raises(jsonschema.ValidationError):
-        CONVENTIONS["lifecycle."].validate(bad)
-
-
-def test_envelope_rejects_empty_string_ids():
-    for field in ("name", "request_id"):
-        with pytest.raises(jsonschema.ValidationError):
-            ENVELOPE.validate(_env("value", {"value": 1}, **{field: ""}))
-
-
-def test_terminated_rejects_negative_exit_code():
-    bad = _env(
-        "launcher.terminated",
-        {"reason": "exited", "exit_code": -1, "signal": None, "t": 0.0},
-        request_id="L1",
-    )
-    with pytest.raises(jsonschema.ValidationError):
-        CONVENTIONS["launcher."].validate(bad)
-
-
-def test_terminated_rejects_signal_zero():
-    # signal numbers start at 1; "killed by signal 0" is not a manner of death
-    bad = _env(
-        "launcher.terminated",
-        {"reason": "killed", "signal": 0, "exit_code": None, "t": 0.0},
-        request_id="L1",
-    )
-    with pytest.raises(jsonschema.ValidationError):
-        CONVENTIONS["launcher."].validate(bad)
-
-
-def test_terminated_enforces_reason_field_pairing():
-    L = CONVENTIONS["launcher."]
-    # present-nullable + reason-coupled: every key present; the inapplicable one null
-    L.validate(
-        _env(
-            "launcher.terminated",
-            {"reason": "exited", "exit_code": 0, "signal": None, "t": 0.0},
-            request_id="L1",
-        )
-    )
-    L.validate(
-        _env(
-            "launcher.terminated",
-            {"reason": "killed", "signal": 9, "exit_code": None, "t": 0.0},
-            request_id="L1",
-        )
-    )
-    for bad in (
-        {
-            "reason": "exited",
-            "exit_code": 0,
-            "signal": 9,
-            "t": 0.0,
-        },  #       exited: signal must be null
-        {
-            "reason": "killed",
-            "signal": 9,
-            "exit_code": 5,
-            "t": 0.0,
-        },  #       killed: exit_code must be null
-        {
-            "reason": "exited",
-            "exit_code": None,
-            "signal": None,
-            "t": 0.0,
-        },  # exited needs a non-null exit_code
-        {
-            "reason": "killed",
-            "exit_code": None,
-            "signal": None,
-            "t": 0.0,
-        },  # killed needs a non-null signal
-        {
-            "reason": "exited",
-            "exit_code": 0,
-            "t": 0.0,
-        },  #                    signal key missing (not omittable)
-        {
-            "reason": "killed",
-            "signal": 9,
-            "t": 0.0,
-        },  #                       exit_code key missing
-    ):
-        with pytest.raises(jsonschema.ValidationError):
-            L.validate(_env("launcher.terminated", bad, request_id="L1"))
-
-
-def test_launcher_records_must_name_their_launch():
-    # launcher-v0.3: the envelope's request_id is the launch's correlation id,
-    # REQUIRED on both records. A death record that names no launch is
-    # unattributable -- it asserts the unknowable "the run is dead" instead of
-    # "my launch ended", and a late or losing launch's death then forges a live
-    # episode's verdict (docs/specs/launcher-record-identity.md).
-    L = CONVENTIONS["launcher."]
-    for topic, body in (
-        ("launcher.launched", {"handle": "local://h/1", "status": "running", "t": 0.0}),
+def test_the_typed_bodies_serialize_to_schema_valid_records():
+    """The frozen bodies mirror the schemas: each one's ``asdict``, under the
+    envelope its topic requires, validates, so the two encodings cannot drift."""
+    bodies = [
+        (Value(value=0.5, t=0.0), {"name": "loss"}),
+        (Value(value=0.5, t=None), {"name": "loss"}),
+        (Started(handle="local://h/1", t=0.0, resume_from=None, sources=["lr"]), {}),
         (
-            "launcher.terminated",
-            {"reason": "exited", "exit_code": 0, "signal": None, "t": 0.0},
+            Commit(
+                claim_seq=1,
+                consumed_seq=0,
+                parent=None,
+                values=[2],
+                fired=["r"],
+                expired=[],
+                t=0.0,
+            ),
+            {},
         ),
+        (Heartbeat(claim_seq=1, consumed_seq=3, t=0.0), {}),
+        (Rewind(claim_seq=1, resume_from=None, t=0.0), {}),
+        (
+            Stopped(
+                completed=True,
+                error=None,
+                claim_seq=1,
+                honored=["s"],
+                parent=3,
+                values=[],
+                fired=[],
+                expired=[],
+                t=0.0,
+            ),
+            {},
+        ),
+        (Bound(claim_seq=1), {"request_id": "lease"}),
+        (Nak(reason=NakReason.MALFORMED, message="x"), {"request_id": "r"}),
+        (Withdraw(t=0.0), {"request_id": "r"}),
+        (Launched(handle="local://h/1", status="running", t=0.0), {"request_id": "L1"}),
+        (
+            Terminated(reason=Reap.EXITED, exit_code=0, signal=None, t=0.0),
+            {"request_id": "L1"},
+        ),
+        (
+            Terminated(reason=Reap.KILLED, exit_code=None, signal=9, t=0.0),
+            {"request_id": "L1"},
+        ),
+        (Died(claim_seq=1, outcome=Outcome.LOST, evidence="probe: x", t=0.0), {}),
+    ]
+    for body, envelope in bodies:
+        assert record_errors(rec(type(body).TOPIC, asdict(body), **envelope)) == []
+
+
+# ----- the envelope ------------------------------------------------------------------
+
+
+def _envelope_errors(record):
+    return list(STACK_0_4_0.envelope.iter_errors(record))
+
+
+def test_the_envelope_is_closed_and_requires_seq_topic_and_body():
+    assert _envelope_errors(rec("value", {"value": 1, "t": None}, name="x")) == []
+    assert _envelope_errors({**rec("value", {}), "surprise": True})
+    for missing in ("seq", "topic", "body"):
+        record = rec("value", {})
+        del record[missing]
+        assert _envelope_errors(record), missing
+
+
+def test_the_envelopes_structural_constraints():
+    """Seqs start at 1, a topic is non-empty, a body is an object, and an id is never
+    the empty string."""
+    for bad in (
+        {**rec("value", {}), "seq": 0},
+        rec("", {}),
+        {**rec("value", {}), "body": [1]},
+        rec("value", {}, name=""),
+        rec("value", {}, request_id=""),
     ):
-        L.validate(_env(topic, body, request_id="L1"))
-        with pytest.raises(jsonschema.ValidationError):
-            L.validate(_env(topic, body))  #                 request_id: null
-    # the id is NOT required elsewhere: a hand-run worker's claim names no launch
-    CONVENTIONS["lifecycle."].validate(
-        _env("lifecycle.started", {"handle": "local://h/1", "t": 0.0})
-    )
+        assert _envelope_errors(bad), bad
 
 
-def test_subscribe_requires_request_id():
-    schedule = {"every": {"step": 1}}
-    # present -> ok
-    CONVENTIONS["control."].validate(
-        {
-            "seq": 1,
-            "topic": "control.subscribe",
-            "name": "loss",
-            "request_id": "r",
-            "body": schedule,
-        }
-    )
-    # missing/null -> rejected (subscribe/unsubscribe are correlated ops)
-    with pytest.raises(jsonschema.ValidationError):
-        CONVENTIONS["control."].validate(
-            {
-                "seq": 1,
-                "topic": "control.subscribe",
-                "name": "loss",
-                "request_id": None,
-                "body": schedule,
-            }
+# ----- the 0.3.0 constraints test_schema_v0_4_0.py's table does not carry --------------
+
+_HEARTBEAT = {"claim_seq": 1, "consumed_seq": 0, "t": 0.0}
+_STOPPED = {
+    "completed": False,
+    "error": None,
+    "claim_seq": 1,
+    "honored": [],
+    "parent": None,
+    "values": [],
+    "fired": [],
+    "expired": [],
+    "t": 0.0,
+}
+_STARTED = {"handle": "local://h/1", "t": 1.5, "resume_from": None, "sources": []}
+_EXITED = {"reason": "exited", "exit_code": 0, "signal": None, "t": 0.0}
+_KILLED = {"reason": "killed", "exit_code": None, "signal": 9, "t": 0.0}
+
+
+def _without(body, key):
+    return {k: v for k, v in body.items() if k != key}
+
+
+REFUSED = {
+    # value-v0.3
+    "value with an extra field": rec(
+        "value", {"value": 1, "t": 0.0, "oops": 1}, name="x"
+    ),
+    "value without its value": rec("value", {"t": 0.0}, name="x"),
+    # lifecycle-v0.6: the heartbeat
+    "heartbeat without consumed_seq": rec(
+        "lifecycle.heartbeat", _without(_HEARTBEAT, "consumed_seq")
+    ),
+    "heartbeat with a negative watermark": rec(
+        "lifecycle.heartbeat", {**_HEARTBEAT, "consumed_seq": -1}
+    ),
+    "heartbeat without claim_seq": rec(
+        "lifecycle.heartbeat", _without(_HEARTBEAT, "claim_seq")
+    ),
+    "heartbeat with a null claim_seq": rec(
+        "lifecycle.heartbeat", {**_HEARTBEAT, "claim_seq": None}
+    ),
+    "heartbeat with claim_seq 0": rec(
+        "lifecycle.heartbeat", {**_HEARTBEAT, "claim_seq": 0}
+    ),
+    "heartbeat with an extra field": rec(
+        "lifecycle.heartbeat", {**_HEARTBEAT, "extra": 1}
+    ),
+    # the exit: every field present, honored a set of non-empty ids
+    **{
+        f"stopped without {k}": rec("lifecycle.stopped", _without(_STOPPED, k))
+        for k in ("error", "claim_seq", "honored", "values", "fired", "expired", "t")
+    },
+    "stopped honoring an id twice": rec(
+        "lifecycle.stopped", {**_STOPPED, "honored": ["s", "s"]}
+    ),
+    "stopped honoring a non-string": rec(
+        "lifecycle.stopped", {**_STOPPED, "honored": [1]}
+    ),
+    "stopped with a null honored": rec(
+        "lifecycle.stopped", {**_STOPPED, "honored": None}
+    ),
+    "stopped with claim_seq 0": rec("lifecycle.stopped", {**_STOPPED, "claim_seq": 0}),
+    # the claim: t required and non-null, handle required, hostname gone
+    "started with a null t": rec("lifecycle.started", {**_STARTED, "t": None}),
+    "started without t": rec("lifecycle.started", _without(_STARTED, "t")),
+    "started with a hostname": rec("lifecycle.started", {**_STARTED, "hostname": None}),
+    "started without handle": rec("lifecycle.started", _without(_STARTED, "handle")),
+    # the refusal: a closed reason, a message
+    "nak without message": rec(
+        "lifecycle.nak", {"reason": "malformed"}, request_id="r"
+    ),
+    "nak without reason": rec("lifecycle.nak", {"message": "x"}, request_id="r"),
+    "nak with an unknown reason": rec(
+        "lifecycle.nak", {"reason": "whatever", "message": "x"}, request_id="r"
+    ),
+    # the binding: an id and a claim
+    "bound without request_id": rec("lifecycle.bound", {"claim_seq": 3}),
+    "bound without claim_seq": rec("lifecycle.bound", {}, request_id="lease"),
+    "bound with a null claim_seq": rec(
+        "lifecycle.bound", {"claim_seq": None}, request_id="lease"
+    ),
+    "bound with claim_seq 0": rec(
+        "lifecycle.bound", {"claim_seq": 0}, request_id="lease"
+    ),
+    "bound with an extra field": rec(
+        "lifecycle.bound", {"claim_seq": 1, "x": 1}, request_id="lease"
+    ),
+    # supervisor-v0.5
+    "launched with an unknown status": rec(
+        "supervisor.launched",
+        {"handle": "local://h/1", "status": "intended", "t": 0.0},
+        request_id="L1",
+    ),
+    "terminated without request_id": rec("supervisor.terminated", _EXITED),
+    "terminated with a negative exit code": rec(
+        "supervisor.terminated", {**_EXITED, "exit_code": -1}, request_id="L1"
+    ),
+    "terminated killed by signal 0": rec(
+        "supervisor.terminated", {**_KILLED, "signal": 0}, request_id="L1"
+    ),
+    "terminated killed with an exit code": rec(
+        "supervisor.terminated", {**_KILLED, "exit_code": 5}, request_id="L1"
+    ),
+    "terminated exited with a null exit code": rec(
+        "supervisor.terminated", {**_EXITED, "exit_code": None}, request_id="L1"
+    ),
+    "terminated killed with a null signal": rec(
+        "supervisor.terminated", {**_KILLED, "signal": None}, request_id="L1"
+    ),
+    "terminated without its signal key": rec(
+        "supervisor.terminated", _without(_EXITED, "signal"), request_id="L1"
+    ),
+    "terminated without its exit_code key": rec(
+        "supervisor.terminated", _without(_KILLED, "exit_code"), request_id="L1"
+    ),
+    "unknown supervisor topic": rec("supervisor.bogus", {}, request_id="L1"),
+    # subscription-v0.4: the grammar and the ids
+    "count nested in from": rec(
+        "control.subscribe",
+        {"from": {"any": [{"count": 3}, {"commits": 10}]}},
+        name="x",
+        request_id="r",
+    ),
+    "count in every": rec(
+        "control.subscribe", {"every": {"count": 2}}, name="x", request_id="r"
+    ),
+    "unknown atom": rec(
+        "control.subscribe", {"from": {"frobnicate": 1}}, name="x", request_id="r"
+    ),
+    "empty any": rec(
+        "control.subscribe", {"every": {"any": []}}, name="x", request_id="r"
+    ),
+    "empty all": rec(
+        "control.subscribe", {"every": {"all": []}}, name="x", request_id="r"
+    ),
+    "negative time_seconds": rec(
+        "control.subscribe", {"from": {"time_seconds": -1}}, name="x", request_id="r"
+    ),
+    "unknown control topic": rec("control.bogus", {}, request_id="r"),
+    "stop with an every": rec(
+        "control.stop", {"every": {"commits": 1}}, request_id="s"
+    ),
+    "stop with an until": rec("control.stop", {"until": {"count": 5}}, request_id="s"),
+    "subscribe without request_id": rec(
+        "control.subscribe", {"every": {"commits": 1}}, name="x"
+    ),
+    "stop without request_id": rec("control.stop", {"from": {"commits": 1}}),
+}
+
+
+@pytest.mark.parametrize("label", sorted(REFUSED))
+def test_a_ported_constraint_is_refused(label):
+    assert record_errors(REFUSED[label]), label
+
+
+ADMITTED = {
+    "count nested in until": rec(
+        "control.subscribe",
+        {"until": {"any": [{"count": 3}, {"commits": 10}]}},
+        name="x",
+        request_id="r",
+    ),
+    "stop now": rec("control.stop", {}, request_id="s"),
+    "stop at a count": rec("control.stop", {"from": {"commits": 100}}, request_id="s"),
+    **{
+        f"nak {reason}": rec(
+            "lifecycle.nak", {"reason": reason, "message": "x"}, request_id="r"
         )
-    # stop requires it too (v0.3: a stop is answered by name) and takes only `from`
-    stop = {
-        "seq": 1,
-        "topic": "control.stop",
-        "name": None,
-        "request_id": "s",
-        "body": {"from": {"step": 1}},
-    }
-    CONVENTIONS["control."].validate(stop)
-    with pytest.raises(jsonschema.ValidationError):
-        CONVENTIONS["control."].validate({**stop, "request_id": None})
+        for reason in NakReason
+    },
+    "terminated killed": rec("supervisor.terminated", _KILLED, request_id="L1"),
+    "a hand-run worker's claim names no launch": rec("lifecycle.started", _STARTED),
+}
 
 
-def test_lifecycle_bound_requires_request_id_and_claim_seq():
-    L = CONVENTIONS["lifecycle."]
-    L.validate(_env("lifecycle.bound", {"claim_seq": 3}, request_id="lease"))
-    with pytest.raises(jsonschema.ValidationError):
-        L.validate(_env("lifecycle.bound", {"claim_seq": 3}))  # request_id null
-    for bad in ({}, {"claim_seq": None}, {"claim_seq": 0}, {"claim_seq": 1, "x": 1}):
-        with pytest.raises(jsonschema.ValidationError):
-            L.validate(_env("lifecycle.bound", bad, request_id="lease"))
-
-
-def test_unsubscribe_body_is_empty_and_request_id_required():
-    C = CONVENTIONS["control."]
-    C.validate(_env("control.unsubscribe", {}, request_id="r"))
-    with pytest.raises(jsonschema.ValidationError):
-        C.validate(_env("control.unsubscribe", {"why": "done"}, request_id="r"))
-    with pytest.raises(jsonschema.ValidationError):
-        C.validate(_env("control.unsubscribe", {}))  # request_id null -> rejected
+@pytest.mark.parametrize("label", sorted(ADMITTED))
+def test_a_ported_shape_is_admitted(label):
+    assert record_errors(ADMITTED[label]) == [], label

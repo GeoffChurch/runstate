@@ -1,5 +1,5 @@
 """0.4.0 logs that the staged observer plane's reads are tested on
-(tests/test_next_reads.py, runstate/_next/observables.py).
+(tests/test_reads.py, runstate/observables.py).
 
 Each is a conforming 0.4.0 log, as (seq, topic, name, request_id, body), written by
 hand for one of the 0.3.0 -> 0.4.0 step's golden 0.3.0 logs before the step was

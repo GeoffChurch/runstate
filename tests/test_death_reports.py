@@ -11,7 +11,7 @@ locator and the environment its launcher set (``current_channel``,
 synchronize with a child by polling the log, or the child's handle, with a timeout.
 
 ``test_interop_death_report_from_evidence`` (§9 item 15) is in
-``tests/test_next_interop.py``."""
+``tests/test_interop.py``."""
 
 import os
 import signal
@@ -24,8 +24,8 @@ from dataclasses import asdict
 
 import pytest
 
-from runstate._next.claims import CAS_ATTEMPTS
-from runstate._next.launcher import (
+from runstate.claims import CAS_ATTEMPTS
+from runstate.launcher import (
     ClaimAliveError,
     Command,
     LocalLauncher,
@@ -37,20 +37,20 @@ from runstate._next.launcher import (
     report_death,
     report_if_dead,
 )
-from runstate._next.observables import (
+from runstate.observables import (
     DeathReport,
     LiveDemand,
     Tier,
     live_episode,
     peek_terminal,
 )
-from runstate._next.vocabulary.coordinate import Commits, Target
-from runstate._next.vocabulary.payloads import Died, Outcome, Started, Topic
+from runstate.vocabulary.coordinate import Commits, Target
+from runstate.vocabulary.payloads import Died, Outcome, Started, Topic
 from runstate.channel.memory import MemoryChannel
 from runstate.vocabulary.handle import local_handle, local_handle_of
 from runstate.vocabulary.launch import current_launch_id
-from tests.next_helpers import Interloping
-from tests.test_next_reads import Rec, append, bound, channel, died, stopped, subscribe
+from tests.live_helpers import Interloping
+from tests.test_reads import Rec, append, bound, channel, died, stopped, subscribe
 
 # A launcher's thread that raises is a test failure, never a warning.
 pytestmark = pytest.mark.filterwarnings(
@@ -283,7 +283,7 @@ def test_report_if_dead_returns_none_when_the_pid_is_reused_between_probe_and_re
     """Its probe finds the pid dead, and the report's own probe finds it alive: a
     new process took the pid in between. The report refuses, and so it reports
     nothing (plan, Task 9)."""
-    from runstate._next import launcher
+    from runstate import launcher
 
     answers = iter([False, True])
     monkeypatch.setattr(launcher, "resolve", lambda handle: next(answers))

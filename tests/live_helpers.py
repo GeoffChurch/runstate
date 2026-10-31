@@ -1,9 +1,9 @@
-"""Test helpers the staged 0.4.0 tests (``tests/test_next_*.py``) share."""
+"""Test helpers the staged 0.4.0 tests (``tests/test_*.py``) share."""
 
 import time
 
-from runstate._next.claims import CAS_ATTEMPTS
-from runstate._next.launcher import ThreadTarget
+from runstate.claims import CAS_ATTEMPTS
+from runstate.launcher import ThreadTarget
 from runstate.channel import Channel
 
 

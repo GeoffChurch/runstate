@@ -4,8 +4,8 @@ choice strategies, which pick a complete checkpoint to resume from.
 
 The checkpoints here are a caller's own objects, ``Ckpt``, holding ``node`` and
 the state the node commits: the iteration count of a toy training loop. The
-Worker's own moments are ``tests/test_next_worker.py``'s and
-``tests/test_next_exit.py``'s; these test the recipe that composes them.
+Worker's own moments are ``tests/test_worker.py``'s and
+``tests/test_exit.py``'s; these test the recipe that composes them.
 """
 
 from contextlib import nullcontext
@@ -13,14 +13,14 @@ from dataclasses import dataclass
 
 import pytest
 
-from runstate._next.checkpoint import Every, MostProgress, OnHeadLineage
-from runstate._next.observables import AtNode, LatestClaimHead, prefix_len
-from runstate._next.vocabulary.coordinate import Commits, Target
-from runstate._next.vocabulary.payloads import Topic
-from runstate._next.worker import Worker
-from tests.next_helpers import Interloping
-from tests.test_next_subscriptions import end
-from tests.test_next_worker import worker
+from runstate.checkpoint import Every, MostProgress, OnHeadLineage
+from runstate.observables import AtNode, LatestClaimHead, prefix_len
+from runstate.vocabulary.coordinate import Commits, Target
+from runstate.vocabulary.payloads import Topic
+from runstate.worker import Worker
+from tests.live_helpers import Interloping
+from tests.test_subscriptions import end
+from tests.test_worker import worker
 
 
 @dataclass(frozen=True)

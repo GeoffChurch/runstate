@@ -11,7 +11,7 @@ import sys
 
 import pytest
 
-from runstate._next.observables import (
+from runstate.observables import (
     Answers,
     AtNode,
     Element,
@@ -28,11 +28,11 @@ from runstate._next.observables import (
     prefix_len,
     undischarged_stops,
 )
-from runstate._next.vocabulary.coordinate import Commits
+from runstate.vocabulary.coordinate import Commits
 from runstate.channel.memory import MemoryChannel
 from tests.lineage_logs import OUTPUT as LINEAGE_LOGS
 from tests.test_migration_goldens import OUTPUT as GOLDEN_LOGS
-from tests.test_next_reads import (
+from tests.test_reads import (
     ANSWERED,
     LOGS as READS_LOGS,
     SAMPLE_BEFORE_SUBSCRIBE,

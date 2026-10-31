@@ -7,7 +7,7 @@ A launch now takes its launcher's target record (plan, open question 18):
 ``launch(rid, fn, args=, kwargs=)`` is ``launch(rid, ThreadTarget(fn, args=,
 kwargs=))``, and ``launch(rid, cmd, env=)`` is ``launch(rid, Command(argv, env=))``.
 The bracket is ``supervisor.*``. The death reports the launchers write are
-``tests/test_next_death_reports.py``'s; these pin the bracket, the handle, and the
+``tests/test_death_reports.py``'s; these pin the bracket, the handle, and the
 verdicts a launch leaves.
 """
 
@@ -16,17 +16,17 @@ import threading
 
 import pytest
 
-from runstate._next.checkpoint import NoSave
-from runstate._next.launcher import (
+from runstate.checkpoint import NoSave
+from runstate.launcher import (
     Command,
     LocalLauncher,
     ThreadLauncher,
 )
-from runstate._next.observables import Tier, peek_terminal
-from runstate._next.vocabulary.coordinate import Commits, Target
-from runstate._next.vocabulary.payloads import Outcome, Topic
-from runstate._next.worker import Worker
-from tests.next_helpers import thread
+from runstate.observables import Tier, peek_terminal
+from runstate.vocabulary.coordinate import Commits, Target
+from runstate.vocabulary.payloads import Outcome, Topic
+from runstate.worker import Worker
+from tests.live_helpers import thread
 
 pytestmark = pytest.mark.filterwarnings(
     "error::pytest.PytestUnhandledThreadExceptionWarning"
@@ -160,9 +160,9 @@ WORKER = (
 # The staged Worker in a child: it claims, commits twice, and completes.
 STAGED = """
 from runstate import current_channel
-from runstate._next.checkpoint import NoSave
-from runstate._next.vocabulary.coordinate import Commits, Target
-from runstate._next.worker import Worker
+from runstate.checkpoint import NoSave
+from runstate.vocabulary.coordinate import Commits, Target
+from runstate.worker import Worker
 
 with Worker(current_channel(), resume_from=None, sources=[], save=NoSave()) as w:
     for i in w.steps(Target(Commits(), 2)):

@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from runstate._next.vocabulary.payloads import Topic
+from runstate.vocabulary.payloads import Topic
 
 jsonschema = pytest.importorskip("jsonschema")
 from jsonschema import Draft202012Validator  # noqa: E402
