@@ -9,23 +9,26 @@ simulator history."""
 
 import dataclasses
 import functools
-import contextlib
-import itertools
 import json
 import os
 import re
-import socket
 from pathlib import Path
 
 import pytest
 
 import runstate.migrations.v0_3_0_to_v0_4_0_engine as E
-from runstate import migrations
 from runstate.channel.sqlite import SqliteChannel
-from runstate.formats import FORMATS, DirectoryLayout
-from runstate.migrations import RENUMBERING_FROM, STEPS, MigrationError, Row, migrate
+from runstate.formats import FORMATS
+from tests.format_helpers import provision_pg
+from runstate import LOG_FORMAT
+from runstate.migrations import (
+    RENUMBERING_FROM,
+    STEPS,
+    MigrationError,
+    chain,
+    migrate,
+)
 from runstate.migrations.ambiguity import (
-    REFUSE,
     Assumed,
     Assumptions,
     Choices,
@@ -69,9 +72,9 @@ from tests.migration_helpers import (
     NO_HISTORY,
     a_beacon_between_two_places,
     a_claim_then_another,
-    a_resumed_workers_log,
     a_watermark_on,
     preset,
+    reference_worker_log,
     under,
 )
 from tests.migration_goldens import (
@@ -450,7 +453,7 @@ def _stack_0_3_0():
     """Format 0.3.0's validators: the envelope, and each convention by the
     prefix of the topics it owns; ``value`` is a topic, not a prefix."""
     jsonschema = pytest.importorskip("jsonschema")
-    root = Path(__file__).resolve().parent.parent / "protocol"
+    root = Path(__file__).resolve().parent / "fixtures" / "log-format-0.3.0"
 
     def load(name):
         schema = json.loads((root / f"{name}.schema.json").read_text())
@@ -717,14 +720,6 @@ def test_a_launchs_second_terminated_is_refused_whatever_the_claims(case):
 # claim's handle is dead, so is_live lets the step decide.
 
 
-@pytest.fixture
-def registered(monkeypatch):
-    """The step registered for the test only, as tests/test_migrate.py's toy
-    fixture registers its steps: the format does not change in this round."""
-    monkeypatch.setitem(FORMATS, "0.4.0", DirectoryLayout("0.4.0"))
-    monkeypatch.setattr(migrations, "STEPS", (V0_3_0_to_V0_4_0(),))
-
-
 def _seed_0_3_0(root, rid, rows):
     """A 0.3.0 sqlite log at its address holding ``rows``, sent through a
     channel, which numbers them from 1."""
@@ -796,9 +791,7 @@ REFUSED = {
 
 
 @pytest.mark.parametrize("case", list(REFUSED))
-def test_a_refusal_comes_before_the_seal_and_names_the_run_and_the_seq(
-    registered, tmp_path, case
-):
+def test_a_refusal_comes_before_the_seal_and_names_the_run_and_the_seq(tmp_path, case):
     rows = REFUSED[case]
     old = _seed_0_3_0(tmp_path, "r1", rows)
     last = rows[-1]
@@ -895,12 +888,50 @@ def test_a_claim_without_a_handle_cannot_be_judged(body):
 # ----- the step's place in the chain ----------------------------------------------------
 
 
-def test_the_step_renumbers_and_is_not_registered_yet():
-    """The format changes only at the end of layer 2 (log-formats §2, rule 3)."""
+def test_the_step_renumbers_and_is_registered():
+    """The step is the one that renumbers, and the last in the chain: it leaves
+    0.3.0 for the current format, 0.4.0, at its own address (log-formats §2, §6)."""
     assert (step.FROM, step.TO, step.RENUMBERS) == ("0.3.0", "0.4.0", True)
     assert step.FROM == RENUMBERING_FROM
-    assert not any(isinstance(s, V0_3_0_to_V0_4_0) for s in STEPS)
-    assert "0.4.0" not in FORMATS
+    (registered,) = [s for s in STEPS if isinstance(s, V0_3_0_to_V0_4_0)]
+    assert STEPS[-1] is registered and chain("0.3.0", "0.4.0") == [registered]
+    assert LOG_FORMAT == "0.4.0"
+    fmt = FORMATS["0.4.0"]
+    assert fmt.sqlite_path(Path("/r"), "x") == Path("/r/v0.4.0/x.db")
+    assert fmt.pg_schema() == "runstate_v0_4_0"
+
+
+def test_the_cli_migrates_to_the_current_format_by_default(tmp_path, capsys):
+    """`runstate migrate` without --to targets LOG_FORMAT: a reference Worker's run
+    the locators refuse at 0.3.0 opens at its 0.4.0 address afterwards, its old log
+    sealed. The refusal names what to state, and the call states it: the preset and
+    the choosers that ``test_the_reference_workers_own_logs_migrate_under_the_preset``
+    proves sufficient."""
+    from runstate import LogFormatMismatch, attach_channel
+    from runstate.cli import main
+
+    old = _seed_0_3_0(tmp_path, "done", reference_worker_log("reference-done"))
+    with pytest.raises(LogFormatMismatch, match="runstate migrate"):
+        attach_channel("done", root=tmp_path)
+    argv = [
+        "migrate",
+        str(tmp_path),
+        "--assume",
+        "tests.test_migration_v0_3_0_to_v0_4_0:PRESET_CHECKPOINTED",
+        "--resolve",
+        "span=fewest",
+        "--resolve",
+        "origin=newest",
+        "--resolve",
+        "end-time=lower",
+    ]
+    assert main(argv) == 0
+    assert capsys.readouterr().out.split() == ["done"]
+    assert not os.stat(old).st_mode & 0o200  # sealed
+    assert FORMATS["0.4.0"].sqlite_path(tmp_path, "done").exists()
+    with attach_channel("done", root=tmp_path) as ch:
+        topics = [e.topic for e in ch.read()]
+    assert topics[0] == "lifecycle.started" and "lifecycle.commit" in topics
 
 
 # ----- a retained step carries its formats' semantics ------------------------------------
@@ -1388,38 +1419,6 @@ def test_the_preset_states_what_the_worker_fixes():
     assert reader.value(2) == {V.ValueRole(x, True) for x in worker_roles}
 
 
-def _the_reference_workers_log(kind):
-    """A log the reference Worker writes: four passes ``done`` (completed), ``plain``
-    (preempted), ``stop`` (honouring a stop at pass 1) or ``error`` (raising in pass
-    2); ``resume``, four passes then a second claim resuming at step 4."""
-    from runstate.channel import MemoryChannel
-    from runstate.worker import Worker
-
-    clock = itertools.count(1.0)
-    ch = MemoryChannel()
-
-    def passes(start, total):
-        with Worker(ch, now=lambda: next(clock)) as w:
-            w.set("lr", 0.1)
-            for s in w.steps(total, start=start):
-                w.emit("loss", 1.0 / (s + 1))
-                if kind == "stop" and s == 1:
-                    ch.send({}, topic="control.stop", request_id="halt")
-                if kind == "error" and s == 2:
-                    raise RuntimeError("boom")
-            if kind == "done":
-                w.stopped(completed=True)
-
-    with contextlib.suppress(RuntimeError):
-        passes(0, 4)
-    if kind == "resume":
-        passes(4, 6)
-    return [
-        Row(e.seq, e.topic, e.name, e.request_id, json.dumps(e.body), float(e.seq))
-        for e in ch.read(after=0)
-    ]
-
-
 @pytest.mark.parametrize("kind", ["done", "plain", "stop", "error", "resume"])
 def test_the_reference_workers_own_logs_migrate_under_the_preset(kind):
     """The preset's word is the reference Worker's code: every log it writes is
@@ -1433,7 +1432,7 @@ def test_the_reference_workers_own_logs_migrate_under_the_preset(kind):
         limits=LIMITS,
     )
     res = resolutions(step, choices)
-    rows = _the_reference_workers_log(kind)
+    rows = reference_worker_log(f"reference-{kind}")
     step.detect(rows, assumptions=res.assumptions, history=NO_HISTORY)
     out = step.transform(rows, resolutions=res, history=NO_HISTORY)
     fired = {d: seqs for d, seqs in out.divergences.items() if seqs}
@@ -1799,7 +1798,7 @@ def _choices_stating(configuration):
 
 
 def test_a_sqlite_store_s_sealed_v0_2_0_log_dates_a_birth_the_manifest_does_not(
-    registered, tmp_path
+    tmp_path,
 ):
     """No manifest entry, but the root holds the run's sealed v0.2.0 log: the store's
     trace dates the birth, so the detection pass finds the writer forks, as an entry
@@ -1857,13 +1856,12 @@ def test_a_postgres_store_s_sealed_runs_row_dates_a_birth_the_manifest_does_not(
     import psycopg
     from psycopg import sql
 
-    from runstate.channel.postgres import ensure_schema
     from runstate.migrations.seal import seal_postgres
     from runstate.migrations.stores import PostgresStore
 
     rows, live = _dead_workers_beat()
     rid = f"born-{uuid.uuid4().hex}"
-    ensure_schema(pg_ready)
+    provision_pg(pg_ready, FORMATS["0.3.0"])  # no channel writes 0.3.0 now
     new = FORMATS["0.3.0"].pg_schema()
     with psycopg.connect(pg_ready) as c, c.transaction():
         for x in rows:
@@ -1982,7 +1980,7 @@ def test_a_record_before_the_first_pass_is_the_consumers_loading_and_values():
     the value every worker role for them to narrow. Under ``loading`` empty the log
     has no history; under ``loaded`` with ``values`` {loading, pass} it migrates, the
     value held by the resumed claim's first commit and read at its count."""
-    rows = a_resumed_workers_log(3, before=2)
+    rows = reference_worker_log("resumed-3-before-2")
     assert [json.loads(x.body)["step"] for x in rows if x.topic == "value"][3] == 2
     with pytest.raises(MigrationError, match=r"^no history .*: relaxing values"):
         step.transform(rows, resolutions=preset(), history=NO_HISTORY)
@@ -2014,7 +2012,7 @@ def test_a_resumed_claims_first_pass_label_is_the_consumers_stride():
     plus one is a skip, the consumer's choice, so ``stride`` is the preset's argument.
     Under ``next`` alone the log has no history, naming the fact; under both it
     migrates."""
-    rows = a_resumed_workers_log(5)
+    rows = reference_worker_log("resumed-5")
     with pytest.raises(MigrationError, match=r"^no history .*relaxing stride"):
         step.transform(rows, resolutions=preset(), history=NO_HISTORY)
     m = step.transform(
@@ -2042,7 +2040,7 @@ def test_a_resume_at_the_loaded_step_is_the_consumers_resume():
     detection reports with ``resume`` among the facts that settle it. Under the
     consumer's word that it resumes after the save it loaded, the newest, the log has
     no history, and the refusal names ``resume``."""
-    rows = a_resumed_workers_log(2)
+    rows = reference_worker_log("resumed-2")
     assert [json.loads(x.body)["step"] for x in rows if x.topic == "value"] == [
         *range(3),
         2,

@@ -16,11 +16,11 @@ is more useful than the test was.
 | | layer | contents | note |
 |---|---|---|---|
 | **0** | **Substrate** | `send` / `read` / `latest` / `last_seq`, CAS via `send(expected_seq=)` | the only layer whose guarantees survive an uncooperative writer |
-| **1** | **Content** | `value` — `(name, step) → body`. Open, app-owned `name` axis | |
+| **1** | **Content** | `value` — a stream's elements and a source's samples, each committed by the node whose `values` names it. Open, app-owned `name` axis | |
 | **2** | **Selection** | the condition algebra: `vocabulary/schedule.py` | **a library, not a protocol** — imports nothing |
-| **3** | **Identity** | `lifecycle.started` / `stopped` — the claim, episodes | where *who produced it* enters |
-| **4** | **Detection** | `lifecycle.heartbeat`, `launcher.launched` / `terminated` | see the caveat below — the heartbeat is not only detection |
-| **5** | **Control** | `control.stop` (linear), `control.subscribe` / `unsubscribe` (affine), `lifecycle.nak` | addressed to a producer ⇒ presupposes layer 3 |
+| **3** | **Identity** | `lifecycle.started` / `commit` / `rewind` / `stopped` — the claim, its position, its lineage nodes | where *who produced it* enters |
+| **4** | **Detection** | `lifecycle.heartbeat`, `supervisor.launched` / `terminated` / `died` | see the caveat below — the heartbeat is not only detection |
+| **5** | **Control** | `control.stop` (linear), `control.subscribe` (affine), `control.withdraw`, `lifecycle.nak` | addressed to a producer ⇒ presupposes layer 3 |
 | **6** | **Materialization** | `ensure`, `history` — *"I want this content; produce what is missing"* | composes 2 + 3 |
 | **7** | **The declarative graph** | dependencies *between* runs | **not runstate** — see the L7 caveat |
 
@@ -55,14 +55,17 @@ indexed data. **`history` is not part of it**: it is a *replay* of the algebra t
 multiplexed across three planes**, and calling it detection is a post-hoc story:
 
 - `t` dates the beacon — detection, the story that holds;
-- `step` is the **dense progress axis** — `observables.progress` folds it and `ensure`'s loop
-  condition depends on it. A layer-6 dependency;
+- `step` was the **dense progress axis** — `observables.progress` folded it and `ensure`'s loop
+  condition depended on it. A layer-6 dependency. Log format 0.4.0 moved progress onto the
+  `lifecycle.commit` node (`specs/commits-and-lineage.md` §3), so the heartbeat now carries `t` and
+  `consumed_seq` only, and the commit is the record multiplexed across planes: a lineage node, a
+  liveness witness and the watermark;
 - `consumed_seq` is the **control-acceptance watermark** — written from `Worker._cursor`, polled by
   `watcher.await_consumed` to answer "has my control request been drained?" A layer-5 dependency.
 
 protocol-algebra records this under *"standing counterexamples against over-formalizing"*: **"the
-heartbeat is deliberately *enriched* (`{step, consumed_seq}`), not Unit/terminal."** The `launcher.*`
-pair *is* purely "because the self-report can fail to arrive." The heartbeat is not.
+heartbeat is deliberately *enriched* (`{step, consumed_seq}`), not Unit/terminal."** The `supervisor.*`
+records *is* purely "because the self-report can fail to arrive." The heartbeat is not.
 
 ## The seam: what couples selection to identity
 
@@ -77,7 +80,9 @@ earlier revision claimed, a single epoch lookup.
    anywhere in its schedule) is bound by name to the episode that registers it, and is void for
    every other episode, and for every reader once a terminal names its episode
    (`observables.lease_void`, `specs/time-lease-boundary.md`). The step-only equivalent survives
-   every episode.
+   every episode. (Log format 0.4.0: a lease is void once its own claim has ended, by an exit or a
+   `supervisor.died`, and a schedule of lineage counts, `{commits: n}` or `{stream, n}`, is durable,
+   live per lineage.)
 
 Until 2026-10-03 (log format 0.2.0) the eliminator was positional: `references_time` ×
 `boundary_voided`, a lease void once a `lifecycle.started` lay between it and the drainer's own
@@ -87,8 +92,8 @@ Measured then over three 3-step episodes: `until={"count":5}` fired `[3,3,3]` (t
 episode), the time equivalent `[3,0,0]`. The gap is closed: the predicate catches both coordinates
 (`time-lease-boundary.md`, the `count` amendment).
 
-So the honest statement is not "time couples information to process" but: **only `step` is intrinsic
-to the information. `time_seconds` and `count` are both measured from a registration that can
+So the honest statement is not "time couples information to process" but: **only `step` (since 0.4.0,
+the lineage counts) is intrinsic to the information. `time_seconds` and `count` are both measured from a registration that can
 outlive the episode receiving it, so both are bound to the episode that registers them.**
 
 ## Correspondences
@@ -134,10 +139,10 @@ absorbed already — `specs/run-id-recipe.md` makes identity content-derived, an
 
 ## The layer-7 caveat
 
-**runstate does schedule.** `sweep.py` is a sequential scheduler with a `resume` policy that reads
-`peek_terminal` and a `stop_on_failure` policy, calling `launcher.launch()` in the loop.
-`Watcher.broadcast` is the cross-run barrier ("no Experiment class"). `ensure` is a one-node planner:
-read-first, produce-on-miss, re-drive `preempted`, refuse on no progress.
+**runstate does schedule.** `Watcher.broadcast` is the cross-run barrier ("no Experiment class").
+`ensure` is a one-node planner: read-first, produce-on-miss, re-drive an extendable exit, refuse on
+no progress. (`sweep.py`, a sequential scheduler with a `resume` policy, did too, until it was deleted
+on 2026-10-30 as a workload helper no consumer called: `dead_ends/sweep.md`.)
 
 The line runstate does not cross is the **declarative graph** — dependencies *between* runs — not
 planning as such. Saying "planning is scheduling and scheduling is not runstate's" is false in this
@@ -157,9 +162,10 @@ Recorded because the gaps are informative, not because the map should grow to co
   three layering violations above are Watcher edges.
 - **Channel locators** — `create_channel` / `attach_channel` / `RunNotFound`, the layout, the root
   env var. Addressing and birth-vs-attach are not among layer 0's four operations.
-- **`EpisodeHolder` / `EpisodeProbe`** — a fifth and sixth backend operation, deliberately off the
-  base ABC. So "layer 0 is four operations" holds only of the *required* tier, and the episode lock
-  is a detection concern implemented at layer 0.
+- **`SessionProbe`** — an opt-in backend capability, deliberately off the base ABC: Postgres's session
+  probe, which replaced the episode lock's `EpisodeHolder` / `EpisodeProbe` on 2026-10-30. So "layer 0
+  is four operations" holds only of the *required* tier, and the session probe is a detection concern
+  implemented at layer 0.
 - **`store` recipes** — content-addressed placement, dedup, membership, GC grace. Neither layer 6
   nor "not runstate."
 - **`Producer`** — a *seam* between layer 6 and a launcher. The stack has no row for seams.

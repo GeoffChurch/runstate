@@ -56,6 +56,19 @@ and waking a run that had *completed* demotes its latest verdict to the new
 episode's outcome — model-inherent in any relaunch, automated here, so
 `ensure_served` is for service runs, not completed autonomous ones.
 
+**Log format 0.4.0** (2026-10-30, [`commits-and-lineage.md`](commits-and-lineage.md) §3, §5). The
+decider's code above is 0.3.0's. Now `ensure_served(launcher, run_id, target, *, demand)` takes a
+`Launcher[T]` and its target record `T`, and the caller's held `LiveDemand` fold for the run (a standing
+waker holds one per run; a one-shot caller passes a fresh one). `live_episode` **no longer probes a
+handle**: it is the newest claim's handle unless that claim has ended, its exit or a death report naming
+it on the log. So the off-host scope above changes shape: a held claim is first given to
+`report_if_dead`, which reports a same-host dead handle, or on Postgres a claim whose session has ended,
+as `lost`; when its report lands the decider reads the demand again, since the report may have voided the
+only lease, and wakes. An unreported same-host crash reads as held until someone reports it, and a claim
+on another host that no session probe covers stays held: no wake. Waking a completed run is refused at the
+claim instead: a closed head carries no demand (`live_demand` is empty there), and
+`LatestClaimHead()` raises on it.
+
 **Caller-invoked primitive; daemon as composition (confirmation 1).** The
 demander calls it — subscribe, then `ensure_served` — because in every
 validated consumer (the monitor driver; mycooc-analyze) the demander and the
@@ -85,6 +98,8 @@ zombies — and `os.kill(pid, 0)` **succeeds on a zombie**, so a crashed
 service would read live to `live_episode` forever and the daemon would
 never re-wake the one run it exists to revive. Reaping frees the pid;
 `resolve()` then answers honestly.
+(Log format 0.4.0: the reap is where `LocalLauncher` writes the `supervisor.died` for a child that
+claimed and left no exit, so the reap now also ends the claim the gate reads.)
 
 Honest counterargument, recorded: real socket activation (systemd) puts the
 launch config in a resident daemon precisely so *clients stay

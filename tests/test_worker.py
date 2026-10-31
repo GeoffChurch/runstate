@@ -1,853 +1,1237 @@
-"""The reference worker loop (docs/design-v0.2.md §6).
+"""The staged 0.4.0 Worker (docs/specs/commits-and-lineage.md §2, §4, §6): the claim,
+its position, values and the commit (plan Task 10a); the drain, stops, the
+heartbeat, the fence and ``steps()`` (Task 10b). The exit and ``discard()`` are
+``tests/test_exit.py``'s, subscriptions ``tests/test_subscriptions.py``'s.
 
-The worker drains ``control.*``, registers/cancels subscriptions, and on each
-``tick(step)`` services due ones by emitting ``value`` envelopes carrying its
-current values. Tests run against both backends (the ``open_run`` factory
-shares one run across handles).
+The tests that involve a compare-and-append are parametrized over the backends by
+the ``open_run`` factory, whose handles share one run. Earlier claims, and the
+records of other writers, are hand-written 0.4.0 records (``tests/test_reads``'
+builders), as another implementation would write them.
 """
 
 import pytest
 
-from runstate.worker import Worker
-from runstate.vocabulary.handle import local_handle
+from runstate.checkpoint import Every, NoSave
+from runstate.claims import CAS_ATTEMPTS
+from runstate.launcher import report_death
+from runstate.observables import (
+    AtNode,
+    LatestClaimHead,
+    last_element,
+    prefix_len,
+    series,
+    undischarged_stops,
+)
+from runstate.vocabulary.coordinate import Commits, Target
+from runstate.vocabulary.payloads import Outcome, Topic
+from runstate.walk import MalformedRecordError
+from runstate.worker import Worker, WorkerStarvedError
+from runstate.channel.memory import MemoryChannel
+from runstate.vocabulary.launch import launch_scope
+from tests.live_helpers import Interloping, Wrapping
+from tests.test_death_reports import dead_handle
+from tests.test_reads import (
+    Rec,
+    append,
+    beat,
+    commit,
+    died,
+    started,
+    stopped,
+    value,
+)
 
 
-def test_subscribe_then_tick_emits_current_value(open_run):
-    # an orchestrator subscribes to "loss", fire once now ({} schedule)
-    orch = open_run()
-    orch.send({}, topic="control.subscribe", name="loss", request_id="r1")
-
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.set("loss", 0.5)
-    w.tick(step=10)
-
-    vals = open_run().read(topics=["value"])
-    assert [(v.name, v.request_id, v.body) for v in vals] == [
-        ("loss", "r1", {"value": 0.5, "step": 10, "t": 0.0})
-    ]
-
-
-def test_recurring_subscription_fires_each_due_tick(open_run):
-    orch = open_run()
-    orch.send(
-        {"every": {"step": 10}}, topic="control.subscribe", name="loss", request_id="r1"
+def worker(ch, *, resume_from=None, sources=(), save=NoSave(), now=lambda: 0.0):
+    """A Worker with the tests' usual arguments: a fresh start, no sources, no
+    saves and a frozen clock."""
+    return Worker(
+        ch, resume_from=resume_from, sources=list(sources), save=save, now=now
     )
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.set("loss", 1.0)
-    for s in (0, 5, 10):
-        w.tick(step=s)
-    steps = [v.body["step"] for v in open_run().read(topics=["value"])]
-    assert steps == [0, 10]  # fires at registration and at +10, not at 5
 
 
-def test_unsubscribe_stops_emissions(open_run):
-    orch = open_run()
-    orch.send(
-        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r1"
-    )
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.set("loss", 1.0)
-    w.tick(step=0)
-    orch.send({}, topic="control.unsubscribe", request_id="r1")
-    w.tick(step=1)
-    w.tick(step=2)
-    steps = [v.body["step"] for v in open_run().read(topics=["value"])]
-    assert steps == [0]  # only the fire before the unsubscribe landed
+def records(ch, *topics):
+    """(seq, topic) of every record on ``topics`` (every record when none)."""
+    return [(e.seq, e.topic) for e in ch.read(topics=list(topics) or None)]
 
 
-def test_control_stop_now(open_run):
-    orch = open_run()
-    orch.send({}, topic="control.stop", request_id="s1")
-    w = Worker(open_run(), now=lambda: 0.0)
-    assert w.tick(step=5) is True
+def nodes(ch):
+    """The bodies of the ``lifecycle.commit`` records, in seq order."""
+    return [e.body for e in ch.read(topics=[Topic.LIFECYCLE_COMMIT])]
 
 
-def test_control_stop_at_step(open_run):
-    orch = open_run()
-    orch.send({"from": {"step": 100}}, topic="control.stop", request_id="s1")
-    w = Worker(open_run(), now=lambda: 0.0)
-    assert w.tick(step=50) is False
-    assert w.tick(step=100) is True
+def end(ch, w):
+    """End ``w``'s claim from outside, as a supervisor would with evidence, so a
+    next worker can claim. (The exit is Task 11's.)"""
+    claim = ch.latest(Topic.LIFECYCLE_STARTED).seq
+    report_death(ch, claim, outcome=Outcome.KILLED, evidence="test: ended", force=True)
 
 
-def test_commanded_stop_latches_until_honored(open_run):
-    # The stop decision is a monotone level, not a consumed-once pulse
-    # (specs/stop-discharge.md S1): a host loop that cannot act on one True --
-    # a callback-guest whose loop ignores tick's return -- recovers it at the
-    # next safe point instead of losing the stop forever.
-    orch = open_run()
-    orch.send({"from": {"step": 5}}, topic="control.stop", request_id="s1")
-    w = Worker(open_run(), now=lambda: 0.0)
-    assert w.tick(step=5) is True
-    assert w.tick(step=6) is True  #  the missed True is still there
-    assert w.tick(step=7) is True
+def conforms(ch, *, after=0):
+    """Every record on the log above ``after`` conforms to the 0.4.0 schemas."""
+    pytest.importorskip("jsonschema")
+    from tests.test_schema_v0_4_0 import record_errors
 
-
-def test_stop_pending_is_a_side_effect_free_poll(open_run):
-    # A callback-guest polls the same decision at its own safe point
-    # (specs/stop-discharge.md): reading the level consumes nothing, and the
-    # tick return is undented by any number of polls.
-    orch = open_run()
-    orch.send({}, topic="control.stop", request_id="s1")
-    w = Worker(open_run(), now=lambda: 0.0)
-    assert w.stop_pending is False  #  nothing drained yet -- no pending stop
-    assert w.tick(step=0) is True
-    assert w.stop_pending is True
-    assert w.stop_pending is True  #   polling consumed nothing...
-    assert w.tick(step=1) is True  #   ...and neither did it dent the decision
-
-
-def test_stop_pending_tracks_the_last_safe_point(open_run):
-    # The property is the SAME predicate tick returns, evaluated at the
-    # worker's last safe point -- a step-keyed stop reads False before its
-    # step and True from it on, in agreement with the tick that just ran.
-    orch = open_run()
-    orch.send({"from": {"step": 5}}, topic="control.stop", request_id="s1")
-    w = Worker(open_run(), now=lambda: 0.0)
-    assert w.tick(step=3) is False
-    assert w.stop_pending is False
-    assert w.tick(step=5) is True
-    assert w.stop_pending is True
-
-
-def test_two_pending_stops_or_join(open_run):
-    # Pending stops are a set, not a slot (specs/stop-discharge.md S4): a
-    # later stop must not clobber an earlier still-pending one (audit F3).
-    # The combined decision is the condition-algebra's own any-join -- the
-    # first satisfied condition stops the run.
-    orch = open_run()
-    orch.send({"from": {"step": 5}}, topic="control.stop", request_id="s1")
-    orch.send({"from": {"step": 10}}, topic="control.stop", request_id="s2")
-    w = Worker(open_run(), now=lambda: 0.0)
-    assert w.tick(step=3) is False
-    assert w.tick(step=5) is True  #  s1 fires; s2's later arrival didn't erase it
-
-
-def test_resumed_episode_ignores_prior_episodes_stop(open_run):
-    """Every control fact is live until its counter-record (the discharge rule,
-    specs/stop-discharge.md), and a ``control.stop``'s counter-record is the
-    next ``lifecycle.stopped``. Episode 1 honored this stop, so its ``stopped``
-    discharged it; episode 2 -- resumed on the SAME run -- must not re-honor it
-    and die at its first step. (A non-time subscription follows the same rule
-    with ``unsubscribe`` as the counter-record: none arrived here, so it
-    correctly carries across episodes -- see
-    test_run_episodes.test_relaunch_extends_one_series; a TIME-referencing
-    subscription is additionally episode-scoped, specs/time-lease-boundary.md.)
-    """
-    orch = open_run()
-    orch.send(
-        {}, topic="control.stop", request_id="s1"
-    )  #  stop-now; lands at a low seq
-
-    # episode 1: claims its episode, drains + honors the stop, ends (started…stopped)
-    with Worker(open_run(), now=lambda: 0.0) as w1:
-        list(w1.steps(total=3))
-
-    # episode 2: resumes on the same run. The prior episode's stop must not carry.
-    with Worker(open_run(), now=lambda: 0.0) as w2:
-        resumed = list(w2.steps(start=5, total=10))
-
-    assert resumed == [5, 6, 7, 8, 9]  #  a re-armed stop would leave just [5]
-
-
-def test_stop_between_episodes_honored_exactly_once(open_run):
-    # specs/stop-discharge.md S2, "the blip": a stop sent while the run is down
-    # is NOT dropped -- the next episode answers it at its first safe point --
-    # and answered exactly once: the blip's own stopped discharges it, so the
-    # episode after runs free. Loud and once; neither silent nor forever.
-    orch = open_run()
-    with Worker(open_run(), now=lambda: 0.0) as w1:  #     episode 1
-        list(w1.steps(total=3))
-    orch.send({}, topic="control.stop", request_id="s1")  #    the run is down
-    with Worker(open_run(), now=lambda: 0.0) as w2:  #     episode 2: the blip
-        blip = list(w2.steps(start=3, total=10))
-    assert blip == [3]  #                                      answered immediately...
-    with Worker(open_run(), now=lambda: 0.0) as w3:  #     episode 3
-        resumed = list(w3.steps(start=4, total=8))
-    assert resumed == [4, 5, 6, 7]  #                          ...and exactly once
-
-
-def test_one_stopped_discharges_every_pending_stop(open_run):
-    # specs/stop-discharge.md S4, second half: the discharge is a broadcast
-    # answer (matching the stopped record's own broadcast nature) -- the stop
-    # that never fired must not survive its episode's stopped and haunt the
-    # resume (per-id discharge was refuted A3).
-    orch = open_run()
-    orch.send({"from": {"step": 5}}, topic="control.stop", request_id="s1")
-    orch.send({"from": {"step": 10}}, topic="control.stop", request_id="s2")
-    with Worker(open_run(), now=lambda: 0.0) as w1:
-        halted = list(w1.steps(total=20))
-    assert halted == [0, 1, 2, 3, 4, 5]  #                     the any-join fired at 5
-    with Worker(open_run(), now=lambda: 0.0) as w2:
-        resumed = list(w2.steps(start=6, total=10))
-    assert resumed == [
-        6,
-        7,
-        8,
-        9,
-    ]  #                          s2 didn't haunt the resume
-
-
-def test_crashed_episodes_undischarged_stop_rearms_on_resume(open_run):
-    # specs/stop-discharge.md crash edge: a stop arrived during an episode that
-    # then crashed (no lifecycle.stopped) before the trigger. No counter-record
-    # followed, so the stop is still pending -- the resumed episode re-arms and
-    # honors it. (Green before and after the discharge fold: it pins that the
-    # discharge boundary is the last *stopped*, not a registered-watermark --
-    # the refuted A5 -- which would silently drop the unanswered command.)
-    orch = open_run()
-    import socket
-
-    orch.send(
-        {"handle": f"local://{socket.gethostname()}/2147483646", "t": 0.0},
-        topic="lifecycle.started",
-    )  #  crashed: dead pid (THIS host), no stopped
-    orch.send({"from": {"step": 8}}, topic="control.stop", request_id="s1")
-    with Worker(open_run(), now=lambda: 0.0) as w:
-        assert (
-            w.claimed is True
-        )  #                            dead episode -> the claim is free
-        resumed = list(w.steps(start=5, total=20))
-    assert resumed == [
-        5,
-        6,
-        7,
-        8,
-    ]  #                          re-armed; honored at its step
-
-
-def test_stopped_emits_dying_breath(open_run):
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.stopped(completed=True, final_step=500)
-    e = open_run().latest("lifecycle.stopped")
-    assert e.body == {
-        "completed": True,
-        "error": None,
-        "final_step": 500,
-        "claim_seq": open_run().latest("lifecycle.started").seq,  # names its claim
-        "honored": [],  #                                     no stop was pending
-        "t": 0.0,
+    bad = {
+        e.seq: errs
+        for e in ch.read(after)
+        if (
+            errs := record_errors(
+                {
+                    "seq": e.seq,
+                    "topic": e.topic,
+                    "name": e.name,
+                    "request_id": e.request_id,
+                    "body": e.body,
+                }
+            )
+        )
     }
-    assert e.request_id is None  # broadcast — every observer sees it
+    assert bad == {}
 
 
-def test_stopped_with_error(open_run):
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.stopped(error="boom")
-    assert open_run().latest("lifecycle.stopped").body == {
-        "completed": False,
-        "error": "boom",
-        "final_step": None,
-        "claim_seq": open_run().latest("lifecycle.started").seq,
-        "honored": [],
-        "t": 0.0,
-    }
+# ----- the claim (§4, "Construction", "The claim") -----------------------------------
 
 
-def test_tick_emits_heartbeat_with_step_and_consumed_seq(open_run):
-    orch = open_run()
-    sub_seq = orch.send({}, topic="control.subscribe", name="loss", request_id="r1")
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.tick(step=7)
-    hb = open_run().latest("lifecycle.heartbeat")
-    # consumed_seq is the worker's read position in the inbound control order:
-    # after draining, it has processed the subscribe at sub_seq. claim_seq names
-    # the claim the beat follows (lifecycle-v0.5).
-    assert hb.body == {
-        "step": 7,
-        "consumed_seq": sub_seq,
-        "claim_seq": open_run().latest("lifecycle.started").seq,
-        "t": 0.0,
-    }
-    assert hb.request_id is None
-
-
-def test_consumed_seq_advances_only_after_draining(open_run):
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.tick(step=0)  # nothing to drain yet
-    assert open_run().latest("lifecycle.heartbeat").body["consumed_seq"] == 0
-
-
-def test_nak_when_until_already_satisfied(open_run):
-    orch = open_run()
-    orch.send(
-        {"until": {"step": 50}}, topic="control.subscribe", name="loss", request_id="r1"
-    )
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.set("loss", 1.0)
-    w.tick(step=100)  # already past `until` step 50 -> window closed, zero fires
-    nak = open_run().latest("lifecycle.nak")
-    assert nak.request_id == "r1"
-    assert nak.body["reason"] == "unsatisfiable"
-    assert open_run().read(topics=["value"]) == []  # no value emitted
-
-
-def test_nak_malformed_schedule_does_not_kill_the_worker(open_run):
-    # a schema-invalid body (unknown condition) must be refused, not fatal
-    orch = open_run()
-    orch.send({"from": {}}, topic="control.subscribe", name="loss", request_id="bad")
-    orch.send(
-        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="ok"
-    )
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.set("loss", 1.0)
-    w.tick(step=0)  # must not raise
-    naks = open_run().read(topics=["lifecycle.nak"], request_ids=["bad"])
-    assert naks[0].body["reason"] == "malformed"
-    # the well-formed sibling still gets serviced -- one bad request isn't fatal
-    assert open_run().latest("value", "loss").request_id == "ok"
-
-
-def test_nak_malformed_stop_from_does_not_crash(open_run):
-    # a malformed `from` on a stop must nak (like a malformed subscribe), not
-    # crash the worker -- and must not poison the pending set and re-crash every tick.
-    orch = open_run()
-    orch.send({"from": {"step": "oops"}}, topic="control.stop", request_id="s1")
-    w = Worker(open_run(), now=lambda: 0.0)
-    assert w.tick(step=0) is False  # survives, does not stop
-    assert w.tick(step=1) is False  # not poisoned
-    nak = open_run().latest("lifecycle.nak")
-    assert nak.request_id == "s1"
-    assert nak.body["reason"] == "malformed"
-
-
-def test_nak_stop_unsatisfiable_on_stepless_worker(open_run):
-    # a step-from stop sent to a stepless worker can never fire -> nak (parity
-    # with subscribe), rather than silently never auto-stopping.
-    orch = open_run()
-    orch.send({"from": {"step": 100}}, topic="control.stop", request_id="s1")
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.tick(step=None)  # stepless
-    nak = open_run().latest("lifecycle.nak")
-    assert nak.request_id == "s1"
-    assert nak.body["reason"] == "unsatisfiable"
-
-
-def test_stepped_step_from_stop_still_fires(open_run):
-    # the parity nak must not catch a legitimate stepped stop (clean >= fires)
-    orch = open_run()
-    orch.send({"from": {"step": 2}}, topic="control.stop", request_id="s1")
-    w = Worker(open_run(), now=lambda: 0.0)
-    assert w.tick(step=0) is False
-    assert w.tick(step=2) is True
-    assert open_run().latest("lifecycle.nak") is None
-
-
-def test_nak_stop_with_every_or_until(open_run):
-    orch = open_run()
-    # a stop is one-shot; every/until are rejected, not silently honored
-    orch.send({"until": {"step": 999}}, topic="control.stop", request_id="s1")
-    w = Worker(open_run(), now=lambda: 0.0)
-    result = w.tick(step=0)  # must NOT stop on a malformed stop
-    assert result is False
-    nak = open_run().latest("lifecycle.nak")
-    assert nak.body["reason"] == "malformed"
-
-
-def test_nak_unsupported_control_verb(open_run):
-    orch = open_run()
-    orch.send({}, topic="control.frobnicate", request_id="r1")
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.tick(step=0)
-    nak = open_run().latest("lifecycle.nak")
-    assert nak.request_id == "r1"
-    assert nak.body["reason"] == "unsupported"
-
-
-def test_nak_subscribe_without_request_id(open_run):
-    orch = open_run()
-    orch.send(
-        {"every": {"step": 1}}, topic="control.subscribe", name="loss"
-    )  # no request_id
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.set("loss", 1.0)
-    w.tick(step=0)
-    nak = open_run().latest("lifecycle.nak")
-    assert nak.body["reason"] == "malformed"
-    assert open_run().read(topics=["value"]) == []  # nothing registered/emitted
-
-
-# ----- the structural gate: full grammar validation of inbound control -----
-
-
-def test_nak_misspelled_schedule_key(open_run):
-    # a misspelled slot is a sender bug (design §6 `malformed`), refused with a
-    # reason naming the key -- NOT silently registered as a fire-once-now.
-    orch = open_run()
-    orch.send(
-        {"frm": {"step": 5}}, topic="control.subscribe", name="loss", request_id="r1"
-    )
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.set("loss", 1.0)
-    w.tick(step=10)
-    nak = open_run().latest("lifecycle.nak")
-    assert nak.request_id == "r1"
-    assert nak.body["reason"] == "malformed"
-    assert "frm" in nak.body["message"]
-    assert open_run().read(topics=["value"]) == []  # did not register or fire
-
-
-def test_nak_null_schedule_slot(open_run):
-    # the schema has no null conditions: absent means absent (present-nullable
-    # is a body-field convention, not a condition-slot one).
-    orch = open_run()
-    orch.send({"from": None}, topic="control.subscribe", name="loss", request_id="r1")
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.tick(step=0)
-    nak = open_run().latest("lifecycle.nak")
-    assert nak.request_id == "r1"
-    assert nak.body["reason"] == "malformed"
-
-
-def test_nak_unknown_condition_atom(open_run):
-    orch = open_run()
-    orch.send(
-        {"from": {"frobnicate": 1}},
-        topic="control.subscribe",
-        name="loss",
-        request_id="r1",
-    )
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.set("loss", 1.0)
-    w.tick(step=0)
-    nak = open_run().latest("lifecycle.nak")
-    assert nak.request_id == "r1"
-    assert nak.body["reason"] == "malformed"
-    assert open_run().read(topics=["value"]) == []
-
-
-def test_nak_empty_any_or_all(open_run):
-    # minItems 1: an empty any is vacuously false and an empty all vacuously
-    # true -- both are sender bugs, not degenerate schedules.
-    orch = open_run()
-    orch.send(
-        {"every": {"any": []}}, topic="control.subscribe", name="loss", request_id="r1"
-    )
-    orch.send(
-        {"every": {"all": []}}, topic="control.subscribe", name="loss", request_id="r2"
-    )
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.set("loss", 1.0)
-    w.tick(step=0)
-    naks = open_run().read(topics=["lifecycle.nak"])
-    assert [(n.request_id, n.body["reason"]) for n in naks] == [
-        ("r1", "malformed"),
-        ("r2", "malformed"),
-    ]
-    assert open_run().read(topics=["value"]) == []
-
-
-def test_nak_bool_posing_as_number(open_run):
-    # Python True serializes to JSON true, which the schema rejects where it
-    # wants an integer -- the validator must agree, not let bool ride int.
-    orch = open_run()
-    orch.send(
-        {"from": {"step": True}},
-        topic="control.subscribe",
-        name="loss",
-        request_id="r1",
-    )
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.tick(step=5)
-    assert open_run().latest("lifecycle.nak").body["reason"] == "malformed"
-
-
-def test_nak_negative_threshold(open_run):
-    orch = open_run()
-    orch.send(
-        {"from": {"step": -1}}, topic="control.subscribe", name="loss", request_id="r1"
-    )
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.tick(step=0)
-    assert open_run().latest("lifecycle.nak").body["reason"] == "malformed"
-
-
-def test_nak_stop_with_unknown_key(open_run):
-    # previously a bogus-key stop fell through to from_=None = stop-now; the
-    # structural gate refuses it instead of honoring a request it can't read.
-    orch = open_run()
-    orch.send({"bogus": 1}, topic="control.stop", request_id="s1")
-    w = Worker(open_run(), now=lambda: 0.0)
-    assert w.tick(step=0) is False  # must NOT stop on a malformed stop
-    nak = open_run().latest("lifecycle.nak")
-    assert nak.request_id == "s1"
-    assert nak.body["reason"] == "malformed"
-
-
-def test_valid_full_schedule_still_registers_and_serves(open_run):
-    # the gate must pass the whole legal grammar: all three slots, nested
-    # any/all, and a count atom inside `until` (where it is grammatical).
-    orch = open_run()
-    orch.send(
-        {
-            "from": {"step": 1},
-            "every": {"any": [{"step": 2}, {"time_seconds": 60.0}]},
-            "until": {"all": [{"step": 100}, {"count": 3}]},
-        },
-        topic="control.subscribe",
-        name="loss",
-        request_id="r1",
-    )
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.set("loss", 0.5)
-    w.tick(step=1)
-    assert open_run().latest("lifecycle.nak") is None
-    assert open_run().latest("value", "loss").request_id == "r1"
-
-
-def test_worker_keeps_serving_after_a_malformed_request(open_run):
-    # one naked request is never fatal: the good sibling registers and serves.
-    orch = open_run()
-    orch.send(
-        {"frm": {"step": 1}}, topic="control.subscribe", name="loss", request_id="bad"
-    )
-    orch.send(
-        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="ok"
-    )
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.set("loss", 1.0)
-    w.tick(step=0)
-    naks = open_run().read(topics=["lifecycle.nak"], request_ids=["bad"])
-    assert naks[0].body["reason"] == "malformed"
-    assert open_run().latest("value", "loss").request_id == "ok"
-
-
-def test_unserializable_value_fails_clearly_naming_the_metric(tmp_path):
-    from runstate.channel import create_channel as oc
-
-    ch = oc("r", root=tmp_path, backend="sqlite")  # default json_default=None
-    ch.send(
-        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="o"
-    )
-    w = Worker(ch, now=lambda: 0.0)
-    w.set("loss", {1, 2})  # a set isn't JSON-serializable
-    with pytest.raises(TypeError, match="'loss'.*not.*JSON-serializable"):
-        w.tick(step=0)
-
-
-def test_json_default_hook_coerces_exotic_values(tmp_path):
-    from runstate.channel import create_channel as oc
-
-    # the sender-side hook coerces a set -> sorted list so it round-trips
-    ch = oc("r", root=tmp_path, backend="sqlite", json_default=sorted)
-    ch.send(
-        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="o"
-    )
-    w = Worker(ch, now=lambda: 0.0)
-    w.set("loss", {3, 1, 2})
-    w.tick(step=0)
-    assert ch.latest("value", "loss").body["value"] == [1, 2, 3]
-
-
-def test_nak_step_condition_on_stepless_worker(open_run):
-    orch = open_run()
-    orch.send(
-        {"from": {"step": 100}}, topic="control.subscribe", name="loss", request_id="r1"
-    )
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.tick(step=None)  # stepless: a step threshold can never be satisfied
-    assert open_run().latest("lifecycle.nak").request_id == "r1"
-
-
-def test_no_nak_for_a_future_step_on_a_stepped_worker(open_run):
-    orch = open_run()
-    orch.send(
-        {"from": {"step": 100}}, topic="control.subscribe", name="loss", request_id="r1"
-    )
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.tick(step=50)  # not there yet — must NOT nak; it just waits
-    assert open_run().latest("lifecycle.nak") is None
-
-
-def test_already_past_step_fires_at_current_step(open_run):
-    # the agreed clean >= semantics: subscribing past the threshold fires now,
-    # at the current step (not a nak).
-    orch = open_run()
-    orch.send(
-        {"from": {"step": 100}}, topic="control.subscribe", name="loss", request_id="r1"
-    )
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.set("loss", 0.5)
-    w.tick(step=150)
-    assert open_run().latest("value", "loss").body == {
-        "value": 0.5,
-        "step": 150,
-        "t": 0.0,
-    }
-    assert open_run().latest("lifecycle.nak") is None
-
-
-def test_constructing_a_worker_emits_started_with_a_handle(open_run):
-    w = Worker(open_run(), now=lambda: 0.0)
-    e = open_run().latest("lifecycle.started")
-    assert e is not None
-    assert e.body["handle"].startswith("local://")  # self-reported liveness handle
-    assert e.body["t"] == 0.0
-    assert e.request_id is None
-
-
-def test_steps_drives_ticks_default_preempted(open_run):
-    # falling off the loop with no explicit claim -> default preempted
-    orch = open_run()
-    orch.send(
-        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r1"
-    )
-    with Worker(open_run(), now=lambda: 0.0) as w:
-        for step in w.steps(3):
-            w.set("loss", float(step))
-    obs = open_run()
-    assert [v.body for v in obs.read(topics=["value"])] == [
-        {"value": 0.0, "step": 0, "t": 0.0},
-        {"value": 1.0, "step": 1, "t": 0.0},
-        {"value": 2.0, "step": 2, "t": 0.0},
-    ]
-    assert obs.latest("lifecycle.stopped").body == {
-        "completed": False,
-        "error": None,
-        "final_step": 2,
-        "claim_seq": obs.latest("lifecycle.started").seq,
-        "honored": [],
-        "t": 0.0,
-    }
-
-
-def test_steps_drives_ticks_explicit_completed_claim(open_run):
-    # worker explicitly claims completed=True before exiting its with block;
-    # the __exit__ idempotency means the explicit stopped() wins (first writer).
-    orch = open_run()
-    orch.send(
-        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r1"
-    )
-    with Worker(open_run(), now=lambda: 0.0) as w:
-        for step in w.steps(3):
-            w.set("loss", float(step))
-        w.stopped(completed=True)
-    obs = open_run()
-    body = obs.latest("lifecycle.stopped").body
-    assert body["completed"] is True
-    assert body["error"] is None
-    assert (
-        body["final_step"] == 2
-    )  #  stopped() auto-fills final_step from the last yielded step
-    # only one stopped record: first writer wins
-    assert len(obs.read(topics=["lifecycle.stopped"])) == 1
-
-
-def test_steps_breaks_on_commanded_stop(open_run):
-    orch = open_run()
-    orch.send({"from": {"step": 2}}, topic="control.stop", request_id="s1")
-    seen = []
-    with Worker(open_run(), now=lambda: 0.0) as w:
-        for step in w.steps(10):
-            seen.append(step)
-    assert seen == [0, 1, 2]  # stops at the commanded step, never reaches 3..9
-    assert open_run().latest("lifecycle.stopped").body == {
-        "completed": False,
-        "error": None,
-        "final_step": 2,
-        "claim_seq": open_run().latest("lifecycle.started").seq,
-        "honored": ["s1"],  #                     the stop it carried out, by name
-        "t": 0.0,
-    }
-
-
-def test_context_manager_reports_errored_on_exception(open_run):
-    with pytest.raises(ValueError):
-        with Worker(open_run(), now=lambda: 0.0) as w:
-            for step in w.steps(10):
-                if step == 1:
-                    raise ValueError("boom")
-    e = open_run().latest("lifecycle.stopped")
-    assert e.body == {
-        "completed": False,
-        "error": "boom",
-        "final_step": 1,
-        "claim_seq": open_run().latest("lifecycle.started").seq,
-        "honored": [],
-        "t": 0.0,
-    }
-
-
-def test_stopped_is_idempotent(open_run):
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.stopped(completed=True)
-    w.stopped(error="x")  # second call is a no-op
-    stops = open_run().read(topics=["lifecycle.stopped"])
-    assert len(stops) == 1 and stops[0].body == {
-        "completed": True,
-        "error": None,
-        "final_step": None,
-        "claim_seq": open_run().latest("lifecycle.started").seq,
-        "honored": [],
-        "t": 0.0,
-    }
-
-
-def test_second_worker_loses_the_claim_and_does_no_work(open_run):
+def test_the_claim_writes_resume_from_sources_and_the_launch_id(open_run):
     ch = open_run()
-    # a live episode already exists: a started by *our* pid (resolves alive), no stopped
-    ch.send({"handle": local_handle(), "t": 0.0}, topic="lifecycle.started")
-    with Worker(open_run(), now=lambda: 0.0) as w:
-        assert (
-            w.claimed is False
-        )  #                           lost: an episode is already live
-        for step in w.steps(total=3):
-            w.set("loss", float(step))  #                      body must not run
-    assert open_run().read(topics=["value"]) == []  #      the loser emitted no values
-    assert len(open_run().read(topics=["lifecycle.started"])) == 1  # no second started
+    with launch_scope("launch-1"):
+        w = worker(ch, sources=["lr", "grad_norm"])
+    assert w.claimed and w.resume_node is None
+    e = open_run().latest(Topic.LIFECYCLE_STARTED)
+    assert e.body["handle"].startswith("local://")
+    assert {k: v for k, v in e.body.items() if k != "handle"} == {
+        "t": 0.0,
+        "resume_from": None,
+        "sources": ["lr", "grad_norm"],
+    }
+    assert (e.name, e.request_id) == (None, "launch-1")
+    w.commit()
+    end(ch, w)
+
+    # a launcher-less claim names no launch, and one that resumes names its node
+    node = ch.latest(Topic.LIFECYCLE_COMMIT).seq
+    w2 = worker(ch, resume_from=AtNode(node), sources=[])
+    e = open_run().latest(Topic.LIFECYCLE_STARTED)
+    assert (e.body["resume_from"], e.body["sources"], e.request_id) == (node, [], None)
+    assert w2.resume_node == node
+    conforms(ch)
 
 
-def test_claim_losers_bare_tick_appends_nothing(open_run):
-    # The callback-guest pattern drives bare tick(); a racing loser must not
-    # drain, nak, or beacon onto the winner's live log ("explicit calls
-    # included"). Its tick answers True -- stop at this safe point; `claimed`
-    # says why.
-    winner = Worker(open_run(), now=lambda: 0.0)
-    assert winner.claimed is True
-    loser = Worker(open_run(), now=lambda: 0.0)
+def test_the_claim_path_reports_a_dead_held_claim_and_claims(open_run):
+    """A held claim whose handle is on this host and probes dead: the claim path
+    calls ``report_if_dead`` (§3, "The writers"), which reports it ``lost``, and
+    starts again, finding the claim ended."""
+    ch = open_run()
+    handle = dead_handle()
+    body = {"handle": handle, "t": 1.0, "resume_from": None, "sources": []}
+    assert ch.send(body, topic=Topic.LIFECYCLE_STARTED) == 1
+    w = worker(open_run())
+    assert w.claimed
+    obs = open_run()
+    assert records(obs) == [
+        (1, Topic.LIFECYCLE_STARTED),
+        (2, Topic.SUPERVISOR_DIED),
+        (3, Topic.LIFECYCLE_STARTED),
+    ]
+    report = obs.read(topics=[Topic.SUPERVISOR_DIED])[0].body
+    assert (report["claim_seq"], report["outcome"], report["evidence"]) == (
+        1,
+        "lost",
+        f"probe: {handle}",
+    )
+
+
+def test_a_claim_race_loser_writes_nothing_and_its_commit_says_stop(open_run):
+    """A held claim whose handle probes alive (this process): ``report_if_dead``
+    reports nothing, and the worker loses the claim. A loser writes nothing,
+    explicit calls included, and its ``commit()`` returns True."""
+    winner = worker(open_run())
+    assert winner.claimed
+    loser = worker(open_run())
     assert loser.claimed is False
-    log_before = [e.seq for e in open_run().read()]
-    loser.set("loss", 1.0)  #                      local-only: allowed
-    assert loser.tick(step=0) is True  #           the muzzle: touch nothing, stop now
-    assert loser.stop_pending is True  #           the side-effect-free poll agrees
-    assert [e.seq for e in open_run().read()] == log_before
+    obs = open_run()
+    before = records(obs)
+    loser.emit("loss", 1.0)
+    loser.set("lr", 0.1)
+    loser.include(1)
+    loser.rewind(None)
+    assert loser.commit() is True
+    assert records(obs) == before == [(1, Topic.LIFECYCLE_STARTED)]
 
 
-def test_steps_resumes_at_start_with_run_absolute_step(open_run):
-    orch = open_run()
-    orch.send(
-        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r"
-    )
-    with Worker(open_run(), now=lambda: 0.0) as w:
-        for step in w.steps(start=5, total=8):
-            w.set("loss", float(step))
-    steps = [v.body["step"] for v in open_run().read(topics=["value"])]
-    assert steps == [
-        5,
-        6,
-        7,
-    ]  #                                  run-absolute, not 0,1,2
-    assert open_run().latest("lifecycle.stopped").body["final_step"] == 7
-
-
-def test_value_t_is_absolute_wall_clock_not_birth_relative(open_run):
-    orch = open_run()
-    orch.send(
-        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="r"
-    )
-    with Worker(open_run(), now=lambda: 1000.0) as w:
-        for step in w.steps(total=2):
-            w.set("loss", float(step))
-    ts = [v.body["t"] for v in open_run().read(topics=["value"])]
-    assert ts == [1000.0, 1000.0]  #  absolute clock; birth-relative would be 0.0
-
-
-# ----- emit: the unconditional broadcast-value verb (worker-chosen cadence) -----
-
-
-def test_emit_logs_the_broadcast_point_now(open_run):
-    # {value, step: current, t: now}, request_id=None -- visible to the
-    # log-as-cache plane (history) with no subscription anywhere.
-    from runstate.memoizer import history
-
+def test_a_worker_that_calls_commit_itself_resumes_from_its_node(open_run):
+    """A self-driving worker, which calls ``commit()`` from its own callback,
+    resumes from the node its checkpoint names: its first commit extends it, and
+    ``Commits()`` continues from the log."""
     ch = open_run()
-    with Worker(ch, now=lambda: 42.0) as w:
-        for step in w.steps(total=3):
-            w.emit("loss", float(step))
-    evs = open_run().read(topics=["value"])
-    assert [(e.name, e.request_id) for e in evs] == [("loss", None)] * 3
-    assert [e.body for e in evs] == [
-        {"value": 0.0, "step": 0, "t": 42.0},
-        {"value": 1.0, "step": 1, "t": 42.0},
-        {"value": 2.0, "step": 2, "t": 42.0},
+    w = worker(ch)
+    for i in range(3):
+        w.emit("loss", float(i))
+        w.commit()
+    node = ch.latest(Topic.LIFECYCLE_COMMIT).seq
+    end(ch, w)
+
+    w2 = worker(open_run(), resume_from=AtNode(node))
+    assert w2.resume_node == node
+    w2.emit("loss", 3.0)
+    w2.commit()
+    obs = open_run()
+    assert nodes(obs)[-1]["parent"] == node
+    assert prefix_len(obs, Commits(), head=LatestClaimHead()) == 4
+    assert [e.value for e in series(obs, "loss", head=LatestClaimHead())] == [
+        0.0,
+        1.0,
+        2.0,
+        3.0,
     ]
-    assert [
-        b["value"] for b in history(open_run(), "loss", {"every": {"step": 1}})
-    ] == [0.0, 1.0, 2.0]
 
 
-def test_emit_updates_the_register_a_subscription_samples(open_run):
-    # register coherence: a worker using ONLY emit never leaves a subscriber
-    # sampling an empty register -- the two planes can't disagree.
-    orch = open_run()
-    orch.send(
-        {"every": {"step": 1}}, topic="control.subscribe", name="loss", request_id="obs"
+# A claim (1) with two commits (2, 3), then an exit (4) the test chooses.
+def _claim_then(exit_rec):
+    return [(1, started(None)), (2, commit(1, None, [])), (3, commit(1, 2, []))] + (
+        [] if exit_rec is None else [(4, exit_rec)]
     )
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.tick(step=0)  #                      a safe point, as inside steps()'s body
-    w.emit("loss", 0.7)
-    w.tick(step=1)  #                      the subscription fires, samples the register
-    samples = [e for e in open_run().read(topics=["value"]) if e.request_id == "obs"]
-    assert samples and samples[-1].body["value"] == 0.7
 
 
-def test_emit_is_muzzled_for_a_claim_loser(open_run):
+def test_latest_claim_head_continues_the_previous_claims_head(open_run):
     ch = open_run()
-    winner = Worker(ch, now=lambda: 0.0)
-    loser = Worker(open_run(), now=lambda: 0.0)
-    assert winner.claimed and not loser.claimed
+    append(ch, _claim_then(stopped(1, 3, [])))  # a preempted exit: extendable
+    w = worker(ch, resume_from=LatestClaimHead())
+    assert w.resume_node == 4
+    assert ch.latest(Topic.LIFECYCLE_STARTED).body["resume_from"] == 4
+    w.commit()
+    assert nodes(ch)[-1]["parent"] == 4
+
+
+def test_latest_claim_head_after_a_death_report_continues_its_position(open_run):
+    """A claim a death report ended, with no exit: its head is its position."""
+    ch = open_run()
+    rows = _claim_then(None) + [
+        (
+            4,
+            Rec(
+                "supervisor.died",
+                {"claim_seq": 1, "outcome": "killed", "evidence": "x", "t": 5.0},
+                None,
+                None,
+            ),
+        )
+    ]
+    append(ch, rows)
+    w = worker(ch, resume_from=LatestClaimHead())
+    assert w.resume_node == 3
+
+
+def test_latest_claim_head_after_an_error_exit_continues_its_parent(open_run):
+    ch = open_run()
+    append(ch, _claim_then(stopped(1, 3, None, error="boom")))  # torn
+    w = worker(ch, resume_from=LatestClaimHead())
+    assert w.resume_node == 3
+    assert ch.latest(Topic.LIFECYCLE_STARTED).body["resume_from"] == 3
+
+
+def test_latest_claim_head_on_the_empty_lineage_starts_fresh(open_run):
+    ch = open_run()
+    w = worker(ch, resume_from=LatestClaimHead())  # nothing ever claimed
+    assert w.resume_node is None
+    assert ch.latest(Topic.LIFECYCLE_STARTED).body["resume_from"] is None
+    end(ch, w)
+    # a commitless claim's head is the empty lineage too
+    w2 = worker(ch, resume_from=LatestClaimHead())
+    assert w2.claimed and w2.resume_node is None
+
+
+def test_latest_claim_head_raises_on_a_closed_head(open_run):
+    ch = open_run()
+    append(ch, _claim_then(stopped(1, 3, [], completed=True)))
+    with pytest.raises(ValueError, match="closed"):
+        worker(ch, resume_from=LatestClaimHead())
+    assert ch.last_seq() == 4  # nothing written
+
+
+# Two branches from node 3: the first claim's commits 3, 4; a rewind to 3; commit 6.
+BRANCHED = [
+    (1, started(None)),
+    (2, commit(1, None, [])),
+    (3, commit(1, 2, [])),
+    (4, commit(1, 3, [])),
+    (
+        5,
+        Rec(
+            "lifecycle.rewind", {"claim_seq": 1, "resume_from": 3, "t": 3.0}, None, None
+        ),
+    ),
+    (6, commit(1, 3, [])),
+    (7, stopped(1, 6, [])),
+]
+
+
+def test_at_node_resumes_and_rewinds_at_x(open_run):
+    ch = open_run()
+    append(ch, BRANCHED)
+    w = worker(ch, resume_from=AtNode(4))  # the abandoned branch
+    assert w.resume_node == 4
+    assert ch.latest(Topic.LIFECYCLE_STARTED).body["resume_from"] == 4
+    w.commit()
+    assert nodes(ch)[-1]["parent"] == 4
+    assert prefix_len(ch, Commits(), head=LatestClaimHead()) == 4
+
+    w.rewind(AtNode(6))
+    assert w.resume_node == 6
+    claim = ch.latest(Topic.LIFECYCLE_STARTED).seq
+    r = ch.latest(Topic.LIFECYCLE_REWIND)
+    assert (r.body, r.name, r.request_id) == (
+        {"claim_seq": claim, "resume_from": 6, "t": 0.0},
+        None,
+        None,
+    )
+    w.commit()
+    assert nodes(ch)[-1]["parent"] == 6
+    assert prefix_len(ch, Commits(), head=LatestClaimHead()) == 4
+    conforms(ch)
+
+
+# A log whose seqs are each a kind a resume_from or a rewind may not name.
+REFUSED = [
+    (1, started(None)),
+    (2, value("loss", 0.5)),
+    (3, commit(1, None, [2])),
+    (4, beat(1)),
+    (5, stopped(1, 3, None, error="boom")),  # a torn exit
+    (6, started(3)),
+    (7, stopped(6, 3, [], completed=True)),  # a closed node
+]
+
+
+@pytest.mark.parametrize(
+    "seq, why",
+    [
+        (7, "closed"),
+        (5, "torn"),
+        (2, "value"),
+        (4, "heartbeat"),
+        (6, "started"),
+        (99, "no record"),
+    ],
+)
+def test_the_worker_refuses_a_resume_from_or_rewind_naming_a_closed_node_a_torn_exit_a_value_or_a_heartbeat(
+    open_run, seq, why
+):
+    ch = open_run()
+    append(ch, REFUSED)
+    with pytest.raises(ValueError):
+        worker(ch, resume_from=AtNode(seq))
+    assert ch.last_seq() == 7  # the claim was never written
+
+    w = worker(ch, resume_from=AtNode(3))
     before = ch.last_seq()
-    loser.emit("loss", 1.0)  #             silent no-op: a loser may not act
-    assert ch.last_seq() == before
+    with pytest.raises(ValueError):
+        w.rewind(AtNode(seq))
+    assert ch.last_seq() == before  # no rewind was written
+    assert w.resume_node == 3
 
 
-def test_emit_with_no_step_to_stamp_raises(open_run):
-    # before the first tick / on a stepless worker a step=None point would
-    # permanently poison history() for the name (append-only log): refuse
-    # loudly; raw channel.send is the stepless / caller-clocked path.
-    w = Worker(open_run(), now=lambda: 0.0)
-    with pytest.raises(ValueError, match="poison"):
+@pytest.mark.parametrize("resume_from", [AtNode(3), LatestClaimHead()])
+def test_a_malformed_lineage_behind_a_valid_resume_node_raises_with_nothing_written(
+    open_run, resume_from
+):
+    """The claim walks ``resume_from``'s lineage at W before its CAS (§4, "The
+    claim", step 1): the node at 3 is extendable, but its ``values`` names a seq at
+    or above its own, so the lineage is malformed, and the claim raises before it
+    writes ``started``, as a ``rewind`` to it does."""
+    ch = open_run()
+    append(
+        ch,
+        [
+            (1, started(None)),
+            (2, died(1, "killed")),
+            (3, commit(1, None, [4])),
+            (4, value("loss", 1.0)),
+        ],
+    )
+    with pytest.raises(MalformedRecordError):
+        worker(ch, resume_from=resume_from)
+    assert ch.last_seq() == 4  # the claim was never written
+
+
+def test_a_rewind_writes_its_record_discards_pending_and_resets_registers(open_run):
+    ch = open_run()
+    ch.send(
+        {"every": {"commits": 1}},
+        topic=Topic.CONTROL_SUBSCRIBE,
+        name="lr",
+        request_id="lr",
+    )
+    w = worker(ch, sources=["lr"])
+    w.emit("loss", 1.0)
+    w.commit()
+    first = ch.latest(Topic.LIFECYCLE_COMMIT).seq
+    w.emit("loss", 2.0)
+    w.commit()
+    w.set("lr", 0.1)
+    w.emit("loss", 99.0)  # pending at the rewind: discarded
+    discarded = ch.last_seq()
+    w.rewind(AtNode(first))
+    assert ch.latest(Topic.LIFECYCLE_REWIND).body["resume_from"] == first
+    w.commit()
+    # the discarded value is in no node; and the register holds no value at the
+    # new position until the next set (§4), so the subscription samples nothing
+    assert nodes(ch)[-1]["values"] == [] and nodes(ch)[-1]["fired"] == []
+    assert nodes(ch)[-1]["parent"] == first
+    loss = [e.value for e in series(ch, "loss", head=LatestClaimHead())]
+    assert loss == [1.0]
+    assert ch.read(after=discarded - 1, limit=1)[0].body["value"] == 99.0
+    assert ch.read(topics=[Topic.VALUE], name="lr") == []
+    w.set("lr", 0.2)
+    w.commit()
+    assert [e.body["value"] for e in ch.read(topics=[Topic.VALUE], name="lr")] == [0.2]
+
+
+def test_rewind_none_reaches_the_root(open_run):
+    ch = open_run()
+    w = worker(ch)
+    w.emit("loss", 1.0)
+    w.commit()
+    w.commit()
+    w.rewind(None)
+    assert w.resume_node is None
+    assert ch.latest(Topic.LIFECYCLE_REWIND).body["resume_from"] is None
+    w.commit()
+    assert nodes(ch)[-1]["parent"] is None
+    assert prefix_len(ch, Commits(), head=LatestClaimHead()) == 1
+    assert prefix_len(ch, "loss", head=LatestClaimHead()) == 0
+
+
+# ----- values and the commit (§4, "Values", "commit()") ------------------------------
+
+
+def test_an_emitted_value_is_committed_once_by_the_next_commit(open_run):
+    ch = open_run()
+    w = worker(ch, now=lambda: 1000.0)
+    w.emit("loss", 0.5)
+    v = ch.latest(Topic.VALUE)
+    # sent at once, with the absolute wall clock: never birth-relative
+    assert (v.body, v.name, v.request_id) == ({"value": 0.5, "t": 1000.0}, "loss", None)
+    claim = ch.latest(Topic.LIFECYCLE_STARTED).seq
+    assert w.commit() is False
+    w.commit()
+    assert nodes(ch) == [
+        {
+            "claim_seq": claim,
+            "consumed_seq": 0,
+            "parent": None,
+            "values": [v.seq],
+            "fired": [],
+            "expired": [],
+            "t": 1000.0,
+        },
+        {
+            "claim_seq": claim,
+            "consumed_seq": 0,
+            "parent": v.seq + 1,
+            "values": [],
+            "fired": [],
+            "expired": [],
+            "t": 1000.0,
+        },
+    ]
+    assert [e.value for e in series(ch, "loss", head=LatestClaimHead())] == [0.5]
+    conforms(ch)
+
+
+def test_two_emits_of_one_name_in_one_iteration_are_two_elements(open_run):
+    """Review Focus 1 (§2, "Order within a node"): unlike 0.3.0's (name, step)
+    cell, which held one value, the second emit does not replace the first."""
+    ch = open_run()
+    w = worker(ch)
+    w.emit("loss", 1.0)
+    w.emit("loss", 2.0)
+    w.commit()
+    assert prefix_len(ch, "loss", head=LatestClaimHead()) == 2
+    assert [e.value for e in series(ch, "loss", head=LatestClaimHead())] == [1.0, 2.0]
+    assert last_element(ch, "loss", head=LatestClaimHead()).value == 2.0
+
+
+def test_declared_kinds_and_set_emit_include_misuse_raise(open_run):
+    ch = open_run()
+    with pytest.raises(ValueError):
+        worker(ch, sources=["lr", "lr"])  # sources are unique
+    with pytest.raises(ValueError):
+        worker(ch, sources=[""])  # and non-empty
+    assert ch.last_seq() == 0
+
+    w = worker(ch, sources=["lr"])
+    with pytest.raises(ValueError, match="source"):
+        w.emit("lr", 0.1)  # a source is sampled on demand, never emitted
+    with pytest.raises(ValueError, match="source"):
+        w.set("loss", 0.5)  # an undeclared name is eager: emit it
+    w.set("lr", 0.1)
+    w.emit("loss", 0.5)
+    w.commit()
+    assert ch.read(topics=[Topic.VALUE]) == [ch.latest(Topic.VALUE)]  # set sent none
+    assert prefix_len(ch, "loss", head=LatestClaimHead()) == 1
+
+
+def test_include_commits_a_value_sent_through_another_handle(open_run):
+    ch = open_run()
+    w = worker(ch)
+    other = open_run()
+    seq = other.send({"value": 0.5, "t": 1.0}, topic=Topic.VALUE, name="loss")
+    w.emit("loss", 0.25)
+    emitted = ch.last_seq()
+    w.include(seq)
+    w.commit()
+    assert nodes(ch)[-1]["values"] == [emitted, seq]  # in the order it added them
+    assert [e.value for e in series(ch, "loss", head=LatestClaimHead())] == [
+        0.25,
+        0.5,
+    ]
+
+
+def _include_case(ch, case):
+    """Build ``case``'s log and worker; return the worker and the seq it includes."""
+    if case == "committed on the lineage by another claim":
+        # A claim (1) that a report ended (2) keeps writing after the next claim
+        # (3): its commit (5) names a value (4) above that claim, and the next
+        # claim rewinds onto it.
+        died = {"claim_seq": 1, "outcome": "killed", "evidence": "x", "t": 1.0}
+        append(ch, [(1, started(None)), (2, Rec("supervisor.died", died, None, None))])
+        w = worker(ch)
+        append(ch, [(4, value("loss", 0.5)), (5, commit(1, None, [4]))])
+        w.rewind(AtNode(5))
+        return w, 4
+    w = worker(ch, sources=["lr"])
+    if case == "not a value":
+        w.commit()
+        return w, ch.last_seq()
+    if case == "no record":
+        return w, ch.last_seq() + 5
+    if case == "a null name":
+        return w, ch.send({"value": 1, "t": 1.0}, topic=Topic.VALUE)
+    if case == "a request_id":
+        return w, ch.send(
+            {"value": 1, "t": 1.0}, topic=Topic.VALUE, name="loss", request_id="r"
+        )
+    if case == "at or below the claim":
+        end(ch, w)
+        seq = ch.send({"value": 1, "t": 1.0}, topic=Topic.VALUE, name="loss")
+        return worker(ch), seq
+    if case == "pending":
         w.emit("loss", 1.0)
-    w.tick(step=None)  #                   the stepless (serve) path
-    with pytest.raises(ValueError, match="poison"):
+        return w, ch.last_seq()
+    if case == "committed on the lineage by this claim":
         w.emit("loss", 1.0)
+        seq = ch.last_seq()
+        w.commit()
+        return w, seq
+    if case == "discarded at a rewind":
+        w.emit("loss", 1.0)
+        seq = ch.last_seq()
+        w.rewind(None)
+        return w, seq
+    if case == "a declared source":
+        return w, ch.send({"value": 1, "t": 1.0}, topic=Topic.VALUE, name="lr")
+    raise AssertionError(case)
 
 
-def test_emit_unserializable_value_raises_naming_the_metric(open_run):
-    w = Worker(open_run(), now=lambda: 0.0)
-    w.tick(step=0)
-    with pytest.raises(TypeError, match="loss"):
+@pytest.mark.parametrize(
+    "case",
+    [
+        "not a value",
+        "no record",
+        "a null name",
+        "a request_id",
+        "at or below the claim",
+        "pending",
+        "committed on the lineage by this claim",
+        "committed on the lineage by another claim",
+        "discarded at a rewind",
+        "a declared source",
+    ],
+)
+def test_include_refuses_each_unmet_condition(open_run, case):
+    ch = open_run()
+    w, seq = _include_case(ch, case)
+    with pytest.raises(ValueError):
+        w.include(seq)
+    w.commit()
+    # the include added nothing: a pending value is committed once
+    assert nodes(ch)[-1]["values"] == ([seq] if case == "pending" else [])
+
+
+def test_an_unserializable_value_raises_naming_its_name(open_run):
+    w = worker(open_run())
+    with pytest.raises(TypeError, match="'loss'.*JSON-serializable"):
         w.emit("loss", object())
 
 
-# ---------------------------------------------------------------------------
-# A worker past its own dying breath may not act on the channel -- the same
-# rule as a claim-race loser. `stopped()` already latched; the write paths did
-# not, so a post-terminal emit landed ABOVE the successor's claim and won the
-# cell under take-the-latest. No third party, no displacement, in contract.
-# ---------------------------------------------------------------------------
-
-
-def test_a_post_terminal_emit_does_not_overwrite_the_successors_cell(tmp_path):
+def test_json_default_coerces_an_emitted_value(tmp_path):
     from runstate.channel import create_channel
-    from runstate.observables import value_series
 
-    root = str(tmp_path)
-    ch = create_channel("r", root=root, backend="sqlite")
-    a = Worker(ch)
-    for step in a.steps(total=2):
-        a.emit("loss", 100.0 + step)
-    a.stopped(final_step=1)
-
-    b = Worker(create_channel("r", root=root, backend="sqlite"))
-    assert b.claimed
-    b.tick(1)
-    b.emit("loss", 101.0)
-
-    a.emit("loss", -999.0)  # episode 1, already terminal
-    assert value_series(ch)["loss"][1] == 101.0  # the successor's value stands
+    ch = create_channel("r", root=tmp_path, backend="sqlite", json_default=sorted)
+    w = worker(ch)
+    w.emit("loss", {3, 1, 2})
+    assert ch.latest(Topic.VALUE).body["value"] == [1, 2, 3]
+    ch.close()
 
 
-def test_a_post_terminal_tick_touches_nothing_and_says_stop(tmp_path):
-    from runstate.channel import create_channel
-    from runstate.vocabulary.payloads import Topic
+# ----- the save policy (§6, "Save") ---------------------------------------------------
 
-    ch = create_channel("r", root=str(tmp_path), backend="sqlite")
-    w = Worker(ch)
-    w.tick(0)
-    w.stopped(final_step=0)
+
+class Recording:
+    """A save policy that records each call and the log's tail at that moment."""
+
+    def __init__(self, ch):
+        self.ch = ch
+        self.calls = []
+
+    def after(self, node, *, commits, exit):
+        self.calls.append((node, commits, exit, self.ch.last_seq()))
+
+
+def test_the_save_policy_runs_after_each_commit_lands(open_run):
+    ch = open_run()
+    save = Recording(open_run())
+    w = worker(ch, save=save)
+    for i in range(3):
+        w.emit("loss", float(i))
+        w.commit()
+    commits = [e.seq for e in ch.read(topics=[Topic.LIFECYCLE_COMMIT])]
+    # each call names the commit that just landed, the log's newest record then
+    assert save.calls == [(c, i + 1, False, c) for i, c in enumerate(commits)]
+
+    # the count is the node's count(Commits()), across a rewind and a resume
+    w.rewind(AtNode(commits[0]))
+    w.commit()
+    assert save.calls[-1][1] == 2
+    end(ch, w)
+    saved = []
+    w2 = worker(ch, resume_from=AtNode(commits[-1]), save=Every(2, saved.append))
+    w2.commit()  # the 4th iteration on its lineage: a multiple of 2
+    w2.commit()
+    assert saved == [ch.read(topics=[Topic.LIFECYCLE_COMMIT])[-2].seq]
+
+
+def test_every_checks_its_k():
+    for k in (0, -1, True, 1.5):
+        with pytest.raises(ValueError):
+            Every(k, print)
+    Every(1, print)
+
+
+# ----- the drain, stops and the heartbeat (§4, "A drain", "The stop decision") -----
+
+
+class Clock:
+    """A clock a test moves."""
+
+    def __init__(self, t=0.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+
+def send_stop(ch, request_id, **trigger):
+    return ch.send(trigger, topic=Topic.CONTROL_STOP, request_id=request_id)
+
+
+def send_withdraw(ch, request_id):
+    return ch.send({"t": 1.0}, topic=Topic.CONTROL_WITHDRAW, request_id=request_id)
+
+
+def naks(ch):
+    """(request_id, reason) of every ``lifecycle.nak``, in seq order."""
+    return [
+        (e.request_id, e.body["reason"]) for e in ch.read(topics=[Topic.LIFECYCLE_NAK])
+    ]
+
+
+def test_a_heartbeat_commits_nothing_and_splits_no_iteration(open_run):
+    ch = open_run()
+    w = worker(ch, now=lambda: 7.0)
+    w.heartbeat()  # nothing to drain yet: the watermark is 0
+    claim = ch.latest(Topic.LIFECYCLE_STARTED).seq
+    hb = ch.latest(Topic.LIFECYCLE_HEARTBEAT)
+    assert (hb.body, hb.name, hb.request_id) == (
+        {"claim_seq": claim, "consumed_seq": 0, "t": 7.0},
+        None,
+        None,
+    )
+    w.emit("loss", 1.0)
+    stop = send_stop(open_run(), "s", **{"from": {"commits": 99}})
+    assert w.heartbeat() is False
+    # the watermark is the control record it drained
+    assert ch.latest(Topic.LIFECYCLE_HEARTBEAT).body["consumed_seq"] == stop
+    w.emit("loss", 2.0)
+    w.commit()
+    assert nodes(ch)[-1]["parent"] is None  # the heartbeats are no nodes
+    assert len(nodes(ch)[-1]["values"]) == 2  # one iteration, both values
+    assert nodes(ch)[-1]["consumed_seq"] == stop
+    assert prefix_len(ch, Commits(), head=LatestClaimHead()) == 1
+    conforms(ch)
+
+
+def test_heartbeat_drains_a_stop_and_returns_true_mid_iteration(open_run):
+    ch = open_run()
+    w = worker(ch)
+    assert w.heartbeat() is False
+    send_stop(open_run(), "s")  # no from: it holds once drained
+    w.emit("loss", 1.0)
+    assert w.heartbeat() is True
+    assert w.stop_pending is True
+    assert nodes(ch) == []  # mid-iteration: nothing committed
+
+
+def test_a_time_from_coming_due_inside_an_iteration_lands_at_a_heartbeat(open_run):
+    ch = open_run()
+    clock = Clock()
+    w = worker(ch, now=clock)
+    send_stop(open_run(), "s", **{"from": {"time_seconds": 10}})
+    assert w.commit() is False  # drained and registered at t=0
+    clock.t = 5.0
+    assert w.heartbeat() is False
+    clock.t = 10.0
+    assert w.heartbeat() is True  # due inside the iteration: no node needed
+    assert w.commit() is True
+
+
+def test_the_stop_decision_is_a_monotone_level_across_a_rewind(open_run):
+    """Once a pending stop holds, the decision is True for the rest of the claim,
+    a rewind to a position where its ``from`` would not hold included (§4). Each
+    stop is evaluated at the node being written, and two stops are an any-join."""
+    ch = open_run()
+    obs = open_run()
+    send_stop(obs, "late", **{"from": {"commits": 5}})
+    send_stop(obs, "s", **{"from": {"commits": 2}})
+    w = worker(ch)
+    assert w.commit() is False  # count 1 at the node being written
+    assert w.commit() is True  # count 2: "s" holds; "late" did not clobber it
+    assert w.commit() is True  # a level, not a pulse
+    w.rewind(None)
+    assert w.stop_pending is True
+    assert w.heartbeat() is True
+    assert w.commit() is True  # count 1 again, and still True
+
+
+def test_stop_pending_reads_the_decision_without_side_effects(open_run):
+    ch = open_run()
+    send_stop(open_run(), "s", **{"from": {"commits": 2}})
+    w = worker(ch)
+    assert w.stop_pending is False  # nothing drained yet
+    assert w.commit() is False
+    assert w.stop_pending is False  # the decision at the last node
     before = ch.last_seq()
+    assert w.stop_pending is False
+    assert ch.last_seq() == before  # reading it writes nothing
+    assert w.commit() is True
+    assert w.stop_pending is True
+    assert w.stop_pending is True  # and consumes nothing
+    assert w.commit() is True
 
-    assert w.tick(1) is True  # already stopped -> stop at this safe point
-    assert ch.last_seq() == before  # and wrote nothing
-    assert ch.latest(Topic.LIFECYCLE_HEARTBEAT).body["step"] == 0
+
+def test_a_withdrawn_stop_is_spent_before_it_holds(open_run):
+    ch = open_run()
+    obs = open_run()
+    send_stop(obs, "s", **{"from": {"commits": 2}})
+    w = worker(ch)
+    assert w.commit() is False  # drained, pending
+    send_withdraw(obs, "s")
+    assert w.commit() is False  # count 2, but the withdrawal spent it
+    assert w.commit() is False
+    send_stop(obs, "s")  # a spent id is dead on arrival
+    assert w.heartbeat() is False
+    assert naks(ch) == []
+
+
+def test_the_claim_folds_the_answers_so_a_spent_stop_is_never_drained(open_run):
+    """The claim folds the answers by name, for the whole log (§4, "The claim",
+    step 1): a stop an exit honored, a withdrawal named or a nak refused is spent
+    wherever the answer sits, a withdrawal before its stop included."""
+    ch = open_run()
+    obs = open_run()
+    append(obs, [(1, started(None))])
+    send_stop(obs, "honored")
+    send_withdraw(obs, "early")  # before the stop it names
+    send_stop(obs, "early")
+    send_stop(obs, "refused")
+    obs.send(
+        {"reason": "malformed", "message": "no"},
+        topic=Topic.LIFECYCLE_NAK,
+        request_id="refused",
+    )
+    append(obs, [(7, stopped(1, None, [], honored=["honored"]))])
+    send_stop(obs, "honored")  # a re-send of a spent id
+    w = worker(ch)
+    assert w.heartbeat() is False
+    assert w.commit() is False
+    assert naks(ch) == [("refused", "malformed")]  # the worker wrote none
+
+
+@pytest.mark.parametrize(
+    "topic, request_id, body, reason",
+    [
+        ("control.stop", "s", {"from": {"commits": "oops"}}, "malformed"),
+        ("control.stop", "s", {"from": {"bogus": 1}}, "malformed"),
+        ("control.stop", "s", {"every": {"commits": 1}}, "malformed"),
+        ("control.stop", "s", {"until": {"commits": 9}}, "malformed"),
+        ("control.stop", "s", {"from": {"count": 1}}, "malformed"),
+        ("control.stop", "s", {"bogus": 1}, "malformed"),
+        ("control.stop", None, {}, "malformed"),  # a stop is named by its id
+        ("control.stop", "s", {"from": {"stream": "lr", "n": 1}}, "unsatisfiable"),
+        ("control.frobnicate", "s", {}, "unsupported"),
+    ],
+)
+def test_a_bad_stop_or_control_verb_is_refused_and_never_pending(
+    open_run, topic, request_id, body, reason
+):
+    """A request the worker cannot honor is refused by a ``nak`` naming it, which
+    spends it, and is never pending: one bad request is never fatal, and does not
+    stop the run (§3, the refusals; §4, "A drain")."""
+    ch = open_run()
+    obs = open_run()
+    seq = obs.send(body, topic=topic, request_id=request_id)
+    w = worker(ch, sources=["lr"])
+    assert w.heartbeat() is False
+    assert w.commit() is False  # not poisoned
+    assert naks(ch) == [(request_id, reason)]
+    assert undischarged_stops(obs) == []  # the nak answers it, by name
+    assert ch.latest(Topic.LIFECYCLE_HEARTBEAT).body["consumed_seq"] == seq
+
+
+def honored(ch):
+    """The newest exit's ``honored``, as the set it is (§3)."""
+    return set(ch.latest(Topic.LIFECYCLE_STOPPED).body["honored"])
+
+
+@pytest.mark.parametrize("topic", ["control.stop", "control.withdraw", "control.frob"])
+def test_an_empty_id_is_nameless_refused_and_never_pending(open_run, topic):
+    """A missing or empty id is nameless, on every control topic (§4, "A drain"):
+    refused ``malformed`` by a ``nak`` whose ``request_id`` is null. An empty-id
+    stop is never pending, so the exit writes normally, honoring nothing."""
+    ch = open_run()
+    obs = open_run()
+    obs.send({}, topic=topic, request_id="")
+    with worker(ch) as w:
+        assert w.heartbeat() is False
+        assert w.commit() is False
+    assert naks(ch) == [(None, "malformed")]
+    assert honored(ch) == set()
+    conforms(ch, after=1)  # the worker's records; the empty id is not on the wire
+
+
+def test_a_nameless_record_is_refused_by_the_first_claim_that_drains_it(open_run):
+    """Nothing can spend a nameless record, so a claim refuses one only above the
+    previous claim's ``started`` (§4, "A drain"): the first claim refuses each
+    once, and the claims after it pass over them. A named one is spent by its
+    refusal, and every later claim skips it."""
+    ch = open_run()
+    obs = open_run()
+    obs.send({}, topic="control.frob", request_id="x")
+    send_stop(obs, None)
+    send_stop(obs, "")
+    claims = []
+    for _ in range(3):
+        with worker(ch, resume_from=LatestClaimHead()) as w:
+            claims.append(obs.latest(Topic.LIFECYCLE_STARTED).seq)
+            assert w.commit() is False
+    assert naks(ch) == [("x", "unsupported"), (None, "malformed"), (None, "malformed")]
+    assert all(e.seq < claims[1] for e in ch.read(topics=[Topic.LIFECYCLE_NAK]))
+
+
+def test_a_nameless_record_an_ended_claim_never_drained_is_refused_by_the_next(
+    open_run,
+):
+    """A nameless record above the previous claim's ``started`` is refused, since
+    that claim may have ended before it drained it (§4, "A drain"); the claim
+    after the refusing one passes over it."""
+    ch = open_run()
+    obs = open_run()
+    w1 = worker(ch)
+    send_stop(obs, None)  # after the first claim, which ends before it drains
+    end(ch, w1)
+    w2 = worker(ch, resume_from=LatestClaimHead())
+    assert w2.commit() is False
+    assert naks(ch) == [(None, "malformed")]
+    end(ch, w2)
+    w3 = worker(ch, resume_from=LatestClaimHead())
+    assert w3.commit() is False
+    assert naks(ch) == [(None, "malformed")]  # not again
+
+
+def test_a_nameless_record_a_claim_refused_is_not_refused_by_the_next(open_run):
+    """The bound is the previous claim's watermark, not its ``started`` (§4, "A
+    drain"): a nameless record that landed after claim N began, and that claim N
+    refused, lies below claim N's watermark, so claim N+1 passes over it."""
+    ch = open_run()
+    obs = open_run()
+    with worker(ch) as w:
+        send_stop(obs, None)  # after the claim's started
+        assert w.commit() is False  # refused, and below this commit's watermark
+    with worker(ch, resume_from=LatestClaimHead()) as w:
+        assert w.commit() is False
+    assert naks(ch) == [(None, "malformed")]
+
+
+class _CommitFails(Wrapping):
+    """A channel whose ``lifecycle.commit`` never lands: a worker that crashes
+    after its drain's writes and before its watermark."""
+
+    def send(self, body, *, topic, name=None, request_id=None, expected_seq=None):
+        if topic == Topic.LIFECYCLE_COMMIT:
+            raise OSError("crashed before the watermark")
+        return super().send(
+            body,
+            topic=topic,
+            name=name,
+            request_id=request_id,
+            expected_seq=expected_seq,
+        )
+
+
+def test_a_claim_that_crashed_before_its_watermark_leaves_a_refusal_to_repeat_once(
+    open_run,
+):
+    """A claim that crashed between a refusal and its next watermark leaves the
+    record to be refused once more, by the next claim (§4, "A drain"), and the
+    claim after that one passes over it."""
+    ch = open_run()
+    obs = open_run()
+    w = worker(_CommitFails(ch))
+    send_stop(obs, None)
+    with pytest.raises(OSError, match="before the watermark"):
+        w.commit()  # the refusal landed; the commit, its watermark, did not
+    assert naks(obs) == [(None, "malformed")]
+    end(obs, w)
+    for _ in range(2):
+        with worker(ch, resume_from=LatestClaimHead()) as w:
+            assert w.commit() is False
+    assert naks(obs) == [(None, "malformed")] * 2
+
+
+def test_a_spent_id_is_skipped_silently_on_every_control_topic(open_run):
+    """A spent id is dead on arrival on every control topic (§4, "A drain"): an
+    unknown verb refused once is skipped by its re-send in the same claim, and by
+    the next claim, whose fold reads the ``nak`` that spent it."""
+    ch = open_run()
+    obs = open_run()
+    obs.send({}, topic="control.frob", request_id="x")
+    with worker(ch) as w:
+        assert w.commit() is False
+        obs.send({}, topic="control.frob", request_id="x")  # a re-send, spent
+        assert w.commit() is False
+    with worker(ch, resume_from=LatestClaimHead()) as w:
+        assert w.commit() is False
+    assert naks(ch) == [("x", "unsupported")]
+
+
+def test_a_refused_resend_of_a_pending_stop_drops_it(open_run):
+    """A refused re-send spends the id and drops the registration (§4, "A drain";
+    §3's re-send rule): the stop it named never holds, and the exit honors
+    nothing."""
+    ch = open_run()
+    obs = open_run()
+    send_stop(obs, "s", **{"from": {"commits": 2}})
+    with worker(ch) as w:
+        assert w.commit() is False  # count 1: pending
+        send_stop(obs, "s", **{"from": {"bogus": 1}})
+        assert w.commit() is False  # count 2, but the refusal dropped it
+        assert w.stop_pending is False
+    assert naks(ch) == [("s", "malformed")]
+    assert honored(ch) == set()
+    assert undischarged_stops(obs) == []
+
+
+def test_an_accepted_resend_of_a_pending_stop_replaces_it_and_restarts_its_clock(
+    open_run,
+):
+    """An accepted re-send of a pending stop replaces its registration, its time
+    ``from`` counted from the re-send (§4, "A drain")."""
+    ch = open_run()
+    obs = open_run()
+    clock = Clock()
+    send_stop(obs, "s", **{"from": {"time_seconds": 10}})
+    with worker(ch, now=clock) as w:
+        assert w.heartbeat() is False  # registered at t 0
+        clock.t = 8.0
+        send_stop(obs, "s", **{"from": {"time_seconds": 10}})
+        assert w.heartbeat() is False  # registered afresh at t 8
+        clock.t = 12.0
+        assert w.heartbeat() is False  # 12 s from the first send, 4 from the re-send
+        clock.t = 18.0
+        assert w.heartbeat() is True
+    assert naks(ch) == []
+    assert honored(ch) == {"s"}
+
+
+def test_a_resend_of_a_held_stop_is_ignored(open_run):
+    """A re-send of a stop that has held is ignored, since the decision is a level
+    (§4, "A drain"): not re-parsed, so not refused, and still honored."""
+    ch = open_run()
+    obs = open_run()
+    send_stop(obs, "s")
+    with worker(ch) as w:
+        assert w.commit() is True
+        send_stop(obs, "s", **{"from": {"bogus": 1}})
+        assert w.heartbeat() is True
+    assert naks(ch) == []
+    assert honored(ch) == {"s"}
+
+
+class _Spanning(MemoryChannel):
+    """A memory channel that records, for each read, the rows of the log its window
+    covers: those above ``after``, up to its ``limit``."""
+
+    def __init__(self):
+        super().__init__()
+        self.spans = []
+
+    def read(self, after=0, **kw):
+        span = self.last_seq() - after
+        limit = kw.get("limit")
+        self.spans.append(span if limit is None else min(limit, span))
+        return super().read(after, **kw)
+
+
+def test_a_drain_reads_only_the_records_since_the_last_drain():
+    """I1: with no control traffic, a drain's reads cover the records since the
+    last complete drain (its W), not the log back to the newest control record:
+    the same rows after 10 iterations as after 10,000, for a commit and a
+    heartbeat alike."""
+
+    def last_drain(n):
+        ch = _Spanning()
+        w = worker(ch)
+        for _ in range(n):
+            w.emit("loss", 1.0)
+            w.commit()
+        rows = []
+        for step in (w.commit, w.heartbeat):
+            ch.spans.clear()
+            w.emit("loss", 1.0)
+            step()
+            rows.append(sum(ch.spans))
+        return rows
+
+    assert last_drain(10) == last_drain(10_000)
+
+
+# ----- steps(until) (§4, "The drivers") ----------------------------------------------
+
+
+def test_steps_continues_from_the_log_after_a_resume(open_run):
+    """The yielded index is ``count(Commits(), position)`` before each commit: a
+    resumed driver continues from the log, run-absolute, and a rewind inside the
+    body moves the next index (0.3.0's ``start=`` is removed)."""
+    ch = open_run()
+    w = worker(ch)
+    assert list(w.steps(Target(Commits(), 3))) == [0, 1, 2]
+    node = ch.latest(Topic.LIFECYCLE_COMMIT).seq
+    end(ch, w)
+
+    first = ch.read(topics=[Topic.LIFECYCLE_COMMIT], limit=1)[0].seq
+    w2 = worker(open_run(), resume_from=AtNode(node))
+    seen, rewound = [], False
+    for i in w2.steps(Target(Commits(), 5)):
+        seen.append(i)
+        if i == 4 and not rewound:
+            w2.rewind(AtNode(first))  # back to count 1: its commit makes 2
+            rewound = True
+    assert seen == [3, 4, 2, 3, 4]
+
+
+def test_steps_ends_at_the_target_or_a_stop(open_run):
+    ch = open_run()
+    obs = open_run()
+    w = worker(ch)
+    assert list(w.steps(Target(Commits(), 0))) == []  # reached at once
+    assert nodes(ch) == []
+    for i in w.steps(Target("loss", 3)):
+        w.emit("loss", float(i))
+        if i == 0:
+            w.emit("loss", 0.5)  # two elements in one iteration
+    assert prefix_len(ch, "loss", head=LatestClaimHead()) == 3
+    assert prefix_len(ch, Commits(), head=LatestClaimHead()) == 2
+
+    send_stop(obs, "s", **{"from": {"commits": 4}})
+    assert list(w.steps(None)) == [2, 3]  # ends on the stop, at count 4
+    assert list(w.steps(None)) == []  # the decision is a level
+
+
+def test_steps_refuses_a_target_naming_a_declared_source(open_run):
+    """Review Focus 2 (§4, "The drivers"; plan, open question 1): a source's count
+    is 0 forever, so such a target would drive without end. Raised at the call,
+    before the first iteration."""
+    ch = open_run()
+    w = worker(ch, sources=["lr"])
+    before = ch.last_seq()
+    with pytest.raises(ValueError, match="source"):
+        w.steps(Target("lr", 1))
+    assert ch.last_seq() == before
+    assert list(w.steps(Target("loss", 0))) == []  # an eager stream is fine
+
+
+# ----- the fence (§4, "A released worker fences itself") ----------------------------
+
+
+def died_rec(claim):
+    """A death report's body naming ``claim``."""
+    return {"claim_seq": claim, "outcome": "killed", "evidence": "test: x", "t": 1.0}
+
+
+@pytest.mark.parametrize(
+    "topic, body",
+    [
+        ("control.stop", {"from": {"bogus": 1}}),  # malformed
+        ("control.stop", {"from": {"stream": "lr", "n": 1}}),  # unsatisfiable
+        ("control.frobnicate", {}),  # unsupported
+    ],
+)
+def test_a_stop_refusal_is_cas_and_a_death_report_landing_first_leaves_it_unrefused(
+    open_run, topic, body
+):
+    """A refusal is judged against the claim's declaration, and a ``nak`` names no
+    claim, so a released worker must not write one (§4, "A drain"). Its CAS at the
+    drain's tail loses to the report, and the drain run again reads the report
+    first and refuses nothing: the request is left for a successor."""
+    obs = open_run()
+    ch = Interloping(open_run(), obs)
+    w = worker(ch, sources=["lr"])
+    claim = obs.latest(Topic.LIFECYCLE_STARTED).seq
+    obs.send(body, topic=topic, request_id="r")
+    ch.arm(died_rec(claim), topic=Topic.SUPERVISOR_DIED)
+    assert w.heartbeat() is True
+    assert ch.fired
+    assert w.released is True
+    assert naks(obs) == []
+    assert records(obs)[-1][1] == Topic.SUPERVISOR_DIED  # nothing after the report
+
+
+def test_a_drain_that_loses_a_refusals_cas_refuses_once(open_run):
+    """A lost CAS re-runs the drain from the record it refused (§4, "A drain"): a
+    record that lands first (here a heartbeat of another writer) is read, and the
+    refusal is written once, at the new tail."""
+    obs = open_run()
+    ch = Interloping(open_run(), obs)
+    w = worker(ch)
+    obs.send({}, topic="control.frobnicate", request_id="a")
+    obs.send({}, topic="control.frobnicate", request_id="b")
+    ch.arm({"value": 1, "t": 1.0}, topic=Topic.VALUE)
+    assert w.heartbeat() is False
+    assert ch.fired
+    assert naks(obs) == [("a", "unsupported"), ("b", "unsupported")]
+
+
+class _ReadFailsAfterTheClaim(Wrapping):
+    """A channel whose first read after the claim's CAS raises."""
+
+    armed = False
+
+    def send(self, body, *, topic, name=None, request_id=None, expected_seq=None):
+        seq = super().send(
+            body,
+            topic=topic,
+            name=name,
+            request_id=request_id,
+            expected_seq=expected_seq,
+        )
+        if topic == Topic.LIFECYCLE_STARTED and seq is not None:
+            self.armed = True
+        return seq
+
+    def read(self, after=0, **kw):
+        if self.armed:
+            self.armed = False
+            raise OSError("the disk is gone")
+        return super().read(after, **kw)
+
+
+def test_a_raise_after_the_claims_cas_writes_its_errored_exit(open_run):
+    """M1: a read after the claim's CAS that raises leaves no held claim with no
+    object to end it. The worker writes the claim's exit, errored and torn, and
+    the raise propagates; the next worker claims without a death report."""
+    ch = open_run()
+    send_stop(ch, "s")  # a log to fold: the fold reads it
+    with pytest.raises(OSError, match="the disk is gone"):
+        worker(_ReadFailsAfterTheClaim(ch))
+    claim = ch.latest(Topic.LIFECYCLE_STARTED).seq
+    exit_ = ch.latest(Topic.LIFECYCLE_STOPPED)
+    assert exit_.seq > claim
+    assert {k: exit_.body[k] for k in ("claim_seq", "completed", "error")} == {
+        "claim_seq": claim,
+        "completed": False,
+        "error": "the disk is gone",
+    }
+    assert (exit_.body["parent"], exit_.body["values"]) == (None, None)
+    assert worker(ch, resume_from=LatestClaimHead()).claimed
+    conforms(ch)
+
+
+_OUTRUN = {"value": 1.0, "t": 1.0}  # what an always-faster writer appends
+
+
+def test_a_claim_that_never_wins_its_cas_raises_worker_starved(open_run):
+    """M3: a writer that appends before every CAS starves the claim, which gives up
+    after ``CAS_ATTEMPTS``, typed, having claimed nothing."""
+    obs = open_run()
+    ch = Interloping(open_run(), obs)
+    ch.arm(_OUTRUN, topic=Topic.VALUE, name="x", times=None)
+    with pytest.raises(WorkerStarvedError) as exc:
+        worker(ch)
+    assert (exc.value.step, exc.value.claim_seq, exc.value.attempts) == (
+        "claim",
+        None,
+        CAS_ATTEMPTS,
+    )
+    assert ch.cas == CAS_ATTEMPTS
+    assert records(obs, Topic.LIFECYCLE_STARTED) == []
+
+
+def test_a_drain_whose_refusal_never_wins_its_cas_raises_worker_starved(open_run):
+    """M3: a drain's refusal that loses every CAS gives up after ``CAS_ATTEMPTS``,
+    typed and naming the claim, having refused nothing."""
+    obs = open_run()
+    ch = Interloping(open_run(), obs)
+    w = worker(ch)
+    claim = obs.latest(Topic.LIFECYCLE_STARTED).seq
+    obs.send({}, topic="control.frob", request_id="a")
+    ch.arm(_OUTRUN, topic=Topic.VALUE, name="x", times=None)
+    with pytest.raises(WorkerStarvedError) as exc:
+        w.heartbeat()
+    assert (exc.value.step, exc.value.claim_seq, exc.value.attempts) == (
+        "drain",
+        claim,
+        CAS_ATTEMPTS,
+    )
+    assert naks(obs) == []
+
+
+def test_a_released_worker_writes_nothing_more(open_run):
+    """A drain reads the death reports naming its claim first; once one does, the
+    worker latches (§4): every method that writes writes nothing, ``commit()`` and
+    ``heartbeat()`` return True, ``stop_pending`` is True, and misuse no longer
+    raises, since it cannot know when the report landed."""
+    ch = open_run()
+    obs = open_run()
+    w = worker(ch, sources=["lr"])
+    w.emit("loss", 1.0)
+    pending = ch.last_seq()
+    w.commit()
+    claim = obs.latest(Topic.LIFECYCLE_STARTED).seq
+    obs.send(died_rec(claim), topic=Topic.SUPERVISOR_DIED)
+    send_stop(obs, "s")  # meant for the successor
+    assert w.released is False  # not read yet
+    assert w.heartbeat() is True
+    assert w.released is True
+    before = records(obs)
+    assert w.commit() is True
+    assert w.heartbeat() is True
+    assert w.stop_pending is True
+    w.emit("lr", 1.0)  # misuse, silently nothing
+    w.set("loss", 1.0)
+    w.include(pending)
+    w.rewind(None)
+    assert list(w.steps(None)) == []
+    assert records(obs) == before
+    assert [e.request_id for e in undischarged_stops(obs)] == ["s"]

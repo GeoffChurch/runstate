@@ -18,12 +18,12 @@ submit / poll / counts / cancel seam with two implementations:
 - ``LocalJobs`` -- qiskit's StatevectorSampler (the default, so anyone can
   run the example): credential-free, with a small ARTIFICIAL queue latency
   (``VQE_LOCAL_LATENCY``, default 0.25 s) standing in for a real queue --
-  without it the worker's tick-while-you-block loop (the example's whole
-  point) would be dead code on the only path that needs no credentials;
+  without it the worker's heartbeat-while-you-block loop (the example's
+  whole point) would be dead code on the only path that needs no credentials;
 - ``IonQJobs`` -- IonQ Cloud via qiskit-ionq (``VQE_BACKEND=simulator`` or
   ``qpu.aria-1``, ...; needs $IONQ_API_KEY). One multi-circuit API job per
   SPSA iteration; ``poll`` is non-blocking on purpose -- the worker owns the
-  wait so it can tick runstate between polls (see worker.py).
+  wait so it can heartbeat between polls (see worker.py).
 
 Dependency note: qiskit is deliberately undeclared by the core (install via
 ``pip install runstate[examples]`` or plain ``pip install qiskit``) and needs
@@ -42,6 +42,8 @@ import hashlib
 import json
 import os
 import time
+from collections.abc import Callable
+from typing import Any
 
 try:
     import numpy as np
@@ -57,7 +59,7 @@ except ImportError as exc:
 ANSATZ = "ry-cx"  # part of the run identity: change the circuit, change the run
 
 
-def config():
+def config() -> dict[str, Any]:
     """The experiment's knobs, from VQE_* env (defaults = the local demo)."""
     backend = os.environ.get("VQE_BACKEND", "local")
     return {
@@ -76,7 +78,7 @@ def config():
     }
 
 
-def run_id(cfg):
+def run_id(cfg: dict[str, Any]) -> str:
     """Content-addressed identity: hash the inputs that change the physics,
     EXCLUDING the budget -- more iterations extend the same run rather than
     naming a new one (the extend axis, docs/specs/run-id-recipe.md)."""
@@ -86,7 +88,7 @@ def run_id(cfg):
     return "vqe-" + hashlib.sha256(canon.encode()).hexdigest()[:12]
 
 
-def circuits(params):
+def circuits(params: list[float]) -> list[Any]:
     """The two measurement circuits for one energy evaluation at ``params``."""
     t0, t1 = params
     prep = QuantumCircuit(2)
@@ -102,12 +104,14 @@ def circuits(params):
     return [zz, xx]
 
 
-def _expval(counts, eig):
+def _expval(counts: dict[str, int], eig: Callable[[str], float]) -> float:
     total = sum(counts.values())
     return sum(eig(key) * n for key, n in counts.items()) / total
 
 
-def energy(zz_counts, xx_counts, *, j, h):
+def energy(
+    zz_counts: dict[str, int], xx_counts: dict[str, int], *, j: float, h: float
+) -> float:
     """E = -J <Z0Z1> - h (<X0> + <X1>). Qiskit bitstrings are little-endian:
     ``key[-1]`` is qubit 0."""
     zz = _expval(zz_counts, lambda k: 1.0 if k[-1] == k[-2] else -1.0)
@@ -116,7 +120,7 @@ def energy(zz_counts, xx_counts, *, j, h):
     return -j * zz - h * (x0 + x1)
 
 
-def exact_ground(j, h):
+def exact_ground(j: float, h: float) -> float:
     """The exact ground energy by diagonalizing the 4x4 Hamiltonian
     (-sqrt(5) at J = h = 1) -- the yardstick the driver prints against."""
     ham = SparsePauliOp.from_list([("ZZ", -j), ("XI", -h), ("IX", -h)])
@@ -132,11 +136,11 @@ class LocalJobs:
     exercised without credentials. ``VQE_LOCAL_LATENCY=0`` restores the
     instant path."""
 
-    def __init__(self, shots, seed):
+    def __init__(self, shots: int, seed: int) -> None:
         self._sampler = StatevectorSampler(default_shots=shots, seed=seed)
         self._latency = float(os.environ.get("VQE_LOCAL_LATENCY", "0.25"))
 
-    def submit(self, circs):
+    def submit(self, circs: list[Any]) -> dict[str, Any]:
         job = self._sampler.run([(c,) for c in circs])
         return {
             "counts": [r.data.meas.get_counts() for r in job.result()],
@@ -144,15 +148,16 @@ class LocalJobs:
             "canceled": False,
         }
 
-    def poll(self, handle):
+    def poll(self, handle: dict[str, Any]) -> str | None:
         if handle["canceled"]:
             return "CANCELED"
         return "DONE" if time.monotonic() >= handle["ready_at"] else None
 
-    def counts(self, handle):
-        return handle["counts"]
+    def counts(self, handle: dict[str, Any]) -> list[dict[str, int]]:
+        counts: list[dict[str, int]] = handle["counts"]
+        return counts
 
-    def cancel(self, handle):
+    def cancel(self, handle: dict[str, Any]) -> None:
         handle["canceled"] = True
 
 
@@ -161,7 +166,7 @@ class IonQJobs:
     polled non-blockingly (``job.result()`` would block -- the worker owns the
     wait so a cooperative stop can land mid-queue)."""
 
-    def __init__(self, backend_name, shots, seed):
+    def __init__(self, backend_name: str, shots: int, seed: int) -> None:
         import warnings
 
         from qiskit_ionq import IonQProvider  # lazy: only the cloud path needs it
@@ -172,28 +177,28 @@ class IonQJobs:
         # native synthesis.
         warnings.filterwarnings("ignore", category=IonQTranspileLevelWarning)
         self._backend = IonQProvider().get_backend(backend_name)  # $IONQ_API_KEY
-        self._opts = {"shots": shots}
+        self._opts: dict[str, Any] = {"shots": shots}
         if "simulator" in backend_name:
             self._opts["sampler_seed"] = seed  # deterministic client-side sampling
 
-    def submit(self, circs):
+    def submit(self, circs: list[Any]) -> Any:
         return self._backend.run(circs, **self._opts)
 
-    def poll(self, job):
+    def poll(self, job: Any) -> str | None:
         from qiskit.providers.jobstatus import JOB_FINAL_STATES
 
         status = job.status()
-        return status.name if status in JOB_FINAL_STATES else None
+        return str(status.name) if status in JOB_FINAL_STATES else None
 
-    def counts(self, job):
+    def counts(self, job: Any) -> list[dict[str, int]]:
         result = job.result()
         return [result.get_counts(i) for i in range(len(result.results))]
 
-    def cancel(self, job):
+    def cancel(self, job: Any) -> None:
         job.cancel()
 
 
-def jobs_backend(cfg):
+def jobs_backend(cfg: dict[str, Any]) -> LocalJobs | IonQJobs:
     if cfg["backend"] == "local":
         return LocalJobs(cfg["shots"], cfg["seed"])
     return IonQJobs(cfg["backend"], cfg["shots"], cfg["seed"])

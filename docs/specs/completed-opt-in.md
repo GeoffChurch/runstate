@@ -2,6 +2,11 @@
 
 **Status:** converged 2026-06-04 (extended design dialectic, including the `Stopped.reason`
 removal); ready for review → implementation.
+**Log format 0.4.0** (2026-10-30, [`commits-and-lineage.md`](commits-and-lineage.md) §2, §4): the one
+bit stands, now on the exit node. A completed exit is closed, a non-completed one extendable, and
+`final_step` is gone from `stopped` (the exit is itself a node, named by its seq; `RunResult.node`).
+`stopped(*, completed, error)` takes both arguments, required. The body shapes and `worker.py`
+references below are 0.3.0's; the register recipe is updated in place.
 **Basis:** refines `preempted-vs-completed.md` (which introduced the `completed`/`preempted` outcome
 distinction). This spec changes the *default*, removes the free `reason` field, and reduces the
 worker's terminal vocabulary to a single bit. **Origin:** the `ensure(until)` final review caught
@@ -78,11 +83,14 @@ it — **one recipe; build your own** — is a **value-plane register**, validat
 (which built it after the recurring completion-classification bug class this removal otherwise
 invites, re-deriving "why" from `outcome + progress`):
 
-- **Shape.** A stepless `value` record: `topic="value"`, a name of your choosing (mycooc uses
+- **Shape.** A raw `value` send: `topic="value"`, a name of your choosing (mycooc uses
   `completion_reason`, the **conventional** name — a viewer/second consumer then has one place to
-  look; the *vocabulary* stays yours), body `{value: {reason: <your word>}, step: null, t: now}`.
-  `step=null` keeps it out of the step-indexed metric folds (it is a register, latest-by-`seq`, not a
-  series point). No wire change — the substrate already carries arbitrary `value` bodies.
+  look; the *vocabulary* stays yours), body `{value: {reason: <your word>}, t: now}`. Since log format
+  0.4.0 (`value`-`v0.3`, [`commits-and-lineage.md`](commits-and-lineage.md) §3, §8) a `value` has no
+  `step`, and its `additionalProperties: false` refuses one. What keeps a register out of the metric
+  reads is that it is sent on the channel directly, never through `w.emit`, so no node's `values`
+  names it: it is outside every lineage, a register read latest-by-`seq`, not a stream's element. No
+  wire change beyond that — the substrate already carries arbitrary `value` bodies.
 - **Writer(s).** The **worker** emits it once before its dying-breath `stopped` (it knows the
   intrinsic why); optionally the **orchestrator** emits it when it force-kills a worker that could not
   self-report (the exogenous why the killed worker never got to write). The value plane is
@@ -90,6 +98,9 @@ invites, re-deriving "why" from `outcome + progress`):
 - **Rule 1 — episode-scope the read.** Read only the register *after* `latest_episode().seq`, else a
   resumed run reports the *prior* dispatch's reason before it re-emits. (mycooc learned this; it is
   not optional.)
+  The register's read, the newest value of the name after the claim's `started`, compares
+  positions across writers, which no 0.4.0 rule does, so the recipe stays outside the convention
+  (`commits-and-lineage.md` §8).
 - **Rule 2 — the terminal owns done-ness; the register owns only *why*.** The register is written
   *before* the terminal, so it is a **prophecy** of a stop the worker's shutdown work (final
   checkpoint, artifact flush) must still complete: **never derive done-ness from the register alone.**

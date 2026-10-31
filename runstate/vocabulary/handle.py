@@ -16,8 +16,16 @@ import os
 import socket
 
 
+def local_handle_of(pid: int) -> str:
+    """The ``local://host/pid`` handle of the process ``pid`` on this host: THE one
+    build site for the local-handle grammar, as ``_parse_local`` is its one parse
+    site, so a launcher's handle for its child and the child's own compare whole."""
+    return f"local://{socket.gethostname()}/{pid}"
+
+
 def local_handle() -> str:
-    return f"local://{socket.gethostname()}/{os.getpid()}"
+    """This process's handle."""
+    return local_handle_of(os.getpid())
 
 
 def _parse_local(handle: str) -> tuple[str, int] | None:

@@ -106,9 +106,11 @@ wider.
 - appends are atomic; the order is total;
 - `send(expected_seq=)` admits exactly one winner at that seq.
 
-That is the entire list, and it is why the *required* substrate is four operations. (Two more —
-`hold_episode` / `episode_alive` — exist as optional capability protocols off the base ABC, for
-backends that can offer a session-bound liveness signal. They are a signal, never a claim gate.)
+That is the entire list, and it is why the *required* substrate is four operations. (One more — the
+session probe, `SessionProbe` — exists as an optional capability protocol off the base ABC, for a
+backend that can say whether the session that wrote a claim has ended; Postgres offers it. It yields
+evidence for a death report, never a claim gate. It replaced the episode lock's `hold_episode` /
+`episode_alive` on 2026-10-30.)
 
 **Recorded** — true if the writer was honest. Who claimed, what was requested, what was observed,
 what the verdict was. Every topic has a declared writer and reader; nothing checks that a writer

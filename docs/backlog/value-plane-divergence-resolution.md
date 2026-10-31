@@ -13,6 +13,16 @@ calls **G1**, and the value-plane robustness the cross-host claim gate needs
 red-team refuted it** — it added machinery to resolve a case that cannot arise. The converged
 design is below: the fix was to *delete* the raise, not add machinery.
 
+**Superseded by lineage** (log format 0.4.0, 2026-10-30:
+[`../specs/commits-and-lineage.md`](../specs/commits-and-lineage.md) §1, §5). The take-the-latest
+collapse is deleted, with the `(name, step)` key it resolved. A value belongs to the node whose
+`values` names its seq, and a reader projects one lineage, so a resumed attempt's recompute is an
+element of *its* lineage and the dead attempt's value is not on it: nothing needs collapsing, since
+an element's index is unique along a lineage. The soundness argument below assumed sequential
+episodes, which displacement breaks: measured, a displaced worker's values spliced the series in 8
+of 36 configurations under every vouching rule (`identity-in-records.md` §2–§3), the case lineage
+closes. Kept as the record of the 0.3.0 design.
+
 ## The problem
 
 `history(channel, name, until)` is the **reuse** projection: fold the logged `value` records

@@ -3,6 +3,12 @@
 **Status:** converged 2026-06-04 (design dialogue + two adversarial reviews — orthonormality
 and correctness — folded in); ready for review → implementation. Supersedes the scalar `up_to`
 form (clean break — **no** back-compat alias).
+**Superseded by log format 0.4.0** (2026-10-30, [`commits-and-lineage.md`](commits-and-lineage.md) §4,
+§5). `ensure`'s target is no longer a `Condition`: it is a `Target(x, n)`, "the first `n` of `x`", over an eager
+stream or `Commits()`, one type for `steps(until)`, `ensure` and the producer seam, passed through `extend` to
+`steps(until)` unconverted. The step axis this spec generalizes is gone, and a target counts lineage
+coordinates only, so a wall-clock budget is not a `Target`. `ensure(producer, target)` returns `Reached(node)` or `Unreachable(closed_at)`, and its failure exits
+carry the target and its count (`memoizer.md`'s status note). This spec stays as the record of the 0.3.0 design.
 **Origin:** the mycooc dogfood (runstate-adoption, Phase 4). Milestone-round-robin sweeps want to
 drive each variant to a *step* milestone **or** a *wall-clock* budget with one uniform loop; the
 scalar `up_to` only spans the step axis. Realizes the **bound** half of

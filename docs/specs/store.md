@@ -107,7 +107,8 @@ plan: the dispatcher `mkdir`s the home before opening the channel
 (sqlite does not create parent dirs), and the reference launchers take
 `root=` at construction, so per-rid homes mean per-rid launcher (or
 producer-side `create_channel`) construction — which breaks the
-one-root-many-runs helpers as shipped: `sweep(variants, launcher)` and
+one-root-many-runs helpers as shipped: `sweep(variants, launcher)` (since
+deleted, `../dead_ends/sweep.md`) and
 the lazy-launch activator-table recipe both hold ONE launcher over N
 rids and need a per-rid wrapper loop (named here so the wiring plan
 prices them; a `create_channel` layout hook is the revival trigger for
@@ -204,6 +205,20 @@ staleness-based liveness tier when it lands (backlog: "Cross-host
 liveness for the claim gate"); until then, cross-host demand convergence
 inherits lazy-launch's single-host scope.
 
+**Log format 0.4.0** (2026-10-30, [`commits-and-lineage.md`](commits-and-lineage.md)
+§3, §5). `live_episode` no longer probes a handle: it is the newest
+claim's handle unless that claim has **ended**, its exit or a death
+report naming it on the log. So `foreign_episode`'s `is_alive()` is a
+pure read of `ended`, writing nothing, and the two caveats above change
+shape: a crashed winner on any host reads live until a death report
+ends its claim, and pid reuse no longer fools the gate, since nothing
+on it probes. The probe moved to `report_if_dead`, which `ensure` calls
+on each poll while it waits on a claim, its own drive's or a foreign
+one: a same-host dead handle, or on Postgres a claim whose session has
+ended, is reported `lost`, which ends the claim and lets the next
+extend re-drive. A foreign-host crash with no session probe waits for
+whoever holds the evidence (a launcher's reap, a reclaim tool).
+
 **Scope of the arbitration claim.** The CAS makes the *claim* exclusive;
 it does not make the loser inert — that is a worker obligation. The
 guarantee holds iff (a) workers are **claim-honoring**: the loser must
@@ -278,6 +293,12 @@ run's id read as an unonboarded legacy log.
 `live_episode`'s conservatism helps here: an unresolvable (foreign-host)
 handle reads live, so the sweep refuses to collect what it cannot
 probe.
+
+**Log format 0.4.0:** the gate rests on `ended` (`commits-and-lineage.md`
+§2): `live_episode(channel) is None` once the newest claim's exit or a
+death report naming it is on the log. No probe enters it, so a
+same-host crash that nobody reports also keeps its home until someone
+reports it: the safe direction.
 
 ## Recipe 4 — provenance: the child records its parent at birth
 

@@ -42,6 +42,7 @@ internal home (`_window_step`).
    `ensure` door, and translation reuses `sweep`'s `Variant` + `launch_producer`
    regardless. `pinned` / `broadcast` / `ensure_served` are the service/leased-demand
    plane the basis audit (Q4) already ruled KEEP for a future persona.
+   *Reversed for `sweep` and `Variant` (owner, 2026-10-30): deleted, [`sweep.md`](sweep.md).*
 
 ## Postscript (2026-07-16)
 

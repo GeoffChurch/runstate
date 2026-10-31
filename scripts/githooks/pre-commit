@@ -1,13 +1,15 @@
 #!/bin/sh
-# The CI default job's gate set, locally, before every commit: ~100 s, almost all
+# The CI default job's gate set, locally, before every commit: ~110 s, almost all
 # of it pytest.
 #
 # These exist because the formatter gate is the one that gets skipped: it is
 # easy to run the checks, then add code, then commit without re-running them.
 # CI catches it, but a red CI on a green-looking branch costs a round trip.
 #
-# WEAKER than CI in one respect: without RUNSTATE_TEST_PG_DSN the ~280 Postgres
-# tests skip here and CI runs them, so a green hook does not imply a green CI.
+# The Postgres tests run here too: the suite starts its own throwaway server
+# (tests/pg_bootstrap.py) unless RUNSTATE_TEST_PG_DSN names one. Only where the
+# server binaries are missing do they skip, and then the suite's `note:` line is
+# shown, since a green hook there does not imply a green CI.
 #
 # The migration oracle's families (`-m oracle`) are deselected, as in CI's default
 # job; CI's oracle job runs them when the 0.3.0 -> 0.4.0 step or its simulator
@@ -20,6 +22,5 @@ rc=0
 run_gate "black"  black  --check runstate/ tests/ || rc=1
 run_gate "mypy"   mypy   --strict runstate        || rc=1
 run_gate "pytest" pytest tests/ -q -m "not oracle" || rc=1
-[ -n "$RUNSTATE_TEST_PG_DSN" ] || echo "  note  postgres suite skipped locally; CI runs it"
 [ $rc -eq 0 ] || echo "  (fix, or re-run with --no-verify)"
 exit $rc

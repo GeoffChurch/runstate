@@ -17,9 +17,8 @@ from typing import NamedTuple
 
 import pytest
 
-from runstate import LOG_FORMAT, Worker, create_channel
-from runstate.channel.sqlite import _SCHEMA, SqliteChannel
-from runstate.formats import FORMATS, DirectoryLayout
+from runstate.channel.sqlite import SqliteChannel
+from runstate.formats import FORMATS
 from runstate.migrations import STEPS, MigrationError, Row, chain, migrate
 from runstate.migrations.ambiguity import Limits, parse_choices, resolutions
 
@@ -27,7 +26,8 @@ from runstate.migrations.ambiguity import Limits, parse_choices, resolutions
 ONE = Limits(cap=1, budget=1, run_on=0)
 from runstate.migrations.stores import SqliteStore
 from runstate.migrations.v0_2_0_to_v0_3_0 import V0_2_0_to_V0_3_0
-from runstate.observables import (
+from runstate.migrations.v0_3_0_to_v0_4_0 import V0_3_0_to_V0_4_0
+from scripts.reads_v0_3_0 import (
     MalformedRecordError,
     live_demand,
     live_episode,
@@ -35,6 +35,7 @@ from runstate.observables import (
     progress,
     undischarged_stops,
 )
+from tests.format_helpers import provision_pg
 from tests.migration_helpers import NO_HISTORY
 
 step = V0_2_0_to_V0_3_0()
@@ -406,7 +407,7 @@ def _write(root: Path, rid: str, rows: list[Row]) -> Path:
     path.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript(_SCHEMA)
+    conn.executescript(FORMATS["0.2.0"].sqlite_ddl)
     conn.executemany(
         "INSERT INTO log (seq, topic, name, request_id, body, created_at)"
         " VALUES (?, ?, ?, ?, ?, ?)",
@@ -617,25 +618,20 @@ def test_a_lease_its_ended_latest_episode_served_is_no_longer_demand(tmp_path):
 
 
 @pytest.mark.parametrize("rid", sorted(MASTER_RESUMED))
-def test_a_worker_resumed_after_migration_serves_what_masters_would(tmp_path, rid):
-    """I1: the resume check. A 0.3.0 worker claims a migrated run, and the
-    demand it serves is master's demand once one more claim lands. Each lease a
-    claim since its send has already served stays unserved: its ``bound`` voids
-    it for every later episode, as the positional rule did."""
+def test_a_claim_after_migration_finds_masters_demand(tmp_path, rid):
+    """I1, the resume check: once one more claim lands on a migrated run, the demand
+    0.3.0 reads is master's. Each lease a claim since its send has already served
+    stays unserved: its ``bound`` voids it for every later episode, as the positional
+    rule did. The claim is a 0.3.0 ``lifecycle.started`` whose handle is dead, which
+    the demand read does not consult. I1's other half, the values a resumed 0.3.0
+    Worker fires, needs that Worker, which the 0.4.0 live layer replaces: dropped."""
     _write(tmp_path, rid, GOLDEN[rid])
-    migrate(SqliteStore(tmp_path), [rid], to=LOG_FORMAT, choices=TODAY)
-    ch = create_channel(rid, root=tmp_path)
-    before = {e.request_id for e in live_demand(ch)}
+    migrate(SqliteStore(tmp_path), [rid], to="0.3.0", choices=TODAY)
+    ch = _migrated(tmp_path, rid)
     head = ch.last_seq()
-    with Worker(ch) as w:
-        demand = {e.request_id: e.seq for e in live_demand(ch)}
-        assert sorted(demand.values()) == MASTER_RESUMED[rid]
-        for s in w.steps(3, start=10):
-            w.set("loss", float(s))
-            w.set("load", float(s))
-    fired = {e.request_id for e in ch.read(after=head, topics=["value"])}
-    assert fired <= set(demand)
-    assert not fired & (before - set(demand))
+    claim = _started(DEAD, 0.0)
+    assert ch.send(claim, topic="lifecycle.started", expected_seq=head) == head + 1
+    assert [e.seq for e in live_demand(ch)] == MASTER_RESUMED[rid]
     ch.close()
 
 
@@ -835,7 +831,7 @@ def _sqlite_reads(tmp_path, rid, rows):
     path = FORMATS["0.3.0"].sqlite_path(tmp_path, rid)
     path.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(path)
-    conn.executescript(_SCHEMA)
+    conn.executescript(FORMATS["0.3.0"].sqlite_ddl)
     conn.executemany(
         "INSERT INTO log (seq, topic, name, request_id, body, created_at)"
         " VALUES (?, ?, ?, ?, ?, ?)",
@@ -910,7 +906,7 @@ def test_the_cli_asks_for_each_fork_and_each_divergence(tmp_path, capsys):
     from runstate.cli import main
 
     write_v0_2_0(tmp_path)
-    assert main(["migrate", str(tmp_path)]) == 1
+    assert main(["migrate", str(tmp_path), "--to", "0.3.0"]) == 1
     err = capsys.readouterr().err
     assert "stop-honored (0.2.0 -> 0.3.0)" in err and "lease-bound (0.2.0" in err
     assert "record-claim (0.2.0" not in err  # no golden log forks there
@@ -919,7 +915,8 @@ def test_the_cli_asks_for_each_fork_and_each_divergence(tmp_path, capsys):
         in err
     )
     assert not (tmp_path / "v0.3.0").exists()
-    argv = ["migrate", str(tmp_path), *(f"--resolve={x}" for x in TODAY_RESOLVE)]
+    argv = ["migrate", str(tmp_path), "--to", "0.3.0"]
+    argv += [f"--resolve={x}" for x in TODAY_RESOLVE]
     assert main(argv) == 1  # the divergences are questions too: nothing migrates
     out = capsys.readouterr()
     assert out.out == "" and not (tmp_path / "v0.3.0").exists()
@@ -1133,29 +1130,17 @@ def test_a_refused_sqlite_run_is_refused_before_the_seal(tmp_path):
 
 @pytest.fixture
 def pg_v0_2_0_run(pg_ready):
-    """A run id for the shared postgres test database's 0.2.0 schema, which the
-    fixture provisions with the channel's own DDL: no channel writes 0.2.0 now.
-    The 0.3.0 schema is the current one, shared by every postgres test, so the
-    fixture removes only its own run from either."""
+    """A run id for the shared postgres test database's 0.2.0 and 0.3.0 schemas,
+    which the fixture provisions with their formats' tables: no channel writes
+    either now. Both are shared by every postgres test, so the fixture removes
+    only its own run from either."""
     import uuid
 
     import psycopg
-    from psycopg import sql
-
-    from runstate.channel.postgres import (
-        _CREATE_INDEX,
-        _CREATE_NAME_INDEX,
-        _CREATE_TABLE,
-    )
 
     rid = f"t12-{uuid.uuid4().hex}"
-    old = sql.Identifier(FORMATS["0.2.0"].pg_schema())
-    with psycopg.connect(pg_ready, autocommit=True) as c:
-        c.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(old))
-        with c.transaction():
-            c.execute(sql.SQL("SET LOCAL search_path TO {}").format(old))
-            for ddl in (_CREATE_TABLE, _CREATE_INDEX, _CREATE_NAME_INDEX):
-                c.execute(ddl)
+    for version in ("0.2.0", "0.3.0"):
+        provision_pg(pg_ready, FORMATS[version])
     try:
         yield pg_ready, rid
     finally:
@@ -1257,7 +1242,7 @@ STACK_0_2_0 = SchemaStack(
     value="value-v0.2",
 )
 STACK_0_3_0 = SchemaStack(
-    root=_HERE.parent / "protocol",
+    root=_HERE / "fixtures" / "log-format-0.3.0",
     envelope="envelope-v0.2",
     control="subscription-v0.3",
     lifecycle="lifecycle-v0.5",
@@ -1346,24 +1331,10 @@ def test_the_step_imports_no_record_semantics():
 
 
 def test_the_step_and_format_are_registered():
-    assert FORMATS["0.3.0"] == DirectoryLayout("0.3.0")
-    assert LOG_FORMAT == "0.3.0"  # the release that introduced it
-    assert [type(s) for s in STEPS] == [V0_2_0_to_V0_3_0]
-    assert chain("0.2.0", "0.3.0") == list(STEPS)
-
-
-def test_the_cli_migrates_to_the_current_format_by_default(tmp_path, capsys):
-    """`runstate migrate` without --to targets LOG_FORMAT: a run the locators
-    refuse at 0.2.0 opens at its 0.3.0 address afterwards, its old log sealed."""
-    from runstate import LogFormatMismatch, attach_channel
-    from runstate.cli import main
-
-    old = _write(tmp_path, "episodes", GOLDEN["episodes"])
-    with pytest.raises(LogFormatMismatch, match="runstate migrate"):
-        attach_channel("episodes", root=tmp_path)
-    assert main(["migrate", str(tmp_path), "--accept", "stale-beat"]) == 0
-    assert capsys.readouterr().out.split() == ["episodes"]
-    assert not os.stat(old).st_mode & 0o200  # sealed
-    with attach_channel("episodes", root=tmp_path) as ch:
-        beats = ch.read(topics=["lifecycle.heartbeat"])
-        assert beats and all(e.body["claim_seq"] >= 1 for e in beats)
+    fmt = FORMATS["0.3.0"]
+    assert fmt.version == "0.3.0"
+    assert fmt.sqlite_path(Path("/r"), "x") == Path("/r/v0.3.0/x.db")
+    assert fmt.pg_schema() == "runstate_v0_3_0"
+    assert [type(s) for s in STEPS] == [V0_2_0_to_V0_3_0, V0_3_0_to_V0_4_0]
+    assert chain("0.2.0", "0.3.0") == [STEPS[0]]
+    assert chain("0.2.0", "0.4.0") == list(STEPS)

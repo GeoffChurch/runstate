@@ -1,9 +1,10 @@
 # Spec: commits and lineage — values committed to a lineage of nodes (log format 0.4.0)
 
-**Status:** DRAFT, revision 2, 2026-10-14; its drafting choices settled 2026-10-23 (review §12, item 14).
-Its migration (§7) and §5's pure reads are implemented, and the step was run over every runstate log the
-consumers hold (2026-10-28; review §12, item 16); it stays unregistered until layer 2's last commit. For the
-owner's review; the rest is not implemented.
+**Status:** APPROVED, revision 2, 2026-10-14; its drafting choices settled 2026-10-23 (review §12, item 14),
+and the owner approved it at ruling 12a (2026-10-28, review §12, item 16). **IMPLEMENTED** 2026-10-31, as log
+format 0.4.0 (package 0.4.0.dev0), by [`../plans/2026-10-28-layer2-live.md`](../plans/2026-10-28-layer2-live.md):
+the live layer (§3–§6), §5's reads, and the migration (§7), whose step was run over every runstate log the
+consumers hold and is registered, so `runstate migrate` moves a 0.2.0 or a 0.3.0 log to 0.4.0.
 
 This is layer 2 of [`../backlog/identity-in-records.md`](../backlog/identity-in-records.md). It introduces
 **log format 0.4.0** under [`log-formats.md`](log-formats.md), and builds on
@@ -16,6 +17,17 @@ This is layer 2 of [`../backlog/identity-in-records.md`](../backlog/identity-in-
   rejected; this spec cites it as "review §N".
 - **The drafting choices,** which the decisions left open or the drafting changed, were settled by the owner
   one at a time (review §12, item 14). None is open.
+- **Amendments while planning the live layer** (2026-10-28 and 2026-10-30) fill what the spec left silent
+  or self-contradicting: a target naming a declared source (§4, §5); the folds polled without a head (§5);
+  who kills an orphan (§3); the Watcher's session tier (§5); a save that raises (§6). The plan,
+  [`../plans/2026-10-28-layer2-live.md`](../plans/2026-10-28-layer2-live.md), records why.
+- **Amendments from the implementers guide** (2026-10-30) state eleven rules that
+  [`../implementers-guide.md`](../implementers-guide.md), written from this spec alone, could find only in the
+  reference code: `consumed_seq`'s value and the claim's first drain (§3, §4); `unsupported` and a stop's
+  progress-atom refusal (§3); a malformed withdrawal and the claim-race loser (§4); the order among a node's
+  samples (§2); the 0.4.0 tables (§3); the evidence strings, `report_death`'s refusals and `RunResult.run_id`
+  (§3, §5); and what "its `claim_seq` parses" means and an unclaimed run's verdict (§5). Each is marked "from
+  the implementers guide".
 
 **What it gives:**
 - **A reader can project one lineage of a run's values.** A displaced worker, a rewind or a recomputed step
@@ -94,6 +106,10 @@ Today's value reads keep the latest value per (name, step).
 - **A node follows what it names.** Every seq in `values` is lower than the node's own, and so is `parent`.
 - **Order within a node** is the order of its `values` list: the writer's own order, which no reordering of
   the log can move. Two `emit`s of one name in one iteration are two elements.
+- **Order among a node's samples is unspecified** (amended 2026-10-30, from the implementers guide). The
+  samples of different sources at one node may be written in any order, and `values` may list them in any
+  order after the pending values. No read depends on it, since each source has one sample per node (§3) and
+  every read is per name.
 - **A seq named twice along one lineage** is malformed.
 
 **Position: who and where.** The episode did two jobs, and layer 2 gives each its own record (review §12,
@@ -165,13 +181,16 @@ item 4).
 - **By name, for the whole log:**
   - **acts:** `control.withdraw`, the asker's, and `lifecycle.nak`, the worker's refusal, spend the request
     they name; an exit's `honored` spends a stop;
-  - **demand:** a subscription is spent once any node names it in `expired`, or a withdrawal or a refusal
-    names it, and nothing is demanded of a closed head. The decision to launch a worker reads demand so,
-    which keeps a claim that dies before its first commit from reviving answered demand;
+  - **demand:** a subscription is spent once a withdrawal or a refusal names it, and nothing is demanded of a
+    closed head. Expiry is the subscription's class's (below): a lease's is its claim's, and a durable
+    subscription's its lineage's. The decision to launch a worker and the decision to keep serving read
+    demand by the same rules (amended 2026-10-30, owner, while implementing: demand was by name, so a durable
+    subscription one lineage expired was served on another by a running worker but relaunched by no waker,
+    and the head's answers stayed truncated);
   - **stops:** a stop is a request about the process. One honoured on one branch is not re-armed on another.
 - **Per lineage:** a durable subscription, whose atoms are all lineage coordinates, is live on a lineage while
-  no withdrawal or refusal names it and no node on that lineage expires it. The Worker serves it so, and its
-  answers are the samples on that lineage. Firing and expiry are facts at a node: a node's `fired` names the
+  no withdrawal or refusal names it and no node on that lineage expires it. The Worker serves it so, a waker
+  launches for it so on the head's lineage, and its answers are the samples on that lineage. Firing and expiry are facts at a node: a node's `fired` names the
   subscriptions that fired there, and its `expired` those whose schedule ended there.
 - **Per claim:** a lease, a subscription with any time or count atom, is bound to its claim at drain by
   `lifecycle.bound`. Its clock, fire count and expiry are the claim's, kept across a rewind, and it is void
@@ -198,6 +217,13 @@ These are the convention bumps. The envelope is unchanged.
 | value-v0.3 | value-v0.2 | `value` |
 | subscription-v0.4 | subscription-v0.3 | `control.subscribe`, `control.stop`, `control.withdraw` (new); `control.unsubscribe` retired |
 | supervisor-v0.5 | launcher-v0.4 | `supervisor.launched`, `supervisor.terminated`, `supervisor.died` (new); the `launcher.*` prefix retired |
+
+**The tables** (amended 2026-10-30, from the implementers guide). A format holds its tables
+([`log-formats.md`](log-formats.md) §3), and `formats/v0_4_0.py` states both. Format 0.4.0's SQLite table is
+0.3.0's, unchanged. Only its Postgres table changes: it is 0.3.0's plus the session stamp, the nullable
+`writer_key` and `writer_server` columns ([`channel-postgres.md`](channel-postgres.md); §3, "Who writes a
+death report"), which the backend writes beside each record and no envelope carries; its indexes are 0.3.0's.
+0.3.0's tables are 0.2.0's, as master wrote them: the stamp is 0.4.0's alone.
 
 ### lifecycle-v0.6
 
@@ -235,11 +261,16 @@ in v0.5; the request on `bound` and `nak`, as in v0.5; and null on `commit`, `he
   between them; item 10b's separate `lifecycle.expired` record is retired by item 13. *Prose:* a request in
   `expired` fires at no later node of that lineage.
 - **`honored`** (on `stopped`): an array of unique, non-empty strings, the stops the exit honoured. v0.5's
-  items could be empty, though an empty one names no stop, since no request id is empty.
+  items could be empty, though an empty one names no stop, since no request id is empty. It is a set, read by
+  name: its order means nothing, and no reader may depend on it (amended 2026-10-30, while implementing).
 - **An exit that discarded its iteration evaluates nothing:** `values: null` implies `fired: []` and `expired:
   []`, as an `if`/`then`, whether or not it completed.
-- **`consumed_seq`** is the control-drain watermark, as in v0.5. No 0.4.0 read uses it except
-  `await_consumed` (§5), which takes it from the claim's commits and heartbeats.
+- **`consumed_seq`** is the control-drain watermark, as in v0.5: the seq of the newest `control.*` record the
+  claim's drains have handled, a skipped one included, or 0 while they have handled none (amended 2026-10-30,
+  from the implementers guide). A drain moves it past a record only once what that record needed, a `bound` or
+  a `nak`, has landed, so a watermark at or above a request's seq says that the claim handled it: registered
+  it, refused it, or skipped it as spent. No 0.4.0 read uses it except `await_consumed` (§5), which takes it
+  from the claim's commits and heartbeats.
 - **`t`** is the writer's wall clock when it wrote the record, as in v0.5. A commit is written when its
   iteration ends, after the values it holds (§4, `commit()`). *Prose:* a commit's `t` is at or after the `t`
   of every value it holds that its writer stamped.
@@ -276,7 +307,8 @@ data-plane project.
   its own earlier send. The refusal spends the id, since a `nak` names the id and so the live original too,
   and the Worker drops the registration. So a subscription's target is its `name`, fixed.
 - **An accepted re-send registers the request afresh** for what the claim holds, as in 0.3.0: a lease's time
-  atoms count from the re-send, its fire count returns to 0, and its time baseline is dropped. That is how a
+  atoms count from the re-send's drain in this claim (a `control.subscribe` carries no clock of the asker's,
+  and positions are not compared), its fire count returns to 0, and its time baseline is dropped. That is how a
   lease is renewed. What the lineage holds stays: a lease's lineage baselines, and all of a durable
   subscription's firing state, are read on the lineage as before.
 - **`control.stop`:** unchanged, except that `StopTrigger.from` takes the new atoms. `name` is null.
@@ -316,10 +348,17 @@ data-plane project.
   - **A time atom's baseline** is the wall clock at the lease's last firing, kept by the claim, which a rewind
     does not move.
   - **An atom with no baseline holds,** which makes the first firing immediate (below).
+  - **An exit adds no commit** (amended 2026-10-30, from the implementers guide): `count(Commits(), exit)` is
+    `count(Commits(), parent)`. So an `every {commits: 1}` that fired at the exit's parent does not fire at
+    the exit, unlike `every {commits: 0}`: the delta rule reads counts, never the number of evaluations.
 - **Expiry.** A subscription whose `until` holds at a node, or a one-shot that fires there, is named in that
   node's `expired`. One whose `until` already holds when it registers expires at the next node, firing
   nothing (review §12, item 14: 0.3.0 refused it as unsatisfiable, but whether it holds depends on the
   position). A withdrawn subscription is spent by the withdrawal, and no node names it.
+  - **A `{count: n}` atom counts the firings up to and including the node,** as `count(X, node)` counts its
+    elements there. So `until {count: n}` is named in the `expired` of the node of the nth firing, the last
+    node a firing could need, and a `serve()` worker does not run one more iteration for it (amended
+    2026-10-30, while implementing; 0.3.0 behaved so).
 - **A source fires once per node.** At a node where one or more subscriptions fire for a source, the Worker
   writes **one** sample of its register, before the node that commits it.
 - **A source with no value yet does not fire.** The subscription waits for the first `set`, as reading an
@@ -335,12 +374,22 @@ data-plane project.
 the request:
 - a subscription targeting a name that claim does not declare a source: eager streams are read, not
   subscribed;
-- a progress atom naming a name that claim declares a source: its count depends on who asked;
+- a progress atom naming a name that claim declares a source, in a subscription's schedule or in a stop's
+  `from`, which is refused as a subscription's is (amended 2026-10-30, from the implementers guide): its count
+  depends on who asked;
 - an empty window: a `from` that implies the `until` (on one X, `until`'s n at most `from`'s), restated in
-  counts from 0.3.0's check. It does not depend on the position.
+  counts from 0.3.0's check. It does not depend on the position. An absent `from` reads as `from` 0 on each X,
+  since a 0 in `from` re-spells an absent one, so `{until: {commits: 0}}` is refused as
+  `{from: {commits: 0}, until: {commits: 0}}` is: one schedule gets one answer (amended 2026-10-30, while
+  implementing).
 
 The request id is spent, so an asker resubscribes if the kind changes back. Revision 1's circularity refusal
 is deleted: circular demand can no longer be expressed.
+
+**`unsupported`** (amended 2026-10-30, from the implementers guide) refuses a `control.*` topic the worker
+does not know, with a `nak` that spends its id, as in 0.3.0. It is judged after the id, as every control
+record is (§4, "A drain"): a nameless one is refused `malformed`, and a spent one is skipped.
+subscription-v0.4 defines no other control topic, so only a writer that does not conform produces one.
 
 **What the refusals keep.** A registered source subscription can fire in future, with two exceptions no
 refusal can see: one waiting on a source that is never `set`, and a `{stream}` atom naming a stream that is
@@ -386,7 +435,19 @@ party, whatever else it does, an observer included, may write one for a death it
   claim's row is still held. Its evidence is that the claim can write nothing more, since a channel never
   reconnects and every record naming a claim travels on the session that wrote it. It is not about the
   process, which may outlive its session until its next write raises, so it outranks a live pid on the same
-  host, and a launcher there kills such an orphan rather than launch a successor beside it.
+  host. A `LocalLauncher` kills such an orphan of its own, through the process handle it holds, once a death
+  report has ended the child's claim, rather than launch a successor beside it. Nothing kills by pid alone,
+  which pid reuse makes unsafe (§12). Amended 2026-10-30, while implementing:
+  - **It kills (`SIGKILL`), not asks.** A graceful window buys the log nothing: the orphan's session is gone
+    and a released worker is fenced. A child that handles `SIGTERM`, as a requeue handler does, would live
+    beside its successor.
+  - **An orphan is a child whose claim a `died` names and no `stopped` names,** read by presence: a claim
+    its own exit ended, readable or not, is finishing, not orphaned.
+  - **The reap of a child killed as an orphan writes `terminated` only.** Its signal is the launcher's, sent
+    because the claim had already ended, so it is no evidence of how the claim ended.
+  - **The limits:** a standing loop reaps before it decides, and tolerates one cycle in which the successor
+    runs beside an orphan that can no longer write. A wrapper's grandchild is no child of the launcher's, so
+    it kills nothing there: that is the wrapper's to do, or a process group's.
 - **Evidence without a cause reports only while the claim is held.** A probe that finds the process gone, an
   exit 0 and a thread that returned say that it is gone and nothing of how, or of why it left no exit. Each
   reports `lost`, which adds nothing once anything has ended the claim (§5). A signal, a nonzero exit code, a
@@ -406,6 +467,15 @@ party, whatever else it does, an observer included, may write one for a death it
   all (§5). A `lost` report on a claim that has ended returns `None`: evidence without a cause reports only
   while the claim is held, and the helper checks it at the W of its CAS. It appends `died` with a CAS at W,
   reads again on a lost CAS, and returns the report's seq.
+  - **Its tests are presence-based and never raise** (amended 2026-10-30, while implementing), as the answer
+    fold's `ended` is (§5): "has a readable exit" is that some readable `stopped` names the claim, and "has
+    ended" that some `stopped` or `died` does. A contradiction in the claim's window is the verdict's to raise,
+    never a reporter's, so a death report and a reap land on any log. A claim whose `started` is unreadable has
+    no handle to probe, which does not refuse, as an unknown probe does not.
+  - **It raises `ValueError`,** writing nothing (amended 2026-10-30, from the implementers guide), when the
+    record at `claim_seq`, at the W it reads, is not a `lifecycle.started`; when `outcome` is not a death's
+    (`preempted`, `errored`, `killed` or `lost`: never `completed`, nor the Watcher's `presumed_dead`, an
+    inference); or when `evidence` is empty.
 - **`report_if_dead(ch) -> int | None`** is the probe's report (working name): when the latest claim is held,
   and its handle is on this host and probes dead, or the channel's session probe finds the claim's session
   ended, it reports `lost` through `report_death`, with `probe:` and the handle, or `session:` and the
@@ -437,6 +507,11 @@ party, whatever else it does, an observer included, may write one for a death it
     `errored`;
   - an exit 0, a thread that returned and a dead probe are `lost`, by the rule above. A worker released by a
     mistaken report exits 0 so (§4), and its reap adds nothing to the report that released it.
+  - **The reference's evidence strings** (amended 2026-10-30, from the implementers guide) are `reap: exit
+    <n>` for an exit code, `reap: exit 0` among them; `reap: signal <s>` for a signal; `reap: returned` for a
+    thread that returned; `reap: <ExceptionType>: <message>` for one that raised; `probe: <handle>`, with the
+    claim's `started.handle`; and `session: <server>/<key>`, with the session stamp on the claim's row. They
+    are the reference's convention, not interop: no fold parses evidence, and another writer spells its own.
 
 ## 4. The Worker
 
@@ -464,16 +539,33 @@ party, whatever else it does, an observer included, may write one for a death it
 - **`save`** takes the checkpoint save policy (§6), a `SavePolicy` such as `NoSave()` or `Every(k, fn)`.
 
 **The claim.** In order:
-1. read W, and fold the answers by name up to it (a stop's `honored`, withdrawals and refusals) and the
-   lease bindings;
+1. read W, and validate `resume_from` there, walking the lineage that ends at its node: that lineage is
+   settled at W, so a malformed one raises with nothing written, as a `rewind` does;
 2. if the latest claim is held, call `report_if_dead` (§3): if it reports, start again, and if not, lose the
    claim;
 3. CAS `started` at W;
-4. after winning, rebuild position-dependent state at `resume_from` (below).
+4. after winning, fold the answers by name up to that same W (a stop's `honored`, withdrawals and refusals)
+   and the lease bindings, and rebuild position-dependent state at `resume_from` (below). The CAS proves W was
+   the tail, and records at or below it never change (§5), so the fold is the one step 1 would have made, and
+   a loser reads nothing.
+
+Amended 2026-10-30, while implementing: the walk moved before the CAS, so a claim never lands that its own
+Worker cannot then serve, and the fold after it.
+
+**A claim-race loser writes nothing** (amended 2026-10-30, from the implementers guide). A worker that loses
+at step 2 holds no claim, so any record it wrote would land on the winner's log: `commit()`, `heartbeat()` and
+`retire()` return True, `stop_pending` is True, its other calls do nothing, its `__exit__` writes no exit, and
+`claimed` is False, which tells a lost claim from a commanded stop, as in 0.3.0.
 
 The Worker's own fold drops a subscription only when a withdrawal or a refusal has spent it, or it is a void
 lease. Expiry it takes per lineage, from the rebuild, so that it re-arms a durable subscription another
 lineage expired.
+
+**Requests that landed before the claim** (amended 2026-10-30, from the implementers guide). Step 4's fold
+settles only what is spent and what is void, by name, up to W. The claim's first drain then reads every
+control record from the start of the log, those at or below W included, so a request that landed before the
+claim is registered or refused by that first drain, by the rules of "A drain" below, as one that lands later
+is by the drain after it.
 
 **Values:**
 - **`emit(name, value)`** sends a `value` record at once and adds its seq to the pending values. It raises on
@@ -500,6 +592,12 @@ lineage expired.
 5. runs the save policy (§6);
 6. returns the stop decision.
 
+**A `commit()` that raises before its node lands tears the iteration,** as `discard()` does (amended
+2026-10-30, while implementing): a raised write's outcome may be unknown (an acknowledgement lost), and a
+subscription's claim-held state has already moved with its evaluation, so the iteration cannot continue. The
+worker's calls then behave as after `discard()`, and its exit is torn, evaluating nothing. A save that raises
+after the node landed is §6's case instead: the node stands.
+
 **A drain** reads the death reports up to its W before it handles any control there, so a released worker
 handles nothing (below). Each record a drain writes, a `lifecycle.bound` for a lease it registers or a
 `lifecycle.nak` for a request it refuses, is CAS-appended at the tail the drain last read, its own writes
@@ -511,6 +609,26 @@ request for good, where a racing commit costs one iteration:
 - **a refusal** would spend the id. A refusal that is judged against the claim's declaration (§3,
   subscription-v0.4, "Refusals") is the released claim's, which its successor may not share, and a `nak`
   names no claim, so the asker cannot tell it from the successor's.
+
+What a drain does with each control record, by its id (amended 2026-10-30, while implementing):
+- **A spent id is skipped silently,** on every control topic: dead on arrival (§2).
+- **A missing or empty id is nameless,** on every control topic and in every fold. It is refused `malformed`,
+  with a `nak` whose `request_id` is null, once: a claim refuses a nameless record only above the newest
+  watermark an earlier claim wrote (the newest `consumed_seq` the nearest earlier claim that wrote one wrote,
+  or its exit's seq), since nothing can spend it and that claim drained and refused what lies below. A claim
+  that died before its first watermark defers to the one before it, so an early crash does not re-refuse the
+  past. A claim that crashed between a refusal and its next
+  watermark leaves that record to be refused again, once more. An empty id is no name: a stop registered under
+  it could never be spent, and every claim's exit would hold it.
+- **A `control.withdraw` spends what its `request_id` names, and its body is never read** (amended 2026-10-30,
+  from the implementers guide), by a drain or by any fold: one whose body is malformed spends it too. A
+  nameless one is refused as above, and spends nothing.
+- **A re-send of a stop's live id** follows §3's re-send rule: an accepted re-send of a pending stop replaces
+  its registration, its time `from` counted from the re-send; a re-send of a stop that has held is ignored,
+  since the decision is a level; a refused re-send spends the id and drops the registration, as for a
+  subscription.
+- **A stop's time `from` counts from its drain in each claim,** so a stop re-armed by a claim after a crash
+  restarts its clock there.
 
 **The stop decision** (review §12, item 14). A stop's `from` is evaluated wherever the decision is returned:
 at each node the claim writes, with the counts at the node being written, and at each `heartbeat()`, with the
@@ -567,12 +685,15 @@ outside every lineage, as at a rewind. A torn iteration to be redone is a `rewin
 
 **The exit.** `stopped(*, completed, error)` writes the exit node by the dying-breath CAS. In order, it:
 1. reads W and drains up to it: stops, withdrawals, and the death reports naming its claim. It registers no
-   subscription, as 0.3.0's plain exit did not: one that arrives after the last commit stays live for the
-   next claim, where a lease bound here would be void at once;
+   subscription, as 0.3.0's plain exit did not, and passes over every named `control.subscribe`, a malformed
+   one included (a nameless one it refuses, as every drain does, or its watermark would shield it from the
+   next claim): one that arrives after the last commit stays live for the next claim, which registers or refuses
+   it, where a lease bound here would be void at once;
 2. unless the exit discards its iteration (an error, or after `discard()`), evaluates the registered
    subscriptions once, at the exit node;
 3. writes the samples once. A failure while writing them makes the exit an error exit: torn, with the
-   failure as its `error`, and the samples already written stay outside every lineage;
+   failure as its `error`, and the samples already written stay outside every lineage. The failure
+   propagates once that exit has landed, as a save's does (§6);
 4. reads W again, drains as in step 1, and CAS-appends `stopped` at it, with `parent` the position,
    `values` (the pending values, then the samples, or null if discarded), `fired`, `expired` and `honored`.
    On a lost CAS it repeats this step only: it does not evaluate again, and a stop first drained here is
@@ -583,7 +704,9 @@ The exit's other rules:
 - **`honored`** names every stop pending at the exit, and every stop whose own condition held at a node or a
   heartbeat of the claim, even one withdrawn since (review §12, item 14, amending item 10b's "honours only
   stops still pending"). So what the exit says about why it stopped does not depend on when another writer's
-  `withdraw` arrived. The answer fold is unchanged, since `honored` and `withdraw` both spend a stop.
+  `withdraw` arrived. The answer fold is unchanged, since `honored` and `withdraw` both spend a stop. A stop
+  is pending from its drain until it is spent, whether or not its `from` has held, so `honored` is not only
+  the stops whose `from` held (amended 2026-10-30, from the implementers guide).
 - **A withdrawal after `commit()` or `heartbeat()` has returned True for a stop is too late.** The claim
   stops, and `honored` names the stop.
 - **`stopped()` takes no node argument.** A caller-supplied one would be a lineage lie.
@@ -592,10 +715,20 @@ The exit's other rules:
 - **A non-completed exit that is not torn is extendable.** The next claim may resume from it, and a chunk's
   post-loop values stay on the lineage the next chunk extends.
 - **`retire()`,** `serve()`'s careful death, drains everything at steps 1 and 4, subscriptions included, and
-  returns False if one arrived at either. Its exit fires nothing, since nothing is registered when it writes.
-  It is extendable, so a woken successor that holds no state continues from it.
+  returns False, writing no exit, if any subscription is live for the claim after either read. Its exit fires
+  nothing, since nothing is registered when it writes. It is extendable, so a woken successor that holds no
+  state continues from it; after `discard()` it writes the torn exit, as `stopped()` would.
+- **An exit that starves** (its CAS lost past the bound, §4's loops) raises and leaves the claim held for a
+  death report to end. The worker may retry `stopped()`; every other call is fenced, writing nothing, so no
+  watermark of the claim claims a request its failed exit passed over.
 - **`__exit__`** writes an error exit on an exception, and otherwise `stopped(completed=False, error=None)`,
   unless the worker has already stopped.
+
+**A worker after its own exit is fenced the same way** (amended 2026-10-30, while implementing): once its exit
+has landed, it writes nothing, `commit()` and `heartbeat()` return True, `stop_pending` is True, and its other
+calls do nothing, as 0.3.0's post-terminal latch did. A record of the claim after its exit would be malformed
+(§5), and silence matches the released fence; only `discard()` makes misuse raise, since that is the
+worker's own mid-iteration statement.
 
 **A released worker fences itself** (review §12, item 13). Every drain reads the death reports first (above).
 Once one names its own claim, the Worker latches, and every method that writes writes nothing: `commit()`,
@@ -621,7 +754,8 @@ construction. A target of 0 is reached at once. The wire spells a target `{strea
 - **`steps(until)`** takes a `Target`, or `None` for no bound. It calls `commit()` once per iteration, and
   yields each iteration's index, `count(Commits(), position)` before its commit. So a resumed driver
   continues from the log, run-absolute, and a rewind inside the body moves the next index. It ends when the
-  target is reached at the position, or on a stop. 0.3.0's `start=` is removed: the log holds the position
+  target is reached at the position, or on a stop. A target naming a declared source raises `ValueError`
+  before the first iteration, since its count is 0 forever (§5). 0.3.0's `start=` is removed: the log holds the position
   (rubric S11).
 - **`serve()`** is the driver for demand: it calls `commit()` once per iteration while some subscription is
   live for it, a lease of its claim or a durable subscription live on its lineage, and retires at zero. It
@@ -710,6 +844,8 @@ envelope (topic `value`, and the name), which keeps tolerant readers' counts ali
   - **It has no `head` parameter.** Under `AtNode` every read is settled and nothing could be produced, and
     the produce branch follows the newest claim, so `LatestClaimHead` is implied.
   - **Read first:** when `count(x, head) ≥ n`, it returns `Reached` at the head.
+  - **A target its drive's claim declares a source** raises `ValueError`: it counts 0 forever, and each chunk
+    would commit without reaching it.
   - **Unreachable:** when the head is closed below `n`, it returns `Unreachable` at it without producing. This
     generalizes today's "never re-drive a completed run".
   - **Otherwise it produces:** it calls `producer.extend(target)`, then polls the newest claim's head with
@@ -727,7 +863,10 @@ envelope (topic `value`, and the name), which keeps tolerant readers' counts ali
       `report_if_dead`;
     - `RecordlessExitError` when a drive's process has died with no claim naming its launch, at the fixed
       point only (a re-drive reproduces it) and never while another claim is unended, as today's
-      claim-aware, own-spawn-scoped guard does.
+      claim-aware, own-spawn-scoped guard does. A drive whose handle has ended, with no claim naming it and
+      none held, counts toward that fixed point whether or not it names a launch, so a foreign handle that
+      drove nothing cannot make `ensure` re-drive without bound; the error's `launch_id` is then `None`
+      (amended 2026-10-30, while implementing).
 
     The errors carry the target and the count, where they carried `progress` and `until`.
   - **The producer seam:** a `Producer` has `.channel`, `.run_id` and `.extend(target)`, which returns a
@@ -748,11 +887,17 @@ envelope (topic `value`, and the name), which keeps tolerant readers' counts ali
     sits inside node bodies, and never runs on a polled path.
 - **The incremental folds are public and standalone,** like `pending_stops`, because `ensure`'s loop has no
   Watcher and the TUI may use public API only. Each is built with its question and polled with
-  `fold.poll(ch, head)`, at O(new records) per poll. Their test: incremental equals pure after every step.
+  `fold.poll(ch, head)`, at O(new records) per poll; the folds by name, `LiveDemand` and `PendingStops`, read
+  the whole log (§2) and are polled with `fold.poll(ch)`. Their test: incremental equals pure after every step.
+  - **A fold raises wherever its pure read raises,** except for the checks the pure walk alone makes (above).
+    Membership is not one of them: a fold reads every `value` record, so it can tell a node that commits a
+    non-value at O(new records), and must, or a malformed log reads differently by how it is read (amended
+    2026-10-30, while implementing).
   - **The stream-prefix fold** holds a cursor over nodes, a cursor over the values of S, the set of S's value
     seqs, and `count[node] = count[parent] + |values ∩ S|`, with membership decided per committing claim.
   - **`Answers`** re-derives on a head that does not descend from its last one, and returns the full list.
-    A caller that streams answers diffs the lists, since a callback cannot retract an answer.
+    A caller that streams answers diffs the lists, since a callback cannot retract an answer. Its reads are
+    O(new records); returning the list is O(answers).
 - **The pure walk** uses windowed bulk reads backward from the head (about 5 µs a row), not point reads (65 µs
   a node on Postgres).
 - **The memory backend** reads a tail as a slice (seq = index + 1), and gains a per-topic index: its `latest`
@@ -767,11 +912,22 @@ null-worker startup crash does.
   strand the claim, and it counts as a `lost` among the death reports' outcomes (review §12, item 14): it
   says only that the claim ended, which is all `lost` says. No fold reads more of its body, since a lenient
   parse is a second reader that another implementation need not share; its seq is in `RunResult.malformed`.
+  - **Its `claim_seq` parses** (amended 2026-10-30, from the implementers guide) when the body has a
+    `claim_seq` whose value is an integer, not a boolean, at least 1 and below the record's own seq, since a
+    record follows what it names. It is read from that key alone, so a record whose other fields are
+    unreadable still names its claim.
 - **Several death reports are all kept** (review §12, item 14). Under death reports, the verdict's outcomes
   are the set of the reports' outcomes, less `lost` when another is present, since `lost` says only what
   every death report says. Nothing is chosen among them: the reports need no order of precedence, the
   verdict does not depend on their order, and it only grows as reports arrive. A consumer's policy tests the
   set, as `ensure` does with "any of its outcomes in `Outcome.failures()`".
+- **An unclaimed run's verdict** (amended 2026-10-30, from the implementers guide) is the newest
+  `supervisor.terminated` at or below W, whichever launch it names, one that no `launched` names included,
+  under the tier `terminated`. A `reason` of `killed` reads `killed`, an exit 0 `completed`, and any other
+  exit `errored`. The verdict rests on that one record, so an unreadable one, or one with no launch id, raises
+  `MalformedRecordError`: it is the run's present verdict, not a record from a dead past, and the read refuses
+  to guess rather than skip it. Its `completed` is a fact about a process, and `worker_completed` is False for
+  it.
 - **`RunResult`:**
   - `outcome` becomes `outcomes: frozenset[Outcome]`, never empty: one element under a self-report, a
     launch's `terminated` or an inference, and the set above under death reports. `Outcome` gains `lost`,
@@ -779,20 +935,42 @@ null-worker startup crash does.
   - `reports: tuple[DeathReport, ...]` is new: the readable death reports naming the claim, in seq order,
     each `DeathReport(seq, outcome, evidence, t)`, and empty under every other viewpoint;
   - `final_step` becomes `node`: the exit node's seq under a self-report, `None` otherwise;
-  - `claim_seq` is new: the claim the verdict is about, `None` for a run nothing claimed;
+  - `claim_seq` is new: the claim the verdict is about, `None` for a run nothing claimed. By tier (amended
+    2026-10-30, while implementing): required under `exit`, `died` and `session_ended`, which read or probe a
+    claim's window, stamp or session; `None` under `terminated`; and either under `heartbeat_stale` and
+    `probed_dead`, since a launch can stale or its handle probe dead before anything claims, which is the
+    never-beaconed startup death observer-clock §5 keeps;
   - `malformed: tuple[int, ...]` is new: the seqs of the unreadable records the verdict skipped, so they are
     reported, not raised;
   - `reason: str` becomes `tier: Tier`, a closed enum naming the viewpoint the verdict rests on (review §12,
     item 14): `exit`, the claim's own exit; `died`, the death reports and unreadable records that ended it;
     `terminated`, an unclaimed run's launch; and the Watcher's `probed_dead`, `heartbeat_stale` and
-    `episode_lock_released`. Under `died`, `error` is `None`, and the evidence is in `reports`.
+    `session_ended`, the session probe's. Under `died`, `error` is `None`, and the evidence is in `reports`.
+  - `run_id: str | None` is, as in 0.3.0, the run's id, which no record carries (amended 2026-10-30, from the
+    implementers guide). A pure read of a channel cannot know it and returns `None`; a reader that knows the
+    run stamps it: the `Watcher` on every verdict its polls return, and `ensure` on the one its
+    `RunFailedError` carries, with the producer's `run_id`.
 - **`worker_completed`** is "the head is closed". Its reading of an exit-0 `terminated` goes, since
   `terminated` no longer enters a claimed run's verdict.
 
 **The answer fold.** `live_demand`, `undischarged_stops` and `Watcher.pending_stops` read §2's rules:
 - a stop is spent by an exit's `honored`, a `control.withdraw` or a `nak` naming it;
-- a subscription is spent by any node's `expired`, a `control.withdraw` or a `nak` naming it; a lease is also
-  void once its claim has ended;
+- a subscription is spent by a `control.withdraw` or a `nak` naming it; a lease also by any node's `expired`
+  naming it, since its expiry is its claim's, and it is void once its claim has ended; a durable subscription
+  by an `expired` on the head's lineage only (§2, "Per lineage"). So a durable subscription another lineage
+  expired is live demand again once the head stands on a lineage that has not, and `LiveDemand` re-derives
+  which expiries lie on the head's lineage when the head moves off its last one, at O(L), as the Worker's
+  rebuild does, and O(new records) per poll otherwise. The fold still takes no head from its caller (it holds
+  its own head fold), and the question is the head's lineage, so the walk is inside its window;
+- **a subscription's class and target are its first send's,** as §3 fixes them: a re-send that changes either
+  is refused, so a void lease does not come back as demand by being sent again as durable;
+- **a subscribe whose body does not parse is live until a `nak` names it,** as a malformed stop is pending
+  until its `nak`: no fold judges a body the worker has not refused, and a waker must launch a worker to
+  refuse it. It is never voided, since no claim binds it;
+- **`ended` here is the presence of an exit or a death report naming the claim** (§3), which never raises.
+  A malformed record in an old claim's window must not poison the present (§2, the claim as a Markov
+  boundary), so the fold and its pure read use this one predicate. The verdict, which reads that claim's
+  window, is where a contradiction in it raises;
 - **nothing is demanded of a closed head:** `live_demand` is empty while `LatestClaimHead` is closed, since
   nothing more can fire on a completed run. A subscription posted to one is never answered and never
   refused: the head shows it settled, and `await_consumed` returns the terminal `RunResult`;
@@ -835,6 +1013,12 @@ It takes no `control.withdraw`, which needs no worker. `_verdict_record`'s singl
 
 **Unchanged:** `latest_episode`, and the Watcher's staleness by witnessed arrival.
 
+**A Watcher that holds a launch's handle reads that launch's verdict** (amended 2026-10-30, while
+implementing): the claims naming the handle's launch id, and while none has landed, the run is `Running`,
+subject to the probe and staleness tiers. Otherwise a relaunch of a run that already has an exit, an extendable
+one included, would read the previous claim's verdict before its own worker claims.
+A Watcher observing a run it holds no handle for reads the latest claim's, as `peek_terminal` does.
+
 ## 6. The checkpoint recipe
 
 This is a recipe, not protocol. runstate supplies no directory.
@@ -845,6 +1029,20 @@ This is a recipe, not protocol. runstate supplies no directory.
     lands. At that instant the state is exactly the state the node commits. It never runs it after a torn
     exit, whose state is part of an iteration ahead of its parent, nor after a closed one. Saving at any other
     moment is outside the recipe.
+  - **A save that raises propagates, and the node it followed stands.** Whether a node has a checkpoint is
+    the store's fact, never the log's: a checkpoint that was saved can be lost later too, and no record could
+    track it. So the log records how the claim ended, and the next claim chooses among the checkpoints that
+    exist, resuming from an older node and branching there.
+    - **After a commit,** the raise leaves `commit()` and ends the claim, so its exit is errored and torn,
+      its `parent` that node.
+    - **After an extendable exit,** the claim has already ended. The exit stands and its verdict is the
+      exit's; nothing more is written. The process's failure is on the external plane: when a launcher reaps
+      it, its launch's `supervisor.terminated` carries the exit code.
+    - **Nothing records the failed save,** by design (owner, 2026-10-30). Saving before the exit's
+      compare-and-append would name a seq the exit may not get, a lineage lie. A record after the exit would
+      speak for a claim that has ended, and the one record that may, a death report, defers to a readable
+      exit (§3). A record of saves would duplicate the store's own listing, and could disagree with it.
+      Revival trigger: runstate owning the checkpoint store.
   - **The policy is a Strategy** (review §12, item 14): the `SavePolicy` Protocol's one method,
     `after(node, *, commits, exit)`, which the Worker calls at each of those moments, with `commits` the
     node's `count(Commits(), node)` and `exit` True at the exit. The Worker fixes *when* a save may happen,
@@ -1708,6 +1906,13 @@ These extend [`reference-by-name.md`](reference-by-name.md) §7. File and line r
 - **`control.unsubscribe`** becomes `control.withdraw` for an asker; a reader of expiries reads the nodes'
   `expired`. **`launcher.*`** becomes `supervisor.*`.
 - **A stranded claim is released by a death report,** through `report_death`, never by a forged `stopped`.
+- **A launch takes its launcher's target record** (`Launcher[T]`; plan, open question 18):
+  `launch(run_id, fn, args=, kwargs=)` becomes `launch(run_id, ThreadTarget(fn, args=, kwargs=))`, and
+  `launch(run_id, cmd, env=)` becomes `launch(run_id, Command(argv, env=))`, each field required.
+  `launch_producer(launcher, variant)` becomes `launch_producer(launcher, run_id, target)`, each argument
+  required: `Variant` is gone, with `sweep` ([`../dead_ends/sweep.md`](../dead_ends/sweep.md)), and its
+  `launch_kwargs` move into the target record. `launch_producer`'s `target_key` is gone: the drive's `Target`
+  arrives as `until`, which the worker passes to `steps(until)`.
 - **A same-host crash that nobody reports reads as held,** where 0.3.0's probe released it at once. A
   claimant, a launcher's reap or a reclaim tool reports it.
 - **Registers stay raw sends,** outside every lineage, read by
@@ -1776,6 +1981,8 @@ These extend [`reference-by-name.md`](reference-by-name.md) §7. File and line r
 - **Its GC gate** (gc_runs.py:179, `live_episode is None`) waits after a same-host crash until someone
   reports it: the safe direction.
 - **Convert its `checkpoint_last` files** from steps to nodes, once, after the log migration.
+- **Its launch takes a `Command`:** the launch its producer makes on analyze_run.py:1519's `LocalLauncher`
+  (analyze_run.py:1437, `launch(self.run_id, cmd)`) becomes `launch(self.run_id, Command(cmd, env={}))`.
 
 **translation:**
 - **Counts:** keys.py:77's `progress+1 >= n` becomes `prefix_len >= n`; its mirror has drifted (keys.py:75,
@@ -1785,6 +1992,11 @@ These extend [`reference-by-name.md`](reference-by-name.md) §7. File and line r
 - **No checkpoint object:** its state is the log plus its ArtifactStore. It passes `resume_from=None` and
   `save=NoSave()`, and re-emits; its tests at tests/test_workers.py:40–75 pin resume.
 - **Declare `sources=[]`.**
+- **Its producer drives by `until`:** translation/runner.py:32's `launch_producer(launcher, variant,
+  target_key="up_to")` becomes `launch_producer(launcher, rid, ThreadTarget(worker, args=(), kwargs=cfg))`,
+  built directly: runner.py:31's `Variant` goes, and with it the `Variant` import at runner.py:11. Each worker
+  takes `until` where it took `up_to` (workers.py:16, :37, :52, :71, :99), reading `until.n` where it slices by
+  the integer, and runner.py:29's reservation of `up_to` becomes `ThreadTarget.driven`'s own refusal.
 
 **runstate-tui:**
 - use `Commits()` for its frontier, and `last_element` for its live value;
@@ -1938,7 +2150,8 @@ On every backend:
     clock and fire count, and keeps the lineage baselines of either class;
   - `answers` via `fired`, including time atoms, a rewind and a resume; its fold re-derives on a head flip;
   - a durable subscription answered on an abandoned branch is answered again on the new one, exactly once per
-    lineage, and not on a lineage that expired it, though `live_demand` counts it spent;
+    lineage, and not on a lineage that expired it, and `live_demand` agrees: live while the head's lineage
+    has not expired it;
   - a lease keeps its clock, fire count and expiry across a rewind, reads its lineage baselines on the new
     lineage, and is void once its claim has ended; a count lease whose service dies at its first firing stops
     the waker after one launch;
@@ -2035,7 +2248,7 @@ On every backend:
   `worker_completed`; `_DATED_TOPICS`; `current_heartbeat`; `is_step` renamed; `progress` and `value_series`
   out; the reads and folds in; `Outcome` gains `LOST`; `Tier` is new, and `RunResult` takes `outcomes`,
   `reports`, `node`, `claim_seq`, `malformed` and `tier`.
-- **`sweep.py`:** `stop_on_failure` tests the set.
+- **`sweep.py`** is deleted ([`../dead_ends/sweep.md`](../dead_ends/sweep.md)).
 - **`watcher.py`:** `_RunState`'s held head and count; `broadcast`; `_refuse_a_void_lease`; `await_consumed`;
   the inference tiers' `Tier` members.
 - **`memoizer.py`:** the error classes, and `_FAILURES` as a test on the set; `ensure`'s `Reached` and

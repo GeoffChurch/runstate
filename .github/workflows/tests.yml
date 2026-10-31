@@ -29,6 +29,9 @@ jobs:
       # a DIRECT endpoint (not a transaction-mode pooler): the session advisory
       # lock and the per-connection session state depend on one stable backend.
       RUNSTATE_TEST_PG_DSN: postgresql://postgres:postgres@localhost:5432/runstate_test
+      # the service is throwaway, so the fsync test may ALTER SYSTEM on it (an opt-in:
+      # server-wide, persisted config that no shared or long-lived server should take).
+      RUNSTATE_TEST_PG_ALTER_SYSTEM: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -63,7 +66,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
-          paths='^(runstate/migrations/v0_3_0_to_v0_4_0(_engine|_facts)?\.py|tests/migration_sim/|tests/test_migration_sim\.py|tests/migration_derive\.py|tests/migration_helpers\.py|tests/migration_mutation\.py|tests/test_migration_oracle\.py)'
+          paths='^(runstate/migrations/v0_3_0_to_v0_4_0(_engine|_facts)?\.py|tests/migration_sim/|tests/test_migration_sim\.py|tests/migration_derive\.py|tests/migration_helpers\.py|tests/migration_mutation\.py|tests/test_migration_oracle\.py|tests/fixtures/log-format-0\.3\.0/)'
           # on demand, or with no base to compare (a new branch): run
           if [ "$EVENT" = workflow_dispatch ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
             echo run=true >> "$GITHUB_OUTPUT"

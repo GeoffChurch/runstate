@@ -13,12 +13,14 @@ import shlex
 from collections.abc import Iterable
 from pathlib import Path
 
-from . import v0_2_0, v0_3_0
+from . import v0_2_0, v0_3_0, v0_4_0
 from ._layout import DirectoryLayout, Layout
 
-LOG_FORMAT = "0.3.0"
+LOG_FORMAT = "0.4.0"
 
-FORMATS: dict[str, Layout] = {m.LAYOUT.version: m.LAYOUT for m in (v0_2_0, v0_3_0)}
+FORMATS: dict[str, Layout] = {
+    m.LAYOUT.version: m.LAYOUT for m in (v0_2_0, v0_3_0, v0_4_0)
+}
 
 _VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
@@ -151,7 +153,7 @@ def postgres_onboarding(run_id: str, schema: str) -> str:
     leave a tombstone in its place, an empty ``log`` with the old columns whose
     trigger refuses every insert (§5). One transaction, so it moves whole or not
     at all."""
-    target = DirectoryLayout(LEGACY_FORMAT).pg_schema()
+    target = FORMATS[LEGACY_FORMAT].pg_schema()
     s = '"' + schema.replace('"', '""') + '"'
     fn = f"{s}.runstate_log_moved"
     sql = (

@@ -2,6 +2,10 @@
 
 The substrate conformance tests run against *every* Channel backend via the
 ``ch`` fixture, parametrized over backends; each must pass independently.
+
+The Postgres backend's tests get a throwaway server of their own unless
+``RUNSTATE_TEST_PG_DSN`` names one (``tests/pg_bootstrap.py``): it starts in
+``pytest_configure``, before collection, and stops in ``pytest_unconfigure``.
 """
 
 import os
@@ -10,15 +14,46 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests import pg_bootstrap
+
+_PG_KEY = pytest.StashKey["pg_bootstrap.Cluster | pg_bootstrap.Skipped | None"]()
+
+
+def pytest_configure(config):
+    config.stash[_PG_KEY] = pg_bootstrap.start()
+
+
+def pytest_unconfigure(config):
+    outcome = config.stash.get(_PG_KEY, None)
+    if isinstance(outcome, pg_bootstrap.Cluster):
+        outcome.stop()
+
+
+def pytest_terminal_summary(terminalreporter, config):
+    # "note: " is the prefix the pre-commit hook surfaces from a passing gate.
+    outcome = config.stash.get(_PG_KEY, None)
+    if isinstance(outcome, pg_bootstrap.Skipped):
+        terminalreporter.write_line(
+            f"note: Postgres tests skipped: {outcome.reason}", yellow=True
+        )
+
 
 @pytest.fixture(scope="session")
-def pg_dsn():
+def pg_dsn(request):
     """The DSN of a live Postgres for the backend tests, or SKIP. The shared-table
-    backend can't be conjured from ``tmp_path``; without a server its tests don't
-    run (set ``RUNSTATE_TEST_PG_DSN`` to a direct/session-pooled endpoint)."""
+    backend can't be conjured from ``tmp_path``: the session's bootstrap starts a
+    throwaway server when the binaries are found, ``RUNSTATE_TEST_PG_DSN`` names
+    your own (a direct/session-pooled endpoint), and without either its tests
+    don't run."""
     dsn = os.environ.get("RUNSTATE_TEST_PG_DSN")
     if not dsn:
-        pytest.skip("RUNSTATE_TEST_PG_DSN unset; skipping the Postgres backend tests")
+        outcome = request.config.stash.get(_PG_KEY, None)
+        why = (
+            outcome.reason
+            if isinstance(outcome, pg_bootstrap.Skipped)
+            else "RUNSTATE_TEST_PG_DSN unset"
+        )
+        pytest.skip(f"no Postgres server ({why}); skipping the Postgres backend tests")
     return dsn
 
 
@@ -194,7 +229,9 @@ def conc_backend(request, tmp_path, monkeypatch):
 def crashed_wal_writer():
     """Review focus 3: write n records in WAL mode from a process that dies without
     closing, leaving its frames un-checkpointed in the WAL -- the realistic state
-    of a log whose writer crashed before it was migrated."""
+    of a log whose writer crashed before it was migrated. Each record is a value as
+    format 0.2.0 wrote one (value-v0.2), since migrating the log to the current
+    format passes it through the 0.3.0 -> 0.4.0 step, which refuses any other."""
     import subprocess
     import sys
 
@@ -202,7 +239,8 @@ def crashed_wal_writer():
         code = (
             "import os; from runstate.channel.sqlite import SqliteChannel; "
             f"ch = SqliteChannel({str(path)!r}); "
-            f"[ch.send({{'i': i}}, topic='value', name='n') for i in range({n})]; "
+            f"[ch.send({{'value': i, 'step': None, 't': None}}, topic='value', name='n')"
+            f" for i in range({n})]; "
             "os._exit(0)"
         )
         env = {**os.environ, "RUNSTATE_SQLITE_JOURNAL_MODE": "WAL"}
@@ -217,7 +255,7 @@ from runstate.channel.sqlite import SqliteChannel
 path, n = sys.argv[1], int(sys.argv[2])
 ch = SqliteChannel(path)
 for i in range(n):
-    ch.send({"i": i}, topic="value", name="n")
+    ch.send({"value": i, "step": None, "t": None}, topic="value", name="n")
 ch.close()
 c = sqlite3.connect(path, isolation_level=None)
 c.execute("PRAGMA cache_size=1")
@@ -233,7 +271,8 @@ def crashed_journal_writer():
     """Write n records in DELETE journal mode (mycooc's NFS mode), then die in
     the middle of a transaction whose dirty pages already spilled to the db
     file: the hot ``-journal`` left beside it holds the pages they overwrote, so
-    the file is consistent only once a read-write open rolls the journal back."""
+    the file is consistent only once a read-write open rolls the journal back. The
+    n committed records are 0.2.0 values, as ``crashed_wal_writer``'s are."""
     import subprocess
     import sys
 
@@ -245,3 +284,22 @@ def crashed_journal_writer():
         assert journal.stat().st_size > 0, "the writer left no hot journal"
 
     return write
+
+
+@pytest.fixture
+def scratch_db(pg_ready):
+    """A database of its own, dropped afterwards, for a test that needs a schema the
+    shared test database already has: onboarding moves a whole table into schema
+    ``runstate_v0_2_0``, and a migration's destination must be created by the
+    migration, not found already there."""
+    import psycopg
+    from psycopg.conninfo import make_conninfo
+
+    name = f"rs_scratch_{uuid.uuid4().hex}"
+    with psycopg.connect(pg_ready, autocommit=True) as c:
+        c.execute(f"CREATE DATABASE {name}")
+    try:
+        yield make_conninfo(pg_ready, dbname=name)
+    finally:
+        with psycopg.connect(pg_ready, autocommit=True) as c:
+            c.execute(f"DROP DATABASE {name} WITH (FORCE)")

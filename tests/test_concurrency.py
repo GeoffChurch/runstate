@@ -132,35 +132,49 @@ def _claim_then_emit(i, root, run_id, backend, claimed_barrier, results):
             )  #             only the winner runs; the loser's steps() is a no-op
 
 
+def _claim_then_commit_0_4_0(i, root, run_id, backend, claimed_barrier, results):
+    """Thread body, for the staged 0.4.0 Worker: construct it (the claim races
+    here), record the verdict, then HOLD at a barrier so the winner's claim stays
+    held while the loser claims, and only then emit and commit. The winner never
+    writes its exit, so its claim stays held, and its channel stays open until the
+    loser has claimed, so a backend's session probe finds the winner's session
+    alive."""
+    from runstate.checkpoint import NoSave
+    from runstate.worker import Worker as Worker0_4_0
+
+    ch = locate(run_id, root=root, backend=backend)
+    try:
+        w = Worker0_4_0(ch, resume_from=None, sources=[], save=NoSave())
+        results[i] = w.claimed
+        claimed_barrier.wait(timeout=10)
+        w.emit("loss", float(i))  # a loser's writes do nothing
+        results[i] = (w.claimed, w.commit())
+    finally:
+        ch.close()
+
+
 @pytest.mark.tier("in_process")
-def test_two_workers_racing_the_claim_muzzle_the_loser(conc_backend):
-    """Two Worker constructors contend for one run -> exactly one claims a live episode;
-    the loser is muzzled (no second lifecycle.started, no loser value, no loser stopped).
-    The barrier holds the winner live across the loser's claim, so this pins the
-    single-live-episode guard + the loser muzzle under a *real* claim race (read ->
-    live_episode -> CAS -> retry), not the pre-seeded short-circuit the sequential muzzle
-    test (test_worker.py) exercises."""
+def test_two_workers_racing_the_claim_one_wins_and_the_loser_writes_nothing(
+    conc_backend,
+):
+    """Two staged 0.4.0 Worker constructors contend for one run (§4, "The claim"):
+    exactly one wins. The loser finds the winner's claim held, ``report_if_dead``
+    reports nothing (the winner's handle is this live process), so it loses: it
+    writes nothing, explicit calls included, and its ``commit()`` returns True.
+    (Replaces ``test_two_workers_racing_the_claim_muzzle_the_loser`` at the
+    cutover, plan Task 19.)"""
     n = 2
     old = sys.getswitchinterval()
-    sys.setswitchinterval(
-        1e-9
-    )  #                 fine interleaving so the claim's internal race is real
+    sys.setswitchinterval(1e-9)  # fine interleaving, so the claim's race is real
     try:
         for trial in range(5):
-            run_id = f"{conc_backend.namespace}-claim-{trial}"
-            seed = locate(run_id, root=conc_backend.root, backend=conc_backend.backend)
-            seed.send(
-                {"every": {"step": 1}},
-                topic="control.subscribe",
-                name="loss",
-                request_id="obs",
-            )
-            seed.close()
+            run_id = f"{conc_backend.namespace}-claim04-{trial}"
+            locate(run_id, root=conc_backend.root, backend=conc_backend.backend).close()
             claimed_barrier = threading.Barrier(n)
-            results = [None] * n
+            results: list[object] = [None] * n
             threads = [
                 threading.Thread(
-                    target=_claim_then_emit,
+                    target=_claim_then_commit_0_4_0,
                     args=(
                         i,
                         conc_backend.root,
@@ -179,20 +193,19 @@ def test_two_workers_racing_the_claim_muzzle_the_loser(conc_backend):
 
             check = locate(run_id, root=conc_backend.root, backend=conc_backend.backend)
             try:
-                started = check.read(topics=["lifecycle.started"])
-                values = check.read(topics=["value"], name="loss")
+                topics = [e.topic for e in check.read()]
             finally:
                 check.close()
-            assert (
-                results.count(True) == 1
-            ), f"[trial {trial}] expected one claimant, got {results}"
-            assert (
-                len(started) == 1
-            ), f"[trial {trial}] {len(started)} lifecycle.started rows (double-live claim)"
-            assert len(values) == 1, (
-                f"[trial {trial}] {len(values)} loss values (the loser was not muzzled): "
-                f"{[v.body for v in values]}"
+            assert sorted(results) == [(False, True), (True, False)], (
+                f"[trial {trial}] expected one winner and a loser told to stop, "
+                f"got {results}"
             )
+            # the winner's claim, value and commit; nothing of the loser's
+            assert topics == [
+                "lifecycle.started",
+                "value",
+                "lifecycle.commit",
+            ], f"[trial {trial}] {topics}"
     finally:
         sys.setswitchinterval(old)
 
@@ -336,3 +349,121 @@ def test_concurrent_writers_produce_unique_contiguous_seqs(tmp_path):
     seqs = [e.seq for e in chans[0].read()]
     assert len(seqs) == total  # no lost writes
     assert sorted(seqs) == list(range(1, total + 1))  # unique + contiguous
+
+
+# ===================== the substrate contract (§9 item 5) =====================
+# A reader that has seen seq W has seen every seq below W. Contiguity alone does not
+# guarantee it: a sequence allocator broke it 30,780 times while leaving a contiguous
+# log (commits-and-lineage.md §5, "The substrate contract"). Every Layer 1 cursor
+# depends on it -- a cursor past a seq that was not yet visible skips that seq for
+# good -- so the reader below reads the way a cursor does: it takes W = last_seq()
+# first, then reads the tail after its cursor, and the tail must be contiguous from
+# the cursor and reach W.
+
+_CONTRACT_WRITERS = 4
+_CONTRACT_SENDS = 150
+
+
+def _contract_writer(root, run_id, backend, journal, fire, sends):
+    """One writer, a thread or a forked process: open its own handle, line up, append."""
+    import os
+
+    if journal:
+        os.environ["RUNSTATE_SQLITE_JOURNAL_MODE"] = journal
+    ch = locate(run_id, root=root, backend=backend)
+    try:
+        fire.wait(timeout=15)
+        for i in range(sends):
+            ch.send({"i": i}, topic="value", name="n")
+    finally:
+        ch.close()
+
+
+def _read_as_a_cursor_while(writing, ch):
+    """Read like a cursor until ``writing()`` is false, then once more; return the seqs
+    read, in order. Asserts the contract at every read."""
+    cursor, seen = 0, []
+    while True:
+        done = not writing()  # sampled BEFORE the read, so the last read sees all
+        w = ch.last_seq()
+        got = [e.seq for e in ch.read(after=cursor)]
+        assert got == list(
+            range(cursor + 1, cursor + 1 + len(got))
+        ), f"the tail after {cursor} is not contiguous: {got[:10]}..."
+        assert (
+            cursor + len(got) >= w
+        ), f"saw last_seq {w}, but the tail stops at {cursor + len(got)}"
+        cursor += len(got)
+        seen.extend(got)
+        if done:
+            return seen
+
+
+@pytest.mark.tier("in_process")
+def test_interop_substrate_contract_across_threads(conc_backend):
+    run_id = f"{conc_backend.namespace}-contract"
+    reader = locate(run_id, root=conc_backend.root, backend=conc_backend.backend)
+    try:
+        fire = threading.Barrier(_CONTRACT_WRITERS + 1)
+        writers = [
+            threading.Thread(
+                target=_contract_writer,
+                args=(
+                    conc_backend.root,
+                    run_id,
+                    conc_backend.backend,
+                    conc_backend.journal,
+                    fire,
+                    _CONTRACT_SENDS,
+                ),
+            )
+            for _ in range(_CONTRACT_WRITERS)
+        ]
+        for t in writers:
+            t.start()
+        fire.wait(timeout=15)
+        seen = _read_as_a_cursor_while(
+            lambda: any(t.is_alive() for t in writers), reader
+        )
+        for t in writers:
+            t.join()
+    finally:
+        reader.close()
+    assert seen == list(range(1, _CONTRACT_WRITERS * _CONTRACT_SENDS + 1))
+
+
+@pytest.mark.tier("cross_process")
+def test_interop_substrate_contract_across_processes(conc_backend):
+    if "fork" not in mp.get_all_start_methods():
+        pytest.skip("the cross_process writers need the 'fork' start method")
+    ctx = mp.get_context("fork")
+    run_id = f"{conc_backend.namespace}-contract"
+    reader = locate(run_id, root=conc_backend.root, backend=conc_backend.backend)
+    try:
+        fire = ctx.Barrier(_CONTRACT_WRITERS + 1)
+        writers = [
+            ctx.Process(
+                target=_contract_writer,
+                args=(
+                    conc_backend.root,
+                    run_id,
+                    conc_backend.backend,
+                    conc_backend.journal,
+                    fire,
+                    _CONTRACT_SENDS,
+                ),
+            )
+            for _ in range(_CONTRACT_WRITERS)
+        ]
+        for p in writers:
+            p.start()
+        fire.wait(timeout=15)
+        seen = _read_as_a_cursor_while(
+            lambda: any(p.is_alive() for p in writers), reader
+        )
+        for p in writers:
+            p.join(timeout=30)
+        assert [p.exitcode for p in writers] == [0] * _CONTRACT_WRITERS
+    finally:
+        reader.close()
+    assert seen == list(range(1, _CONTRACT_WRITERS * _CONTRACT_SENDS + 1))

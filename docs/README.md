@@ -105,7 +105,8 @@ because they describe the current library.
 
 The v0.2 redesign — **the current model, implemented** in `../runstate/`. A
 topic-log substrate with opt-in conventions (cooperative-control, subscription,
-lifecycle, launcher) plus reference orchestration (launchers, Watcher, sweep).
+lifecycle, supervisor) plus reference orchestration (launchers, Watcher, the
+deciders, `ensure`), speaking log format 0.4.0 (`specs/commits-and-lineage.md`).
 
 - `design-v0.2.md` — the **converged design**: the authoritative prose for the
   v0.2 semantics.

@@ -220,6 +220,11 @@ the same move `../specs/launcher-record-identity.md` made for death records.
 **The probe veto.** An eviction releases the claim only where the handle probe does **not** say
 definitively alive. `resolve()` returns True (same-host, pid alive), False (same-host, dead), or
 None (abstain — every foreign-host handle, `vocabulary/handle.py:45`). The veto fires only on True.
+(Log format 0.4.0, `../specs/commits-and-lineage.md` §3: the veto lives in the writer's helper,
+`report_death`, which raises `ClaimAliveError` on a handle that probes alive unless `force=True`, the
+caller's statement that its evidence outranks the probe — as a reap's `waitpid` and a session probe's
+ended session do, so `LocalLauncher`, `ThreadLauncher` and `report_if_dead`'s session branch force it.
+No read probes, so no fold carries the veto.)
 
 This is not a refinement; it is required. `tests/test_observables.py` pins the invariant and records
 what happens without it:

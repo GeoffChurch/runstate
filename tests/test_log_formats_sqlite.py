@@ -18,13 +18,15 @@ from runstate import (
 from runstate.channel.sqlite import SqliteChannel
 from runstate.formats import FORMATS
 from runstate.migrations import STEPS, migrate
+from runstate.cli import BUDGET, CAP, RUN_ON
 from runstate.migrations.ambiguity import Limits, parse_choices
 from runstate.migrations.stores import SqliteStore
 
 # The logs below hold values only: no fork, and no divergence fires.
-# the limits of a step that reads none of them
-ONE = Limits(cap=1, budget=1, run_on=0)
-NOTHING = parse_choices(STEPS, assume=[], resolve=[], accept=[], limits=ONE)
+# The command line's limits: the 0.3.0 -> 0.4.0 step reads them, and under no stated
+# facts it follows more than one history even through a log of values alone.
+LIMITS = Limits(cap=CAP, budget=BUDGET, run_on=RUN_ON)
+NOTHING = parse_choices(STEPS, assume=[], resolve=[], accept=[], limits=LIMITS)
 
 
 def _path(root, rid):
@@ -59,10 +61,10 @@ def test_a_newer_format_in_the_root_refuses_everything(tmp_path):
 
 def test_an_older_format_holding_the_run_says_migrate(tmp_path, monkeypatch):
     from runstate import formats
-    from runstate.formats import DirectoryLayout
+    from tests.format_helpers import toy_layout
 
-    monkeypatch.setitem(formats.FORMATS, "0.1.0", DirectoryLayout("0.1.0"))
-    old = DirectoryLayout("0.1.0").sqlite_path(tmp_path, "r1")
+    monkeypatch.setitem(formats.FORMATS, "0.1.0", toy_layout("0.1.0"))
+    old = toy_layout("0.1.0").sqlite_path(tmp_path, "r1")
     old.parent.mkdir()
     sqlite3.connect(old).close()
     for locate in (attach_channel, create_channel):
@@ -71,8 +73,8 @@ def test_an_older_format_holding_the_run_says_migrate(tmp_path, monkeypatch):
 
 
 def test_a_v0_2_0_log_says_migrate(tmp_path):
-    """Format 0.3.0 is current, so a run still at 0.2.0 is refused with the
-    instruction to migrate it: never read as 0.3.0, never not found."""
+    """Format 0.4.0 is current, so a run still at 0.2.0 is refused with the
+    instruction to migrate it: never read as 0.4.0, never not found."""
     from runstate.channel.sqlite import SqliteChannel
 
     old = FORMATS["0.2.0"].sqlite_path(tmp_path, "r1")
@@ -82,9 +84,27 @@ def test_a_v0_2_0_log_says_migrate(tmp_path):
     for locate in (attach_channel, create_channel):
         with pytest.raises(LogFormatMismatch) as exc:
             locate("r1", root=tmp_path)
-        assert (exc.value.found, exc.value.expected) == ("0.2.0", "0.3.0")
+        assert (exc.value.found, exc.value.expected) == ("0.2.0", "0.4.0")
         assert f"run `runstate migrate {tmp_path}`" in str(exc.value)  # in full
     assert not _path(tmp_path, "r1").exists()  # create did not birth beside it
+
+
+def test_a_v0_3_0_log_says_migrate(tmp_path):
+    """The format before the current one: a run still at 0.3.0 is refused by both
+    locators with the whole command that moves it to 0.4.0, and create births
+    nothing beside it."""
+    old = FORMATS["0.3.0"].sqlite_path(tmp_path, "r1")
+    old.parent.mkdir()
+    with SqliteChannel(old) as ch:
+        ch.send({"value": 0.5, "step": None, "t": None}, topic="value", name="n")
+    for locate in (attach_channel, create_channel):
+        with pytest.raises(LogFormatMismatch, match="runstate migrate") as exc:
+            locate("r1", root=tmp_path)
+        assert (exc.value.found, exc.value.expected) == ("0.3.0", "0.4.0")
+        assert f"run `runstate migrate {tmp_path}` to move it to format 0.4.0" in str(
+            exc.value
+        )
+    assert not _path(tmp_path, "r1").exists()
 
 
 def test_a_legacy_log_is_missing_never_not_found(tmp_path):
@@ -294,4 +314,6 @@ def test_a_crashed_delete_mode_writer_onboards_and_migrates(
         SqliteStore(tmp_path), None, to=LOG_FORMAT, choices=NOTHING
     ).moved == ("r1",)
     with attach_channel("r1", root=tmp_path) as ch:
-        assert [e.body for e in ch.read()] == [{"i": i} for i in range(5)]
+        assert [e.body for e in ch.read()] == [
+            {"value": i, "t": None} for i in range(5)
+        ]

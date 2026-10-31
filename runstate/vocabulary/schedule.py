@@ -1,350 +1,589 @@
-"""The subscription convention's condition-algebra (docs/design-v0.2.md §6).
+"""The condition algebra over counts (docs/specs/commits-and-lineage.md §3,
+subscription-v0.4).
 
-A *Condition* is a threshold over the worker's coordinates ``(step, time, count)``
-or an ``any``/``all`` of Conditions:
+THE WIRE. A condition is an atom over the coordinates at a node, or an
+``any``/``all`` of conditions:
 
-    Threshold := {"step": N} | {"time_seconds": S} | {"count": C}
-    Condition := Threshold | {"any": [Condition, ...]} | {"all": [Condition, ...]}
+    Atom      := {"stream": X, "n": N} | {"commits": N} | {"time_seconds": S}
+               | {"count": C}
+    Condition := Atom | {"any": [Condition, ...]} | {"all": [Condition, ...]}
 
-``any`` fires when *any* child crosses (whichever first / OR); ``all`` when *all*
-have crossed (whichever last / AND). Thresholds are ``>=`` comparisons, so every
-condition is monotone (once true, stays true as coordinates advance). A
-``step`` threshold is never satisfied for a stepless worker (``step is None``).
+A schedule is ``{from?, every?, until?}``, each a condition, with ``count`` only in
+``until``; a stop trigger is ``{from?}``. The step atom of 0.3.0 is removed.
+
+THE TERM. The wire dict is checked and converted once, at the boundary, by
+``parse_schedule`` and ``parse_stop_trigger``, into a typed ``Term`` and a
+``Schedule``; everything past the parse matches on types, never on string keys.
+
+- ``Target`` (``coordinate.py``) is the **lineage atom** ``{stream, n}`` or
+  ``{commits: n}``: ``count(X, node)``, the number of X's elements on the lineage up
+  to and including the node, for an eager stream X or ``Commits()`` (§2, "The
+  coordinate"), at least ``n``.
+- ``Elapsed`` is ``time_seconds``: the wall clock since the claim registered the
+  request. ``Fired`` is ``count``: the claim's firings of it.
+- ``AnyOf`` holds when any child does, ``AllOf`` when all do.
+
+Every atom is a ``>=`` threshold, so every term is monotone along a lineage. A
+schedule with any ``Elapsed`` or ``Fired`` atom is a **lease**, which lives per
+claim; every other one is **durable**, and lives per lineage (§2, "Requests").
+
+The parse refuses what subscription-v0.4 refuses, with two exceptions, as in
+``payloads``: a whole-number float such as ``3.0`` is no integer here, and NaN is
+no number, though JSON Schema admits both. No writer of a 0.4.0 log writes either.
 """
 
 from __future__ import annotations
 
-from typing import Any, NamedTuple
+from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Set as AbstractSet
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Any, NamedTuple, assert_never
+
+from .coordinate import Commits, Target
 
 Condition = dict[str, Any]
-"""A condition-algebra dict (the wire subscription shape): a step/time_seconds/count
-threshold or an any/all of them, plus the from/every/until schedule. Kept as the wire
-dict by design -- no separate Bound/Target type."""
+"""The wire dict of a schedule or a stop trigger (subscription-v0.4), as a
+``control.subscribe`` or ``control.stop`` body carries it. Only the boundary takes
+it: ``parse_schedule`` and ``parse_stop_trigger``, and the functions that send or
+replay a wire schedule, which parse it at their own boundary."""
 
 
-def satisfied(
-    cond: Condition,
-    *,
-    step: int | None = None,
-    time_seconds: float = 0.0,
-    count: int = 0,
-) -> bool:
-    """Is ``cond`` satisfied at coordinates (step, time_seconds, count)?"""
-    if "any" in cond:
-        return any(
-            satisfied(c, step=step, time_seconds=time_seconds, count=count)
-            for c in cond["any"]
-        )
-    if "all" in cond:
-        return all(
-            satisfied(c, step=step, time_seconds=time_seconds, count=count)
-            for c in cond["all"]
-        )
-    if "step" in cond:
-        return step is not None and step >= cond["step"]
-    if "time_seconds" in cond:
-        return bool(time_seconds >= cond["time_seconds"])
-    if "count" in cond:
-        return bool(count >= cond["count"])
-    raise ValueError(f"unknown condition: {cond!r}")
+class MalformedSchedule(ValueError):
+    """A body subscription-v0.4 refuses, or a pure demand with a ``from``, an
+    ``every`` or a ``count`` atom. Its message names the offending key by its path
+    in the body (``from.any[1].time_seconds``), and is the worker's ``malformed``
+    nak message."""
+
+
+# ----- the term ---------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Elapsed:
+    """``{time_seconds: s}``: holds once ``s`` seconds have passed since the claim
+    registered the request (in ``every``: since its last firing)."""
+
+    seconds: float
+
+    def __post_init__(self) -> None:
+        s = self.seconds
+        if isinstance(s, bool) or not isinstance(s, (int, float)) or not s >= 0:
+            raise ValueError(f"seconds must be a number >= 0, got {s!r}")
+
+
+@dataclass(frozen=True)
+class Fired:
+    """``{count: n}``: holds once the claim has fired the subscription ``n`` times,
+    this node's firing included. Only in ``until``: elsewhere it is circular, since
+    firings advance only by firing."""
+
+    n: int
+
+    def __post_init__(self) -> None:
+        n = self.n
+        if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+            raise ValueError(f"n must be an integer >= 0, got {n!r}")
+
+
+@dataclass(frozen=True)
+class AnyOf:
+    """Holds when any of its terms does: whichever crosses first."""
+
+    terms: tuple[Term, ...]
+
+    def __post_init__(self) -> None:
+        if not self.terms:
+            raise ValueError("any takes at least one term")
+
+
+@dataclass(frozen=True)
+class AllOf:
+    """Holds when all of its terms do: whichever crosses last."""
+
+    terms: tuple[Term, ...]
+
+    def __post_init__(self) -> None:
+        if not self.terms:
+            raise ValueError("all takes at least one term")
+
+
+Atom = Target | Elapsed | Fired
+Term = Target | Elapsed | Fired | AnyOf | AllOf
+
+
+@dataclass(frozen=True)
+class Schedule:
+    """A subscription's schedule (§3): ``from_`` opens it, ``every`` repeats it
+    (absent: a one-shot), ``until`` ends it. A ``Fired`` atom only in ``until``."""
+
+    from_: Term | None
+    every: Term | None
+    until: Term | None
+
+    def __post_init__(self) -> None:
+        for slot, term in (("from", self.from_), ("every", self.every)):
+            if term is not None and any(isinstance(a, Fired) for a in _atoms(term)):
+                raise MalformedSchedule(f"`{slot}`: count is valid only in `until`")
+
+    def atoms(self) -> Iterator[Atom]:
+        """Every atom of every slot."""
+        for term in (self.from_, self.every, self.until):
+            if term is not None:
+                yield from _atoms(term)
+
+
+def _atoms(term: Term) -> Iterator[Atom]:
+    """The leaves of ``term``."""
+    match term:
+        case AnyOf(terms=terms) | AllOf(terms=terms):
+            for t in terms:
+                yield from _atoms(t)
+        case Target() | Elapsed() | Fired():
+            yield term
+        case _:
+            assert_never(term)
+
+
+# ----- evaluation -------------------------------------------------------------------
+
+
+class Coordinates(NamedTuple):
+    """The counts at one node (§3, "Evaluation"), its pending values included when
+    it is the node being written: evaluated at the previous node instead, ``from
+    {commits: 1}`` would fire one commit late."""
+
+    streams: Mapping[str, int]
+    """``count(X, node)`` per eager stream X. A stream with no element on the
+    lineage counts 0, so it may be absent: empty is 0, with no sentinel (§2)."""
+    commits: int
+    """``count(Commits(), node)``: the iterations committed."""
+
+    def of(self, x: str | Commits) -> int:
+        """``count(x, node)``, for an eager stream name or ``Commits()``."""
+        if isinstance(x, Commits):
+            return self.commits
+        return self.streams.get(x, 0)
+
+
+def _holds(term: Term, atom: Callable[[Atom], bool]) -> bool:
+    """``term`` under ``atom``, the judgment of one leaf: ``any`` and ``all`` are the
+    same combinators for an absolute threshold and for a delta."""
+    match term:
+        case AnyOf(terms=terms):
+            return any(_holds(t, atom) for t in terms)
+        case AllOf(terms=terms):
+            return all(_holds(t, atom) for t in terms)
+        case Target() | Elapsed() | Fired():
+            return atom(term)
+        case _:
+            assert_never(term)
+
+
+def satisfied(term: Term, *, at: Coordinates, time_seconds: float, count: int) -> bool:
+    """Does ``term`` hold at the node whose counts are ``at``, ``time_seconds``
+    after registration, with ``count`` firings? (§3: ``from`` and ``until`` hold
+    once ``count(X, node) >= n``.)"""
+
+    def atom(a: Atom) -> bool:
+        match a:
+            case Target(x=x, n=n):
+                return at.of(x) >= n
+            case Elapsed(seconds=s):
+                return time_seconds >= s
+            case Fired(n=n):
+                return count >= n
+            case _:
+                assert_never(a)
+
+    return _holds(term, atom)
 
 
 class Decision(NamedTuple):
+    """A subscription's evaluation at one node: whether it fires there, and whether
+    its schedule ends there (the node's ``fired`` and ``expired``)."""
+
     fire: bool
     expired: bool
 
 
-class Corner(NamedTuple):
-    """The minimal ``(step, time)`` corner of a conjunctive condition."""
-
-    step: int
-    time: float
-
-
 class Subscription:
-    """A subscription's schedule + firing history.
+    """A registered schedule (§3, "Evaluation"). The claim holds ``registered_at``,
+    the fire count and the time of the last firing; the lineage supplies the count
+    baselines, which the caller passes to each ``evaluate``.
 
-    ``tick(step, now)`` is called at each of the worker's safe points and returns
-    ``Decision(fire, expired)``. ``from``/``until`` evaluate over absolute
-    coordinates (step, seconds-since-registration, fire-count); ``every``
-    evaluates over deltas-since-the-last-fire. Absent ``every`` => one-shot.
-    """
+    ``target`` is the source it samples, its envelope ``name``, or ``None`` for a
+    pure demand, which has a lifetime but no schedule and never fires. It is fixed
+    at registration (§3: a re-send that changes it is refused), so it is the
+    constructor's; which sources hold a value varies per node, so that is
+    ``evaluate``'s. The schedule comes parsed: ``parse_schedule(body,
+    pure_demand=target is None)`` refuses at the drain what the Worker naks as
+    ``malformed``.
 
-    def __init__(self, schedule: Condition, *, registered_at: float):
-        self.from_ = schedule.get("from")
-        self.every = schedule.get("every")
-        self.until = schedule.get("until")
-        self.registered_at = registered_at
-        self.count = 0
-        self._last_step: int | None = None
-        self._last_elapsed: float | None = None
+    A re-send that the worker accepts registers afresh (§3, subscription-v0.4): a
+    new ``Subscription``, so a lease's time atoms count from the re-send, its fire
+    count returns to 0, and its time baseline is dropped, while its lineage
+    baselines, read on the lineage, stay.
 
-    def tick(self, *, step: int | None, now: float) -> Decision:
-        elapsed = now - self.registered_at
-        # Pre-fire expiry gate (catches step/time `until`, and count `until`
-        # once the budget is already spent).
-        if self.until is not None and satisfied(
-            self.until, step=step, time_seconds=elapsed, count=self.count
+    ``fires`` and the time baseline are the claim's, and only a lease reads them:
+    an ``Elapsed`` or a ``Fired`` atom is what makes a schedule a lease, so a durable
+    subscription, whose state is all the lineage's, reads neither, and nothing
+    rebuilds them."""
+
+    def __init__(
+        self, schedule: Schedule, *, registered_at: float, target: str | None
+    ) -> None:
+        self._schedule = schedule
+        self._registered_at = registered_at
+        self._target = target
+        self._lease = is_lease(schedule)
+        self._fires = 0
+        self._fired_at: float | None = None
+
+    @property
+    def schedule(self) -> Schedule:
+        return self._schedule
+
+    @property
+    def target(self) -> str | None:
+        """The source it samples, or ``None`` for a pure demand; fixed."""
+        return self._target
+
+    @property
+    def registered_at(self) -> float:
+        """The claim's clock at registration, which ``from`` and ``until``'s
+        ``Elapsed`` atoms count from."""
+        return self._registered_at
+
+    @property
+    def lease(self) -> bool:
+        """``is_lease(schedule)``: whether it lives per claim."""
+        return self._lease
+
+    @property
+    def fires(self) -> int:
+        """The claim's firings, which a ``Fired`` atom reads."""
+        return self._fires
+
+    def evaluate(
+        self,
+        *,
+        at: Coordinates,
+        baseline: Coordinates | None,
+        now: float,
+        valued: AbstractSet[str],
+    ) -> Decision:
+        """Evaluate the schedule at the node being written. **The call is the
+        firing:** a ``Decision`` that fires has already advanced ``fires`` and the
+        time baseline, so two calls at one node count two firings, and a caller
+        that retries a write reuses the ``Decision`` rather than calling again.
+
+        - ``at``: the counts at the node, its pending values included.
+        - ``baseline``: the counts at the newest node on the lineage whose ``fired``
+          names this subscription, or ``None`` when no node there does. It is the
+          baseline of every lineage atom in ``every``, for a lease as for a durable
+          subscription (review §12, item 14), so after a rewind below the last
+          firing, ``every`` counts from the newest firing left on the lineage.
+        - ``now``: the writer's clock. ``Elapsed`` in ``from`` and ``until`` reads
+          ``now - registered_at``; in ``every`` it reads ``now`` minus the time of
+          this claim's last firing, which a rewind does not move.
+        - ``valued``: the sources whose registers hold a value at this node. A
+          subscription can fire only when its target is one of them: a source with
+          no value yet does not fire, and waits for the first ``set`` (§3). A pure
+          demand never consults it, as a schedule with no time atom never consults
+          ``now``.
+
+        ``until`` first: where it holds, the subscription expires and fires
+        nothing. One that cannot fire here (a pure demand, or a target with no
+        value) evaluates only its ``until``: it may expire, never fires, and moves
+        neither ``fires`` nor the time baseline, so its first firing once it can
+        sample is still immediate. Otherwise it fires once ``from`` holds and
+        ``every``'s delta rule does: ``count(now) - count(at the last firing) >=
+        n``, not rounded to a multiple, with no interpolation inside a jump. An
+        atom with no baseline holds, so the first firing is immediate. It expires
+        at the node where it fires if it is a one-shot (no ``every``), or if its
+        ``until`` holds once this firing is counted: a ``Fired`` atom counts the
+        firings up to and including the node (§3, "Expiry"), so the nth firing
+        ends the schedule, as a one-shot's one firing does."""
+        s = self._schedule
+        elapsed = now - self._registered_at
+        if s.until is not None and satisfied(
+            s.until, at=at, time_seconds=elapsed, count=self._fires
         ):
-            return Decision(False, True)
-        fire = self._triggers(step, elapsed)
-        if fire:
-            self.count += 1
-            self._last_step = step
-            self._last_elapsed = elapsed
-        return Decision(fire, self._expired(step, elapsed))
-
-    def _triggers(self, step: int | None, elapsed: float) -> bool:
-        from_open = self.from_ is None or satisfied(
-            self.from_, step=step, time_seconds=elapsed, count=self.count
-        )
-        if not from_open:
-            return False
-        if self.count == 0:
-            return True  # first fire, at `from`
-        if self.every is None:
-            return False  # one-shot, already fired
-        since_step = (
-            step - self._last_step
-            if (step is not None and self._last_step is not None)
-            else None
-        )
-        assert (
-            self._last_elapsed is not None
-        )  # set with count on the first fire (count>0 here)
-        since_elapsed = elapsed - self._last_elapsed
-        return satisfied(
-            self.every, step=since_step, time_seconds=since_elapsed, count=0
-        )
-
-    def _expired(self, step: int | None, elapsed: float) -> bool:
-        # Post-fire: count-based `until` (the fire that reached the budget), and
-        # one-shot subscriptions that have now fired.
-        if self.until is not None and satisfied(
-            self.until, step=step, time_seconds=elapsed, count=self.count
+            return Decision(fire=False, expired=True)
+        if self._target is None or self._target not in valued:
+            return Decision(fire=False, expired=False)
+        if s.from_ is not None and not satisfied(
+            s.from_, at=at, time_seconds=elapsed, count=self._fires
         ):
-            return True
-        if self.every is None and self.count >= 1:
-            return True
-        # The enforced invariant (specs/service-worker.md): registered iff a
-        # future fire is possible. After a fire, an `every` that can never be
-        # satisfied again on this worker's coordinates -- a step-only `every`
-        # on a stepless worker -- expires instead of pinning forever.
-        return (
-            self.every is not None
-            and self.count >= 1
-            and step is None
-            and not _satisfiable_stepless(self.every)
+            return Decision(fire=False, expired=False)
+        if s.every is not None and not self._due(s.every, at, baseline, now):
+            return Decision(fire=False, expired=False)
+        self._fires += 1
+        self._fired_at = now
+        expired = s.every is None or (
+            s.until is not None
+            and satisfied(s.until, at=at, time_seconds=elapsed, count=self._fires)
         )
+        return Decision(fire=True, expired=expired)
+
+    def _due(
+        self,
+        every: Term,
+        at: Coordinates,
+        baseline: Coordinates | None,
+        now: float,
+    ) -> bool:
+        """``every``'s delta rule, atom by atom against each atom's own baseline."""
+        fired_at = self._fired_at
+
+        def atom(a: Atom) -> bool:
+            match a:
+                case Target(x=x, n=n):
+                    return baseline is None or at.of(x) - baseline.of(x) >= n
+                case Elapsed(seconds=s):
+                    return fired_at is None or now - fired_at >= s
+                case Fired():
+                    raise AssertionError("Schedule refuses a count atom in `every`")
+                case _:
+                    assert_never(a)
+
+        return _holds(every, atom)
 
 
-def is_unsatisfiable(schedule: Condition, *, step: int | None) -> bool:
-    """Can this schedule produce *zero* fires, determinable at registration?
-
-    Static cases (docs/design-v0.2.md §6):
-    - ``until`` already satisfied at the current coordinates (window closed);
-    - a step-keyed ``from`` on a *stepless* worker (it can never open);
-    - an empty window — ``from`` ⟹ ``until`` (the gate opens no earlier than it
-      closes). Detected for a *conjunctive* ``from`` (its single minimal corner)
-      by checking whether ``until`` already holds there; a ``from`` containing an
-      ``any`` has many corners (a potential exponential), so we punt on it and it
-      degrades to a dynamic never-fire rather than reach for a normal form.
-
-    A merely-future or already-crossed step threshold is NOT unsatisfiable — by
-    the clean ``>=`` semantics it fires at the next safe point where it holds.
-    """
-    until = schedule.get("until")
-    if until is not None and satisfied(until, step=step, time_seconds=0.0, count=0):
-        return True
-    from_ = schedule.get("from")
-    if step is None and from_ is not None and not _satisfiable_stepless(from_):
-        return True
-    if until is not None and from_ is not None:
-        corner = _conjunctive_corner(from_)
-        if corner is not None:
-            # On a stepless worker, `from` provably has no step atom to reach
-            # here (else the stepless check above returned), so the step corner
-            # is meaningless -- pass step=None so a `step` atom in `until`
-            # evaluates as it does everywhere else (never satisfied), instead of
-            # spuriously matching at corner step 0.
-            corner_step = corner.step if step is not None else None
-            if satisfied(until, step=corner_step, time_seconds=corner.time, count=0):
-                return True
-    return False
+# ----- the class of a schedule ------------------------------------------------------
 
 
-def _conjunctive_corner(cond: Condition) -> Corner | None:
-    """The single minimal ``(step, time)`` corner of a conjunctive condition, or
-    None if it contains an ``any`` (many corners) or isn't corner-representable.
-    Sound for the from ⟹ until check: ``until`` holding at this corner means it
-    holds on all of ``from``'s up-set (every condition is monotone)."""
-    if "any" in cond:
-        return None
-    if "all" in cond:
-        step, time = 0, 0.0
-        for c in cond["all"]:
-            sub = _conjunctive_corner(c)
-            if sub is None:
-                return None
-            step, time = max(step, sub.step), max(time, sub.time)
-        return Corner(step, time)
-    if "step" in cond:
-        return Corner(cond["step"], 0.0)
-    if "time_seconds" in cond:
-        return Corner(0, cond["time_seconds"])
-    return None  # count (not a `from` key) or unknown -> punt
+def is_lease(schedule: Schedule) -> bool:
+    """Is the schedule a **lease** (§2, §3)? True if and only if it has an
+    ``Elapsed`` or a ``Fired`` atom anywhere: both are relative to the claim that
+    registered it (seconds since, firings since), so it lives per claim, is bound
+    to it by ``lifecycle.bound``, and is void once that claim has ended. Every
+    other schedule's atoms are lineage coordinates, and it is durable.
+
+    A fold that meets a logged ``control.subscribe`` parses its body first. A body
+    that does not parse is malformed: it is never a lease, so no claim's end voids
+    it, and it is live demand until the worker's ``nak`` spends its id, so a worker
+    is launched to refuse it. A junk record cannot poison a fold, which an
+    append-only log could never retract."""
+    return any(isinstance(a, (Elapsed, Fired)) for a in schedule.atoms())
 
 
-def _references_atom(schedule: Condition, keys: frozenset[str]) -> bool:
-    """Does the schedule mention any atom in ``keys``, anywhere in
-    ``from``/``every``/``until`` (descending through ``any``/``all``)?
-    Tolerant: an unparseable schedule references nothing (the worker naks it,
-    which answers it)."""
-
-    def hit(cond: object) -> bool:
-        if not isinstance(cond, dict):
-            return False
-        if "any" in cond and isinstance(cond["any"], list):
-            return any(hit(c) for c in cond["any"])
-        if "all" in cond and isinstance(cond["all"], list):
-            return any(hit(c) for c in cond["all"])
-        return bool(keys & cond.keys())
-
-    if not isinstance(schedule, dict):
-        return False
+def needs_epoch(schedule: Schedule) -> bool:
+    """Does evaluating the schedule read ``registered_at``: an ``Elapsed`` atom in
+    ``from`` or ``until``, which count seconds from registration? ``every``'s count
+    from its last firing, so an ``every`` time atom needs none. Not the lease
+    question, which a count-only schedule answers yes and this one no."""
     return any(
-        hit(schedule.get(k))
-        for k in ("from", "every", "until")
-        if schedule.get(k) is not None
+        isinstance(a, Elapsed)
+        for term in (schedule.from_, schedule.until)
+        if term is not None
+        for a in _atoms(term)
     )
 
 
-# The two coordinates whose meaning is RELATIVE TO THE REGISTRATION, so a worker
-# that did not receive the registration cannot reconstruct them: `time_seconds`
-# (seconds since) and `count` (fires since). Both live only in the Subscription
-# object -- `self.count = 0`, `registered_at` -- and so resurrect at zero in the
-# next episode. `step` is NOT one: it is run-absolute (`steps(start=k)` emits
-# run-absolute steps), so it survives an episode boundary intact.
-_EPISODE_LOCAL_ATOMS = frozenset({"time_seconds", "count"})
+# ----- the parse --------------------------------------------------------------------
+
+_COUNT_OUTSIDE_UNTIL = "count is valid only in `until`"
 
 
-def references_episode_local(schedule: Condition) -> bool:
-    """Is this schedule a **lease** — scoped to the one episode that received it
-    (specs/time-lease-boundary.md)?
+def parse_schedule(body: Condition, *, pure_demand: bool) -> Schedule:
+    """Parse a ``control.subscribe`` body into a ``Schedule``, or raise
+    ``MalformedSchedule`` naming the offending key: subscription-v0.4's
+    ``Schedule``, spelled in Python so the worker needs no jsonschema.
 
-    True iff it references a coordinate whose meaning is relative to the
-    registration, so a later episode would silently re-anchor it: the spec's
-    disease is that such state *"lives only in the worker's memory, dies with
-    it, and resurrects at zero in the next episode."* That is true of
-    ``time_seconds`` AND of ``count``; the original predicate tested only the
-    former, so a ``{"until": {"count": N}}`` lease got its budget refunded every
-    episode (measured: fires 3+3+3 across three episodes where the time
-    equivalent correctly fires 3+0+0).
-
-    Blunt-but-crisp, as the spec chose: no per-atom carve-outs. ``count`` COULD
-    instead be re-derived from the log (unlike elapsed time, the fires are
-    countable) — declined deliberately, because a carve-out is exactly what the
-    rule forbids and a schedule mixing both atoms would then have two
-    incompatible survival rules.
-
-    NOT the same question as ``references_time``, which asks whether the time
-    axis needs anchoring. They diverge on ``count``: a count-only schedule is a
-    lease but needs no epoch."""
-    return _references_atom(schedule, _EPISODE_LOCAL_ATOMS)
-
-
-def references_time(schedule: Condition) -> bool:
-    """Does the schedule need the run epoch — i.e. does it contain a
-    ``time_seconds`` atom anywhere in ``from``/``every``/``until``?
-
-    The *anchoring* question, used by ``memoizer.history`` to decide whether a
-    replay requires ``lifecycle.started.t``. For the *episode-scoping* question
-    (which also catches ``count``) use ``references_episode_local``."""
-    return _references_atom(schedule, frozenset({"time_seconds"}))
-
-
-def malformed_schedule(body: Condition) -> str | None:
-    """Why ``body`` fails the Schedule grammar, or None if it conforms.
-
-    The full structural check against the subscription schema
-    (protocol/subscription-v0.3.schema.json ``$defs.Schedule``), spelled in
-    Python so the worker needs no jsonschema dependency: top-level keys ⊆
-    ``from``/``every``/``until``, each a Condition -- with ``count``
-    grammatical only under ``until`` (elsewhere it is a circular gate: count
-    advances only on fires -- the accidental pure pin,
-    specs/service-worker.md). A non-None reason is the worker's ``malformed``
-    nak message, decided before any semantic (unsatisfiable) check; a None
-    guarantees the schedule evaluates cleanly at every safe point."""
-    for key, value in body.items():
-        if key not in ("from", "every", "until"):
-            return f"unknown schedule key {key!r} (a schedule takes from/every/until)"
-        problem = _malformed_condition(value, allow_count=(key == "until"), path=key)
-        if problem is not None:
-            return problem
-    return None
-
-
-def malformed_stop_trigger(body: Condition) -> str | None:
-    """Why ``body`` fails the StopTrigger grammar, or None if it conforms:
-    at most a count-free ``from`` (a stop is one-shot -- ``every`` is inert
-    and an ``until`` could perversely gate it from ever firing)."""
-    for key, value in body.items():
-        if key != "from":
-            return "control.stop takes only `from`"
-        problem = _malformed_condition(value, allow_count=False, path="from")
-        if problem is not None:
-            return problem
-    return None
-
-
-def _malformed_condition(cond: object, *, allow_count: bool, path: str) -> str | None:
-    """The Condition/UntilCondition oneOf: exactly one key -- a threshold atom
-    (``count`` only where ``allow_count``) or a non-empty ``any``/``all`` of
-    conditions. ``path`` locates the offense in the reason string."""
-    if cond is None:
-        return f"`{path}` is null (omit the key instead)"
-    if not isinstance(cond, dict):
-        return f"`{path}` must be a condition object, got {type(cond).__name__}"
-    if len(cond) != 1:
-        keys = (
-            "step/time_seconds/count/any/all"
-            if allow_count
-            else "step/time_seconds/any/all"
+    With ``pure_demand`` (a subscription whose envelope ``name`` is null), it also
+    refuses a ``from``, an ``every`` or a ``count`` atom anywhere: a pure demand has
+    a lifetime, not a schedule, and those schedule samples it cannot take (§3;
+    review §12, item 14). The worker's drain parses first, and its refusal is a
+    ``nak`` of reason ``malformed``, decided before any refusal as
+    ``unsatisfiable``. A fold that meets a logged body parses it too, and reads a
+    body that does not parse as malformed demand, live until that ``nak`` spends
+    it (``is_lease``)."""
+    unknown = _unknown_keys(body, {"from", "every", "until"})
+    if unknown:
+        raise MalformedSchedule(
+            f"`{unknown}`: unknown schedule key (a schedule takes from/every/until)"
         )
-        return (
-            f"`{path}` must carry exactly one condition key ({keys}), got {list(cond)}"
+
+    def slot(key: str) -> Term | None:
+        if key not in body:
+            return None
+        if pure_demand and key != "until":
+            raise MalformedSchedule(f"`{key}`: a pure demand takes only an `until`")
+        if key != "until":
+            no_count: str | None = _COUNT_OUTSIDE_UNTIL
+        elif pure_demand:
+            no_count = "a pure demand takes no count: it never fires"
+        else:
+            no_count = None
+        return _parse_term(body[key], path=key, no_count=no_count)
+
+    return Schedule(from_=slot("from"), every=slot("every"), until=slot("until"))
+
+
+def parse_stop_trigger(body: Condition) -> Term | None:
+    """Parse a ``control.stop`` body (subscription-v0.4's ``StopTrigger``) into its
+    ``from``, or ``None`` when it has none, which holds once drained (§4, "The stop
+    decision"); raise ``MalformedSchedule`` naming the offending key. A stop is
+    one-shot, so an ``every`` is inert and an ``until`` could gate it from ever
+    firing: it takes only a ``from``, with no ``count``."""
+    unknown = _unknown_keys(body, {"from"})
+    if unknown:
+        raise MalformedSchedule(f"`{unknown}`: control.stop takes only `from`")
+    if "from" not in body:
+        return None
+    return _parse_term(body["from"], path="from", no_count=_COUNT_OUTSIDE_UNTIL)
+
+
+def _unknown_keys(body: object, allowed: set[str]) -> str | None:
+    """The first key of ``body`` outside ``allowed``, or None; raise
+    ``MalformedSchedule`` when ``body`` is no object. A Python caller can hand the
+    boundary what JSON cannot spell (a list, an ``int`` key), and the boundary
+    refuses all of it with its one error."""
+    if not isinstance(body, dict):
+        raise MalformedSchedule(
+            f"a schedule must be an object, got {type(body).__name__}"
+        )
+    unknown = sorted(str(k) for k in body if k not in allowed)
+    return unknown[0] if unknown else None
+
+
+def _parse_term(cond: object, *, path: str, no_count: str | None) -> Term:
+    """subscription-v0.4's ``Condition`` (``no_count`` is the refusal of a count
+    atom) or ``UntilCondition`` (``no_count`` is None): an atom, or a non-empty
+    ``any``/``all`` of conditions. ``path`` names the offending key."""
+    if cond is None:
+        raise MalformedSchedule(f"`{path}`: is null (omit the key instead)")
+    if not isinstance(cond, dict):
+        raise MalformedSchedule(
+            f"`{path}`: must be a condition object, got {type(cond).__name__}"
+        )
+    if "stream" in cond or "n" in cond:
+        if set(cond) != {"stream", "n"}:
+            raise MalformedSchedule(
+                f"`{path}`: {{stream, n}} takes exactly those keys, got {list(cond)}"
+            )
+        stream = cond["stream"]
+        if not (isinstance(stream, str) and stream):
+            raise MalformedSchedule(
+                f"`{path}.stream`: must be a non-empty string, got {stream!r}"
+            )
+        n = cond["n"]
+        return _built(f"{path}.n", lambda: Target(stream, n))
+    if len(cond) != 1:
+        raise MalformedSchedule(
+            f"`{path}`: must carry exactly one condition key, got {list(cond)}"
         )
     ((key, value),) = cond.items()
+    here = f"{path}.{key}"
     if key in ("any", "all"):
         if not isinstance(value, list) or not value:
-            return f"`{path}.{key}` must be a non-empty list of conditions"
-        for i, child in enumerate(value):
-            problem = _malformed_condition(
-                child, allow_count=allow_count, path=f"{path}.{key}[{i}]"
-            )
-            if problem is not None:
-                return problem
-        return None
-    if key == "count" and not allow_count:
-        return "count thresholds are valid only in `until`"
-    if key not in ("step", "time_seconds", "count"):
-        return f"`{path}` has unknown condition key {key!r}"
-    # bool is excluded explicitly: Python True serializes to JSON true, which
-    # the schema rejects where it requires an integer/number.
+            raise MalformedSchedule(f"`{here}`: must be a non-empty list of conditions")
+        terms = tuple(
+            _parse_term(c, path=f"{here}[{i}]", no_count=no_count)
+            for i, c in enumerate(value)
+        )
+        return AnyOf(terms) if key == "any" else AllOf(terms)
+    if key == "commits":
+        return _built(here, lambda: Target(Commits(), value))
     if key == "time_seconds":
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
-            return f"`{path}.time_seconds` must be a number >= 0, got {value!r}"
-    elif isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        return f"`{path}.{key}` must be an integer >= 0, got {value!r}"
+        return _built(here, lambda: Elapsed(value))
+    if key == "count":
+        if no_count is not None:
+            raise MalformedSchedule(f"`{here}`: {no_count}")
+        return _built(here, lambda: Fired(value))
+    raise MalformedSchedule(f"`{here}`: unknown condition key")
+
+
+def _built(path: str, build: Callable[[], Atom]) -> Atom:
+    """An atom whose own constructor checks its number, its refusal named by
+    ``path``."""
+    try:
+        return build()
+    except ValueError as e:
+        raise MalformedSchedule(f"`{path}`: {e}") from None
+
+
+# ----- the refusals -----------------------------------------------------------------
+
+
+class _Corner(NamedTuple):
+    """The least coordinates at which a conjunctive term holds."""
+
+    at: Coordinates
+    time: float
+
+
+# The root: no element, no commit, no time. An absent `from` holds here.
+_ROOT = _Corner(Coordinates(streams=MappingProxyType({}), commits=0), 0.0)
+
+
+def unsatisfiable(schedule: Schedule, *, sources: frozenset[str]) -> str | None:
+    """Why the claim whose declared sources are ``sources`` refuses ``schedule``
+    as ``unsatisfiable``, or ``None`` (§3, "Refusals"):
+
+    - a progress atom naming a declared source, anywhere: a source's samples
+      exist only where someone asked, so its count depends on who asked;
+    - an empty window: a ``from`` that implies the ``until``, so the subscription
+      can never fire. 0.3.0's corner check, restated in counts: ``until`` holding
+      at the least coordinates where a conjunctive ``from`` holds holds wherever
+      ``from`` does, since every term is monotone. On one X, that is ``until``'s
+      n at most ``from``'s; across two it is speed-contingent and not refused. A
+      ``from`` with an ``any`` has many corners, and is not checked rather than
+      normalized. It does not depend on the position. An absent ``from`` reads as
+      ``from`` 0 on each X, its corner the root, since a 0 in ``from`` re-spells
+      an absent one: ``{until: {commits: 0}}`` is refused as ``{from: {commits:
+      0}, until: {commits: 0}}`` is, so one schedule gets one answer (amended
+      2026-10-30).
+
+    An ``until`` that holds at registration but not at the root is not refused
+    (review §12, item 14): whether it holds depends on the position, and it
+    expires at the next node. The third refusal, a subscription targeting a name
+    the claim does not declare a source, is the Worker's, since it reads the
+    envelope's ``name``."""
+    streams = {a.x for a in schedule.atoms() if isinstance(a, Target)}
+    named = sorted(x for x in streams & sources if isinstance(x, str))
+    if named:
+        return (
+            f"a progress atom names the declared source(s) {named}: a source's"
+            " samples exist only where asked, so they are never counted"
+        )
+    if schedule.until is not None:
+        corner = _ROOT if schedule.from_ is None else _corner(schedule.from_)
+        if corner is not None and satisfied(
+            schedule.until, at=corner.at, time_seconds=corner.time, count=0
+        ):
+            return "an empty window: `from` implies `until`, so it can never fire"
     return None
 
 
-def _satisfiable_stepless(cond: Condition) -> bool:
-    """Could ``cond`` ever be satisfied when the worker has no step?"""
-    if "any" in cond:
-        return any(_satisfiable_stepless(c) for c in cond["any"])
-    if "all" in cond:
-        return all(_satisfiable_stepless(c) for c in cond["all"])
-    if "step" in cond:
-        return False
-    return True  # time_seconds / count become satisfiable as they grow
+def _corner(term: Term) -> _Corner | None:
+    """The least coordinates where the count-free ``term`` holds, or ``None`` for a
+    term with an ``any``, which has many. ``all`` takes the per-coordinate maximum
+    of its children's corners."""
+    match term:
+        case Target(x=x, n=n):
+            if isinstance(x, Commits):
+                return _Corner(_ROOT.at._replace(commits=n), 0.0)
+            return _Corner(_ROOT.at._replace(streams={x: n}), 0.0)
+        case Elapsed(seconds=s):
+            return _Corner(_ROOT.at, s)
+        case AnyOf():
+            return None
+        case AllOf(terms=terms):
+            streams: dict[str, int] = {}
+            commits, time = 0, 0.0
+            for t in terms:
+                sub = _corner(t)
+                if sub is None:
+                    return None
+                for x, n in sub.at.streams.items():
+                    streams[x] = max(streams.get(x, 0), n)
+                commits = max(commits, sub.at.commits)
+                time = max(time, sub.time)
+            return _Corner(Coordinates(streams=streams, commits=commits), time)
+        case Fired():
+            raise AssertionError("Schedule refuses a count atom in `from`")
+        case _:
+            assert_never(term)

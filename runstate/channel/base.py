@@ -24,7 +24,7 @@ and design-v0.2.md §4.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Protocol, runtime_checkable
+from typing import NamedTuple, Protocol, overload, runtime_checkable
 
 from .envelope import Body, Envelope
 
@@ -45,6 +45,30 @@ class RunNotFound(LookupError):
 class Channel(ABC):
     """A handle on one run's append-only topic log (see the module docstring)."""
 
+    # Typed by its mode: an unconditional append always lands or raises, so it is
+    # ``int``, and only a compare-and-append can return ``None``. Every backend
+    # repeats these two overloads.
+    @overload
+    def send(
+        self,
+        body: Body,
+        *,
+        topic: str,
+        name: str | None = None,
+        request_id: str | None = None,
+    ) -> int: ...
+
+    @overload
+    def send(
+        self,
+        body: Body,
+        *,
+        topic: str,
+        name: str | None = None,
+        request_id: str | None = None,
+        expected_seq: int | None,
+    ) -> int | None: ...
+
     @abstractmethod
     def send(
         self,
@@ -59,7 +83,8 @@ class Channel(ABC):
         returning the new ``seq``. With ``expected_seq`` it is a compare-and-append:
         the record lands iff the log's max seq still equals ``expected_seq``; ``None``
         means the claim was provably lost (the log moved), a raise means the outcome
-        was indeterminate (a backend fault) — never a silent loss."""
+        was indeterminate (a backend fault) — never a silent loss. Without it the
+        append always lands or raises, so its type is ``int``."""
 
     @abstractmethod
     def read(
@@ -98,31 +123,31 @@ class Channel(ABC):
         self.close()
 
 
-# --- optional liveness capability (off the base ABC; the collections.abc base-plus-
-# mixins shape) ---
-# A backend whose handle is bound to a connection that auto-releases on death can
-# offer a *definitive* cross-host liveness signal -- where a bare-handle probe
-# (os.kill on a foreign host) must abstain. It is exposed as two capability
-# Protocols, isinstance-dispatched and split by VIEWPOINT so a pure observer's
-# channel type never advertises a method it must not call (the worker holds; the
-# observer probes). This is a liveness SIGNAL the Watcher consumes -- never a claim
-# arbiter: the claim stays the uniform CAS. The substrate ABC stays the five pure
-# data ops; this is opt-in and backend-specific (PostgresChannel implements both).
+# --- optional session capability: evidence for a death report ---
+# A backend whose every connection holds a lock of its own from before its first
+# write, and stamps every row with it, can say of a record whether the session that
+# wrote it has ended (commits-and-lineage.md §3; channel-postgres.md, "Liveness").
+# Its answer is EVIDENCE that the claim can write nothing more -- a channel never
+# reconnects, and every record naming a claim travels on the claim's session -- which
+# report_if_dead turns into a record. It never arbitrates a claim: the CAS stays the
+# only arbiter. Opt-in and backend-specific (PostgresChannel), isinstance-dispatched.
+
+
+class Session(NamedTuple):
+    """A writer connection's identity, as stamped on the rows it wrote."""
+
+    server: str  # the writing server: its system identifier and the row's WAL timeline
+    key: int  # the connection's advisory-lock key, a signed 64-bit integer
 
 
 @runtime_checkable
-class EpisodeHolder(Protocol):
-    """Worker-side capability: pin THIS episode's liveness after winning the claim.
-    The signal is held for the episode's life and auto-releases when the holding
-    connection dies (clean stop or crash) -- no explicit release call."""
+class SessionProbe(Protocol):
+    def writer_session(self, seq: int) -> Session | None:
+        """The stamp on the record at ``seq``, or None when it has none (a migrated row).
+        Raises ``LookupError`` when the run has no record at ``seq``."""
+        ...
 
-    def hold_episode(self, started_seq: int) -> None: ...
-
-
-@runtime_checkable
-class EpisodeProbe(Protocol):
-    """Observer-side capability: read whether an episode is still live -- a definitive
-    cross-host signal where a bare-handle probe abstains (a foreign host's pid table
-    isn't ours to read). ``started_seq`` identifies the episode on the run's log."""
-
-    def episode_alive(self, started_seq: int) -> bool: ...
+    def session_ended(self, session: Session) -> bool | None:
+        """True when no connection holds ``session.key``; False when one does; None when
+        this connection cannot tell: another server's stamp, or a standby."""
+        ...

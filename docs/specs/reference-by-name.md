@@ -11,6 +11,23 @@ control-plane reads then give the same answer whatever order records arrive in. 
 the stale-beat leak are fixed, and a stop sent before any worker exists is honored exactly once. It
 supersedes [`../backlog/episode-aim.md`](../backlog/episode-aim.md).
 
+**Extended by log format 0.4.0** ([`commits-and-lineage.md`](commits-and-lineage.md), 2026-10-30), layer 2 of
+the same backlog item. The rule stands and gains instances; where this spec states 0.3.0's records, the
+current ones are:
+- **The answer fold** gains `control.withdraw`, the asker's cancellation, which spends a stop or a
+  subscription by name, and a node's **`expired`**, where the worker records a schedule's end.
+  `control.unsubscribe` is **retired**, with §3's "to replace a subscription" recipe: a replacement is a
+  fresh id plus a `control.withdraw` of the old one.
+- **Request ids are one namespace,** and a missing or empty id is **nameless**: refused `malformed` once, with
+  a `nak` whose `request_id` is null, above the newest watermark an earlier claim wrote.
+- **Each request kind has its own scope:** a stop by name, a lease per claim (bound by `lifecycle.bound`, void
+  once its claim has ended), and a durable subscription per the head's lineage.
+- **`honored` is a set,** read by name, whose items are non-empty.
+- **A claim's end is told from two viewpoints:** its exit, and `supervisor.died`, the death report naming it
+  by `claim_seq`. A third party never forges a `stopped`; two terminals naming one claim no longer resolve
+  newest-wins, since the verdict reads the exit if readable, else every death report.
+- **The nodes name what they extend and commit:** `parent`, `values`, `resume_from`, `fired`, `expired`.
+
 ## 1. The problem
 
 Format 0.2.0 related records by position, by design §7's rule *"a standing fact's eliminator must follow

@@ -17,8 +17,10 @@ today. An item leaves this list by being done, or by being shown moot.
 ## Migration robustness
 
 - **`chain` has no cycle guard.** It is latent while one step exists.
-- **`PostgresStore` duplicates the log DDL without the advisory lock the channel takes, and imports private names.**
-  Two migrators racing `CREATE TABLE IF NOT EXISTS` could collide. Migration is offline by spec.
+- **`PostgresStore` creates a destination's tables without the advisory lock the channel takes.**
+  Two migrators racing `CREATE TABLE IF NOT EXISTS` could collide. Migration is offline by spec. (Its
+  duplicated DDL and private imports are gone: since 2026-10-30 a format holds its tables, and the store takes
+  each destination's DDL from that format's layout, `pg_ddl`; `log-formats.md` §3.)
 - **The CLI prints a traceback on a `MigrationError`.** The seal's `RuntimeError` and raw `sqlite3` errors are not
   `MigrationError`s, so they surface raw too. A clean one-line message per refusal is the fix.
 - **SQLite runs the transform twice**, as a dry run before sealing and again for real (Ruling 12). This costs

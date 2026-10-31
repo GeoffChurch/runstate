@@ -13,7 +13,7 @@ hide the partition choice and risk silently omitting an output-determining file.
 
 ```python
 import json, hashlib
-from runstate import attach_channel, peek_terminal, RunNotFound
+from runstate import attach_channel, peek_terminal, worker_completed, RunNotFound
 
 def run_id(inputs: dict) -> str:                # inputs = everything that
     canon = json.dumps(inputs, sort_keys=True, allow_nan=False)   # determines output
@@ -32,13 +32,13 @@ try:
         prior = peek_terminal(ch)
 except RunNotFound:
     prior = None                                 # no such run yet
-if prior is not None and prior.outcome == "completed":
+if worker_completed(prior):                      # the worker closed its lineage
     ...   # reuse
 else:
     ...   # launch into rid (create_channel births it)
 
-# Or for a sweep: key each Variant by run_id and call sweep(resume=True) — it
-# already skips any run with a terminal record, so that *is* reuse-by-hash.
+# Or let ensure(producer, Target(stream, n)) decide: it reads first, and returns
+# Reached without producing when the rid's lineage already holds the target.
 ```
 
 ## What to get right (the lessons — this is the real content)
@@ -58,6 +58,14 @@ else:
   Seed, code, data are all just inputs — include exactly what determines your
   result. Which outcomes count as reusable (and any min-steps floor) is likewise
   your policy, applied via `peek_terminal`.
+- **Observers' demands count as inputs wherever they perturb** (log format 0.4.0;
+  `../backlog/demand-streams.md`). A source is sampled only where a subscription
+  fires, and the commit holding a sample names the demands it answered, so a log
+  records what the worker produced *given what was demanded of it*. If computing a
+  demanded sample has side effects on the trajectory (an RNG advance, a BatchNorm
+  update, cache warming), two runs of one `run_id` watched differently are
+  different runs, and the hash does not see it. A trajectory that must not depend
+  on who watched keeps its demanded computations free of side effects.
 
 ## Extendable runs: exclude the step-target
 
@@ -68,6 +76,9 @@ and `steps=500` are different runs and nothing extends). Relaunch the same `run_
 with a higher target; the worker resumes from its `run_id`-keyed checkpoint and
 continues the run-absolute `step`. The reuse check is then "did the prior run reach
 ≥ N?" — the min-steps floor above. (Mechanics: `docs/specs/run-episodes.md`.)
+(Log format 0.4.0: the step is the lineage's `Commits()` count, the target a
+`Target(x, n)` that `steps(until)` and `ensure` take, and the check is
+`prefix_len(ch, x, head=LatestClaimHead()) >= n`; `commits-and-lineage.md` §2, §5.)
 
 **Precondition (you own it): the trajectory must be *target-independent*** —
 `loss[42]` is the same whether you asked for 100 or 500 steps. A schedule keyed on
@@ -85,8 +96,9 @@ the channel and artifacts live at `runs/<rid[:2]>/<rid>/` and
 kernel condition gains a second consumer: a false *hit* now silently
 *converges* two intended computations on one home (no duplicate artifacts
 to diff), so owning the partition matters more, not less. (Note for
-one-root helpers: `sweep` and the lazy-launch activator hold one
-launcher/root over N rids and need a per-rid wrapper under this layout.)
+one-root helpers: the lazy-launch activator holds one launcher/root over
+N rids and needs a per-rid wrapper under this layout; `sweep`, which did
+too, is deleted, `../dead_ends/sweep.md`.)
 
 ## Derived runs: identity composes (2026-06-11)
 

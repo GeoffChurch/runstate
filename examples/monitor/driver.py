@@ -5,20 +5,22 @@ The whole service story, end to end, twice:
 
 1. DEMAND FIRST: a keepalive-leased subscription lands on the durable channel
    before any worker exists (the log buffers demand).
-2. WAKE: ``ensure_served`` — live demand, no live episode → launch. The
-   service's first tick drains the subscribe that justified the launch
-   (register-before-reap by loop order) and it serves while pinned.
-3. READ: ``latest("value", name)`` — a stepless service's emissions are a
-   register, deliberately outside ``value_series``'s step-indexed domain.
-4. LAPSE: no refresh is sent; the worker writes the expiry counter-record
-   (``control.unsubscribe`` — the worker completing the pair) and retires via
-   the careful death (the CAS'd dying breath).
+2. WAKE: ``ensure_served`` — live demand, no held claim → launch. The
+   service's first drain registers the subscribe that justified the launch
+   (binding the lease to its claim) and it serves while pinned.
+3. READ: the ``Answers`` fold — each sample a fired subscription takes is
+   committed by the node that fired it, so a lease's answers are a lineage
+   read like any other (``load1`` is a source, so it is no eager stream:
+   ``series`` and ``LastElement`` count none of it).
+4. LAPSE: no refresh is sent; the node at which the lease runs out names it
+   in its ``expired``, which spends it in the answer fold (``LiveDemand``),
+   and the worker retires via the careful death (the CAS'd exit).
 5. RE-DEMAND, RE-WAKE: a subscribe under a fresh id is live for the next
-   episode (no episode has bound it yet — specs/time-lease-boundary.md; the
-   lapsed id is spent by its expiry record), and the same
-   ``ensure_served`` call starts episode 2 on the same run. Note: never gate
-   wake logic on ``peek_terminal`` — between the launch and the child's
-   claim it still shows the previous episode's terminal (the wake-gap).
+   claim (no claim has bound it yet — specs/time-lease-boundary.md; the
+   lapsed id is spent by its expiry), and the same ``ensure_served`` call
+   starts claim 2 on the same run. Note: never gate wake logic on
+   ``peek_terminal`` — between the launch and the child's claim it still
+   shows the previous claim's verdict (the wake-gap).
 """
 
 import sys
@@ -27,60 +29,101 @@ import time
 from pathlib import Path
 
 from runstate import (
+    Channel,
+    Command,
+    Commit,
+    Answers,
+    HeadFold,
+    LiveDemand,
     LocalLauncher,
+    Stopped,
     Topic,
-    ensure_served,
-    live_demand,
     create_channel,
+    ensure_served,
     peek_terminal,
 )
 
 RUN = "monitor"
-LEASE = 2.0          # seconds: the keepalive lease each subscribe grants
-SERVICE = Path(__file__).parent / "service.py"
+LEASE = 2.0  # seconds: the keepalive lease each subscribe grants
+SERVICE = Command([sys.executable, str(Path(__file__).parent / "service.py")], env={})
 
 
-def demand(ch, rid):
-    return ch.send({"every": {"time_seconds": 0.5}, "until": {"time_seconds": LEASE}},
-                   topic=Topic.CONTROL_SUBSCRIBE, name="load1", request_id=rid)
+def demand(ch: Channel, rid: str) -> None:
+    ch.send(
+        {"every": {"time_seconds": 0.5}, "until": {"time_seconds": LEASE}},
+        topic=Topic.CONTROL_SUBSCRIBE,
+        name="load1",
+        request_id=rid,
+    )
 
 
-def watch_until_idle(ch, launcher):
-    """Read the register while the episode serves; return when it retires."""
+def verdict(ch: Channel) -> str:
+    r = peek_terminal(ch)
+    return "none" if r is None else f"{', '.join(sorted(r.outcomes))} ({r.tier})"
+
+
+def expiries(ch: Channel) -> list[tuple[str, int]]:
+    """Each lapsed lease and the node that expired it: the nodes' ``expired``,
+    the field the answer fold spends a lease by. (A one-shot scan, for the
+    printout; the fold itself reads only what is new.)"""
+    out: list[tuple[str, int]] = []
+    for e in ch.read(topics=[Topic.LIFECYCLE_COMMIT, Topic.LIFECYCLE_STOPPED]):
+        node = (
+            Commit(**e.body) if e.topic == Topic.LIFECYCLE_COMMIT else Stopped(**e.body)
+        )
+        out += [(rid, e.seq) for rid in node.expired]
+    return out
+
+
+def watch_until_idle(
+    ch: Channel, launcher: LocalLauncher, live: LiveDemand, rid: str
+) -> None:
+    """Read the lease's answers while the claim serves; return when it retires."""
+    heads, load = HeadFold(), Answers(rid)
     deadline = time.time() + LEASE * 5
     while time.time() < deadline:
-        launcher.reap()                      # the activator discipline
-        if not live_demand(ch) and peek_terminal(ch) is not None:
+        launcher.reap()  # the activator discipline
+        if not live.poll(ch) and peek_terminal(ch) is not None:
             return
-        e = ch.latest(Topic.VALUE, "load1")
-        if e is not None:
-            print(f"[driver] load1 = {e.body['value']:.2f}")
+        answered = load.poll(ch, heads.poll(ch))
+        if answered:
+            e = answered[-1]
+            print(f"[driver] load1 = {e.value:.2f} ({len(answered)} answers to {rid})")
         time.sleep(0.4)
 
 
-def main():
-    root = tempfile.mkdtemp(prefix="runstate-monitor-")   # off the repo tree (was ./.runs)
+def main() -> None:
+    root = tempfile.mkdtemp(prefix="runstate-monitor-")  # off the repo tree
     launcher = LocalLauncher(root=root)
-    with create_channel(RUN, root=root) as ch, launcher:    # the channel is a context manager
-        # ----- episode 1 -----
+    # One answer fold for the run, held across every call: each poll reads only
+    # the records since the last.
+    live = LiveDemand()
+    # the channel is a context manager, as the launcher is
+    with create_channel(RUN, root=root) as ch, launcher:
+        # ----- claim 1 -----
         demand(ch, "dash-1")
-        print("[driver] demand pre-staged; live:",
-              [e.request_id for e in live_demand(ch)])
-        assert ensure_served(launcher, RUN, [sys.executable, str(SERVICE)]) is not None
-        watch_until_idle(ch, launcher)       # lease lapses -> careful death
-        print(f"[driver] episode 1 over: terminal={peek_terminal(ch).outcome}, "
-              f"expiry records="
-              f"{[u.request_id for u in ch.read(topics=[Topic.CONTROL_UNSUBSCRIBE])]}")
+        print(
+            "[driver] demand pre-staged; live:", [e.request_id for e in live.poll(ch)]
+        )
+        assert ensure_served(launcher, RUN, SERVICE, demand=live) is not None
+        watch_until_idle(ch, launcher, live, "dash-1")  # lease lapses -> careful death
+        print(
+            f"[driver] claim 1 over: terminal={verdict(ch)}, "
+            f"live demand={[e.request_id for e in live.poll(ch)]}, "
+            f"expired (lease, node)={expiries(ch)}"
+        )
 
-        # ----- episode 2: re-demand re-wakes the SAME run -----
+        # ----- claim 2: re-demand re-wakes the SAME run -----
         demand(ch, "dash-2")
-        h = ensure_served(launcher, RUN, [sys.executable, str(SERVICE)])
+        h = ensure_served(launcher, RUN, SERVICE, demand=live)
         print(f"[driver] re-wake: {'launched' if h else 'already served'}")
-        watch_until_idle(ch, launcher)
+        watch_until_idle(ch, launcher, live, "dash-2")
         starteds = ch.read(topics=[Topic.LIFECYCLE_STARTED])
-        print(f"[driver] episodes on one run: {len(starteds)}; "
-              f"live demand now: {live_demand(ch)}")
-        print(f"[driver] terminal: {peek_terminal(ch)}")
+        print(
+            f"[driver] claims on one run: {len(starteds)}; "
+            f"live demand now: {[e.request_id for e in live.poll(ch)]}"
+        )
+        print(f"[driver] terminal: {verdict(ch)}; expired: {expiries(ch)}")
 
 
 if __name__ == "__main__":

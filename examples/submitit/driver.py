@@ -2,9 +2,13 @@
 
 Proves the claim the README makes -- "spawn however you want (subprocess,
 submitit, ray) and talk via the protocol." The ``SubmititLauncher`` /
-``SubmititHandle`` below are ~50 lines of EXAMPLE code implementing runstate's
-``Launcher`` / ``LaunchHandle`` protocol over ``submitit.AutoExecutor``; nothing
-here is library code. The eventual first-class adapter's open design questions
+``SubmititHandle`` below are EXAMPLE code implementing runstate's
+``Launcher[Job]`` / ``LaunchHandle`` protocol over ``submitit.AutoExecutor``,
+with ``Job`` its target record; nothing here is library code. It writes the
+supervisor-v0.5 records a launcher owes the log: ``supervisor.launched`` at the
+spawn, ``supervisor.terminated`` at the reap, and, since the job contains the
+claimant, a ``supervisor.died`` through ``report_death`` when the job ended
+without its worker's own exit. The eventual first-class adapter's open design questions
 live in docs/backlog/submitit-launcher.md.
 
 Runs WITHOUT a SLURM cluster via ``cluster="local"`` (submitit's subprocess
@@ -28,12 +32,11 @@ import os
 import sys
 import tempfile
 import time
-from dataclasses import asdict, dataclass, field
-from typing import Optional
+from collections.abc import Callable, Mapping
+from dataclasses import KW_ONLY, asdict, dataclass, field
+from typing import Any, Optional
 
 import runstate
-from runstate.vocabulary.launch import new_launch_id  # mint the launch's correlation id
-from runstate.vocabulary.payloads import Launched, Terminated
 
 try:
     import submitit
@@ -45,38 +48,58 @@ except ImportError:
 # --------------------------------------------------------------------------- #
 # The worker -- runs inside the submitit job's process.                       #
 # --------------------------------------------------------------------------- #
-def _worker_main(total: int) -> None:
+def _worker_main(until: runstate.Target) -> None:
     """A normal runstate worker, identical in spirit to
     examples/minimal/worker.py -- ``current_channel()`` finds the run, ``Worker``
-    drains control and beacons lifecycle, the loop reports ``loss``. Only the
+    drains control and writes lifecycle, the loop exposes ``loss``. Only the
     launcher changed; the worker code did not."""
-    import math
-
-    with runstate.Worker(runstate.current_channel()) as w:
-        for step in w.steps(total=total):
+    with runstate.Worker(
+        runstate.current_channel(),
+        resume_from=None,
+        sources=["loss"],
+        save=runstate.NoSave(),
+    ) as w:
+        for step in w.steps(until):
             w.set("loss", max(0.01, 5.0 * (0.97**step)))
-        w.stopped(completed=True)  # finished the budget -> claim completion
+        if not w.stop_pending:  # ran the whole budget, rather than being stopped
+            w.stopped(completed=True, error=None)
 
 
 def _entrypoint(
-    run_id: str, root: str, backend: str, launch_id: str, total: int
+    fn: Callable[..., None],
+    kwargs: Mapping[str, Any],
+    run_id: str,
+    root: str,
+    backend: str,
+    launch_id: str,
 ) -> None:
     """What submitit runs in the job. It sets the ``RUNSTATE_*`` env (exactly as
     ``LocalLauncher`` does for its subprocess child) so the worker's
-    ``current_channel()`` meets the same log, and ``RUNSTATE_LAUNCH_ID`` so the ``Worker``'s
-    ``lifecycle.started`` names the launch it answers
+    ``current_channel()`` meets the same log, and ``RUNSTATE_LAUNCH_ID`` so the
+    ``Worker``'s ``lifecycle.started`` names the launch it answers
     (specs/launcher-record-identity.md)."""
     os.environ["RUNSTATE_RUN_ID"] = run_id
     os.environ["RUNSTATE_CHANNEL_ROOT"] = root
     os.environ["RUNSTATE_CHANNEL_BACKEND"] = backend
-    os.environ["RUNSTATE_LAUNCH_ID"] = launch_id
+    os.environ[runstate.LAUNCH_ID_ENV] = launch_id
     # os.environ["RUNSTATE_SQLITE_JOURNAL_MODE"] = "DELETE"  # <-- on a real cluster (NFS)
-    _worker_main(total)
+    fn(**kwargs)
 
 
 # --------------------------------------------------------------------------- #
-# The launcher -- EXAMPLE code implementing Launcher / LaunchHandle.          #
+# The launcher -- EXAMPLE code implementing Launcher[Job] / LaunchHandle.     #
 # --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class Job:
+    """What ``SubmititLauncher`` runs: ``fn(**kwargs)`` in a submitit job. Its
+    target record, as ``ThreadTarget`` is ``ThreadLauncher``'s: frozen, and
+    ``kwargs``, which change the worker's result, required."""
+
+    fn: Callable[..., None]
+    _: KW_ONLY
+    kwargs: Mapping[str, Any]
+
+
 @dataclass
 class SubmititHandle:
     """A ``LaunchHandle`` over a submitit ``Job``. Liveness reads the job object's
@@ -84,12 +107,12 @@ class SubmititHandle:
     ``slurm://<job_id>``. ``resolve()`` abstains on that scheme
     (vocabulary/handle.py) -- so a handle-*less* observer falls to the heartbeat
     tier -- while the Watcher, holding THIS object, uses ``is_alive`` / ``wait``
-    directly (the OS-handle liveness tier)."""
+    directly (the OS-handle liveness tier), and reaps through ``wait``."""
 
     run_id: str
     channel: runstate.Channel
     handle: str
-    _job: "submitit.Job"
+    _job: "submitit.Job[None]"
     launch_id: str
     _reaped: bool = field(default=False)
 
@@ -97,8 +120,8 @@ class SubmititHandle:
         return not self._job.done()
 
     def wait(self, timeout: Optional[float] = None) -> Optional[int]:
-        """Block until the job finishes, then reap (emit ``launcher.terminated``
-        once). Returns the synthetic exit code."""
+        """Block until the job finishes, then reap it (its records, once).
+        Returns the synthetic exit code."""
         deadline = None if timeout is None else time.time() + timeout
         while not self._job.done():
             if deadline is not None and time.time() >= deadline:
@@ -110,31 +133,55 @@ class SubmititHandle:
         self._job.cancel()
 
     def _reap(self) -> int:
-        """Record this job's death exactly once, correlated by ``launch_id``.
+        """Record this job's end exactly once, correlated by ``launch_id``:
+        ``supervisor.terminated`` always, since a launcher reports what its own
+        job did; then, when a claim names the launch, a death report. The job
+        contains the claimant, so its end is evidence of the claim's:
+        ``report_death`` writes nothing when the claim has its own readable exit,
+        and ``force=True`` since a finished job is definitive, as a reap is.
+
         submitit surfaces success/failure, not a real exit code, so map it
         synthetically (0/1) -- like ThreadLauncher's thread-death mapping; a
         viewer must not read the 1 as a process exit status."""
-        rc = 1 if self._job.exception() is not None else 0
-        if not self._reaped:
-            self._reaped = True
-            self.channel.send(
-                asdict(
-                    Terminated(
-                        reason="exited", exit_code=rc, signal=None, t=time.time()
-                    )
-                ),
-                topic=Terminated.TOPIC,
-                request_id=self.launch_id,
+        raised = self._job.exception() is not None
+        rc = 1 if raised else 0
+        if self._reaped:
+            return rc
+        self._reaped = True
+        t = time.time()
+        end = runstate.Terminated(
+            reason=runstate.Reap.EXITED, exit_code=rc, signal=None, t=t
+        )
+        self.channel.send(
+            asdict(end),
+            topic=runstate.Topic.SUPERVISOR_TERMINATED,
+            request_id=self.launch_id,
+        )
+        # The claim naming this launch, in the log as read now.
+        claim = runstate.launch_claim(
+            self.channel, self.launch_id, after=0, w=self.channel.last_seq()
+        )
+        if claim is not None:
+            # A raise is errored; a return with the claim still held is lost
+            # (which lands only while it is held).
+            outcome = runstate.Outcome.ERRORED if raised else runstate.Outcome.LOST
+            evidence = (
+                f"submitit: job {self._job.job_id} {'raised' if raised else 'returned'}"
+            )
+            runstate.report_death(
+                self.channel,
+                claim.seq,
+                outcome=outcome,
+                evidence=evidence,
+                force=True,
             )
         return rc
 
 
 class SubmititLauncher:
-    """A ``Launcher`` over submitit. The channel locators are uniform (as in the
-    reference launchers); ``launch`` submits the worker to the executor, mints
-    the launch id, and records ``launcher.launched`` (the spawn + the handle).
-    The worker function is fixed here; the loop budget ``total`` is the
-    launcher-specific config (as ``cmd`` is for ``LocalLauncher``)."""
+    """A ``Launcher[Job]`` over submitit. The channel locators are uniform (as in
+    the reference launchers); ``launch`` mints the launch id, submits the job,
+    and records ``supervisor.launched`` (the spawn + the handle)."""
 
     def __init__(
         self, *, root: str, folder: str, backend: str = "sqlite", cluster: str = "local"
@@ -150,18 +197,27 @@ class SubmititLauncher:
     def attach_channel(self, run_id: str) -> runstate.Channel:
         return runstate.attach_channel(run_id, root=self._root, backend=self._backend)
 
-    def launch(self, run_id: str, total: int) -> SubmititHandle:
-        launch_id = new_launch_id()
+    def launch(self, run_id: str, target: Job) -> SubmititHandle:
+        # One opaque id per launch (specs/launcher-record-identity.md): its records
+        # and its claim carry it.
+        launch_id = runstate.new_launch_id()
         job = self._executor.submit(
-            _entrypoint, run_id, str(self._root), self._backend, launch_id, total
+            _entrypoint,
+            target.fn,
+            dict(target.kwargs),
+            run_id,
+            str(self._root),
+            self._backend,
+            launch_id,
         )
         handle_str = (
             f"slurm://{job.job_id}"  # resolve() abstains -> heartbeat/handle tiers
         )
         channel = self.create_channel(run_id)
+        launched = runstate.Launched(handle=handle_str, status="running", t=time.time())
         channel.send(
-            asdict(Launched(handle=handle_str, t=time.time())),
-            topic=Launched.TOPIC,
+            asdict(launched),
+            topic=runstate.Topic.SUPERVISOR_LAUNCHED,
             request_id=launch_id,
         )
         return SubmititHandle(run_id, channel, handle_str, job, launch_id)
@@ -171,46 +227,60 @@ class SubmititLauncher:
 # The driver -- mirrors examples/minimal/driver.py.                           #
 # --------------------------------------------------------------------------- #
 def main() -> None:
-    root = tempfile.mkdtemp(
-        prefix="runstate-submitit-"
-    )  # a SHARED-FS path on a real cluster
+    root = tempfile.mkdtemp(prefix="runstate-submitit-")  # SHARED FS on a cluster
     folder = tempfile.mkdtemp(prefix="submitit-logs-")
     run_id = "submitit-demo"
-    launcher = SubmititLauncher(root=root, folder=folder)
+    # Typed as the Protocol, so mypy checks that the recipe satisfies it.
+    launcher: runstate.Launcher[Job] = SubmititLauncher(root=root, folder=folder)
     print(f"[driver] run_id={run_id} root={root}")
 
-    # Subscribe BEFORE launch so the worker picks it up on its first tick.
+    # Subscribe BEFORE launch so the worker picks it up on its first drain.
     ch = launcher.create_channel(run_id)
     ch.send(
-        {"every": {"step": 1}},
+        {"every": {"commits": 1}},
         topic=runstate.Topic.CONTROL_SUBSCRIBE,
         name="loss",
         request_id="driver",
     )
 
-    handle = launcher.launch(run_id, total=20)
+    until = runstate.Target(runstate.Commits(), 20)
+    handle = launcher.launch(run_id, Job(_worker_main, kwargs={"until": until}))
     print(f"[driver] launched {handle.handle}")
 
-    watcher = runstate.Watcher(poll_interval=0.05)
+    watcher = runstate.Watcher(heartbeat_timeout=60.0, poll_interval=0.05)
     watcher.add(handle)
 
-    def on_event(rid, e):
-        if e.topic == runstate.Topic.VALUE and e.request_id == "driver":
-            print(f"[driver] step {e.body['step']:>2} loss {e.body['value']:.4f}")
+    # The answers to "driver", polled at each node (see examples/minimal).
+    heads, answers = runstate.HeadFold(), runstate.Answers("driver")
+    printed: set[int] = set()
 
-    # Block to the terminal verdict (the worker's clean lifecycle.stopped wins
-    # tiers 1-2; the slurm:// handle only matters for the inference tiers).
+    def on_event(rid: str, e: runstate.Envelope) -> None:
+        if e.topic not in (
+            runstate.Topic.LIFECYCLE_COMMIT,
+            runstate.Topic.LIFECYCLE_STOPPED,
+        ):
+            return
+        for a in answers.poll(ch, heads.poll(ch)):
+            if a.seq not in printed:
+                printed.add(a.seq)
+                print(f"[driver] node {a.node:>3} loss {a.value:.4f}")
+
+    # Block to the terminal verdict (the worker's own exit; the slurm:// handle
+    # only matters for the inference tiers).
     result = watcher.wait(run_id, on_event=on_event)
+    outcomes = ", ".join(sorted(result.outcomes))
     print(
-        f"[driver] terminal: outcome={result.outcome} reason={result.reason!r} "
-        f"final_step={result.final_step}"
+        f"[driver] terminal: outcomes={{{outcomes}}} tier={result.tier} node={result.node}"
     )
 
-    # Reap the job to record launcher.terminated (correlated by the launch id).
+    # Reap the job: its supervisor.terminated, correlated by the launch id. The
+    # claim has its own exit, so report_death writes nothing. (Had the Watcher
+    # found the job dead first, its poll would have reaped; a reap is once.)
     handle.wait()
-    terminated = ch.read(topics=[runstate.Topic.LAUNCHER_TERMINATED])
+    terminated = ch.read(topics=[runstate.Topic.SUPERVISOR_TERMINATED])
     print(
-        f"[driver] launcher.terminated: {[(t.request_id == handle.launch_id, t.body['reason']) for t in terminated]}"
+        "[driver] supervisor.terminated: "
+        f"{[(t.request_id == handle.launch_id, t.body['reason']) for t in terminated]}"
     )
 
 

@@ -164,6 +164,15 @@ relation carries the step as a key, so the positional-indexing defect measured i
 measurements say" is moot rather than fixed. What remains is that a range of steps is a walk along a
 lineage (§"The honest cost").
 
+**A follow-up, from log format 0.4.0** (2026-10-30, [`../../specs/commits-and-lineage.md`](../../specs/commits-and-lineage.md)
+§2). This domain's step is depth, and 0.4.0 found that depth does not count iterations once a lineage
+passes through an exit: a non-completed exit is a node and extendable, so a lineage that resumes from a
+chunk's exit has one more node than it has iterations. 0.4.0 therefore counts commits, `Commits()`, and
+says "step" means that count everywhere, never depth. Here the exit "takes a step of its own" and `at_step`
+already reads commits only, so `depth(N, S)` in `along` and `at_step` overcounts by one per exit on the
+lineage. Open: restate `along` and `at_step` over a commit count, a rule beside `depth` that adds one at a
+`commit` node and nothing at an exit, and check what §"What the measurements say" leans on depth for.
+
 **The coarse key survives as a view.** Two claims resumed from one checkpoint post **sibling** nodes:
 separate facts, each vouched for by the claim that computed it. That is [`2-polarity.md`](2-polarity.md) §"The rule for
 posting"'s finer key, and it pays that key's price: a disagreement does not read as a conflict. Reading

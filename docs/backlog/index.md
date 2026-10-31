@@ -70,7 +70,7 @@ clusters that unlock each other, with a sequencing — see
   release + what SemVer means against per-convention wire versions; the public
   form of the migration doctrine (retain scripts once strangers hold logs); the
   end-of-schema-file-deletion trigger; deprecation policy; the version-naming
-  tension (`0.3.0.dev0` vs the docs' "v0.3" vs wire-`v0.5`); and the schemas-
+  tension (`0.4.0.dev0` vs the docs' "v0.3" vs wire-`v0.6`); and the schemas-
   not-in-the-wheel question. Six decision points, each with a recommendation;
   nothing ruled. Blocks the first `pip install runstate`.
 
@@ -165,8 +165,9 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
   1. reference by name on control and lifecycle records (order-independent folds; fixes #39, the
      cascade and the stale-beat leak; the startless run answered) — **IMPLEMENTED 2026-10-03** as log
      format 0.3.0 ([`../specs/reference-by-name.md`](../specs/reference-by-name.md));
-  2. names on values: commits and lineage, log format 0.4.0 — **SPEC REVISION 2 under review**
-     (2026-10-14; [`../specs/commits-and-lineage.md`](../specs/commits-and-lineage.md));
+  2. names on values: commits and lineage — **IMPLEMENTED 2026-10-31** as log format 0.4.0
+     ([`../specs/commits-and-lineage.md`](../specs/commits-and-lineage.md)), its live layer and its
+     registered migration step;
   3. episode-keyed artefacts read through the log's vouching;
   4. time as a *trigger* for claims, which dissolves the cross-host wedge;
   5. fenced worker writes, possibly optional given 1.
@@ -314,7 +315,12 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
   ([value-plane-divergence-resolution](value-plane-divergence-resolution.md)) so a
   residual double-live can't sticky-poison the log. sqlite-NFS stays conservative
   single-host; the heartbeat ◊P detector remains the floor for *observation* (the
-  `Watcher`), not the claim.
+  `Watcher`), not the claim. *(Log format 0.4.0, 2026-10-30: `live_episode` no longer
+  probes; it reads `ended`, an exit or a death report naming the claim, so a crashed
+  foreign episode blocks until someone with evidence reports it. The episode lock is gone;
+  the Postgres **session probe** is evidence `report_if_dead` records as a death report,
+  which the claim path, the deciders and `ensure` call before they act — never a claim
+  arbiter. `../specs/commits-and-lineage.md` §3.)*
 - **Watcher boundary-aware re-broadcast** — a time-keyed `broadcast` barrier
   subscription is a lease, so on a run that *resumes* it is void for the new
   episode (`../specs/time-lease-boundary.md`); today's steering is "spell
@@ -365,7 +371,8 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
 
 - **channel-postgres — SHIPPED** (`../specs/channel-postgres.md`): the cross-host backend.
   Claim = the uniform shared-log CAS (cross-host single-spawn + control fall out of it);
-  liveness = the advisory lock as a Watcher-consumed signal, *not* a claim arbiter. Still
+  liveness = the session probe (since 2026-10-30; it replaced the episode lock), evidence
+  for a death report and the Watcher's `session_ended` tier, *not* a claim arbiter. Still
   open (deferred in the spec): low-latency push (LISTEN/NOTIFY — issue #16), cross-host auto-relaunch
   (the rejected co-arbiter — see "Cross-host liveness for the claim gate" above), sharding,
   HA.
@@ -462,11 +469,10 @@ reasoning, listed here so they're discoverable as work (cross-ref, not moved):
 
 ## Tactical
 
-- **`hold_episode` runs after the claim CAS** (`runstate/worker.py:144`), so a raise inside it, such as the
-  pooler self-check, leaves a claim on the log that no exit will ever end. Found by mycooc's 12b attack
-  ([review](../review-2026-10-04-commits-and-lineage.md) §12, item 15). Layer 2's session probe fixes it by
-  taking the lock before the connection's first write; until then, a claimant that raises there should end
-  its own claim.
+- **A `Channel` names no run**, so a held fold cannot refuse a poll of another run's channel: it reads that
+  run's records past its cursor and skips the rest in silence. A run identity on the channel would let every
+  fold bind to its run at its first poll and raise on a mismatch. Found by batch 5's review of
+  [`../plans/2026-10-28-layer2-live.md`](../plans/2026-10-28-layer2-live.md).
 - **Windows support** — untested, unclaimed. The old rationale ("uses
   `fcntl.flock`") died with the v0.1 file backend — v0.2 holds no file locks
   (sqlite serializes internally; memory uses a threading lock). The actual
@@ -480,8 +486,6 @@ reasoning, listed here so they're discoverable as work (cross-ref, not moved):
 - **Protocol versioning** — v0.2 versions each convention schema on its own timeline
   (version-suffixed `$id`). Still open: v0.1↔v0.2 coexistence semantics on one
   channel, and how a reader negotiates the convention version.
-- **`sweep` under placement** — `sweep`'s one-root assumption needs a per-rid
-  wrapper under content-addressed placement (`../specs/run-id-recipe.md`).
 - **[memoizer-index-algebra](memoizer-index-algebra.md)** — a derived, rebuildable,
   never-authoritative membership index over the value log; **dormant** until a
   consumer needs cross-run enumeration faster than a scan (the named trigger;

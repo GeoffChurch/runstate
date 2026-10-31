@@ -7,6 +7,30 @@ the shipped conventions, Review B on this design). Builds on shipped
 run-episodes (CAS `send(expected_seq=)`, episode-aware
 `peek_terminal`/`live_episode`, `Worker.steps(start=)`, the worker self-claim).
 
+**Superseded in part by log format 0.4.0** (2026-10-30, [`commits-and-lineage.md`](commits-and-lineage.md) §5,
+"The reads"). The design below is the record of what 0.3.0 built; the current surface is:
+- **`ensure(producer, target) -> Reached | Unreachable`,** with `target` a `Target(x, n)`, "the first `n` of
+  `x`", `x` an eager stream or `Commits()`. It reads first (`count(x, head) >= n` at `LatestClaimHead` is
+  `Reached` at the head), returns `Unreachable(closed_at)` without producing when the head is closed below `n`,
+  and otherwise calls `producer.extend(target)` and polls the newest claim's head with held folds, calling
+  `report_if_dead` on each poll. Neither outcome carries elements: the caller reads anything at
+  `AtNode(node)`, which is permanent. A target its drive's claim declares a source raises `ValueError`.
+- **The failure exits** are per drive, a drive's claim being the claim naming its launch id:
+  `RunFailedError(run_id, result, *, target, count)` when that claim ends with an outcome in
+  `Outcome.failures()`; `NoProgressError(run_id, *, target, count)` when it ends having written no commit
+  (progress by `Commits()`, not by the target's stream); and `RecordlessExitError(run_id, *, launch_id, target,
+  count)` at the fixed point, a second drive in a row whose handle ended with no claim naming it and none held,
+  at an unchanged head and `Commits()` count. While a drive's claim is held, `ensure` waits, whatever its
+  handle says: an ended handle may be a wrapper's.
+- **The producer seam** is the `Producer` Protocol (`.channel`, `.run_id`, `.extend(target)` returning a
+  `LiveHandle` that carries its `launch_id`, never `None`). `launch_producer(launcher, run_id, target)` takes a
+  `Launcher[D]` and a `Drivable` target record (`ThreadTarget`), and launches `target.driven(until)`, so the
+  worker receives the drive's `Target` as `until` and passes it to `steps(until)`; `Variant` and `target_key`
+  are gone (`../dead_ends/sweep.md`).
+- **`history(ch, stream, schedule, *, head)`** replays the schedule once per node of the head's lineage and
+  returns `Element`s. Decision 4's take-the-latest-per-step collapse is deleted: an element's index is unique
+  along a lineage, so nothing needs collapsing.
+
 ## What it is
 
 The transparent "ask for N losses, get N" experience over a content-addressed

@@ -1,0 +1,894 @@
+{
+ "reference-done": [
+  [
+   1,
+   "lifecycle.started",
+   null,
+   null,
+   "{\"handle\": \"local://rtx6000/1513192\", \"t\": 1.0}"
+  ],
+  [
+   2,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 1.0, \"step\": 0, \"t\": 2.0}"
+  ],
+  [
+   3,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 0, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 4.0}"
+  ],
+  [
+   4,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 0.5, \"step\": 1, \"t\": 6.0}"
+  ],
+  [
+   5,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 1, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 8.0}"
+  ],
+  [
+   6,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 0.3333333333333333, \"step\": 2, \"t\": 10.0}"
+  ],
+  [
+   7,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 2, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 12.0}"
+  ],
+  [
+   8,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 0.25, \"step\": 3, \"t\": 14.0}"
+  ],
+  [
+   9,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 3, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 16.0}"
+  ],
+  [
+   10,
+   "lifecycle.stopped",
+   null,
+   null,
+   "{\"completed\": true, \"error\": null, \"final_step\": 3, \"claim_seq\": 1, \"honored\": [], \"t\": 18.0}"
+  ]
+ ],
+ "reference-error": [
+  [
+   1,
+   "lifecycle.started",
+   null,
+   null,
+   "{\"handle\": \"local://rtx6000/1513192\", \"t\": 1.0}"
+  ],
+  [
+   2,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 1.0, \"step\": 0, \"t\": 2.0}"
+  ],
+  [
+   3,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 0, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 4.0}"
+  ],
+  [
+   4,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 0.5, \"step\": 1, \"t\": 6.0}"
+  ],
+  [
+   5,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 1, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 8.0}"
+  ],
+  [
+   6,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 0.3333333333333333, \"step\": 2, \"t\": 10.0}"
+  ],
+  [
+   7,
+   "lifecycle.stopped",
+   null,
+   null,
+   "{\"completed\": false, \"error\": \"boom\", \"final_step\": 2, \"claim_seq\": 1, \"honored\": [], \"t\": 11.0}"
+  ]
+ ],
+ "reference-plain": [
+  [
+   1,
+   "lifecycle.started",
+   null,
+   null,
+   "{\"handle\": \"local://rtx6000/1513192\", \"t\": 1.0}"
+  ],
+  [
+   2,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 1.0, \"step\": 0, \"t\": 2.0}"
+  ],
+  [
+   3,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 0, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 4.0}"
+  ],
+  [
+   4,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 0.5, \"step\": 1, \"t\": 6.0}"
+  ],
+  [
+   5,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 1, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 8.0}"
+  ],
+  [
+   6,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 0.3333333333333333, \"step\": 2, \"t\": 10.0}"
+  ],
+  [
+   7,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 2, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 12.0}"
+  ],
+  [
+   8,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 0.25, \"step\": 3, \"t\": 14.0}"
+  ],
+  [
+   9,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 3, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 16.0}"
+  ],
+  [
+   10,
+   "lifecycle.stopped",
+   null,
+   null,
+   "{\"completed\": false, \"error\": null, \"final_step\": 3, \"claim_seq\": 1, \"honored\": [], \"t\": 18.0}"
+  ]
+ ],
+ "reference-resume": [
+  [
+   1,
+   "lifecycle.started",
+   null,
+   null,
+   "{\"handle\": \"local://rtx6000/1513192\", \"t\": 1.0}"
+  ],
+  [
+   2,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 1.0, \"step\": 0, \"t\": 2.0}"
+  ],
+  [
+   3,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 0, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 4.0}"
+  ],
+  [
+   4,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 0.5, \"step\": 1, \"t\": 6.0}"
+  ],
+  [
+   5,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 1, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 8.0}"
+  ],
+  [
+   6,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 0.3333333333333333, \"step\": 2, \"t\": 10.0}"
+  ],
+  [
+   7,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 2, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 12.0}"
+  ],
+  [
+   8,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 0.25, \"step\": 3, \"t\": 14.0}"
+  ],
+  [
+   9,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 3, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 16.0}"
+  ],
+  [
+   10,
+   "lifecycle.stopped",
+   null,
+   null,
+   "{\"completed\": false, \"error\": null, \"final_step\": 3, \"claim_seq\": 1, \"honored\": [], \"t\": 18.0}"
+  ],
+  [
+   11,
+   "lifecycle.started",
+   null,
+   null,
+   "{\"handle\": \"local://rtx6000/1513192\", \"t\": 19.0}"
+  ],
+  [
+   12,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 0.2, \"step\": 4, \"t\": 20.0}"
+  ],
+  [
+   13,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 4, \"consumed_seq\": 0, \"claim_seq\": 11, \"t\": 22.0}"
+  ],
+  [
+   14,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 0.16666666666666666, \"step\": 5, \"t\": 24.0}"
+  ],
+  [
+   15,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 5, \"consumed_seq\": 0, \"claim_seq\": 11, \"t\": 26.0}"
+  ],
+  [
+   16,
+   "lifecycle.stopped",
+   null,
+   null,
+   "{\"completed\": false, \"error\": null, \"final_step\": 5, \"claim_seq\": 11, \"honored\": [], \"t\": 28.0}"
+  ]
+ ],
+ "reference-stop": [
+  [
+   1,
+   "lifecycle.started",
+   null,
+   null,
+   "{\"handle\": \"local://rtx6000/1513192\", \"t\": 1.0}"
+  ],
+  [
+   2,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 1.0, \"step\": 0, \"t\": 2.0}"
+  ],
+  [
+   3,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 0, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 4.0}"
+  ],
+  [
+   4,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 0.5, \"step\": 1, \"t\": 6.0}"
+  ],
+  [
+   5,
+   "control.stop",
+   null,
+   "halt",
+   "{}"
+  ],
+  [
+   6,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 1, \"consumed_seq\": 5, \"claim_seq\": 1, \"t\": 9.0}"
+  ],
+  [
+   7,
+   "lifecycle.stopped",
+   null,
+   null,
+   "{\"completed\": false, \"error\": null, \"final_step\": 1, \"claim_seq\": 1, \"honored\": [\"halt\"], \"t\": 11.0}"
+  ]
+ ],
+ "resumed-2": [
+  [
+   1,
+   "lifecycle.started",
+   null,
+   null,
+   "{\"handle\": \"local://rtx6000/1513192\", \"t\": 1.0}"
+  ],
+  [
+   2,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 1.0, \"step\": 0, \"t\": 2.0}"
+  ],
+  [
+   3,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 0, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 4.0}"
+  ],
+  [
+   4,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 0.5, \"step\": 1, \"t\": 6.0}"
+  ],
+  [
+   5,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 1, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 8.0}"
+  ],
+  [
+   6,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 0.3333333333333333, \"step\": 2, \"t\": 10.0}"
+  ],
+  [
+   7,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 2, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 12.0}"
+  ],
+  [
+   8,
+   "lifecycle.stopped",
+   null,
+   null,
+   "{\"completed\": false, \"error\": null, \"final_step\": 2, \"claim_seq\": 1, \"honored\": [], \"t\": 14.0}"
+  ],
+  [
+   9,
+   "lifecycle.started",
+   null,
+   null,
+   "{\"handle\": \"local://rtx6000/1513192\", \"t\": 15.0}"
+  ],
+  [
+   10,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 0.3333333333333333, \"step\": 2, \"t\": 16.0}"
+  ],
+  [
+   11,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 2, \"consumed_seq\": 0, \"claim_seq\": 9, \"t\": 18.0}"
+  ],
+  [
+   12,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 0.25, \"step\": 3, \"t\": 20.0}"
+  ],
+  [
+   13,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 3, \"consumed_seq\": 0, \"claim_seq\": 9, \"t\": 22.0}"
+  ],
+  [
+   14,
+   "lifecycle.stopped",
+   null,
+   null,
+   "{\"completed\": false, \"error\": null, \"final_step\": 3, \"claim_seq\": 9, \"honored\": [], \"t\": 24.0}"
+  ]
+ ],
+ "resumed-3-before-2": [
+  [
+   1,
+   "lifecycle.started",
+   null,
+   null,
+   "{\"handle\": \"local://rtx6000/1513192\", \"t\": 1.0}"
+  ],
+  [
+   2,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 1.0, \"step\": 0, \"t\": 2.0}"
+  ],
+  [
+   3,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 0, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 4.0}"
+  ],
+  [
+   4,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 0.5, \"step\": 1, \"t\": 6.0}"
+  ],
+  [
+   5,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 1, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 8.0}"
+  ],
+  [
+   6,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 0.3333333333333333, \"step\": 2, \"t\": 10.0}"
+  ],
+  [
+   7,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 2, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 12.0}"
+  ],
+  [
+   8,
+   "lifecycle.stopped",
+   null,
+   null,
+   "{\"completed\": false, \"error\": null, \"final_step\": 2, \"claim_seq\": 1, \"honored\": [], \"t\": 14.0}"
+  ],
+  [
+   9,
+   "lifecycle.started",
+   null,
+   null,
+   "{\"handle\": \"local://rtx6000/1513192\", \"t\": 15.0}"
+  ],
+  [
+   10,
+   "value",
+   "val_loss",
+   null,
+   "{\"value\": 0.5, \"step\": 2, \"t\": 16.0}"
+  ],
+  [
+   11,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 0.25, \"step\": 3, \"t\": 17.0}"
+  ],
+  [
+   12,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 3, \"consumed_seq\": 0, \"claim_seq\": 9, \"t\": 19.0}"
+  ],
+  [
+   13,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 0.2, \"step\": 4, \"t\": 21.0}"
+  ],
+  [
+   14,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 4, \"consumed_seq\": 0, \"claim_seq\": 9, \"t\": 23.0}"
+  ],
+  [
+   15,
+   "lifecycle.stopped",
+   null,
+   null,
+   "{\"completed\": false, \"error\": null, \"final_step\": 4, \"claim_seq\": 9, \"honored\": [], \"t\": 25.0}"
+  ]
+ ],
+ "resumed-5": [
+  [
+   1,
+   "lifecycle.started",
+   null,
+   null,
+   "{\"handle\": \"local://rtx6000/1513192\", \"t\": 1.0}"
+  ],
+  [
+   2,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 1.0, \"step\": 0, \"t\": 2.0}"
+  ],
+  [
+   3,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 0, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 4.0}"
+  ],
+  [
+   4,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 0.5, \"step\": 1, \"t\": 6.0}"
+  ],
+  [
+   5,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 1, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 8.0}"
+  ],
+  [
+   6,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 0.3333333333333333, \"step\": 2, \"t\": 10.0}"
+  ],
+  [
+   7,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 2, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 12.0}"
+  ],
+  [
+   8,
+   "lifecycle.stopped",
+   null,
+   null,
+   "{\"completed\": false, \"error\": null, \"final_step\": 2, \"claim_seq\": 1, \"honored\": [], \"t\": 14.0}"
+  ],
+  [
+   9,
+   "lifecycle.started",
+   null,
+   null,
+   "{\"handle\": \"local://rtx6000/1513192\", \"t\": 15.0}"
+  ],
+  [
+   10,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 0.16666666666666666, \"step\": 5, \"t\": 16.0}"
+  ],
+  [
+   11,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 5, \"consumed_seq\": 0, \"claim_seq\": 9, \"t\": 18.0}"
+  ],
+  [
+   12,
+   "value",
+   "loss",
+   null,
+   "{\"value\": 0.14285714285714285, \"step\": 6, \"t\": 20.0}"
+  ],
+  [
+   13,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 6, \"consumed_seq\": 0, \"claim_seq\": 9, \"t\": 22.0}"
+  ],
+  [
+   14,
+   "lifecycle.stopped",
+   null,
+   null,
+   "{\"completed\": false, \"error\": null, \"final_step\": 6, \"claim_seq\": 9, \"honored\": [], \"t\": 24.0}"
+  ]
+ ],
+ "sim-clean-run": [
+  [
+   1,
+   "lifecycle.started",
+   null,
+   null,
+   "{\"handle\": \"local://rtx6000/1513192\", \"t\": 1793367743.2508936}"
+  ],
+  [
+   2,
+   "value",
+   "v",
+   null,
+   "{\"value\": \"v@0\", \"step\": 0, \"t\": 1793367743.2509098}"
+  ],
+  [
+   3,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 0, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 1793367743.2509186}"
+  ],
+  [
+   4,
+   "value",
+   "v",
+   null,
+   "{\"value\": \"v@1\", \"step\": 1, \"t\": 1793367743.2509258}"
+  ],
+  [
+   5,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 1, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 1793367743.250933}"
+  ],
+  [
+   6,
+   "value",
+   "v",
+   null,
+   "{\"value\": \"v@2\", \"step\": 2, \"t\": 1793367743.250939}"
+  ],
+  [
+   7,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 2, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 1793367743.2509453}"
+  ],
+  [
+   8,
+   "lifecycle.stopped",
+   null,
+   null,
+   "{\"completed\": true, \"error\": null, \"final_step\": 2, \"claim_seq\": 1, \"honored\": [], \"t\": 1793367743.250953}"
+  ]
+ ],
+ "sim-cooperative-stop": [
+  [
+   1,
+   "control.stop",
+   null,
+   "halt",
+   "{}"
+  ],
+  [
+   2,
+   "lifecycle.started",
+   null,
+   null,
+   "{\"handle\": \"local://rtx6000/1513192\", \"t\": 1793367743.2512994}"
+  ],
+  [
+   3,
+   "value",
+   "v",
+   null,
+   "{\"value\": \"v@0\", \"step\": 0, \"t\": 1793367743.251317}"
+  ],
+  [
+   4,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 0, \"consumed_seq\": 1, \"claim_seq\": 2, \"t\": 1793367743.2513294}"
+  ],
+  [
+   5,
+   "lifecycle.stopped",
+   null,
+   null,
+   "{\"completed\": false, \"error\": null, \"final_step\": 0, \"claim_seq\": 2, \"honored\": [\"halt\"], \"t\": 1793367743.251339}"
+  ]
+ ],
+ "sim-kill-mid-step": [
+  [
+   1,
+   "lifecycle.started",
+   null,
+   null,
+   "{\"handle\": \"local://rtx6000/1513192\", \"t\": 1793367743.251014}"
+  ],
+  [
+   2,
+   "value",
+   "v",
+   null,
+   "{\"value\": \"v@0\", \"step\": 0, \"t\": 1793367743.2510278}"
+  ],
+  [
+   3,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 0, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 1793367743.2510362}"
+  ],
+  [
+   4,
+   "value",
+   "v",
+   null,
+   "{\"value\": \"v@1\", \"step\": 1, \"t\": 1793367743.2510433}"
+  ],
+  [
+   5,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 1, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 1793367743.25105}"
+  ],
+  [
+   6,
+   "value",
+   "v",
+   null,
+   "{\"value\": \"v@2\", \"step\": 2, \"t\": 1793367743.2510557}"
+  ]
+ ],
+ "sim-resume": [
+  [
+   1,
+   "lifecycle.started",
+   null,
+   null,
+   "{\"handle\": \"local://rtx6000/1513192\", \"t\": 1793367743.2510982}"
+  ],
+  [
+   2,
+   "value",
+   "v",
+   null,
+   "{\"value\": \"v@0\", \"step\": 0, \"t\": 1793367743.2511125}"
+  ],
+  [
+   3,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 0, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 1793367743.2511199}"
+  ],
+  [
+   4,
+   "value",
+   "v",
+   null,
+   "{\"value\": \"v@1\", \"step\": 1, \"t\": 1793367743.2511265}"
+  ],
+  [
+   5,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 1, \"consumed_seq\": 0, \"claim_seq\": 1, \"t\": 1793367743.251133}"
+  ],
+  [
+   6,
+   "lifecycle.stopped",
+   null,
+   null,
+   "{\"completed\": false, \"error\": null, \"final_step\": 1, \"claim_seq\": 1, \"honored\": [], \"t\": 1793367743.2511406}"
+  ],
+  [
+   7,
+   "lifecycle.started",
+   null,
+   null,
+   "{\"handle\": \"local://rtx6000/1513192\", \"t\": 1793367743.2511728}"
+  ],
+  [
+   8,
+   "value",
+   "v",
+   null,
+   "{\"value\": \"v@2\", \"step\": 2, \"t\": 1793367743.251185}"
+  ],
+  [
+   9,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 2, \"consumed_seq\": 0, \"claim_seq\": 7, \"t\": 1793367743.251194}"
+  ],
+  [
+   10,
+   "value",
+   "v",
+   null,
+   "{\"value\": \"v@3\", \"step\": 3, \"t\": 1793367743.2512014}"
+  ],
+  [
+   11,
+   "lifecycle.heartbeat",
+   null,
+   null,
+   "{\"step\": 3, \"consumed_seq\": 0, \"claim_seq\": 7, \"t\": 1793367743.2512095}"
+  ],
+  [
+   12,
+   "lifecycle.stopped",
+   null,
+   null,
+   "{\"completed\": true, \"error\": null, \"final_step\": 3, \"claim_seq\": 7, \"honored\": [], \"t\": 1793367743.251218}"
+  ]
+ ]
+}

@@ -201,9 +201,17 @@ def test_each_schema_is_a_valid_schema(schema):
     )
 
 
-def test_the_0_3_0_schemas_are_still_there():
-    for f in ("lifecycle-v0.5", "subscription-v0.3", "launcher-v0.4", "value-v0.2"):
-        assert (_PROTO / f"{f}.schema.json").exists()
+def test_protocol_holds_exactly_the_0_4_0_stack():
+    """0.3.0's schemas left for the step tests' fixtures (tests/fixtures/log-format-0.3.0/)
+    at the cutover; protocol/ holds the current format's stack and nothing else."""
+    held = {p.name.removesuffix(".schema.json") for p in _PROTO.glob("*.schema.json")}
+    assert held == {
+        "envelope-v0.2",
+        "lifecycle-v0.6",
+        "subscription-v0.4",
+        "supervisor-v0.5",
+        "value-v0.3",
+    }
 
 
 @pytest.mark.parametrize("label", list(VALID))

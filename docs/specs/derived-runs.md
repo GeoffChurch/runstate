@@ -11,6 +11,13 @@ library surface** — only an identity recipe extension and one convention. The
 build is consumer-side (mycooc-analyze, the oracle); the library's job here
 is to have already been enough.
 
+**Log format 0.4.0** (2026-10-30, [`commits-and-lineage.md`](commits-and-lineage.md) §5). The
+quiescence precondition below, `live_episode(R) is None`, now rests on `ended`: `live_episode` no
+longer probes a handle, so it is `None` once R's newest claim has an exit or a death report naming
+it. An unreported same-host crash of R reads as held until someone reports it (`report_if_dead`, a
+launcher's reap), so `ensure_analysis` waits on it rather than analyzing: the safe direction. The
+`progress(R)` proxy below is 0.3.0's; its 0.4.0 form is `prefix_len(R, Commits(), head=...)`.
+
 ## The finding (recon-grounded)
 
 The oracle (`mycooc/analyze_run.py`) is one shared load (~191 MB of tensors —

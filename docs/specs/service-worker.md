@@ -19,6 +19,29 @@ format 0.3.0): the answer fold joins on names, so a `request_id` that any answer
 wherever the answer sits; and a lease is bound to its registering episode by `lifecycle.bound`
 (`specs/time-lease-boundary.md`). The sections below state the converted rule.
 
+**Log format 0.4.0** (2026-10-30, [`commits-and-lineage.md`](commits-and-lineage.md) §2–§4). The sections
+below are the 0.3.0 design, kept as the record; where they differ, the current rules are:
+- **`serve()` per lineage.** It calls `commit()` once per iteration while some subscription is live for it, a
+  lease of its claim or a durable subscription live on its lineage, and retires at zero. A durable
+  subscription is served per the head's lineage (a woken successor re-arms one another branch expired), and a
+  lease per claim, void once its claim has ended. It yields `count(Commits(), position)`; there is no
+  stepless `tick(step=None)`, since `heartbeat()` carries no `step`.
+- **Expiry is on the node.** The worker no longer appends `control.unsubscribe`: a subscription whose `until`
+  holds, or a one-shot that fires, is named in the `expired` of that commit or exit, in the one record that
+  holds the firing. `control.unsubscribe` is retired; the asker's cancellation is `control.withdraw`.
+- **The invariant** "registered ⟺ a future fire is possible" becomes **"live while not spent"**: a
+  subscription is live until a withdrawal, a refusal or its expiry spends it, and, for a lease, until its
+  claim ends. A source never `set`, or a `{stream}` atom naming a stream never emitted, can pin a `serve()`
+  worker; an asker bounds such a request with a time `until`, which makes it a lease that dies with its claim.
+- **Pure demand has a lifetime, not a schedule.** A subscribe with a null `name` targets nothing and never
+  fires; it takes only an `until` (a `from`, an `every` or a `count` atom is refused `malformed`), and is live
+  until its `until` holds at a node, a withdrawal or a refusal names it, or, as a lease, its claim ends. With
+  no `until` it lasts until withdrawn. This replaces the pure-pin refusal below.
+- **The retire exit is an extendable head.** `retire()` drains every control verb before the exit's CAS and
+  returns False, writing no exit, if any subscription is live for the claim after either read. Its exit fires
+  nothing, since nothing is registered when it writes, and it is extendable, so a woken successor that holds no
+  state (`resume_from=LatestClaimHead()`) continues from it.
+
 ## The model
 
 > **One worker primitive, two demand durabilities.** *Durable* demand is the

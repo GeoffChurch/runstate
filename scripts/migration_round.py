@@ -24,7 +24,8 @@ THE FILES. Every ``*.db`` under each ROOT, following symlinks (a symlink cycle i
 cut), resolved and counted once per inode: a consumer's cell->home symlinks reach
 each log twice. A file is skipped, and counted by why (``SkipWhy``), when it is
 a broken symlink, unreadable, empty (a tombstone), at an address of a format this
-runstate does not register, beside the same run's log in a newer registered
+runstate does not register, already in the format the round migrates to (0.4.0,
+which no step leaves), beside the same run's log in a newer registered
 format (superseded when it is sealed, as ``runstate migrate`` leaves the log it
 moves, and a conflict when not), not a SQLite database, too corrupt to read its
 schema, another SQLite error (named), or one with no runstate ``log`` table. Its
@@ -59,18 +60,22 @@ EACH RUN, as ``runstate migrate``'s detection pass takes it, in memory:
 2. Every 0.4.0 row is validated against the 0.4.0 schemas, loaded from
    ``protocol/`` here (ruling R1), and "Also" is checked.
 3. THE READS. The 0.3.0 reads, ``value_series``, ``peek_terminal`` and
-   ``undischarged_stops``, over a ``MemoryChannel`` of the 0.3.0 rows; the 0.4.0
-   reads, ``runstate.lineage``'s ``series`` per name at ``LatestClaimHead``, its
-   ``verdict`` and ``undischarged_stops``, over one of the 0.4.0 rows. Each
+   ``undischarged_stops`` as 0.3.0 defined them (``scripts/reads_v0_3_0.py``),
+   over a ``MemoryChannel`` of the 0.3.0 rows; the 0.4.0 reads,
+   the staged observer plane's (``runstate.observables``) ``series`` per
+   name at ``LatestClaimHead``, its ``peek_terminal`` and ``undischarged_stops``, over
+   one of the 0.4.0 rows. Each
    difference is attributed to the divergences that fired there (``Reads``), or
    ``unattributed``: an unattributed difference is a read-changing rule the step
    does not declare. A read that raises ``MalformedRecordError`` is a value: a
    0.3.0 verdict that raises is compared as one, and a 0.4.0 series that raises
    leaves the series uncompared, with the error.
 
-4. P1's reads (``LineageCheck``): ``runstate.lineage``'s ``lineage``, ``count``,
-   ``prefix_len`` and ``last_element`` over the 0.4.0 log, each of which must
-   hold (not raise), the last element agreeing with the series' last.
+4. P1's reads (``LineageCheck``): the staged observer plane's ``prefix_len`` of
+   ``Commits()`` at ``LatestClaimHead`` (the walk of the whole lineage), then its
+   ``prefix_len``, ``series`` and ``last_element`` per name over the 0.4.0 log,
+   each of which must hold (not raise), the last element agreeing with the
+   series' last.
 5. THE CENSUS (``Census``), from the candidates the 0.3.0 step's ``detect`` built
    (the step keeps them for its transform): each commit's end-time fork, split by
    what is open, a tick or undated (dating) and the places an undated end may
@@ -111,9 +116,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from jsonschema import Draft202012Validator  # type: ignore[import-untyped]  # noqa: E402
 
-from runstate import formats, observables  # noqa: E402
-from runstate import lineage as reads  # noqa: E402
-from runstate.channel import Envelope, MemoryChannel  # noqa: E402
+from runstate import formats  # noqa: E402
+from runstate import observables as reads  # noqa: E402
+from runstate.vocabulary.coordinate import Commits  # noqa: E402
+from runstate.channel import Envelope, MemoryChannel, MemoryLog  # noqa: E402
 from runstate.migrations import (  # noqa: E402
     Memo,
     MigrationError,
@@ -134,6 +140,7 @@ from runstate.migrations.ambiguity import (  # noqa: E402
 )
 from runstate.migrations.stores import sqlite_traces  # noqa: E402
 from runstate.migrations.v0_2_0_to_v0_3_0 import V0_2_0_to_V0_3_0  # noqa: E402
+from scripts import reads_v0_3_0 as reads03  # noqa: E402
 
 _STEP_0_2_0 = V0_2_0_to_V0_3_0()
 _STEP_0_3_0 = step04.V0_3_0_to_V0_4_0()
@@ -162,6 +169,7 @@ class SkipWhy(StrEnum):
     BROKEN_LINK = "a broken symlink"
     EMPTY = "an empty file (a tombstone)"
     UNREGISTERED_FORMAT = "an address of a format this runstate does not register"
+    CURRENT = "already in the format the round migrates to"
     SUPERSEDED = "superseded by the run's log in a newer format, and sealed"
     CONFLICT = "beside the run's log in a newer format, and not sealed"
     UNREADABLE = "unreadable: the OS refused a stat or a listing, named in detail"
@@ -653,6 +661,8 @@ def _classify(
     if isinstance(where, SkipWhy):
         return Skipped(real, where, None)
     address, version = where
+    if version == _STEP_0_3_0.TO:
+        return Skipped(real, SkipWhy.CURRENT, None)
     newer = _newer(real, version, address)
     if newer is not None:
         return Skipped(real, newer, None)
@@ -793,8 +803,8 @@ class OldReads(NamedTuple):
 def old_reads(ch03: MemoryChannel) -> OldReads:
     """A verdict that raises ``MalformedRecordError`` is a value."""
     try:
-        result = observables.peek_terminal(ch03)
-    except observables.MalformedRecordError as exc:
+        result = reads03.peek_terminal(ch03)
+    except reads03.MalformedRecordError as exc:
         verdict = VerdictValue("raised", [], _raised(exc))
     else:
         verdict = (
@@ -803,7 +813,7 @@ def old_reads(ch03: MemoryChannel) -> OldReads:
             else VerdictValue("outcomes", [str(result.outcome)], None)
         )
     return OldReads(
-        observables.value_series(ch03), verdict, observables.undischarged_stops(ch03)
+        reads03.value_series(ch03), verdict, reads03.undischarged_stops(ch03)
     )
 
 
@@ -815,8 +825,8 @@ class NewVerdict(NamedTuple):
 def new_verdict(ch04: MemoryChannel) -> NewVerdict:
     """A verdict that raises ``MalformedRecordError`` is a value."""
     try:
-        result = reads.verdict(ch04)
-    except observables.MalformedRecordError as exc:
+        result = reads.peek_terminal(ch04)
+    except reads.MalformedRecordError as exc:
         verdict = VerdictValue("raised", [], _raised(exc))
     else:
         verdict = (
@@ -824,7 +834,7 @@ def new_verdict(ch04: MemoryChannel) -> NewVerdict:
             if result is None
             else VerdictValue("outcomes", sorted(str(o) for o in result.outcomes), None)
         )
-    return NewVerdict(verdict, reads.undischarged_stops(ch04))
+    return NewVerdict(verdict, [e.seq for e in reads.undischarged_stops(ch04)])
 
 
 def _old_cells(
@@ -839,7 +849,7 @@ def _old_cells(
             e.topic == _VALUE
             and e.name is not None
             and "value" in e.body
-            and observables.is_step(e.body.get("step"))
+            and reads03.is_step(e.body.get("step"))
         ):
             cells[(e.name, e.body["step"])] = Old(e.seq, e.body["value"])
     read = {(n, s): v for n, steps in series.items() for s, v in steps.items()}
@@ -855,15 +865,9 @@ def _new_cells(
     """The 0.4.0 series at ``LatestClaimHead``, each element at its cell,
     ``(name, count(Commits(), node) - 1)``, by its 0.3.0 seq: the step writes
     every value where it stood, in order, so the k-th value of each log is one
-    record."""
+    record. The counts are ``aligned``'s x over ``Commits()``, read in one walk:
+    every node that commits an element of a name is one of its rows."""
     head = reads.LatestClaimHead().resolve(ch04)
-    nodes = reads.lineage(ch04, head=head)
-    commits = {e.seq for e in env04 if e.topic == _COMMIT}
-    count: dict[int, int] = {}
-    running = 0
-    for n in nodes:
-        running += n in commits
-        count[n] = running
     old_of = dict(
         zip(
             (e.seq for e in env04 if e.topic == _VALUE),
@@ -872,6 +876,10 @@ def _new_cells(
         )
     )
     names = {e.name for e in env04 if e.topic == _VALUE and e.name is not None}
+    count = {
+        row.node: row.x
+        for row in reads.aligned(ch04, sorted(names), head=head, axis=Commits())
+    }
     cells: dict[tuple[str, int], list[Element]] = {}
     for name in sorted(names):
         for el in reads.series(ch04, name, head=head):
@@ -1147,7 +1155,7 @@ def _first_ticks(rows: Sequence[Row]) -> dict[int, int]:
             claim = r.seq
         elif claim is not None and r.topic in (_HEARTBEAT, _VALUE):
             step = json.loads(r.body).get("step")
-            if not observables.is_step(step):
+            if not reads03.is_step(step):
                 continue
             if r.topic == _HEARTBEAT:
                 ticks.setdefault(claim, step)
@@ -1198,8 +1206,7 @@ def lineage_check(ch04: MemoryChannel, env04: Sequence[Envelope]) -> LineageChec
     disagree: list[str] = []
     try:
         head = reads.LatestClaimHead().resolve(ch04)
-        reads.lineage(ch04, head=head)
-        reads.count(ch04, reads.Commits(), node=None)
+        reads.prefix_len(ch04, Commits(), head=head)
     except Exception as exc:
         return LineageCheck([f"lineage: {_raised(exc)}"], [])
     names = sorted({e.name for e in env04 if e.topic == _VALUE and e.name is not None})
@@ -1281,8 +1288,8 @@ def measure(
     del rows
     env03 = _envelopes(rows03)
     env04 = _envelopes(migrated04.rows)
-    ch03 = MemoryChannel(log=env03)
-    ch04 = MemoryChannel(log=env04)
+    ch03 = MemoryChannel(MemoryLog(env03))
+    ch04 = MemoryChannel(MemoryLog(env04))
     try:
         old = old_reads(ch03)
         old_cells = _old_cells(env03, old.series)
@@ -1292,7 +1299,7 @@ def measure(
         verdict = new_verdict(ch04)
         try:
             new_cells = _new_cells(ch04, env03, env04)
-        except observables.MalformedRecordError as exc:
+        except reads.MalformedRecordError as exc:
             series = SeriesResult(_raised(exc), len(old_cells), 0, 0, {}, 0, [])
         else:
             series = series_result(old_cells, new_cells, migrated04.divergences)
