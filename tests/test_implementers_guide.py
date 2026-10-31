@@ -1,9 +1,11 @@
 """The implementer's guide's wire examples never drift from the schema stack.
 
-`docs/implementers-guide.md` embeds canonical envelope records so a non-Python
-implementer can copy conforming bytes. This is the same drift-guard mechanic as
-`tests/test_schema.py`, pointed at the guide's fenced code blocks instead of the
-reference implementation's emissions.
+`docs/implementers-guide.md` embeds canonical envelope records of log format
+0.4.0 so a non-Python implementer can copy conforming bytes. This is the same
+drift-guard mechanic as `tests/test_schema.py`, pointed at the guide's fenced
+code blocks instead of the reference implementation's emissions, and it
+validates against the 0.4.0 stack: `envelope-v0.2`, `lifecycle-v0.6`,
+`subscription-v0.4`, `supervisor-v0.5` and `value-v0.3`.
 
 The guide's convention (documented in its "Validated wire examples" section):
 
@@ -25,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from runstate.vocabulary.payloads import Topic
+from runstate._next.vocabulary.payloads import Topic
 
 jsonschema = pytest.importorskip("jsonschema")
 from jsonschema import Draft202012Validator  # noqa: E402
@@ -35,18 +37,18 @@ _PROTO = _ROOT / "protocol"
 _GUIDE = _ROOT / "docs" / "implementers-guide.md"
 
 
-def _validator(name, version="v0.2"):
+def _validator(name, version):
     schema = json.loads((_PROTO / f"{name}-{version}.schema.json").read_text())
     Draft202012Validator.check_schema(schema)
     return Draft202012Validator(schema)
 
 
-ENVELOPE = _validator("envelope")
+ENVELOPE = _validator("envelope", "v0.2")
 CONVENTIONS = {
-    "control.": _validator("subscription", "v0.3"),
-    "lifecycle.": _validator("lifecycle", "v0.5"),
-    "launcher.": _validator("launcher", "v0.4"),
-    "value": _validator("value"),
+    "control.": _validator("subscription", "v0.4"),
+    "lifecycle.": _validator("lifecycle", "v0.6"),
+    "supervisor.": _validator("supervisor", "v0.5"),
+    "value": _validator("value", "v0.3"),
 }
 
 # The complete reserved routing-key set, coupled to the enum (a hand-copied
