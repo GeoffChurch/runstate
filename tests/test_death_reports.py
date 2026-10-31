@@ -38,7 +38,6 @@ from runstate.launcher import (
     report_if_dead,
 )
 from runstate.observables import (
-    DeathReport,
     LiveDemand,
     Tier,
     live_episode,

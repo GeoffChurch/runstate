@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, NamedTuple, assert_never
 
-from .coordinate import _MAX_COUNT, Commits, Target
+from .coordinate import Commits, Target
 
 Condition = dict[str, Any]
 """The wire dict of a schedule or a stop trigger (subscription-v0.4), as a
