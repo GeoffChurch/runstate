@@ -28,12 +28,13 @@ holds each node's ``NodeKind`` where the walk reads the parent's record, so a
 from __future__ import annotations
 
 from collections.abc import Callable, Container, Iterator
+from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
-from typing import NamedTuple, TypeVar
+from typing import Any, NamedTuple, TypeVar
 
 from ..channel import Channel, Envelope
-from .vocabulary.payloads import Commit, Node, Started, Stopped, Topic
+from .vocabulary.payloads import Commit, Node, Started, Stopped, Topic, Value
 from .vocabulary.schedule import Coordinates
 
 _T = TypeVar("_T")
@@ -328,6 +329,24 @@ def value_record(walked: Walked, at: At, seq: int) -> Envelope:
     if e is None or e.topic != Topic.VALUE:
         raise not_a_value(at, seq)
     return e
+
+
+@dataclass(frozen=True)
+class Element:
+    """One element of an eager stream, or one sample of a source (§5): the node
+    that committed it, the value's seq, and its body's ``value`` and ``t``."""
+
+    node: int
+    seq: int
+    value: Any
+    t: float | None
+
+
+def element(walked: Walked, at: At, seq: int) -> Element:
+    """The element at value ``seq``, which ``at`` commits, its body read: a
+    malformed one raises."""
+    v = verdict_parse(Value, walked.records[seq])
+    return Element(node=at.env.seq, seq=seq, value=v.value, t=v.t)
 
 
 def declared(walked: Walked, at: At) -> frozenset[str]:

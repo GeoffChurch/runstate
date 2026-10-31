@@ -897,6 +897,13 @@ The probe's report: when the latest claim is held and its session probe finds it
 session ended, or its handle is on this host and probes dead, it reports `lost`.
 The Worker's claim path, the deciders and `ensure` call it before they act.
 
+### The errors public calls raise
+
+Every error a public call raises is on the surface, and listed together here (plan
+Task 16): the substrate's `RunNotFound`, `LogFormatError`, `LogFormatMismatch` and
+`LogFormatMissing`, and the reads' `MalformedRecordError`, unchanged (their entries
+above); and the entries below.
+
 #### `ClaimAliveError`
 
 ```python
@@ -905,11 +912,6 @@ ClaimAliveError(claim_seq: int, handle: str)
 
 `report_death` refused: the claim's handle probes alive, and the caller did not
 pass `force=True`.
-
-### The errors public calls raise
-
-Beside `ClaimAliveError` (above) and `ensure`'s errors, three more reach the
-caller of a public call, and so are on the surface (plan Task 16).
 
 #### `ReportStarvedError`
 
@@ -945,6 +947,36 @@ or a `count` atom. Its message names the offending key by its path in the body
 (`from.any[1].time_seconds`), and is the worker's `malformed` nak message.
 `history` and `Watcher.broadcast` parse their schedule first and raise it to the
 caller, writing nothing.
+
+#### `RunFailedError`
+
+```python
+RunFailedError(run_id: str, result: RunResult, *, target: Target, count: int)
+```
+
+A drive's claim ended with an outcome in `Outcome.failures()`. `result` is its
+verdict at raise time, stamped with the run, the retry decision's input; `count`
+is the target's count at the head then.
+
+#### `NoProgressError`
+
+```python
+NoProgressError(run_id: str, *, target: Target, count: int)
+```
+
+A drive's claim ended, not failing, having written no commit: a re-drive would
+spin. Progress is measured per drive by `Commits()`, not by the target's stream.
+
+#### `RecordlessExitError`
+
+```python
+RecordlessExitError(run_id: str, *, launch_id: str | None, target: Target, count: int)
+```
+
+A drive's handle ended with no claim naming it and no other claim held, a second
+time in a row at an unchanged head and `Commits()` count: the re-drive reproduced
+it. `launch_id` is the second drive's, `None` for a foreign handle. A sibling of
+`RunFailedError`, not a subclass: no claim ended, so there is no verdict.
 
 ### The reads (§5)
 
@@ -1172,6 +1204,40 @@ DeathReport(seq: int, outcome: Outcome, evidence: str, t: float)
 
 A readable `supervisor.died` naming the claim, in `RunResult.reports`.
 
+### The producer seam (§5)
+
+`launch_producer` and `foreign_episode` return these Protocols; their concrete
+classes are private.
+
+#### `Producer`
+
+```python
+class Producer(Protocol):
+    run_id: str
+    @property
+    def channel(self) -> Channel: ...
+    def extend(self, target: Target) -> LiveHandle: ...
+```
+
+A run `ensure` can read and extend: `channel` and `run_id` locate its log, and
+`extend(target)` drives toward `target`, returning a liveness handle, never
+`None`. `launch_producer`'s opens its channel once, on first access, and holds it;
+the caller that made it closes `producer.channel`.
+
+#### `LiveHandle`
+
+```python
+class LiveHandle(Protocol):
+    @property
+    def launch_id(self) -> str | None: ...
+    def is_alive(self) -> bool: ...
+    def wait(self) -> object: ...
+```
+
+What `ensure` drives: the drive's `launch_id`, which its claim names, or `None`
+for a foreign handle; `is_alive`, which writes nothing; and `wait`, which reaps.
+A launcher's `LaunchHandle` is one, and so is `foreign_episode`'s.
+
 ### `ensure`'s outcomes (§5)
 
 #### `Reached`
@@ -1211,6 +1277,22 @@ Rewind(claim_seq, resume_from, t)  # lifecycle.rewind
 
 Restates the claim's position, never who: an extendable node of the run, or null
 for the root.
+
+#### `NakReason`
+
+```python
+class NakReason(StrEnum): MALFORMED, UNSATISFIABLE, UNSUPPORTED
+```
+
+`Nak.reason`, lifecycle-v0.6's: why the worker refused a control request.
+
+#### `Reap`
+
+```python
+class Reap(StrEnum): EXITED, KILLED
+```
+
+`Terminated.reason`, supervisor-v0.5's: how a launch's process ended.
 
 #### `Withdraw`
 

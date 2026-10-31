@@ -369,10 +369,17 @@ def is_lease(schedule: Schedule) -> bool:
     return any(isinstance(a, (Elapsed, Fired)) for a in schedule.atoms())
 
 
-def references_time(schedule: Schedule) -> bool:
-    """Does the schedule need an epoch: an ``Elapsed`` atom anywhere? Not the lease
+def needs_epoch(schedule: Schedule) -> bool:
+    """Does evaluating the schedule read ``registered_at``: an ``Elapsed`` atom in
+    ``from`` or ``until``, which count seconds from registration? ``every``'s count
+    from its last firing, so an ``every`` time atom needs none. Not the lease
     question, which a count-only schedule answers yes and this one no."""
-    return any(isinstance(a, Elapsed) for a in schedule.atoms())
+    return any(
+        isinstance(a, Elapsed)
+        for term in (schedule.from_, schedule.until)
+        if term is not None
+        for a in _atoms(term)
+    )
 
 
 # ----- the parse --------------------------------------------------------------------

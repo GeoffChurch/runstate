@@ -13,11 +13,7 @@ EXPECTED = {
     "attach_channel",
     "create_channel",
     "current_channel",
-    "RunNotFound",
     "LOG_FORMAT",
-    "LogFormatError",
-    "LogFormatMismatch",
-    "LogFormatMissing",
     "Channel",
     "Body",
     "Envelope",
@@ -44,7 +40,6 @@ EXPECTED = {
     "ensure_served",
     "report_death",
     "report_if_dead",
-    "ClaimAliveError",
     # the observer plane and orchestration
     "Watcher",
     "await_consumed",
@@ -54,7 +49,6 @@ EXPECTED = {
     "Outcome",
     "Tier",
     "DeathReport",
-    "MalformedRecordError",
     "peek_terminal",
     "worker_completed",
     "last_activity",
@@ -91,18 +85,26 @@ EXPECTED = {
     "ensure",
     "Reached",
     "Unreachable",
+    "Producer",
+    "LiveHandle",
     "launch_producer",
     "foreign_episode",
+    "sweep",
+    "Variant",
+    # the errors public calls raise
+    "RunNotFound",
+    "LogFormatError",
+    "LogFormatMismatch",
+    "LogFormatMissing",
+    "MalformedRecordError",
+    "MalformedSchedule",
+    "ClaimAliveError",
+    "ReportStarvedError",
+    "WorkerStarvedError",
     "RunFailedError",
     "NoProgressError",
     "RecordlessExitError",
-    "sweep",
-    "Variant",
-    # the errors public calls raise (ClaimAliveError, above, among them)
-    "ReportStarvedError",
-    "WorkerStarvedError",
-    "MalformedSchedule",
-    # the convention vocabulary and its bodies
+    # the convention vocabulary, its bodies and their fields' enums
     "Topic",
     "Condition",
     "Value",
@@ -113,9 +115,11 @@ EXPECTED = {
     "Stopped",
     "Bound",
     "Nak",
+    "NakReason",
     "Withdraw",
     "Launched",
     "Terminated",
+    "Reap",
     "Died",
     "Node",
 }
@@ -128,11 +132,15 @@ def test_all_public_names_resolve():
 
 def test_public_surface_is_stable():
     """The surface is exactly the plan's; ``progress`` and ``value_series`` are
-    removed (§5), and the memoizer's names are on it."""
+    removed (§5), and the memoizer's names are on it, its seam's Protocols among
+    them, while the concrete producer and handle stay private."""
     assert set(surface.__all__) == EXPECTED
     assert len(surface.__all__) == len(EXPECTED)  # no name listed twice
     for removed in ("progress", "value_series"):
         assert not hasattr(surface, removed)
+    # the factories return the exported Protocols, not their private classes
+    assert surface.launch_producer.__annotations__["return"] == "Producer"
+    assert surface.foreign_episode.__annotations__["return"] == "LiveHandle"
 
 
 def test_api_doc_covers_the_public_surface():

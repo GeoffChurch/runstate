@@ -17,7 +17,7 @@ import pytest
 
 from runstate import LOG_FORMAT
 from runstate._next.checkpoint import NoSave
-from runstate._next.launcher import ThreadLauncher, ThreadTarget
+from runstate._next.launcher import ThreadLauncher
 from runstate._next.memoizer import (
     NoProgressError,
     Reached,
@@ -47,6 +47,7 @@ from runstate._next.worker import Worker
 from runstate.channel.memory import MemoryChannel
 from runstate.formats import FORMATS
 from runstate.vocabulary.handle import local_handle, local_handle_of
+from tests.next_helpers import bounded_sleep, thread
 from tests.test_next_reads import (
     append,
     channel,
@@ -710,9 +711,7 @@ def loss_worker(ch, *, until):
 
 
 def producer(launcher, run_id="exp", fn=loss_worker, **kwargs):
-    return launch_producer(
-        launcher, Variant(run_id, ThreadTarget(fn, args=(), kwargs=kwargs))
-    )
+    return launch_producer(launcher, Variant(run_id, thread(fn, **kwargs)))
 
 
 def losses(ch):
@@ -755,7 +754,7 @@ def test_ensure_cold_miss_then_hit():
     second launch."""
     launcher = ThreadLauncher()
     p = producer(launcher)
-    got = ensure(p, Target("loss", 5))
+    got = ensure(p, Target("loss", 5), sleep=bounded_sleep())
     assert isinstance(got, Reached)
     ch = p.channel
     assert prefix_len(ch, "loss", head=AtNode(got.node)) == 5
@@ -781,8 +780,8 @@ def test_a_larger_target_continues_from_the_earlier_drives_extendable_exit():
     one series, and the second claim resumes from the first claim's exit."""
     launcher = ThreadLauncher()
     p = producer(launcher)
-    assert isinstance(ensure(p, LOSS3), Reached)
-    got = ensure(p, Target("loss", 6))
+    assert isinstance(ensure(p, LOSS3, sleep=bounded_sleep()), Reached)
+    got = ensure(p, Target("loss", 6), sleep=bounded_sleep())
     assert isinstance(got, Reached)
     ch = p.channel
     assert [e.value for e in series(ch, "loss", head=AtNode(got.node))] == [
@@ -813,7 +812,7 @@ def test_ensure_redrives_within_one_call_to_reach_the_target():
                 w.emit("loss", float(i))
 
     p = producer(launcher, fn=chunked)
-    got = ensure(p, Target("loss", 7))
+    got = ensure(p, Target("loss", 7), sleep=bounded_sleep())
     assert isinstance(got, Reached)
     ch = p.channel
     assert losses(ch) == [float(i) for i in range(7)]
@@ -836,10 +835,10 @@ def test_ensure_fails_fast_on_a_launched_workers_raise_and_a_re_call_resumes():
 
     p = producer(launcher, fn=flaky)
     with pytest.raises(RunFailedError) as ei:
-        ensure(p, Target("loss", 4))
+        ensure(p, Target("loss", 4), sleep=bounded_sleep())
     assert ei.value.result.outcomes == {Outcome.ERRORED}
     assert ei.value.run_id == "exp"
-    got = ensure(p, Target("loss", 4))
+    got = ensure(p, Target("loss", 4), sleep=bounded_sleep())
     assert isinstance(got, Reached)
     # the errored exit tore its open iteration: loss 1 was never committed
     assert losses(p.channel) == [0.0, 1.0, 2.0, 3.0]
@@ -855,7 +854,7 @@ def test_ensure_raises_no_progress_for_a_launched_worker_that_commits_nothing():
             pass
 
     with pytest.raises(NoProgressError):
-        ensure(producer(launcher, fn=idle), LOSS3)
+        ensure(producer(launcher, fn=idle), LOSS3, sleep=bounded_sleep())
 
 
 def test_a_worker_that_dies_before_it_claims_is_a_recordless_exit():
@@ -869,7 +868,7 @@ def test_a_worker_that_dies_before_it_claims_is_a_recordless_exit():
 
     p = producer(launcher, fn=dies)
     with pytest.raises(RecordlessExitError):
-        ensure(p, LOSS3)
+        ensure(p, LOSS3, sleep=bounded_sleep())
     assert len(p.channel.read(topics=[Topic.SUPERVISOR_LAUNCHED])) == 2
 
 
@@ -886,7 +885,7 @@ def test_a_completing_worker_is_a_function_producer():
             w.stopped(completed=True, error=None)
 
     p = producer(launcher, run_id="analysis-abc123", fn=derived)
-    got = ensure(p, Target("pair_metrics", 1))
+    got = ensure(p, Target("pair_metrics", 1), sleep=bounded_sleep())
     assert isinstance(got, Reached)
     ch = p.channel
     assert [e.value for e in series(ch, "pair_metrics", head=AtNode(got.node))] == [
@@ -905,8 +904,8 @@ def test_reuse_is_extend_across_drivers(tmp_path):
     home.mkdir(parents=True)
     a = producer(ThreadLauncher(root=home, backend="sqlite"), run_id=rid)
     b = producer(ThreadLauncher(root=home, backend="sqlite"), run_id=rid)
-    assert isinstance(ensure(a, LOSS3), Reached)
-    assert isinstance(ensure(b, Target("loss", 8)), Reached)
+    assert isinstance(ensure(a, LOSS3, sleep=bounded_sleep()), Reached)
+    assert isinstance(ensure(b, Target("loss", 8), sleep=bounded_sleep()), Reached)
     assert losses(b.channel) == [float(i) for i in range(8)]
     assert sorted((tmp_path / "runs").rglob("*.db")) == [
         FORMATS[LOG_FORMAT].sqlite_path(home, rid)
@@ -1020,11 +1019,13 @@ def test_history_parses_its_schedule_at_its_boundary():
         history(ch, "loss", {"sometimes": {}}, head=LatestClaimHead())
 
 
-def test_history_reads_the_epoch_only_for_a_time_atom():
-    """The epoch, the earliest ``started.t``, is read only for a schedule with a time
-    atom (``references_time``): an unreadable first claim from a dead past poisons no
-    count-only read, which still returns its elements, while a time atom, which
-    needs that ``t``, raises ``MalformedRecordError``."""
+def test_history_reads_the_epoch_only_for_a_time_atom_in_from_or_until():
+    """The epoch, the earliest ``started.t``, is read only for a schedule with an
+    ``Elapsed`` atom in ``from`` or ``until`` (``needs_epoch``), the slots that count
+    from registration: an unreadable first claim from a dead past poisons no
+    count-only read and no ``every`` time atom, which counts from its last firing,
+    and each still returns its elements; a time atom in ``until``, which needs that
+    ``t``, raises ``MalformedRecordError``."""
     ch = channel(
         [
             (1, junk(claim(), t="junk")),  # a dead past's claim, unreadable
@@ -1040,5 +1041,9 @@ def test_history_reads_the_epoch_only_for_a_time_atom():
         0.3,
         0.2,
     ]
+    every_second = {"every": {"time_seconds": 1}}
+    assert loss_values(history(ch, "loss", every_second, head=h)) == [0.3]
     with pytest.raises(MalformedRecordError):
-        history(ch, "loss", {"every": {"time_seconds": 1}}, head=h)
+        history(ch, "loss", {"until": {"time_seconds": 1}}, head=h)
+    with pytest.raises(MalformedRecordError):
+        history(ch, "loss", {"from": {"time_seconds": 1}}, head=h)

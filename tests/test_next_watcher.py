@@ -21,7 +21,6 @@ from runstate._next.checkpoint import NoSave
 from runstate._next.launcher import (
     LocalLauncher,
     ThreadLauncher,
-    ThreadTarget,
     report_death,
 )
 from runstate._next.observables import (
@@ -50,7 +49,7 @@ from runstate.channel import RunNotFound
 from runstate.channel.base import Session
 from runstate.channel.memory import MemoryChannel
 from runstate.vocabulary.handle import local_handle
-from tests.next_helpers import Wrapping
+from tests.next_helpers import Wrapping, bounded_sleep, thread
 from tests.test_next_reads import (
     Rec,
     append,
@@ -172,8 +171,9 @@ def test_running_head_and_commits_equal_the_pure_reads_after_every_poll():
     """``Running.head`` and ``Running.commits`` come from folds held per run (§5,
     "Sites that change"), and equal ``LatestClaimHead`` and ``prefix_len(Commits())``
     after every poll, across commits, a rewind, a new claim's resume and a displaced
-    worker's commit. The first poll is a cold attach to a log already written, and a
-    poll that returns the exit's verdict still advances the folds."""
+    worker's commit. The first poll is a cold attach to a log already written. A
+    poll that returns the exit's verdict reads no fold, since the verdict comes
+    first, and the next poll's ``Running`` catches the folds up from their cursors."""
     ch = channel([(1, claim()), (2, value("loss", 0.3)), (3, commit(1, None, [2]))])
     w = watching(ch)
     rows = [
@@ -224,6 +224,54 @@ def test_a_verdict_on_the_log_beats_every_inference():
     w = Watcher(heartbeat_timeout=1.0, now=Clock(1e6))
     w.add(FakeHandle("r", ch, alive=False))
     assert w.poll("r").outcomes == {Outcome.COMPLETED}
+
+
+class LandsOnLastSeq(MemoryChannel):
+    """Once ``arm``ed with a row and ``k``, lands the row as its ``k``-th
+    ``last_seq()`` call since: a record CAS'd between a reader's reads."""
+
+    def __init__(self):
+        super().__init__()
+        self._row = None
+
+    def arm(self, row, k):
+        self._row, self._k, self._calls = row, k, 0
+
+    def last_seq(self):
+        if self._row is not None:
+            self._calls += 1
+            if self._calls == self._k:
+                row, self._row = self._row, None
+                self.send(row.body, topic=row.topic, request_id=row.request_id)
+        return super().last_seq()
+
+
+def test_a_poll_reads_its_verdict_and_its_head_at_one_w():
+    """One poll takes one W: a completing exit landing between its reads is either
+    the poll's verdict or not yet seen at all, so a ``Running`` never carries a
+    closed head, wherever in the poll the exit lands."""
+    for k in range(1, 8):
+        ch = LandsOnLastSeq()
+        append(ch, [(1, claim()), (2, commit(1, None, []))])
+        w = watching(ch)
+        ch.arm(stopped(1, 2, [], completed=True), k)
+        for _ in range(k + 1):  # the exit lands within the first k polls' reads
+            s = w.poll("r")
+            assert isinstance(s, RunResult) or not s.head.settled, k
+        assert s.outcomes == {Outcome.COMPLETED}, k
+
+
+def test_a_verdict_on_the_log_is_read_before_a_malformed_head():
+    """The poll reads the verdict before its folds: a run whose claim exited is that
+    exit's verdict though a commit of it breaks the head fold, which every later poll
+    would otherwise raise forever."""
+    ch = channel([(1, claim()), (2, commit(1, 99, [])), (3, stopped(1, None, []))])
+    with pytest.raises(MalformedRecordError):
+        LatestClaimHead().resolve(ch)
+    w = watching(ch)
+    for _ in range(2):
+        r = w.poll("r")
+        assert (r.outcomes, r.tier, r.node) == ({Outcome.PREEMPTED}, Tier.EXIT, 3)
 
 
 # ----- the inferences ----------------------------------------------------------------
@@ -506,7 +554,7 @@ def test_watcher_poll_and_is_alive_write_nothing_but_a_reap_of_a_held_handle(tmp
         assert h.is_alive() and isinstance(w.poll("local"), Running)
         assert h.channel.last_seq() == before
         h.terminate()
-        r = w.wait("local")
+        r = w.wait("local", timeout=30)
     assert (r.outcomes, r.tier) == ({Outcome.KILLED}, Tier.DIED)
     after = launcher.attach_channel("local").read(after=before)
     assert [e.topic for e in after] == [
@@ -526,7 +574,7 @@ def test_the_watcher_reaps_a_crashed_launch_for_a_precise_verdict(tmp_path):
         h = launcher.launch("crash", cmd)
         w = Watcher(heartbeat_timeout=None, poll_interval=0.005)
         w.add(h)
-        r = w.wait("crash")
+        r = w.wait("crash", timeout=30)
     assert (r.outcomes, r.tier) == ({Outcome.ERRORED}, Tier.TERMINATED)
     term = launcher.attach_channel("crash").latest(Topic.SUPERVISOR_TERMINATED)
     assert term.body["exit_code"] == 42
@@ -552,8 +600,6 @@ def test_a_held_claim_whose_session_ended_is_presumed_dead_without_a_grace(pg_re
     so the claim's row was stamped by a session held when it landed. While the
     session is held, the run reads alive, a live pid on the same host
     notwithstanding either way."""
-    import time
-
     run_id = f"wsession-{uuid.uuid4()}"
     writer, obs = _pg(pg_ready, run_id), _pg(pg_ready, run_id)
     try:
@@ -620,15 +666,11 @@ def done_worker(ch, *, n=2):
         w.stopped(completed=True, error=None)
 
 
-def thread(fn, **kwargs):
-    return ThreadTarget(fn, args=(), kwargs=kwargs)
-
-
 def test_wait_blocks_until_terminal():
     launcher = ThreadLauncher()
     w = Watcher(heartbeat_timeout=None, poll_interval=0.005)
     w.add(launcher.launch("run", thread(done_worker, n=3)))
-    r = w.wait("run")
+    r = w.wait("run", timeout=30)
     assert r.outcomes == {Outcome.COMPLETED} and r.run_id == "run"
 
 
@@ -672,7 +714,7 @@ def test_wait_streams_events_via_on_event():
     w = Watcher(heartbeat_timeout=None, poll_interval=0.005)
     w.add(launcher.launch("run", thread(done_worker)))
     seen = []
-    r = w.wait("run", on_event=lambda rid, e: seen.append(e.topic))
+    r = w.wait("run", on_event=lambda rid, e: seen.append(e.topic), timeout=30)
     assert r.outcomes == {Outcome.COMPLETED}
     assert {"lifecycle.started", "lifecycle.commit", "lifecycle.stopped"} <= set(seen)
 
@@ -688,7 +730,7 @@ def test_wait_does_a_final_drain_after_terminal():
         if e.topic == "lifecycle.stopped" and len(seen) == 2:
             at(ch, exited("L1", 0))
 
-    w.wait("r", on_event=on_event)
+    w.wait("r", on_event=on_event, timeout=30)
     assert "supervisor.terminated" in seen
 
 
@@ -697,7 +739,7 @@ def test_wait_all_returns_all_terminal():
     w = Watcher(heartbeat_timeout=None, poll_interval=0.005)
     w.add(launcher.launch("a", thread(done_worker, n=1)))
     w.add(launcher.launch("b", thread(done_worker, n=1)))
-    res = w.wait_all()
+    res = w.wait_all(timeout=30)
     assert set(res) == {"a", "b"}
     assert all(s.done and s.outcomes == {Outcome.COMPLETED} for s in res.values())
 
@@ -916,6 +958,46 @@ def test_await_consumed_blocks_below_the_watermark_then_returns_when_it_advances
     assert await_consumed(ch, 2, sleep=advance) is None and turns == [1]
 
 
+def advancing(clock, step=1.0):
+    """A ``sleep`` hook that advances ``clock`` instead of sleeping."""
+
+    def sleep(_):
+        clock.t += step
+
+    return sleep
+
+
+def test_an_answer_landing_mid_poll_is_accepted_never_the_verdict():
+    """One poll of ``await_consumed`` takes one W for its answer scan, its head and
+    its claim: a completing exit that fires the request is accepted wherever in a
+    poll it lands, never the run's terminal verdict."""
+    for k in range(1, 10):
+        ch = LandsOnLastSeq()
+        append(ch, [(1, claim()), (2, subscribe("loss", "r", every={"commits": 1}))])
+        fire = stopped(1, None, [], completed=True)
+        ch.arm(fire._replace(body={**fire.body, "fired": ["r"]}), k)
+        clock = Clock(0.0)
+        got = await_consumed(ch, 2, timeout=50.0, now=clock, sleep=advancing(clock))
+        assert got is None, k
+
+
+def test_a_claim_landing_mid_poll_is_the_next_claims_wait_or_the_ended_verdict():
+    """The exit at 3 saw the request and did not take it, and the next claim lands
+    somewhere in the polls: at the W it reads, a poll either holds the exit's verdict
+    or waits for the new claim. Never a claim read at another W than its exits."""
+    for k in range(1, 10):
+        ch = LandsOnLastSeq()
+        req = subscribe("loss", "r", every={"commits": 1})
+        append(ch, [(1, claim()), (2, req), (3, stopped(1, None, []))])
+        ch.arm(claim(resume_from=3), k)
+        clock = Clock(0.0)
+        try:
+            r = await_consumed(ch, 2, timeout=50.0, now=clock, sleep=advancing(clock))
+        except TimeoutError:
+            continue
+        assert (r.outcomes, r.tier, r.claim_seq) == ({Outcome.PREEMPTED}, Tier.EXIT, 1)
+
+
 def test_await_consumed_times_out_if_not_consumed():
     ch = request_log()
     with pytest.raises(TimeoutError):
@@ -1100,8 +1182,11 @@ def test_await_consumed_by_backend(open_run):
 # ----- sweep ----------------------------------------------------------------------
 
 
-def fast():
-    return Watcher(heartbeat_timeout=None, poll_interval=0.005)
+def fast(*, sleep=None):
+    """A Watcher polling fast, whose waits fail past 30 s in all."""
+    return Watcher(
+        heartbeat_timeout=None, poll_interval=0.005, sleep=sleep or bounded_sleep()
+    )
 
 
 def boom(ch):
@@ -1211,25 +1296,21 @@ def test_sweep_does_not_hang_on_a_worker_stuck_before_it_claims():
     """A worker that hangs before it claims is presumed dead once the Watcher's
     ``heartbeat_timeout`` passes (the startup-death catch), so the sweep returns."""
     gate = threading.Event()
-    results = []
+    clock = Clock(0.0)
 
     def hung(ch):
         gate.wait(30)
 
-    def run():
-        w = Watcher(heartbeat_timeout=0.2, poll_interval=0.01)
-        results.extend(
-            sweep_of(ThreadLauncher(), [Variant("h", thread(hung))], watcher=w)
-        )
+    def sleep(seconds):  # the Watcher's clock, advanced by its own waits
+        clock.t += seconds
+        if clock.t > 30.0:
+            raise AssertionError("sweep hung on a worker stuck before it claims")
 
-    t = threading.Thread(target=run, daemon=True)
-    t.start()
-    t.join(10)
-    hanging = t.is_alive()
-    gate.set()
-    t.join(10)
-    assert not hanging, "sweep hung on a worker stuck before it claims"
-    (r,) = results
+    w = Watcher(heartbeat_timeout=0.2, now=clock, sleep=sleep, poll_interval=0.01)
+    try:
+        (r,) = sweep_of(ThreadLauncher(), [Variant("h", thread(hung))], watcher=w)
+    finally:
+        gate.set()
     assert (r.outcomes, r.tier, r.claim_seq) == (
         {Outcome.PRESUMED_DEAD},
         Tier.HEARTBEAT_STALE,
@@ -1242,16 +1323,25 @@ def test_a_relaunching_sweep_waits_for_the_new_launchs_own_verdict(tmp_path):
     ``resume`` skips a run with any verdict) watches the new launch's handle, so it
     returns that launch's verdict, never the previous claim's."""
     launcher = ThreadLauncher(root=tmp_path, backend="sqlite")
+    polled = threading.Event()  # the Watcher has read the new launch as running
 
     def preempted(ch):
         with Worker(ch, resume_from=None, sources=[], save=NoSave()) as w:
             w.commit()
 
     def late(ch):
-        time.sleep(0.2)
+        assert polled.wait(30), "the Watcher never waited on the new launch"
         done_worker(ch)
+
+    bounded = bounded_sleep()
+
+    def sleep(seconds):
+        polled.set()
+        bounded(seconds)
 
     (first,) = sweep_of(launcher, [Variant("r", thread(preempted))])
     assert first.outcomes == {Outcome.PREEMPTED}
-    (r,) = sweep_of(launcher, [Variant("r", thread(late))], resume=False)
+    (r,) = sweep_of(
+        launcher, [Variant("r", thread(late))], resume=False, watcher=fast(sleep=sleep)
+    )
     assert r.outcomes == {Outcome.COMPLETED} and r.claim_seq > first.claim_seq

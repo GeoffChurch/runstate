@@ -21,20 +21,16 @@ from runstate._next.launcher import (
     Command,
     LocalLauncher,
     ThreadLauncher,
-    ThreadTarget,
 )
 from runstate._next.observables import Tier, peek_terminal
 from runstate._next.vocabulary.coordinate import Commits, Target
 from runstate._next.vocabulary.payloads import Outcome, Topic
 from runstate._next.worker import Worker
+from tests.next_helpers import thread
 
 pytestmark = pytest.mark.filterwarnings(
     "error::pytest.PytestUnhandledThreadExceptionWarning"
 )
-
-
-def thread(fn, *args, **kwargs):
-    return ThreadTarget(fn, args=args, kwargs=kwargs)
 
 
 # ----- ThreadLauncher ---------------------------------------------------------------
@@ -51,7 +47,7 @@ def test_launch_runs_target_and_brackets_with_supervisor_records(tmp_path):
         ch.send({"value": 1, "t": None}, topic=Topic.VALUE, name="loss")
 
     h = launcher.launch("run-1", thread(target))
-    h.wait()
+    h.wait(timeout=30)
     assert len(seen) == 1
     ch = launcher.attach_channel("run-1")
     records = ch.read()
@@ -69,11 +65,11 @@ def test_launch_runs_target_and_brackets_with_supervisor_records(tmp_path):
 def test_handle_fields_and_liveness(tmp_path):
     launcher = ThreadLauncher(root=tmp_path)
     gate = threading.Event()
-    h = launcher.launch("run-2", thread(lambda ch: gate.wait()))
+    h = launcher.launch("run-2", thread(lambda ch: gate.wait(30)))
     assert h.run_id == "run-2" and h.handle.startswith("local://")
     assert h.is_alive() is True
     gate.set()
-    h.wait()
+    h.wait(timeout=30)
     assert h.is_alive() is False
 
 
@@ -86,7 +82,7 @@ def test_an_errored_target_that_never_claimed_reads_errored(tmp_path):
         raise RuntimeError("boom")
 
     h = launcher.launch("run-3", thread(target))
-    h.wait()
+    h.wait(timeout=30)
     assert isinstance(h.exception, RuntimeError)
     ch = launcher.attach_channel("run-3")
     term = ch.latest(Topic.SUPERVISOR_TERMINATED).body
@@ -102,7 +98,7 @@ def test_target_receives_args(tmp_path):
     def target(ch, a, b, *, c):
         got.append((a, b, c))
 
-    launcher.launch("run-4", thread(target, 1, 2, c=3)).wait()
+    launcher.launch("run-4", thread(target, 1, 2, c=3)).wait(timeout=30)
     assert got == [(1, 2, 3)]
 
 
@@ -136,7 +132,7 @@ def test_a_claim_losers_clean_exit_does_not_forge_the_winners_verdict(tmp_path):
     hw = launcher.launch("collide", thread(winner))
     hl = launcher.launch("collide", thread(loser))
     claim_now.set()
-    assert loser_done.wait(20) and hl.wait() is None
+    assert loser_done.wait(20) and hl.wait(timeout=30) is None
     ch = launcher.attach_channel("collide")
     claims = ch.read(topics=[Topic.LIFECYCLE_STARTED])
     assert [c.request_id for c in claims] == [hw.launch_id]
@@ -147,7 +143,7 @@ def test_a_claim_losers_clean_exit_does_not_forge_the_winners_verdict(tmp_path):
     assert peek_terminal(ch) is None  # the winner runs on
 
     release_winner.set()
-    hw.wait()
+    hw.wait(timeout=30)
     r = peek_terminal(ch)
     assert (r.outcomes, r.tier) == ({Outcome.PREEMPTED}, Tier.EXIT)
 
@@ -187,7 +183,7 @@ def test_subprocess_attaches_to_same_run_and_is_reaped(tmp_path):
     launch's ``terminated``, and the unclaimed run reads ``completed``."""
     with LocalLauncher(root=tmp_path) as launcher:
         h = launcher.launch("run-1", command(WORKER))
-        assert h.wait() == 0
+        assert h.wait(timeout=30) == 0
     ch = launcher.attach_channel("run-1")
     assert ch.latest(Topic.VALUE, "loss").body["value"] == 0.5
     launched = ch.latest(Topic.SUPERVISOR_LAUNCHED).body
@@ -218,7 +214,7 @@ def test_handle_is_alive_then_terminate_records_killed(tmp_path):
         h = launcher.launch("run-2", command(BLOCKER))
         assert h.is_alive() is True
         h.terminate()
-        h.wait()
+        h.wait(timeout=30)
         assert h.is_alive() is False
     ch = launcher.attach_channel("run-2")
     term = ch.latest(Topic.SUPERVISOR_TERMINATED).body
@@ -230,7 +226,7 @@ def test_handle_is_alive_then_terminate_records_killed(tmp_path):
 def test_reap_is_idempotent(tmp_path):
     with LocalLauncher(root=tmp_path) as launcher:
         h = launcher.launch("run-3", command(WORKER))
-        h.wait()
-        h.wait()  # a second reap writes nothing more
+        h.wait(timeout=30)
+        h.wait(timeout=30)  # a second reap writes nothing more
     ch = launcher.attach_channel("run-3")
     assert len(ch.read(topics=[Topic.SUPERVISOR_TERMINATED])) == 1

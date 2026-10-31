@@ -43,7 +43,6 @@ from .launcher import (
     report_if_dead,
 )
 from .observables import (
-    Element,
     HeadFold,
     HeadStrategy,
     PrefixLen,
@@ -52,15 +51,15 @@ from .observables import (
     latest_episode,
 )
 from .vocabulary.coordinate import Commits, Target
-from .vocabulary.payloads import Outcome, Started, Topic, Value
+from .vocabulary.payloads import Outcome, Started, Topic
 from .vocabulary.schedule import (
     Condition,
     Coordinates,
     Subscription,
+    needs_epoch,
     parse_schedule,
-    references_time,
 )
-from .walk import coordinates, members, verdict_parse, walk
+from .walk import Element, coordinates, element, members, verdict_parse, walk
 
 if TYPE_CHECKING:
     from .sweep import Variant
@@ -200,7 +199,7 @@ class _ForeignEpisode:
         return None
 
 
-def foreign_episode(ch: Channel) -> _ForeignEpisode:
+def foreign_episode(ch: Channel) -> LiveHandle:
     """The one public copy of the producer gate's foreign half: compose a
     producer's ``extend`` as ``relaunch_if_needed(...) or foreign_episode(ch)``."""
     return _ForeignEpisode(ch)
@@ -220,12 +219,19 @@ class _LaunchProducer(Generic[D]):
         self._launcher = launcher
         self._variant = variant
         self.run_id = variant.run_id
+        self._channel: Channel | None = None  # opened on first access, then held
 
     @property
     def channel(self) -> Channel:
-        """A fresh handle on the run: the producer births it, so the first access
-        may precede any record (``create_channel``)."""
-        return self._launcher.create_channel(self.run_id)
+        """The producer's one handle on the run, opened on first access and held:
+        the producer births the run (``create_channel``), so the first access may
+        precede any record. A producer has no lifecycle (the seam is
+        ``channel``, ``run_id`` and ``extend``), so it never closes the handle: the
+        caller that made the producer closes ``producer.channel`` once done with
+        it, or leaves it to be released with the producer."""
+        if self._channel is None:
+            self._channel = self._launcher.create_channel(self.run_id)
+        return self._channel
 
     def extend(self, target: Target) -> LiveHandle:
         """Launch ``variant.target.driven(target)`` unless the run's newest claim is
@@ -239,7 +245,7 @@ class _LaunchProducer(Generic[D]):
         return handle if handle is not None else foreign_episode(self.channel)
 
 
-def launch_producer(launcher: Launcher[D], variant: Variant[D]) -> _LaunchProducer[D]:
+def launch_producer(launcher: Launcher[D], variant: Variant[D]) -> Producer:
     """A producer backed by ``launcher`` relaunching ``variant`` (§5, "The producer
     seam"), for a launcher whose target is ``Drivable``: a ``ThreadLauncher`` and a
     ``ThreadTarget``, whose ``driven(until)`` passes the target as the worker's
@@ -266,8 +272,9 @@ def history(
     node's ``t``, from the epoch, the earliest ``started.t``. ``every``'s baseline
     is the coordinates at the last node it fired at, as on a live lineage. It stops
     at the node where the schedule expires. The epoch is read only for a schedule
-    with a time atom (``references_time``), so an unreadable first claim from a
-    dead past poisons no other read.
+    with a time atom in ``from`` or ``until`` (``needs_epoch``), the slots that
+    count from registration, so an unreadable first claim from a dead past poisons
+    no other read.
 
     A node where it fires contributes every element of ``stream`` it commits, in its
     order, none when it commits none: the take-the-latest-per-step collapse is
@@ -278,9 +285,9 @@ def history(
     walked = walk(ch, head.resolve(ch).node)
     if not walked.nodes:
         return []
-    # Without an Elapsed atom nothing reads the epoch (``evaluate`` reads
-    # ``registered_at`` only through one), so 0.0 changes no firing.
-    epoch = _epoch(ch) if references_time(parsed) else 0.0
+    # Without an Elapsed atom in from or until nothing reads the epoch (``evaluate``
+    # reads ``registered_at`` only through one), so 0.0 changes no firing.
+    epoch = _epoch(ch) if needs_epoch(parsed) else 0.0
     sub = Subscription(parsed, registered_at=epoch, target=stream)
     valued = frozenset({stream})
     elements: dict[int, list[int]] = {}
@@ -294,9 +301,7 @@ def history(
         )
         if decision.fire:
             baseline = coords
-            for s in elements.get(at.env.seq, ()):
-                v = verdict_parse(Value, walked.records[s])
-                out.append(Element(node=at.env.seq, seq=s, value=v.value, t=v.t))
+            out.extend(element(walked, at, s) for s in elements.get(at.env.seq, ()))
         if decision.expired:
             break
     return out
@@ -322,25 +327,29 @@ class _At(NamedTuple):
 
 
 class _Drive:
-    """One ``extend``: its handle, the log's last seq before it (``floor``: its
-    claim lands above it), and the newest claim naming its launch, read
-    incrementally above what the last poll read, so a poll costs the records since.
-    ``reaped`` latches the one ``wait()`` once the handle is seen dead."""
+    """One ``extend`` toward ``target``: its handle, the log's last seq before it
+    (``floor``: its claim lands above it), and the newest claim naming its launch,
+    read incrementally above what the last poll read, so a poll costs the records
+    since. ``reaped`` latches the one ``wait()`` once the handle is seen dead."""
 
-    def __init__(self, handle: LiveHandle, floor: int) -> None:
+    def __init__(self, handle: LiveHandle, floor: int, target: Target) -> None:
         self.handle = handle
         self.reaped = False
+        self._target = target
         self._read = floor
         self._claim: Envelope | None = None
 
     def claim(self, ch: Channel, w: int) -> Envelope | None:
         """The newest claim at or below ``w`` naming the drive's launch, or
-        ``None``: always ``None`` for a foreign handle, which names none."""
+        ``None``: always ``None`` for a foreign handle, which names none. Each claim
+        is checked once, as it is first found: one declaring the target a source
+        raises (``_refuse_a_source``)."""
         launch = self.handle.launch_id
         if launch is None:
             return None
         newer = launch_claim(ch, launch, after=self._read, w=w)
         if newer is not None:
+            _refuse_a_source(newer, self._target)
             self._claim = newer
         self._read = max(self._read, w)
         return self._claim
@@ -397,8 +406,9 @@ def ensure(
     recordless: _At | None = None  # where the last drive, if recordless, left it
     while True:
         floor = ch.last_seq()  # before the launch: its claim lands above it
-        drive = _Drive(producer.extend(target), floor)
-        while True:
+        drive = _Drive(producer.extend(target), floor, target)
+        redrive = False
+        while not redrive:
             alive = drive.handle.is_alive()
             if not alive and not drive.reaped:
                 drive.handle.wait()
@@ -413,35 +423,30 @@ def ensure(
                 return Unreachable(head.node)
             claim = drive.claim(ch, head.w)
             if claim is not None:
-                _refuse_a_source(claim, target)
+                # held: wait, whatever the handle says; ended: fail, or drive again
                 result = claim_verdict(ch, claim, w=head.w)
-                if result is None:
-                    sleep(poll_interval)  # held: wait, whatever the handle says
-                    continue
-                if result.outcomes & Outcome.failures():
-                    stamped = replace(result, run_id=producer.run_id)
-                    raise RunFailedError(
-                        producer.run_id, stamped, target=target, count=count
+                if result is not None:
+                    if result.outcomes & Outcome.failures():
+                        stamped = replace(result, run_id=producer.run_id)
+                        raise RunFailedError(
+                            producer.run_id, stamped, target=target, count=count
+                        )
+                    if not _committed(ch, claim, head.w):
+                        raise NoProgressError(
+                            producer.run_id, target=target, count=count
+                        )
+                    recordless, redrive = None, True
+            elif not (alive or _held(ch)):
+                here = _At(head.node, commits.poll(ch, head))
+                if recordless == here:
+                    raise RecordlessExitError(
+                        producer.run_id,
+                        launch_id=drive.handle.launch_id,
+                        target=target,
+                        count=count,
                     )
-                if not _committed(ch, claim, head.w):
-                    raise NoProgressError(producer.run_id, target=target, count=count)
-                recordless = None
-                sleep(poll_interval)
-                break  # it ended having committed: drive again
-            if alive or _held(ch):
-                sleep(poll_interval)
-                continue
-            here = _At(head.node, commits.poll(ch, head))
-            if recordless == here:
-                raise RecordlessExitError(
-                    producer.run_id,
-                    launch_id=drive.handle.launch_id,
-                    target=target,
-                    count=count,
-                )
-            recordless = here
-            sleep(poll_interval)
-            break  # recordless, once here: drive again
+                recordless, redrive = here, True  # recordless, once here
+            sleep(poll_interval)  # a wait, or the pacing of the re-drive
 
 
 def _refuse_a_source(claim: Envelope, target: Target) -> None:

@@ -60,7 +60,6 @@ from ..channel import Channel, Envelope
 from ..channel.base import Session, SessionProbe
 from .claims import (
     backward,
-    claim_before,
     endings,
     named_claim,
     request_name,
@@ -75,9 +74,8 @@ from .observables import (
     RunResult,
     Tier,
     claim_verdict,
-    latest_episode,
     launch_verdict,
-    peek_terminal,
+    newest_claim,
 )
 from .vocabulary.coordinate import Commits
 from .vocabulary.payloads import (
@@ -137,7 +135,7 @@ class _Sessions:
 
     def __init__(self, ch: SessionProbe) -> None:
         self._ch = ch
-        self._claim = 0
+        self._claim: int | None = None  # the claim whose stamp is held
         self._session: Session | None = None
 
     def ended(self, claim: int) -> bool:
@@ -196,7 +194,7 @@ class _LatestClaim:
         return True
 
     def claim(self, ch: Channel, w: int) -> Envelope | None:
-        return claim_before(ch, w + 1)
+        return newest_claim(ch, w=w)
 
 
 @dataclass(frozen=True)
@@ -229,10 +227,9 @@ class _Witness:
         self._end: Envelope | None = None
         self._end_read = 0
 
-    def poll(self, ch: Channel, now: float) -> None:
-        """Read the records since the cursor, and restart the clock at ``now`` if
-        any witnesses the claim alive."""
-        w = ch.last_seq()
+    def poll(self, ch: Channel, *, w: int, now: float) -> None:
+        """Read the records since the cursor up to ``w``, the caller's W, and
+        restart the clock at ``now`` if any witnesses the claim alive."""
         if w <= self.w:
             return
         got = ch.read(after=self.w, topics=_WITNESS_TOPICS, limit=w - self.w)
@@ -288,8 +285,8 @@ def _seed(ch: Channel, claim: Envelope, w: int, now: float) -> float:
 @dataclass
 class _RunState:
     """What the Watcher holds per run: its channel and handle, the folds a poll
-    reads (§5, "Bounded reads"), the session tier resolved at registration, and its
-    witnessed liveness."""
+    reads (§5, "Bounded reads"), the session tier resolved at registration, its
+    witnessed liveness, and the cursor of its event drain."""
 
     run_id: str
     channel: Channel
@@ -299,6 +296,7 @@ class _RunState:
     stops: PendingStops
     sessions: _SessionTier
     witness: _Witness
+    event_cursor: int  # the last seq ``_drain`` handed on
 
 
 def _presumed(run_id: str, claim: Envelope | None, tier: Tier) -> RunResult:
@@ -341,7 +339,6 @@ class Watcher:
         self._sleep = sleep
         self._poll_interval = poll_interval
         self._runs: dict[str, _RunState] = {}
-        self._event_cursors: dict[str, int] = {}
 
     def add(self, handle: LaunchHandle) -> None:
         """Track a launched run by its handle, which enables the probe tier and the
@@ -379,6 +376,7 @@ class Watcher:
             stops=PendingStops(),
             sessions=sessions,
             witness=_Witness(channel, subject, self._now()),
+            event_cursor=0,
         )
 
     def poll(self, run_id: str) -> RunStatus:
@@ -392,19 +390,23 @@ class Watcher:
         reap leaves no verdict is it ``probed_dead``, naming the launch's claim, or
         none when nothing claimed for it. The session tier needs a claim; staleness
         does not, so a worker that hangs before it claims is presumed dead once
-        ``heartbeat_timeout`` passes from its registration (observer-clock §5)."""
+        ``heartbeat_timeout`` passes from its registration (observer-clock §5).
+
+        A poll reads at one W, taken first: the verdict, then the inferences, and
+        only for ``Running`` the held folds, so a ``Running`` never carries a head
+        the verdict would have closed, and a head the fold cannot read never hides a
+        verdict. The reap is a write, so its verdict is read at a W taken after it."""
         st = self._runs[run_id]
         ch, witness = st.channel, st.witness
         now = self._now()
-        witness.poll(ch, now)
-        head = st.heads.poll(ch)
-        commits = st.commits.poll(ch, head)
+        w = ch.last_seq()
+        witness.poll(ch, w=w, now=now)
         result = witness.verdict(ch)
         if result is not None:
             return replace(result, run_id=run_id)
         if st.handle is not None and not st.handle.is_alive():
             st.handle.wait()  # the reap: the one write a poll makes
-            witness.poll(ch, now)
+            witness.poll(ch, w=ch.last_seq(), now=now)
             result = witness.verdict(ch)
             if result is not None:
                 return replace(result, run_id=run_id)
@@ -415,7 +417,8 @@ class Watcher:
         age = now - witness.at
         if self._hb_timeout is not None and age > self._hb_timeout:
             return _presumed(run_id, claim, Tier.HEARTBEAT_STALE)
-        return Running(head=head, commits=commits, beacon_age=age)
+        head = st.heads.poll_at(ch, w=w)
+        return Running(head=head, commits=st.commits.poll(ch, head), beacon_age=age)
 
     def wait(
         self,
@@ -462,19 +465,21 @@ class Watcher:
             if on_event is not None:
                 for rid, e in self._drain():
                     on_event(rid, e)
+            running: dict[str, Running] = {}
             for run_id in list(pending):
                 s = self.poll(run_id)
-                if s.done:
+                if isinstance(s, RunResult):
                     results[run_id] = s
                     pending.discard(run_id)
+                else:
+                    running[run_id] = s
             if not pending:
                 if on_event is not None:
                     for rid, e in self._drain():
                         on_event(rid, e)
                 break
             if deadline is not None and self._now() >= deadline:
-                for run_id in pending:
-                    results[run_id] = self.poll(run_id)
+                results.update(running)  # this round's statuses: no second poll
                 break
             self._sleep(self._poll_interval)
         return results
@@ -525,9 +530,8 @@ class Watcher:
         """Every record since the last drain, across every tracked run."""
         out: list[tuple[str, Envelope]] = []
         for run_id, st in list(self._runs.items()):
-            cur = self._event_cursors.get(run_id, 0)
-            for e in st.channel.read(after=cur):
-                self._event_cursors[run_id] = e.seq
+            for e in st.channel.read(after=st.event_cursor):
+                st.event_cursor = e.seq
                 out.append((run_id, e))
         return out
 
@@ -570,7 +574,9 @@ def await_consumed(
       did).
 
     Each answer follows the request, so only the records above ``seq`` are read, in a
-    cursor, at O(new records) per poll.
+    cursor, at O(new records) per poll. A poll reads at one W, taken first: its
+    answers, its head and its newest claim, so an answer landing mid-poll is either
+    this poll's or the next's, never read as the verdict of a run that took it.
 
     It refuses up front, with ``ValueError``, what no worker could answer, since
     ``None`` would be a false "accepted": no record at ``seq``; a record that is not
@@ -600,7 +606,7 @@ def await_consumed(
         )
     _refuse_a_spent_id(ch, request, rid)
     leases = _Leases(ch, request, rid)
-    leases.refuse_void(taken_by=None)
+    leases.refuse_void(taken_by=None, w=ch.last_seq())
     heads = HeadFold()
     exits: set[int] = set()  # the claims with a readable exit above the request
     cursor = seq
@@ -631,14 +637,15 @@ def await_consumed(
         if answer is not None:
             return answer
         if accepted is not None:
-            leases.refuse_void(taken_by=accepted)
+            leases.refuse_void(taken_by=accepted, w=w)
             return None
-        head = heads.poll(ch)
-        claim = latest_episode(ch)
-        if head.settled or (claim is not None and claim.seq in exits):
-            result = peek_terminal(ch)
-            assert result is not None  # an exit names the newest claim
-            return result
+        head = heads.poll_at(ch, w=w)
+        claim = newest_claim(ch, w=w)
+        if claim is not None and (head.settled or claim.seq in exits):
+            # the newest claim's readable exit is at or below w: its verdict
+            result = claim_verdict(ch, claim, w=w)
+            if result is not None:
+                return result
         if deadline is not None and now() >= deadline:
             raise TimeoutError(
                 f"the request at seq {seq} not consumed within {timeout}s"
@@ -698,14 +705,14 @@ class _Leases:
         self._request = request
         self._rid = rid
 
-    def refuse_void(self, *, taken_by: int | None) -> None:
-        """``ValueError`` if ``rid`` is bound to a claim that has ended, other than
-        ``taken_by``, the claim whose record took the request: a claim the lease is
-        bound to accepts its resend while it holds it."""
+    def refuse_void(self, *, taken_by: int | None, w: int) -> None:
+        """``ValueError`` if ``rid`` is bound, at or below ``w``, the caller's W, to
+        a claim that has ended, other than ``taken_by``, the claim whose record took
+        the request: a claim the lease is bound to accepts its resend while it
+        holds it."""
         if self._request.topic != Topic.CONTROL_SUBSCRIBE:
             return
         ch, rid = self._ch, self._rid
-        w = ch.last_seq()
         topics: list[str] = [Topic.LIFECYCLE_BOUND]
         for e in ch.read(topics=topics, request_ids=[rid], limit=w):
             bound = readable(Bound, e)

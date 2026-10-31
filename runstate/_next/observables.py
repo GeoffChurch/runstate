@@ -65,7 +65,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Generic, NamedTuple, Protocol, TypeVar, assert_never
+from typing import Generic, NamedTuple, Protocol, TypeVar, assert_never
 
 from ..channel import Channel, Envelope
 from .vocabulary.coordinate import Commits
@@ -94,6 +94,7 @@ from .walk import (
     EVERY_NAME,
     FIRST_WINDOW,
     At,
+    Element as Element,
     KindOf,
     MalformedRecordError as MalformedRecordError,
     NodeKind,
@@ -102,6 +103,7 @@ from .walk import (
     check_node,
     check_reference,
     classified,
+    element,
     kind,
     kind_at,
     members,
@@ -185,17 +187,6 @@ class AtNode:
 
 
 @dataclass(frozen=True)
-class Element:
-    """One element of an eager stream, or one sample of a source (§5): the node
-    that committed it, the value's seq, and its body's ``value`` and ``t``."""
-
-    node: int
-    seq: int
-    value: Any
-    t: float | None
-
-
-@dataclass(frozen=True)
 class Complete:
     """``prefix``'s first ``n`` elements, at the head ``node`` it evaluated. Only
     this outcome has ``elements`` (§5): on the union, ``.elements`` is a type
@@ -263,7 +254,7 @@ def prefix(
     if n == 0:
         return Complete((), h.node)
     walked = walk(ch, h.node)
-    found = tuple(_element(walked, at, s) for at, s in members(walked, stream)[:n])
+    found = tuple(element(walked, at, s) for at, s in members(walked, stream)[:n])
     if len(found) == n:
         return Complete(found, h.node)
     if h.settled:
@@ -275,7 +266,7 @@ def series(ch: Channel, stream: str, *, head: HeadStrategy) -> list[Element]:
     """One eager stream's elements in lineage order (§5). It reads every
     element's body, so a malformed one raises."""
     walked = walk(ch, head.resolve(ch).node)
-    return [_element(walked, at, s) for at, s in members(walked, stream)]
+    return [element(walked, at, s) for at, s in members(walked, stream)]
 
 
 def last_element(ch: Channel, stream: str, *, head: HeadStrategy) -> Element | None:
@@ -287,7 +278,7 @@ def last_element(ch: Channel, stream: str, *, head: HeadStrategy) -> Element | N
     if not found:
         return None
     at, s = found[-1]
-    return _element(walked, at, s)
+    return element(walked, at, s)
 
 
 def aligned(
@@ -309,7 +300,7 @@ def aligned(
         for s in at.node.committed:
             name = value_record(walked, at, s).name
             if name is not None and name in wanted:
-                cells[name].append(_element(walked, at, s))
+                cells[name].append(element(walked, at, s))
         if any(cells.values()):
             frozen = {n: tuple(v) for n, v in cells.items()}
             rows.append(AlignedRow(x, at.env.seq, MappingProxyType(frozen)))
@@ -344,7 +335,7 @@ def answers(ch: Channel, request_id: str, *, head: HeadStrategy) -> list[Element
             raise _not_one_sample(
                 at.env.seq, at.env.topic, request_id, target, len(samples)
             )
-        out.append(_element(walked, at, samples[0]))
+        out.append(element(walked, at, samples[0]))
     return out
 
 
@@ -588,7 +579,7 @@ def peek_terminal(ch: Channel) -> RunResult | None:
     not a record from a dead past, so the read refuses to guess rather than skip
     it."""
     w = ch.last_seq()
-    claim = _newest(ch, Topic.LIFECYCLE_STARTED, w)
+    claim = newest_claim(ch, w=w)
     if claim is None:
         return _launch_end(ch, w)
     return claim_verdict(ch, claim, w=w)
@@ -613,7 +604,7 @@ def live_episode(ch: Channel) -> str | None:
     read stays pure and a death is a record every reader agrees on. An unreadable
     claim raises ``MalformedRecordError``: the gate refuses to guess."""
     w = ch.last_seq()
-    claim = _newest(ch, Topic.LIFECYCLE_STARTED, w)
+    claim = newest_claim(ch, w=w)
     if claim is None or claim_verdict(ch, claim, w=w) is not None:
         return None
     return verdict_parse(Started, claim).handle
@@ -1097,13 +1088,21 @@ class HeadFold:
         self._head = _ClaimHead()
 
     def poll(self, ch: Channel) -> Head:
-        w = ch.last_seq()
+        """The head at a W this poll takes: ``poll_at`` at ``ch.last_seq()``."""
+        return self.poll_at(ch, w=ch.last_seq())
+
+    def poll_at(self, ch: Channel, *, w: int) -> Head:
+        """The head at the caller's ``w``, a W it took first, so every other read of
+        its poll agrees with the head. A held fold only reads forward: a ``w`` below
+        what it has read raises ``ValueError``."""
+        if w < self._cursor:
+            raise ValueError(f"w={w} is below the fold's cursor {self._cursor}")
 
         def read_at(seq: int) -> Envelope | None:
             return point(ch, seq, w=w)
 
         if self._head.claim is None and w > self._cursor:
-            claim = _newest(ch, Topic.LIFECYCLE_STARTED, w)
+            claim = newest_claim(ch, w=w)
             if claim is None:
                 self._cursor = w  # nothing claimed: no record below w is the head's
             else:
@@ -1546,6 +1545,13 @@ def _newest(ch: Channel, topic: Topic, w: int) -> Envelope | None:
     return below[-1] if below else None
 
 
+def newest_claim(ch: Channel, *, w: int) -> Envelope | None:
+    """The newest claim at or below ``w``, the caller's W: the one way every read of
+    the newest claim finds it (``peek_terminal``, the head, the Watcher's observed
+    run, ``await_consumed``), so they agree on it at one W."""
+    return _newest(ch, Topic.LIFECYCLE_STARTED, w)
+
+
 # ----- the head fold ----------------------------------------------------------------
 
 
@@ -1556,7 +1562,7 @@ def _latest_claim_head(ch: Channel, w: int) -> Head:
     the claim is a Markov boundary for its own position, so a malformed record
     from a dead past cannot poison it."""
     head = _ClaimHead()
-    claim = _newest(ch, Topic.LIFECYCLE_STARTED, w)
+    claim = newest_claim(ch, w=w)
     if claim is not None:
 
         def read_at(seq: int) -> Envelope | None:
@@ -1722,12 +1728,6 @@ def _axis(walked: Walked, axis: str | Commits) -> list[int]:
         running += n
         out.append(running)
     return out
-
-
-def _element(walked: Walked, at: At, seq: int) -> Element:
-    """The element at value ``seq``, its body read: a malformed one raises."""
-    v = verdict_parse(Value, walked.records[seq])
-    return Element(node=at.env.seq, seq=seq, value=v.value, t=v.t)
 
 
 def _subscription_target(ch: Channel, request_id: str, w: int) -> str | None:

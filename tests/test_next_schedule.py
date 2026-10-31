@@ -32,7 +32,7 @@ from runstate._next.vocabulary.schedule import (
     is_lease,
     parse_schedule,
     parse_stop_trigger,
-    references_time,
+    needs_epoch,
     satisfied,
     unsatisfiable,
 )
@@ -586,7 +586,8 @@ def test_a_subscriptions_registration_is_read_only():
 def test_a_lease_is_a_schedule_with_a_time_or_count_atom():
     """§3: a schedule with any ``time_seconds`` or ``count`` atom is a lease; one
     whose atoms are all ``{stream, n}`` or ``{commits: n}`` is durable. Only a
-    time atom references time."""
+    time atom in ``from`` or ``until`` needs an epoch: ``every``'s counts from its
+    last firing."""
     leases = [
         {"from": {"time_seconds": 5}},
         {"every": {"any": [{"commits": 10}, {"time_seconds": 60}]}},
@@ -604,10 +605,12 @@ def test_a_lease_is_a_schedule_with_a_time_or_count_atom():
     for body in durables:
         assert not is_lease(sched(body))
         assert not sub(body).lease
-    assert references_time(sched(leases[0])) and references_time(sched(leases[1]))
-    assert not references_time(sched(leases[2]))
-    assert not references_time(sched(leases[3]))
-    assert not any(references_time(sched(b)) for b in durables)
+    assert needs_epoch(sched(leases[0]))
+    assert needs_epoch(sched({"until": {"all": [{"commits": 3}, {"time_seconds": 1}]}}))
+    assert not needs_epoch(sched(leases[1]))  # an every time atom
+    assert not needs_epoch(sched(leases[2]))
+    assert not needs_epoch(sched(leases[3]))
+    assert not any(needs_epoch(sched(b)) for b in durables)
 
 
 def test_a_logged_body_that_does_not_parse_is_no_lease():

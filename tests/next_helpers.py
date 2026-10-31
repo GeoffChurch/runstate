@@ -1,7 +1,29 @@
 """Test helpers the staged 0.4.0 tests (``tests/test_next_*.py``) share."""
 
+import time
+
 from runstate._next.claims import CAS_ATTEMPTS
+from runstate._next.launcher import ThreadTarget
 from runstate.channel import Channel
+
+
+def thread(fn, *args, **kwargs):
+    """A ``ThreadLauncher`` target running ``fn(channel, *args, **kwargs)``."""
+    return ThreadTarget(fn, args=args, kwargs=kwargs)
+
+
+def bounded_sleep(budget=30.0):
+    """A ``sleep`` hook that sleeps, and fails once ``budget`` seconds in all have
+    been asked for, so a test whose wait never ends fails rather than hangs CI."""
+    slept = [0.0]
+
+    def sleep(seconds):
+        slept[0] += seconds
+        if slept[0] > budget:
+            raise AssertionError(f"waited over {budget}s in all")
+        time.sleep(seconds)
+
+    return sleep
 
 
 class Wrapping(Channel):
