@@ -8,8 +8,9 @@ is the cache key (the run_id recipe). In-process via ThreadLauncher + the
 memory backend, so the whole demo is self-contained.
 
 The worker checkpoints by the recipe (commits-and-lineage.md §6): the Worker
-saves right after each node lands, when the state is exactly what the node
-commits; the next claim chooses a checkpoint on the head's lineage, claims
+saves in two phases, writing the state just before each node is written, when it
+is exactly what the node commits, and naming the file by the node once it has
+landed; the next claim chooses a checkpoint on the head's lineage, claims
 from it, loads it, and asserts the two agree.
 """
 
@@ -18,6 +19,7 @@ import json
 import math
 import os
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,27 +35,42 @@ class Checkpoint:
     path: Path
 
     def load(self) -> dict[str, float | int]:
+        """The state, and the node the file it was read from is named by."""
         state: dict[str, float | int] = json.loads(self.path.read_text())
-        return state
+        return {**state, "node": node_of(self.path)}
+
+
+def node_of(path: Path) -> int:
+    """The node a checkpoint file is named by: ``<rid>.<node>.json``."""
+    return int(path.name.split(".")[1])
 
 
 def saved(ckpt_dir: Path, rid: str) -> list[Checkpoint]:
     """The store's listing: every checkpoint of the run, by its file name."""
-    return [
-        Checkpoint(int(p.name.split(".")[1]), p) for p in ckpt_dir.glob(f"{rid}.*.json")
-    ]
+    return [Checkpoint(node_of(p), p) for p in ckpt_dir.glob(f"{rid}.*.json")]
 
 
-def write(path: Path, payload: dict[str, float | int]) -> None:
-    """Publish ATOMICALLY: temp file, then ``os.replace`` into position.
+def write(
+    ckpt_dir: Path, rid: str, payload: dict[str, float | int]
+) -> Callable[[int], None]:
+    """Save in two phases (commits-and-lineage.md §6): write the bytes now, to a temp
+    file in the store that no listing matches, and return the bind, which
+    ``os.replace``s it to ``<rid>.<node>.json`` once the node has landed.
 
-    ``write_text`` truncates before it fills, so mid-write the file exists and is
-    EMPTY: a worker that dies there leaves a checkpoint the resume cannot parse.
-    ``os.replace`` is atomic within a directory: readers see a whole file or none.
+    ``write_text`` in place truncates before it fills, so mid-write the file exists
+    and is EMPTY: a worker that died there would leave a checkpoint the resume cannot
+    parse. Here a death before the bind leaves only a temp file nothing names, and
+    ``os.replace`` is atomic within a directory: readers see a whole checkpoint or
+    none.
     """
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload))
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(dir=ckpt_dir, prefix=f".{rid}.", suffix=".tmp")
+    with os.fdopen(fd, "w") as f:
+        json.dump(payload, f)
+
+    def bind(node: int) -> None:
+        os.replace(tmp, ckpt_dir / f"{rid}.{node}.json")
+
+    return bind
 
 
 def run_id(inputs: dict[str, float]) -> str:
@@ -80,8 +97,8 @@ def train(
     )
     state = {"loss": 5.0}
 
-    def save(node: int) -> None:  # called by the Worker, right after `node` lands
-        write(store / f"{run_id}.{node}.json", {"node": node, "loss": state["loss"]})
+    def save() -> Callable[[int], None]:  # called by the Worker before each node
+        return write(store, run_id, {"loss": state["loss"]})
 
     with runstate.Worker(
         channel, resume_from=chosen, sources=[], save=runstate.Every(1, save)

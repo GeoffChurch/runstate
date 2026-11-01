@@ -19,8 +19,9 @@ the exit is not torn. A variant that emits before the wait calls
 ``w.discard()`` on the way out instead.
 
 Resumable by the checkpoint recipe (commits-and-lineage.md §6): the Worker saves
-right after each node lands, when ``params`` is exactly the state the node
-commits; a resume chooses the newest checkpoint on the head's lineage, claims
+in two phases, writing ``params`` just before each node is written, when it is
+exactly the state the node commits, and naming the file by the node once it has
+landed; a resume chooses the newest checkpoint on the head's lineage, claims
 from it, loads it, and asserts the two agree. The position is the log's, so
 ``steps()`` needs no start index. Budget exhaustion deliberately claims nothing:
 the run_id excludes the budget (the extend axis), so "did what was asked" is a
@@ -34,7 +35,9 @@ import json
 import math
 import os
 import random
+import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -46,6 +49,11 @@ import vqe
 A_GAIN, C_GAIN, STABILITY, ALPHA, GAMMA = 2.0, 0.2, 8.0, 0.602, 0.101
 
 
+def node_of(path: Path) -> int:
+    """The node a checkpoint file is named by: ``<rid>.<node>.ckpt.json``."""
+    return int(path.name.split(".")[1])
+
+
 @dataclass(frozen=True)
 class Checkpoint:
     """One saved state: its node (so it is a ``NodeRef``) and its file."""
@@ -54,21 +62,30 @@ class Checkpoint:
     path: Path
 
     def load(self) -> dict[str, Any]:
+        """The state, and the node the file it was read from is named by."""
         state: dict[str, Any] = json.loads(self.path.read_text())
-        return state
+        return {**state, "node": node_of(self.path)}
 
 
-def write(path: Path, payload: dict[str, Any]) -> None:
-    """Publish ATOMICALLY: temp file, then ``os.replace`` into position.
+def write(store: Path, rid: str, payload: dict[str, Any]) -> Callable[[int], None]:
+    """Save in two phases (commits-and-lineage.md §6): write the bytes now, to a temp
+    file in the store that no listing matches, and return the bind, which
+    ``os.replace``s it to ``<rid>.<node>.ckpt.json`` once the node has landed.
 
-    ``write_text`` truncates before it fills, so mid-write the file exists and is EMPTY.
-    This worker can be preempted between QPU polls, and losing the params to a torn
-    write costs the whole optimisation run, not just one iteration. ``os.replace`` is
-    atomic within a directory: a resume reads a whole file or none.
+    ``write_text`` in place truncates before it fills, so mid-write the file exists
+    and is EMPTY. This worker can be preempted between QPU polls, and losing the
+    params to a torn write costs the whole optimisation run, not just one iteration.
+    Here a death before the bind leaves only a temp file nothing names, and
+    ``os.replace`` is atomic within a directory: a resume reads a whole file or none.
     """
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload))
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(dir=store, prefix=f".{rid}.", suffix=".tmp")
+    with os.fdopen(fd, "w") as f:
+        json.dump(payload, f)
+
+    def bind(node: int) -> None:
+        os.replace(tmp, store / f"{rid}.{node}.ckpt.json")
+
+    return bind
 
 
 def perturbation(seed: int, k: int, n: int) -> list[float]:
@@ -117,10 +134,7 @@ def main() -> None:
     # The checkpoints live next to the channel, keyed by the run and the node.
     store = Path(os.environ["RUNSTATE_CHANNEL_ROOT"])
     rid = os.environ["RUNSTATE_RUN_ID"]
-    candidates = [
-        Checkpoint(int(p.name.split(".")[1]), p)
-        for p in store.glob(f"{rid}.*.ckpt.json")
-    ]
+    candidates = [Checkpoint(node_of(p), p) for p in store.glob(f"{rid}.*.ckpt.json")]
     # Choose before claiming: the newest checkpoint on the head's lineage.
     chosen = runstate.OnHeadLineage().choose(
         ch, candidates, head=runstate.LatestClaimHead()
@@ -128,8 +142,8 @@ def main() -> None:
     rng = random.Random(cfg["seed"])
     params = [rng.uniform(-math.pi, math.pi) for _ in range(2)]  # a fresh start's
 
-    def save(node: int) -> None:  # the Worker calls it right after `node` lands
-        write(store / f"{rid}.{node}.ckpt.json", {"node": node, "params": params})
+    def save() -> Callable[[int], None]:  # just before a node is written
+        return write(store, rid, {"params": params})
 
     with runstate.Worker(
         ch,

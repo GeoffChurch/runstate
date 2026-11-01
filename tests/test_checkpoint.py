@@ -1,6 +1,7 @@
 """The checkpoint recipe, staged (docs/specs/commits-and-lineage.md §6; plan Task 13):
-the save policies, which the Worker calls at the two moments it chooses, and the
-choice strategies, which pick a complete checkpoint to resume from.
+the save policies, which the Worker prepares before and binds after the two kinds of
+node it chooses, and the choice strategies, which pick a complete checkpoint to
+resume from.
 
 The checkpoints here are a caller's own objects, ``Ckpt``, holding ``node`` and
 the state the node commits: the iteration count of a toy training loop. The
@@ -33,25 +34,31 @@ class Ckpt:
 
 
 class Store:
-    """A checkpoint store: one location, written by the save policy's ``fn`` with
-    the training loop's state at the moment it is called."""
+    """A checkpoint store: ``write``, the save policy's, holds the training loop's
+    state at the moment it is called, unnamed, and its bind names it by the node."""
 
     def __init__(self):
         self.iterations = 0
         self.saved: list[Ckpt] = []
 
-    def save(self, node):
-        self.saved.append(Ckpt(node, self.iterations))
+    def write(self):
+        iterations = self.iterations
+
+        def bind(node):
+            self.saved.append(Ckpt(node, iterations))
+
+        return bind
 
 
 class Recording:
-    """A caller's own ``SavePolicy``: it records every moment it is called at."""
+    """A caller's own ``SavePolicy``: it records every prepare and every bind."""
 
     def __init__(self):
         self.calls = []
 
-    def after(self, node, *, commits, exit):
-        self.calls.append((node, commits, exit))
+    def prepare(self, *, commits, exit):
+        self.calls.append(("prepare", commits, exit))
+        return lambda node: self.calls.append(("bind", node))
 
 
 def commits_at(ch, node):
@@ -75,7 +82,7 @@ def train(ch, store, *, resume_from, until, save):
 
 def test_every_k_counts_commits_and_saves_at_every_extendable_exit(open_run):
     ch, store = open_run(), Store()
-    save = Every(3, store.save)
+    save = Every(3, store.write)
     train(ch, store, resume_from=None, until=Target(Commits(), 7), save=save)
     exit_ = ch.latest(Topic.LIFECYCLE_STOPPED).seq
     assert [commits_at(ch, c.node) for c in store.saved] == [3, 6, 7]
@@ -96,9 +103,9 @@ def test_every_k_counts_commits_and_saves_at_every_extendable_exit(open_run):
 
 
 def test_a_callers_save_policy_is_called_at_each_moment_and_nowhere_else(open_run):
-    """Immediately after each commit lands, and after an extendable exit lands:
-    never at a heartbeat, a rewind, a value, a lost exit CAS's retry, a torn or a
-    closed exit, or by a released worker."""
+    """Prepared before each commit and before an extendable exit, and bound to each
+    once it lands: never at a heartbeat, a rewind, a value, a lost exit CAS's retry,
+    a torn or a closed exit; and a released worker prepares nothing."""
     obs = open_run()
     ip = Interloping(open_run(), obs)
     policy = Recording()
@@ -114,7 +121,14 @@ def test_a_callers_save_policy_is_called_at_each_moment_and_nowhere_else(open_ru
     w.stopped(completed=False, error=None)  # its first CAS loses
     exit_ = obs.latest(Topic.LIFECYCLE_STOPPED).seq
     assert ip.fired
-    assert policy.calls == [(c1, 1, False), (c2, 2, False), (exit_, 2, True)]
+    assert policy.calls == [
+        ("prepare", 1, False),
+        ("bind", c1),
+        ("prepare", 2, False),
+        ("bind", c2),
+        ("prepare", 2, True),
+        ("bind", exit_),
+    ]
     for leave in ("discard", "error", "release", "complete"):
         policy.calls.clear()
         with pytest.raises(RuntimeError) if leave == "error" else nullcontext():
@@ -136,7 +150,7 @@ def test_the_save_policy_names_the_right_node(open_run):
     ``count(Commits(), node)`` is the state's iteration count, through a resume and
     a rewind to a checkpoint."""
     ch, store = open_run(), Store()
-    save = Every(2, store.save)
+    save = Every(2, store.write)
     train(ch, store, resume_from=None, until=Target(Commits(), 5), save=save)
     train(
         open_run(),
@@ -167,7 +181,7 @@ def history(open_run):
     commit emits one ``loss``, so the counts are 1, 2, 3 on the abandoned branch,
     and 1, 2 on the head's."""
     ch, store = open_run(), Store()
-    w = worker(ch, save=Every(1, store.save))
+    w = worker(ch, save=Every(1, store.write))
     for _ in range(3):
         store.iterations += 1
         w.emit("loss", 0.0)
@@ -223,7 +237,7 @@ def test_both_choice_policies_select_only_complete_checkpoints(open_run, choice)
     and values need not be readable there. Both strategies pass over it, however
     much progress it holds."""
     ch, store = open_run(), Store()
-    w = worker(ch, save=Every(1, store.save))
+    w = worker(ch, save=Every(1, store.write))
     for _ in range(2):
         w.emit("loss", 0.0)
         w.commit()

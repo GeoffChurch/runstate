@@ -4,18 +4,32 @@
 A RECIPE, NOT PROTOCOL. runstate supplies no directory and owns no checkpoint
 store: whether a node has a checkpoint is the store's fact, never the log's.
 
-THE WORKER FIXES *WHEN*, THE POLICY DECIDES *WHETHER*. The Worker calls
-``SavePolicy.after`` at exactly two moments: immediately after a commit lands, and
-immediately after an extendable exit lands, when the process's state is exactly the
-state the node commits. It never calls it after a torn exit, whose state is part of
-an iteration ahead of its parent, nor after a closed one. So no policy can save at
-a wrong moment, and no checkpoint names a node whose state it does not hold: no
-lineage lie can be written (§6).
+THE WORKER FIXES *WHEN* AND IN WHAT ORDER, THE POLICY DECIDES *WHETHER* AND
+*HOW*. The Worker calls ``SavePolicy.prepare`` at exactly two moments: immediately
+before a commit is written, and immediately before an extendable exit is written,
+when the process's state is exactly the state the node commits. It never calls it
+for a torn exit, whose state is part of an iteration ahead of its parent, nor for a
+closed one. So no policy can save at a wrong moment, and no checkpoint names a node
+whose state it does not hold: no lineage lie can be written (§6).
 
-A SAVE THAT RAISES PROPAGATES, and the node it followed stands (§6, amended
-2026-10-30): out of ``commit()``, which ends the claim with an errored, torn exit
-whose ``parent`` is that node; or out of the exit, which stands with its own
-verdict. Nothing records the failed save.
+THE SAVE IS IN TWO PHASES, THE DATA BEFORE THE RECORD THAT PUBLISHES IT (§6, "Save
+in two phases", amended 2026-10-31, #62). ``prepare`` writes the checkpoint's bytes
+where no reader looks for them, the slow part, and returns the **bind**; the Worker
+writes the node, and once it lands calls the bind with the node's seq, which names
+the bytes by it, as by an atomic rename. At an exit, which also ends the claim, only
+the bind's moment lies between the exit and its checkpoint, and an exit's lost CAS
+retries with the bytes already prepared: the Worker prepares once per node. Bytes a
+crash, a release or a retire that turns to serving leaves unbound are never named,
+and the policy's own store may sweep them.
+
+A SAVE THAT RAISES PROPAGATES (§6, "A save that raises"). A prepare that raises
+comes before its node is written, so the log records it as the claim's end: at a
+commit, ``commit()`` raises before its node lands, which tears the iteration; at an
+extendable exit, the exit becomes an error exit, torn, its ``error`` the failure. A
+bind that raises comes after its node landed, so the node stands: out of
+``commit()``, which ends the claim with an errored, torn exit whose ``parent`` is
+that node; or out of the exit, which stands with its own verdict. Nothing records a
+checkpoint.
 
 CHOOSING IS A STRATEGY, OVER THE CALLER'S OWN CHECKPOINTS. ``CheckpointChoice``
 picks one of the candidates the caller lists from its store, and returns that very
@@ -40,15 +54,19 @@ from .observables import HeadStrategy, PrefixLen
 from .vocabulary.coordinate import NodeRef
 from .walk import walk
 
+Bind = Callable[[int], None]
+"""Names a prepared checkpoint by its node's seq, once the node has landed."""
+
 
 class SavePolicy(Protocol):
-    """Whether to save at a moment the Worker chose (§6): ``node`` is the seq of
-    the node that just landed, ``commits`` its ``count(Commits(), node)``, and
-    ``exit`` True when it is an extendable exit rather than a commit."""
+    """Whether and how to save at a moment the Worker chose (§6), called before the
+    node is written: ``commits`` is the node's ``count(Commits(), node)``, and
+    ``exit`` True when it is an extendable exit rather than a commit. It returns the
+    bind, having written the checkpoint's bytes, or ``None`` for no save here."""
 
     # ``exit`` shadows the builtin, kept since it is the spec's keyword (§6:
-    # ``after(node, *, commits, exit)``).
-    def after(self, node: int, *, commits: int, exit: bool) -> None: ...
+    # ``prepare(*, commits, exit)``).
+    def prepare(self, *, commits: int, exit: bool) -> Bind | None: ...
 
 
 @dataclass(frozen=True)
@@ -56,27 +74,30 @@ class NoSave:
     """Never saves. Passed explicitly, since a chunked run without checkpoints
     restarts at the root every claim (§6)."""
 
-    def after(self, node: int, *, commits: int, exit: bool) -> None:
+    def prepare(self, *, commits: int, exit: bool) -> Bind | None:
         return None
 
 
 @dataclass(frozen=True)
 class Every:
-    """Calls ``fn(node)`` at each commit whose ``commits`` is a multiple of ``k``,
+    """Calls ``write()`` at each commit whose ``commits`` is a multiple of ``k``,
     and at every extendable exit (§6), so a preempted chunk always leaves a
-    checkpoint of where it stopped. ``k >= 1``, checked once here."""
+    checkpoint of where it stopped. ``write`` writes the checkpoint's bytes and
+    returns the bind that names them by the node's seq. ``k >= 1``, checked once
+    here."""
 
     k: int
-    fn: Callable[[int], None]
+    write: Callable[[], Bind]
 
     def __post_init__(self) -> None:
         k = self.k
         if not (isinstance(k, int) and not isinstance(k, bool) and k >= 1):
             raise ValueError(f"k must be an integer >= 1, got {k!r}")
 
-    def after(self, node: int, *, commits: int, exit: bool) -> None:
+    def prepare(self, *, commits: int, exit: bool) -> Bind | None:
         if exit or commits % self.k == 0:
-            self.fn(node)
+            return self.write()
+        return None
 
 
 # ----- choosing a checkpoint (§6, "Choosing a checkpoint") --------------------------
@@ -154,6 +175,11 @@ class MostProgress:
 
 
 if TYPE_CHECKING:
+
+    def _save_proof(none: NoSave, every: Every) -> list[SavePolicy]:
+        """Checked by ``mypy --strict runstate``, never run: it fails when a save
+        policy stops satisfying ``SavePolicy``."""
+        return [none, every]
 
     def _proof(on: OnHeadLineage, most: MostProgress) -> list[CheckpointChoice]:
         """Checked by ``mypy --strict runstate``, never run: it fails when a choice

@@ -80,7 +80,7 @@ from typing import Literal, NamedTuple, Protocol, Self, assert_never
 from .channel import Channel, Envelope
 from .vocabulary.handle import local_handle
 from .vocabulary.launch import current_launch_id
-from .checkpoint import SavePolicy
+from .checkpoint import Bind, SavePolicy
 from .claims import (
     CAS_ATTEMPTS,
     Bindings,
@@ -332,11 +332,9 @@ class _Position:
 
 
 class _Landed(NamedTuple):
-    """An exit that landed: its seq, and whether it is extendable, so the save
-    policy runs after it."""
+    """An exit that landed: its seq, which its prepared checkpoint is bound to."""
 
     seq: int
-    extendable: bool
 
 
 class _Unwritten(Enum):
@@ -456,17 +454,21 @@ _NOTHING = _Evaluation(fired=[], expired=[], sources=[])
 
 
 class _ExitNode(NamedTuple):
-    """What step 4 of the exit writes, decided by steps 1 to 3 (§4, "The exit"),
+    """What step 5 of the exit writes, decided by steps 1 to 4 (§4, "The exit"),
     held so that a lost CAS, or the retry of an exit that starved, writes it again
-    without evaluating again: its verdict, its ``values`` (null when it discards
-    its iteration), and its evaluation; and ``failure``, step 3's, which
-    propagates once the exit has landed, or as the cause of its starving."""
+    without evaluating or preparing again: its verdict, its ``values`` (null when
+    it discards its iteration), and its evaluation; ``failure``, step 3's or step
+    4's, which propagates once the exit has landed, or as the cause of its
+    starving; and ``bind``, step 4's prepared checkpoint, if the exit is extendable
+    and the policy saves there, which step 6 binds to the exit's seq once it has
+    landed (§6, "Save in two phases")."""
 
     completed: bool
     error: str | None
     values: list[int] | None
     evaluation: _Evaluation
     failure: Exception | None
+    bind: Bind | None
 
 
 @dataclass(frozen=True)
@@ -910,8 +912,8 @@ class Worker:
     - ``sources`` are the names the worker exposes to be sampled on demand
       (``set``); every other name is an eager stream (``emit``). ``[]`` declares
       none.
-    - ``save`` is the checkpoint save policy (§6), run after each node the
-      recipe saves at.
+    - ``save`` is the checkpoint save policy (§6): prepared just before each node
+      the recipe saves at is written, and bound to its seq once it has landed.
     - ``now`` is the clock every record's ``t`` reads. Exempt from the rule that a
       result-changing parameter has no default (plan, "Exempt defaults"): it is
       the clock source, which tests freeze.
@@ -1245,19 +1247,20 @@ class Worker:
         the node being written; write one sample per source whose subscriptions
         fired; write one ``lifecycle.commit`` extending the position, committing
         the pending values in the order they were added, then the samples, and
-        naming what fired and expired; run the save policy once it has landed
-        (§6); return the stop decision. The clock is read once, for the drain, the
-        evaluations, the samples and the node's ``t``.
+        naming what fired and expired, the save policy's checkpoint prepared just
+        before it and bound to its seq once it has landed (§6, "Save in two
+        phases"); return the stop decision. The clock is read once, for the drain,
+        the evaluations, the samples and the node's ``t``.
 
         **A commit that raises before its node lands tears the iteration** (§4,
         amended 2026-10-30), as ``discard()`` does: a sample that cannot be written
-        (it raises, as ``emit`` does), or a node send that raises, whose outcome
-        may be unknown. The evaluation has already counted the firings, so the
-        iteration cannot continue: the worker's calls then behave as after
-        ``discard()``, its exit is torn, and the samples already written stay
-        outside every lineage. A save that raises propagates, and the node stands
-        (§6): the worker is as it was, and a claim the raise ends has an exit,
-        errored and torn, that names that node as its ``parent``."""
+        (it raises, as ``emit`` does), a prepare that raises, or a node send that
+        raises, whose outcome may be unknown. The evaluation has already counted
+        the firings, so the iteration cannot continue: the worker's calls then
+        behave as after ``discard()``, its exit is torn, and the samples already
+        written stay outside every lineage. A bind that raises propagates, and the
+        node stands (§6): the worker is as it was, and a claim the raise ends has
+        an exit, errored and torn, that names that node as its ``parent``."""
         if not self._phase.iterates:
             return True  # writes nothing
         now = self._now()
@@ -1268,6 +1271,7 @@ class Worker:
         try:  # from the firing to the node
             evaluation = self._evaluate(at, now)
             values = [*self._pending(), *self._samples(evaluation, now)]
+            bind = self._save.prepare(commits=at.commits, exit=False)
             body = Commit(
                 claim_seq=self._claim.seq,
                 consumed_seq=self._drained.watermark,
@@ -1287,7 +1291,8 @@ class Worker:
         self._position.lineage.extend(node)
         self._requests.subscriptions.node_landed(evaluation, self._position.lineage)
         self._iteration.pending = []
-        self._save.after(seq, commits=at.commits, exit=False)
+        if bind is not None:
+            bind(seq)  # outside the tear: the node stands
         return decision
 
     def _evaluate(self, at: Coordinates, now: float) -> _Evaluation:
@@ -1497,37 +1502,45 @@ class Worker:
         3. write their samples once. A failure while writing them makes the exit an
            error exit, torn, with the failure as its ``error``; the samples already
            written stay outside every lineage, and the failure propagates once the
-           exit has landed, as a save's does (§4, "The exit", step 3; §6);
-        4. read W again, drain as in step 1, and compare-and-append ``stopped`` at
+           exit has landed (§4, "The exit", step 3);
+        4. if the exit is extendable, prepare the save policy's checkpoint, once
+           (§6, "Save in two phases"). A prepare that raises makes the exit an error
+           exit, torn, with the failure as its ``error``, and the failure propagates
+           once the exit has landed, as a sample's does;
+        5. read W again, drain as in step 1, and compare-and-append ``stopped`` at
            the drain's tail, with ``parent`` the position, ``values`` the pending
            values then the samples, or null when the exit discards its iteration,
            ``fired`` and ``expired`` step 2's, and ``honored`` every stop that held
            during the claim and every stop pending now, a set whose order means
-           nothing (§3). A lost CAS repeats this step only: it does not evaluate
-           again, and a stop first drained here is honored;
-        5. if the exit is extendable, run the save policy (§6).
+           nothing (§3). A lost CAS repeats this step only: it does not evaluate or
+           prepare again, and a stop first drained here is honored;
+        6. bind the prepared checkpoint to the exit's seq.
 
         ``completed`` is the worker's claim of intrinsic completion, which closes
         the lineage; a completed exit carries no ``error`` (``ValueError``, checked
         first). A second call does nothing, and so does a lost or released
         worker's.
 
-        After ``CAS_ATTEMPTS`` lost CASes in a row, step 4 raises
+        After ``CAS_ATTEMPTS`` lost CASes in a row, step 5 raises
         ``WorkerStarvedError``, out of ``stopped()`` and so out of ``__exit__``: no
         exit was written, the claim is still held, and a death report is what ends
         it (§4, "An exit that starves"). Every call but ``stopped()`` is then
         fenced, writing nothing and returning as a stopped worker's does, since the
         exit's drains passed over requests, a subscribe among them, that no
-        watermark of the claim may claim. A retried ``stopped()`` repeats step 4 of
-        the exit that starved, as a lost CAS does: it does not evaluate again, its
-        samples being on the log already, and it writes that exit's verdict and
-        ``values``, whatever its own arguments say.
+        watermark of the claim may claim. A retried ``stopped()`` repeats steps 5
+        and 6 of the exit that starved, as a lost CAS does: it does not evaluate or
+        prepare again, its samples being on the log already and its checkpoint
+        prepared, and it writes that exit's verdict and ``values``, whatever its own
+        arguments say.
 
-        A save that raises propagates (§6, "A save that raises"). The exit has
+        A bind that raises propagates (§6, "A save that raises"). The exit has
         landed and stands with its own verdict, and the worker is stopped, so
         nothing more is written: the failure is the process's, on the external
-        plane. The save is never run before the CAS, which would name a seq the exit
-        may not get."""
+        plane. A worker released at step 5 writes no exit, and so binds nothing:
+        its prepared bytes stay unnamed, and the policy's own store may sweep them,
+        as it may a crash's. So may a retire's whose step 5 finds a live
+        subscription, since that worker serves on and prepares afresh at its next
+        node."""
         if completed and error is not None:
             raise ValueError("a completed exit carries no error")
         self._exit(completed=completed, error=error, mode=_Mode.EXIT)
@@ -1557,9 +1570,9 @@ class Worker:
         ``retire()`` ``ITERATION``'s, whose registrations make it return False,
         having written no exit, when a subscription is live after a drain. True
         once the exit has landed, or when there is nothing to write. A starved
-        exit's retry repeats step 4 only, in ``EXIT`` mode, since only
-        ``stopped()`` retries it, and its sample failure, if any, then propagates
-        as the first attempt's would have."""
+        exit's retry repeats steps 5 and 6 only, in ``EXIT`` mode, since only
+        ``stopped()`` retries it: its failure, if any, then propagates as the first
+        attempt's would have, and its prepared checkpoint, if any, is bound."""
         if not self._phase.exits:
             return True
         if isinstance(self._phase, _Starved):
@@ -1572,12 +1585,15 @@ class Worker:
         landed = self._exit_cas(node, mode=mode)
         if node.failure is not None:
             raise node.failure  # once the exit has landed (§4, "The exit", step 3)
+        if node.bind is not None and isinstance(landed, _Landed):
+            node.bind(landed.seq)  # step 6, once the exit has landed (§6)
         return self._after(landed)
 
     def _exit_node(
         self, *, completed: bool, error: str | None, mode: _Mode
     ) -> _ExitNode | _Unwritten:
-        """Steps 1 to 3: the exit node to write, or why none is written."""
+        """Steps 1 to 4: the exit node to write, its checkpoint prepared if it is
+        extendable, or why none is written."""
         retiring = mode is _Mode.ITERATION
         discards = error is not None or self._phase is _Phase.DISCARDED
         if self._drain(mode, self._now()) is None:  # step 1
@@ -1586,11 +1602,15 @@ class Worker:
             return _Unwritten.SERVING
         evaluation, samples = _NOTHING, []
         failure: Exception | None = None
-        if not discards:  # steps 2 and 3, once
+        bind: Bind | None = None
+        if not discards:  # steps 2 to 4, once
             now = self._now()
             evaluation = self._evaluate(self._written(iterations=0), now)
             try:
                 samples = self._samples(evaluation, now)
+                if not completed:  # extendable: neither closed nor torn
+                    commits = self._position.lineage.tip.commits  # an exit adds none
+                    bind = self._save.prepare(commits=commits, exit=True)
             except Exception as exc:
                 failure = exc
                 completed, error, discards = False, _described(exc), True
@@ -1601,20 +1621,16 @@ class Worker:
             values=None if discards else [*self._pending(), *samples],
             evaluation=evaluation,
             failure=failure,
+            bind=bind,
         )
 
     def _after(self, landed: _Landed | _Unwritten) -> bool:
-        """Step 5, once step 4 has returned: the save policy after an extendable
-        exit (§6); whether the worker is done, False only when it serves."""
+        """Whether the worker is done, once the exit's steps have run: False only
+        when it serves."""
         match landed:
             case _Unwritten.SERVING:
                 return False
-            case _Unwritten.RELEASED:
-                return True
-            case _Landed(seq=seq, extendable=extendable):
-                if extendable:
-                    commits = self._position.lineage.tip.commits  # an exit adds none
-                    self._save.after(seq, commits=commits, exit=True)
+            case _Unwritten.RELEASED | _Landed():
                 return True
             case _:
                 assert_never(landed)
@@ -1623,7 +1639,7 @@ class Worker:
         return [p.seq for p in self._iteration.pending]
 
     def _exit_cas(self, node: _ExitNode, *, mode: _Mode) -> _Landed | _Unwritten:
-        """Step 4: drain in ``mode``, then compare-and-append ``node`` at the
+        """Step 5: drain in ``mode``, then compare-and-append ``node`` at the
         drain's tail, until it lands; the exit that landed, or why none was
         written. After ``CAS_ATTEMPTS`` lost CASes it holds ``node`` and fences the
         worker (``_Starved``) before it raises ``WorkerStarvedError``, caused by
@@ -1650,7 +1666,7 @@ class Worker:
             if seq is None:
                 continue  # a record landed unread: drain it, and try again
             self._phase = _Phase.STOPPED
-            return _Landed(seq=seq, extendable=body.extendable)
+            return _Landed(seq=seq)
         self._phase = _Starved(node)
         starved = WorkerStarvedError("exit", self._claim.seq, CAS_ATTEMPTS)
         if node.failure is not None:

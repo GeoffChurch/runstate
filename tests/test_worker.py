@@ -580,44 +580,96 @@ def test_json_default_coerces_an_emitted_value(tmp_path):
 
 
 class Recording:
-    """A save policy that records each call and the log's tail at that moment."""
+    """A save policy that records each prepare and each bind, with the log's tail
+    at that moment: ``("prepare", commits, exit, tail)`` and ``("bind", node,
+    tail)``."""
 
     def __init__(self, ch):
         self.ch = ch
         self.calls = []
 
-    def after(self, node, *, commits, exit):
-        self.calls.append((node, commits, exit, self.ch.last_seq()))
+    def prepare(self, *, commits, exit):
+        self.calls.append(("prepare", commits, exit, self.ch.last_seq()))
+        return lambda node: self.calls.append(("bind", node, self.ch.last_seq()))
 
 
-def test_the_save_policy_runs_after_each_commit_lands(open_run):
+def test_each_commit_prepares_before_its_node_is_written_and_binds_after_it_lands(
+    open_run,
+):
+    """§4, "commit()", steps 4 to 6; §6, "Save in two phases": the prepare runs
+    after the samples and before the node's write, when the node's seq does not yet
+    exist, and the bind once the node has landed, with its seq."""
     ch = open_run()
     save = Recording(open_run())
-    w = worker(ch, save=save)
+    w = worker(ch, sources=["x"], save=save)
+    ch.send(
+        {"every": {"commits": 1}},
+        topic=Topic.CONTROL_SUBSCRIBE,
+        name="x",
+        request_id="d",
+    )
+    w.set("x", 0.0)
     for i in range(3):
         w.emit("loss", float(i))
         w.commit()
     commits = [e.seq for e in ch.read(topics=[Topic.LIFECYCLE_COMMIT])]
-    # each call names the commit that just landed, the log's newest record then
-    assert save.calls == [(c, i + 1, False, c) for i, c in enumerate(commits)]
+    samples = [e.seq for e in ch.read(topics=[Topic.VALUE], name="x")]
+    # each prepare follows its node's sample, the log's newest record then, and
+    # each bind names the commit that just landed, the newest record then
+    assert save.calls == [
+        call
+        for i, (c, x) in enumerate(zip(commits, samples))
+        for call in (("prepare", i + 1, False, x), ("bind", c, c))
+    ]
 
     # the count is the node's count(Commits()), across a rewind and a resume
     w.rewind(AtNode(commits[0]))
     w.commit()
-    assert save.calls[-1][1] == 2
+    assert save.calls[-2][:3] == ("prepare", 2, False)
     end(ch, w)
     saved = []
-    w2 = worker(ch, resume_from=AtNode(commits[-1]), save=Every(2, saved.append))
+
+    def write():
+        return saved.append
+
+    w2 = worker(ch, resume_from=AtNode(commits[-1]), save=Every(2, write))
     w2.commit()  # the 4th iteration on its lineage: a multiple of 2
     w2.commit()
     assert saved == [ch.read(topics=[Topic.LIFECYCLE_COMMIT])[-2].seq]
 
 
+def test_every_prepares_at_its_cadence_and_at_every_extendable_exit():
+    """``Every(k, write)`` calls ``write()`` and returns its bind at each commit
+    whose count is a multiple of ``k`` and at every exit it is asked about;
+    ``NoSave`` never saves."""
+    binds = []
+
+    def write():
+        bind = binds.append
+        binds.append(None)  # the write ran
+        return bind
+
+    every = Every(3, write)
+    got = [every.prepare(commits=n, exit=False) for n in range(1, 8)]
+    assert [g is not None for g in got] == [n % 3 == 0 for n in range(1, 8)]
+    assert binds == [None, None]
+    assert every.prepare(commits=7, exit=True) is not None
+    assert len(binds) == 3
+    assert all(
+        NoSave().prepare(commits=n, exit=e) is None
+        for n in range(4)
+        for e in (False, True)
+    )
+
+
 def test_every_checks_its_k():
+    def write():
+        return print
+
     for k in (0, -1, True, 1.5):
         with pytest.raises(ValueError):
-            Every(k, print)
-    Every(1, print)
+            Every(k, write)
+    Every(1, write)
 
 
 # ----- the drain, stops and the heartbeat (§4, "A drain", "The stop decision") -----

@@ -15,6 +15,7 @@ import sys
 
 import pytest
 
+from runstate.checkpoint import Every, OnHeadLineage
 from runstate.claims import CAS_ATTEMPTS, endings
 from runstate.launcher import Command, LocalLauncher, report_death
 from runstate.observables import (
@@ -33,6 +34,8 @@ from runstate.walk import NodeKind, kind_at
 from runstate.worker import WorkerStarvedError
 from tests.live_helpers import Interloping, Wrapping
 from tests.test_death_reports import dead_handle
+from tests.test_checkpoint import Ckpt
+from tests.test_subscriptions import end as end_claim
 from tests.test_worker import (
     Clock,
     Recording,
@@ -446,18 +449,26 @@ def test_a_stop_no_exit_honored_rearms_on_the_next_claim(open_run):
     assert exits(ch)[0].body["honored"] == ["s1"]
 
 
-# ----- the save policy at the exit (§6, "Save") ---------------------------------------
+# ----- the save policy at the exit (§6, "Save", "Save in two phases") ---------------
 
 
-def test_the_save_policy_runs_after_an_extendable_exit_and_never_after_a_torn_or_closed_one(
+def test_an_extendable_exit_prepares_before_its_cas_and_binds_after_and_a_torn_or_closed_one_saves_nothing(
     open_run,
 ):
+    """§4, "The exit", steps 4 to 6: the prepare runs before the exit's CAS, when
+    its seq does not yet exist, and the bind once it has landed, with its seq. A
+    completed, an errored and a discarded exit prepare nothing."""
     ch = open_run()
     save = Recording(open_run())
     with worker(ch, save=save) as w:  # preempted: extendable
         w.commit()
     c, exit_ = ch.latest(Topic.LIFECYCLE_COMMIT).seq, exits(ch)[-1].seq
-    assert save.calls == [(c, 1, False, c), (exit_, 1, True, exit_)]
+    assert save.calls == [
+        ("prepare", 1, False, c - 1),
+        ("bind", c, c),
+        ("prepare", 1, True, c),
+        ("bind", exit_, exit_),
+    ]
 
     for end_kind in ("completed", "errored", "discarded"):
         save = Recording(open_run())
@@ -474,28 +485,115 @@ def test_the_save_policy_runs_after_an_extendable_exit_and_never_after_a_torn_or
         assert save.calls == [], end_kind
 
 
-def test_a_save_policy_that_raises_leaves_its_node_committed_and_the_exit_torn(
+def test_a_lost_exit_cas_prepares_once_and_binds_once_to_the_seq_it_finally_got(
     open_run,
 ):
-    """Review Focus 4, after a commit (§6, "A save that raises"): the raise leaves
-    ``commit()`` and ends the claim, so ``__exit__`` writes an errored, torn exit
-    whose ``parent`` is that node, which stays extendable."""
+    """§4, "The exit", step 5: a lost CAS drains again and retries with the
+    checkpoint already prepared, never preparing again, and the bind names the seq
+    the exit finally landed at, not the one its first CAS tried."""
+    obs = open_run()
+    ip = Interloping(open_run(), obs)
+    save = Recording(obs)
+    w = worker(ip, save=save)
+    ip.arm({"value": 0, "t": 0.0}, topic=Topic.VALUE, name="other", times=2)
+    tried, cas = obs.last_seq() + 1, ip.cas
+    w.stopped(completed=False, error=None)  # its first two CASes lose
+    exit_ = exits(obs)[-1].seq
+    assert ip.cas - cas == 3 and exit_ == tried + 2
+    assert save.calls == [("prepare", 0, True, tried - 1), ("bind", exit_, exit_)]
 
-    class DiskFull:
-        def after(self, node, *, commits, exit):
-            if commits == 2:
-                raise OSError("disk full")
 
+class Failing:
+    """A save policy whose prepare raises at ``prepare_at`` (commits, exit), or
+    whose bind raises there; ``calls`` records each phase it ran."""
+
+    def __init__(self, *, phase, at):
+        self.phase, self.at = phase, at
+        self.calls = []
+
+    def prepare(self, *, commits, exit):
+        self.calls.append(("prepare", commits, exit))
+        if self.phase == "prepare" and (commits, exit) == self.at:
+            raise OSError("disk full")
+
+        def bind(node):
+            self.calls.append(("bind", node))
+            if self.phase == "bind" and (commits, exit) == self.at:
+                raise OSError("rename failed")
+
+        return bind
+
+
+def test_a_prepare_that_raises_at_a_commit_writes_no_node_and_tears_the_exit(
+    open_run,
+):
+    """§6, "A prepare that raises": it comes before its node is written, so
+    ``commit()`` raises before its node lands, which tears the iteration (§4): no
+    node is written for it, and the exit is errored and torn, its ``parent`` the
+    previous position, which stays extendable."""
     ch = open_run()
+    save = Failing(phase="prepare", at=(2, False))
     with pytest.raises(OSError, match="disk full"):
-        with worker(ch, save=DiskFull()) as w:
+        with worker(ch, save=save) as w:
+            for i in w.steps(Target(Commits(), 5)):
+                w.emit("loss", float(i))
+    (first,) = [e.seq for e in ch.read(topics=[Topic.LIFECYCLE_COMMIT])]
+    assert save.calls == [("prepare", 1, False), ("bind", first), ("prepare", 2, False)]
+    e = exits(ch)[0]
+    assert (e.body["error"], e.body["values"], e.body["parent"]) == (
+        "disk full",
+        None,
+        first,
+    )
+    assert kind(ch, e.seq) is NodeKind.TORN
+    # the second iteration's loss stays on the log, outside every lineage
+    assert len(ch.read(topics=[Topic.VALUE], name="loss")) == 2
+    assert worker(ch, resume_from=LatestClaimHead()).resume_node == first
+
+
+def test_a_prepare_that_raises_at_an_exit_makes_it_an_error_exit_and_propagates(
+    open_run,
+):
+    """§4, "The exit", step 4; §6, "A prepare that raises": it comes before the
+    exit's CAS, so the exit becomes an error exit, torn, its ``error`` the failure,
+    with nothing bound, and the failure propagates once that exit has landed."""
+    ch = open_run()
+    save = Failing(phase="prepare", at=(1, True))
+    with pytest.raises(OSError, match="disk full"):
+        with worker(ch, save=save) as w:
+            w.commit()
+    c = ch.latest(Topic.LIFECYCLE_COMMIT).seq
+    (e,) = exits(ch)
+    assert (e.body["error"], e.body["values"], e.body["parent"]) == (
+        "disk full",
+        None,
+        c,
+    )
+    assert (e.body["fired"], e.body["expired"]) == ([], [])
+    assert kind(ch, e.seq) is NodeKind.TORN
+    assert save.calls == [("prepare", 1, False), ("bind", c), ("prepare", 1, True)]
+    verdict = peek_terminal(ch)
+    assert verdict.outcomes == {Outcome.ERRORED}
+
+
+def test_a_bind_that_raises_at_a_commit_leaves_its_node_committed_and_the_exit_torn(
+    open_run,
+):
+    """Review Focus 4, after a commit (§6, "A bind that raises"): the bind comes
+    after its node landed, so the node stands; the raise leaves ``commit()`` and
+    ends the claim, so ``__exit__`` writes an errored, torn exit whose ``parent`` is
+    that node, which stays extendable."""
+    ch = open_run()
+    save = Failing(phase="bind", at=(2, False))
+    with pytest.raises(OSError, match="rename failed"):
+        with worker(ch, save=save) as w:
             for i in w.steps(Target(Commits(), 5)):
                 w.emit("loss", float(i))
     second = ch.read(topics=[Topic.LIFECYCLE_COMMIT])[-1].seq
     assert len(nodes(ch)) == 2  # the node stands
     e = exits(ch)[0]
     assert (e.body["error"], e.body["values"], e.body["parent"]) == (
-        "disk full",
+        "rename failed",
         None,
         second,
     )
@@ -503,8 +601,110 @@ def test_a_save_policy_that_raises_leaves_its_node_committed_and_the_exit_torn(
     assert worker(ch, resume_from=LatestClaimHead()).resume_node == second
 
 
+def test_a_bind_that_raises_at_an_exit_leaves_the_exit_standing_and_propagates(
+    open_run,
+):
+    """§6, "A bind that raises", at an exit: the claim has already ended, so the
+    exit stands with its own verdict, preempted and extendable, nothing more is
+    written, and the raise propagates."""
+    ch = open_run()
+    save = Failing(phase="bind", at=(1, True))
+    with pytest.raises(OSError, match="rename failed"):
+        with worker(ch, save=save) as w:
+            w.commit()
+    (e,) = exits(ch)
+    assert ch.last_seq() == e.seq  # the exit is the claim's last record
+    assert (e.body["error"], e.body["completed"]) == (None, False)
+    assert kind(ch, e.seq) is NodeKind.EXTENDABLE
+    assert save.calls[-2:] == [("prepare", 1, True), ("bind", e.seq)]
+    assert peek_terminal(ch).outcomes == {Outcome.PREEMPTED}
+
+
+def test_a_worker_released_after_its_exit_prepared_binds_nothing(open_run):
+    """A death report that lands while the exit prepares is read by step 5's
+    drain: the worker writes no exit, and so binds nothing. Its prepared bytes stay
+    unnamed, for the policy's own store to sweep."""
+    ch = open_run()
+    calls = []
+
+    class ReleasedWhilePreparing:
+        def prepare(self, *, commits, exit):
+            calls.append(("prepare", commits, exit))
+            if exit:
+                end_claim(ch)
+            return lambda node: calls.append(("bind", node))
+
+    with worker(ch, save=ReleasedWhilePreparing()) as w:
+        w.commit()
+    c = ch.latest(Topic.LIFECYCLE_COMMIT).seq
+    assert exits(ch) == []
+    assert calls == [("prepare", 1, False), ("bind", c), ("prepare", 1, True)]
+
+
+def test_the_exit_holds_its_claim_while_it_prepares_so_a_successor_resumes_from_its_checkpoint(
+    open_run,
+):
+    """The window #62 closes (§6, "Save in two phases"). The first worker's
+    ``write()`` blocks at its exit until the test releases it; meanwhile a second
+    claimant, on its own handle, tries to claim, and loses, since the first claim
+    is still held: its exit, the record that ends the claim, is not yet written.
+    Once released, the exit lands and binds, and a successor that chooses with
+    ``OnHeadLineage`` finds the checkpoint for the exit node.
+
+    The old order (``after``, run once the exit had landed) published the exit
+    first: for the whole save the claim had ended and the exit node had no
+    checkpoint, so a claimant there won, and ``OnHeadLineage`` chose the older
+    commit's checkpoint, a correct branch paid for in recomputation."""
+    import threading
+
+    ch = open_run()
+    saved, errors = [], []
+    state = {"iterations": 0, "exiting": False}
+    preparing, release = threading.Event(), threading.Event()
+
+    def write():
+        iterations = state["iterations"]  # the state the node commits
+        if state["exiting"]:
+            preparing.set()
+            assert release.wait(timeout=30)
+
+        def bind(node):
+            saved.append(Ckpt(node, iterations))
+
+        return bind
+
+    def first():  # its own handle, opened on its own thread
+        try:
+            with worker(open_run(), save=Every(1, write)) as w:
+                for _ in w.steps(Target(Commits(), 2)):
+                    state["iterations"] += 1
+                state["exiting"] = True
+        except BaseException as exc:  # surfaced in the main thread
+            errors.append(exc)
+
+    t = threading.Thread(target=first)
+    t.start()
+    try:
+        assert preparing.wait(timeout=30)
+        assert exits(ch) == []
+        second = worker(open_run(), resume_from=LatestClaimHead())
+        assert not second.claimed  # the first claim is held while it prepares
+        assert len(ch.read(topics=[Topic.LIFECYCLE_STARTED])) == 1
+    finally:
+        release.set()
+        t.join(timeout=30)
+    assert not t.is_alive() and errors == []
+    (e,) = exits(ch)
+    assert saved[-1] == Ckpt(e.seq, 2)
+    chosen = OnHeadLineage().choose(ch, saved, head=LatestClaimHead())
+    assert chosen is saved[-1]
+    successor = worker(open_run(), resume_from=chosen)
+    assert successor.claimed and successor.resume_node == e.seq
+
+
 # A child whose Every(2) save writes each node it saves to a file, its checkpoint
-# store, until the exit, where the save raises: the store is full.
+# store, until the exit, where its PHASE raises: the store is full (the prepare) or
+# its rename fails (the bind).
 SAVE_RAISES_AT_THE_EXIT = """
 import sys
 from runstate import current_channel
@@ -513,39 +713,65 @@ from runstate.claims import CAS_ATTEMPTS, endings
 from runstate.vocabulary.coordinate import Commits, Target
 from runstate.worker import Worker
 
-store, exiting = sys.argv[1], []
+store, phase, exiting = sys.argv[1], sys.argv[2], []
 
-def save(node):
-    if exiting:
+def write():
+    if exiting and phase == "prepare":
         raise OSError("disk full")
-    with open(store, "a") as f:
-        f.write(f"{node}\\n")
 
-with Worker(current_channel(), resume_from=None, sources=[], save=Every(2, save)) as w:
+    def bind(node):
+        if exiting and phase == "bind":
+            raise OSError("rename failed")
+        with open(store, "a") as f:
+            f.write(f"{node}\\n")
+
+    return bind
+
+with Worker(current_channel(), resume_from=None, sources=[], save=Every(2, write)) as w:
     for i in w.steps(Target(Commits(), 3)):
         w.emit("loss", float(i))
     exiting.append(True)
 """
 
 
-def test_a_save_that_raises_after_an_extendable_exit_leaves_the_exit_and_the_next_resume_branches(
-    tmp_path,
-):
-    """Review Focus 4, at the exit (§6, "A save that raises"; plan, open question
-    17): the claim has already ended, so the exit stands with its own verdict and
-    nothing more is written; the process's failure is on the external plane, its
-    launch's ``supervisor.terminated``; the next claim resumes from the newest
-    checkpoint the store holds, an older node, and branches there."""
+def run_save_raises_at_the_exit(tmp_path, phase):
+    """Launch the child above, raising at the exit's ``phase``; its channel, once
+    it has exited non-zero, and the nodes its store holds."""
     store = tmp_path / "checkpoints"
     with LocalLauncher(root=tmp_path) as launcher:
         h = launcher.launch(
             "run",
             Command(
-                [sys.executable, "-c", SAVE_RAISES_AT_THE_EXIT, str(store)], env={}
+                [sys.executable, "-c", SAVE_RAISES_AT_THE_EXIT, str(store), phase],
+                env={},
             ),
         )
         assert h.wait(timeout=60) != 0
         ch = launcher.attach_channel("run")
+    return ch, [int(line) for line in store.read_text().split()]
+
+
+def assert_the_next_resume_branches(ch, saved):
+    """The next claim resumes from the newest checkpoint the store holds, the
+    second commit, an older node than the exit, and branches there."""
+    p = ch.read(topics=[Topic.LIFECYCLE_COMMIT])[1].seq  # the second commit
+    assert saved == [p]
+    w = worker(ch, resume_from=AtNode(saved[-1]))  # the recipe's newest checkpoint
+    assert w.resume_node == p
+    w.commit()
+    assert nodes(ch)[-1]["parent"] == p  # a branch: the exit is not on it
+
+
+def test_a_save_that_raises_after_an_extendable_exit_leaves_the_exit_and_the_next_resume_branches(
+    tmp_path,
+):
+    """Review Focus 4, at the exit (§6, "A bind that raises"; plan, open question
+    17): the bind comes after the exit landed and the claim has ended, so the exit
+    stands with its own verdict and nothing more is written; the process's failure
+    is on the external plane, its launch's ``supervisor.terminated``; the next claim
+    resumes from the newest checkpoint the store holds, an older node, and branches
+    there."""
+    ch, saved = run_save_raises_at_the_exit(tmp_path, "bind")
     verdict = peek_terminal(ch)
     assert (verdict.tier, verdict.outcomes) == (Tier.EXIT, {Outcome.PREEMPTED})
     claim = claim_of(ch)
@@ -556,14 +782,26 @@ def test_a_save_that_raises_after_an_extendable_exit_leaves_the_exit_and_the_nex
     terminated = ch.latest(Topic.SUPERVISOR_TERMINATED).body
     assert terminated["exit_code"] not in (None, 0)
     assert ch.read(topics=[Topic.SUPERVISOR_DIED]) == []
+    assert_the_next_resume_branches(ch, saved)
+    ch.close()
 
-    saved = [int(line) for line in store.read_text().split()]
-    p = ch.read(topics=[Topic.LIFECYCLE_COMMIT])[1].seq  # the second commit
-    assert saved == [p]
-    w = worker(ch, resume_from=AtNode(saved[-1]))  # the recipe's newest checkpoint
-    assert w.resume_node == p
-    w.commit()
-    assert nodes(ch)[-1]["parent"] == p  # a branch: the exit is not on it
+
+def test_a_save_that_raises_before_an_extendable_exit_errors_the_exit_and_the_next_resume_branches(
+    tmp_path,
+):
+    """The counterpart (§6, "A prepare that raises"): the prepare comes before the
+    exit's CAS, so the log records the failure as the claim's end, an error exit,
+    torn, its ``error`` the failure; the launch's ``supervisor.terminated`` follows
+    it, and the next claim resumes from the newest checkpoint and branches."""
+    ch, saved = run_save_raises_at_the_exit(tmp_path, "prepare")
+    verdict = peek_terminal(ch)
+    assert (verdict.tier, verdict.outcomes) == (Tier.EXIT, {Outcome.ERRORED})
+    exit_ = exits(ch)[0]
+    assert (exit_.body["error"], exit_.body["values"]) == ("disk full", None)
+    assert kind(ch, exit_.seq) is NodeKind.TORN
+    assert [e.topic for e in ch.read(after=exit_.seq)] == [Topic.SUPERVISOR_TERMINATED]
+    assert ch.latest(Topic.SUPERVISOR_TERMINATED).body["exit_code"] not in (None, 0)
+    assert_the_next_resume_branches(ch, saved)
     ch.close()
 
 
@@ -735,20 +973,11 @@ def test_a_commit_whose_node_send_raises_tears_its_iteration_and_the_exit_errs(
     assert kind(obs, e.seq) is NodeKind.TORN
 
 
-def test_a_save_that_raises_after_its_node_landed_leaves_the_worker_live(open_run):
+def test_a_bind_that_raises_after_its_node_landed_leaves_the_worker_live(open_run):
     """§6's case, not the torn one: the node stands, and the worker is as it was, so
     a caller that catches the raise and carries on commits the next node on it."""
-
-    class FirstSaveFails:
-        calls = 0
-
-        def after(self, node, *, commits, exit):
-            self.calls += 1
-            if self.calls == 1:
-                raise OSError("disk full")
-
     ch = open_run()
-    w = worker(ch, save=FirstSaveFails())
+    w = worker(ch, save=Failing(phase="bind", at=(1, False)))
     with pytest.raises(OSError):
         w.commit()
     first = ch.latest(Topic.LIFECYCLE_COMMIT).seq
@@ -784,3 +1013,23 @@ def test_a_starved_exit_keeps_its_sample_failure_and_its_retry_raises_it(open_ru
     (e,) = exits(obs)
     assert e.body["values"] is None and "x" in e.body["error"]
     assert kind(obs, e.seq) is NodeKind.TORN
+
+
+def test_a_starved_exits_retry_binds_without_preparing_again(open_run):
+    """§4, "An exit that starves": the prepared checkpoint is held with the exit
+    node, so a retried ``stopped()``, once its CAS lands, binds it to the exit's
+    seq without preparing again."""
+    obs = open_run()
+    ch = Interloping(open_run(), obs)
+    save = Recording(obs)
+    w = worker(ch, save=save)
+    noise = {"value": 1.0, "t": 1.0}
+    ch.arm(noise, topic=Topic.VALUE, name="noise", times=CAS_ATTEMPTS)
+    with pytest.raises(WorkerStarvedError):
+        w.stopped(completed=False, error=None)
+    assert exits(obs) == []
+    assert [c[0] for c in save.calls] == ["prepare"]  # prepared, never bound
+    w.stopped(completed=False, error=None)  # the retry, on a quiet channel
+    (e,) = exits(obs)
+    assert kind(obs, e.seq) is NodeKind.EXTENDABLE
+    assert [c[:2] for c in save.calls] == [("prepare", 0), ("bind", e.seq)]
