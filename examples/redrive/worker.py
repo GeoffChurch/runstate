@@ -12,11 +12,18 @@ demo is deterministic.
 import json
 import math
 import os
+import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import runstate
+
+
+def node_of(path: Path) -> int:
+    """The node a checkpoint file is named by: ``<rid>.<node>.ckpt``."""
+    return int(path.name.split(".")[1])
 
 
 @dataclass(frozen=True)
@@ -27,21 +34,30 @@ class Checkpoint:
     path: Path
 
     def load(self) -> dict[str, Any]:
+        """The state, and the node the file it was read from is named by."""
         state: dict[str, Any] = json.loads(self.path.read_text())
-        return state
+        return {**state, "node": node_of(self.path)}
 
 
-def write(path: Path, payload: dict[str, Any]) -> None:
-    """Publish ATOMICALLY: temp file, then ``os.replace`` into position.
+def write(state_dir: Path, rid: str, payload: dict[str, Any]) -> Callable[[int], None]:
+    """Save in two phases (commits-and-lineage.md §6): write the bytes now, to a temp
+    file in the checkpoint directory that no listing matches, and return the bind,
+    which ``os.replace``s it to ``<rid>.<node>.ckpt`` once the node has landed.
 
-    ``write_text`` truncates before it fills, so a death mid-write -- exactly what this
-    example simulates -- can leave a TRUNCATED checkpoint the resume cannot parse,
-    turning a crash-once demo into a crash-forever one. ``os.replace`` is atomic within
-    a directory: a reader sees a whole file or none, never a half-file.
+    ``write_text`` in place truncates before it fills, so a death mid-write -- exactly
+    what this example simulates -- could leave a TRUNCATED checkpoint the resume cannot
+    parse, turning a crash-once demo into a crash-forever one. Here a death before the
+    bind leaves only a temp file nothing names, and ``os.replace`` is atomic within a
+    directory: a reader sees a whole checkpoint or none.
     """
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload))
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(dir=state_dir, prefix=f".{rid}.", suffix=".tmp")
+    with os.fdopen(fd, "w") as f:
+        json.dump(payload, f)
+
+    def bind(node: int) -> None:
+        os.replace(tmp, state_dir / f"{rid}.{node}.ckpt")
+
+    return bind
 
 
 def main() -> None:
@@ -58,17 +74,14 @@ def main() -> None:
     # the head's lineage. A crashed claim's newer commits have no checkpoint, so
     # the resume branches at the last one saved, and the commits after it stay on
     # the log, off the new lineage.
-    candidates = [
-        Checkpoint(int(p.name.split(".")[1]), p)
-        for p in state_dir.glob(f"{rid}.*.ckpt")
-    ]
+    candidates = [Checkpoint(node_of(p), p) for p in state_dir.glob(f"{rid}.*.ckpt")]
     chosen = runstate.OnHeadLineage().choose(
         ch, candidates, head=runstate.LatestClaimHead()
     )
     state = {"loss": 5.0}
 
-    def save(node: int) -> None:  # the Worker calls it right after `node` lands
-        write(state_dir / f"{rid}.{node}.ckpt", {"node": node, "loss": state["loss"]})
+    def save() -> Callable[[int], None]:  # just before a node is written
+        return write(state_dir, rid, {"loss": state["loss"]})
 
     # Checkpoint every 3 commits (and at every extendable exit).
     with runstate.Worker(

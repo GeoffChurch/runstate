@@ -95,7 +95,7 @@ All three are **required and keyword-only**, so no reader re-derives them:
 - **`sources`** — the names this worker exposes to be **sampled on demand**
   (`[]` declares none). Every other name it reports is an **eager stream**.
 - **`save`** — the checkpoint save policy: `runstate.NoSave()`, or
-  `runstate.Every(k, fn)` (section 4).
+  `runstate.Every(k, write)` (section 4).
 
 ### `emit` vs `set` — eager streams vs sources
 
@@ -124,9 +124,10 @@ checkpoint saved at the node in between, a crash loses it.
 
 - **`w.commit()`** ends an iteration: it drains control, evaluates
   subscriptions at the node being written, writes the fired sources' samples and
-  one `lifecycle.commit` naming the iteration's values, runs the save policy, and
-  returns the **stop decision** (`True` once a stop has held). One commit per
-  iteration, so **`Commits()` counts iterations**.
+  one `lifecycle.commit` naming the iteration's values, saves around it (the
+  save policy's two phases, section 4), and returns the **stop decision**
+  (`True` once a stop has held). One commit per iteration, so **`Commits()`
+  counts iterations**.
 - **`w.heartbeat()`** is liveness for inside a slow iteration: it drains
   control, writes a `lifecycle.heartbeat`, and returns the stop decision. It
   commits nothing and evaluates no subscription.
@@ -414,10 +415,18 @@ claim on the *same* log can continue from a node of it. The checkpoint recipe
 (spec §6) makes "the state I loaded is the state that node committed" true by
 construction — no checkpoint can name work that never committed:
 
-- **Save through the Worker.** `save=runstate.Every(k, fn)` calls `fn(node)`
-  right after every k-th commit lands, and after every extendable exit, the one
-  instant the process's state is exactly what `node` commits. You never pick the
-  moment; the policy decides only *whether*.
+- **Save through the Worker, in two phases.** `save=runstate.Every(k, write)`
+  calls `write()` just before every k-th commit is written, and before every
+  extendable exit, the one instant the process's state is exactly what that node
+  commits. `write()` writes the checkpoint's bytes where no listing looks (a temp
+  file in the checkpoint directory) and returns a **bind**, which the Worker calls
+  with the node's seq once the node has landed, to name the bytes by it (an
+  `os.replace` to `<dir>/<node>.ckpt`). You never pick the moment; the policy
+  decides only *whether* and *how*. The data comes before the record that
+  publishes it, so an exit, which ends the claim, lands only once its checkpoint's
+  bytes exist, and a successor that claims right after it finds the checkpoint for
+  it; a death before the bind leaves only a temp file nothing names. A `write()`
+  that raises is the claim's end, recorded: an errored, torn exit.
 - **A checkpoint names its node.** Any object with an integer `.node` is a
   `runstate.NodeRef`, which `resume_from` and `rewind` take. Pass the object
   itself, never `AtNode(ckpt.node)`, so the state and the node come from one
@@ -425,11 +434,12 @@ construction — no checkpoint can name work that never committed:
 - **Choose before claiming:** `runstate.OnHeadLineage().choose(ch, candidates,
   head=...)` picks the candidate nearest the head on the head's lineage (the
   suggested preset; `MostProgress(stream)` is the other).
-- **Claim, load, then assert** `loaded["node"] == w.resume_node`, which
-  catches a file that changed after you chose it.
-- **Publish atomically** (temp file, then `os.replace`): `write_text` truncates
-  before it fills, so a worker killed mid-write leaves a checkpoint the next
-  claim cannot parse.
+- **Claim, load, then assert** `loaded["node"] == w.resume_node`, the node
+  read from the name of the file the state was loaded from, which catches a
+  loader that reads another file than the one chosen (a mutable `latest`, say).
+- **Publish atomically** (temp file, then `os.replace`): `write_text` in place
+  truncates before it fills, so a worker killed mid-write would leave a
+  checkpoint the next claim cannot parse. The two phases give you this for free.
 
 This is `examples/reuse/`'s resumable cell, cut to its load-bearing half:
 
@@ -437,6 +447,7 @@ This is `examples/reuse/`'s resumable cell, cut to its load-bearing half:
 import json
 import os
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -448,26 +459,32 @@ class Checkpoint:
     node: int  # the node it was saved at: this makes it a runstate.NodeRef
     path: Path
 
-    def load(self) -> dict:
-        return json.loads(self.path.read_text())
+    def load(self) -> dict:  # the state, and the node its file is named by
+        return {**json.loads(self.path.read_text()), "node": int(self.path.stem)}
 
 
-def write(path: Path, payload: dict) -> None:
-    """Publish atomically: a reader sees the whole file or none of it."""
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload))
-    os.replace(tmp, path)
+def write(store: Path, payload: dict) -> Callable[[int], None]:
+    """Phase 1, before the node is written: the bytes, in a temp file no
+    listing matches. Phase 2, the bind, once it has landed: name them."""
+    fd, tmp = tempfile.mkstemp(dir=store, suffix=".tmp")
+    with os.fdopen(fd, "w") as f:
+        json.dump(payload, f)
+
+    def bind(node: int) -> None:  # atomic: a reader sees all of it or none
+        os.replace(tmp, store / f"{node}.ckpt")
+
+    return bind
 
 
 def train(ch: runstate.Channel, store: Path, until: runstate.Target) -> None:
     # 1. choose, BEFORE claiming, among the checkpoints the store holds
-    saved = [Checkpoint(int(p.stem), p) for p in store.glob("*.json")]
+    saved = [Checkpoint(int(p.stem), p) for p in store.glob("*.ckpt")]
     head = runstate.LatestClaimHead()
     chosen = runstate.OnHeadLineage().choose(ch, saved, head=head)
     state = {"loss": 5.0}
 
-    def save(node: int) -> None:  # the Worker calls it right after `node` lands
-        write(store / f"{node}.json", {"node": node, "loss": state["loss"]})
+    def save() -> Callable[[int], None]:  # just before a node is written
+        return write(store, {"loss": state["loss"]})
 
     # 2. claim from it
     with runstate.Worker(
@@ -501,6 +518,7 @@ again; the abandoned branch stays readable at its own node:
 
 ```python
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import runstate
@@ -516,8 +534,9 @@ snapshots: list[Snapshot] = []
 state = {"loss": 1.0, "spiked": False}
 
 
-def save(node: int) -> None:  # the Worker calls it right after `node` lands
-    snapshots.append(Snapshot(node, state["loss"]))
+def save() -> Callable[[int], None]:  # just before a node is written
+    loss = state["loss"]  # the state the node commits, held until it lands
+    return lambda node: snapshots.append(Snapshot(node, loss))
 
 
 with runstate.create_channel("rewind-demo", root=tempfile.mkdtemp()) as ch:
@@ -1065,9 +1084,9 @@ each woken by fresh demand.
    runs; a time-keyed barrier on a run that relaunches is void for the new
    claim (pitfall 3). *Fix:* key it on `commits` or a stream count.
 
-5. **Checkpoint through the save policy, not by hand.** A checkpoint written
-   before its node lands, or after the loop with the *target* in it, names work
-   that never committed. *Fix:* `save=Every(k, fn)`, choose before claiming,
+5. **Checkpoint through the save policy, not by hand.** A checkpoint named
+   before its node lands, or saved after the loop with the *target* in it, names
+   work that never committed. *Fix:* `save=Every(k, write)`, choose before claiming,
    load after, and assert `loaded node == w.resume_node` (section 4).
 
 6. **A target or progress atom naming a source counts 0 forever.** *Fix:* aim

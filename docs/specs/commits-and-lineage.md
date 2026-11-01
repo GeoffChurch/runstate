@@ -17,6 +17,9 @@ This is layer 2 of [`../backlog/identity-in-records.md`](../backlog/identity-in-
   rejected; this spec cites it as "review §N".
 - **The drafting choices,** which the decisions left open or the drafting changed, were settled by the owner
   one at a time (review §12, item 14). None is open.
+- **Amended after implementation (2026-10-31, #62; implemented 2026-10-31):** §6's save in two phases, the
+  checkpoint's data prepared before the node is written and bound to its seq after, so an exit ends its claim
+  only once its checkpoint's bytes exist; §4's `commit()` and exit steps follow it.
 - **Amendments while planning the live layer** (2026-10-28 and 2026-10-30) fill what the spec left silent
   or self-contradicting: a target naming a declared source (§4, §5); the folds polled without a head (§5);
   who kills an orphan (§3); the Watcher's session tier (§5); a save that raises (§6). The plan,
@@ -536,7 +539,7 @@ party, whatever else it does, an observer included, may write one for a death it
   or below W. That covers `steps()`, `serve()` and a worker that calls `commit()` itself. It exposes the node
   as `w.resume_node`, `None` when it names no node, which a rewind moves to its target (§6's load assertion).
 - **`sources`** takes the names the worker exposes; an explicit `[]` is fine. It is written on `started`.
-- **`save`** takes the checkpoint save policy (§6), a `SavePolicy` such as `NoSave()` or `Every(k, fn)`.
+- **`save`** takes the checkpoint save policy (§6), a `SavePolicy` such as `NoSave()` or `Every(k, write)`.
 
 **The claim.** In order:
 1. read W, and validate `resume_from` there, walking the lineage that ends at its node: that lineage is
@@ -587,16 +590,17 @@ is by the drain after it.
    in this commit;
 2. evaluates subscriptions at the node being written;
 3. writes one sample per source whose subscriptions fired;
-4. writes the `lifecycle.commit`, with `values` (the pending values, then the samples), `fired` and
+4. prepares the save policy's checkpoint, if it saves here (§6, "Save in two phases");
+5. writes the `lifecycle.commit`, with `values` (the pending values, then the samples), `fired` and
    `expired`;
-5. runs the save policy (§6);
-6. returns the stop decision.
+6. binds the prepared checkpoint to the commit's seq;
+7. returns the stop decision.
 
 **A `commit()` that raises before its node lands tears the iteration,** as `discard()` does (amended
 2026-10-30, while implementing): a raised write's outcome may be unknown (an acknowledgement lost), and a
 subscription's claim-held state has already moved with its evaluation, so the iteration cannot continue. The
-worker's calls then behave as after `discard()`, and its exit is torn, evaluating nothing. A save that raises
-after the node landed is §6's case instead: the node stands.
+worker's calls then behave as after `discard()`, and its exit is torn, evaluating nothing. A bind that raises after the node landed is §6's case instead (a prepare that raises comes before it,
+and tears the iteration here): the node stands.
 
 **A drain** reads the death reports up to its W before it handles any control there, so a released worker
 handles nothing (below). Each record a drain writes, a `lifecycle.bound` for a lease it registers or a
@@ -694,11 +698,14 @@ outside every lineage, as at a rewind. A torn iteration to be redone is a `rewin
 3. writes the samples once. A failure while writing them makes the exit an error exit: torn, with the
    failure as its `error`, and the samples already written stay outside every lineage. The failure
    propagates once that exit has landed, as a save's does (§6);
-4. reads W again, drains as in step 1, and CAS-appends `stopped` at it, with `parent` the position,
+4. if the exit is extendable, prepares the save policy's checkpoint, once (§6, "Save in two phases"). A
+   prepare that raises makes the exit an error exit, torn, with the failure as its `error`, which propagates
+   once that exit has landed;
+5. reads W again, drains as in step 1, and CAS-appends `stopped` at it, with `parent` the position,
    `values` (the pending values, then the samples, or null if discarded), `fired`, `expired` and `honored`.
-   On a lost CAS it repeats this step only: it does not evaluate again, and a stop first drained here is
-   honoured;
-5. if the exit is extendable, runs the save policy (§6).
+   On a lost CAS it repeats this step only: it does not evaluate or prepare again, and a stop first drained
+   here is honoured;
+6. binds the prepared checkpoint to the exit's seq.
 
 The exit's other rules:
 - **`honored`** names every stop pending at the exit, and every stop whose own condition held at a node or a
@@ -1025,35 +1032,65 @@ This is a recipe, not protocol. runstate supplies no directory.
 
 - **No lineage lie can be written.** A lineage lie is a checkpoint whose state is not the state committed by
   the node it names. The recipe prevents it at both ends.
-  - **Save.** The Worker runs its save policy immediately after a commit lands, and after an extendable exit
-    lands. At that instant the state is exactly the state the node commits. It never runs it after a torn
-    exit, whose state is part of an iteration ahead of its parent, nor after a closed one. Saving at any other
-    moment is outside the recipe.
-  - **A save that raises propagates, and the node it followed stands.** Whether a node has a checkpoint is
-    the store's fact, never the log's: a checkpoint that was saved can be lost later too, and no record could
-    track it. So the log records how the claim ended, and the next claim chooses among the checkpoints that
-    exist, resuming from an older node and branching there.
-    - **After a commit,** the raise leaves `commit()` and ends the claim, so its exit is errored and torn,
-      its `parent` that node.
-    - **After an extendable exit,** the claim has already ended. The exit stands and its verdict is the
-      exit's; nothing more is written. The process's failure is on the external plane: when a launcher reaps
-      it, its launch's `supervisor.terminated` carries the exit code.
-    - **Nothing records the failed save,** by design (owner, 2026-10-30). Saving before the exit's
-      compare-and-append would name a seq the exit may not get, a lineage lie. A record after the exit would
-      speak for a claim that has ended, and the one record that may, a death report, defers to a readable
-      exit (§3). A record of saves would duplicate the store's own listing, and could disagree with it.
-      Revival trigger: runstate owning the checkpoint store.
+  - **Save.** The Worker saves for a commit, and for an extendable exit: its state at that node is exactly
+    the state the node commits. It never saves for a torn exit, whose state is part of an iteration ahead of
+    its parent, nor for a closed one. Saving at any other moment is outside the recipe.
+  - **Save in two phases: the data before the record that publishes it** (amended 2026-10-31, #62;
+    implemented). Two stores that cannot change together, the log and the consumer's checkpoint store, are
+    written in the classic order: the data first, then the record that refers to it, so a crash between
+    them leaves only data nothing names. A checkpoint names its node by seq, which exists only once the node
+    lands, so the save is split:
+    - **Prepare**, immediately before the node is written: the policy writes the checkpoint's bytes where no
+      reader looks for them (its own temporary). Nothing between the prepare and the node's write changes
+      the state the node commits: a drain changes no committed state, and a lost exit CAS re-drains, which
+      may change `honored`, never `values`. The prepare runs once per node, and an exit's retried CAS reuses
+      it. This is the slow part.
+    - **Bind**, immediately after the node lands: the policy names the prepared checkpoint by the node's
+      seq, as by an atomic rename. Only a bound checkpoint is a candidate for `choose`.
+
+    The order matters most at the exit, which also ends the claim: a successor can claim as soon as the exit
+    lands, and before #62 it found no checkpoint for the newest node for the whole save, minutes on a large
+    set, and resumed from an older one, a correct branch paid for in recomputation. Now only the bind's
+    moment lies between the exit and its checkpoint. A prepare that a crash, a release, or a `retire()` that a last drain
+    keeps serving (§4) leaves unbound is never named, and the policy's own store may sweep it; the retire
+    case costs one wasted write, and the next node prepares again. Splitting the exit instead (a final node, the save, then
+    a claim-ending record) would close even that moment, but it reverses E1 (review item 2), reopens the kill
+    between two appends that E1 closed, and needs the renumbering §7 forbids from 0.4.0 on, since every
+    exit holding values would gain a record before it.
+  - **A save that raises propagates.** Whether a node has a checkpoint is the store's fact, never the log's:
+    a checkpoint that was saved can be lost later too, and no record could track it. So the log records how
+    the claim ended, and the next claim chooses among the checkpoints that exist, resuming from an older node
+    and branching there.
+    - **A prepare that raises** comes before its node is written, so the log records it as the claim's end:
+      at a commit, `commit()` raises before its node lands, which tears the iteration (§4), and the exit is
+      errored and torn; at an extendable exit, the exit becomes an error exit, torn, its `error` the failure.
+      Both are the same rule, now that the slow, failing part precedes the record (amended 2026-10-31, #62;
+      it replaces the asymmetry of 2026-10-30, where a save failing after the exit could not be recorded).
+    - **A bind that raises** comes after its node landed, so the node stands. At a commit the raise leaves
+      `commit()` and ends the claim, so its exit is errored and torn, its `parent` that node. At an exit the
+      claim has already ended: the exit stands with its own verdict and nothing more is written, and the
+      process's failure is on the external plane (a launch's `supervisor.terminated` carries the exit code).
+      A bind is a rename, so this is rare.
+    - **Nothing records a checkpoint,** by design (owner, 2026-10-30): a record of saves would duplicate the
+      store's own listing, and could disagree with it. Revival trigger: runstate owning the checkpoint
+      store.
   - **The policy is a Strategy** (review §12, item 14): the `SavePolicy` Protocol's one method,
-    `after(node, *, commits, exit)`, which the Worker calls at each of those moments, with `commits` the
-    node's `count(Commits(), node)` and `exit` True at the exit. The Worker fixes *when* a save may happen,
-    and the policy decides only *whether*, so no policy can save at a wrong moment. Two ship:
-    - `Every(k, fn)` calls `fn(node)` at each commit whose `commits` is a multiple of `k`, and at every
-      extendable exit;
+    `prepare(*, commits, exit) -> Callable[[int], None] | None` (amended 2026-10-31, #62; it was
+    `after(node, *, commits, exit)`). The Worker calls it at each of those moments, before the node is
+    written, with `commits` the node's `count(Commits(), node)` and `exit` True at the exit. It returns the
+    bind, which the Worker calls with the node's seq once the node lands, or None for no save here. The
+    Worker fixes *when* a save may happen and in what order, and the policy decides only *whether* and
+    *how*, so no policy can save at a wrong moment or name a node before it lands. Two ship:
+    - `Every(k, write)` calls `write()` at each commit whose `commits` is a multiple of `k`, and at every
+      extendable exit, where `write: Callable[[], Callable[[int], None]]` writes the checkpoint's bytes and
+      returns the bind that names them;
     - `NoSave()` never saves, and is passed explicitly, since a chunked run without checkpoints restarts at
       the root every claim.
 
     Another cadence, such as by wall time for a SLURM job, is the caller's own few lines.
   - **Load.** A checkpoint object satisfies the `NodeRef` Protocol (§4): `.node`, the node it was saved at.
+    Its node is the seq it was **bound** under, its name, never its contents: the bytes are prepared before
+    the seq exists, so a loader reads `.node` from where the bind put it (amended 2026-11-01, #62).
     Pass `resume_from` and `rewind` the object itself, never `AtNode` of its node, so the state loaded and
     the node named come from one place. It carries no driver position: the driver reads its position from
     the log.
