@@ -76,9 +76,9 @@ clusters that unlock each other, with a sequencing — see
 
 ## Filed from the runstate-tui cockpit build (GitHub issues)
 
-The cockpit is [the acceptance test for this ledger](cockpit.md); building it surfaced three
-upstream asks. They live as GitHub issues (the **inbox**); each graduates to a design entry here —
-with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
+The cockpit is [the acceptance test for this ledger](cockpit.md); building it, and upgrading it to
+log format 0.4.0, surfaced these upstream asks. They live as GitHub issues (the **inbox**); each
+graduates to a design entry here — with the basis-rubric trail — when taken up.
 
 - **[#15](https://github.com/GeoffChurch/runstate/issues/15) — `read()` query layer** (`filter=`,
   `before=`/`max_seq=`, windowing): push filter / scrollback / search into the substrate (SQL
@@ -90,11 +90,23 @@ with the basis-rubric trail — when taken up. Not urgent (the TUI is early).
   per-tick `last_seq()` polling — pg `LISTEN/NOTIFY`, sqlite WAL/inotify. The push upgrade of the
   watermark/delta model; same idea as the channel-postgres deferred "low-latency push" note below.
 - **[#17](https://github.com/GeoffChurch/runstate/issues/17) — liveness / `conflicted` as an
-  observable**: expose the atomic live/stale/dead/conflicted verdict (corroborated by `resolve()` +
-  `launcher.terminated`) as a Watcher method, so a daemon + TUI + Emacs share **one** verdict rather
-  than each re-deriving it (the §3.2/§12 "verdicts live upstream" rule). The 2026-07 cockpit
-  red-team showed pure-log conflict detection is unreliable — the naive triggers fire on ordinary
-  crash+relaunch. Downstream *representation* stays tui-side (`runstate-tui` `liveness-overlay.md`).
+  observable**: one shared live/stale/dead/conflicted verdict, so a daemon + TUI + Emacs do not each
+  re-derive it (the §3.2/§12 "verdicts live upstream" rule). **Half answered by log format 0.4.0:** a
+  death is a record (`supervisor.died`), so crash+relaunch no longer reads as conflict, and
+  disagreeing death reports are the verdict's own `outcomes` set, each report's evidence in
+  `reports`. Open: whether a stranded or stale claim's process is alive, which needs a probe the
+  `Watcher` makes only for handles it holds (`report_if_dead` is the writer-side form). Downstream
+  *representation* stays tui-side (`runstate-tui` `liveness-overlay.md`).
+- **[#64](https://github.com/GeoffChurch/runstate/issues/64) — a public inverse of the log address
+  scheme** (path → root, run id, format), defined by the format that owns the layout, so a viewer
+  that walks a directory never re-encodes `<root>/vX.Y.Z/<rid>.db`.
+- **[#65](https://github.com/GeoffChurch/runstate/issues/65) — does an attached run's log still
+  exist**: a backend-neutral, never-creating question a pool can poll.
+- **[#66](https://github.com/GeoffChurch/runstate/issues/66) — an O(1) cold read of a run's commit
+  count and head**: held folds are O(new records) warm, but a first read walks the log (~35–45 ms on
+  a median mycooc run), which a view larger than its fold pool pays every frame. Related: #15.
+- **[#67](https://github.com/GeoffChurch/runstate/issues/67) — a public read of a source's or a
+  register's current value**: `last_element` reads eager streams only.
 
 ## Long-term ambition
 

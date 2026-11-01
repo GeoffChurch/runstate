@@ -466,6 +466,10 @@ plan as the remaining work; and the deferred design-§12 items mirrored there).
 - The JSON Schema stack + conformance tests.
 
 **Shipped since v0.2:**
+- The **cockpit**, GeoffChurch/runstate-tui: a control-plane TUI in its own repo, built
+  2026-07 on the public API only and upgraded to log format 0.4.0 on 2026-11-01. Status +
+  act, deliberately **no plots**. Its API gaps come back as issues
+  (`docs/backlog/index.md`, "Filed from the runstate-tui cockpit build").
 - The cross-host **`PostgresChannel`** backend (`docs/specs/channel-postgres.md`):
   one shared `log` table, the CAS (`PRIMARY KEY (run_id, seq)`) as the cross-host
   claim arbiter (cross-host single-spawn + control fall out of it, claim model
@@ -504,8 +508,6 @@ plan as the remaining work; and the deferred design-§12 items mirrored there).
   the rid is also the run's address; the input-partition policy is
   workload-specific.
 - Pause / Resume / Snapshot / Reconfigure commands.
-- The **cockpit** — a control-plane TUI in its own repo (`docs/backlog/cockpit.md`;
-  design converged 2026-07-16, project next). Status + act, deliberately **no plots**.
 - Open §12 implementation items still on the design's list
   (cursor-persistence efficiency, multi-orchestrator attribution,
   author/provenance; lazy-launch closed 2026-06-11, home-level GC
