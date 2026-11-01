@@ -1051,8 +1051,9 @@ This is a recipe, not protocol. runstate supplies no directory.
     The order matters most at the exit, which also ends the claim: a successor can claim as soon as the exit
     lands, and before #62 it found no checkpoint for the newest node for the whole save, minutes on a large
     set, and resumed from an older one, a correct branch paid for in recomputation. Now only the bind's
-    moment lies between the exit and its checkpoint. A prepare a crash or a release leaves unbound is never
-    named, and the policy's own store may sweep it. Splitting the exit instead (a final node, the save, then
+    moment lies between the exit and its checkpoint. A prepare that a crash, a release, or a `retire()` that a last drain
+    keeps serving (§4) leaves unbound is never named, and the policy's own store may sweep it; the retire
+    case costs one wasted write, and the next node prepares again. Splitting the exit instead (a final node, the save, then
     a claim-ending record) would close even that moment, but it reverses E1 (review item 2), reopens the kill
     between two appends that E1 closed, and needs the renumbering §7 forbids from 0.4.0 on, since every
     exit holding values would gain a record before it.
@@ -1088,6 +1089,8 @@ This is a recipe, not protocol. runstate supplies no directory.
 
     Another cadence, such as by wall time for a SLURM job, is the caller's own few lines.
   - **Load.** A checkpoint object satisfies the `NodeRef` Protocol (§4): `.node`, the node it was saved at.
+    Its node is the seq it was **bound** under, its name, never its contents: the bytes are prepared before
+    the seq exists, so a loader reads `.node` from where the bind put it (amended 2026-11-01, #62).
     Pass `resume_from` and `rewind` the object itself, never `AtNode` of its node, so the state loaded and
     the node named come from one place. It carries no driver position: the driver reads its position from
     the log.
