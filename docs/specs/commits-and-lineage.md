@@ -2023,11 +2023,16 @@ These extend [`reference-by-name.md`](reference-by-name.md) §7. File and line r
 
 **translation:**
 - **Counts:** keys.py:77's `progress+1 >= n` becomes `prefix_len >= n`; its mirror has drifted (keys.py:75,
-  `floor_ok(None, 0)` is False).
+  `floor_ok(None, 0)` is False). *As upgraded (2026-11-01, GeoffChurch/translation#1):* only their own tests
+  called `floor_ok` and `assert_reached`, so both were deleted rather than ported; `ensure`'s `Reached` and
+  `Unreachable` answer the question.
 - **Delete the emit-only-missing guard** at workers.py:28, which raises `KeyError` on `body["step"]`.
 - **The element type** at runner.py:33 and orchestrator.py:36–37 and :69.
-- **No checkpoint object:** its state is the log plus its ArtifactStore. It passes `resume_from=None` and
-  `save=NoSave()`, and re-emits; its tests at tests/test_workers.py:40–75 pin resume.
+- **No checkpoint object:** its state is the log plus its ArtifactStore, so `save=NoSave()`. **Where it
+  resumes is per worker** (corrected 2026-11-01 by the upgrade; this said `resume_from=None` for all, with a
+  re-emit): R1–R4 and the ignition worker resume from `LatestClaimHead()`, so an earlier claim's committed
+  values stand, which tests/test_workers.py:40–75 pin; R5 passes `None`, since its estimator is an
+  in-memory fold that a resume from the head would leave empty for the committed prefix.
 - **Declare `sources=[]`.**
 - **Its producer drives by `until`:** translation/runner.py:32's `launch_producer(launcher, variant,
   target_key="up_to")` becomes `launch_producer(launcher, rid, ThreadTarget(worker, args=(), kwargs=cfg))`,
