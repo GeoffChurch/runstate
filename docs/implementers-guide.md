@@ -642,11 +642,12 @@ live log.
    registered in this drain may fire in this commit;
 2. evaluate subscriptions at the node being written;
 3. write one sample per source whose subscriptions fired;
-4. write the `lifecycle.commit`: `parent` the position, `values` the pending
+4. prepare the save policy's checkpoint, if it saves here (§3.14);
+5. write the `lifecycle.commit`: `parent` the position, `values` the pending
    values then the samples, `fired`, `expired`, `consumed_seq` the drain's
    watermark;
-5. run the save policy (§3.14);
-6. return the stop decision.
+6. bind the prepared checkpoint to the commit's seq;
+7. return the stop decision.
 
 A `commit()` that raises before its node lands **tears the iteration**, as
 `discard()` does: the write's outcome may be unknown, and a subscription's state
@@ -703,11 +704,14 @@ from a signal handler.
 3. write the samples once. A failure while writing them makes the exit an error
    exit: torn, the failure its `error`, and the samples already written stay
    outside every lineage;
-4. read W again, drain as in step 1, and CAS-append `stopped` at it, with
+4. if the exit is extendable, prepare the save policy's checkpoint, once. A
+   prepare that raises makes the exit an error exit, torn, the failure its
+   `error`;
+5. read W again, drain as in step 1, and CAS-append `stopped` at it, with
    `parent` the position, `values` (pending then samples, or null if discarded),
    `fired`, `expired` and `honored`. **On a lost CAS repeat this step only**: do
-   not evaluate again, and honour a stop first drained here;
-5. if the exit is extendable, run the save policy.
+   not evaluate or prepare again, and honour a stop first drained here;
+6. bind the prepared checkpoint to the exit's seq.
 
 The exit's other rules:
 - **`honored`** names every stop pending at the exit, **and every stop whose own
@@ -909,14 +913,23 @@ reusing process lives (spec §12; the `?start=T` disambiguator is deferred).
 A recipe, not protocol; runstate supplies no directory. Its one wire-relevant
 rule: **no lineage lie can be written** — a checkpoint's state is the state
 committed by the node it names.
-- **Save** only immediately after a commit lands, and after an **extendable**
-  exit lands — never after a torn or closed one. The policy decides only
-  whether, at those moments.
-- **A save that raises propagates, and the node it followed stands.** After a
-  commit, the raise ends the claim with an errored, torn exit whose `parent` is
-  that node. After an extendable exit, nothing more is written: the exit's
-  verdict stands. **Nothing records a failed save**: whether a node has a
-  checkpoint is the store's fact, never the log's.
+- **Save** only for a commit, and for an **extendable** exit — never for a torn
+  or closed one. The policy decides only whether and how, at those moments.
+- **Save in two phases, the data before the record that publishes it.**
+  **Prepare** immediately before the node is written: the checkpoint's bytes,
+  where no reader looks for them, once per node (an exit's retried CAS reuses
+  them). **Bind** immediately after the node lands: name the bytes by its seq,
+  as by an atomic rename. So an exit, which ends the claim, lands only once its
+  checkpoint's bytes exist, and only the bind's moment lies between them.
+- **A save that raises propagates.** A **prepare** that raises comes before its
+  node: at a commit it tears the iteration, and the exit is errored and torn,
+  its `parent` the previous position; at an extendable exit, the exit becomes an
+  error exit, torn, its `error` the failure. A **bind** that raises comes after
+  its node landed, so the node stands: after a commit, the raise ends the claim
+  with an errored, torn exit whose `parent` is that node; after an extendable
+  exit, nothing more is written and the exit's verdict stands. **Nothing
+  records a checkpoint**: whether a node has one is the store's fact, never the
+  log's.
 - **Load:** a checkpoint names its node; pass the checkpoint itself as
   `resume_from` or the rewind's target; after claiming, assert the loaded node
   equals the worker's resume node.

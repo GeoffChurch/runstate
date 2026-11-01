@@ -168,10 +168,12 @@ the clock every record's `t` reads, exempt from the no-default rule.
 `commit()` ends an iteration: it drains control (the death reports naming the
 claim first), evaluates the subscriptions at the node being written, writes
 one sample per fired source and one `lifecycle.commit` (its `values` the
-pending values, then the samples), runs the save policy, and returns the stop
+pending values, then the samples), prepares the save policy's checkpoint just
+before that write and binds it once the node lands, and returns the stop
 decision. **A `commit()` that raises before its node lands tears the
-iteration**, as `discard()` does; a save that raises after it landed
-propagates, the node standing. `heartbeat()` drains and writes liveness only.
+iteration**, as `discard()` does, a prepare that raises among them; a bind that
+raises after it landed propagates, the node standing. `heartbeat()` drains and
+writes liveness only.
 `steps(until)` yields each iteration's index, `count(Commits(), position)`,
 before its commit, so a resumed driver continues from the log; it ends at the
 `Target` or on a stop, and raises `ValueError` at once on a target naming a
@@ -203,12 +205,18 @@ substrate, and a per-tick self-check in the worker — are refuted in
 
 ```python
 class SavePolicy(Protocol):
-    def after(self, node: int, *, commits: int, exit: bool) -> None: ...
+    def prepare(self, *, commits: int, exit: bool) -> Callable[[int], None] | None: ...
 ```
 
-Whether to save at a moment the Worker chose: after each commit lands, and after
-an extendable exit. `node` is the node that just landed, `commits` its
-`count(Commits(), node)`.
+Whether and how to save at a moment the Worker chose, in two phases (spec §6,
+"Save in two phases"): just before each commit is written, and before an
+extendable exit, `commits` the node's `count(Commits(), node)` and `exit` True at
+the exit. It writes the checkpoint's bytes where no reader looks and returns the
+**bind**, or `None` for no save here; the Worker calls the bind with the node's
+seq once the node has landed, which names the bytes by it (an atomic rename).
+A prepare that raises comes before its node, so the claim ends with an errored,
+torn exit; a bind that raises comes after, so the node stands. An exit's retried
+CAS reuses the prepared bytes, and a released worker binds nothing.
 
 ### `NoSave`
 
@@ -222,12 +230,13 @@ the root every claim.
 ### `Every`
 
 ```python
-Every(k: int, fn: Callable[[int], None])
+Every(k: int, write: Callable[[], Callable[[int], None]])
 ```
 
-Calls `fn(node)` at each commit whose `commits` is a multiple of `k`, and at every
+Calls `write()` at each commit whose `commits` is a multiple of `k`, and at every
 extendable exit, so a preempted chunk always leaves a checkpoint of where it
-stopped. `k >= 1`.
+stopped. `write` writes the checkpoint's bytes and returns the bind that names
+them by the node's seq. `k >= 1`.
 
 ### `CheckpointChoice`
 

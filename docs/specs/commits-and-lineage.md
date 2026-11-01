@@ -17,7 +17,7 @@ This is layer 2 of [`../backlog/identity-in-records.md`](../backlog/identity-in-
   rejected; this spec cites it as "review §N".
 - **The drafting choices,** which the decisions left open or the drafting changed, were settled by the owner
   one at a time (review §12, item 14). None is open.
-- **Proposed after implementation (2026-10-31, #62; not yet implemented):** §6's save in two phases, the
+- **Amended after implementation (2026-10-31, #62; implemented 2026-10-31):** §6's save in two phases, the
   checkpoint's data prepared before the node is written and bound to its seq after, so an exit ends its claim
   only once its checkpoint's bytes exist; §4's `commit()` and exit steps follow it.
 - **Amendments while planning the live layer** (2026-10-28 and 2026-10-30) fill what the spec left silent
@@ -539,7 +539,7 @@ party, whatever else it does, an observer included, may write one for a death it
   or below W. That covers `steps()`, `serve()` and a worker that calls `commit()` itself. It exposes the node
   as `w.resume_node`, `None` when it names no node, which a rewind moves to its target (§6's load assertion).
 - **`sources`** takes the names the worker exposes; an explicit `[]` is fine. It is written on `started`.
-- **`save`** takes the checkpoint save policy (§6), a `SavePolicy` such as `NoSave()` or `Every(k, fn)`.
+- **`save`** takes the checkpoint save policy (§6), a `SavePolicy` such as `NoSave()` or `Every(k, write)`.
 
 **The claim.** In order:
 1. read W, and validate `resume_from` there, walking the lineage that ends at its node: that lineage is
@@ -1035,7 +1035,7 @@ This is a recipe, not protocol. runstate supplies no directory.
   - **Save.** The Worker saves for a commit, and for an extendable exit: its state at that node is exactly
     the state the node commits. It never saves for a torn exit, whose state is part of an iteration ahead of
     its parent, nor for a closed one. Saving at any other moment is outside the recipe.
-  - **Save in two phases: the data before the record that publishes it** (amended 2026-10-31, #62; not yet
+  - **Save in two phases: the data before the record that publishes it** (amended 2026-10-31, #62;
     implemented). Two stores that cannot change together, the log and the consumer's checkpoint store, are
     written in the classic order: the data first, then the record that refers to it, so a crash between
     them leaves only data nothing names. A checkpoint names its node by seq, which exists only once the node

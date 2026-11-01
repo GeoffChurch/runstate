@@ -352,8 +352,8 @@ or orchestrator can ignore it and compose `send`/`read`/`latest` directly.
   loop; the `with` block writes the exit. Service-ness is **opt-in by verb** — an
   autonomous run's life never depends on its observers. The **checkpoint
   recipe** beside it (`Every`, `NoSave`, `OnHeadLineage`, `MostProgress`) saves
-  only right after a node lands, so no checkpoint names work that never
-  committed.
+  in two phases, the bytes just before a node is written and their name, the
+  node's seq, once it lands, so no checkpoint names work that never committed.
 - **The observables** (`runstate.observables`) — the stateless observer plane:
   pure folds log → view. `peek_terminal` (the terminal verdict), `live_episode`
   (the claim gate), `latest_episode` (the newest claim), `live_demand` (the live

@@ -120,10 +120,11 @@ The substrate + opt-in conventions + reference orchestration, in
   loser and a worker after its exit are fenced. The levels: `claimed`,
   `released`, `stop_pending`, `pinned`, `resume_node`.
 - **`checkpoint.py`** — the checkpoint recipe (`commits-and-lineage.md` §6):
-  the `SavePolicy` Strategy (`Every(k, fn)`, `NoSave()`), which the Worker
-  runs after each commit and each extendable exit, and the `CheckpointChoice`
-  Strategy (`OnHeadLineage()`, `MostProgress(stream)`) over the caller's
-  checkpoints.
+  the `SavePolicy` Strategy (`Every(k, write)`, `NoSave()`), which the Worker
+  prepares just before each commit and each extendable exit is written and
+  binds to the node's seq once it lands (§6, "Save in two phases"), and the
+  `CheckpointChoice` Strategy (`OnHeadLineage()`, `MostProgress(stream)`) over
+  the caller's checkpoints.
 - **`walk.py`** and **`claims.py`** — internal, not in `runstate.__all__`:
   the lineage walk the reads, the Worker and `ensure` share
   (`MalformedRecordError`, the node checks, `walk`), and the claim plane's
