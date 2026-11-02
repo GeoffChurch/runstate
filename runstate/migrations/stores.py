@@ -98,7 +98,7 @@ def sqlite_traces(root: Path, run_id: str) -> tuple[Trace, ...]:
         )
         if (path := layout.sqlite_path(root, run_id)).is_file() and _sealed(path)
     ]
-    legacy = root / f"{run_id}.db"
+    legacy = formats.legacy_sqlite_path(root, run_id)
     if legacy.is_file() and legacy.stat().st_size == 0 and _sealed(legacy):
         out.append(Trace(formats.LEGACY_FORMAT, f"a legacy tombstone at {legacy}"))
     return tuple(out)
@@ -130,7 +130,11 @@ class SqliteStore:
             layout = formats.FORMATS[version]
             if run_ids is None:
                 d = layout.sqlite_path(self._root, "x").parent
-                rids = [p.stem for p in d.glob("*.db")] if d.is_dir() else []
+                rids = [
+                    addr[1]
+                    for p in (d.glob("*.db") if d.is_dir() else ())
+                    if (addr := layout.sqlite_run(p)) is not None
+                ]
             else:
                 rids = [
                     r for r in run_ids if layout.sqlite_path(self._root, r).exists()

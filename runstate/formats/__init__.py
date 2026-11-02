@@ -8,9 +8,11 @@ read it."""
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import v0_2_0, v0_3_0, v0_4_0
@@ -60,6 +62,94 @@ def newer_in(names: Iterable[str], *, prefix: str, sep: str, than: str) -> list[
         if m and (int(m[1]), int(m[2]), int(m[3])) > floor:
             found.append(f"{m[1]}.{m[2]}.{m[3]}")
     return sorted(set(found), key=parse)
+
+
+# A format directory's name, registered or not: ``v`` and three dot-separated
+# integers (§3). Inside a root it names a format; as a root's own name it is refused.
+_FORMAT_DIR = re.compile(r"^v(\d+\.\d+\.\d+)$")
+
+
+def check_sqlite_names(root: Path, run_id: str) -> None:
+    """§3's two name rules, which make the sqlite address scheme one-to-one: a
+    run id is one filename, and a root is not named like a format directory.
+    ``ValueError`` names the rule broken; both locators call this before any
+    opening check, so a refused name creates nothing."""
+    seps = [os.sep] if os.altsep is None else [os.sep, os.altsep]
+    if run_id in ("", ".", "..") or any(sep in run_id for sep in seps):
+        raise ValueError(
+            f"a sqlite run id must be one filename (no path separator, not '', '.' "
+            f"or '..'), got {run_id!r}: a path in it would put the log at another "
+            f"run's address (log-formats.md §3)"
+        )
+    name = Path(os.path.abspath(root)).name
+    if _FORMAT_DIR.match(name):
+        raise ValueError(
+            f"a sqlite root must not be named like a format directory (vX.Y.Z), got "
+            f"{str(root)!r}: its logs' paths would also read as format {name[1:]} "
+            f"logs under its parent (log-formats.md §3)"
+        )
+
+
+def legacy_sqlite_path(root: Path, run_id: str) -> Path:
+    """The legacy address, from before versioned addresses: ``<root>/<rid>.db``."""
+    return root / f"{run_id}.db"
+
+
+def legacy_sqlite_run(path: Path) -> tuple[Path, str] | None:
+    """The inverse of ``legacy_sqlite_path``."""
+    if path.suffix != ".db":
+        return None
+    return path.parent, path.stem
+
+
+@dataclass(frozen=True)
+class VersionedAddress:
+    """A run's log in a registered format, at that format's address."""
+
+    root: Path
+    run_id: str
+    format: str
+
+
+@dataclass(frozen=True)
+class LegacyAddress:
+    """A run's log, or its tombstone, at the legacy address (§7)."""
+
+    root: Path
+    run_id: str
+
+
+@dataclass(frozen=True)
+class NewerFormatRoot:
+    """A root holding a format newer than this release knows. Its layout cannot be
+    known, so neither can its run ids; every open under the root raises
+    ``LogFormatMismatch`` (§4, check 1)."""
+
+    root: Path
+    format: str
+
+
+def sqlite_address(
+    path: Path,
+) -> VersionedAddress | LegacyAddress | NewerFormatRoot | None:
+    """The inverse of the sqlite address scheme (§3, "The inverse"): what ``path``
+    is the address of, decided by its parent directory. A registered format's
+    directory gives that layout's inverse; an unregistered newer one, its root and
+    format, never a guessed run id; any other ``vX.Y.Z`` directory is no format and
+    no root, so nothing; any other parent is the legacy address's root. Every copy
+    of one run, current, sealed or tombstone, names the same ``(root, run_id)``."""
+    m = _FORMAT_DIR.match(path.parent.name)
+    if m is None:
+        legacy = legacy_sqlite_run(path)
+        return None if legacy is None else LegacyAddress(*legacy)
+    version = m[1]
+    layout = FORMATS.get(version)
+    if layout is not None:
+        found = layout.sqlite_run(path)
+        return None if found is None else VersionedAddress(*found, format=version)
+    if parse(version) > parse(LOG_FORMAT):
+        return NewerFormatRoot(path.parent.parent, version)
+    return None
 
 
 def sqlite_migrate_command(root: Path) -> str:
@@ -134,7 +224,7 @@ def sqlite_onboarding(root: Path, run_id: str) -> str:
         '&& [ "$rc" = 0 ]'
     )
     return (
-        f"{root / (run_id + '.db')} predates versioned addresses, so its format "
+        f"{legacy_sqlite_path(root, run_id)} predates versioned addresses, so its format "
         f"is unknown and nothing will infer it. If it was written by runstate at "
         f"or after {_BASE_COMMIT}, it is format {LEGACY_FORMAT}: check that its "
         f"lifecycle.heartbeat bodies carry a `t` field. First stop every process "
@@ -186,13 +276,20 @@ __all__ = [
     "LOG_FORMAT",
     "POSTGRES_MIGRATE_COMMAND",
     "Layout",
+    "LegacyAddress",
     "LogFormatError",
     "LogFormatMismatch",
     "LogFormatMissing",
+    "NewerFormatRoot",
+    "VersionedAddress",
+    "check_sqlite_names",
+    "legacy_sqlite_path",
+    "legacy_sqlite_run",
     "newer_in",
     "older_than",
     "parse",
     "postgres_onboarding",
+    "sqlite_address",
     "sqlite_migrate_command",
     "sqlite_onboarding",
 ]

@@ -76,6 +76,13 @@ run has no records, so a nonexistent and an empty run are identically "no run"
 - `LOG_FORMAT`: the log format this release reads and writes, `"0.4.0"`.
 - `LogFormatError`, `LogFormatMismatch` and `LogFormatMissing`: see
   `docs/specs/log-formats.md` §4.
+- **The sqlite names.** `attach_channel` and `create_channel` refuse, with `ValueError` and creating
+  nothing, a sqlite run id that is not one filename and a root named like a format directory
+  (`vX.Y.Z`), which makes the address scheme one-to-one (`log-formats.md` §3).
+- `runstate.formats.sqlite_address(path) -> VersionedAddress | LegacyAddress | NewerFormatRoot | None`:
+  the inverse of the address scheme, for a viewer that walks a directory. Every copy of one run
+  (current, sealed, tombstone) names the same `(root, run_id)`; a newer format's directory names its
+  root and format, never a run id (`log-formats.md` §3, "The inverse").
 
 ### `Channel`
 
