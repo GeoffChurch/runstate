@@ -56,6 +56,7 @@ def _locate_sqlite(
     """log-formats.md §4, in order: refuse a root holding a newer format; open the
     current address; refuse an older format or the legacy address holding the run;
     else RunNotFound (attach) or a birth at the current address (create)."""
+    formats.check_sqlite_names(root, run_id)
     if root.is_dir():
         newer = formats.newer_in(
             (p.name for p in root.iterdir() if p.is_dir()),
@@ -82,7 +83,7 @@ def _locate_sqlite(
                 where=str(old),
                 command=formats.sqlite_migrate_command(root),
             )
-    legacy = root / f"{run_id}.db"
+    legacy = formats.legacy_sqlite_path(root, run_id)
     if legacy.exists():
         raise LogFormatMissing(
             where=str(legacy), instructions=formats.sqlite_onboarding(root, run_id)

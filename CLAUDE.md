@@ -62,8 +62,10 @@ The substrate + opt-in conventions + reference orchestration, in
   format is the outermost part of its address (`<root>/v0.4.0/<rid>.db`; schema
   `runstate_v0_4_0` on Postgres), `LOG_FORMAT` is the one this release reads and
   writes (0.4.0; `FORMATS` holds 0.2.0, 0.3.0 and 0.4.0), one module per format
-  holds its layout and its tables, and the locators raise
-  `LogFormatMismatch` / `LogFormatMissing` on any other.
+  holds its layout (the address and its inverse, `sqlite_run`) and its tables, and
+  the locators raise `LogFormatMismatch` / `LogFormatMissing` on any other. The two
+  sqlite name rules (a run id is one filename; a root is not named `vX.Y.Z`) make the
+  address scheme one-to-one, so `sqlite_address(path)` inverts it exactly.
 - **`migrations/`** + **`cli.py`** — `runstate migrate`: retained, chained steps
   that copy a run's log to the next format and seal the old one, refusing a
   live run or a run the step refuses before sealing it. One module per step

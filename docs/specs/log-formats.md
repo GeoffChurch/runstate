@@ -7,9 +7,9 @@ first retained step (0.2.0 → 0.3.0) the same day. The current format is 0.4.0,
 [`commits-and-lineage.md`](commits-and-lineage.md) introduced with the second step (0.3.0 → 0.4.0) on
 2026-10-31.
 
-**Proposed 2026-11-01 (#64; not yet implemented):** §3's two name rules (a SQLite run id is one
+**Amended 2026-11-01 (#64):** §3's two name rules (a SQLite run id is one
 filename; a root is not named like a format directory), which make the address scheme one-to-one, and its
-inverse, `formats.locate_sqlite`.
+inverse, `formats.sqlite_address`.
 
 **What it gives:** every log has exactly one format, and every log can say which. A runstate release opens
 only logs of its own format and raises on any other. Logs move between formats only through retained,
@@ -86,7 +86,7 @@ because only the outermost component leaves every future layout free.
   first looked only in `public`, so a run in another schema read as not found, and `create_channel`
   birthed an empty run over it; and an unrelated `public.log` raised `UndefinedColumn` on every open.
 
-### The two names in an address (proposed 2026-11-01, #64; not yet implemented)
+### The two names in an address (2026-11-01, #64)
 
 A SQLite address is built from two caller-chosen names, the root and the run id, and the scheme is
 one-to-one only when both are constrained. `attach_channel` and `create_channel` refuse, with
@@ -110,7 +110,7 @@ run that may move between backends should follow the first.
   `LogFormatMissing` ("onboard it"). A viewer would have to guess, or show a false alarm beside every
   current log. Forbidding the name removes the second reading instead of choosing between them.
 
-### The inverse: from a path to its address (proposed 2026-11-01, #64; not yet implemented)
+### The inverse: from a path to its address (2026-11-01, #64)
 
 A viewer that walks a directory finds log files, not run ids, and must turn each path back into what
 `attach_channel` takes. With both names constrained the forward map is one-to-one, so **its inverse is
@@ -121,28 +121,35 @@ a function**, defined beside the forward map so the two cannot drift:
   `v<version>` and `path.suffix` is `.db`, else `None`.
 - **The legacy address** gets its forward map and its inverse in `formats` as well. Today the forward map
   is inline in `_locate`'s SQLite branch. The address is `<root>/<rid>.db`, and back.
-- **`formats.locate_sqlite(path) -> Located | None`** composes them, by the path's parent directory:
-  - **named `v<version>` for a registered format:** `Versioned(root, run_id, format)`, from that
+- **`formats.sqlite_address(path) -> VersionedAddress | LegacyAddress | NewerFormatRoot | None`**
+  composes them, by the path's parent directory:
+  - **named `v<version>` for a registered format:** `VersionedAddress(root, run_id, format)`, from that
     layout's inverse;
-  - **named `vX.Y.Z` for a version newer than `LOG_FORMAT` and not registered:** `NewerFormat(root,
+  - **named `vX.Y.Z` for a version newer than `LOG_FORMAT` and not registered:** `NewerFormatRoot(root,
     format)`. Its layout cannot be known, so neither can its run id, but its name can: check 1 of §4 rests
     on the same fact, and every open under that root raises `LogFormatMismatch`. So the answer names the
     root and the format, never a guessed run id;
   - **named `vX.Y.Z` otherwise** (`v0.1.5`): `None`. It is no format, since the registry keeps every
     format there has been, and it is no root, by the root rule;
-  - **any other parent:** `Legacy(root, run_id)`, the parent being the root.
+  - **any other parent:** `LegacyAddress(root, run_id)`, the parent being the root.
 
-  A non-`.db` path is `None` too, a sidecar (`-wal`, `-shm`) included.
+  A non-`.db` path in a registered format's directory or at the legacy address is `None` too, a sidecar
+  (`-wal`, `-shm`) included. Under a newer format's directory every path names its root, since that
+  format's interior is unknown. It returns rather than raises
+  for a newer format's root: it only reads a path, a valid path is no error, and a viewer walking a
+  directory renders the answer as a row. It is not named `locate_*`: the locators are `attach_channel`
+  and `create_channel` ([`channel-locators.md`](channel-locators.md)), which open a channel, while this
+  names an address, the inverse of `sqlite_path`.
 - **One run, one pair.** Every copy of a run maps to the same `(root, run_id)`: its current log and its
-  sealed older ones are `Versioned`, its tombstone is `Legacy`. A viewer shows one row per run by
+  sealed older ones are `VersionedAddress`es, its tombstone a `LegacyAddress`. A viewer shows one row per run by
   grouping on that pair, and opening it says which copy answers (§4).
 - **Postgres has no paths.** A run's address there is a row in its format's schema. Discovering runs on a
   server is a separate question (GeoffChurch/runstate-tui's `postgres-resolver.md`), not this inverse.
 
 *The rule that makes it right,* and its test: for every address `a` the two name rules admit,
-`locate_sqlite(forward(a)) == a` (the inverse undoes the forward map); and for every path `p` with
-`locate_sqlite(p)` a `Versioned` or `Legacy` address `a`, `forward(a) == p` (it names nothing the
-forward map would not build). `NewerFormat` is checked against the naming rule alone, the only part of
+`sqlite_address(forward(a)) == a` (the inverse undoes the forward map); and for every path `p` with
+`sqlite_address(p)` a `VersionedAddress` or `LegacyAddress` `a`, `forward(a) == p` (it names nothing the
+forward map would not build). `NewerFormatRoot` is checked against the naming rule alone, the only part of
 an unknown format the protocol fixes.
 
 ## 4. Opening a log
@@ -664,10 +671,10 @@ On SQLite and Postgres (Memory has no addresses):
 
 - the five opening cases (§4), including refusing a root that holds a newer format, and the legacy
   "missing" error carrying its instructions;
-- (proposed, #64) both locators refusing, before any check and creating nothing, a SQLite run id that
+- (#64) both locators refusing, before any check and creating nothing, a SQLite run id that
   is not one filename (`a/b`, `..`, `.`, empty) and a root named `vX.Y.Z`; the inverse undoing the
   forward map over every registered format and the legacy address, and naming nothing the forward map
-  would not build; `NewerFormat` for an unregistered newer directory, `None` for an unregistered older
+  would not build; `NewerFormatRoot` for an unregistered newer directory, `None` for an unregistered older
   one and for a sidecar; and every copy of a migrated run (current, sealed, tombstone) naming one
   `(root, run_id)`;
 - an old-style writer appending to a sealed log fails loudly;

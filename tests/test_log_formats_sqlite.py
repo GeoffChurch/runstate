@@ -317,3 +317,33 @@ def test_a_crashed_delete_mode_writer_onboards_and_migrates(
         assert [e.body for e in ch.read()] == [
             {"value": i, "t": None} for i in range(5)
         ]
+
+
+# §3, "The two names in an address": both locators refuse before any check,
+# creating nothing.
+
+
+@pytest.mark.parametrize("run_id", ["", ".", "..", "a/b", "../x"])
+def test_both_locators_refuse_a_run_id_that_is_not_one_filename(tmp_path, run_id):
+    for locate in (attach_channel, create_channel):
+        with pytest.raises(ValueError, match="one filename"):
+            locate(run_id, root=tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_dotdot_can_no_longer_write_another_runs_legacy_address(tmp_path):
+    # before the rule, "../x" put its log at <root>/x.db, run x's legacy address
+    root = tmp_path / "root"
+    root.mkdir()
+    with pytest.raises(ValueError):
+        create_channel("../x", root=root)
+    assert not (root / "x.db").exists() and not (tmp_path / "x.db").exists()
+
+
+def test_both_locators_refuse_a_root_named_like_a_format_directory(tmp_path):
+    root = tmp_path / "v0.4.0"
+    root.mkdir()
+    for locate in (attach_channel, create_channel):
+        with pytest.raises(ValueError, match="named like a format directory"):
+            locate("r1", root=root)
+    assert list(root.iterdir()) == []
