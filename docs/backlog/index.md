@@ -80,15 +80,15 @@ The cockpit is [the acceptance test for this ledger](cockpit.md); building it, a
 log format 0.4.0, surfaced these upstream asks. They live as GitHub issues (the **inbox**); each
 graduates to a design entry here — with the basis-rubric trail — when taken up.
 
-- **[#15](https://github.com/GeoffChurch/runstate/issues/15) — `read()` query layer** (`filter=`,
-  `before=`/`max_seq=`, windowing): push filter / scrollback / search into the substrate (SQL
-  `WHERE`, pg full-text, sqlite FTS5) instead of the O(all-records) client-side scan every consumer
-  reimplements. The drill-down's filter/search rest on it, and a future multi-frontend daemon
-  exposes it as thin RPC. Bounds are **seq-only, never on `t`** (t is never an ordering key).
-- **[#16](https://github.com/GeoffChurch/runstate/issues/16) — change-notification (poll → push)**:
-  a `wait_for_change()` / `subscribe(after)` primitive so consumers react to new commits instead of
-  per-tick `last_seq()` polling — pg `LISTEN/NOTIFY`, sqlite WAL/inotify. The push upgrade of the
-  watermark/delta model; same idea as the channel-postgres deferred "low-latency push" note below.
+- **[filtered-reads](filtered-reads.md) — DEFERRED, with triggers** (from #15, closed): today's `read()`
+  already filters on the routing fields and reaches any unfiltered window by seq arithmetic, and a body
+  search is a derived index. What remains are three separate asks: a filtered backward read (the last N
+  matching before seq B), a richer predicate over envelope fields (substring, negation), and a batched
+  latest-per-topic.
+- **[change-notification](change-notification.md) — DEFERRED, with a trigger** (from #16, closed): wait for
+  a log to grow instead of polling `last_seq()`. An optimization over a basis that already spans it;
+  Postgres and memory could offer it as an opt-in capability, SQLite cannot honestly. Revive for a cockpit
+  watching many runs over a remote Postgres, after weighing one cross-run `last_seq` query.
 - **[#17](https://github.com/GeoffChurch/runstate/issues/17) — liveness / `conflicted` as an
   observable**: one shared live/stale/dead/conflicted verdict, so a daemon + TUI + Emacs do not each
   re-derive it (the §3.2/§12 "verdicts live upstream" rule). **Half answered by log format 0.4.0:** a
@@ -104,7 +104,7 @@ graduates to a design entry here — with the basis-rubric trail — when taken 
   exist**: a backend-neutral, never-creating question a pool can poll.
 - **[#66](https://github.com/GeoffChurch/runstate/issues/66) — an O(1) cold read of a run's commit
   count and head**: held folds are O(new records) warm, but a first read walks the log (~35–45 ms on
-  a median mycooc run), which a view larger than its fold pool pays every frame. Related: #15.
+  a median mycooc run), which a view larger than its fold pool pays every frame. Related: [filtered-reads](filtered-reads.md).
 - **[#67](https://github.com/GeoffChurch/runstate/issues/67) — a public read of a source's or a
   register's current value**: `last_element` reads eager streams only.
 
@@ -385,7 +385,7 @@ graduates to a design entry here — with the basis-rubric trail — when taken 
   Claim = the uniform shared-log CAS (cross-host single-spawn + control fall out of it);
   liveness = the session probe (since 2026-10-30; it replaced the episode lock), evidence
   for a death report and the Watcher's `session_ended` tier, *not* a claim arbiter. Still
-  open (deferred in the spec): low-latency push (LISTEN/NOTIFY — issue #16), cross-host auto-relaunch
+  open (deferred in the spec): low-latency push (LISTEN/NOTIFY — [change-notification](change-notification.md)), cross-host auto-relaunch
   (the rejected co-arbiter — see "Cross-host liveness for the claim gate" above), sharding,
   HA.
 - **log-tiering — DEFERRED** ([`log-tiering.md`](log-tiering.md)): a run's log in Postgres while it is worked

@@ -320,6 +320,7 @@ rule — never mutate a row on a read path — is not in tension with the
   (`ensure`/`history`). The multi-run dashboard case needs a *multiplexed* listener — really
   the separate viewer project. `NOTIFY` must be best-effort (never fail the append; bounded
   hash channel name, given the 63-byte identifier limit; polling is the floor).
+  Graduated to `../backlog/change-notification.md` (2026-11-02), which holds its shape and trigger.
 - **Sharding** (`run_id → DSN`; per-run independence makes the surface shard-ready) with
   cross-run discovery from a derived, never-authoritative index (`../specs/store.md` Recipe
   5), not by co-locating all writes.

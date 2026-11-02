@@ -462,7 +462,8 @@ RTT because it removes two round trips instead of adding one.
 
 That is the honest conclusion: the third read is affordable everywhere runstate runs today
 (sqlite, and Postgres on a socket), it is the tunnel deployment that would feel it, and the fix is
-already an open issue that this design gives a concrete reason to take.
+already a backlog entry ([filtered-reads](filtered-reads.md), ask 3) that this design gives a
+concrete reason to take.
 
 ## 11. Still open
 
