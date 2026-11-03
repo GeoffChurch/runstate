@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import v0_2_0, v0_3_0, v0_4_0
-from ._layout import DirectoryLayout, Layout
+from ._layout import DirectoryLayout, Layout, Row
 
 LOG_FORMAT = "0.4.0"
 
@@ -281,6 +281,7 @@ __all__ = [
     "LogFormatMismatch",
     "LogFormatMissing",
     "NewerFormatRoot",
+    "Row",
     "VersionedAddress",
     "check_sqlite_names",
     "legacy_sqlite_path",

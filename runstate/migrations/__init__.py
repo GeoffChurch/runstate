@@ -21,18 +21,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, Protocol
 
 from .. import formats
+from ..formats import Row as Row  # the steps take Row from this package
 
 if TYPE_CHECKING:
     from .stores import Store
-
-
-class Row(NamedTuple):
-    seq: int
-    topic: str
-    name: str | None
-    request_id: str | None
-    body: str  # the stored JSON text, byte-for-byte unless a step rewrites it
-    created_at: float
 
 
 class MigrationError(Exception):
