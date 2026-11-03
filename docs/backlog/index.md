@@ -102,9 +102,11 @@ graduates to a design entry here — with the basis-rubric trail — when taken 
   that walks a directory never re-encodes `<root>/vX.Y.Z/<rid>.db`.
 - **[#65](https://github.com/GeoffChurch/runstate/issues/65) — does an attached run's log still
   exist**: a backend-neutral, never-creating question a pool can poll.
-- **[#66](https://github.com/GeoffChurch/runstate/issues/66) — an O(1) cold read of a run's commit
-  count and head**: held folds are O(new records) warm, but a first read walks the log (~35–45 ms on
-  a median mycooc run), which a view larger than its fold pool pays every frame. Related: [filtered-reads](filtered-reads.md).
+- **[header-reads](header-reads.md) — DEFERRED, measured** (from #66, closed): a fold that needs only
+  envelope fields still decodes every body. #66's O(1) commit count is ~5 ms of a ~54 ms cold cockpit
+  row; ~38 ms is `LastElement` decoding ~3,300 value bodies to learn names. Reading without bodies cuts
+  a cold row to ~30 ms. The order-of-magnitude fix is the cockpit's ended-row cache
+  (GeoffChurch/runstate-tui#36).
 - **[#67](https://github.com/GeoffChurch/runstate/issues/67) — a public read of a source's or a
   register's current value**: `last_element` reads eager streams only.
 
