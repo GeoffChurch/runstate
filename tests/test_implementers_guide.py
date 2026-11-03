@@ -33,7 +33,7 @@ jsonschema = pytest.importorskip("jsonschema")
 from jsonschema import Draft202012Validator  # noqa: E402
 
 _ROOT = Path(__file__).resolve().parent.parent
-_PROTO = _ROOT / "protocol"
+_PROTO = _ROOT / "protocol" / "v0.4.0"
 _GUIDE = _ROOT / "docs" / "implementers-guide.md"
 
 

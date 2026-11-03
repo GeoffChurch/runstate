@@ -58,7 +58,7 @@ EACH RUN, as ``runstate migrate``'s detection pass takes it, in memory:
    reads a step's messages). 0.3.0's ``is_live`` is recorded as
    ``live_by_0_3_0``, and refuses nothing here.
 2. Every 0.4.0 row is validated against the 0.4.0 schemas, loaded from
-   ``protocol/`` here (ruling R1), and "Also" is checked.
+   ``protocol/v0.4.0/`` here (ruling R1), and "Also" is checked.
 3. THE READS. The 0.3.0 reads, ``value_series``, ``peek_terminal`` and
    ``undischarged_stops`` as 0.3.0 defined them (``scripts/reads_v0_3_0.py``),
    over a ``MemoryChannel`` of the 0.3.0 rows; the 0.4.0 reads,
@@ -146,7 +146,7 @@ _STEP_0_2_0 = V0_2_0_to_V0_3_0()
 _STEP_0_3_0 = step04.V0_3_0_to_V0_4_0()
 _STEPS: tuple[Step, ...] = (_STEP_0_2_0, _STEP_0_3_0)
 
-_PROTOCOL = Path(__file__).resolve().parent.parent / "protocol"
+_PROTOCOL = Path(__file__).resolve().parent.parent / "protocol" / "v0.4.0"
 _COLUMNS = {"seq", "topic", "name", "request_id", "body", "created_at"}
 _SIDECARS = ("-wal", "-journal")  # what immutable=1 leaves unread
 _VERSIONED = re.compile(r"^v\d+\.\d+\.\d+$")

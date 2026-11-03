@@ -445,7 +445,8 @@ a fourth clock.)
 - [`guide.md`](guide.md) — the how-to, with runnable code.
 - `design-v0.2.md` — the converged design with full rationale and rejected
   alternatives; `specs/commits-and-lineage.md` for log format 0.4.0.
-- `protocol/` — the JSON Schema stack (the wire-authoritative source of truth).
+- `protocol/v0.4.0/` — the JSON Schema stack (the wire-authoritative source of truth); each
+  older log format's beside it.
 - `examples/minimal/` — a runnable end-to-end example
   (`python examples/minimal/driver.py`).
 - `backlog/synergy-map.md` — the forward roadmap. (Two of its layers since

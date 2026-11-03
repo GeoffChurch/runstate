@@ -63,16 +63,15 @@ clusters that unlock each other, with a sequencing — see
   disambiguator (F9) remains, deferred (rationale in the file); the rest of the
   adversarial orthonormal-basis audit of the L2 conventions resolved, and the basis
   audited as largely tight.
-- **[release-and-stability-contract](release-and-stability-contract.md)** —
-  [PROPOSED 2026-07-16, owner-gated] the release *mechanics* are prepared
-  (packaging metadata, `MANIFEST.in`, a tag-gated PyPI trusted-publishing
-  workflow, `CHANGELOG.md`) but every *policy* is open: what freezes at first
-  release + what SemVer means against per-convention wire versions; the public
-  form of the migration doctrine (retain scripts once strangers hold logs); the
-  end-of-schema-file-deletion trigger; deprecation policy; the version-naming
-  tension (`0.4.0.dev0` vs the docs' "v0.3" vs wire-`v0.6`); and the schemas-
-  not-in-the-wheel question. Six decision points, each with a recommendation;
-  nothing ruled. Blocks the first `pip install runstate`.
+- **The 0.4.0 release** — the contract is RULED (`../specs/release-and-stability.md`, 2026-11-02) and the
+  release mechanics are prepared (packaging metadata, `MANIFEST.in`, the tag-gated trusted-publishing workflow).
+  It is tagged once mycooc's Postgres stage 3 (GeoffChurch/mycooc#2) has carried real live runs, the first
+  workload on `PostgresChannel`'s format-0.4.0 tables; mycooc proposes its archive step's (3b) pilot gate as
+  that point. Before it: [#69](https://github.com/GeoffChurch/runstate/issues/69) (a per-run copy between
+  SQLite and Postgres, with public seal and unseal, which 3b needs) and
+  [#70](https://github.com/GeoffChurch/runstate/issues/70) (whether `sealed_runs` is part of format 0.4.0's
+  DDL). At the tag: the version commit and `CHANGELOG.md`'s 0.4.0 section; the owner creates the PyPI project
+  and its trusted-publisher binding.
 
 ## Filed from the runstate-tui cockpit build (GitHub issues)
 

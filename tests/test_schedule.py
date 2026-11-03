@@ -37,7 +37,7 @@ from runstate.vocabulary.schedule import (
     unsatisfiable,
 )
 
-_PROTO = Path(__file__).resolve().parent.parent / "protocol"
+_PROTO = Path(__file__).resolve().parent.parent / "protocol" / "v0.4.0"
 
 # The source the subscriptions below target, and the valued sources at a node
 # where its register holds a value.

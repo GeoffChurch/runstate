@@ -1231,10 +1231,9 @@ class SchemaStack(NamedTuple):
     value: str
 
 
-# 0.2.0's stack, vendored from master 72d9c3f: its lifecycle and subscription
-# schemas left protocol/ when 0.3.0 replaced them.
+# Each format's stack, at its place in protocol/ (0.2.0's as of master 72d9c3f).
 STACK_0_2_0 = SchemaStack(
-    root=_HERE / "fixtures" / "log-format-0.2.0",
+    root=_HERE.parent / "protocol" / "v0.2.0",
     envelope="envelope-v0.2",
     control="subscription-v0.2",
     lifecycle="lifecycle-v0.4",
@@ -1242,7 +1241,7 @@ STACK_0_2_0 = SchemaStack(
     value="value-v0.2",
 )
 STACK_0_3_0 = SchemaStack(
-    root=_HERE / "fixtures" / "log-format-0.3.0",
+    root=_HERE.parent / "protocol" / "v0.3.0",
     envelope="envelope-v0.2",
     control="subscription-v0.3",
     lifecycle="lifecycle-v0.5",
