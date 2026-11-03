@@ -34,6 +34,18 @@ from .checkpoint import (
     OnHeadLineage,
     SavePolicy,
 )
+from .copy import (
+    Copied,
+    CopyRefused,
+    Logs,
+    PostgresLogs,
+    Row,
+    RunLive,
+    SqliteLogs,
+    copy_run,
+    drop_run,
+    log_digest,
+)
 from .launcher import (
     ClaimAliveError,
     Command,
@@ -236,6 +248,15 @@ __all__ = [
     "LiveHandle",
     "launch_producer",
     "foreign_episode",
+    # run copy: one run's log between backends, at its format
+    "copy_run",
+    "drop_run",
+    "Copied",
+    "log_digest",
+    "Row",
+    "Logs",
+    "SqliteLogs",
+    "PostgresLogs",
     # the errors public calls raise
     "RunNotFound",
     "LogFormatError",
@@ -249,6 +270,8 @@ __all__ = [
     "RunFailedError",
     "NoProgressError",
     "RecordlessExitError",
+    "RunLive",
+    "CopyRefused",
     # the convention vocabulary and its typed bodies (serialize via
     # dataclasses.asdict, parse via Cls(**body)), with their fields' enums
     "Topic",
