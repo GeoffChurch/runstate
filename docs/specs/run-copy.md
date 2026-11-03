@@ -4,7 +4,7 @@
 with GeoffChurch/mycooc on 2026-11-02, after the owner ruled that mycooc's storage tier copies rather than moves
 (`../backlog/log-tiering.md`), and revised on 2026-11-03 after mycooc's review of
 [#75](https://github.com/GeoffChurch/runstate/pull/75): `Logs` is the one place type, `Logs.rows`, and `drop_run`.
-Built on branch `feat/run-copy` (`runstate/copy.py`, `tests/test_copy.py`). What the build
+Built in [#76](https://github.com/GeoffChurch/runstate/pull/76) (`runstate/copy.py`, `tests/test_copy.py`). What the build
 settled that this draft left open is folded in below and marked "(build)": which source a copy seals and the
 same-backend pairs (§2), a writable SQLite destination (§3), the digest's field order (§4), `Row`'s module (§6)
 and the liveness read (§8).
