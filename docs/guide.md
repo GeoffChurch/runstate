@@ -36,9 +36,9 @@ pip install runstate            # Python >= 3.11, stdlib-only core
 pip install "runstate[postgres]"  # + the cross-host Postgres backend
 ```
 
-> **Not on PyPI yet.** The release machinery is prepared but the first release
-> is owner-gated (`backlog/release-and-stability-contract.md`); until it lands,
-> install from a clone: `pip install -e .`
+> **Not on PyPI yet.** The first release, 0.4.0, waits on its first Postgres
+> workload (`backlog/index.md`, "The 0.4.0 release"); until it lands, install
+> from a clone: `pip install -e .`
 
 The library is pure-Python and has no required dependencies. The examples below
 run against the default SQLite backend (a single file per run) or an in-process

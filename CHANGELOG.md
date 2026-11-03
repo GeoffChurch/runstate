@@ -3,12 +3,10 @@
 All notable changes to runstate are recorded here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-runstate has **not yet cut a public release**: the package is `0.3.0.dev0` and
-its logs are log format 0.3.0, while the docs describe the shipped arc as "v0.3"
-and the wire conventions run up to `v0.5`. That three-way version-naming tension, and
-what SemVer means against per-convention wire versions, is an owner decision
-drafted (not ruled) in
-[`docs/backlog/release-and-stability-contract.md`](docs/backlog/release-and-stability-contract.md).
+runstate has **not yet cut a public release**. The first will be **0.4.0**, which writes log
+format 0.4.0; what a version promises is ruled in
+[`docs/specs/release-and-stability.md`](docs/specs/release-and-stability.md), and when it is tagged
+is in [`docs/backlog/index.md`](docs/backlog/index.md) ("The 0.4.0 release").
 
 Reconstructed from the repo's own records — `docs/design-v0.2.md` (revision
 history), the dated status lines in `docs/specs/*`, and `git log master`. Not a
@@ -16,8 +14,76 @@ substitute for those; a reading order over them.
 
 ## [Unreleased]
 
-The post-v0.2 arc, landed on `master`, not yet released. Grouped by the thread
-that produced each change.
+The post-v0.2 arc, landed on `master`, not yet released; it becomes 0.4.0. Grouped by
+the thread that produced each change, newest first.
+
+### Release and stability (2026-11-02)
+
+- **The release contract is ruled** (`docs/specs/release-and-stability.md`). The log
+  format is the wire's one promised version. Before 1.0, a MINOR release may change it
+  (always with a retained `runstate migrate` step) or break `runstate.__all__`, and a
+  PATCH does neither; from 1.0, either is a MAJOR. There are no deprecation windows.
+  The wheel carries no schemas; the sdist and the repository do.
+- **Every registered format's schemas are kept, in `protocol/v<format>/`**, named as a
+  log's address names its format: `protocol/v0.2.0/`, `v0.3.0/` and `v0.4.0/`. The
+  0.2.0 and 0.3.0 stacks move there from the migration tests' fixtures.
+- **The bodies and their schemas are compared over generated bodies.**
+  `tests/test_payloads.py` checks that a body parses if and only if its schema
+  definition admits it, now over ~17k bodies generated from each definition as well as
+  the hand-picked edges.
+
+### Log format 0.4.0 — commits and lineage (breaking; 2026-10-31)
+
+`docs/specs/commits-and-lineage.md`, executed by `docs/plans/2026-10-28-layer2-live.md`.
+`runstate.LOG_FORMAT` is 0.4.0 and the package is `0.4.0.dev0`. `runstate migrate`
+moves a 0.2.0 or a 0.3.0 log to it through the retained 0.3.0 → 0.4.0 step, which
+runs a detection pass first and takes a consumer's facts and choices
+(`--assume`, `--resolve`, `--accept`).
+
+- **Values are committed to a lineage of nodes.** Each `commit()` writes a
+  `lifecycle.commit` node naming its parent and the values it commits. A worker's
+  exit is a node too, and `lifecycle.rewind` restates the position. Every lineage
+  read (`series`, `prefix`, `prefix_len`, `last_element`, `aligned`, `answers`,
+  `streams`) takes a required `head` (`LatestClaimHead()`, `AtNode(node)`), so a
+  rewind, a resume from an older checkpoint or a displaced worker branches rather than
+  splicing.
+- **Progress is a count along the lineage:** `Commits()`, or an eager stream's
+  length, and `Target(x, n)`, "the first n of x". The subscription algebra counts the
+  same way (`{commits: n}`, `{stream: name, n: n}`), with no `step`. `ensure`
+  returns `Reached | Unreachable`.
+- **The Worker** (`Worker(channel, *, resume_from, sources, save)`) claims from a node:
+  - `emit`, `set` and `include` write values;
+  - `commit()` ends an iteration;
+  - `rewind`, `discard`, `stopped` and `retire` change its position or end it.
+- **`control.withdraw`** cancels a stop or a subscription by its id, replacing
+  `control.unsubscribe`.
+- **`launcher.*` is renamed `supervisor.*`**, and **`supervisor.died`** is a death
+  report naming the claim it ends. A launcher's reap writes it, as do
+  `report_if_dead` and any party with evidence through `report_death`. A claim
+  ends by its exit or a death report, by presence (`ended`), never by a probe's
+  silence.
+- **The verdict is by viewpoint:** `RunResult.outcomes` (a set of the closed `Outcome`
+  enum), `tier` and `reports`.
+- **Held folds** for a polled path, each equal to its pure read after every record:
+  `HeadFold`, `PrefixLen`, `LastElement`, `Answers`, `LiveDemand`, `PendingStops`.
+- **The checkpoint recipe** (`runstate/checkpoint.py`): the `SavePolicy` Strategy
+  (`Every(k, write)`, `NoSave()`) saves in two phases: the bytes before the node, and
+  the name after it (#62). The `CheckpointChoice` Strategy (`OnHeadLineage()`,
+  `MostProgress(stream)`) chooses among checkpoints.
+- **`Launcher[T]`**, typed by its target record (`ThreadTarget`, `Command`).
+- **`sweep` and `Variant` are deleted** (2026-10-30), a workload helper no consumer
+  called (`docs/dead_ends/sweep.md`).
+- **The SQLite name rules and the address scheme's inverse** (2026-11-02, #64). A run
+  id is one filename, and a root is not named `vX.Y.Z`; together they make the address
+  scheme one-to-one, and `formats.sqlite_address(path)` inverts it.
+
+### The session probe on Postgres (2026-10-30)
+
+- Every `PostgresChannel` connection takes a fresh advisory-lock key before its first
+  write, and every row carries its writer's stamp. `SessionProbe` reads whether the
+  session that wrote a claim has ended, as evidence for a death report, never as a
+  claim arbiter; the `Watcher` reads it as the `session_ended` tier. It replaces the
+  episode lock (`EpisodeHolder` / `EpisodeProbe`). PostgreSQL 16 or newer.
 
 ### Log formats (breaking)
 
@@ -26,8 +92,8 @@ that produced each change.
   per format on Postgres). The locators raise `LogFormatMismatch` on a newer or an
   older format and `LogFormatMissing` on a legacy unversioned log, and
   `runstate migrate` moves logs forward through retained, chained steps that copy
-  and seal. Format 0.2.0 names the logs written since `4729fcd`; format 0.3.0
-  (reference by name, below) is current, and the package is `0.3.0.dev0`.
+  and seal. Format 0.2.0 names the logs written since `4729fcd`, and format 0.3.0
+  is reference by name (below). Format 0.4.0 (above) is current.
 
 ### Library API (breaking)
 
@@ -71,6 +137,13 @@ times:
   The control-plane folds no longer depend on arrival order, which fixes #39,
   the claim cascade and the stale-beat leak. Its migration is retained, as log
   format 0.3.0, reached by `runstate migrate`.
+- **lifecycle `v0.5 → v0.6`, subscription `v0.3 → v0.4`, value `v0.2 → v0.3`, and
+  launcher `v0.4` → supervisor `v0.5`** (2026-10-31): commits and lineage, log format
+  0.4.0 (above). `lifecycle.commit` and `lifecycle.rewind` are new, and `stopped` is a
+  node; the schedules count commits and streams; `control.withdraw` replaces
+  `control.unsubscribe`; a value's body drops `step`; the `launcher.*` topics become
+  `supervisor.*`, with `supervisor.died` new. Its migration is retained, as log format
+  0.4.0.
 
 ### June 2026 — the v0.3 thread (run-episodes → the store dissolution)
 
@@ -179,10 +252,10 @@ times:
   workflow (`.github/workflows/release.yml`) using trusted publishing, with the
   tag↔`pyproject`-version match enforced in the build job — all **inert** until
   the owner creates the PyPI project and pushes a version tag.
-- The **release-and-stability-contract draft**
-  (`docs/backlog/release-and-stability-contract.md`, `PROPOSED`) — the
+- The **release-and-stability-contract draft** — the
   freeze/SemVer/migration-doctrine/version-naming/schemas-in-wheel decision points,
-  drafted for owner ratification. Nothing there is policy until ruled.
+  drafted for owner ratification. Ruled 2026-11-02 as
+  `docs/specs/release-and-stability.md` (above).
 - User-facing documentation: `docs/guide.md` ("Integrate your training loop in 15
   minutes") and `docs/api.md` (the public-surface reference, with a drift-guard
   test), plus a submitit/SLURM launcher *recipe* (`examples/submitit/`) and its

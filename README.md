@@ -16,7 +16,7 @@ The protocol is language-agnostic: any implementation that produces conforming m
 
 ## Quickstart
 
-Install: `pip install -e .` (Python ≥ 3.11, stdlib-only core; add `.[postgres]` for the cross-host backend, `.[test]` for the suite).
+Install: `pip install runstate` (Python ≥ 3.11, stdlib-only core; `runstate[postgres]` adds the cross-host backend). Until 0.4.0 is on PyPI, install from a clone: `pip install -e .`, with `.[test]` for the suite.
 
 **The code below runs.** As in the guide, a block fenced ` ```python ` is a complete program, and `tests/test_guide.py` runs each one against the current `runstate/`; a block fenced ` ```python fragment ` is a sketch, most often of a runnable example under `examples/` (named beside it, and run by `tests/test_examples.py`).
 
