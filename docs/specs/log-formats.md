@@ -43,7 +43,9 @@ inspection. A step ladder needs to know where to start, so the format must be st
    metadata.
 5. **No mixed logs.** A log is entirely in one format. Nothing reads one format as another.
 6. **Exactly one writable log per run.** A run whose log is being migrated, or has been, has a sealed old
-   log and at most one writable new one.
+   log and at most one writable new one. A run whose log is copied between backends at its format
+   ([`run-copy.md`](run-copy.md)) keeps its one writable log, and every copy of it is sealed: a copy into
+   SQLite is written sealed, and a copy into Postgres, which becomes the writable log, seals its source first.
 
 **Why the address, and not a record or metadata.** A record would make a created-but-unclaimed log hold
 records, which changes the existence rule (`channel-locators.md`: a run exists iff it has records). It

@@ -1,10 +1,13 @@
 # Run copy — one run's log, copied between backends at its format
 
-**Status: DRAFT 2026-11-03**, for [#69](https://github.com/GeoffChurch/runstate/issues/69). Its shape was agreed
+**Status: IMPLEMENTED 2026-11-03**, for [#69](https://github.com/GeoffChurch/runstate/issues/69). Its shape was agreed
 with GeoffChurch/mycooc on 2026-11-02, after the owner ruled that mycooc's storage tier copies rather than moves
 (`../backlog/log-tiering.md`), and revised on 2026-11-03 after mycooc's review of
 [#75](https://github.com/GeoffChurch/runstate/pull/75): `Logs` is the one place type, `Logs.rows`, and `drop_run`.
-Not built.
+Built on branch `feat/run-copy` (`runstate/copy.py`, `tests/test_copy.py`). What the build
+settled that this draft left open is folded in below and marked "(build)": which source a copy seals and the
+same-backend pairs (§2), a writable SQLite destination (§3), the digest's field order (§4), `Row`'s module (§6)
+and the liveness read (§8).
 
 ## 1. The need
 
@@ -65,6 +68,17 @@ In order:
 4. **Verify**: re-read the destination's rows and compare their digest with the source's.
 5. **Return** the digest and the last seq.
 
+**Which source is sealed (build).** A run has exactly one writable log, and every copy of it is sealed. So the
+source is sealed exactly when the destination is writable, which is Postgres: a copy into SQLite is a sealed
+snapshot and leaves its source as it was. Each `Logs` says which it is, and `copy_run` asks no other question. The
+two pairs this draft did not name follow from it: **SQLite → SQLite** writes a sealed snapshot and leaves the
+source writable, and **Postgres → Postgres** is refused with `ValueError` before anything is read, since a
+Postgres log cannot be sealed while it is worked on (#70) and the run would have two writable logs.
+
+**Both endpoints take the locators' opening checks (build)** (`log-formats.md` §4): a root or database holding a
+newer format, or the run held in an older format or at the legacy address, raises `LogFormatMismatch` or
+`LogFormatMissing` on either side. A copy is never written beside a log of another format.
+
 Every field copies exactly. Format 0.4.0 stores `body` as text and `created_at` as a double on both backends
 (`runstate/formats/v0_4_0.py`), so a row reads back byte-identical whichever way it went.
 
@@ -77,7 +91,8 @@ writer stamp.
 **Postgres → SQLite (a snapshot).**
 - The source is not sealed: Postgres stays the run's writable log.
 - The destination is the locators' address, `<root>/v0.4.0/<rid>.db`. It may be absent, equal to the source
-  (a no-op, so a retry succeeds), or a strict prefix of it (replaced).
+  (a no-op, so a retry succeeds), or a strict prefix of it (replaced). A destination that is not sealed is the
+  run's writable SQLite log, and a copy never replaces it or adopts it as a snapshot: `CopyRefused` (build).
 - The file is written under a hidden temporary name beside the address, verified, sealed by `seal_sqlite`
   (checkpointed, `journal_mode=DELETE`, every write bit cleared), and renamed into place. A reader never sees a
   partial or writable snapshot, and a replacement needs write permission on the directory only.
@@ -101,7 +116,11 @@ writer stamp.
   lock a channel's birth takes. It may be absent or equal to the source (a no-op, so a retried import
   succeeds). A strict prefix is refused: Postgres is the writable log, and a writer may be appending to it.
 - The rows are inserted, checked and committed in one transaction. A writer birthing the run concurrently
-  collides with the insert on the primary key `(run_id, seq)`, and one of the two fails.
+  collides with the insert on the primary key `(run_id, seq)`, and one of the two fails: a claim's CAS returns
+  `None`, as any loser's does, and a losing import raises `CopyRefused`.
+- The schema is born first, by `ensure_schema`, as a channel's birth provisions it, in a transaction of its own
+  (build): the birth lock is then not held across the import's inserts, and a rolled-back import leaves only the
+  schema any channel would have born.
 - A crash after the seal and before the commit leaves the run sealed in SQLite and absent from Postgres: no
   writable log, nothing lost. A retry seals nothing new and completes.
 
@@ -114,7 +133,8 @@ log_digest(rows: Iterable[Row]) -> str   # "sha256:<64 hex digits>"
 ```
 
 `Row` is `(seq, topic, name, request_id, body, created_at)`, the columns every format-0.4.0 log holds. The digest
-is SHA-256 over the rows in seq order, each encoded as the concatenation of:
+is SHA-256 over the rows in seq order (rows out of order are a `ValueError`), each encoded as the concatenation of
+its fields **in that order** (build), each field as:
 
 | Field | Encoding |
 |---|---|
@@ -125,6 +145,11 @@ is SHA-256 over the rows in seq order, each encoded as the concatenation of:
 
 A length prefix and a byte-exact float make the encoding unambiguous and language-neutral: no JSON escaping, no
 float formatting. The run id is not in it, since the digest describes a log's contents, wherever it lives.
+Fixed vectors, with their expected digests written out, are in `tests/test_copy.py`
+(`test_log_digest_fixed_vectors`, and the bytes of two rows in `test_log_digest_encodes_each_row_as_the_table_says`).
+
+A destination is compared with the source row by row as this encoding writes them, so a prefix of rows is a prefix
+of the digest's input.
 
 ## 5. Dropping a run's log
 
@@ -153,8 +178,15 @@ drop_run(run_id: str, *, logs: Logs) -> None
 - A module of its own, `runstate/copy.py`, beside `channel/` rather than under `migrations/`, since it is not a
   migration. It reuses `migrations/seal.py`'s seals and the channel modules' DDL and birth lock.
 - `copy_run`, `drop_run`, `Copied`, `log_digest`, `Row`, `Logs`, `SqliteLogs`, `PostgresLogs`, `RunLive` and
-  `CopyRefused` join `runstate.__all__`. `Row` moves from `runstate.migrations` to the new module, which the
-  migrations then import.
+  `CopyRefused` join `runstate.__all__`.
+- **`Row` moves to `runstate.formats` (build),** not to `runstate/copy.py`: it is the record of every registered
+  format's log table, which the migrations read and write for every format and the copy for the current one, so
+  both import it from the leaf they already depend on. In `copy.py` it would point the migrations at the copy, and
+  close an import cycle, since the copy reuses `runstate.migrations.seal`. `runstate.migrations` imports it for its
+  own use, and its retained steps keep taking it from there (`from . import Row`), unchanged. `copy.py` imports the
+  seal at its call, so `import runstate` does not load every retained step.
+- The SQLite opening checks move out of the locator into `runstate.channel.sqlite_log_path(root, run_id)`, which
+  the locators and the copy share; Postgres's were already `channel.postgres.check_format`.
 - No command line: mycooc wraps its bulk import in a module of its own, which owns resumability, the per-run
   report and its fold-identical check.
 
@@ -174,8 +206,8 @@ drop_run(run_id: str, *, logs: Logs) -> None
 1. **#74's read-only attach.** A sealed snapshot already attaches, reads, and refuses a write
    (`sqlite3.OperationalError: attempt to write a readonly database`, checked 2026-11-03). Opening it with
    `immutable=1`, and a read-only handle type, are #74's.
-2. **The liveness read.** Step 2 needs `live_episode` over rows rather than a channel. Building envelopes from the
-   rows and reusing the fold is the expected shape; this is for the build.
+2. ~~**The liveness read.**~~ Settled by the build: the rows become envelopes in a `MemoryLog`, and `live_episode`
+   reads it through a `MemoryChannel`, so the copy and the claim gate cannot disagree.
 
 ## 9. Tests
 

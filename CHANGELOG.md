@@ -17,6 +17,20 @@ substitute for those; a reading order over them.
 The post-v0.2 arc, landed on `master`, not yet released; it becomes 0.4.0. Grouped by
 the thread that produced each change, newest first.
 
+### Run copy (2026-11-03)
+
+- **`copy_run`, `drop_run` and `log_digest`** (`docs/specs/run-copy.md`, #69): one
+  run's log copied between backends at its format, every `seq` and `created_at`
+  exact, and verified by a public, language-neutral digest. Postgres → SQLite
+  writes a sealed snapshot; SQLite → Postgres seals its source, which becomes the
+  run's first snapshot, and its rows carry no writer stamp. A place is a `Logs`
+  (`SqliteLogs(root)`, `PostgresLogs(dsn)`) with a public `rows`; a live run is
+  `RunLive`, a destination the copy may not replace `CopyRefused`. `drop_run`
+  deletes a run's log for GC, on Postgres under the seal's table lock. Built for
+  GeoffChurch/mycooc's storage tier (`docs/backlog/log-tiering.md`).
+- **`Row` is exported from `runstate`** and lives in `runstate.formats`, which the
+  migrations import it from.
+
 ### Release and stability (2026-11-02)
 
 - **`Bind` is exported from `runstate`**, beside `SavePolicy`, whose `prepare` returns it
