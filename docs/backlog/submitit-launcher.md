@@ -127,5 +127,5 @@ cannot exercise preemption.
 - [launcher-protocol-typing](launcher-protocol-typing.md) — the `launch`
   signature finding this adapter is the third instance of.
 - `docs/specs/channel-postgres.md` — the in-repo optional-extra precedent (2, 1).
-- `docs/backlog/release-and-stability-contract.md` — if it ships as an extra, it
-  bears on the packaging decisions there.
+- `docs/specs/release-and-stability.md` — if it ships as an extra, it bears on
+  what a release promises.

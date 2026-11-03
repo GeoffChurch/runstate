@@ -16,8 +16,7 @@
 # REFUSES a tag that doesn't match it (PyPI is a one-way door: a mismatched tag
 # would burn pyproject's version -- and a dev version is invisible to default
 # pip resolution, so the workflow would go green while the package can't even
-# be installed). The version story itself is owner-gated -- see
-# docs/backlog/release-and-stability-contract.md.
+# be installed). What a version promises: docs/specs/release-and-stability.md.
 
 name: release
 

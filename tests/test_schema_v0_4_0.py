@@ -1,8 +1,8 @@
 """The 0.4.0 convention schemas (docs/specs/commits-and-lineage.md section 3, 10).
 
-They sit beside 0.3.0's in protocol/; tests/test_schema.py keeps validating
-0.3.0. `STACK_0_4_0` and `row_errors` are what the migration's tests validate
-migrated rows with.
+They sit in protocol/v0.4.0/, beside each older format's in its own directory.
+`STACK_0_4_0` and `row_errors` are what the migration's tests validate migrated
+rows with.
 """
 
 import json
@@ -14,7 +14,7 @@ import pytest
 jsonschema = pytest.importorskip("jsonschema")
 from jsonschema import Draft202012Validator  # noqa: E402
 
-_PROTO = Path(__file__).resolve().parent.parent / "protocol"
+_PROTO = Path(__file__).resolve().parent.parent / "protocol" / "v0.4.0"
 
 
 def _load(name: str) -> Draft202012Validator:
@@ -201,9 +201,14 @@ def test_each_schema_is_a_valid_schema(schema):
     )
 
 
-def test_protocol_holds_exactly_the_0_4_0_stack():
-    """0.3.0's schemas left for the step tests' fixtures (tests/fixtures/log-format-0.3.0/)
-    at the cutover; protocol/ holds the current format's stack and nothing else."""
+def test_protocol_holds_every_format_and_exactly_the_0_4_0_stack_at_its_place():
+    """protocol/ holds one directory per registered format, named as a log's address
+    names it (docs/specs/release-and-stability.md, "Schemas"), and nothing else; this
+    format's is the 0.4.0 stack."""
+    from runstate.formats import FORMATS
+
+    held = {p.name for p in _PROTO.parent.iterdir()}
+    assert held == {f"v{f}" for f in FORMATS}
     held = {p.name.removesuffix(".schema.json") for p in _PROTO.glob("*.schema.json")}
     assert held == {
         "envelope-v0.2",

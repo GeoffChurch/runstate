@@ -10,7 +10,7 @@ are the live ones under `runstate/` since the layer-2 cutover.
 
 **Authority order** (when this guide disagrees with any of them, they win):
 
-1. The **JSON Schema stack** in [`../protocol/`](../protocol/) — the wire format:
+1. The **JSON Schema stack** in [`../protocol/v0.4.0/`](../protocol/v0.4.0/) — the wire format:
    `envelope-v0.2` plus the four 0.4.0 conventions, `lifecycle-v0.6`,
    `subscription-v0.4`, `supervisor-v0.5` and `value-v0.3`, each
    `additionalProperties: false` and independently versioned.
@@ -69,7 +69,7 @@ no RPC, no run-time negotiation.
 ## 2. The substrate contract (design §4)
 
 A channel is a handle on **one run's** append-only log of envelopes. The
-envelope (design §4; [`envelope-v0.2.schema.json`](../protocol/envelope-v0.2.schema.json),
+envelope (design §4; [`envelope-v0.2.schema.json`](../protocol/v0.4.0/envelope-v0.2.schema.json),
 unchanged in 0.4.0; `runstate/channel/envelope.py`):
 
 ```

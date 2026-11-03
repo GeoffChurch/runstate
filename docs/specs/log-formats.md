@@ -23,7 +23,7 @@ counts.
 
 **Consumers now upgrade on their own schedule.** mycooc, translation and runstate-tui pin runstate to a
 commit (2026-10-03), so a log can sit at an old format indefinitely. Whatever moves it forward must still
-exist when its owner upgrades. `../backlog/release-and-stability-contract.md` §(b) anticipated this, and
+exist when its owner upgrades. The release contract's draft (§(b), now ruled in `release-and-stability.md` §3) anticipated this, and
 named the missing piece as "version detection, a step ladder".
 
 **A log's format cannot be told from its shape.** `value.t` was redefined from per-episode to absolute
@@ -267,7 +267,7 @@ migrated.
   write. On Postgres the seal and the copy are one transaction, so a failure, a refusal included, rolls
   back completely and leaves the run unsealed and unmigrated. A chain that stops part-way leaves the run
   at an intermediate format, and re-running continues from there.
-- **Steps are retained, never deleted.** This resolves `release-and-stability-contract.md` §(b) in favor
+- **Steps are retained, never deleted.** This resolved the release contract draft's §(b) in favor
   of its option 3, with the detection problem removed by the address.
 
 *Found in implementation.* The CLI needs `--backend sqlite|postgres`, in the synopsis above. On Postgres the
@@ -727,7 +727,7 @@ On SQLite and Postgres (Memory has no addresses):
 - `store.md`: a log's address under placement, and Recipe 3's deletion rule.
 - `design-v0.2.md` §4: the locators check formats.
 - `CLAUDE.md`: the upgrade procedure, beside the pinning note.
-- `../backlog/release-and-stability-contract.md` §(b): resolved by this spec.
+- The release contract draft's §(b): resolved by this spec (`release-and-stability.md` §3).
 - `store.md` Recipe 3: collecting a run also deletes its entries in the root's migration manifest (§6,
   "Ambiguity").
 - `CLAUDE.md`: the upgrade procedure's `runstate migrate` takes a `--resolve` for each projection the

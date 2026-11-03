@@ -21,13 +21,19 @@ with opt-in **conventions** on top. The design rationale lives in
 
 ## Two source-of-truth artifacts
 
-1. **The JSON Schema stack in `protocol/`** — `envelope-v0.2.schema.json`
+1. **The JSON Schema stack in `protocol/v0.4.0/`** — `envelope-v0.2.schema.json`
    (the substrate record: structure only, opaque body) plus the
    per-convention schemas (`value`-`v0.3`, `subscription`-`v0.4`,
    `supervisor`-`v0.5`, `lifecycle`-`v0.6`; log format 0.4.0,
    `docs/specs/commits-and-lineage.md` §3), each `additionalProperties: false`
-   and independently versioned. Authoritative for the wire format. (The 0.3.0
-   schemas are the migration's test fixtures, `tests/fixtures/log-format-0.3.0/`.)
+   and independently versioned. Authoritative for the wire format. `protocol/`
+   holds one directory per registered format, named as a log's address names
+   it (`v0.2.0/`, `v0.3.0/`, `v0.4.0/`), since a retained migration step reads
+   each older format (`docs/specs/release-and-stability.md`, "Schemas"). The
+   library re-encodes the current stack by hand (`vocabulary/payloads.py`,
+   `schedule.parse_schedule`) and never loads it, so its core needs no
+   `jsonschema`; `tests/test_payloads.py` holds the two encodings to one
+   meaning over bodies generated from each schema definition.
 2. **`docs/design-v0.2.md`** — prose. Defines the two-layer model and
    semantics: the topic-log substrate, the conventions, the liveness
    tiers, the subscription condition-algebra, the three clocks. Its 0.4.0

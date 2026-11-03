@@ -33,7 +33,7 @@ from runstate.vocabulary.payloads import (
     Withdraw,
 )
 
-_PROTO = Path(__file__).resolve().parent.parent / "protocol"
+_PROTO = Path(__file__).resolve().parent.parent / "protocol" / "v0.4.0"
 
 _SAMPLES = [
     Value(value=0.5, t=0.0),
@@ -355,6 +355,78 @@ def _edges():
     yield Topic.SUPERVISOR_TERMINATED, {**by_signal, "exit_code": 0}
 
 
+# A field's candidate values: every JSON type, at the edges the schemas draw (0 and 1
+# for a seq, "" for a name, a repeat for a unique array). No whole-number float and no
+# NaN: those are the two deliberate disagreements, tested below.
+_POOL: tuple[object, ...] = (
+    None,
+    True,
+    False,
+    -1,
+    0,
+    1,
+    2,
+    -0.5,
+    0.5,
+    "",
+    "x",
+    [],
+    [1],
+    [1, 1],
+    [0],
+    ["x"],
+    ["x", "x"],
+    [""],
+    [None],
+    {},
+    {"x": 1},
+)
+
+
+def _named(node: object) -> list[object]:
+    """Every ``enum`` member and ``const`` under ``node``: the values a closed
+    field admits, which the pool cannot guess."""
+    if isinstance(node, list):
+        return [v for n in node for v in _named(n)]
+    if not isinstance(node, dict):
+        return []
+    found = [*node.get("enum", []), *([node["const"]] if "const" in node else [])]
+    return found + [
+        v for k, n in node.items() if k not in ("enum", "const") for v in _named(n)
+    ]
+
+
+def _generated():
+    """Bodies made from each definition itself, so the comparison does not depend on
+    which edges a person thought of. For each field, the candidates its schema admits
+    (from the pool and the definition's enums and consts); a base body for each
+    admitted value of each field, the other fields at their first; and from each base,
+    every field set to every candidate, admitted or not, so each coupling between two
+    fields is crossed."""
+    from jsonschema import Draft202012Validator
+
+    for topic, (schema, definition, _cls) in _DEFINITIONS.items():
+        defs = json.loads((_PROTO / f"{schema}.schema.json").read_text())["$defs"]
+        node = defs[definition]
+        candidates = [*_POOL, *_named(node)]
+        admitted = {
+            field: [
+                v
+                for v in candidates
+                if Draft202012Validator({"$defs": defs, "allOf": [sub]}).is_valid(v)
+            ]
+            for field, sub in node["properties"].items()
+        }
+        assert all(admitted.values()), (topic, admitted)  # the pool reaches every field
+        first = {field: vs[0] for field, vs in admitted.items()}
+        for field, vs in admitted.items():
+            for v in vs:
+                base = {**first, field: v}
+                for other in base:
+                    for c in candidates:
+                        yield topic, {**base, other: c}
+
+
 def _bodies():
     from test_schema_v0_4_0 import NEGATIVE, VALID
 
@@ -362,6 +434,7 @@ def _bodies():
         if r["topic"] in _DEFINITIONS:
             yield Topic(r["topic"]), r["body"]
     yield from _edges()
+    yield from _generated()
 
 
 def test_a_body_parses_if_and_only_if_its_schema_definition_admits_it():

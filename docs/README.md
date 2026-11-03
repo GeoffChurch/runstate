@@ -119,8 +119,9 @@ deciders, `ensure`), speaking log format 0.4.0 (`specs/commits-and-lineage.md`).
 
 **The authoritative sources for what the library currently is:**
 
-1. The JSON Schema stack in `../protocol/` (`envelope-v0.2.schema.json` + the
-   per-convention schemas) — the wire format.
+1. The JSON Schema stack in `../protocol/v0.4.0/` (`envelope-v0.2.schema.json` + the
+   per-convention schemas) — the wire format. Each older log format's stack sits beside
+   it, in `../protocol/v<format>/`.
 2. `design-v0.2.md` — the semantics (plus the shipped `specs/` for the scopes
    not yet folded back into it).
 3. The code in `../runstate/` and the tests in `../tests/`.

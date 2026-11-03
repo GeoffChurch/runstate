@@ -1,17 +1,17 @@
 # sdist contents beyond the package itself. The wheel is unaffected -- these
 # trees live OUTSIDE the `runstate` package, so they ship in the source
-# distribution only (the schemas-in-the-wheel question is deferred to the
-# stability contract: docs/backlog/release-and-stability-contract.md).
+# distribution only. The wheel is the Python implementation and does not read
+# the schemas (docs/specs/release-and-stability.md, "Schemas").
 
 include CHANGELOG.md
 include LICENSE
 
-# The wire-authoritative source of truth travels with the source.
+# The wire-authoritative source of truth travels with the source: every
+# registered log format's schemas, in protocol/v<format>/.
 recursive-include protocol *.json
 
-# The design record and the runnable examples. (Migration scripts are deleted
-# on convergence per the develop-by-migration doctrine -- git carries them --
-# so there is nothing under scripts/ to ship.)
+# The design record and the runnable examples. (The migration steps ship in the
+# package, runstate/migrations/; scripts/ holds development tools only.)
 recursive-include docs *.md
 recursive-include examples *.py
 
