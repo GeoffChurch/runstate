@@ -26,6 +26,7 @@ from .formats import LOG_FORMAT, LogFormatError, LogFormatMismatch, LogFormatMis
 from .vocabulary.handle import handle_pid
 from .vocabulary.launch import LAUNCH_ID_ENV, new_launch_id
 from .checkpoint import (
+    Bind,
     CheckpointChoice,
     Every,
     MostProgress,
@@ -162,6 +163,7 @@ __all__ = [
     # the worker and the checkpoint recipe
     "Worker",
     "SavePolicy",
+    "Bind",
     "Every",
     "NoSave",
     "CheckpointChoice",

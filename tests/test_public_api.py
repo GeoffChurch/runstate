@@ -20,6 +20,7 @@ EXPECTED = {
     # the worker and the checkpoint recipe
     "Worker",
     "SavePolicy",
+    "Bind",
     "Every",
     "NoSave",
     "CheckpointChoice",

@@ -211,15 +211,17 @@ substrate, and a per-tick self-check in the worker — are refuted in
 ### `SavePolicy`
 
 ```python
+Bind = Callable[[int], None]
+
 class SavePolicy(Protocol):
-    def prepare(self, *, commits: int, exit: bool) -> Callable[[int], None] | None: ...
+    def prepare(self, *, commits: int, exit: bool) -> Bind | None: ...
 ```
 
 Whether and how to save at a moment the Worker chose, in two phases (spec §6,
 "Save in two phases"): just before each commit is written, and before an
 extendable exit, `commits` the node's `count(Commits(), node)` and `exit` True at
 the exit. It writes the checkpoint's bytes where no reader looks and returns the
-**bind**, or `None` for no save here; the Worker calls the bind with the node's
+**bind** (a `Bind`), or `None` for no save here; the Worker calls the bind with the node's
 seq once the node has landed, which names the bytes by it (an atomic rename).
 A prepare that raises comes before its node, so the claim ends with an errored,
 torn exit; a bind that raises comes after, so the node stands. An exit's retried
@@ -237,7 +239,7 @@ the root every claim.
 ### `Every`
 
 ```python
-Every(k: int, write: Callable[[], Callable[[int], None]])
+Every(k: int, write: Callable[[], Bind])
 ```
 
 Calls `write()` at each commit whose `commits` is a multiple of `k`, and at every

@@ -19,6 +19,8 @@ the thread that produced each change, newest first.
 
 ### Release and stability (2026-11-02)
 
+- **`Bind` is exported from `runstate`**, beside `SavePolicy`, whose `prepare` returns it
+  (found by GeoffChurch/mycooc's stage-3 build).
 - **The release contract is ruled** (`docs/specs/release-and-stability.md`). The log
   format is the wire's one promised version. Before 1.0, a MINOR release may change it
   (always with a retained `runstate migrate` step) or break `runstate.__all__`, and a
