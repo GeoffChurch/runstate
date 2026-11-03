@@ -66,11 +66,10 @@ clusters that unlock each other, with a sequencing — see
 - **The 0.4.0 release** — the contract is RULED (`../specs/release-and-stability.md`, 2026-11-02) and the
   release mechanics are prepared (packaging metadata, `MANIFEST.in`, the tag-gated trusted-publishing workflow).
   It is tagged once mycooc's Postgres stage 3 (GeoffChurch/mycooc#2) has carried real live runs, the first
-  workload on `PostgresChannel`'s format-0.4.0 tables; mycooc proposes its archive step's (3b) pilot gate as
-  that point. Before it: [#69](https://github.com/GeoffChurch/runstate/issues/69), a seq-preserving,
-  digest-verified per-run copy between SQLite and Postgres, which 3b's snapshots and its cut-over import need
-  (3b copies rather than moves since 2026-11-02, so [#70](https://github.com/GeoffChurch/runstate/issues/70),
-  a live seal in format 0.4.0's DDL, closed unbuilt; `log-tiering.md`). At the tag: the version commit and `CHANGELOG.md`'s 0.4.0 section; the owner creates the PyPI project
+  workload on `PostgresChannel`'s format-0.4.0 tables; mycooc proposes its snapshot step's (3b) pilot gate as
+  that point. #69, the per-run copy its snapshots and cut-over import need, is built
+  (`../specs/run-copy.md`, #76; 3b copies rather than moves since 2026-11-02, so #70, a live seal, closed
+  unbuilt). At the tag: the version commit and `CHANGELOG.md`'s 0.4.0 section; the owner creates the PyPI project
   and its trusted-publisher binding.
 
 ## Filed from the runstate-tui cockpit build (GitHub issues)
