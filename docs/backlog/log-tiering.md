@@ -1,8 +1,10 @@
 # Log tiering — a run's log in Postgres while it is worked on, in a file otherwise
 
 **Status: DEFERRED, with a trigger.** Ruled 2026-10-23 as GeoffChurch/mycooc's decision 12c
-([review](../review-2026-10-04-commits-and-lineage.md) §12, item 15). mycooc tiers its own logs; runstate does
-not, until **a second consumer wants a tier**. Then runstate builds the general form below, not mycooc's.
+([review](../review-2026-10-04-commits-and-lineage.md) §12, item 15), and its form re-ruled 2026-11-02: mycooc
+now copies rather than moves (below). mycooc tiers its own logs; runstate provides the one primitive its tier
+needs, a seq-preserving per-run copy between backends ([#69](https://github.com/GeoffChurch/runstate/issues/69)),
+and builds no tier until **a second consumer wants one**.
 
 ## Why a tier at all
 
@@ -22,20 +24,32 @@ good.
 
 ## Two forms
 
-- **Move and re-import (mycooc's).** The rows leave Postgres. A writer to an archived run first copies the
-  file back, with its seqs, and renames the file aside. **Every write must re-import first, not only a
-  claim.** Both the compare-and-append and the plain append compute `MAX(seq)` over the run's rows in
-  Postgres (`runstate/channel/postgres.py`, `_CAS` and the append beside it). With the rows gone, a stop, a
+- **Move and re-import (mycooc's until 2026-11-02).** The rows leave Postgres. A writer to an archived run
+  first copies the file back, with its seqs, and renames the file aside. **Every write must re-import first,
+  not only a claim.** Both the compare-and-append and the plain append compute `MAX(seq)` over the run's rows
+  in Postgres (`runstate/channel/postgres.py`, `_CAS` and the append beside it). With the rows gone, a stop, a
   late death report or a launcher record lands at seq 1 and starts a second log. Readers, who prefer the
-  file, never see it.
+  file, never see it. Guarding that loudly would need a live seal on the current format: `sealed_runs` in
+  format 0.4.0's DDL and a check on every append (#70, closed unbuilt).
 - **Copy, don't move (the general form).** Postgres keeps every row and stays the one truth. When a run's
   latest claim ends, a read-only snapshot is written to its home for readers that must not depend on the
   server. A writer retires a stale snapshot by renaming it aside before it writes, and a new one is written
   when the run next ends. There is no copy-back and no re-import inside the claim path. The costs: Postgres
   and its backups hold all history (mycooc's 4,683 channels are 3.0 GB), and GC deletes in two places.
 
-runstate would build the second. The first makes the substrate own a log with two homes and a copy-back in
-every claim, which is the most sensitive path.
+runstate would build the second, and on 2026-11-02 the owner ruled it for mycooc too. The deciding
+asymmetry is what a writer that skips the consumer's write seam does: under a move it forks the log silently
+(seq 1, and a worker recomputing from step 0); under a copy it appends correctly to the one log, and the only
+damage is a snapshot that stays stale until the run next ends. The log's correctness stops depending on the
+seam. mycooc's accepted refinements: every ended run's snapshot is a digest-verified copy, so losing the server
+costs about what a move did (runs in flight, plus anything written since a run's last end); backups move to
+continuous WAL archiving; readers that act on liveness read Postgres, readers of finished results read the
+snapshot; GC deletes the home and the rows in one sweep; and a one-time import moves every existing SQLite log
+into Postgres at the cut-over, through the same copy.
+
+The copy needs no live seal. As proposed for #69 (not yet agreed), its one sealing is the old one's case, a
+log with two homes that a stale writer could reach: the cut-over import seals its SQLite source, which then
+serves as the run's first snapshot, and each snapshot is written sealed, so readers can open it `immutable=1`.
 
 ## Not per-episode logs
 

@@ -67,10 +67,10 @@ clusters that unlock each other, with a sequencing — see
   release mechanics are prepared (packaging metadata, `MANIFEST.in`, the tag-gated trusted-publishing workflow).
   It is tagged once mycooc's Postgres stage 3 (GeoffChurch/mycooc#2) has carried real live runs, the first
   workload on `PostgresChannel`'s format-0.4.0 tables; mycooc proposes its archive step's (3b) pilot gate as
-  that point. Before it: [#69](https://github.com/GeoffChurch/runstate/issues/69) (a per-run copy between
-  SQLite and Postgres, with public seal and unseal, which 3b needs) and
-  [#70](https://github.com/GeoffChurch/runstate/issues/70) (whether `sealed_runs` is part of format 0.4.0's
-  DDL). At the tag: the version commit and `CHANGELOG.md`'s 0.4.0 section; the owner creates the PyPI project
+  that point. Before it: [#69](https://github.com/GeoffChurch/runstate/issues/69), a seq-preserving,
+  digest-verified per-run copy between SQLite and Postgres, which 3b's snapshots and its cut-over import need
+  (3b copies rather than moves since 2026-11-02, so [#70](https://github.com/GeoffChurch/runstate/issues/70),
+  a live seal in format 0.4.0's DDL, closed unbuilt; `log-tiering.md`). At the tag: the version commit and `CHANGELOG.md`'s 0.4.0 section; the owner creates the PyPI project
   and its trusted-publisher binding.
 
 ## Filed from the runstate-tui cockpit build (GitHub issues)
@@ -390,9 +390,9 @@ graduates to a design entry here — with the basis-rubric trail — when taken 
   (the rejected co-arbiter — see "Cross-host liveness for the claim gate" above), sharding,
   HA.
 - **log-tiering — DEFERRED** ([`log-tiering.md`](log-tiering.md)): a run's log in Postgres while it is worked
-  on and in a file once its latest claim has `ended`. mycooc tiers its own (move and re-import, where every
-  write must re-import first); runstate builds the general form, copy-not-move, when a second consumer wants a
-  tier.
+  on and in a file once its latest claim has `ended`. mycooc tiers its own, by copy-not-move since
+  2026-11-02 (Postgres keeps every row; a sealed snapshot in the run's home), over #69's per-run copy; runstate
+  builds a tier itself when a second consumer wants one.
 - **outage-as-pause — DEFERRED** ([`outage-as-pause.md`](outage-as-pause.md)): a worker whose Postgres session
   drops waits for the server, ends its own old claim on session evidence, and claims afresh from its last
   landed node, so an outage costs a pause, not a requeue. Decided with mycooc's 12b.
