@@ -182,6 +182,14 @@ The substrate + opt-in conventions + reference orchestration, in
   (`Running(head, commits, beacon_age) | RunResult`) + `await_consumed` (did my
   control request land: a `Nak`, the terminal `RunResult`, or `None` for
   accepted; a spent id, a nameless request or a void lease raises).
+- **`copy.py`** — run copy (`docs/specs/run-copy.md`): `copy_run(rid, *,
+  source, destination) -> Copied` moves one run's rows between backends at
+  `LOG_FORMAT`, every `seq` and `created_at` exact, verified by `log_digest`
+  (a language-neutral SHA-256 over `Row`s, which live in `formats/`); the
+  `Logs` Strategy per place, `SqliteLogs(root)` (a copy here is a sealed
+  snapshot) and `PostgresLogs(dsn)` (the writable log, so its source is sealed
+  first), each with a public `rows`; `drop_run` for GC; `RunLive` (routine)
+  and `CopyRefused`.
 - **`__init__.py`** — `current_channel()` (worker-side Channel factory reading
   `RUNSTATE_RUN_ID` / `RUNSTATE_CHANNEL_ROOT` / `RUNSTATE_CHANNEL_BACKEND`
   from env, delegating to `create_channel` so a launcher-less direct run still

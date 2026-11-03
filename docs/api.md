@@ -1075,6 +1075,113 @@ presence; it probes nothing, writes nothing, names no launch (`launch_id` is
 `None`), and `wait()` reaps nothing. Compose a producer's `extend` as
 `relaunch_if_needed(...) or foreign_episode(channel)`.
 
+## Run copy
+
+One run's log, copied between backends at its format and dropped, every field
+exact (docs/specs/run-copy.md). A copy keeps each record's `seq` and
+`created_at`, which no append can, so a consumer never writes runstate's tables
+itself. A run has exactly one writable log, and every copy of it is sealed.
+
+### `copy_run`
+
+```python
+copy_run(run_id: str, *, source: Logs, destination: Logs) -> Copied
+```
+
+Read the source in one read (sealed first when the destination is writable),
+refuse a live run (`RunLive`) or one the source lacks (`RunNotFound`), check the
+destination, write, re-read the destination and compare digests. The
+destination may hold nothing, the same rows (a no-op, so a retry succeeds) or,
+in SQLite only, a strict prefix of them (replaced); anything else is
+`CopyRefused`. Postgres → SQLite writes a sealed snapshot; SQLite → Postgres
+seals the SQLite log, which is then the run's first snapshot, and its rows land
+with no writer stamp; SQLite → SQLite writes a sealed snapshot; Postgres →
+Postgres is a `ValueError`.
+
+### `drop_run`
+
+```python
+drop_run(run_id: str, *, logs: Logs) -> None
+```
+
+Delete the run's log, as a consumer's GC does: `RunLive` while the run is live,
+nothing when it is absent. On SQLite the log goes with any `-wal`, `-shm` or
+`-journal`; on Postgres the rows are read, checked and deleted in one
+transaction under the seal's table lock, so no racing append lands an orphan
+row.
+
+### `Copied`
+
+```python
+Copied(digest: str, last_seq: int)
+```
+
+What `copy_run` copied: the rows' `log_digest` and the newest seq, which a
+caller compares with the source's `last_seq()` to retire a snapshot gone stale
+on arrival.
+
+### `log_digest`
+
+```python
+log_digest(rows: Iterable[Row]) -> str   # "sha256:<64 hex digits>"
+```
+
+SHA-256 over the rows in seq order, each its fields in `Row`'s order: `seq`
+as 8 bytes big-endian, a text as a 4-byte big-endian length and its UTF-8
+bytes, a nullable text as `0x00` or `0x01` and the text, `created_at` as its
+IEEE 754 binary64 bytes, big-endian. Language-neutral; the run id is not in it.
+
+### `Row`
+
+```python
+Row(seq: int, topic: str, name: str | None, request_id: str | None, body: str, created_at: float)
+```
+
+One record as a log's table stores it, `body` its stored JSON text. The
+migration steps read and write rows as these too.
+
+### `Logs`
+
+```python
+Logs.rows(run_id: str) -> list[Row]   # in seq order, in one read; RunNotFound if none
+```
+
+A place where a backend keeps logs at `LOG_FORMAT`. Built once where the
+consumer reads its configuration and passed down. Opening a run there takes the
+locators' opening checks, so another format raises `LogFormatMismatch` or
+`LogFormatMissing`.
+
+### `SqliteLogs`
+
+```python
+SqliteLogs(root)
+```
+
+The logs under a SQLite root, the directory the locators take; a run's log is
+at `<root>/v<LOG_FORMAT>/<rid>.db`. A copy written here is a sealed snapshot.
+
+### `PostgresLogs`
+
+```python
+PostgresLogs(dsn: str)
+```
+
+The logs in a Postgres database (the `[postgres]` extra). A copy written here is
+the run's writable log.
+
+### `RunLive`
+
+The run's latest claim has not ended (`live_episode`), so `copy_run` or
+`drop_run` refuses it. Routine, not an error: copy at the run's next end.
+Carries `run_id` and the claim's `handle`.
+
+### `CopyRefused`
+
+The destination holds a log of the run the copy may not replace: rows the
+source does not extend, a strict prefix in Postgres (the writable log), or a
+writable SQLite log. An append-only log never diverges from its own copy, so
+this is an error.
+
 ## Errors
 
 Every error a public call raises is on the surface: the substrate's

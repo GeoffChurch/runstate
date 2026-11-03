@@ -290,6 +290,15 @@ run's onboarding tombstone (`<home>/<rid>.db`, empty and read-only;
 [`log-formats.md`](log-formats.md) §5) with it: a tombstone left behind makes the
 run's id read as an unonboarded legacy log.
 
+On Postgres, collecting a run is `drop_run(rid, logs=PostgresLogs(dsn))`
+([`run-copy.md`](run-copy.md) §5): it refuses a live run, reads, checks and
+deletes the run's rows in one transaction under the seal's table lock, so no
+racing append lands an orphan row, and an absent run is a no-op. A consumer that
+keeps a sealed snapshot in the run's home as well (copy, not move:
+[`../backlog/log-tiering.md`](../backlog/log-tiering.md)) deletes the home and the
+rows in one sweep; `drop_run(rid, logs=SqliteLogs(home))` deletes a log at the
+current format's address with its sidecars.
+
 `live_episode`'s conservatism helps here: an unresolvable (foreign-host)
 handle reads live, so the sweep refuses to collect what it cannot
 probe.

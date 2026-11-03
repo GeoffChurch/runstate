@@ -93,6 +93,15 @@ EXPECTED = {
     "LiveHandle",
     "launch_producer",
     "foreign_episode",
+    # run copy: one run's log between backends, at its format
+    "copy_run",
+    "drop_run",
+    "Copied",
+    "log_digest",
+    "Row",
+    "Logs",
+    "SqliteLogs",
+    "PostgresLogs",
     # the errors public calls raise
     "RunNotFound",
     "LogFormatError",
@@ -106,6 +115,8 @@ EXPECTED = {
     "RunFailedError",
     "NoProgressError",
     "RecordlessExitError",
+    "RunLive",
+    "CopyRefused",
     # the convention vocabulary, its bodies and their fields' enums
     "Topic",
     "Condition",

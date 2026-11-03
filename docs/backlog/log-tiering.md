@@ -47,9 +47,11 @@ continuous WAL archiving; readers that act on liveness read Postgres, readers of
 snapshot; GC deletes the home and the rows in one sweep; and a one-time import moves every existing SQLite log
 into Postgres at the cut-over, through the same copy.
 
-The copy needs no live seal. As proposed for #69 (not yet agreed), its one sealing is the old one's case, a
-log with two homes that a stale writer could reach: the cut-over import seals its SQLite source, which then
-serves as the run's first snapshot, and each snapshot is written sealed, so readers can open it `immutable=1`.
+The copy needs no live seal. Its primitive is [`../specs/run-copy.md`](../specs/run-copy.md) (#69, built
+2026-11-03): `copy_run` between a `PostgresLogs` and a `SqliteLogs`, verified by `log_digest`, and `drop_run`
+for the GC. Its one sealing is the old one's case, a log with two homes that a stale writer could reach: the
+cut-over import seals its SQLite source, which then serves as the run's first snapshot, and each snapshot is
+written sealed, so readers can open it `immutable=1`.
 
 ## Not per-episode logs
 

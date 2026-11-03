@@ -46,16 +46,13 @@ from .sqlite import SqliteChannel
 _MEMORY_LOGS: dict[tuple[str | None, str], MemoryLog] = {}
 
 
-def _locate_sqlite(
-    root: Path,
-    run_id: str,
-    *,
-    create: bool,
-    json_default: Callable[[object], object] | None,
-) -> Channel:
-    """log-formats.md §4, in order: refuse a root holding a newer format; open the
-    current address; refuse an older format or the legacy address holding the run;
-    else RunNotFound (attach) or a birth at the current address (create)."""
+def sqlite_log_path(root: Path, run_id: str) -> Path:
+    """The run's address at the current format, once log-formats.md §4's opening
+    checks pass, in order: refuse a root holding a newer format; the current
+    address, if the run's log is there; refuse an older format or the legacy
+    address holding the run; else the current address, which holds nothing. The
+    locators open or birth a channel there, and a run copy reads or writes rows
+    there (docs/specs/run-copy.md)."""
     formats.check_sqlite_names(root, run_id)
     if root.is_dir():
         newer = formats.newer_in(
@@ -73,7 +70,7 @@ def _locate_sqlite(
             )
     path = FORMATS[LOG_FORMAT].sqlite_path(root, run_id)
     if path.exists():
-        return SqliteChannel(path, create=create, json_default=json_default)
+        return path
     for version, layout in formats.older_than(LOG_FORMAT):
         old = layout.sqlite_path(root, run_id)
         if old.exists():
@@ -88,6 +85,21 @@ def _locate_sqlite(
         raise LogFormatMissing(
             where=str(legacy), instructions=formats.sqlite_onboarding(root, run_id)
         )
+    return path
+
+
+def _locate_sqlite(
+    root: Path,
+    run_id: str,
+    *,
+    create: bool,
+    json_default: Callable[[object], object] | None,
+) -> Channel:
+    """Open the run's log at its checked address (``sqlite_log_path``); else
+    RunNotFound (attach) or a birth there (create)."""
+    path = sqlite_log_path(root, run_id)
+    if path.exists():
+        return SqliteChannel(path, create=create, json_default=json_default)
     if not create:
         raise RunNotFound(f"run has no records at {path}")
     path.parent.mkdir(exist_ok=True)  # the root itself must already exist

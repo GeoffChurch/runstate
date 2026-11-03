@@ -5,7 +5,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import NamedTuple, Protocol
+
+
+class Row(NamedTuple):
+    """One record as a log's table stores it: the columns every registered format's
+    log holds, on either backend (Postgres's ``run_id`` and its writer stamp aside).
+    The migration steps read and write a run's rows as these, and a run copy copies
+    them (docs/specs/run-copy.md)."""
+
+    seq: int
+    topic: str
+    name: str | None
+    request_id: str | None
+    body: str  # the stored JSON text, byte for byte
+    created_at: float
 
 
 class Layout(Protocol):
