@@ -19,6 +19,7 @@ from .channel import (
     Envelope,
     Logs,
     ProcessLogs,
+    Reader,
     RunNotFound,
 )
 from .formats import LOG_FORMAT, LogFormatError, LogFormatMismatch, LogFormatMissing
@@ -171,6 +172,7 @@ __all__ = [
     "current_channel",
     "LOG_FORMAT",
     "Channel",
+    "Reader",
     "Body",
     "Envelope",
     # the worker and the checkpoint recipe

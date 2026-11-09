@@ -231,3 +231,154 @@ def test_sqlite_root_spellings_of_one_path_share(tmp_path):
     b = SqliteLogs(str(tmp_path) + "/.").create("reg-path")
     a.send({"v": 1}, topic="value", name="x")
     assert [e.body for e in b.read()] == [{"v": 1}]
+
+
+# ----- a reader: the observer's open (#74) -----
+
+
+def test_reader_missing_or_empty_run_raises(loc):
+    with pytest.raises(RunNotFound):
+        loc.logs.reader(loc.run_id)
+    loc.logs.create(loc.run_id).close()
+    with pytest.raises(RunNotFound):
+        loc.logs.reader(loc.run_id)
+
+
+def test_reader_reads_what_attach_reads(loc):
+    with loc.logs.create(loc.run_id) as born:
+        born.send({"v": 1}, topic="value", name="loss")
+        born.send({"reason": "x"}, topic="control.stop", request_id="s")
+    with loc.logs.reader(loc.run_id) as r, loc.logs.attach(loc.run_id) as ch:
+        assert r.last_seq() == ch.last_seq() == 2
+        assert r.read() == ch.read()
+        assert r.read(1, topics=["control.>"]) == ch.read(1, topics=["control.>"])
+        assert r.latest("value", "loss") == ch.latest("value", "loss")
+
+
+def _snapshot(tmp_path, rid="snap", *, commits=1):
+    """A sealed snapshot of a finished run, as a copy writes one, and its place."""
+    from runstate import NoSave, Worker, copy_run
+
+    live, snaps = tmp_path / "live", tmp_path / "snaps"
+    live.mkdir(parents=True), snaps.mkdir()
+    with SqliteLogs(live).create(rid) as ch:
+        with Worker(ch, resume_from=None, sources=[], save=NoSave()) as w:
+            for _ in range(commits):
+                w.emit("loss", 0.5)
+                w.commit()
+            w.stopped(completed=True, error=None)
+    copy_run(rid, source=SqliteLogs(live), destination=SqliteLogs(snaps))
+    return SqliteLogs(snaps), FORMATS[LOG_FORMAT].sqlite_path(snaps, rid)
+
+
+def test_a_sealed_snapshot_is_read_immutable_and_cannot_send(tmp_path):
+    """The reader of a sealed snapshot is a ``SqliteSnapshot``: it has no ``send``,
+    its reads equal the channel's, and it leaves the file and its directory as they
+    were (no sidecar, no byte changed)."""
+    from runstate.channel import SqliteSnapshot
+
+    logs, path = _snapshot(tmp_path)
+    before, listing = path.read_bytes(), sorted(p.name for p in path.parent.iterdir())
+    with logs.reader("snap") as r, logs.attach("snap") as ch:
+        assert type(r) is SqliteSnapshot
+        assert not hasattr(r, "send")
+        assert r.read() == ch.read() and r.last_seq() == ch.last_seq()
+    assert path.read_bytes() == before
+    assert sorted(p.name for p in path.parent.iterdir()) == listing
+
+
+def test_the_folds_read_a_snapshot_through_its_reader(tmp_path):
+    from runstate import LatestClaimHead, Outcome, peek_terminal, series
+
+    logs, _ = _snapshot(tmp_path)
+    with logs.reader("snap") as r:
+        result = peek_terminal(r)
+        assert result is not None and result.outcomes == {Outcome.COMPLETED}
+        assert [e.value for e in series(r, "loss", head=LatestClaimHead())] == [0.5]
+
+
+def test_a_snapshot_reader_takes_no_lock(tmp_path):
+    """Pinned by what a lock would do: while another connection holds the file
+    locked exclusively, a read-only open that locks cannot read it, and the
+    reader can."""
+    import sqlite3
+    from urllib.request import pathname2url
+
+    logs, path = _snapshot(tmp_path)
+    os.chmod(path, 0o644)  # to take the lock; the bits are cleared again below
+    holder = sqlite3.connect(path, isolation_level=None)
+    holder.execute("BEGIN EXCLUSIVE")
+    os.chmod(path, 0o444)
+    try:
+        locking = sqlite3.connect(
+            f"file:{pathname2url(str(path))}?mode=ro", uri=True, timeout=0
+        )
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            locking.execute("SELECT count(*) FROM log").fetchone()
+        locking.close()
+        with logs.reader("snap") as r:
+            assert r.last_seq() > 0
+    finally:
+        holder.close()
+
+
+def test_an_unsealed_log_is_read_through_a_channel(tmp_path):
+    """Only a read-write open rolls back a hot journal, so a log still written is
+    never opened immutable: its reader is the channel, under the narrow type."""
+    from runstate.channel import SqliteChannel
+
+    logs = SqliteLogs(tmp_path)
+    logs.create("live").send({"v": 1}, topic="value", name="x")
+    with logs.reader("live") as r:
+        assert type(r) is SqliteChannel
+
+
+@pytest.mark.parametrize("sidecar", ["-wal", "-journal"])
+def test_a_sealed_file_beside_a_sidecar_is_not_read_immutable(tmp_path, sidecar):
+    """Write bits alone are not the seal: a file with a journal beside it may hold
+    records an immutable open would not see."""
+    from runstate.channel import SqliteChannel
+
+    logs, path = _snapshot(tmp_path)
+    path.with_name(path.name + sidecar).write_bytes(b"")
+    with logs.reader("snap") as r:
+        assert type(r) is SqliteChannel
+
+
+def test_a_reader_outlives_its_snapshot_being_replaced(tmp_path):
+    """A snapshot is replaced by a rename (run-copy.md), so a reader already open
+    keeps the file it opened and a new reader sees the new one."""
+    logs, path = _snapshot(tmp_path)
+    old = logs.reader("snap")
+    seen = old.read()
+    _, longer = _snapshot(tmp_path / "second", rid="snap", commits=3)
+    os.replace(longer, path)
+    assert old.read() == seen
+    old.close()
+    with logs.reader("snap") as new:
+        assert new.last_seq() > len(seen)
+
+
+def test_reader_takes_the_opening_checks(tmp_path):
+    """A run held in another format raises, as attach does, and is not read."""
+    from runstate import LogFormatMismatch
+
+    old = FORMATS["0.3.0"].sqlite_path(tmp_path, "r1")
+    old.parent.mkdir()
+    old.write_bytes(b"")
+    with pytest.raises(LogFormatMismatch):
+        SqliteLogs(tmp_path).reader("r1")
+
+
+def test_a_foreign_sealed_sqlite_file_is_run_not_found(tmp_path):
+    import sqlite3
+
+    path = FORMATS[LOG_FORMAT].sqlite_path(tmp_path, "junk")
+    path.parent.mkdir()
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE other (x)")
+    con.commit()
+    con.close()
+    os.chmod(path, 0o444)
+    with pytest.raises(RunNotFound):
+        SqliteLogs(tmp_path).reader("junk")

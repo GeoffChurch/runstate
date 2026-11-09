@@ -33,7 +33,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, NamedTuple, TypeVar
 
-from .channel import Channel, Envelope
+from .channel import Envelope, Reader
 from .vocabulary.payloads import Commit, Node, Started, Stopped, Topic, Value
 from .vocabulary.schedule import Coordinates
 
@@ -81,7 +81,7 @@ def readable(cls: type[_T], e: Envelope) -> _T | None:
         return None
 
 
-def point(ch: Channel, seq: int, *, w: int) -> Envelope | None:
+def point(ch: Reader, seq: int, *, w: int) -> Envelope | None:
     """The record at ``seq``, one point read, or ``None`` when there is none at or
     below ``w``."""
     if not 1 <= seq <= w:
@@ -215,7 +215,7 @@ class Backward:
     is, so a walk reads O(the distance back to the lowest record it needs) rows in
     O(log) reads, whatever the log's length below that."""
 
-    def __init__(self, ch: Channel, hi: int) -> None:
+    def __init__(self, ch: Reader, hi: int) -> None:
         self._ch = ch
         self._hi = hi
         self._lo = hi  # the records in (lo, hi] are loaded
@@ -289,7 +289,7 @@ def chain(node: int, node_of: NodeAt, *, stop_at: int | None) -> list[At]:
     return out
 
 
-def walk(ch: Channel, node: int | None) -> Walked:
+def walk(ch: Reader, node: int | None) -> Walked:
     """The lineage ending at ``node`` (``None``, the empty lineage), checked (§5):
     every node walked by ``check_node`` (``chain``), and along the lineage, a seq
     committed twice. A ``node`` that is not a node raises ``ValueError``.

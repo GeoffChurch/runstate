@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from typing import NamedTuple, Protocol, overload, runtime_checkable
+from typing import NamedTuple, Protocol, Self, overload, runtime_checkable
 
 from .envelope import Body, Envelope
 
@@ -41,6 +41,33 @@ class RunNotFound(LookupError):
     run. Callers that treat "no run yet" as "proceed" (the launch deciders)
     catch it; a birth site that leaks it fails loudly rather than manufacturing
     a phantom empty run (docs/specs/channel-locators.md)."""
+
+
+class Reader(Protocol):
+    """The read half of a handle on a run's log: what an observer needs, and all a
+    fold takes, so that observing a run cannot write to it is a fact the type
+    checker holds. Every ``Channel`` is one; a place's ``reader`` returns one that
+    is nothing more (docs/specs/channel-locators.md, "A reader")."""
+
+    def read(
+        self,
+        after: int = 0,
+        *,
+        topics: list[str] | None = None,
+        name: str | None = None,
+        request_ids: list[str] | None = None,
+        limit: int | None = None,
+    ) -> list[Envelope]: ...
+
+    def latest(self, topic: str, name: str | None = None) -> Envelope | None: ...
+
+    def last_seq(self) -> int: ...
+
+    def close(self) -> None: ...
+
+    def __enter__(self) -> Self: ...
+
+    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None: ...
 
 
 class Channel(ABC):
@@ -117,7 +144,7 @@ class Channel(ABC):
         """Release this handle's backend resources. Does not touch the log or any
         other handle on the run (see the module docstring)."""
 
-    def __enter__(self) -> Channel:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
@@ -176,6 +203,13 @@ class Logs(Protocol):
         records. Creates and changes nothing in the place, yet the handle is
         **writable**: the stop path attaches then sends, and a decider attaches to
         write a death report."""
+        ...
+
+    def reader(self, run_id: str) -> Reader:
+        """Open an **existing** run's log to read; ``RunNotFound`` if it has no
+        records. Creates and changes nothing, as ``attach``, and the handle cannot
+        write: an observer's open. A place may serve it more cheaply than a
+        channel (``SqliteLogs`` opens a sealed snapshot with no locks)."""
         ...
 
 

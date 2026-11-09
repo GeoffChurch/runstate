@@ -35,6 +35,11 @@ the thread that produced each change, newest first.
   is a type error where `backend="memory"` was an empty log in the child.
 - **Breaking: `current_channel()` has no default backend.** `RUNSTATE_CHANNEL_BACKEND` and
   `RUNSTATE_CHANNEL_ROOT` are required beside `RUNSTATE_RUN_ID`, and `memory` is refused.
+- **`Reader`, and a place's `reader(run_id)`** (#74): the read half of the channel surface, which
+  every `Channel` is. The observables, the lineage reads, the held folds, `history`,
+  `await_consumed` and the checkpoint choices take a `Reader`, so an observer's handle cannot
+  write by type. `SqliteLogs.reader` opens a sealed snapshot `immutable=1`, with no locks,
+  which a network filesystem needs; a log still written is read through a channel.
 - **Breaking: the copy's Protocol is `CopyLogs`** (`Logs` is now the opening half), and
   `runstate/copy.py` is `runstate/logs.py`.
 

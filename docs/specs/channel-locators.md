@@ -74,6 +74,33 @@ log in the child.
   three itself still births). All three are required: there is no default place.
   This decode is the one point where a backend is a string.
 
+### A reader
+
+*(#74, 2026-11-09.)* The access axis is orthogonal to creation policy, so it is a
+third open and not a flag on `attach`:
+
+- **`logs.reader(run_id) -> Reader`** — open an existing run's log to read.
+  `RunNotFound` as `attach`; creates and changes nothing; the handle has no
+  `send`.
+
+`Reader` is the read half of the channel surface (`read`, `latest`, `last_seq`,
+`close`), and every `Channel` is one. The folds take a `Reader`, so "observing a
+run never mutates it" is held by the type checker for every observer, whichever
+open it used. The handle is read-only **by type**: nothing wraps it to raise at
+run time, since a wrapper would be a second, weaker statement of what the type
+already says.
+
+What only a place can do is open more cheaply. `SqliteLogs.reader` opens a
+**sealed** file (`seal_sqlite`: checkpointed, out of WAL, write bits cleared) with
+no sidecar beside it `mode=ro&immutable=1`: no lock is taken and no journal is
+looked for, which a file nobody will write again allows and a network filesystem
+with unreliable locks needs. Any other file it opens as `attach` does, because
+only a read-write open rolls back a hot journal a dead writer left, so a log
+still written cannot be opened read-only at the SQLite level. The place detects
+the seal itself; no caller asserts it. A snapshot is replaced by a rename, so a
+reader already open keeps the file it opened. `PostgresLogs` and `MemoryLogs`
+return their channel under the narrow type.
+
 A consumer's own place (a storage tier that decides per run) implements `create`,
 `attach` and a `child_env` returning whatever its own worker reads; that worker
 does not call `current_channel()`.
@@ -93,8 +120,8 @@ channel it opens.
 - **`stat-before-open`** — refuted by PR #14: the foreign-db mutation is atomic
   with open; a pre-check can't catch it.
 - **`read_channel`** — the safe path *writes* (stop). The axis is create-vs-attach,
-  not read-vs-write. A pure read-only "touch nothing" mode is a separate axis,
-  open as #74 (a sealed snapshot's reader).
+  not read-vs-write. Read-only is a separate axis, and a third open: "A reader",
+  below.
 - **Module functions taking `(root, backend)`** — what shipped until #73. The
   backend was a string re-dispatched at every open, `root` meant a directory, a
   namespace or a DSN depending on it, and a caller whose place was none of the
@@ -209,3 +236,10 @@ authorization, when they bump their pin.
   its three variables unset it raises `KeyError`.
 - `from_env` inverts both reference `child_env`s and refuses `memory`.
 - Two `MemoryLogs` instances are two places; one instance shares a run's log.
+- `reader` raises `RunNotFound` on a missing and on an empty run, and reads what
+  `attach` reads (every backend).
+- A sealed snapshot's reader has no `send`, changes no byte and creates no
+  sidecar, reads while another connection holds the file locked exclusively, and
+  outlives the snapshot's replacement by rename.
+- An unsealed file, and a sealed one beside a `-wal` or `-journal`, are read
+  through a channel.

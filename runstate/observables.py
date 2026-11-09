@@ -67,7 +67,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Generic, NamedTuple, Protocol, TypeVar, assert_never
 
-from .channel import Channel, Envelope
+from .channel import Envelope, Reader
 from .vocabulary.coordinate import Commits
 from .vocabulary.payloads import (
     Commit,
@@ -142,14 +142,14 @@ class Head:
         elif not 1 <= self.node <= self.w:
             raise ValueError(f"a head node is a seq from 1 to w={self.w}")
 
-    def resolve(self, ch: Channel) -> Head:
+    def resolve(self, ch: Reader) -> Head:
         return self
 
 
 class HeadStrategy(Protocol):
     """How a read chooses its head (§5), chosen once at the edge."""
 
-    def resolve(self, ch: Channel) -> Head: ...
+    def resolve(self, ch: Reader) -> Head: ...
 
 
 @dataclass(frozen=True)
@@ -159,7 +159,7 @@ class LatestClaimHead:
     claim's head, though a commitless claim's head may be an older claim's node.
     The read is settled if and only if the head is closed."""
 
-    def resolve(self, ch: Channel) -> Head:
+    def resolve(self, ch: Reader) -> Head:
         return _latest_claim_head(ch, ch.last_seq())
 
 
@@ -173,7 +173,7 @@ class AtNode:
 
     node: int
 
-    def resolve(self, ch: Channel) -> Head:
+    def resolve(self, ch: Reader) -> Head:
         w = ch.last_seq()
         e = point(ch, self.node, w=w)
         if e is None:
@@ -233,14 +233,14 @@ class Streams(NamedTuple):
 # ----- the reads (§5) ---------------------------------------------------------------
 
 
-def prefix_len(ch: Channel, x: str | Commits, *, head: HeadStrategy) -> int:
+def prefix_len(ch: Reader, x: str | Commits, *, head: HeadStrategy) -> int:
     """``count(x, head)`` (§5): what ``progress`` was, as a count, for an eager
     stream or ``Commits()``. A name that was a source throughout counts 0."""
     return _count(walk(ch, head.resolve(ch).node), x)
 
 
 def prefix(
-    ch: Channel, stream: str, n: int, *, head: HeadStrategy
+    ch: Reader, stream: str, n: int, *, head: HeadStrategy
 ) -> Complete | Pending | SettledShort:
     """The threshold read (§5): the first ``n`` elements of ``stream`` at the head,
     ``Complete``; else the elements found, ``SettledShort`` when the read is
@@ -262,14 +262,14 @@ def prefix(
     return Pending(found, h.node)
 
 
-def series(ch: Channel, stream: str, *, head: HeadStrategy) -> list[Element]:
+def series(ch: Reader, stream: str, *, head: HeadStrategy) -> list[Element]:
     """One eager stream's elements in lineage order (§5). It reads every
     element's body, so a malformed one raises."""
     walked = walk(ch, head.resolve(ch).node)
     return [element(walked, at, s) for at, s in members(walked, stream)]
 
 
-def last_element(ch: Channel, stream: str, *, head: HeadStrategy) -> Element | None:
+def last_element(ch: Reader, stream: str, *, head: HeadStrategy) -> Element | None:
     """The last element in lineage order, or ``None`` (§5). That is not always
     the newest by seq: ``include`` can commit an older value after a newer one.
     It reads the last element's body only."""
@@ -282,7 +282,7 @@ def last_element(ch: Channel, stream: str, *, head: HeadStrategy) -> Element | N
 
 
 def aligned(
-    ch: Channel, names: Sequence[str], *, head: HeadStrategy, axis: str | Commits
+    ch: Reader, names: Sequence[str], *, head: HeadStrategy, axis: str | Commits
 ) -> list[AlignedRow]:
     """Values aligned by node (§5): one row per node on the lineage that commits a
     value of any of ``names``, in lineage order. The row's ``x`` is ``count(axis,
@@ -307,7 +307,7 @@ def aligned(
     return rows
 
 
-def answers(ch: Channel, request_id: str, *, head: HeadStrategy) -> list[Element]:
+def answers(ch: Reader, request_id: str, *, head: HeadStrategy) -> list[Element]:
     """The answers to a subscription on the head's lineage (§5): at each node
     whose ``fired`` names ``request_id``, the sample of its target that the node
     commits, one per firing, in lineage order. A pure demand has none, since it
@@ -362,7 +362,7 @@ def _not_one_sample(
     )
 
 
-def streams(ch: Channel, *, head: HeadStrategy) -> Streams:
+def streams(ch: Reader, *, head: HeadStrategy) -> Streams:
     """The names with a committed value on the lineage (§5), two sets, each by the
     committing claim's declaration (§2, "Membership"): ``sources`` the names some
     committing claim declared, ``eager`` the names some committing claim did not.
@@ -478,7 +478,7 @@ class RunResult:
         return True
 
 
-def claim_verdict(ch: Channel, claim: Envelope, *, w: int) -> RunResult | None:
+def claim_verdict(ch: Reader, claim: Envelope, *, w: int) -> RunResult | None:
     """How ``claim`` ended, at ``w``, or ``None`` while it is held (§2, §5). A claim
     has **ended** if and only if this is not ``None``, where it does not raise:
     the one predicate the folds, the Worker and the launchers use (§2, "How a
@@ -564,7 +564,7 @@ def claim_verdict(ch: Channel, claim: Envelope, *, w: int) -> RunResult | None:
     )
 
 
-def peek_terminal(ch: Channel) -> RunResult | None:
+def peek_terminal(ch: Reader) -> RunResult | None:
     """How the run ended (§5), at a W taken first, or ``None`` while the newest
     claim is held, or nothing has ended: ``claim_verdict`` of the newest claim.
 
@@ -585,7 +585,7 @@ def peek_terminal(ch: Channel) -> RunResult | None:
     return claim_verdict(ch, claim, w=w)
 
 
-def latest_episode(ch: Channel) -> Envelope | None:
+def latest_episode(ch: Reader) -> Envelope | None:
     """The newest ``lifecycle.started``, or ``None`` if nothing ever claimed:
     unchanged (§5). *Latest* means latest, live or ended alike; its seq is the
     claim's name, which every record speaking for it carries as ``claim_seq``,
@@ -593,7 +593,7 @@ def latest_episode(ch: Channel) -> Envelope | None:
     return ch.latest(Topic.LIFECYCLE_STARTED)
 
 
-def live_episode(ch: Channel) -> str | None:
+def live_episode(ch: Reader) -> str | None:
     """The newest claim's handle unless that claim has ended (§2, §5): the claim
     gate. ``None`` when nothing claimed, or the claim's exit or a death report
     naming it is on the log, an unreadable one whose ``claim_seq`` parses
@@ -637,7 +637,7 @@ _DATED_TOPICS = (
 )
 
 
-def last_activity(ch: Channel) -> float | None:
+def last_activity(ch: Reader) -> float | None:
     """When the run last did anything, from the log alone (observer-clock.md): the
     largest ``t`` among the newest record of each dated topic, or ``None`` when it
     has none. The largest of a few finalists, not the ``t`` of the newest record
@@ -654,7 +654,7 @@ def last_activity(ch: Channel) -> float | None:
     return max(ts) if ts else None
 
 
-def current_heartbeat(ch: Channel, claim: Envelope | None) -> Envelope | None:
+def current_heartbeat(ch: Reader, claim: Envelope | None) -> Envelope | None:
     """The claim's newest commit or heartbeat, the records that carry its
     ``consumed_seq`` (§5), or ``None``. Latest-then-verify: the newest of the two
     on the log usually names the claim, so one ``latest`` per topic; on a miss (a
@@ -693,7 +693,7 @@ def current_heartbeat(ch: Channel, claim: Envelope | None) -> Envelope | None:
 # ----- the answer fold (§2 "Requests", §5) ------------------------------------------
 
 
-def live_demand(ch: Channel) -> list[Envelope]:
+def live_demand(ch: Reader) -> list[Envelope]:
     """The live subscriptions at a W taken first (§2, §5, "The answer fold"): each
     ``control.subscribe`` id's newest send, ascending by seq, unless
 
@@ -757,7 +757,7 @@ def live_demand(ch: Channel) -> list[Envelope]:
     return demand.live()
 
 
-def undischarged_stops(ch: Channel) -> list[Envelope]:
+def undischarged_stops(ch: Reader) -> list[Envelope]:
     """The pending ``control.stop`` records, each id's newest send, ascending by
     seq, at a W taken first (§2, §5, "The answer fold").
 
@@ -1056,7 +1056,7 @@ def _is_lease(e: Envelope) -> bool:
 # cost O(depth) per value (§5, "Well-formedness": "Checked by the pure walk only").
 
 
-def _tail(ch: Channel, cursor: int, w: int, topics: Sequence[str]) -> list[Envelope]:
+def _tail(ch: Reader, cursor: int, w: int, topics: Sequence[str]) -> list[Envelope]:
     """The records on ``topics`` above ``cursor`` and at or below ``w``. There are
     at most ``w - cursor`` of them, so that is the limit, and the filter is the
     guard against one that landed above ``w``."""
@@ -1087,11 +1087,11 @@ class HeadFold:
         self._cursor = 0
         self._head = _ClaimHead()
 
-    def poll(self, ch: Channel) -> Head:
+    def poll(self, ch: Reader) -> Head:
         """The head at a W this poll takes: ``poll_at`` at ``ch.last_seq()``."""
         return self.poll_at(ch, w=ch.last_seq())
 
-    def poll_at(self, ch: Channel, *, w: int) -> Head:
+    def poll_at(self, ch: Reader, *, w: int) -> Head:
         """The head at the caller's ``w``, a W it took first, so every other read of
         its poll agrees with the head. A held fold only reads forward: a ``w`` below
         what it has read raises ``ValueError``."""
@@ -1138,14 +1138,14 @@ class _NodeFold(ABC, Generic[_S]):
         self._sources: dict[int, frozenset[str] | MalformedRecordError] = {}
         self._name_of: dict[int, str | None] = {}  # every value's
 
-    def _advance(self, ch: Channel, w: int) -> None:
+    def _advance(self, ch: Reader, w: int) -> None:
         """Apply the records above the cursor and at or below ``w``."""
         for e in _tail(ch, self._cursor, w, self._topics):
             self._apply(e)
             self._cursor = e.seq
         self._cursor = max(self._cursor, w)
 
-    def _held(self, ch: Channel, head: Head) -> _S | None:
+    def _held(self, ch: Reader, head: Head) -> _S | None:
         """The state at ``head.node`` after reading up to ``head.w``; ``None`` for
         the empty lineage."""
         self._advance(ch, head.w)
@@ -1245,11 +1245,11 @@ class PrefixLen(_NodeFold[int]):
             stream = x
             self._adds = lambda at: len(self._members(at, stream))
 
-    def poll(self, ch: Channel, head: Head) -> int:
+    def poll(self, ch: Reader, head: Head) -> int:
         count = self._held(ch, head)
         return 0 if count is None else count
 
-    def at(self, ch: Channel, node: int, *, w: int) -> int:
+    def at(self, ch: Reader, node: int, *, w: int) -> int:
         """The count at ``node``, any node at or below ``w``, after reading up to
         ``w``: the count map's lookup, for a caller that asks of nodes, not of
         heads (``checkpoint.MostProgress``). ``ValueError`` when ``node`` is not a
@@ -1277,7 +1277,7 @@ class LastElement(_NodeFold[_Last | None]):
         super().__init__(_STREAM_TOPICS)
         self._stream = stream
 
-    def poll(self, ch: Channel, head: Head) -> Element | None:
+    def poll(self, ch: Reader, head: Head) -> Element | None:
         last = self._held(ch, head)
         if last is None:
             return None
@@ -1332,7 +1332,7 @@ class Answers(_NodeFold[_AnswerNode]):
         self._along: int | None = None  # the head its list is along
         self._list: list[Element] = []
 
-    def poll(self, ch: Channel, head: Head) -> list[Element]:
+    def poll(self, ch: Reader, head: Head) -> list[Element]:
         self._advance(ch, head.w)
         # parents decrease, so the walk back from the head meets the held head,
         # if it descends from it, before it passes below it. That the extend path
@@ -1355,7 +1355,7 @@ class Answers(_NodeFold[_AnswerNode]):
         return list(answers)
 
     def _answer(
-        self, ch: Channel, w: int, node: int, firing: _Firing | MalformedRecordError
+        self, ch: Reader, w: int, node: int, firing: _Firing | MalformedRecordError
     ) -> Element:
         """The answer at ``node``, which fires the request, checked as ``answers``
         checks it; its sample's record is read the first time."""
@@ -1414,7 +1414,7 @@ class LiveDemand:
         self._head = _ClaimHead()
         self._lineage = _HeldLineage()
 
-    def poll(self, ch: Channel) -> list[Envelope]:
+    def poll(self, ch: Reader) -> list[Envelope]:
         w = ch.last_seq()
 
         def read_at(seq: int) -> Envelope | None:
@@ -1468,7 +1468,7 @@ class _HeldLineage:
         """A node record the current poll applied."""
         self._seen[e.seq] = e
 
-    def move(self, ch: Channel, node: int | None) -> _Extended | _Rewalked:
+    def move(self, ch: Reader, node: int | None) -> _Extended | _Rewalked:
         """Hold the lineage ending at ``node``: the ids its new nodes expire when it
         extends the held one (none when it is the held one), else every id it
         expires, walked."""
@@ -1519,7 +1519,7 @@ class PendingStops:
         self._cursor = 0
         self._stops = _Stops()
 
-    def poll(self, ch: Channel) -> list[Envelope]:
+    def poll(self, ch: Reader) -> list[Envelope]:
         w = ch.last_seq()
         for e in _tail(ch, self._cursor, w, _STOP_TOPICS):
             self._stops.apply(e)
@@ -1531,7 +1531,7 @@ class PendingStops:
 # ----- reading at W -----------------------------------------------------------------
 
 
-def _newest(ch: Channel, topic: Topic, w: int) -> Envelope | None:
+def _newest(ch: Reader, topic: Topic, w: int) -> Envelope | None:
     """The newest record on ``topic`` at or below ``w``: the newest on the log,
     unless one landed above ``w`` since it was read. ``latest`` takes no bound;
     the fallback scan reads at most ``w`` records, which holds every one at or
@@ -1545,7 +1545,7 @@ def _newest(ch: Channel, topic: Topic, w: int) -> Envelope | None:
     return below[-1] if below else None
 
 
-def newest_claim(ch: Channel, *, w: int) -> Envelope | None:
+def newest_claim(ch: Reader, *, w: int) -> Envelope | None:
     """The newest claim at or below ``w``, the caller's W: the one way every read of
     the newest claim finds it (``peek_terminal``, the head, the Watcher's observed
     run, ``await_consumed``), so they agree on it at one W."""
@@ -1555,7 +1555,7 @@ def newest_claim(ch: Channel, *, w: int) -> Envelope | None:
 # ----- the head fold ----------------------------------------------------------------
 
 
-def _latest_claim_head(ch: Channel, w: int) -> Head:
+def _latest_claim_head(ch: Reader, w: int) -> Head:
     """The newest claim's head at ``w``, the caller's W, taken first: the claim and
     the records after it applied to a ``_ClaimHead``. It reads nothing above ``w``
     (``claim_window``), and below the claim only the nodes its ``resume_from``s name:
@@ -1730,7 +1730,7 @@ def _axis(walked: Walked, axis: str | Commits) -> list[int]:
     return out
 
 
-def _subscription_target(ch: Channel, request_id: str, w: int) -> str | None:
+def _subscription_target(ch: Reader, request_id: str, w: int) -> str | None:
     """The source the ``control.subscribe`` that first names ``request_id`` at or
     below ``w`` targets, its envelope ``name``: ``None`` for a pure demand, and
     when no subscribe names it. Either way nothing is sampled for it."""
@@ -1762,7 +1762,7 @@ def _self_report(stop: Stopped) -> Outcome:
     return Outcome.COMPLETED if stop.completed else Outcome.PREEMPTED
 
 
-def _launch_end(ch: Channel, w: int) -> RunResult | None:
+def _launch_end(ch: Reader, w: int) -> RunResult | None:
     """An unclaimed run's verdict: its newest ``terminated`` at or below ``w``
     (``peek_terminal``)."""
     e = _newest(ch, Topic.SUPERVISOR_TERMINATED, w)

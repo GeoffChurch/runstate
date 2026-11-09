@@ -28,13 +28,14 @@ from .base import (
     Channel,
     Logs,
     ProcessLogs,
+    Reader,
     RunNotFound,
     Session,
     SessionProbe,
 )
 from .envelope import Body, Envelope
 from .memory import MemoryChannel, MemoryLog
-from .sqlite import SqliteChannel
+from .sqlite import SqliteChannel, SqliteSnapshot
 
 
 def sqlite_log_path(root: Path, run_id: str) -> Path:
@@ -87,9 +88,11 @@ __all__ = [
     "MemoryChannel",
     "MemoryLog",
     "ProcessLogs",
+    "Reader",
     "RunNotFound",
     "Session",
     "SessionProbe",
     "SqliteChannel",
+    "SqliteSnapshot",
     "sqlite_log_path",
 ]
