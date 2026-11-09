@@ -40,6 +40,7 @@ from runstate.worker import Worker
 from tests.live_helpers import Interloping
 from tests.test_death_reports import claim, dead_handle
 from tests.test_reads import append, died
+from runstate.logs import MemoryLogs
 from tests.test_worker import (
     Clock,
     conforms,
@@ -762,8 +763,8 @@ def test_a_count_lease_whose_service_dies_at_its_first_firing_stops_the_waker_af
     waker, holding its ``LiveDemand``, launches once and never again. The same
     holds for a lease nobody will renew behind a crash-birth that never drained
     it: one launch."""
-    launcher = ThreadLauncher(root=tmp_path)
-    obs = launcher.create_channel("svc")
+    launcher = ThreadLauncher(logs=MemoryLogs())
+    obs = launcher.logs.create("svc")
     launches = []
 
     def service(ch):
@@ -797,8 +798,8 @@ def test_ensure_served_launches_a_service_that_serves_its_demand_and_retires(
 ):
     """Lazy launch: no demand, no launch; demand with no held claim, a launch,
     whose ``serve()`` serves it and retires at zero."""
-    launcher = ThreadLauncher(root=tmp_path)
-    obs = launcher.create_channel("svc")
+    launcher = ThreadLauncher(logs=MemoryLogs())
+    obs = launcher.logs.create("svc")
 
     def service(ch):
         with Worker(
@@ -1163,8 +1164,8 @@ def train(ch, *, until):
 
 
 def test_a_subscription_is_served_end_to_end_on_a_thread(tmp_path):
-    launcher = ThreadLauncher(root=tmp_path)
-    obs = launcher.create_channel("run")
+    launcher = ThreadLauncher(logs=MemoryLogs())
+    obs = launcher.logs.create("run")
     sub(obs, "obs-1", every={"commits": 1})  # prestaged: drained at the first commit
     target = ThreadTarget(train, args=(), kwargs={"until": Target(Commits(), 5)})
     launcher.launch("run", target).wait()
@@ -1175,8 +1176,8 @@ def test_a_subscription_is_served_end_to_end_on_a_thread(tmp_path):
 
 
 def test_a_stop_ends_a_thread_worker_end_to_end(tmp_path):
-    launcher = ThreadLauncher(root=tmp_path)
-    obs = launcher.create_channel("run2")
+    launcher = ThreadLauncher(logs=MemoryLogs())
+    obs = launcher.logs.create("run2")
     send_stop(obs, "obs-1", **{"from": {"commits": 2}})
     target = ThreadTarget(train, args=(), kwargs={"until": Target(Commits(), 5)})
     launcher.launch("run2", target).wait()
@@ -1190,8 +1191,8 @@ def test_a_double_launch_leaves_one_claim_and_the_winners_own_verdict(tmp_path):
     """Two launches into one run: one claim wins, the loser writes no claim, and
     both launches end with their ``terminated``; the verdict is the winner's own
     exit, since a ``terminated`` enters no claimed run's verdict (§5)."""
-    launcher = ThreadLauncher(root=tmp_path)
-    obs = launcher.create_channel("race")
+    launcher = ThreadLauncher(logs=MemoryLogs())
+    obs = launcher.logs.create("race")
     go = threading.Event()
 
     def body(ch):

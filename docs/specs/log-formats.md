@@ -91,7 +91,7 @@ because only the outermost component leaves every future layout free.
 ### The two names in an address (2026-11-01, #64)
 
 A SQLite address is built from two caller-chosen names, the root and the run id, and the scheme is
-one-to-one only when both are constrained. `attach_channel` and `create_channel` refuse, with
+one-to-one only when both are constrained. `SqliteLogs`'s `attach` and `create` refuse, with
 `ValueError` and before the opening checks, creating nothing:
 
 - **a run id that is not one filename:** empty, containing `/` (or the platform's own separator), or
@@ -104,7 +104,7 @@ run that may move between backends should follow the first.
 
 *Why each:*
 - **The run id.** Without it, `../x` writes `<root>/x.db`, which is the **legacy address of run `x`**:
-  two runs, one log. And `create_channel("a/b")` fails by accident (`FileNotFoundError`), or succeeds if
+  two runs, one log. And `create("a/b")` fails by accident (`FileNotFoundError`), or succeeds if
   `v0.4.0/a/` happens to exist.
 - **The root.** Without it, `/data/v0.4.0/r.db` is both run `r` in format 0.4.0 under `/data` and run
   `r`'s legacy log under a root named `v0.4.0`. Nothing can tell the two apart: the path cannot, and the
@@ -114,15 +114,16 @@ run that may move between backends should follow the first.
 
 ### The inverse: from a path to its address (2026-11-01, #64)
 
-A viewer that walks a directory finds log files, not run ids, and must turn each path back into what
-`attach_channel` takes. With both names constrained the forward map is one-to-one, so **its inverse is
-a function**, defined beside the forward map so the two cannot drift:
+A viewer that walks a directory finds log files, not run ids, and must turn each path back into the
+root and run id that `SqliteLogs(root).attach(run_id)` takes. With both names constrained the forward
+map is one-to-one, so **its inverse is a function**, defined beside the forward map so the two cannot
+drift:
 
 - **Each format's layout** gains the inverse of `sqlite_path`: `sqlite_run(path) -> (root, run_id) |
   None`. `DirectoryLayout`'s is `(path.parent.parent, path.stem)` when `path.parent.name` is
   `v<version>` and `path.suffix` is `.db`, else `None`.
-- **The legacy address** gets its forward map and its inverse in `formats` as well. Today the forward map
-  is inline in `_locate`'s SQLite branch. The address is `<root>/<rid>.db`, and back.
+- **The legacy address** has its forward map and its inverse in `formats` as well, `legacy_sqlite_path`
+  and `legacy_sqlite_run`. The address is `<root>/<rid>.db`, and back.
 - **`formats.sqlite_address(path) -> VersionedAddress | LegacyAddress | NewerFormatRoot | None`**
   composes them, by the path's parent directory:
   - **named `v<version>` for a registered format:** `VersionedAddress(root, run_id, format)`, from that
@@ -139,9 +140,9 @@ a function**, defined beside the forward map so the two cannot drift:
   (`-wal`, `-shm`) included. Under a newer format's directory every path names its root, since that
   format's interior is unknown. It returns rather than raises
   for a newer format's root: it only reads a path, a valid path is no error, and a viewer walking a
-  directory renders the answer as a row. It is not named `locate_*`: the locators are `attach_channel`
-  and `create_channel` ([`channel-locators.md`](channel-locators.md)), which open a channel, while this
-  names an address, the inverse of `sqlite_path`.
+  directory renders the answer as a row. It is not named `locate_*`, since it opens nothing: a place's
+  `attach` and `create` ([`channel-locators.md`](channel-locators.md)) open a channel, while this names
+  an address, the inverse of `sqlite_path`.
 - **One run, one pair.** Every copy of a run maps to the same `(root, run_id)`: its current log and its
   sealed older ones are `VersionedAddress`es, its tombstone a `LegacyAddress`. A viewer shows one row per run by
   grouping on that pair, and opening it says which copy answers (§4).
@@ -156,7 +157,7 @@ an unknown format the protocol fixes.
 
 ## 4. Opening a log
 
-`attach_channel` and `create_channel` both run these checks, in order, before anything reads or writes.
+A place's `attach` and `create` both run these checks, in order, before anything reads or writes.
 Every party opens a log through one of them: the Worker, the folds, `ensure`, the Watcher, and raw
 `channel.send` users.
 
@@ -172,8 +173,8 @@ Every party opens a log through one of them: the Worker, the folds, `ensure`, th
    `runstate migrate`.
 4. **The legacy unversioned address holds the run.** Raise **`LogFormatMissing`**. Its message carries the
    one-time onboarding instructions (§7).
-5. **Nothing anywhere.** `attach_channel` raises `RunNotFound`. `create_channel` births the log at the
-   current address.
+5. **Nothing anywhere.** `attach` raises `RunNotFound`. `create` births the log at the current
+   address.
 
 Both errors subclass a new **`LogFormatError`**. Neither is ever caught and turned into "not found".
 Memory channels have no address, so they skip these checks.
@@ -673,12 +674,12 @@ On SQLite and Postgres (Memory has no addresses):
 
 - the five opening cases (§4), including refusing a root that holds a newer format, and the legacy
   "missing" error carrying its instructions;
-- (#64) both locators refusing, before any check and creating nothing, a SQLite run id that
-  is not one filename (`a/b`, `..`, `.`, empty) and a root named `vX.Y.Z`; the inverse undoing the
-  forward map over every registered format and the legacy address, and naming nothing the forward map
-  would not build; `NewerFormatRoot` for an unregistered newer directory, `None` for an unregistered older
-  one and for a sidecar; and every copy of a migrated run (current, sealed, tombstone) naming one
-  `(root, run_id)`;
+- (#64) `SqliteLogs`'s `attach` and `create` refusing, before any check and creating nothing, a
+  SQLite run id that is not one filename (`a/b`, `..`, `.`, empty) and a root named `vX.Y.Z`; the
+  inverse undoing the forward map over every registered format and the legacy address, and naming
+  nothing the forward map would not build; `NewerFormatRoot` for an unregistered newer directory,
+  `None` for an unregistered older one and for a sidecar; and every copy of a migrated run (current,
+  sealed, tombstone) naming one `(root, run_id)`;
 - an old-style writer appending to a sealed log fails loudly;
 - chaining through test-only steps (`FROM`→`TO` edges, no-path and two-steps-from-one-format refusals);
 - a migration that fails midway leaves the run sealed and unmigrated, and a retry completes it;
@@ -727,7 +728,7 @@ On SQLite and Postgres (Memory has no addresses):
 - `channel-locators.md`: the address scheme and §4's checks.
 - `channel-postgres.md`: a schema per format.
 - `store.md`: a log's address under placement, and Recipe 3's deletion rule.
-- `design-v0.2.md` §4: the locators check formats.
+- `design-v0.2.md` §4: a place's opens check formats.
 - `CLAUDE.md`: the upgrade procedure, beside the pinning note.
 - The release contract draft's §(b): resolved by this spec (`release-and-stability.md` §3).
 - `store.md` Recipe 3: collecting a run also deletes its entries in the root's migration manifest (§6,
@@ -741,5 +742,5 @@ On SQLite and Postgres (Memory has no addresses):
 ## Related
 
 - [`reference-by-name.md`](reference-by-name.md) — introduces format 0.3.0, and the first migration step.
-- [`channel-locators.md`](channel-locators.md) — the locators this spec extends.
+- [`channel-locators.md`](channel-locators.md) — the opens this spec extends.
 - [`../backlog/identity-in-records.md`](../backlog/identity-in-records.md) — the design both specs serve.

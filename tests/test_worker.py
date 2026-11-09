@@ -30,6 +30,7 @@ from runstate.channel.memory import MemoryChannel
 from runstate.vocabulary.launch import launch_scope
 from tests.live_helpers import Interloping, Wrapping
 from tests.test_death_reports import dead_handle
+from runstate.logs import SqliteLogs
 from tests.test_reads import (
     Rec,
     append,
@@ -567,9 +568,8 @@ def test_an_unserializable_value_raises_naming_its_name(open_run):
 
 
 def test_json_default_coerces_an_emitted_value(tmp_path):
-    from runstate.channel import create_channel
 
-    ch = create_channel("r", root=tmp_path, backend="sqlite", json_default=sorted)
+    ch = SqliteLogs(tmp_path, json_default=sorted).create("r")
     w = worker(ch)
     w.emit("loss", {3, 1, 2})
     assert ch.latest(Topic.VALUE).body["value"] == [1, 2, 3]

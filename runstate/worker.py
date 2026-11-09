@@ -1184,8 +1184,8 @@ class Worker:
         except (TypeError, ValueError) as exc:
             raise TypeError(
                 f"value for {name!r} ({type(value).__name__}) is not "
-                "JSON-serializable; pass json_default to "
-                "current_channel()/create_channel() to coerce it"
+                "JSON-serializable; pass json_default to the place that "
+                "opens the channel, or to current_channel(), to coerce it"
             ) from exc
         return seq
 

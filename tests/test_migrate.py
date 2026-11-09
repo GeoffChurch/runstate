@@ -31,6 +31,7 @@ from runstate.migrations.stores import PostgresStore, SqliteStore
 from tests.format_helpers import toy_layout
 from tests.migration_helpers import NO_HISTORY
 from tests.migration_consumer import ASKED, UNSETTLED, ToyFacts
+from runstate.logs import SqliteLogs, PostgresLogs
 
 # The toy steps declare no facts, projections or divergences: the user has nothing
 # to give them. The limits are the command line's, which no toy reads.
@@ -1429,8 +1430,6 @@ def test_a_destination_takes_its_formats_ddl(backend, request, tmp_path, monkeyp
     import dataclasses
     import sqlite3
 
-    from runstate import attach_channel, create_channel
-
     if backend == "postgres":
         dsn = request.getfixturevalue("scratch_db")  # SKIPs without a DSN
     v030 = formats.FORMATS["0.3.0"]
@@ -1461,7 +1460,7 @@ def test_a_destination_takes_its_formats_ddl(backend, request, tmp_path, monkeyp
         assert _sqlite_catalog(v040.sqlite_path(tmp_path, "r1")) == _sqlite_catalog(
             reference
         )
-        create_channel("r2", root=tmp_path).close()
+        SqliteLogs(tmp_path).create("r2").close()
         assert _sqlite_catalog(v040.sqlite_path(tmp_path, "r2")) == _sqlite_catalog(
             reference
         )
@@ -1485,7 +1484,7 @@ def test_a_destination_takes_its_formats_ddl(backend, request, tmp_path, monkeyp
                 c.execute("INSERT INTO log VALUES ('r1', %s, %s, %s, %s, %s, %s)", row)
     assert migrate(PostgresStore(dsn), None, to="0.4.0", choices=NONE).moved
     assert _pg_catalog(dsn, v040.pg_schema()) == reference
-    with attach_channel("r1", root=dsn, backend="postgres") as ch:
+    with PostgresLogs(dsn).attach("r1") as ch:
         assert ch.last_seq() == 3
 
 
@@ -1497,8 +1496,6 @@ def test_a_chain_to_0_4_0_stamps_only_0_4_0s_table(scratch_db):
     registered steps, leaves a 0.3.0 table without the stamp columns, as master wrote
     0.3.0's, and a 0.4.0 table with them, each exactly its format's tables."""
     import psycopg
-
-    from runstate import attach_channel
 
     v020, v030, v040 = (formats.FORMATS[v] for v in ("0.2.0", "0.3.0", "0.4.0"))
     with psycopg.connect(scratch_db, autocommit=True) as c:
@@ -1539,7 +1536,7 @@ def test_a_chain_to_0_4_0_stamps_only_0_4_0s_table(scratch_db):
         columns[layout.version] = {col for _, col, *_ in got[0]}
     assert not columns["0.3.0"] & _STAMP
     assert columns["0.4.0"] >= _STAMP
-    with attach_channel("r1", root=scratch_db, backend="postgres") as ch:
+    with PostgresLogs(scratch_db).attach("r1") as ch:
         assert ch.last_seq() == 3
 
 

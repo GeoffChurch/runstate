@@ -44,7 +44,7 @@ class SubprocessProducer:
     def channel(self) -> runstate.Channel:
         """One handle on the run, opened (birthing it) on first access, then held."""
         if self._channel is None:
-            self._channel = self._launcher.create_channel(self.run_id)
+            self._channel = self._launcher.logs.create(self.run_id)
         return self._channel
 
     def extend(self, target: runstate.Target) -> runstate.LiveHandle:
@@ -73,7 +73,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as root:
         state = Path(root) / "state"
         state.mkdir()
-        with runstate.LocalLauncher(root=root) as launcher:
+        with runstate.LocalLauncher(logs=runstate.SqliteLogs(root)) as launcher:
             producer = SubprocessProducer(launcher, rid, state)
             target = runstate.Target("loss", 10)
 

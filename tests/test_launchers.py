@@ -11,6 +11,7 @@ The bracket is ``supervisor.*``. The death reports the launchers write are
 verdicts a launch leaves.
 """
 
+from runstate.logs import MemoryLogs, SqliteLogs
 import sys
 import threading
 
@@ -39,7 +40,7 @@ pytestmark = pytest.mark.filterwarnings(
 def test_launch_runs_target_and_brackets_with_supervisor_records(tmp_path):
     """``supervisor.launched`` brackets the work, and ``supervisor.terminated`` closes
     it, both naming the launch."""
-    launcher = ThreadLauncher(root=tmp_path)
+    launcher = ThreadLauncher(logs=MemoryLogs())
     seen = []
 
     def target(ch):
@@ -49,7 +50,7 @@ def test_launch_runs_target_and_brackets_with_supervisor_records(tmp_path):
     h = launcher.launch("run-1", thread(target))
     h.wait(timeout=30)
     assert len(seen) == 1
-    ch = launcher.attach_channel("run-1")
+    ch = launcher.logs.attach("run-1")
     records = ch.read()
     assert [e.topic for e in records] == [
         Topic.SUPERVISOR_LAUNCHED,
@@ -63,7 +64,7 @@ def test_launch_runs_target_and_brackets_with_supervisor_records(tmp_path):
 
 
 def test_handle_fields_and_liveness(tmp_path):
-    launcher = ThreadLauncher(root=tmp_path)
+    launcher = ThreadLauncher(logs=MemoryLogs())
     gate = threading.Event()
     h = launcher.launch("run-2", thread(lambda ch: gate.wait(30)))
     assert h.run_id == "run-2" and h.handle.startswith("local://")
@@ -76,7 +77,7 @@ def test_handle_fields_and_liveness(tmp_path):
 def test_an_errored_target_that_never_claimed_reads_errored(tmp_path):
     """A target that raises before it claims records exit code 1, and the unclaimed
     run's verdict is its launch's ``terminated``: ``errored`` (§5)."""
-    launcher = ThreadLauncher(root=tmp_path)
+    launcher = ThreadLauncher(logs=MemoryLogs())
 
     def target(ch):
         raise RuntimeError("boom")
@@ -84,7 +85,7 @@ def test_an_errored_target_that_never_claimed_reads_errored(tmp_path):
     h = launcher.launch("run-3", thread(target))
     h.wait(timeout=30)
     assert isinstance(h.exception, RuntimeError)
-    ch = launcher.attach_channel("run-3")
+    ch = launcher.logs.attach("run-3")
     term = ch.latest(Topic.SUPERVISOR_TERMINATED).body
     assert (term["reason"], term["exit_code"]) == ("exited", 1)
     r = peek_terminal(ch)
@@ -92,7 +93,7 @@ def test_an_errored_target_that_never_claimed_reads_errored(tmp_path):
 
 
 def test_target_receives_args(tmp_path):
-    launcher = ThreadLauncher(root=tmp_path)
+    launcher = ThreadLauncher(logs=MemoryLogs())
     got = []
 
     def target(ch, a, b, *, c):
@@ -109,7 +110,7 @@ def test_a_claim_losers_clean_exit_does_not_forge_the_winners_verdict(tmp_path):
     position and not the handle (threads share one pid), attributes the claim
     (specs/launcher-record-identity.md). The loser's end writes ``terminated`` only,
     since no claim names its launch, and ends nothing."""
-    launcher = ThreadLauncher(root=tmp_path)
+    launcher = ThreadLauncher(logs=MemoryLogs())
     claim_now, winner_claimed = threading.Event(), threading.Event()
     loser_done, release_winner = threading.Event(), threading.Event()
 
@@ -133,7 +134,7 @@ def test_a_claim_losers_clean_exit_does_not_forge_the_winners_verdict(tmp_path):
     hl = launcher.launch("collide", thread(loser))
     claim_now.set()
     assert loser_done.wait(20) and hl.wait(timeout=30) is None
-    ch = launcher.attach_channel("collide")
+    ch = launcher.logs.attach("collide")
     claims = ch.read(topics=[Topic.LIFECYCLE_STARTED])
     assert [c.request_id for c in claims] == [hw.launch_id]
     assert claims[0].seq > ch.read(topics=[Topic.SUPERVISOR_LAUNCHED])[-1].seq
@@ -163,6 +164,7 @@ from runstate import current_channel
 from runstate.checkpoint import NoSave
 from runstate.vocabulary.coordinate import Commits, Target
 from runstate.worker import Worker
+from runstate.logs import MemoryLogs, SqliteLogs
 
 with Worker(current_channel(), resume_from=None, sources=[], save=NoSave()) as w:
     for i in w.steps(Target(Commits(), 2)):
@@ -181,10 +183,10 @@ def command(code):
 def test_subprocess_attaches_to_same_run_and_is_reaped(tmp_path):
     """The child writes on the same run's log, across processes; its reap writes the
     launch's ``terminated``, and the unclaimed run reads ``completed``."""
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         h = launcher.launch("run-1", command(WORKER))
         assert h.wait(timeout=30) == 0
-    ch = launcher.attach_channel("run-1")
+    ch = launcher.logs.attach("run-1")
     assert ch.latest(Topic.VALUE, "loss").body["value"] == 0.5
     launched = ch.latest(Topic.SUPERVISOR_LAUNCHED).body
     assert launched["handle"].startswith("local://") and launched["status"] == "running"
@@ -198,10 +200,10 @@ def test_a_staged_worker_child_claims_commits_and_completes(tmp_path):
     """The staged Worker in a child: its claim names its launch, its nodes land on
     the shared log, and the verdict is its own exit, which its exit-0 reap does not
     change."""
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         h = launcher.launch("run-w", command(STAGED))
         assert h.wait(timeout=60) == 0
-    ch = launcher.attach_channel("run-w")
+    ch = launcher.logs.attach("run-w")
     assert ch.latest(Topic.LIFECYCLE_STARTED).request_id == h.launch_id
     assert len(ch.read(topics=[Topic.LIFECYCLE_COMMIT])) == 2
     assert ch.read(topics=[Topic.SUPERVISOR_DIED]) == []
@@ -210,13 +212,13 @@ def test_a_staged_worker_child_claims_commits_and_completes(tmp_path):
 
 
 def test_handle_is_alive_then_terminate_records_killed(tmp_path):
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         h = launcher.launch("run-2", command(BLOCKER))
         assert h.is_alive() is True
         h.terminate()
         h.wait(timeout=30)
         assert h.is_alive() is False
-    ch = launcher.attach_channel("run-2")
+    ch = launcher.logs.attach("run-2")
     term = ch.latest(Topic.SUPERVISOR_TERMINATED).body
     assert (term["reason"], term["signal"]) == ("killed", 15)
     r = peek_terminal(ch)
@@ -224,9 +226,9 @@ def test_handle_is_alive_then_terminate_records_killed(tmp_path):
 
 
 def test_reap_is_idempotent(tmp_path):
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         h = launcher.launch("run-3", command(WORKER))
         h.wait(timeout=30)
         h.wait(timeout=30)  # a second reap writes nothing more
-    ch = launcher.attach_channel("run-3")
+    ch = launcher.logs.attach("run-3")
     assert len(ch.read(topics=[Topic.SUPERVISOR_TERMINATED])) == 1

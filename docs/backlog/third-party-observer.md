@@ -269,9 +269,8 @@ orthogonality. Settle that before writing code. Full spec + adversarial pass.
 ## 3. Run enumeration — there is no surface at all
 
 Nothing in the library enumerates runs (no `list_runs`, no `SELECT DISTINCT run_id`,
-no directory walk). The locators (`attach_channel`/`create_channel`) locate *a* run
-by id; the Channel surface is per-run. But a viewer's first screen is *"what runs
-exist?"*.
+no directory walk). A place's opens (`attach`/`create`) locate *a* run by id; the
+Channel surface is per-run. But a viewer's first screen is *"what runs exist?"*.
 
 Worse, the answer is **filesystem-shaped and `PostgresChannel` is not**: every
 Postgres op is scoped `WHERE run_id = %s`, there are no roots, no directories, no

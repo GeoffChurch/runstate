@@ -11,6 +11,7 @@ every stop pending at the exit and every stop that held during the claim.
 ``tests/test_interop.py``.
 """
 
+from runstate.logs import SqliteLogs
 import sys
 
 import pytest
@@ -712,6 +713,7 @@ from runstate.checkpoint import Every
 from runstate.claims import CAS_ATTEMPTS, endings
 from runstate.vocabulary.coordinate import Commits, Target
 from runstate.worker import Worker
+from runstate.logs import SqliteLogs
 
 store, phase, exiting = sys.argv[1], sys.argv[2], []
 
@@ -738,7 +740,7 @@ def run_save_raises_at_the_exit(tmp_path, phase):
     """Launch the child above, raising at the exit's ``phase``; its channel, once
     it has exited non-zero, and the nodes its store holds."""
     store = tmp_path / "checkpoints"
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         h = launcher.launch(
             "run",
             Command(
@@ -747,7 +749,7 @@ def run_save_raises_at_the_exit(tmp_path, phase):
             ),
         )
         assert h.wait(timeout=60) != 0
-        ch = launcher.attach_channel("run")
+        ch = launcher.logs.attach("run")
     return ch, [int(line) for line in store.read_text().split()]
 
 

@@ -10,6 +10,7 @@ end-to-end tests drive the staged Worker through a ``ThreadLauncher`` and
 ``launch_producer``, as a consumer does.
 """
 
+from runstate.logs import SqliteLogs
 import subprocess
 import time
 
@@ -47,6 +48,7 @@ from runstate.channel.memory import MemoryChannel
 from runstate.formats import FORMATS
 from runstate.vocabulary.handle import local_handle, local_handle_of
 from tests.live_helpers import bounded_sleep, thread
+from runstate.logs import MemoryLogs
 from tests.test_reads import (
     append,
     channel,
@@ -721,7 +723,7 @@ def test_launch_producer_drives_its_target_with_until():
     """``launch_producer(launcher, run_id, target)``'s ``extend(t)`` launches
     ``target.driven(t)``: the worker receives the drive's ``Target`` as ``until`` (plan, open
     question 18), and the handle carries the launch its claim names."""
-    launcher = ThreadLauncher()
+    launcher = ThreadLauncher(logs=MemoryLogs())
     seen = {}
 
     def fn(ch, *, tag, until):
@@ -740,8 +742,8 @@ def test_launch_producer_drives_its_target_with_until():
 def test_launch_producer_hands_back_a_foreign_episode_while_a_claim_is_held():
     """While the run's newest claim is held, ``extend`` launches nothing and hands
     back ``foreign_episode`` (``relaunch_if_needed`` returned ``None``)."""
-    launcher = ThreadLauncher()
-    at(launcher.create_channel("exp"), claim())
+    launcher = ThreadLauncher(logs=MemoryLogs())
+    at(launcher.logs.create("exp"), claim())
     p = producer(launcher)
     h = p.extend(LOSS3)
     assert h.launch_id is None and h.is_alive() is True
@@ -751,7 +753,7 @@ def test_launch_producer_hands_back_a_foreign_episode_while_a_claim_is_held():
 def test_ensure_cold_miss_then_hit():
     """A miss drives the worker to the target, and a second call is a read: no
     second launch."""
-    launcher = ThreadLauncher()
+    launcher = ThreadLauncher(logs=MemoryLogs())
     p = producer(launcher)
     got = ensure(p, Target("loss", 5), sleep=bounded_sleep())
     assert isinstance(got, Reached)
@@ -777,7 +779,7 @@ def test_a_larger_target_continues_from_the_earlier_drives_extendable_exit():
     """The worker exits preempted at its target, an extendable exit, so a later
     ``ensure`` with a larger target continues from it (§5, "The producer seam"):
     one series, and the second claim resumes from the first claim's exit."""
-    launcher = ThreadLauncher()
+    launcher = ThreadLauncher(logs=MemoryLogs())
     p = producer(launcher)
     assert isinstance(ensure(p, LOSS3, sleep=bounded_sleep()), Reached)
     got = ensure(p, Target("loss", 6), sleep=bounded_sleep())
@@ -801,7 +803,7 @@ def test_ensure_redrives_within_one_call_to_reach_the_target():
     """A worker that commits at most two elements a claim is driven again and
     again by one call, continuing the head each time, until the target is
     reached."""
-    launcher = ThreadLauncher()
+    launcher = ThreadLauncher(logs=MemoryLogs())
 
     def chunked(ch, *, until):
         done = prefix_len(ch, until.x, head=LatestClaimHead())
@@ -821,7 +823,7 @@ def test_ensure_redrives_within_one_call_to_reach_the_target():
 def test_ensure_fails_fast_on_a_launched_workers_raise_and_a_re_call_resumes():
     """A drive whose worker raises fails the call with the verdict (the retry is the
     caller's); a re-call resumes from the head and reaches the target."""
-    launcher = ThreadLauncher()
+    launcher = ThreadLauncher(logs=MemoryLogs())
     tries = []
 
     def flaky(ch, *, until):
@@ -846,7 +848,7 @@ def test_ensure_fails_fast_on_a_launched_workers_raise_and_a_re_call_resumes():
 def test_ensure_raises_no_progress_for_a_launched_worker_that_commits_nothing():
     """A worker that claims and exits without a commit, whatever its target, makes
     a re-drive spin: ``NoProgressError``."""
-    launcher = ThreadLauncher()
+    launcher = ThreadLauncher(logs=MemoryLogs())
 
     def idle(ch, *, until):
         with Worker(ch, resume_from=LatestClaimHead(), sources=[], save=NoSave()):
@@ -860,7 +862,7 @@ def test_a_worker_that_dies_before_it_claims_is_a_recordless_exit():
     """A worker that raises before it constructs its ``Worker`` leaves no claim, only
     its launch's ``terminated``: recordless, and the re-drive reproduces it, so the
     second raises ``RecordlessExitError`` rather than hang."""
-    launcher = ThreadLauncher()
+    launcher = ThreadLauncher(logs=MemoryLogs())
 
     def dies(ch, *, until):
         raise RuntimeError("died before claiming")
@@ -875,7 +877,7 @@ def test_a_completing_worker_is_a_function_producer():
     """specs/derived-runs.md's dissolution pin, in 0.4.0 terms: compute-on-demand
     needs no new surface. A worker that emits its bundle and completes, its exit
     committing it, is reached at that closed exit, and a second call is a read."""
-    launcher = ThreadLauncher()
+    launcher = ThreadLauncher(logs=MemoryLogs())
 
     def derived(ch, *, until):
         with Worker(ch, resume_from=None, sources=[], save=NoSave()) as w:
@@ -901,8 +903,8 @@ def test_reuse_is_extend_across_drivers(tmp_path):
     rid = "abc123"
     home = tmp_path / "runs" / rid[:2] / rid
     home.mkdir(parents=True)
-    a = producer(ThreadLauncher(root=home, backend="sqlite"), run_id=rid)
-    b = producer(ThreadLauncher(root=home, backend="sqlite"), run_id=rid)
+    a = producer(ThreadLauncher(logs=SqliteLogs(home)), run_id=rid)
+    b = producer(ThreadLauncher(logs=SqliteLogs(home)), run_id=rid)
     assert isinstance(ensure(a, LOSS3, sleep=bounded_sleep()), Reached)
     assert isinstance(ensure(b, Target("loss", 8), sleep=bounded_sleep()), Reached)
     assert losses(b.channel) == [float(i) for i in range(8)]
@@ -915,8 +917,8 @@ def test_reuse_is_extend_across_drivers(tmp_path):
 def test_a_latecomer_waits_on_a_live_foreign_claim_and_launches_nothing():
     """specs/store.md pin 2a: while a foreign claim is held, a latecomer's ``ensure``
     waits on it, launching nothing, and is reached once the winner delivers."""
-    launcher = ThreadLauncher()
-    ch = launcher.create_channel("exp")
+    launcher = ThreadLauncher(logs=MemoryLogs())
+    ch = launcher.logs.create("exp")
     at(ch, claim())
     p = producer(launcher)
     delivered = []

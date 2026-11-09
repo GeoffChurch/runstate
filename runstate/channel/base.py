@@ -1,15 +1,15 @@
 """The Channel surface: the abstract base every substrate backend implements.
 
 A Channel is a **handle on a run's shared topic log — not the log itself.** The
-log is the durable, shared thing (a SQLite file; the process-global in-memory
-registry); a Channel is one open handle onto it. Closing a handle releases *that
+log is the durable, shared thing (a SQLite file; the in-memory log a
+``MemoryLogs`` instance holds); a Channel is one open handle onto it. Closing a handle releases *that
 handle's* resources (a SQLite connection + its WAL sidecar fds; nothing for the
 in-memory backend) — it does **not** delete the log, stop the worker, or affect
 any other handle on the same run. Many handles coexist on one run (the worker, an
 observer, a Watcher), each opened and closed independently; the log and every
 other handle outlive any one of them.
 
-So ``with create_channel(...) as ch:`` scopes the *handle*, not the *run*: the
+So ``with logs.create(run_id) as ch:`` scopes the *handle*, not the *run*: the
 context manager closes this handle at block exit, while the run's log persists.
 Use-after-close is a backend error (a closed SQLite connection raises), not
 defined behavior.
@@ -24,6 +24,7 @@ and design-v0.2.md §4.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from typing import NamedTuple, Protocol, overload, runtime_checkable
 
 from .envelope import Body, Envelope
@@ -34,8 +35,8 @@ class RunNotFound(LookupError):
 
     The uniform absence signal across backends: a run *is* its records (an
     append-only log has no existence independent of them), so a nonexistent run
-    and an empty run are the same miss. Raised by ``attach_channel`` (the
-    non-creating locator) — never by ``create_channel`` (which births). A
+    and an empty run are the same miss. Raised by ``Logs.attach`` (the
+    non-creating open) — never by ``Logs.create`` (which births). A
     ``LookupError`` because that is exactly what this is: the lookup found no
     run. Callers that treat "no run yet" as "proceed" (the launch deciders)
     catch it; a birth site that leaks it fails loudly rather than manufacturing
@@ -150,4 +151,42 @@ class SessionProbe(Protocol):
     def session_ended(self, session: Session) -> bool | None:
         """True when no connection holds ``session.key``; False when one does; None when
         this connection cannot tell: another server's stamp, or a standby."""
+        ...
+
+
+# --- where logs are: the place a channel is opened from ---
+
+
+class Logs(Protocol):
+    """A place that holds runs' logs, and the two ways to open one there
+    (docs/specs/channel-locators.md). A Strategy: built once, where the program
+    reads its configuration (``SqliteLogs(root)``, ``PostgresLogs(dsn)``,
+    ``MemoryLogs()``, or a consumer's own), and passed down, so no caller below
+    asks which backend it holds. Repeated opens of one ``run_id`` share the run's
+    log."""
+
+    def create(self, run_id: str) -> Channel:
+        """Open the run's channel, birthing its log if it has none; idempotent via
+        the birth CAS. The one open that may create: bringing a run into existence
+        is always this call, never a default of attaching."""
+        ...
+
+    def attach(self, run_id: str) -> Channel:
+        """Open an **existing** run's channel; ``RunNotFound`` if it has no
+        records. Creates and changes nothing in the place, yet the handle is
+        **writable**: the stop path attaches then sends, and a decider attaches to
+        write a death report."""
+        ...
+
+
+class ProcessLogs(Logs, Protocol):
+    """A place another process can open: it can spell itself as environment
+    variables. A launcher that spawns a process takes one, so a place that cannot
+    cross the boundary (``MemoryLogs``) is a type error there, not an empty log in
+    the child."""
+
+    def child_env(self) -> Mapping[str, str]:
+        """What a child's environment must hold for the child to open this place:
+        for the reference places, what ``runstate.current_channel()`` reads. A
+        consumer's own place returns whatever its own worker reads."""
         ...

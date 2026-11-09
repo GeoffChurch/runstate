@@ -266,13 +266,12 @@ any idle-reap timeout, and set client-side libpq keepalives.
 reads `lost`, which is a failure, where accounting would say `preempted`. A deployment that wants
 the cause keeps an accounting reporter beside it (`commits-and-lineage.md` §12).
 
-## Locator + dependency
+## Place + dependency
 
-`create_channel` / `attach_channel` `(run_id, root=<DSN>, backend="postgres")` — `root` is the
-connection string (or `RUNSTATE_PG_DSN`), a **direct or session-pooled** endpoint. Dependency:
-`psycopg` v3 as an optional `runstate[postgres] = ["psycopg[binary]"]` extra; the locators'
-`"postgres"` branch imports it lazily and raises a clear *"pip install runstate[postgres]"* on
-absence.
+`PostgresLogs(dsn).create(run_id)` / `.attach(run_id)` — `dsn` is the connection string, a
+**direct or session-pooled** endpoint. Dependency: `psycopg` v3 as an optional
+`runstate[postgres] = ["psycopg[binary]"]` extra; `PostgresLogs` imports it lazily when it opens a
+channel and raises a clear *"pip install runstate[postgres]"* on absence.
 The server must be **PostgreSQL 16 or newer** (see *Liveness*, the server's identity). The
 `SessionProbe` Protocol (with `Session`) and the
 `isinstance`-dispatch sites live in a **psycopg-free module** (`channel/base.py`, `watcher`), so `import runstate` works without

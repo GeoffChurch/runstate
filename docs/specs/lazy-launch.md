@@ -26,7 +26,7 @@ inputs: the demand fold, and the deletion of all flap policy). Closes design
 > ```python
 > def ensure_served(launcher, run_id, target, **launch_kwargs):
 >     try:
->         with launcher.attach_channel(run_id) as channel:  # existing-only probe
+>         with launcher.logs.attach(run_id) as channel:  # existing-only probe
 >             if not live_demand(channel):          # leased demand, boundary-aware
 >                 return None
 >             if live_episode(channel) is not None: # someone already serving
@@ -79,7 +79,7 @@ or subclass), so the standing-daemon form is a *composition*, not a second
 implementation:
 
 ```python
-with LocalLauncher(root=root) as launcher:
+with LocalLauncher(logs=SqliteLogs(root)) as launcher:
     while True:                              # the activator recipe
         launcher.reap()                      # MANDATORY: see below
         for run_id, target, kw in table:
@@ -89,7 +89,7 @@ with LocalLauncher(root=root) as launcher:
 
 (Under `specs/store.md` Recipe-1 placement — per-rid content-addressed
 roots — the one-launcher-many-rids shape above needs a per-rid wrapper
-loop: construct the launcher, or at least its root, per run_id.)
+loop: construct the launcher, or at least its place, per run_id.)
 
 The per-cycle `launcher.reap()` (a new public method: poll every
 outstanding handle) is load-bearing, not hygiene: a never-exiting loop

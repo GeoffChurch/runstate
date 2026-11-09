@@ -11,21 +11,23 @@ indeterminate (a backend fault, e.g. a competing writer wedged past the wait
 bound) — never a loss. Every backend must honor this; the conformance race
 tests in ``tests/test_channel.py`` pin it. See docs/design-v0.2.md §4.
 
-This module is the package *facade*: it imports the core record, the backends,
-and the locator, and re-exports them. It is the top of the package's import DAG
-— siblings import from ``.envelope`` (a leaf), never from here.
+This module is the package *facade*: it imports the core record, the backends
+and the ``Logs`` Protocols, and re-exports them. The places that open channels
+(``SqliteLogs``, ``PostgresLogs``, ``MemoryLogs``) are ``runstate.logs``'s. It is
+the top of the package's import DAG — siblings import from ``.envelope`` (a
+leaf), never from here.
 """
 
 from __future__ import annotations
 
-import os
-from collections.abc import Callable
 from pathlib import Path
 
 from .. import formats
 from ..formats import LOG_FORMAT, FORMATS, LogFormatMismatch, LogFormatMissing
 from .base import (
     Channel,
+    Logs,
+    ProcessLogs,
     RunNotFound,
     Session,
     SessionProbe,
@@ -34,25 +36,14 @@ from .envelope import Body, Envelope
 from .memory import MemoryChannel, MemoryLog
 from .sqlite import SqliteChannel
 
-# In-process registry of MemoryChannel logs, keyed by (root, run_id). Lets
-# several ``create_channel`` / ``attach_channel`` (..., backend="memory") calls
-# in one process act as multiple readers/writers of the *same* run (the analogue
-# of several SqliteChannels on one file). Each entry is one ``MemoryLog``, whose
-# own lock keeps the seq read-modify-write atomic across every handle on it.
-# Distinct (root, run_id) keys stay isolated; the root is identity-normalized
-# (absolute path, None kept as None) so two spellings of one location share a log
-# exactly as they would share a file on sqlite -- and root=None never collides
-# with a namespace literally named "None".
-_MEMORY_LOGS: dict[tuple[str | None, str], MemoryLog] = {}
-
 
 def sqlite_log_path(root: Path, run_id: str) -> Path:
     """The run's address at the current format, once log-formats.md §4's opening
     checks pass, in order: refuse a root holding a newer format; the current
     address, if the run's log is there; refuse an older format or the legacy
-    address holding the run; else the current address, which holds nothing. The
-    locators open or birth a channel there, and a run copy reads or writes rows
-    there (docs/specs/run-copy.md)."""
+    address holding the run; else the current address, which holds nothing.
+    ``SqliteLogs`` opens or births a channel there, and a run copy reads or writes
+    rows there (docs/specs/run-copy.md)."""
     formats.check_sqlite_names(root, run_id)
     if root.is_dir():
         newer = formats.newer_in(
@@ -88,143 +79,17 @@ def sqlite_log_path(root: Path, run_id: str) -> Path:
     return path
 
 
-def _locate_sqlite(
-    root: Path,
-    run_id: str,
-    *,
-    create: bool,
-    json_default: Callable[[object], object] | None,
-) -> Channel:
-    """Open the run's log at its checked address (``sqlite_log_path``); else
-    RunNotFound (attach) or a birth there (create)."""
-    path = sqlite_log_path(root, run_id)
-    if path.exists():
-        return SqliteChannel(path, create=create, json_default=json_default)
-    if not create:
-        raise RunNotFound(f"run has no records at {path}")
-    path.parent.mkdir(exist_ok=True)  # the root itself must already exist
-    return SqliteChannel(path, create=True, json_default=json_default)
-
-
-def _locate(
-    run_id: str,
-    *,
-    root: str | os.PathLike[str] | None = None,
-    backend: str = "sqlite",
-    create: bool,
-    json_default: Callable[[object], object] | None = None,
-) -> Channel:
-    """The backend-dispatch ladder behind the two public locators.
-
-    ``create`` forks the two contracts and lives ONLY here — the public basis is
-    two total functions (``create_channel`` / ``attach_channel``), each with one
-    contract, never a boolean flag. ``create=True`` is the birth path (open-or-
-    create, idempotent via the birth-CAS); ``create=False`` attaches to an
-    existing run and raises ``RunNotFound`` if it has no records, mutating no
-    backing store (docs/specs/channel-locators.md).
-    """
-    if backend == "sqlite":
-        if root is None:
-            raise ValueError(
-                "the sqlite backend requires a root directory (got root=None)"
-            )
-        return _locate_sqlite(
-            Path(root), run_id, create=create, json_default=json_default
-        )
-    if backend == "memory":
-        key = (None if root is None else os.path.abspath(str(root)), run_id)
-        if create:
-            # Build a log only for an absent key; setdefault, not an assignment,
-            # so two racing creates of one run still share the log that won.
-            existing = _MEMORY_LOGS.get(key)
-            log = (
-                existing
-                if existing is not None
-                else _MEMORY_LOGS.setdefault(key, MemoryLog([]))
-            )
-        else:
-            # Attach: look up WITHOUT setdefault (no phantom); an absent key or an
-            # empty log is "no records" -> the run does not exist.
-            found = _MEMORY_LOGS.get(key)
-            if found is None or found.last_seq() == 0:
-                raise RunNotFound(
-                    f"run {run_id!r} has no records (memory backend, root={root!r})"
-                )
-            log = found
-        return MemoryChannel(log, json_default=json_default)
-    if backend == "postgres":
-        if root is None:
-            raise ValueError("the postgres backend requires a DSN root (got root=None)")
-        try:
-            from .postgres import PostgresChannel
-        except ImportError as exc:  # the optional extra isn't installed
-            raise ImportError(
-                "the postgres backend needs psycopg: pip install runstate[postgres]"
-            ) from exc
-        return PostgresChannel(
-            str(root), run_id, create=create, json_default=json_default
-        )
-    raise ValueError(
-        f"unknown backend: {backend!r} (expected 'sqlite', 'memory', or 'postgres')"
-    )
-
-
-def attach_channel(
-    run_id: str,
-    *,
-    root: str | os.PathLike[str] | None = None,
-    backend: str = "sqlite",
-    json_default: Callable[[object], object] | None = None,
-) -> Channel:
-    """Attach to an **existing** run's channel; raise ``RunNotFound`` if it has
-    no records. Never creates or mutates any backing store (the foreign-db-safe
-    open) — yet **writable**: an attached handle reads *and* writes, so the stop
-    path attaches then sends. The non-creating half of the locator split; birth
-    is always the explicitly-named ``create_channel``.
-
-    ``root`` is the directory (sqlite) or namespace (memory) holding runs;
-    ``run_id`` selects one. Repeated calls on the same ``(root, run_id)`` share
-    the run's log. ``json_default`` is a sender-side ``json.dumps`` hook for
-    coercing exotic value payloads (e.g. numpy scalars -> float); readers are
-    unaffected. (docs/specs/channel-locators.md)
-    """
-    return _locate(
-        run_id, root=root, backend=backend, create=False, json_default=json_default
-    )
-
-
-def create_channel(
-    run_id: str,
-    *,
-    root: str | os.PathLike[str] | None = None,
-    backend: str = "sqlite",
-    json_default: Callable[[object], object] | None = None,
-) -> Channel:
-    """Open-or-create (birth) a run's channel; idempotent via the birth-CAS. The
-    one side-effecting locator — creation is *always* this explicitly-named call,
-    never a default of attaching.
-
-    ``root`` is the directory (sqlite) or namespace (memory) holding runs;
-    ``run_id`` selects one. Repeated calls on the same ``(root, run_id)`` share
-    the run's log, so an orchestrator and a worker name the run the same way.
-    ``json_default`` is a sender-side ``json.dumps`` hook for coercing exotic
-    value payloads (e.g. numpy scalars -> float); readers are unaffected.
-    """
-    return _locate(
-        run_id, root=root, backend=backend, create=True, json_default=json_default
-    )
-
-
 __all__ = [
     "Body",
     "Channel",
     "Envelope",
+    "Logs",
     "MemoryChannel",
     "MemoryLog",
+    "ProcessLogs",
     "RunNotFound",
     "Session",
     "SessionProbe",
     "SqliteChannel",
-    "attach_channel",
-    "create_channel",
+    "sqlite_log_path",
 ]

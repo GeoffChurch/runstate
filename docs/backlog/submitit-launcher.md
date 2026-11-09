@@ -42,14 +42,11 @@ package is right the moment it grows resource-config surface (see 5).
 ### 2. Target shape — callable vs cmd (the heterogeneous-`launch` finding)
 
 submitit submits a **callable** (like `ThreadLauncher`), not a command (like
-`LocalLauncher`). This is a third instance of
-[launcher-protocol-typing](launcher-protocol-typing.md)'s finding: the reference
-launchers' `launch` signatures are already disjoint (`target: Callable` vs
-`cmd: list[str]`), so `launch` cannot be structurally typed, and the four helpers
-take `launcher: Any`. A `SubmititLauncher.launch` adds a callable-plus-resources
-signature — it does **not** worsen the finding (the helpers already accept `Any`),
-but it is the concrete third case that would drive the proposed split (the uniform
-`create_channel`/`attach_channel` + a per-launcher launch thunk). The recipe sidesteps it by fixing
+`LocalLauncher`). The reference launchers' targets are disjoint (a callable, a
+command line), which `Launcher[T]` types: each launcher is a `Launcher` of its
+own target record, and holds the place its runs' logs are (`logs`). A
+`SubmititLauncher` is a third, a `Launcher[Job]` over a callable-plus-resources
+record, as the recipe's is. The recipe keeps its record small by fixing
 the worker callable and taking `total` as the config; a first-class adapter must
 decide whether `launch` takes an arbitrary callable (needs cloudpickle — the
 recipe relies on it) or a cmd (submitit can run one via
@@ -124,8 +121,6 @@ cannot exercise preemption.
 ## See also
 
 - `examples/submitit/driver.py` — the validating prototype.
-- [launcher-protocol-typing](launcher-protocol-typing.md) — the `launch`
-  signature finding this adapter is the third instance of.
 - `docs/specs/channel-postgres.md` — the in-repo optional-extra precedent (2, 1).
 - `docs/specs/release-and-stability.md` — if it ships as an extra, it bears on
   what a release promises.

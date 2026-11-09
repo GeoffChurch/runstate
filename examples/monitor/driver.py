@@ -28,6 +28,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from runstate.logs import SqliteLogs
 from runstate import (
     Channel,
     Command,
@@ -38,7 +39,6 @@ from runstate import (
     LocalLauncher,
     Stopped,
     Topic,
-    create_channel,
     ensure_served,
     peek_terminal,
 )
@@ -94,12 +94,12 @@ def watch_until_idle(
 
 def main() -> None:
     root = tempfile.mkdtemp(prefix="runstate-monitor-")  # off the repo tree
-    launcher = LocalLauncher(root=root)
+    launcher = LocalLauncher(logs=SqliteLogs(root))
     # One answer fold for the run, held across every call: each poll reads only
     # the records since the last.
     live = LiveDemand()
     # the channel is a context manager, as the launcher is
-    with create_channel(RUN, root=root) as ch, launcher:
+    with SqliteLogs(root).create(RUN) as ch, launcher:
         # ----- claim 1 -----
         demand(ch, "dash-1")
         print(

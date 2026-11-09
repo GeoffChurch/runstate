@@ -47,6 +47,7 @@ from runstate.channel.base import Session
 from runstate.channel.memory import MemoryChannel
 from runstate.vocabulary.handle import local_handle
 from tests.live_helpers import Wrapping, thread
+from runstate.logs import MemoryLogs, SqliteLogs
 from tests.test_reads import (
     Rec,
     append,
@@ -538,7 +539,7 @@ def test_watcher_poll_and_is_alive_write_nothing_but_a_reap_of_a_held_handle(tmp
         assert w.poll("r").done is True
     assert ch.last_seq() == 1
 
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         from runstate.launcher import Command
 
         h = launcher.launch(
@@ -553,7 +554,7 @@ def test_watcher_poll_and_is_alive_write_nothing_but_a_reap_of_a_held_handle(tmp
         h.terminate()
         r = w.wait("local", timeout=30)
     assert (r.outcomes, r.tier) == ({Outcome.KILLED}, Tier.DIED)
-    after = launcher.attach_channel("local").read(after=before)
+    after = launcher.logs.attach("local").read(after=before)
     assert [e.topic for e in after] == [
         Topic.SUPERVISOR_TERMINATED,
         Topic.SUPERVISOR_DIED,
@@ -564,7 +565,7 @@ def test_the_watcher_reaps_a_crashed_launch_for_a_precise_verdict(tmp_path):
     """A child that exits 42 before claiming: the Watcher's reap writes its
     ``terminated``, and the unclaimed run's verdict is ``errored``, not a bare
     presumption."""
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         from runstate.launcher import Command
 
         cmd = Command([sys.executable, "-c", "import os; os._exit(42)"], env={})
@@ -573,7 +574,7 @@ def test_the_watcher_reaps_a_crashed_launch_for_a_precise_verdict(tmp_path):
         w.add(h)
         r = w.wait("crash", timeout=30)
     assert (r.outcomes, r.tier) == ({Outcome.ERRORED}, Tier.TERMINATED)
-    term = launcher.attach_channel("crash").latest(Topic.SUPERVISOR_TERMINATED)
+    term = launcher.logs.attach("crash").latest(Topic.SUPERVISOR_TERMINATED)
     assert term.body["exit_code"] == 42
 
 
@@ -664,7 +665,7 @@ def done_worker(ch, *, n=2):
 
 
 def test_wait_blocks_until_terminal():
-    launcher = ThreadLauncher()
+    launcher = ThreadLauncher(logs=MemoryLogs())
     w = Watcher(heartbeat_timeout=None, poll_interval=0.005)
     w.add(launcher.launch("run", thread(done_worker, n=3)))
     r = w.wait("run", timeout=30)
@@ -707,7 +708,7 @@ def test_iter_events_spans_multiple_runs():
 
 
 def test_wait_streams_events_via_on_event():
-    launcher = ThreadLauncher()
+    launcher = ThreadLauncher(logs=MemoryLogs())
     w = Watcher(heartbeat_timeout=None, poll_interval=0.005)
     w.add(launcher.launch("run", thread(done_worker)))
     seen = []
@@ -732,7 +733,7 @@ def test_wait_does_a_final_drain_after_terminal():
 
 
 def test_wait_all_returns_all_terminal():
-    launcher = ThreadLauncher()
+    launcher = ThreadLauncher(logs=MemoryLogs())
     w = Watcher(heartbeat_timeout=None, poll_interval=0.005)
     w.add(launcher.launch("a", thread(done_worker, n=1)))
     w.add(launcher.launch("b", thread(done_worker, n=1)))

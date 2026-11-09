@@ -77,6 +77,7 @@ from tests.migration_helpers import (
     reference_worker_log,
     under,
 )
+from runstate.logs import SqliteLogs
 from tests.migration_goldens import (
     BACKSTOP,
     DEAD,
@@ -903,16 +904,16 @@ def test_the_step_renumbers_and_is_registered():
 
 def test_the_cli_migrates_to_the_current_format_by_default(tmp_path, capsys):
     """`runstate migrate` without --to targets LOG_FORMAT: a reference Worker's run
-    the locators refuse at 0.3.0 opens at its 0.4.0 address afterwards, its old log
+    ``SqliteLogs`` refuses at 0.3.0 opens at its 0.4.0 address afterwards, its old log
     sealed. The refusal names what to state, and the call states it: the preset and
     the choosers that ``test_the_reference_workers_own_logs_migrate_under_the_preset``
     proves sufficient."""
-    from runstate import LogFormatMismatch, attach_channel
+    from runstate import LogFormatMismatch
     from runstate.cli import main
 
     old = _seed_0_3_0(tmp_path, "done", reference_worker_log("reference-done"))
     with pytest.raises(LogFormatMismatch, match="runstate migrate"):
-        attach_channel("done", root=tmp_path)
+        SqliteLogs(tmp_path).attach("done")
     argv = [
         "migrate",
         str(tmp_path),
@@ -929,7 +930,7 @@ def test_the_cli_migrates_to_the_current_format_by_default(tmp_path, capsys):
     assert capsys.readouterr().out.split() == ["done"]
     assert not os.stat(old).st_mode & 0o200  # sealed
     assert FORMATS["0.4.0"].sqlite_path(tmp_path, "done").exists()
-    with attach_channel("done", root=tmp_path) as ch:
+    with SqliteLogs(tmp_path).attach("done") as ch:
         topics = [e.topic for e in ch.read()]
     assert topics[0] == "lifecycle.started" and "lifecycle.commit" in topics
 

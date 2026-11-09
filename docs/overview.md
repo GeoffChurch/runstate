@@ -78,7 +78,7 @@ test runs too — so neither can drift.)
   terminal `RunResult` verdict (a closed set of `outcomes`, and the `tier` it
   rests on).
 - **Observer side** — attach to the existing channel and tail it read-only; the
-  worker never knows (`attach_channel(run_id, root=...)` — which raises
+  worker never knows (`SqliteLogs(root).attach(run_id)` — which raises
   `RunNotFound` rather than fabricating a run, never mutates it — +
   `read(after=cursor)`, or the lineage reads by head).
 

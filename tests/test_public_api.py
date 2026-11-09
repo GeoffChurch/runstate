@@ -9,9 +9,12 @@ import runstate as surface
 _API_DOC = Path(__file__).resolve().parent.parent / "docs" / "api.md"
 
 EXPECTED = {
-    # substrate, unchanged
-    "attach_channel",
-    "create_channel",
+    # the substrate, and the places a channel is opened from
+    "Logs",
+    "ProcessLogs",
+    "MemoryLogs",
+    "SqliteLogs",
+    "PostgresLogs",
     "current_channel",
     "LOG_FORMAT",
     "Channel",
@@ -99,9 +102,7 @@ EXPECTED = {
     "Copied",
     "log_digest",
     "Row",
-    "Logs",
-    "SqliteLogs",
-    "PostgresLogs",
+    "CopyLogs",
     # the errors public calls raise
     "RunNotFound",
     "LogFormatError",

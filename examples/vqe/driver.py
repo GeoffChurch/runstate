@@ -60,8 +60,8 @@ def main() -> None:
     print(f"[driver] {rid} backend={cfg['backend']} budget={cfg['budget']} root={root}")
     print(f"[driver] exact ground energy {exact:.4f}")
 
-    with runstate.LocalLauncher(root=root) as launcher:
-        ch = launcher.create_channel(rid)
+    with runstate.LocalLauncher(logs=runstate.SqliteLogs(root)) as launcher:
+        ch = launcher.logs.create(rid)
         head = runstate.LatestClaimHead()
         energies = [e.value for e in runstate.series(ch, "energy", head=head)]
         satisfied = plateaued(energies) or len(energies) >= cfg["budget"]

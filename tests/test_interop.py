@@ -62,6 +62,7 @@ from tests.test_death_reports import (
     undated,
     until,
 )
+from runstate.logs import MemoryLogs, SqliteLogs
 from tests.test_reads import (
     A_CLAIMS_LAUNCH_ENDED,
     BAD_BODY,
@@ -348,18 +349,18 @@ def test_interop_death_report_from_evidence(tmp_path):
     assert report_if_dead(ch) == 4  # the party that wants it recorded calls this
     # a thread handle's is_alive() is pure: the thread's end is its reap
     release = threading.Event()
-    threads = ThreadLauncher(root=tmp_path)
+    threads = ThreadLauncher(logs=MemoryLogs())
     th = threads.launch("thread", thread(lambda c: release.wait(30)))
-    tch = threads.attach_channel("thread")
+    tch = threads.logs.attach("thread")
     before = tch.last_seq()
     assert th.is_alive() and tch.last_seq() == before
     release.set()
     th.wait()
     # a handle's is_alive() is pure, though the process has ended; its reap writes
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         h = launcher.launch("run", child("exit", "0"))
         until(lambda: not h.is_alive())
-        ch = launcher.attach_channel("run")
+        ch = launcher.logs.attach("run")
         claim_seq = ch.latest(Topic.LIFECYCLE_STARTED).seq
         assert deaths(ch) == [] and ch.read(topics=["supervisor.terminated"]) == []
         h.wait()

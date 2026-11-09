@@ -23,6 +23,7 @@ import textwrap
 # missing distribution does, without uninstalling anything.
 _BLOCK_PSYCOPG = """
 import sys
+from runstate.logs import PostgresLogs
 
 
 class _NoPsycopg:
@@ -55,7 +56,6 @@ def test_importing_runstate_does_not_pull_in_psycopg():
         import runstate
         from runstate import Worker, Watcher
         from runstate.channel import Channel, Session, SessionProbe
-        from runstate.channel import attach_channel, create_channel
 
         assert "psycopg" not in sys.modules, "importing runstate pulled in psycopg"
         """)
@@ -63,15 +63,14 @@ def test_importing_runstate_does_not_pull_in_psycopg():
 
 
 def test_both_locators_name_the_extra_when_psycopg_is_absent():
-    # BOTH locators, because the psycopg import lives in the backend dispatch they share:
+    # BOTH opens, because the psycopg import lives in ``PostgresLogs._open``, which they share:
     # neither the attach path nor the birth path may reach Postgres without the extra, and
     # each must fail with an actionable message rather than a raw ImportError.
     proc = _without_psycopg("""
-        from runstate.channel import attach_channel, create_channel
 
-        for locate in (attach_channel, create_channel):
+        for locate in (PostgresLogs.attach, PostgresLogs.create):
             try:
-                locate("r", root="postgresql://x", backend="postgres")
+                locate(PostgresLogs("postgresql://x"), "r")
             except ImportError as exc:
                 assert "pip install runstate[postgres]" in str(exc), exc
             else:

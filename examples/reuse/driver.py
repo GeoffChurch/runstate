@@ -134,7 +134,7 @@ def losses(p: runstate.Producer, n: int) -> list[runstate.Element]:
 
 
 def main() -> None:
-    launcher = runstate.ThreadLauncher()
+    launcher = runstate.ThreadLauncher(logs=runstate.MemoryLogs())
     with tempfile.TemporaryDirectory() as ckpt_dir:
         p = producer_for(launcher, ckpt_dir, lr=0.3)
 

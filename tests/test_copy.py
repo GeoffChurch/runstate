@@ -1,8 +1,8 @@
 """Run copy (docs/specs/run-copy.md §9): one run's log copied between backends at
 its format, verified by its digest, and dropped.
 
-Every log here is written by the reference ``Worker`` through the locators, so
-each copied row is one production writes. The races are made deterministic with a
+Every log here is written by the reference ``Worker`` through a place's
+``create``, so each copied row is one production writes. The races are made deterministic with a
 pause at a named point of the copy, threads and events, and a second connection
 holding a lock: never a sleep that hopes."""
 
@@ -30,9 +30,7 @@ from runstate import (
     Topic,
     Value,
     Worker,
-    attach_channel,
     copy_run,
-    create_channel,
     drop_run,
     log_digest,
     new_launch_id,
@@ -87,13 +85,13 @@ def journal(request, monkeypatch):
 
 
 def sqlite_run(root, rid, *, claims=1, commits=3):
-    with create_channel(rid, root=root, backend="sqlite") as ch:
+    with SqliteLogs(root).create(rid) as ch:
         for _ in range(claims):
             work(ch, commits=commits)
 
 
 def pg_run(dsn, rid, *, claims=1, commits=3):
-    with create_channel(rid, root=dsn, backend="postgres") as ch:
+    with PostgresLogs(dsn).create(rid) as ch:
         for _ in range(claims):
             work(ch, commits=commits)
 
@@ -243,7 +241,7 @@ def test_sqlite_to_postgres_to_sqlite_round_trips_byte_identically(
     down = copy_run(rid, source=pg, destination=SqliteLogs(b))
     assert SqliteLogs(b).rows(rid) == original == sqlite_rows(_address(b, rid))
     assert up == down == Copied(log_digest(original), original[-1].seq)
-    with attach_channel(rid, root=pg_ready, backend="postgres") as ch:
+    with PostgresLogs(pg_ready).attach(rid) as ch:
         assert up.last_seq == ch.last_seq()
 
 
@@ -313,7 +311,7 @@ def test_an_imported_run_carries_no_writer_stamp_and_the_probe_abstains(
             [rid],
         ).fetchall()
     assert stamps == [(None, None)]
-    with attach_channel(rid, root=pg_ready, backend="postgres") as ch:
+    with PostgresLogs(pg_ready).attach(rid) as ch:
         assert all(ch.writer_session(s) is None for s in range(1, copied.last_seq + 1))
         seq = ch.send(asdict(Value(value=1, t=None)), topic=Topic.VALUE, name="n")
         assert ch.writer_session(seq) is not None  # an append after it is stamped
@@ -325,7 +323,7 @@ def test_after_an_import_the_next_append_lands_at_last_seq_plus_one(tmp_path, pg
     copied = copy_run(
         rid, source=SqliteLogs(tmp_path), destination=PostgresLogs(pg_ready)
     )
-    with attach_channel(rid, root=pg_ready, backend="postgres") as ch:
+    with PostgresLogs(pg_ready).attach(rid) as ch:
         w = claim(ch)
         assert w.claimed
         assert ch.latest(Topic.LIFECYCLE_STARTED).seq == copied.last_seq + 1
@@ -337,7 +335,7 @@ def test_after_an_import_the_next_append_lands_at_last_seq_plus_one(tmp_path, pg
 
 def test_a_live_run_is_refused_in_both_directions(tmp_path, journal, pg_ready):
     rid = _rid()
-    with create_channel(rid, root=tmp_path, backend="sqlite") as ch:
+    with SqliteLogs(tmp_path).create(rid) as ch:
         w = claim(ch)
         with pytest.raises(RunLive) as e:
             copy_run(
@@ -350,7 +348,7 @@ def test_a_live_run_is_refused_in_both_directions(tmp_path, journal, pg_ready):
         PostgresLogs(pg_ready).rows(rid)
 
     rid = _rid()
-    with create_channel(rid, root=pg_ready, backend="postgres") as ch:
+    with PostgresLogs(pg_ready).create(rid) as ch:
         w = claim(ch)
         with pytest.raises(RunLive):
             copy_run(
@@ -375,9 +373,9 @@ def test_no_log_at_the_source_is_run_not_found(tmp_path, pg_ready, scratch_db):
         copy_run(
             _rid(), source=PostgresLogs(scratch_db), destination=SqliteLogs(tmp_path)
         )
-    # a born-but-empty sqlite log is no run, as the locators read it
+    # a born-but-empty sqlite log is no run, as ``attach`` reads it
     rid = _rid()
-    create_channel(rid, root=tmp_path, backend="sqlite").close()
+    SqliteLogs(tmp_path).create(rid).close()
     with pytest.raises(RunNotFound):
         SqliteLogs(tmp_path).rows(rid)
 
@@ -502,7 +500,7 @@ def test_the_snapshot_is_sealed_when_published(tmp_path, pg_ready):
     c.close()
     assert temporaries(tmp_path) == []
     # it attaches and reads, as any log does
-    with attach_channel(rid, root=tmp_path, backend="sqlite") as ch:
+    with SqliteLogs(tmp_path).attach(rid) as ch:
         assert ch.last_seq() == pg_rows(pg_ready, rid)[-1].seq
         if not _AS_ROOT:
             with pytest.raises(sqlite3.OperationalError, match="readonly"):
@@ -515,7 +513,7 @@ def test_a_failed_snapshot_leaves_no_temporary_file(
 ):
     """A failure at the last step before the rename (the seal), injected: the
     address keeps what it held, and the temporary file is gone."""
-    import runstate.copy
+    import runstate.logs
 
     rid = _rid()
     pg = PostgresLogs(pg_ready)
@@ -527,7 +525,7 @@ def test_a_failed_snapshot_leaves_no_temporary_file(
         assert path.name.endswith(".tmp") and path.exists()
         raise fault("injected")
 
-    monkeypatch.setattr(runstate.copy, "_seal", fail)
+    monkeypatch.setattr(runstate.logs, "_seal", fail)
     with pytest.raises(fault):
         copy_run(rid, source=pg, destination=SqliteLogs(tmp_path))
     assert temporaries(tmp_path) == []
@@ -550,11 +548,11 @@ def test_the_import_seals_its_source(tmp_path, journal, pg_ready):
     for suffix in ("-wal", "-shm"):
         assert not path.with_name(path.name + suffix).exists()
     if not _AS_ROOT:
-        # a stale writer to the SQLite address fails loudly, by either locator
-        # (the create locator's open may already fail, writing the journal mode)
-        for locate in (attach_channel, create_channel):
+        # a stale writer to the SQLite address fails loudly, by either open
+        # (``create``'s may already fail, writing the journal mode)
+        for locate in (SqliteLogs.attach, SqliteLogs.create):
             with pytest.raises(sqlite3.OperationalError, match="readonly"):
-                with locate(rid, root=tmp_path, backend="sqlite") as ch:
+                with locate(SqliteLogs(tmp_path), rid) as ch:
                     ch.send(asdict(Value(value=1, t=None)), topic=Topic.VALUE, name="n")
 
 
@@ -617,15 +615,15 @@ def test_a_writer_birthing_the_run_during_an_import_loses_to_it(
 ):
     """The import has inserted and not committed; a claimant's CAS at 0 waits on
     its first row, then loses when the import commits."""
-    import runstate.copy
+    import runstate.logs
 
     rid = _rid()
     sqlite_run(tmp_path, rid)
     source = SqliteLogs(tmp_path).rows(rid)
-    writer = create_channel(rid, root=pg_ready, backend="postgres")
+    writer = PostgresLogs(pg_ready).create(rid)
     try:
         # the import's verify read: after its insert, inside its transaction
-        reached, go = pause_after_first_call(monkeypatch, runstate.copy, "_pg_rows")
+        reached, go = pause_after_first_call(monkeypatch, runstate.logs, "_pg_rows")
         t, imported = in_thread(
             lambda: copy_run(
                 rid, source=SqliteLogs(tmp_path), destination=PostgresLogs(pg_ready)
@@ -657,7 +655,7 @@ def test_a_writer_birthing_the_run_during_an_import_wins_over_it(
 
     rid = _rid()
     sqlite_run(tmp_path, rid)
-    writer = create_channel(rid, root=pg_ready, backend="postgres")
+    writer = PostgresLogs(pg_ready).create(rid)
     try:
         # the import's destination check, before its insert
         reached, go = pause_after_first_call(
@@ -684,13 +682,13 @@ def test_an_export_racing_a_claim_publishes_nothing_from_after_its_read(
 ):
     """A claim that lands after the export's one read: the snapshot is the log as
     read, its last seq before the claim's."""
-    import runstate.copy
+    import runstate.logs
 
     rid = _rid()
     pg_run(pg_ready, rid)
     read = pg_rows(pg_ready, rid)
-    with attach_channel(rid, root=pg_ready, backend="postgres") as ch:
-        reached, go = pause_after_first_call(monkeypatch, runstate.copy, "_pg_rows")
+    with PostgresLogs(pg_ready).attach(rid) as ch:
+        reached, go = pause_after_first_call(monkeypatch, runstate.logs, "_pg_rows")
         t, exported = in_thread(
             lambda: copy_run(
                 rid, source=PostgresLogs(pg_ready), destination=SqliteLogs(tmp_path)
@@ -720,14 +718,14 @@ def test_an_export_racing_a_claim_publishes_nothing_from_after_its_read(
 
 def test_drop_refuses_a_live_run(tmp_path, journal, pg_ready):
     rid = _rid()
-    with create_channel(rid, root=tmp_path, backend="sqlite") as ch:
+    with SqliteLogs(tmp_path).create(rid) as ch:
         w = claim(ch)
         with pytest.raises(RunLive):
             drop_run(rid, logs=SqliteLogs(tmp_path))
         w.stopped(completed=True, error=None)
     assert SqliteLogs(tmp_path).rows(rid)
     rid = _rid()
-    with create_channel(rid, root=pg_ready, backend="postgres") as ch:
+    with PostgresLogs(pg_ready).create(rid) as ch:
         w = claim(ch)
         with pytest.raises(RunLive):
             drop_run(rid, logs=PostgresLogs(pg_ready))
@@ -788,7 +786,7 @@ def test_an_append_racing_a_postgres_drop_lands_no_orphan(pg_ready, cas):
     rid = _rid()
     pg_run(pg_ready, rid)
     last = pg_rows(pg_ready, rid)[-1].seq
-    appender = attach_channel(rid, root=pg_ready, backend="postgres")
+    appender = PostgresLogs(pg_ready).attach(rid)
     holder = psycopg.connect(pg_ready)
     try:
         holder.execute(

@@ -3,7 +3,7 @@
 
 A format is named by the runstate release that introduced it. ``LOG_FORMAT`` is
 the one this release reads and writes; ``FORMATS`` holds every known format's
-layout, so the locators can recognise an older log and the migration steps can
+layout, so every open can recognise an older log and the migration steps can
 read it."""
 
 from __future__ import annotations
@@ -72,8 +72,8 @@ _FORMAT_DIR = re.compile(r"^v(\d+\.\d+\.\d+)$")
 def check_sqlite_names(root: Path, run_id: str) -> None:
     """§3's two name rules, which make the sqlite address scheme one-to-one: a
     run id is one filename, and a root is not named like a format directory.
-    ``ValueError`` names the rule broken; both locators call this before any
-    opening check, so a refused name creates nothing."""
+    ``ValueError`` names the rule broken; ``channel.sqlite_log_path`` calls this
+    before any opening check, so a refused name creates nothing."""
     seps = [os.sep] if os.altsep is None else [os.sep, os.altsep]
     if run_id in ("", ".", "..") or any(sep in run_id for sep in seps):
         raise ValueError(

@@ -52,10 +52,11 @@ The substrate + opt-in conventions + reference orchestration, in
 - **`channel/`** — the substrate. `Envelope` (the log record, in
   `channel/envelope.py`), `MemoryChannel` + `SqliteChannel` + the cross-host
   `PostgresChannel` (the three backends; Postgres is the optional `[postgres]`
-  extra — `docs/specs/channel-postgres.md`), the two locators `attach_channel`
-  (existing-only; raises `RunNotFound`, never creates or mutates) + `create_channel`
-  (open-or-create birth) splitting on creation policy so observing a run never
-  mutates it (`docs/specs/channel-locators.md`), and the opt-in capability
+  extra — `docs/specs/channel-postgres.md`), the `Logs` Protocol a channel is
+  opened through — `attach` (existing-only; raises `RunNotFound`, never creates or
+  mutates) + `create` (open-or-create birth), splitting on creation policy so
+  observing a run never mutates it — with `ProcessLogs`, a place another process
+  can open (`child_env`) (`docs/specs/channel-locators.md`), and the opt-in capability
   Protocol `SessionProbe` (with `Session`) in `channel/base.py`: the session
   probe, a backend's evidence that the session that wrote a claim has ended,
   off the five-op base and isinstance-detected (Postgres offers it: a fresh
@@ -159,8 +160,10 @@ The substrate + opt-in conventions + reference orchestration, in
   `docs/specs/observer-clock.md`). Membership test: needs a cursor or clock → it's the
   `Watcher`'s; parses a handle string → it's `vocabulary/`'s.
 - **`launcher.py`** — the `Launcher[T]` Protocol, contravariant in its
-  target record (`ThreadTarget`, `Command`; `Drivable`), and `LaunchHandle` +
-  `ThreadLauncher` (in-process) + `LocalLauncher` (subprocess; `reap()`, which
+  target record (`ThreadTarget`, `Command`; `Drivable`) and holding the place
+  its runs' logs are (`logs`), and `LaunchHandle` +
+  `ThreadLauncher` (in-process; any `Logs`) + `LocalLauncher` (subprocess; a
+  `ProcessLogs`, whose `child_env` it gives the child; `reap()`, which
   kills an orphan of its own through its `Popen`) + the death reports
   (`report_death`, `report_if_dead`, `ClaimAliveError`, `ReportStarvedError`;
   a launcher's reap writes the `supervisor.died` beside its `terminated`) +
@@ -182,18 +185,22 @@ The substrate + opt-in conventions + reference orchestration, in
   (`Running(head, commits, beacon_age) | RunResult`) + `await_consumed` (did my
   control request land: a `Nak`, the terminal `RunResult`, or `None` for
   accepted; a spent id, a nameless request or a void lease raises).
-- **`copy.py`** — run copy (`docs/specs/run-copy.md`): `copy_run(rid, *,
-  source, destination) -> Copied` moves one run's rows between backends at
-  `LOG_FORMAT`, every `seq` and `created_at` exact, verified by `log_digest`
-  (a language-neutral SHA-256 over `Row`s, which live in `formats/`); the
-  `Logs` Strategy per place, `SqliteLogs(root)` (a copy here is a sealed
-  snapshot) and `PostgresLogs(dsn)` (the writable log, so its source is sealed
-  first), each with a public `rows`; `drop_run` for GC; `RunLive` (routine)
-  and `CopyRefused`.
+- **`logs.py`** — the places, and run copy. A place is one object, a Strategy
+  built where configuration is read: `SqliteLogs(root)`, `PostgresLogs(dsn)`,
+  `MemoryLogs()` (each instance its own place), each a `Logs`; the first two are
+  `ProcessLogs` (their `child_env`, which `from_env` reads back, is the one point
+  a backend is a string) and `CopyLogs`, a copy's endpoints. Run copy
+  (`docs/specs/run-copy.md`): `copy_run(rid, *, source, destination) -> Copied`
+  moves one run's rows between backends at `LOG_FORMAT`, every `seq` and
+  `created_at` exact, verified by `log_digest` (a language-neutral SHA-256 over
+  `Row`s, which live in `formats/`); a copy into `SqliteLogs` is a sealed
+  snapshot, and `PostgresLogs` is the writable log, so its source is sealed
+  first; each has a public `rows`; `drop_run` for GC; `RunLive` (routine) and
+  `CopyRefused`.
 - **`__init__.py`** — `current_channel()` (worker-side Channel factory reading
-  `RUNSTATE_RUN_ID` / `RUNSTATE_CHANNEL_ROOT` / `RUNSTATE_CHANNEL_BACKEND`
-  from env, delegating to `create_channel` so a launcher-less direct run still
-  births) + the public re-exports.
+  `RUNSTATE_RUN_ID` and the place's `child_env` — `RUNSTATE_CHANNEL_BACKEND`,
+  `RUNSTATE_CHANNEL_ROOT`, all required — then the place's `create`, so a direct
+  run that sets them still births) + the public re-exports.
 
 No `Orchestrator` class. There **is** a reference `Launcher` Protocol +
 launchers, but they're opt-in helpers — users can spawn however they want
@@ -413,8 +420,9 @@ add or change a convention body.
 **Add a new Channel backend:**
 1. Implement the Channel surface in `runstate/channel/<name>.py`
    (import `Envelope` from `.envelope`, not the package `__init__`).
-2. Add a `"<name>"` branch in `runstate/channel/__init__.py:_locate` (the private
-   backend dispatch both `attach_channel` and `create_channel` wrap).
+2. Add its place in `runstate/logs.py`: a `Logs` (`create`, `attach`), a
+   `ProcessLogs` too if another process can open it (a `child_env`, and its
+   branch in `from_env`).
 3. Parametrize the conformance tests over the new backend in
    `tests/conftest.py`.
 4. Declare the backend's concurrency tier (`in_process` / `cross_process` /
@@ -435,7 +443,7 @@ add or change a convention body.
      every registered format;
      every writer of a log (the channel's birth, a migration's destination)
      runs the DDL of the format it writes;
-   - **the five opening checks** (§4), in order, in its `_locate` branch: a newer
+   - **the five opening checks** (§4), in order, in its place's opens: a newer
      format present, the current address, an older format, the legacy address
      (only for a backend that held logs before versioned addresses), nothing;
    - **a migration store** — a `Store` in `runstate/migrations/stores.py`
@@ -468,7 +476,8 @@ plan as the remaining work; and the deferred design-§12 items mirrored there).
 
 **Shipped in v0.2 (this effort):**
 - Topic-log substrate: Channel surface + `MemoryChannel` + `SqliteChannel`
-  + `Envelope` + the `attach_channel`/`create_channel` locators; thread-safe
+  + `Envelope` + the `attach_channel`/`create_channel` locators (a place's
+  `attach`/`create` since 2026-11-09, #73); thread-safe
   in-process sharing.
 - The conventions: cooperative-control (`control.subscribe`/`unsubscribe`/
   `stop` + the condition-algebra), lifecycle (started/heartbeat/stopped/

@@ -160,8 +160,9 @@ Recorded because the gaps are informative, not because the map should grow to co
   staleness clock). "Stateful observer" is a category the stack lacks, and `observables.py`'s own
   docstring draws the line the stack does not: *needs a cursor or a clock? it's the Watcher's*. All
   three layering violations above are Watcher edges.
-- **Channel locators** — `create_channel` / `attach_channel` / `RunNotFound`, the layout, the root
-  env var. Addressing and birth-vs-attach are not among layer 0's four operations.
+- **Places** — the `Logs` Strategy (`create` / `attach` / `RunNotFound`), the layout, the env vars a
+  place another process can open spells itself as. Addressing and birth-vs-attach are not among layer
+  0's four operations.
 - **`SessionProbe`** — an opt-in backend capability, deliberately off the base ABC: Postgres's session
   probe, which replaced the episode lock's `EpisodeHolder` / `EpisodeProbe` on 2026-10-30. So "layer 0
   is four operations" holds only of the *required* tier, and the session probe is a detection concern

@@ -13,7 +13,9 @@ hide the partition choice and risk silently omitting an output-determining file.
 
 ```python
 import json, hashlib
-from runstate import attach_channel, peek_terminal, worker_completed, RunNotFound
+from runstate import SqliteLogs, peek_terminal, worker_completed, RunNotFound
+
+logs = SqliteLogs(ROOT)                         # the place, built where config is read
 
 def run_id(inputs: dict) -> str:                # inputs = everything that
     canon = json.dumps(inputs, sort_keys=True, allow_nan=False)   # determines output
@@ -28,14 +30,14 @@ def hash_code(paths) -> str:                    # your partition: which files co
 
 rid = run_id({**config, "seed": seed, "code": hash_code(my_files)})
 try:
-    with attach_channel(rid, root=ROOT) as ch:   # existing-only: never fabricates rid
+    with logs.attach(rid) as ch:                 # existing-only: never fabricates rid
         prior = peek_terminal(ch)
 except RunNotFound:
     prior = None                                 # no such run yet
 if worker_completed(prior):                      # the worker closed its lineage
     ...   # reuse
 else:
-    ...   # launch into rid (create_channel births it)
+    ...   # launch into rid (logs.create births it)
 
 # Or let ensure(producer, Target(stream, n)) decide: it reads first, and returns
 # Reached without producing when the rid's lineage already holds the target.

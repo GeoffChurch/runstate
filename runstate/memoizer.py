@@ -221,13 +221,13 @@ class _LaunchProducer(Generic[D]):
     @property
     def channel(self) -> Channel:
         """The producer's one handle on the run, opened on first access and held:
-        the producer births the run (``create_channel``), so the first access may
+        the producer births the run (``logs.create``), so the first access may
         precede any record. A producer has no lifecycle (the seam is
         ``channel``, ``run_id`` and ``extend``), so it never closes the handle: the
         caller that made the producer closes ``producer.channel`` once done with
         it, or leaves it to be released with the producer."""
         if self._channel is None:
-            self._channel = self._launcher.create_channel(self.run_id)
+            self._channel = self._launcher.logs.create(self.run_id)
         return self._channel
 
     def extend(self, target: Target) -> LiveHandle:
