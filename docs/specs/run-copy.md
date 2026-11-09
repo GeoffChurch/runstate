@@ -205,9 +205,9 @@ drop_run(run_id: str, *, logs: CopyLogs) -> None
 
 ## 8. Open questions
 
-1. **#74's read-only attach.** A sealed snapshot already attaches, reads, and refuses a write
-   (`sqlite3.OperationalError: attempt to write a readonly database`, checked 2026-11-03). Opening it with
-   `immutable=1`, and a read-only handle type, are #74's.
+1. ~~**#74's read-only attach.**~~ Built 2026-11-09: a place's `reader(run_id)` returns a `Reader`, a handle
+   with no `send`, and `SqliteLogs` opens a sealed snapshot `immutable=1` (`channel-locators.md`, "A reader").
+   A sealed snapshot also still attaches, reads, and refuses a write.
 2. ~~**The liveness read.**~~ Settled by the build: the rows become envelopes in a `MemoryLog`, and `live_episode`
    reads it through a `MemoryChannel`, so the copy and the claim gate cannot disagree.
 

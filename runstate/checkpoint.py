@@ -49,7 +49,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, TypeVar
 
-from .channel import Channel
+from .channel import Reader
 from .observables import HeadStrategy, PrefixLen
 from .vocabulary.coordinate import NodeRef
 from .walk import walk
@@ -113,7 +113,7 @@ class CheckpointChoice(Protocol):
     is at or below the head's ``w``; the strategy reads nothing above it."""
 
     def choose(
-        self, ch: Channel, candidates: Sequence[C], *, head: HeadStrategy
+        self, ch: Reader, candidates: Sequence[C], *, head: HeadStrategy
     ) -> C | None: ...
 
 
@@ -133,7 +133,7 @@ class OnHeadLineage:
     order."""
 
     def choose(
-        self, ch: Channel, candidates: Sequence[C], *, head: HeadStrategy
+        self, ch: Reader, candidates: Sequence[C], *, head: HeadStrategy
     ) -> C | None:
         h = head.resolve(ch)
         complete = _complete(candidates, h.w)
@@ -160,7 +160,7 @@ class MostProgress:
     stream: str
 
     def choose(
-        self, ch: Channel, candidates: Sequence[C], *, head: HeadStrategy
+        self, ch: Reader, candidates: Sequence[C], *, head: HeadStrategy
     ) -> C | None:
         h = head.resolve(ch)
         complete = _complete(candidates, h.w)

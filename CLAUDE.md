@@ -52,10 +52,14 @@ The substrate + opt-in conventions + reference orchestration, in
 - **`channel/`** — the substrate. `Envelope` (the log record, in
   `channel/envelope.py`), `MemoryChannel` + `SqliteChannel` + the cross-host
   `PostgresChannel` (the three backends; Postgres is the optional `[postgres]`
-  extra — `docs/specs/channel-postgres.md`), the `Logs` Protocol a channel is
+  extra — `docs/specs/channel-postgres.md`), `Reader`, the read half of the
+  surface, which every fold takes, so an observer's handle cannot write by type,
+  the `Logs` Protocol a channel is
   opened through — `attach` (existing-only; raises `RunNotFound`, never creates or
   mutates) + `create` (open-or-create birth), splitting on creation policy so
-  observing a run never mutates it — with `ProcessLogs`, a place another process
+  observing a run never mutates it, + `reader` (existing-only, a `Reader`;
+  `SqliteLogs` opens a sealed snapshot `immutable=1`, as a `SqliteSnapshot`) — with
+  `ProcessLogs`, a place another process
   can open (`child_env`) (`docs/specs/channel-locators.md`), and the opt-in capability
   Protocol `SessionProbe` (with `Session`) in `channel/base.py`: the session
   probe, a backend's evidence that the session that wrote a claim has ended,
@@ -420,7 +424,7 @@ add or change a convention body.
 **Add a new Channel backend:**
 1. Implement the Channel surface in `runstate/channel/<name>.py`
    (import `Envelope` from `.envelope`, not the package `__init__`).
-2. Add its place in `runstate/logs.py`: a `Logs` (`create`, `attach`), a
+2. Add its place in `runstate/logs.py`: a `Logs` (`create`, `attach`, `reader`), a
    `ProcessLogs` too if another process can open it (a `child_env`, and its
    branch in `from_env`).
 3. Parametrize the conformance tests over the new backend in

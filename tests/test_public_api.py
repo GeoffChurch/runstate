@@ -18,6 +18,7 @@ EXPECTED = {
     "current_channel",
     "LOG_FORMAT",
     "Channel",
+    "Reader",
     "Body",
     "Envelope",
     # the worker and the checkpoint recipe

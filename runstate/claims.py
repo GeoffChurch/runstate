@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 
-from .channel import Channel, Envelope
+from .channel import Envelope, Reader
 from .vocabulary.payloads import Bound, Stopped, Topic
 from .walk import FIRST_WINDOW, readable
 
@@ -146,7 +146,7 @@ class Bindings:
 
 
 def claim_window(
-    ch: Channel, claim: Envelope, w: int, topics: list[str]
+    ch: Reader, claim: Envelope, w: int, topics: list[str]
 ) -> list[Envelope]:
     """The records on ``topics`` after ``claim`` and at or below ``w``: the
     claim's window, since a record cannot speak for a claim it never saw. The
@@ -158,7 +158,7 @@ def claim_window(
     return [e for e in got if e.seq <= w]
 
 
-def endings(ch: Channel, claim: Envelope, w: int) -> list[Envelope]:
+def endings(ch: Reader, claim: Envelope, w: int) -> list[Envelope]:
     """The records at or below ``w`` that end ``claim``, by presence (§5, the
     answer fold's ``ended``): each ``lifecycle.stopped`` and ``supervisor.died``
     naming it, readable or not. Empty exactly while the claim is held; it never
@@ -177,7 +177,7 @@ def has_exit(endings: list[Envelope]) -> bool:
 
 
 def backward(
-    ch: Channel, *, after: int, hi: int, topics: list[str]
+    ch: Reader, *, after: int, hi: int, topics: list[str]
 ) -> Iterator[Envelope]:
     """The records on ``topics`` above ``after`` and at or below ``hi``, newest
     first, read in windows that grow by 4x back from ``hi``: a search that stops at
@@ -190,14 +190,14 @@ def backward(
         hi, width = lo, width * 4
 
 
-def claim_before(ch: Channel, seq: int) -> Envelope | None:
+def claim_before(ch: Reader, seq: int) -> Envelope | None:
     """The newest ``lifecycle.started`` below ``seq``, or ``None``."""
     return next(
         backward(ch, after=0, hi=seq - 1, topics=[Topic.LIFECYCLE_STARTED]), None
     )
 
 
-def watermark(ch: Channel, claim: Envelope, w: int) -> int | None:
+def watermark(ch: Reader, claim: Envelope, w: int) -> int | None:
     """The newest watermark ``claim`` wrote at or below ``w`` (§4, "A drain"): its
     exit's seq, or else the ``consumed_seq`` of its newest commit or heartbeat;
     ``None`` when it wrote none. A claim's watermark only grows and its exit is its

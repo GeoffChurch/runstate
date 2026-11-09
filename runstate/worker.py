@@ -77,7 +77,7 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Literal, NamedTuple, Protocol, Self, assert_never
 
-from .channel import Channel, Envelope
+from .channel import Channel, Envelope, Reader
 from .vocabulary.handle import local_handle
 from .vocabulary.launch import current_launch_id
 from .checkpoint import Bind, SavePolicy
@@ -240,7 +240,7 @@ class _Lineage:
         self._expired.update(node.expired)
 
     @classmethod
-    def at(cls, ch: Channel, node: int | None) -> _Lineage:
+    def at(cls, ch: Reader, node: int | None) -> _Lineage:
         """The lineage ending at ``node`` (``None``: the empty lineage), walked and
         checked (§5, "The pure walk"), its coordinates resolved."""
         walked = walk(ch, node)
@@ -290,7 +290,7 @@ class _Lineage:
         for n in self._nodes[depth:]:
             yield from n.expired
 
-    def to(self, ch: Channel, node: int | None) -> _Lineage:
+    def to(self, ch: Reader, node: int | None) -> _Lineage:
         """The lineage ending at ``node``: this one's prefix when ``node`` is on it
         (or is the root), else walked from ``node``."""
         if node is None:
@@ -878,7 +878,7 @@ class _Requests:
 # ----- reading at W -----------------------------------------------------------------
 
 
-def _extendable(ch: Channel, seq: int, w: int) -> None:
+def _extendable(ch: Reader, seq: int, w: int) -> None:
     """Check, with one point read, that ``seq`` names an extendable node of this run
     at or below ``w`` (§4: what ``resume_from`` and ``rewind`` may name); raise
     ``ValueError`` naming what it is instead. A node whose body is unreadable raises

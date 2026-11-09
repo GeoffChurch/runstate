@@ -33,6 +33,7 @@ never mutates it.
 class Logs(Protocol):
     def create(self, run_id: str) -> Channel: ...
     def attach(self, run_id: str) -> Channel: ...
+    def reader(self, run_id: str) -> Reader: ...
 ```
 
 Protocol: a place that holds runs' logs. `create` opens the run's channel,
@@ -40,7 +41,11 @@ birthing its log if it has none (idempotent via the birth-CAS); it is the one
 open that may create. `attach` opens an **existing** run's channel and raises
 `RunNotFound` if it has no records, creating and changing nothing in the place
 (the foreign-db-safe open), yet the handle is **writable**: the stop path attaches
-then sends. Repeated opens of one `run_id` in one place share the run's log.
+then sends. `reader` opens an existing run's log to read, raising `RunNotFound`
+as `attach` does: the observer's open, whose handle has no `send`. A place may
+serve it more cheaply than a channel: `SqliteLogs` opens a sealed snapshot
+`immutable=1`, with no locks and no journal lookup, and any other log as `attach`
+does. Repeated opens of one `run_id` in one place share the run's log.
 
 ### `ProcessLogs`
 
@@ -122,6 +127,22 @@ run has no records, so a nonexistent and an empty run are identically "no run"
   the inverse of the address scheme, for a viewer that walks a directory. Every copy of one run
   (current, sealed, tombstone) names the same `(root, run_id)`; a newer format's directory names its
   root and format, never a run id (`log-formats.md` §3, "The inverse").
+
+### `Reader`
+
+```python
+read(after=0, *, topics=None, name=None, request_ids=None, limit=None) -> list[Envelope]
+latest(topic, name=None) -> Envelope | None
+last_seq() -> int
+close() -> None
+```
+
+Protocol: the read half of a handle on a run's log, and a context manager. Every
+`Channel` is one, and it is all an observer needs: the observables, the lineage
+reads and their held folds, `history`, `await_consumed` and the checkpoint
+choices take a `Reader`, so that observing a run cannot write to it is checked
+by the type. What writes takes a `Channel`: the `Worker`, the death reports, the
+deciders, and a `Watcher`'s tracked runs, which `broadcast` sends to.
 
 ### `Channel`
 

@@ -51,7 +51,7 @@ The copy needs no live seal. Its primitive is [`../specs/run-copy.md`](../specs/
 2026-11-03): `copy_run` between a `PostgresLogs` and a `SqliteLogs`, verified by `log_digest`, and `drop_run`
 for the GC. Its one sealing is the old one's case, a log with two homes that a stale writer could reach: the
 cut-over import seals its SQLite source, which then serves as the run's first snapshot, and each snapshot is
-written sealed, so readers can open it `immutable=1`.
+written sealed, so readers open it `immutable=1` (`SqliteLogs.reader`, #74).
 
 ## Not per-episode logs
 

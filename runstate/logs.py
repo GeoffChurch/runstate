@@ -36,7 +36,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, Protocol
 from urllib.request import pathname2url
 
-from .channel import Channel, Logs, RunNotFound, SqliteChannel, sqlite_log_path
+from .channel import (
+    Channel,
+    Logs,
+    Reader,
+    RunNotFound,
+    SqliteChannel,
+    SqliteSnapshot,
+    sqlite_log_path,
+)
 from .channel.envelope import Envelope
 from .channel.memory import MemoryChannel, MemoryLog
 from .formats import FORMATS, LOG_FORMAT, Row
@@ -306,6 +314,9 @@ class MemoryLogs:
             raise RunNotFound(f"run {run_id!r} has no records in {self!r}")
         return MemoryChannel(found, json_default=self._json_default)
 
+    def reader(self, run_id: str) -> Reader:
+        return self.attach(run_id)
+
 
 class SqliteLogs:
     """The logs under a SQLite root directory, which must exist: a run's log is at
@@ -333,6 +344,18 @@ class SqliteLogs:
         path = sqlite_log_path(self._root, run_id)
         if not path.exists():
             raise RunNotFound(f"run has no records at {path}")
+        return SqliteChannel(path, create=False, json_default=self._json_default)
+
+    def reader(self, run_id: str) -> Reader:
+        """A sealed snapshot with no sidecar beside it is opened immutable, with no
+        locks (``SqliteSnapshot``); any other log as ``attach`` opens it, since
+        only a read-write open rolls back a hot journal a dead writer left."""
+        path = sqlite_log_path(self._root, run_id)
+        if not path.exists():
+            raise RunNotFound(f"run has no records at {path}")
+        sidecars = (path.with_name(path.name + s) for s in ("-wal", "-journal"))
+        if _sealed(path) and not any(p.exists() for p in sidecars):
+            return SqliteSnapshot(path)
         return SqliteChannel(path, create=False, json_default=self._json_default)
 
     def child_env(self) -> Mapping[str, str]:
@@ -464,6 +487,9 @@ class PostgresLogs:
 
     def attach(self, run_id: str) -> Channel:
         return self._open(run_id, create=False)
+
+    def reader(self, run_id: str) -> Reader:
+        return self.attach(run_id)
 
     def child_env(self) -> Mapping[str, str]:
         # The DSN goes into the child's environment, as it always has: a DSN that

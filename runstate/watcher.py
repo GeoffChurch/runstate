@@ -56,7 +56,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from typing import Protocol
 
-from .channel import Channel, Envelope
+from .channel import Channel, Envelope, Reader
 from .channel.base import Session, SessionProbe
 from .claims import (
     backward,
@@ -180,7 +180,7 @@ class _Subject(Protocol):
         subject's: a claim its verdict may be about, or its launch's end?"""
         ...
 
-    def claim(self, ch: Channel, w: int) -> Envelope | None:
+    def claim(self, ch: Reader, w: int) -> Envelope | None:
         """The subject's newest claim at or below ``w``: registration's one read,
         which the witness then keeps from the records since."""
         ...
@@ -193,7 +193,7 @@ class _LatestClaim:
     def owns(self, e: Envelope) -> bool:
         return True
 
-    def claim(self, ch: Channel, w: int) -> Envelope | None:
+    def claim(self, ch: Reader, w: int) -> Envelope | None:
         return newest_claim(ch, w=w)
 
 
@@ -208,7 +208,7 @@ class _HeldLaunch:
     def owns(self, e: Envelope) -> bool:
         return e.request_id == self.launch_id
 
-    def claim(self, ch: Channel, w: int) -> Envelope | None:
+    def claim(self, ch: Reader, w: int) -> Envelope | None:
         return launch_claim(ch, self.launch_id, after=0, w=w)
 
 
@@ -218,7 +218,7 @@ class _Witness:
     reads only the records since. While nothing has claimed for the subject, it
     also keeps the newest launch's end the subject owns, read from its own cursor."""
 
-    def __init__(self, ch: Channel, subject: _Subject, now: float) -> None:
+    def __init__(self, ch: Reader, subject: _Subject, now: float) -> None:
         w = ch.last_seq()  # first: a claim CAS'd after it lands above the cursor
         self._subject = subject
         self.claim = subject.claim(ch, w)
@@ -227,7 +227,7 @@ class _Witness:
         self._end: Envelope | None = None
         self._end_read = 0
 
-    def poll(self, ch: Channel, *, w: int, now: float) -> None:
+    def poll(self, ch: Reader, *, w: int, now: float) -> None:
         """Read the records since the cursor up to ``w``, the caller's W, and
         restart the clock at ``now`` if any witnesses the claim alive."""
         if w <= self.w:
@@ -246,7 +246,7 @@ class _Witness:
                     self.at = now
         self.w = w
 
-    def verdict(self, ch: Channel) -> RunResult | None:
+    def verdict(self, ch: Reader) -> RunResult | None:
         """The verdict the log holds at the cursor: the claim's (``claim_verdict``),
         or while there is none, the newest launch's end the subject owns
         (``launch_verdict``), as ``peek_terminal`` reads an unclaimed run's."""
@@ -264,7 +264,7 @@ class _Witness:
         return None if self._end is None else launch_verdict(self._end)
 
 
-def _seed(ch: Channel, claim: Envelope, w: int, now: float) -> float:
+def _seed(ch: Reader, claim: Envelope, w: int, now: float) -> float:
     """The ``t`` of the newest readable record naming ``claim`` among its commits,
     heartbeats and rewinds, searched back from ``w`` to the claim (``backward``), else
     of its ``started``; ``now`` when the claim is unreadable too, as a beacon the
@@ -548,7 +548,7 @@ _ANSWER_TOPICS: list[str] = [
 
 
 def await_consumed(
-    ch: Channel,
+    ch: Reader,
     seq: int,
     *,
     timeout: float | None = None,
@@ -672,7 +672,7 @@ def _takes(e: Envelope, rid: str, seq: int) -> bool:
     )
 
 
-def _refuse_a_spent_id(ch: Channel, request: Envelope, rid: str) -> None:
+def _refuse_a_spent_id(ch: Reader, request: Envelope, rid: str) -> None:
     """``ValueError`` if a record below the request spends ``rid`` by name
     (``claims.spent_by``: an exit's ``honored``, a withdrawal, a refusal): request
     ids are one namespace, and a spent id is dead on arrival on every control topic,
@@ -700,7 +700,7 @@ class _Leases:
     void once its claim has ended (§2, "Per claim"), so a resend of it is dropped by
     every later claim, unanswered."""
 
-    def __init__(self, ch: Channel, request: Envelope, rid: str) -> None:
+    def __init__(self, ch: Reader, request: Envelope, rid: str) -> None:
         self._ch = ch
         self._request = request
         self._rid = rid

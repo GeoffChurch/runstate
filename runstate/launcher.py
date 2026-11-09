@@ -56,7 +56,7 @@ from types import MappingProxyType, TracebackType
 from typing import TYPE_CHECKING, Optional, Protocol, Self, TypeVar
 
 from .channel import Channel, Envelope, RunNotFound
-from .channel.base import Logs, ProcessLogs, SessionProbe
+from .channel.base import Logs, ProcessLogs, Reader, SessionProbe
 from .vocabulary.handle import local_handle, local_handle_of, resolve
 from .vocabulary.launch import LAUNCH_ID_ENV, launch_scope, new_launch_id
 from .claims import CAS_ATTEMPTS, endings, has_exit
@@ -164,7 +164,7 @@ def _report(ch: Channel, died: Died, *, force: bool) -> int | None:
     raise ReportStarvedError(died.claim_seq, CAS_ATTEMPTS)
 
 
-def _claim_at(ch: Channel, claim_seq: int, w: int) -> Envelope:
+def _claim_at(ch: Reader, claim_seq: int, w: int) -> Envelope:
     """The claim at ``claim_seq``, at or below ``w``; ``ValueError`` if there is
     none: a report naming no claim would end nothing any reader can name."""
     e = point(ch, claim_seq, w=w)
@@ -222,7 +222,7 @@ def report_if_dead(ch: Channel) -> int | None:
         return None
 
 
-def launch_claim(ch: Channel, launch_id: str, *, after: int, w: int) -> Envelope | None:
+def launch_claim(ch: Reader, launch_id: str, *, after: int, w: int) -> Envelope | None:
     """The newest claim naming the launch ``launch_id`` (the ``lifecycle.started``
     whose ``request_id`` is it), above ``after`` and at or below ``w``, or ``None``.
     Public because ``Launcher`` is: a launcher's reap reports a death against the
@@ -636,7 +636,7 @@ class _LocalHandle:
             self._failed = True
             raise
 
-    def _own_claim(self, ch: Channel) -> Envelope | None:
+    def _own_claim(self, ch: Reader) -> Envelope | None:
         """Under the lock: the newest claim naming this launch, if its claimant is
         this child: its handle is the launch's whole ``local://host/pid``
         (``local_handle_of``, the one build site of both), compared as the

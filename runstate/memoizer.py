@@ -33,7 +33,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Generic, NamedTuple, Protocol, TypeVar
 
-from .channel import Channel, Envelope
+from .channel import Channel, Envelope, Reader
 from .claims import backward, endings, named_claim
 from .launcher import (
     Drivable,
@@ -185,7 +185,7 @@ class _ForeignEpisode:
 
     launch_id: None = None
 
-    def __init__(self, ch: Channel) -> None:
+    def __init__(self, ch: Reader) -> None:
         self._ch = ch
 
     def is_alive(self) -> bool:
@@ -196,7 +196,7 @@ class _ForeignEpisode:
         return None
 
 
-def foreign_episode(ch: Channel) -> LiveHandle:
+def foreign_episode(ch: Reader) -> LiveHandle:
     """The one public copy of the producer gate's foreign half: compose a
     producer's ``extend`` as ``relaunch_if_needed(...) or foreign_episode(ch)``."""
     return _ForeignEpisode(ch)
@@ -257,7 +257,7 @@ def launch_producer(launcher: Launcher[D], run_id: str, target: D) -> Producer:
 
 
 def history(
-    ch: Channel, stream: str, schedule: Condition, *, head: HeadStrategy
+    ch: Reader, stream: str, schedule: Condition, *, head: HeadStrategy
 ) -> list[Element]:
     """Replay ``schedule`` over the lineage's nodes, root first, and return the
     elements of ``stream`` committed at the nodes where it fires (§5).
@@ -307,7 +307,7 @@ def history(
     return out
 
 
-def _epoch(ch: Channel) -> float:
+def _epoch(ch: Reader) -> float:
     """The run's epoch, the earliest claim's ``started.t``, which a time atom counts
     from; an unreadable one raises ``MalformedRecordError``. A lineage's first
     node is a claim's, so one is on the log."""
@@ -339,7 +339,7 @@ class _Drive:
         self._read = floor
         self._claim: Envelope | None = None
 
-    def claim(self, ch: Channel, w: int) -> Envelope | None:
+    def claim(self, ch: Reader, w: int) -> Envelope | None:
         """The newest claim at or below ``w`` naming the drive's launch, or
         ``None``: always ``None`` for a foreign handle, which names none. Each claim
         is checked once, as it is first found: one declaring the target a source
@@ -463,7 +463,7 @@ def _refuse_a_source(claim: Envelope, target: Target) -> None:
         )
 
 
-def _committed(ch: Channel, claim: Envelope, w: int) -> bool:
+def _committed(ch: Reader, claim: Envelope, w: int) -> bool:
     """Did ``claim`` write a commit at or below ``w``? Its newest commit, searched
     back from ``w`` within its window (``claims.backward``), so the read costs the
     distance back to it, and the whole window only for a claim that wrote none."""
@@ -474,7 +474,7 @@ def _committed(ch: Channel, claim: Envelope, w: int) -> bool:
     )
 
 
-def _held(ch: Channel) -> bool:
+def _held(ch: Reader) -> bool:
     """Is the newest claim held: no exit and no death report names it, readable or
     not (``claims.endings``, which never raises)? ``foreign_episode``'s test."""
     return foreign_episode(ch).is_alive()
