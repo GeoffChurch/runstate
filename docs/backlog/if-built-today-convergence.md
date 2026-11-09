@@ -61,7 +61,7 @@ and every later design question gets easier.
 - **the claim gate's `live_episode is None`**, an absence;
 - **the dying breath:** a CAS over a fully read control tail;
 - **lease expiry and voiding:** a lease ends because time passed, or because its episode ended;
-- **the liveness tiers:** a probe, staleness and the episode lock each conclude a death from an absence;
+- **the liveness tiers:** a probe, staleness and the session probe each conclude a death from an absence;
 - **the subtracting folds:** pending stops and live demand are requests minus their answers;
 - **`await_consumed`'s "accepted"**, which is the absence of a `nak`;
 - **terminal resolution:** the verdict's *else* tests for the absence of a readable self-report;

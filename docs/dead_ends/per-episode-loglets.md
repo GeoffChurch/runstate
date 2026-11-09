@@ -4,6 +4,25 @@
 killed, and it died on a dilemma neither of its neighbours faced. **What survives is real and is not
 segmentation** — see *Where it goes instead*.
 
+**Note, 2026-11-09: still refuted as proposed; one finding is superseded, and a third form is live
+elsewhere.** Reasoned from the shipped specs, not re-measured.
+
+- **Still holds:** the dilemma. Claims are arbitrated only on a shared frontier, `open_segment()` is still
+  an append that no broker serves, and the fenced variant still mutes a live worker without a trace.
+- **Its motive is gone.** The spliced series was fixed as *Where it goes instead* predicted, by naming:
+  values are committed to nodes and read along a chosen head (log format 0.4.0,
+  [`../specs/commits-and-lineage.md`](../specs/commits-and-lineage.md)).
+- **Superseded: the blast radius and the positional rules.** They described folds that paired by position.
+  Since log formats 0.3.0 and 0.4.0 the control and lineage folds read by name, so a stop that lands after
+  an exit is absent from its `honored` and stays pending, not *born already discharged*.
+- **A third form the dilemma did not weigh:** claims stay on one shared, compare-and-swapped log, and each
+  claim's values and commits go in a segment only it writes. That is not this proposal. It is layer 6 of
+  [`../backlog/identity-in-records.md`](../backlog/identity-in-records.md), in [`../backlog/lineage-graph.md`](../backlog/lineage-graph.md) and
+  [`../backlog/machine-partitioned-logs.md`](../backlog/machine-partitioned-logs.md), and it costs minted `(claim, k)` node names (a seq is a
+  name only under one sequencer), a dying breath that is best-effort across segments, and a shared claim
+  order the observer plane still needs. Its trigger is the one recorded there: a log gaining a second
+  sequencer.
+
 ## What it proposed
 
 Each episode writes into its own **loglet/segment**; a run's log is the ordered concatenation. The

@@ -452,11 +452,13 @@ want; large to build.
 
 ## Runstate, mapped
 
-Shipped and decided are kept apart. **What ships** is runstate as it is, on log format 0.3.0. **What layer 2
-has decided** is the walkthrough recorded in [`../../review-2026-10-04-commits-and-lineage.md`](../../review-2026-10-04-commits-and-lineage.md) §12, not yet
-shipped.
+Two strata are kept apart. **Before layer 2** is what runstate already had on log format 0.3.0, brought up to
+date where log format 0.4.0 renamed or replaced it. **What layer 2 changed** shipped 2026-10-31 as log format
+0.4.0 ([`../../specs/commits-and-lineage.md`](../../specs/commits-and-lineage.md)), as decided in the walkthrough recorded in
+[`../../review-2026-10-04-commits-and-lineage.md`](../../review-2026-10-04-commits-and-lineage.md) §12. (Corrected 2026-11-09: this section had still called
+layer 2 unshipped.)
 
-### What ships
+### Before layer 2
 
 **`ensure` is the one place the library's core operation leaves the fragment.** Its loop condition is a
 threshold claim on `progress`, a *retractable* quantity, and its two termination guards are a **temporal
@@ -466,29 +468,31 @@ moments, which no growing set of facts can do — and both feed demand, because 
 relaunch. [`1-logic.md`](1-logic.md) §"Two layers" is where that belongs.
 
 **Exhaustion arrives four ways in runstate today, and is inferred a fifth.** It arrives as a worker's own
-`lifecycle.stopped`, an observer's `launcher.terminated`, a pid probe, and on Postgres the release of the
-episode's advisory lock; heartbeat staleness infers it. The first two exist only if somebody volunteers
-them, and the probe **abstains off-host**. The lock observes a death across hosts, but runstate keeps it a
-Watcher signal, never a claim gate ([`../../specs/channel-postgres.md`](../../specs/channel-postgres.md)). Staleness is an inference, and
+`lifecycle.stopped`, an observer's `supervisor.terminated` for a launch it reaped, a pid probe, and on
+Postgres the session probe, which says whether the connection that wrote a claim has ended; heartbeat
+staleness infers it. The first two exist only if somebody volunteers them, and the pid probe **abstains
+off-host**. The session probe observes a death across hosts, but runstate keeps it evidence for a death
+report and a Watcher tier, never a claim arbiter ([`../../specs/channel-postgres.md`](../../specs/channel-postgres.md); it replaced the episode's
+advisory lock on 2026-10-30). Staleness is an inference, and
 [`../../dead_ends/failure-detector.md`](../../dead_ends/failure-detector.md) shows it must never arbitrate a claim. That is the launcher-versus-lifecycle
 split this library already has, kept orthogonal for exactly the reason [`2-polarity.md`](2-polarity.md) §"How a party comes to
 know a negative fact" gives: exhaustion is a fact about a process, never about what exists.
 
-**What ships already carries its extent as a constraint.** A subscription with an `until` is one durable
+**It already carried its extent as a constraint.** A subscription with an `until` is one durable
 record denoting a bounded region — durable across the *producer's* death, because a worker re-drains the
-control log and re-registers whatever is still unanswered, pinned by
-`tests/test_run_episodes.py::test_relaunch_extends_one_series`: one subscribe posted *before episode 1
-exists*, two episodes, ten steps, one series. `{"every": …}` with no `until` is schema-legal, documented
-as *"forever"* — the unbounded region of [`3-questions.md`](3-questions.md) §"Quantifiers live in questions", concrete rather
-than hypothetical. (The bare subscribe is served by a poll of the register, `self._values.get(name)`, not
-by anything waiting on a production; that is the gap between the shipped library and this design.)
+control log and re-registers whatever is still unanswered. On log format 0.3.0 a test pinned it: one
+subscribe posted *before episode 1 exists*, two episodes, ten steps, one series. `{"every": …}` with no
+`until` was schema-legal, documented as *"forever"* — the unbounded region of [`3-questions.md`](3-questions.md)
+§"Quantifiers live in questions", concrete rather than hypothetical. (The bare subscribe was served by a
+poll of the worker's register, not by anything waiting on a production; that was the gap between the
+library and this design, which §"What layer 2 changed" narrows under "Sources and eager streams".)
 
 **Stops address the run.** Runstate's `control.stop` names no claim; the claim's compare-and-swap makes
 *"the run's computation"* one claimant at a time. Since log format 0.3.0 a stop is spent by name, by the
 exit that honours it or by a `nak`, and a stop its claim did not honour — unseen at exit, or outlived by a
 death — stays pending for the next claim.
 
-### What layer 2 has decided
+### What layer 2 changed
 
 **Who and where.** The claim carries its resume point, `resume_from`, and a rollback is its own record,
 `lifecycle.rewind` (§12, items 3 and 4): §"The schema"'s split of a claim into who and where. Layer 2's count
@@ -513,8 +517,10 @@ two live writers.
 
 **Withdrawing a stop.** Layer 2 adds the asker's `control.withdraw`, which spends a stop by name
 (§12, item 10b), so any party that can name a stop can withdraw it; §"Halting and withdrawing" withdraws by
-reveal instead. Its stops also address a claim, not the run, so a stop the claim did not honour lapses with
-it, and the next claim is a forbid's business. Layer 2 has no forbid.
+reveal instead. Its stops still name no claim, so a stop its claim never honoured is honoured by the next
+claim ([`../../specs/commits-and-lineage.md`](../../specs/commits-and-lineage.md), "A stop names no claim"), where this design's stop lapses with its
+claim and leaves the next one to a forbid. Layer 2 has no forbid. (Corrected 2026-11-09: this paragraph had
+said layer 2's stops address a claim.)
 
 **Sources and eager streams.** The shipped `control.subscribe` is the record [`3-questions.md`](3-questions.md) §"Demand is
 control" replaces: a read, a route and a trigger in one record, whose `request_id` survives only as a routing

@@ -96,7 +96,7 @@ were forgeries in form; the defect they caused was attribution, since a release 
 stop, discharges none. Two more instances were reproduced in a prototype rather than counted: a late
 heartbeat from a dead episode read as current, and a displaced worker's terminal read as the run's verdict
 ([`../episode-aim.md`](../episode-aim.md)). Position-derived identity does not fail rarely. Runstate has since moved to
-this convention: its log format 0.3.0 pairs a discharge by name, and its layer-2 design gives a third
+this convention: its log format 0.3.0 pairs a discharge by name, and its log format 0.4.0 gives a third
 party a record of its own, a death report naming the claim, and an asker one, a withdrawal naming the stop
 ([`../../review-2026-10-04-commits-and-lineage.md`](../../review-2026-10-04-commits-and-lineage.md) §12).
 
