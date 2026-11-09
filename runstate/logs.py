@@ -1,5 +1,13 @@
-"""Run copy: one run's log copied between backends at its format, and dropped
-(docs/specs/run-copy.md).
+"""Where logs are: the places a run's channel is opened from
+(docs/specs/channel-locators.md), and run copy, one run's log copied between two
+of them at its format, and dropped (docs/specs/run-copy.md).
+
+A place is one object, built where the program reads its configuration and passed
+down: ``SqliteLogs(root)``, ``PostgresLogs(dsn)`` or ``MemoryLogs()``. Each opens a
+run's channel (``create``, ``attach``: the ``Logs`` Protocol). The two another
+process can open also spell themselves as environment variables (``child_env``:
+``ProcessLogs``), which ``from_env`` reads back, and are the endpoints of a copy
+(``CopyLogs``).
 
 A copy keeps every record's ``seq`` and ``created_at``, which no append can: every
 append assigns the next seq and stamps the clock. So the copy writes the format's
@@ -11,10 +19,9 @@ copy into Postgres is the run's writable log, so its source is sealed first; a
 Postgres log cannot be sealed while it is worked on (#70), so a Postgres log is
 never the source of a copy into Postgres.
 
-Each place is one ``Logs``, built where the consumer reads its configuration and
-passed down: ``SqliteLogs(root)`` or ``PostgresLogs(dsn)``. Its private side is
-the backend's half of a copy, which ``copy_run`` and ``drop_run`` call without
-asking which backend they hold."""
+A copy's endpoints are ``SqliteLogs(root)`` and ``PostgresLogs(dsn)``. Their
+private side is the backend's half of a copy, which ``copy_run`` and ``drop_run``
+call without asking which backend they hold."""
 
 from __future__ import annotations
 
@@ -24,12 +31,12 @@ import os
 import sqlite3
 import struct
 import uuid
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, Protocol
 from urllib.request import pathname2url
 
-from .channel import RunNotFound, sqlite_log_path
+from .channel import Channel, Logs, RunNotFound, SqliteChannel, sqlite_log_path
 from .channel.envelope import Envelope
 from .channel.memory import MemoryChannel, MemoryLog
 from .formats import FORMATS, LOG_FORMAT, Row
@@ -39,9 +46,10 @@ if TYPE_CHECKING:
     import psycopg
 
 __all__ = [
+    "CopyLogs",
     "CopyRefused",
     "Copied",
-    "Logs",
+    "MemoryLogs",
     "PostgresLogs",
     "Row",
     "RunLive",
@@ -155,12 +163,12 @@ def _verify(run_id: str, written: list[Row], digest: str, where: str) -> None:
         )
 
 
-class Logs(Protocol):
-    """A place where one backend keeps logs at ``LOG_FORMAT``: ``SqliteLogs(root)``
-    or ``PostgresLogs(dsn)``. Opening a run's log here takes the locators' opening
-    checks (log-formats.md §4), so a run held in another format raises
-    ``LogFormatMismatch`` or ``LogFormatMissing``, which ``runstate migrate``
-    resolves.
+class CopyLogs(Logs, Protocol):
+    """A place a run's log can be copied from or to: one backend's logs at
+    ``LOG_FORMAT``, ``SqliteLogs(root)`` or ``PostgresLogs(dsn)``. Every open here,
+    a channel's or a copy's, takes the opening checks (log-formats.md §4), so a run
+    held in another format raises ``LogFormatMismatch`` or ``LogFormatMissing``,
+    which ``runstate migrate`` resolves.
 
     ``rows`` is public, so a caller can compute ``log_digest`` on either side
     without copying. The rest is the backend's half of ``copy_run`` and
@@ -191,7 +199,7 @@ class Logs(Protocol):
         ...
 
 
-def copy_run(run_id: str, *, source: Logs, destination: Logs) -> Copied:
+def copy_run(run_id: str, *, source: CopyLogs, destination: CopyLogs) -> Copied:
     """Copy the run's log from ``source`` to ``destination``, every field exact.
 
     In order: read the source in one read (a source the copy must seal, since the
@@ -213,7 +221,7 @@ def copy_run(run_id: str, *, source: Logs, destination: Logs) -> Copied:
     return Copied(digest, rows[-1].seq)
 
 
-def drop_run(run_id: str, *, logs: Logs) -> None:
+def drop_run(run_id: str, *, logs: CopyLogs) -> None:
     """Delete the run's log from ``logs``, as a consumer's GC does: ``RunLive``
     while the run is live, nothing when it has no log there."""
     logs._drop(run_id)
@@ -254,18 +262,81 @@ def _seal(path: Path) -> None:
     seal_sqlite(path)
 
 
+# What the two cross-process places write into a child's environment, and what
+# ``from_env`` reads back: the one place a backend is a string.
+ROOT_ENV = "RUNSTATE_CHANNEL_ROOT"
+BACKEND_ENV = "RUNSTATE_CHANNEL_BACKEND"
+
+# ``json_default``, on every place: a sender-side ``json.dumps`` hook for coercing
+# exotic value payloads (numpy scalars -> float), given to each channel the place
+# opens. An exempt default: it encodes, and changes no record a plain value would
+# write; readers are unaffected.
+JsonDefault = Callable[[object], object]
+
+
+class MemoryLogs:
+    """Logs held in this object, for tests and in-process runs: each instance is a
+    place of its own, and two handles share a run's log by opening it from the
+    same instance. It cannot cross a process boundary, so it is no
+    ``ProcessLogs`` and no copy endpoint."""
+
+    def __init__(self, *, json_default: JsonDefault | None = None) -> None:
+        self._logs: dict[str, MemoryLog] = {}
+        self._json_default = json_default
+
+    def __repr__(self) -> str:
+        return f"MemoryLogs(<{len(self._logs)} runs>)"
+
+    def create(self, run_id: str) -> Channel:
+        # Build a log only for an absent run; setdefault, not an assignment, so
+        # two racing creates of one run still share the log that won.
+        existing = self._logs.get(run_id)
+        log = (
+            existing
+            if existing is not None
+            else self._logs.setdefault(run_id, MemoryLog([]))
+        )
+        return MemoryChannel(log, json_default=self._json_default)
+
+    def attach(self, run_id: str) -> Channel:
+        # No setdefault (no phantom): an absent run or an empty log is "no
+        # records", so the run does not exist.
+        found = self._logs.get(run_id)
+        if found is None or found.last_seq() == 0:
+            raise RunNotFound(f"run {run_id!r} has no records in {self!r}")
+        return MemoryChannel(found, json_default=self._json_default)
+
+
 class SqliteLogs:
-    """The logs under a SQLite root, the directory the locators take as ``root``:
-    a run's log is at ``<root>/v<LOG_FORMAT>/<rid>.db``. A copy written here is a
-    sealed snapshot."""
+    """The logs under a SQLite root directory, which must exist: a run's log is at
+    ``<root>/v<LOG_FORMAT>/<rid>.db``. A copy written here is a sealed
+    snapshot."""
 
     _writable: ClassVar[bool] = False
 
-    def __init__(self, root: str | os.PathLike[str]) -> None:
+    def __init__(
+        self, root: str | os.PathLike[str], *, json_default: JsonDefault | None = None
+    ) -> None:
         self._root = Path(root)
+        self._json_default = json_default
 
     def __repr__(self) -> str:
         return f"SqliteLogs({str(self._root)!r})"
+
+    def create(self, run_id: str) -> Channel:
+        path = sqlite_log_path(self._root, run_id)
+        if not path.exists():
+            path.parent.mkdir(exist_ok=True)  # the root itself must already exist
+        return SqliteChannel(path, create=True, json_default=self._json_default)
+
+    def attach(self, run_id: str) -> Channel:
+        path = sqlite_log_path(self._root, run_id)
+        if not path.exists():
+            raise RunNotFound(f"run has no records at {path}")
+        return SqliteChannel(path, create=False, json_default=self._json_default)
+
+    def child_env(self) -> Mapping[str, str]:
+        return {BACKEND_ENV: "sqlite", ROOT_ENV: str(self._root)}
 
     def rows(self, run_id: str) -> list[Row]:
         path = sqlite_log_path(self._root, run_id)
@@ -362,18 +433,42 @@ def _pg_rows(conn: "psycopg.Connection[Any]", run_id: str) -> list[Row]:
 
 
 class PostgresLogs:
-    """The logs in a Postgres database, the DSN the locators take as ``root``: the
-    rows of format ``LOG_FORMAT``'s schema. A copy written here is the run's
+    """The logs in a Postgres database, named by its DSN: the rows of format
+    ``LOG_FORMAT``'s schema, which ``channel.postgres.ensure_schema(dsn)`` must
+    have provisioned before a channel is opened. A copy written here is the run's
     writable log, its rows carrying no writer stamp, so the session probe abstains
     on them. Needs the ``[postgres]`` extra."""
 
     _writable: ClassVar[bool] = True
 
-    def __init__(self, dsn: str) -> None:
+    def __init__(self, dsn: str, *, json_default: JsonDefault | None = None) -> None:
         self._dsn = dsn
+        self._json_default = json_default
 
     def __repr__(self) -> str:
         return "PostgresLogs('<dsn>')"  # a DSN can carry a password
+
+    def _open(self, run_id: str, *, create: bool) -> Channel:
+        try:
+            from .channel.postgres import PostgresChannel
+        except ImportError as exc:  # the optional extra isn't installed
+            raise ImportError(
+                "PostgresLogs needs psycopg: pip install runstate[postgres]"
+            ) from exc
+        return PostgresChannel(
+            self._dsn, run_id, create=create, json_default=self._json_default
+        )
+
+    def create(self, run_id: str) -> Channel:
+        return self._open(run_id, create=True)
+
+    def attach(self, run_id: str) -> Channel:
+        return self._open(run_id, create=False)
+
+    def child_env(self) -> Mapping[str, str]:
+        # The DSN goes into the child's environment, as it always has: a DSN that
+        # carries a password is readable there by the child's own user.
+        return {BACKEND_ENV: "postgres", ROOT_ENV: self._dsn}
 
     def rows(self, run_id: str) -> list[Row]:
         import psycopg
@@ -460,3 +555,37 @@ class PostgresLogs:
                 sql.SQL("DELETE FROM {}.log WHERE run_id = %s").format(schema),
                 [run_id],
             )
+
+
+def from_env(
+    environ: Mapping[str, str], *, json_default: JsonDefault | None = None
+) -> SqliteLogs | PostgresLogs:
+    """The place ``child_env`` spelled into ``environ``: the inverse of the two
+    reference encodings, and the one place a backend is read as a string. Both
+    variables are required, so a process launched without them raises here rather
+    than opening a default place."""
+    backend, root = environ[BACKEND_ENV], environ[ROOT_ENV]
+    if backend == "sqlite":
+        return SqliteLogs(root, json_default=json_default)
+    if backend == "postgres":
+        return PostgresLogs(root, json_default=json_default)
+    raise ValueError(
+        f"{BACKEND_ENV}={backend!r}: expected 'sqlite' or 'postgres', the places "
+        "another process can open"
+    )
+
+
+# ----- the proof: each place satisfies the Protocols it is documented as --------------
+if TYPE_CHECKING:
+    from .channel import ProcessLogs
+    from .launcher import LocalLauncher
+
+    def _proof(
+        memory: MemoryLogs, sqlite: SqliteLogs, postgres: PostgresLogs
+    ) -> tuple[Logs, ProcessLogs, ProcessLogs, CopyLogs, CopyLogs]:
+        """Checked by ``mypy --strict runstate``, never run: it fails when a place
+        stops satisfying a Protocol, and, through the unused-ignore check, when a
+        place no other process can open starts being accepted by the launcher
+        that spawns one."""
+        LocalLauncher(logs=memory)  # type: ignore[arg-type]
+        return memory, sqlite, postgres, sqlite, postgres

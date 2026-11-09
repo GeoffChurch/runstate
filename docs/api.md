@@ -21,36 +21,73 @@ conformance reference (this page is the Python surface).
 
 The opinion-free topic-log transport.
 
-Opening a run splits on **creation policy** into two total locators plus the
-worker's ambient factory, so birth is always explicitly named and observing a run
-never mutates it (docs/specs/channel-locators.md).
+A channel is opened from a **place**: one object that says where runs' logs are,
+built where the program reads its configuration and passed down
+(docs/specs/channel-locators.md). Opening splits on **creation policy** into the
+place's two methods, so birth is always explicitly named and observing a run
+never mutates it.
 
-### `attach_channel`
-
-```python
-attach_channel(run_id: str, *, root=None, backend="sqlite", json_default=None) -> Channel
-```
-
-Attach to an **existing** run's channel; raise `RunNotFound` if it has no records
-— never creating or mutating any backing store (the foreign-db-safe open), yet
-**writable** (an attached handle reads *and* writes, so the stop path attaches
-then sends). `root` is the directory (sqlite) or namespace (memory) holding runs;
-`run_id` selects one. Repeated calls on the same `(root, run_id)` share the run's
-log. `json_default` is a sender-side `json.dumps` hook for coercing exotic value
-payloads.
-
-### `create_channel`
+### `Logs`
 
 ```python
-create_channel(run_id: str, *, root=None, backend="sqlite", json_default=None) -> Channel
+class Logs(Protocol):
+    def create(self, run_id: str) -> Channel: ...
+    def attach(self, run_id: str) -> Channel: ...
 ```
 
-Open-or-create (birth) a run's channel; idempotent via the birth-CAS. The one
-side-effecting locator — creation is *always* this explicitly-named call, never a
-default of attaching. `root` / `run_id` / `json_default` and the backend set are
-as for `attach_channel`. Backends: `"memory"`, `"sqlite"` (default), `"postgres"`
-(the `[postgres]` extra). Raises `ValueError` on a bad backend/root and
-`ImportError` (with an install hint) if `backend="postgres"` without psycopg.
+Protocol: a place that holds runs' logs. `create` opens the run's channel,
+birthing its log if it has none (idempotent via the birth-CAS); it is the one
+open that may create. `attach` opens an **existing** run's channel and raises
+`RunNotFound` if it has no records, creating and changing nothing in the place
+(the foreign-db-safe open), yet the handle is **writable**: the stop path attaches
+then sends. Repeated opens of one `run_id` in one place share the run's log.
+
+### `ProcessLogs`
+
+```python
+class ProcessLogs(Logs, Protocol):
+    def child_env(self) -> Mapping[str, str]: ...
+```
+
+Protocol: a place another process can open, because it can spell itself as
+environment variables. A launcher that spawns a process takes one, so a place
+that cannot cross the boundary (`MemoryLogs`) is a type error there. For the two
+reference places `child_env()` is what `current_channel()` reads; a consumer's
+own place returns whatever its own worker reads.
+
+### `SqliteLogs`
+
+```python
+SqliteLogs(root, *, json_default=None)
+```
+
+The logs under a SQLite root, an existing directory: a run's log is at
+`<root>/v<LOG_FORMAT>/<rid>.db`. A `ProcessLogs` and a `CopyLogs`; a copy written
+here is a sealed snapshot. Every open takes the opening checks
+(`log-formats.md` §4), so another format raises `LogFormatMismatch` or
+`LogFormatMissing`. `json_default`, on every place, is a sender-side `json.dumps`
+hook for coercing exotic value payloads, given to each channel the place opens.
+
+### `PostgresLogs`
+
+```python
+PostgresLogs(dsn: str, *, json_default=None)
+```
+
+The logs in a Postgres database (the `[postgres]` extra; `ImportError` with an
+install hint at the first open without psycopg). A `ProcessLogs` and a
+`CopyLogs`; a copy written here is the run's writable log. Its `child_env()`
+carries the DSN.
+
+### `MemoryLogs`
+
+```python
+MemoryLogs(*, json_default=None)
+```
+
+Logs held in the object, for tests and in-process runs. Each instance is a place
+of its own: two handles share a run's log by opening it from the same instance.
+It is no `ProcessLogs` and no `CopyLogs`.
 
 ### `current_channel`
 
@@ -59,15 +96,17 @@ current_channel(json_default=None) -> Channel
 ```
 
 Worker-side: open (or birth) the channel for the run this process was launched
-into. A launcher sets `RUNSTATE_RUN_ID` / `RUNSTATE_CHANNEL_ROOT` /
-`RUNSTATE_CHANNEL_BACKEND` in the worker's environment; `current_channel` reads
-them and delegates to `create_channel` (open-or-create, so a launcher-less direct
-run still births). See [environment variables](#environment-variables) below.
-Raises `KeyError` if `RUNSTATE_RUN_ID` is unset.
+into. A `LocalLauncher` over `SqliteLogs` or `PostgresLogs` sets
+`RUNSTATE_RUN_ID` and the place's `child_env()` in the worker's environment;
+`current_channel` reads them back into the place and calls its `create`
+(open-or-create, so a direct run that sets them itself still births). See
+[environment variables](#environment-variables) below. Raises `KeyError` if any
+of the three is unset, and `ValueError` on a backend no process can open: there
+is no default place.
 
 ### `RunNotFound`
 
-The uniform absence signal (a `LookupError`): `attach_channel` raises it when a
+The uniform absence signal (a `LookupError`): a place's `attach` raises it when a
 run has no records, so a nonexistent and an empty run are identically "no run"
 (docs/specs/channel-locators.md).
 
@@ -76,7 +115,7 @@ run has no records, so a nonexistent and an empty run are identically "no run"
 - `LOG_FORMAT`: the log format this release reads and writes, `"0.4.0"`.
 - `LogFormatError`, `LogFormatMismatch` and `LogFormatMissing`: see
   `docs/specs/log-formats.md` §4.
-- **The sqlite names.** `attach_channel` and `create_channel` refuse, with `ValueError` and creating
+- **The sqlite names.** `SqliteLogs`'s `attach` and `create` refuse, with `ValueError` and creating
   nothing, a sqlite run id that is not one filename and a root named like a format directory
   (`vX.Y.Z`), which makes the address scheme one-to-one (`log-formats.md` §3).
 - `runstate.formats.sqlite_address(path) -> VersionedAddress | LegacyAddress | NewerFormatRoot | None`:
@@ -315,24 +354,25 @@ object, or `AtNode(x)`.
 
 Opt-in orchestration: spawn a worker and bracket it with `supervisor.launched`
 / `supervisor.terminated`, reporting a claimant's death with `supervisor.died`
-(§3). The channel locators are uniform; `launch`'s target is the launcher's own
-record type.
+(§3). A launcher holds the place its runs' logs are; `launch`'s target is the
+launcher's own record type.
 
 ### `Launcher`
 
 ```python
 class Launcher(Protocol[T_contra]):
-    def create_channel(self, run_id: str) -> Channel: ...
-    def attach_channel(self, run_id: str) -> Channel: ...
+    @property
+    def logs(self) -> Logs: ...
     def launch(self, run_id: str, target: T_contra) -> LaunchHandle: ...
 ```
 
 Protocol: spawn a worker into a run. A launcher is typed by its **target
 record**, contravariant: `ThreadLauncher` is a `Launcher[ThreadTarget]` and
 `LocalLauncher` a `Launcher[Command]`, so a mismatched pair is a type error at
-the call site. The two channel methods bind the launcher's `root` / `backend`
-— `create_channel` for the launch flow (births the run), `attach_channel` for
-probes (the deciders catch `RunNotFound`). A launch writes
+the call site. `logs` is the place its runs' logs are: the launch births a run
+there (`logs.create`), and the deciders probe one (`logs.attach`, catching
+`RunNotFound`). It is the launcher's, so a decider and the launch it decides
+cannot be pointed at two places. A launch writes
 `supervisor.launched` and, at its reap, `supervisor.terminated`, both naming
 the launch by its id, and a `supervisor.died` beside the `terminated` when the
 newest claim naming the launch has no readable exit.
@@ -358,7 +398,7 @@ cannot, and raises).
 ### `ThreadLauncher`
 
 ```python
-ThreadLauncher(*, root=None, backend="memory")
+ThreadLauncher(*, logs: Logs)
 launch(run_id, target: ThreadTarget) -> LaunchHandle
 ```
 
@@ -367,23 +407,24 @@ In-process launcher (tests / single-process orchestration): runs
 bound for it, so the claim its Worker writes names the launch. When the thread
 finishes, the newest claim naming the launch gets a death report unless it has
 a readable exit: a raise is `errored`, a return `lost` (only while the claim is
-held), with `force=True`. Defaults to the memory backend (`root`/`backend` say
-where a log lives, not what it holds). The concrete handle carries a
+held), with `force=True`. `logs` is any place, `MemoryLogs()` included, since
+the target is handed the launch's own channel. The concrete handle carries a
 `.exception`.
 
 ### `LocalLauncher`
 
 ```python
-LocalLauncher(*, root, backend="sqlite")
+LocalLauncher(*, logs: ProcessLogs)
 launch(run_id, target: Command) -> LaunchHandle
 reap() -> None
 ```
 
 Spawn workers as local subprocesses (the full handle story). `launch` runs
-`target.argv` with `os.environ`, then `target.env`, then the `RUNSTATE_*`
-variables; the child calls `runstate.current_channel()` to re-derive the same
-run's channel — so the backend must be cross-process durable (sqlite, the
-default). A handle's reap writes `terminated`, and a `died` (`reap: exit <n>`,
+`target.argv` with `os.environ`, then `target.env`, then `logs.child_env()`,
+then the run's id and the launch's; with `SqliteLogs` or `PostgresLogs` the child
+calls `runstate.current_channel()` to open the same run's channel. `logs` is a
+`ProcessLogs`, so a place no other process can open is a type error. A handle's
+reap writes `terminated`, and a `died` (`reap: exit <n>`,
 `reap: signal <s>`) when the newest claim naming the launch has the child's
 handle and no readable exit. `reap()` reaps every finished child, and kills
 (`SIGKILL`, through its `Popen`, never by pid) a live child of its own whose
@@ -1085,7 +1126,7 @@ itself. A run has exactly one writable log, and every copy of it is sealed.
 ### `copy_run`
 
 ```python
-copy_run(run_id: str, *, source: Logs, destination: Logs) -> Copied
+copy_run(run_id: str, *, source: CopyLogs, destination: CopyLogs) -> Copied
 ```
 
 Read the source in one read (sealed first when the destination is writable),
@@ -1101,7 +1142,7 @@ Postgres is a `ValueError`.
 ### `drop_run`
 
 ```python
-drop_run(run_id: str, *, logs: Logs) -> None
+drop_run(run_id: str, *, logs: CopyLogs) -> None
 ```
 
 Delete the run's log, as a consumer's GC does: `RunLive` while the run is live,
@@ -1140,34 +1181,15 @@ Row(seq: int, topic: str, name: str | None, request_id: str | None, body: str, c
 One record as a log's table stores it, `body` its stored JSON text. The
 migration steps read and write rows as these too.
 
-### `Logs`
+### `CopyLogs`
 
 ```python
-Logs.rows(run_id: str) -> list[Row]   # in seq order, in one read; RunNotFound if none
+CopyLogs.rows(run_id: str) -> list[Row]   # in seq order, in one read; RunNotFound if none
 ```
 
-A place where a backend keeps logs at `LOG_FORMAT`. Built once where the
-consumer reads its configuration and passed down. Opening a run there takes the
-locators' opening checks, so another format raises `LogFormatMismatch` or
-`LogFormatMissing`.
-
-### `SqliteLogs`
-
-```python
-SqliteLogs(root)
-```
-
-The logs under a SQLite root, the directory the locators take; a run's log is
-at `<root>/v<LOG_FORMAT>/<rid>.db`. A copy written here is a sealed snapshot.
-
-### `PostgresLogs`
-
-```python
-PostgresLogs(dsn: str)
-```
-
-The logs in a Postgres database (the `[postgres]` extra). A copy written here is
-the run's writable log.
+Protocol: a `Logs` a run's log can be copied from or to, `SqliteLogs(root)` or
+`PostgresLogs(dsn)` (above). The one place object opens a run's channels and is
+a copy's endpoint, so the two cannot name different places.
 
 ### `RunLive`
 
@@ -1503,16 +1525,17 @@ deliberate version bump (never silent).
 | variable | meaning | default |
 |---|---|---|
 | `RUNSTATE_RUN_ID` | the run to attach to | required (else `KeyError`) |
-| `RUNSTATE_CHANNEL_ROOT` | the directory/namespace holding runs | `None` |
-| `RUNSTATE_CHANNEL_BACKEND` | `memory` / `sqlite` / `postgres` | `sqlite` |
+| `RUNSTATE_CHANNEL_ROOT` | the SQLite root directory, or the Postgres DSN | required (else `KeyError`) |
+| `RUNSTATE_CHANNEL_BACKEND` | `sqlite` / `postgres` | required (else `KeyError`) |
 | `RUNSTATE_LAUNCH_ID` | the launch's correlation id (re-emitted on `started`) | `None` |
 | `RUNSTATE_SQLITE_JOURNAL_MODE` | sqlite journal mode (`DELETE` on NFS) | `WAL` |
 
 ## Builtin exceptions
 
-Beside the errors above, the public functions raise builtins: `create_channel`
-raises `ValueError` (bad backend) / `ImportError` (postgres without psycopg);
-`current_channel` raises `KeyError` (unset `RUNSTATE_RUN_ID`); `Watcher.poll`
+Beside the errors above, the public functions raise builtins: `PostgresLogs`'s
+opens raise `ImportError` (postgres without psycopg); `current_channel` raises
+`KeyError` (an unset variable) / `ValueError` (a backend that is neither `sqlite`
+nor `postgres`); `Watcher.poll`
 raises `KeyError` (untracked run); `Worker.emit` raises `ValueError` on a
 declared source, `set` on an undeclared name, and `include` on a seq it may not
 commit; `Worker.steps` and `ensure` raise `ValueError` on a target naming a

@@ -100,18 +100,18 @@ own-your-`run_id`-partition burden, rate unchanged, detection harder);
 loose runs (no rid computed) stay outside the namespace.
 
 Library scope: **zero for placement itself** — it is policy over
-`create_channel(run_id, root)` (pure path construction,
-`channel/__init__.py:_locate`; nothing in the library enumerates
+`SqliteLogs(root).create(run_id)` (pure path construction,
+`channel/__init__.py:sqlite_log_path`; nothing in the library enumerates
 directories, so nesting is library-invisible). Mechanics for the wiring
 plan: the dispatcher `mkdir`s the home before opening the channel
 (sqlite does not create parent dirs), and the reference launchers take
-`root=` at construction, so per-rid homes mean per-rid launcher (or
-producer-side `create_channel`) construction — which breaks the
+their place (`logs=`) at construction, so per-rid homes mean per-rid
+launcher (or producer-side place) construction — which breaks the
 one-root-many-runs helpers as shipped: `sweep(variants, launcher)` (since
 deleted, `../dead_ends/sweep.md`) and
 the lazy-launch activator-table recipe both hold ONE launcher over N
 rids and need a per-rid wrapper loop (named here so the wiring plan
-prices them; a `create_channel` layout hook is the revival trigger for
+prices them; a layout hook on the place is the revival trigger for
 library surface if a second consumer hits it). An unclaimed serendipity
 the same mechanics buy: `RUNSTATE_CHANNEL_ROOT` *is* the run's home, so
 a spawned worker derives its artifact/checkpoint dir from env —

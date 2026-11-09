@@ -12,15 +12,14 @@ a ``head``, with ``prefix_len``, ``prefix``, ``series``, ``last_element``,
 """
 
 import os
-from collections.abc import Callable
 
 from .channel import (
     Body,
     Channel,
     Envelope,
+    Logs,
+    ProcessLogs,
     RunNotFound,
-    attach_channel,
-    create_channel,
 )
 from .formats import LOG_FORMAT, LogFormatError, LogFormatMismatch, LogFormatMissing
 from .vocabulary.handle import handle_pid
@@ -34,16 +33,19 @@ from .checkpoint import (
     OnHeadLineage,
     SavePolicy,
 )
-from .copy import (
+from .logs import (
     Copied,
+    CopyLogs,
     CopyRefused,
-    Logs,
+    JsonDefault,
+    MemoryLogs,
     PostgresLogs,
     Row,
     RunLive,
     SqliteLogs,
     copy_run,
     drop_run,
+    from_env,
     log_digest,
 )
 from .launcher import (
@@ -136,21 +138,19 @@ from .watcher import Running, RunStatus, Watcher, await_consumed
 from .worker import Worker, WorkerStarvedError
 
 
-def current_channel(
-    json_default: Callable[[object], object] | None = None,
-) -> Channel:
+def current_channel(json_default: JsonDefault | None = None) -> Channel:
     """Worker-side: open (or birth) the channel for the run this process was
     launched into.
 
-    A Launcher sets ``RUNSTATE_RUN_ID`` / ``RUNSTATE_CHANNEL_ROOT`` /
-    ``RUNSTATE_CHANNEL_BACKEND`` in the worker's environment; ``current_channel``
-    reads them and delegates to ``create_channel`` (open-or-create, so a
-    launcher-less direct run still births its own log). Mirrors how the
-    orchestrator named the run, so both ends meet on the same log.
-    ``json_default`` is a sender-side ``json.dumps`` hook for coercing exotic
-    value payloads (e.g. numpy scalars / tensors) the worker reports: an exempt
-    default (plan, "Exempt defaults"), since it encodes, and changes no record a
-    plain value would write.
+    A ``LocalLauncher`` over ``SqliteLogs`` or ``PostgresLogs`` sets
+    ``RUNSTATE_RUN_ID`` and the place's ``child_env()``
+    (``RUNSTATE_CHANNEL_BACKEND``, ``RUNSTATE_CHANNEL_ROOT``) in the worker's
+    environment; ``current_channel`` reads them back into the place
+    (``logs.from_env``) and calls its ``create`` (open-or-create, so a direct run
+    that sets the three itself still births its own log). All three are required:
+    there is no default place. ``json_default`` is the place's (``logs.py``): an
+    exempt default, since it encodes, and changes no record a plain value would
+    write.
 
     A launcher also sets ``RUNSTATE_LAUNCH_ID`` (the launch's correlation id);
     the ``Worker`` re-emits it on its ``lifecycle.started`` so its claim names
@@ -158,15 +158,16 @@ def current_channel(
     identifies the claim, not the channel.
     """
     run_id = os.environ["RUNSTATE_RUN_ID"]
-    root = os.environ.get("RUNSTATE_CHANNEL_ROOT")
-    backend = os.environ.get("RUNSTATE_CHANNEL_BACKEND", "sqlite")
-    return create_channel(run_id, root=root, backend=backend, json_default=json_default)
+    return from_env(os.environ, json_default=json_default).create(run_id)
 
 
 __all__ = [
-    # substrate, unchanged
-    "attach_channel",
-    "create_channel",
+    # the substrate, and the places a channel is opened from
+    "Logs",
+    "ProcessLogs",
+    "MemoryLogs",
+    "SqliteLogs",
+    "PostgresLogs",
     "current_channel",
     "LOG_FORMAT",
     "Channel",
@@ -254,9 +255,7 @@ __all__ = [
     "Copied",
     "log_digest",
     "Row",
-    "Logs",
-    "SqliteLogs",
-    "PostgresLogs",
+    "CopyLogs",
     # the errors public calls raise
     "RunNotFound",
     "LogFormatError",

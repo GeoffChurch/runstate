@@ -21,8 +21,9 @@ current `runstate/`. A block fenced ` ```python fragment ` is a piece of a large
 program, most often a runnable one under `examples/` (named inline, and run by
 `tests/test_examples.py`); it is shown, not run. Worker-side blocks call
 `runstate.current_channel()`, which reads the `RUNSTATE_*` variables a launcher
-sets (section 3); to run one by hand, set `RUNSTATE_RUN_ID` and
-`RUNSTATE_CHANNEL_ROOT` (an existing directory) first.
+sets (section 3); to run one by hand, set `RUNSTATE_RUN_ID`,
+`RUNSTATE_CHANNEL_BACKEND=sqlite` and `RUNSTATE_CHANNEL_ROOT` (an existing
+directory) first.
 
 Coming from format 0.3.0? Read [the migration note](#coming-from-format-030)
 at the end first.
@@ -226,11 +227,17 @@ You write a small script that composes a launcher, a subscription and a watcher.
 A launcher is typed by its **target record**, `Launcher[T]`:
 
 - **`ThreadLauncher`** runs a `ThreadTarget(fn, args=..., kwargs=...)` on a
-  thread, as `fn(channel, *args, **kwargs)`, on the memory backend by default
-  (tests, single-process orchestration);
-- **`LocalLauncher(root=...)`** runs a `Command(argv, env=...)` as a
-  subprocess, injecting the `RUNSTATE_*` env that `current_channel()` reads
-  (`env={}` is "the parent's environment", said explicitly).
+  thread, as `fn(channel, *args, **kwargs)` (tests, single-process
+  orchestration);
+- **`LocalLauncher`** runs a `Command(argv, env=...)` as a subprocess,
+  injecting the `RUNSTATE_*` env that `current_channel()` reads (`env={}` is
+  "the parent's environment", said explicitly).
+
+Both take `logs=`, the **place** their runs' logs are: `SqliteLogs(root)`,
+`PostgresLogs(dsn)` or, in one process only, `MemoryLogs()`. `LocalLauncher`
+needs one a child process can open, so `MemoryLogs()` is a type error there.
+`launcher.logs.create(run_id)` births a run's log and `launcher.logs.attach(run_id)`
+opens an existing one.
 
 Each launch writes `supervisor.launched` and, at its reap,
 `supervisor.terminated`, and a death report when the worker left no exit
@@ -252,8 +259,8 @@ def train(channel: runstate.Channel, *, iterations: int) -> None:
             w.stopped(completed=True, error=None)
 
 
-launcher = runstate.ThreadLauncher()  # in-process, on the memory backend
-ch = launcher.create_channel("run-1")
+launcher = runstate.ThreadLauncher(logs=runstate.MemoryLogs())  # in-process
+ch = launcher.logs.create("run-1")
 # Subscribe BEFORE the launch: the log holds the request until a worker drains it.
 ch.send(
     {"every": {"commits": 10}},  # sample `loss` at every 10th commit
@@ -278,8 +285,8 @@ With a subprocess worker the shape is the same; this is the skeleton of
 `examples/minimal/driver.py`, which also streams the answers as they arrive:
 
 ```python fragment
-with runstate.LocalLauncher(root=root) as launcher:
-    ch = launcher.create_channel(run_id)
+with runstate.LocalLauncher(logs=runstate.SqliteLogs(root)) as launcher:
+    ch = launcher.logs.create(run_id)
     ch.send(
         {"every": {"commits": 1}},
         topic=runstate.Topic.CONTROL_SUBSCRIBE,
@@ -384,11 +391,11 @@ def run(launcher: runstate.ThreadLauncher, rid: str) -> runstate.RunResult:
     return watcher.wait(rid)
 
 
-launcher = runstate.ThreadLauncher()
+launcher = runstate.ThreadLauncher(logs=runstate.MemoryLogs())
 STOP, WITHDRAW = runstate.Topic.CONTROL_STOP, runstate.Topic.CONTROL_WITHDRAW
 
 # A stop that holds once the lineage has 5 commits.
-ch = launcher.create_channel("stopped-early")
+ch = launcher.logs.create("stopped-early")
 stop = ch.send({"from": {"commits": 5}}, topic=STOP, request_id=uuid.uuid4().hex)
 result = run(launcher, "stopped-early")
 assert result.outcomes == {runstate.Outcome.PREEMPTED}  # clean, and resumable
@@ -397,7 +404,7 @@ assert runstate.prefix_len(ch, runstate.Commits(), head=head) == 5
 assert runstate.await_consumed(ch, stop) is None  # landed: the exit honoured it
 
 # A stop its asker withdrew before any worker read it: spent, never honoured.
-ch = launcher.create_channel("withdrawn")
+ch = launcher.logs.create("withdrawn")
 rid = uuid.uuid4().hex
 ch.send({"from": {"commits": 5}}, topic=STOP, request_id=rid)
 ch.send({"t": time.time()}, topic=WITHDRAW, request_id=rid)
@@ -502,7 +509,7 @@ def train(ch: runstate.Channel, store: Path, until: runstate.Target) -> None:
 
 
 store = Path(tempfile.mkdtemp())
-with runstate.create_channel("ckpt-demo", root=tempfile.mkdtemp()) as ch:
+with runstate.SqliteLogs(tempfile.mkdtemp()).create("ckpt-demo") as ch:
     train(ch, store, runstate.Target("loss", 5))  # claim 1: losses 0..4
     train(ch, store, runstate.Target("loss", 12))  # claim 2: resumes, 5..11
     losses = runstate.series(ch, "loss", head=runstate.LatestClaimHead())
@@ -539,7 +546,7 @@ def save() -> Callable[[int], None]:  # just before a node is written
     return lambda node: snapshots.append(Snapshot(node, loss))
 
 
-with runstate.create_channel("rewind-demo", root=tempfile.mkdtemp()) as ch:
+with runstate.SqliteLogs(tempfile.mkdtemp()).create("rewind-demo") as ch:
     with runstate.Worker(
         ch, resume_from=None, sources=[], save=runstate.Every(1, save)
     ) as w:
@@ -673,9 +680,9 @@ def service(channel: runstate.Channel) -> None:
             w.set("load1", os.getloadavg()[0])
 
 
-launcher = runstate.ThreadLauncher()
+launcher = runstate.ThreadLauncher(logs=runstate.MemoryLogs())
 target = runstate.ThreadTarget(service, args=(), kwargs={})
-ch = launcher.create_channel("monitor")
+ch = launcher.logs.create("monitor")
 demand = runstate.LiveDemand()  # held across calls: each poll reads what is new
 SUBSCRIBE = runstate.Topic.CONTROL_SUBSCRIBE
 
@@ -737,7 +744,7 @@ import tempfile
 
 import runstate
 
-with runstate.create_channel("stranded", root=tempfile.mkdtemp()) as ch:
+with runstate.SqliteLogs(tempfile.mkdtemp()).create("stranded") as ch:
     # A worker claims, commits once, and then its process is lost (here: we just
     # stop calling it), so its claim is held and nothing will write its exit.
     w = runstate.Worker(ch, resume_from=None, sources=[], save=runstate.NoSave())
@@ -775,7 +782,7 @@ def lost(channel: runstate.Channel) -> None:
     # returns without an exit: no `with`, so nothing writes lifecycle.stopped
 
 
-launcher = runstate.ThreadLauncher()
+launcher = runstate.ThreadLauncher(logs=runstate.MemoryLogs())
 handle = launcher.launch("lost", runstate.ThreadTarget(lost, args=(), kwargs={}))
 watcher = runstate.Watcher(heartbeat_timeout=30.0)
 watcher.add(handle)
@@ -822,7 +829,7 @@ import tempfile
 import runstate
 from runstate import Commits, LatestClaimHead
 
-with runstate.create_channel("reads", root=tempfile.mkdtemp()) as ch:
+with runstate.SqliteLogs(tempfile.mkdtemp()).create("reads") as ch:
     ch.send(  # a durable subscription to the `lr` source, every 4th commit
         {"every": {"commits": 4}},
         topic=runstate.Topic.CONTROL_SUBSCRIBE,
@@ -891,8 +898,8 @@ def train(channel: runstate.Channel) -> None:
             time.sleep(0.005)
 
 
-launcher = runstate.ThreadLauncher()
-ch = launcher.create_channel("polled")
+launcher = runstate.ThreadLauncher(logs=runstate.MemoryLogs())
+ch = launcher.logs.create("polled")
 launcher.launch("polled", runstate.ThreadTarget(train, args=(), kwargs={}))
 
 heads = runstate.HeadFold()
@@ -971,7 +978,7 @@ def train(channel: runstate.Channel, *, until: runstate.Target, lr: float) -> No
     # no completed claim: a preempted exit at the target, the next drive extends
 
 
-launcher = runstate.ThreadLauncher()
+launcher = runstate.ThreadLauncher(logs=runstate.MemoryLogs())
 inputs = {"lr": 0.3}
 target = runstate.ThreadTarget(train, args=(), kwargs=inputs)
 producer = runstate.launch_producer(launcher, run_id(inputs), target)
@@ -1066,7 +1073,7 @@ each woken by fresh demand.
            w.stopped(completed=True, error=None)  # WRONG for a chunk
 
 
-   launcher = runstate.ThreadLauncher()
+   launcher = runstate.ThreadLauncher(logs=runstate.MemoryLogs())
    target = runstate.ThreadTarget(chunk, args=(), kwargs={})
    producer = runstate.launch_producer(launcher, "chunked", target)
    five, ten = runstate.Target("loss", 5), runstate.Target("loss", 10)

@@ -50,8 +50,8 @@ import sys
 
 import runstate
 
-with runstate.LocalLauncher(root="/tmp/runs") as launcher:
-    ch = launcher.create_channel("run-1")  # birth the run's log
+with runstate.LocalLauncher(logs=runstate.SqliteLogs("/tmp/runs")) as launcher:
+    ch = launcher.logs.create("run-1")  # birth the run's log
     # Subscribe BEFORE the launch: the log holds the request until a worker drains it.
     ch.send(
         {"every": {"commits": 10}},  # sample the `lr` source at every 10th commit
@@ -106,7 +106,7 @@ def train(channel: runstate.Channel, *, until: runstate.Target, lr: float) -> No
 inputs = {"lr": 0.3}  # the run_id is the inputs' hash, never the target's
 rid = hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()[:16]
 target = runstate.ThreadTarget(train, args=(), kwargs=inputs)
-producer = runstate.launch_producer(runstate.ThreadLauncher(), rid, target)
+producer = runstate.launch_producer(runstate.ThreadLauncher(logs=runstate.MemoryLogs()), rid, target)
 
 runstate.ensure(producer, runstate.Target("loss", 8))  # cold: produce 0..7
 runstate.ensure(producer, runstate.Target("loss", 8))  # warm: from the log, no worker
@@ -140,8 +140,8 @@ def train(channel: runstate.Channel) -> None:
             time.sleep(0.005)
 
 
-launcher = runstate.ThreadLauncher()
-ch = launcher.create_channel("run-1")
+launcher = runstate.ThreadLauncher(logs=runstate.MemoryLogs())
+ch = launcher.logs.create("run-1")
 handle = launcher.launch("run-1", runstate.ThreadTarget(train, args=(), kwargs={}))
 
 heads, last = runstate.HeadFold(), runstate.LastElement("loss")  # held folds

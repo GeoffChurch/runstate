@@ -6,13 +6,14 @@ launchers' ``supervisor.died``, and the deciders that report before they launch.
 The claims here are hand-written 0.4.0 ``lifecycle.started`` records, as any
 implementation's worker writes them, since the staged Worker comes later (plan,
 Task 9). A ``LocalLauncher`` child writes its own: it opens its channel through the
-locator and the environment its launcher set (``current_channel``,
-``RUNSTATE_LAUNCH_ID``), as a worker of another language would. The tests
+environment its launcher set (``current_channel``, ``RUNSTATE_LAUNCH_ID``), as a
+worker of another language would. The tests
 synchronize with a child by polling the log, or the child's handle, with a timeout.
 
 ``test_interop_death_report_from_evidence`` (§9 item 15) is in
 ``tests/test_interop.py``."""
 
+from runstate.logs import MemoryLogs, SqliteLogs
 import os
 import signal
 import subprocess
@@ -346,8 +347,8 @@ def test_report_if_dead_reports_a_held_claim_whose_session_ended_though_its_pid_
 
 # ----- the launchers ---------------------------------------------------------------
 
-# A worker of any implementation: it opens its channel through the locator and the
-# environment its launcher set, CAS-appends a 0.4.0 claim naming its launch, then
+# A worker of any implementation: it opens its channel through the environment its
+# launcher set (``current_channel``), CAS-appends a 0.4.0 claim naming its launch, then
 # does what its arguments say, in order:
 #   release      a death report naming its claim lands (the claim has ended)
 #   exit N       it exits with code N
@@ -400,6 +401,7 @@ UNREADABLE_CLAIM = """
 import time
 from runstate import current_channel
 from runstate.vocabulary.launch import current_launch_id
+from runstate.logs import MemoryLogs, SqliteLogs
 
 ch = current_channel()
 ch.send({"handle": 7}, topic="lifecycle.started", request_id=current_launch_id())
@@ -433,13 +435,13 @@ def terminated(ch):
 def test_local_launchers_reap_writes_died_when_the_handles_match_whoever_waited(
     tmp_path, reaper
 ):
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         h = launcher.launch("run", child("exit", "3"))
         if reaper == "wait":
             assert h.wait(timeout=30) == 3
         else:
             assert until(lambda: h.poll()) == 3
-        ch = launcher.attach_channel("run")
+        ch = launcher.logs.attach("run")
         claim_seq = launched_claim(ch).seq
         assert ch.latest(Topic.LIFECYCLE_STARTED).request_id == h.launch_id
         assert terminated(ch) == [(h.launch_id, "exited", 3, None)]
@@ -459,10 +461,10 @@ def test_local_launchers_reap_writes_only_terminated_when_the_handles_differ(
     wrapper = Command(
         ["sh", "-c", f'"{sys.executable}" "{script}" exit 0; exit 3'], env={}
     )
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         h = launcher.launch("run", wrapper)
         assert h.wait(timeout=30) == 3
-        ch = launcher.attach_channel("run")
+        ch = launcher.logs.attach("run")
         started = launched_claim(ch)
         assert started.request_id == h.launch_id  # it names the launch, but
         assert started.body["handle"] != h.handle  # it is not the launch's process
@@ -479,11 +481,11 @@ def test_local_launchers_reap_is_not_stopped_by_one_runs_unreadable_claim(tmp_pa
     ``terminated`` only."""
     script = tmp_path / "unreadable.py"
     script.write_text(UNREADABLE_CLAIM)
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         bad = launcher.launch("bad", Command([sys.executable, str(script)], env={}))
         good = launcher.launch("good", child("exit", "2"))
-        bad_ch = launcher.attach_channel("bad")
-        ch = launcher.attach_channel("good")
+        bad_ch = launcher.logs.attach("bad")
+        ch = launcher.logs.attach("good")
         try:
             launched_claim(bad_ch)
             good._proc.wait(timeout=30)  # exited, and not yet reaped
@@ -514,7 +516,7 @@ def test_local_launchers_reap_retries_a_write_that_failed(
     """A write the reap could not land is retried by the next ``poll()``: the exit
     status ``waitpid`` yielded once is kept on the handle, with the reap's one
     ``t``, and a record that landed is not written twice."""
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         h = launcher.launch("run", child("exit", "3"))
         h._proc.wait(timeout=30)
         sent = h.channel.send
@@ -531,7 +533,7 @@ def test_local_launchers_reap_retries_a_write_that_failed(
             h.poll()
         assert h.poll() == 3
         h.wait()  # reaped: nothing more
-        ch = launcher.attach_channel("run")
+        ch = launcher.logs.attach("run")
         try:
             claim_seq = launched_claim(ch).seq
             assert terminated(ch) == [(h.launch_id, "exited", 3, None)]
@@ -551,11 +553,11 @@ def test_local_launchers_reap_processes_every_handle_and_raises_what_failed_afte
     """The backstop: a handle whose backend raises does not keep ``reap()`` from
     the others; the errors are raised together once every handle is processed,
     each noted with the run, the launch and the handle it failed on."""
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         broken = launcher.launch("broken", child("block"))
         good = launcher.launch("good", child("exit", "2"))
-        broken_ch = launcher.attach_channel("broken")
-        ch = launcher.attach_channel("good")
+        broken_ch = launcher.logs.attach("broken")
+        ch = launcher.logs.attach("good")
         try:
             launched_claim(broken_ch)
             good._proc.wait(timeout=30)
@@ -601,7 +603,7 @@ def test_a_launchers_exit_notes_its_reaps_failures_on_the_bodys_exception(
     """The body's exception propagates, never the reap's group, which would hide
     the cause behind its consequence; the reap's failures ride on it as notes."""
     with pytest.raises(KeyError) as body:
-        with LocalLauncher(root=tmp_path) as launcher:
+        with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
             h = _broken_reap(launcher, monkeypatch)
             raise KeyError("the body")
     [note] = body.value.__notes__
@@ -613,7 +615,7 @@ def test_a_launchers_exit_raises_its_reaps_failures_when_the_body_did_not(
     tmp_path, monkeypatch
 ):
     with pytest.raises(ExceptionGroup) as group:
-        with LocalLauncher(root=tmp_path) as launcher:
+        with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
             _broken_reap(launcher, monkeypatch)
     assert [type(e) for e in group.value.exceptions] == [OSError]
 
@@ -638,10 +640,10 @@ def test_thread_launcher_writes_died_when_its_thread_finishes_with_no_exit(tmp_p
                 expected_seq=ch.last_seq(),
             )
 
-    launcher = ThreadLauncher(root=tmp_path)
+    launcher = ThreadLauncher(logs=MemoryLogs())
     h = launcher.launch("no-exit", thread(claims, exits=False))
     h.wait()
-    ch = launcher.attach_channel("no-exit")
+    ch = launcher.logs.attach("no-exit")
     assert [e.topic for e in ch.read()] == [
         Topic.SUPERVISOR_LAUNCHED,
         Topic.LIFECYCLE_STARTED,
@@ -653,12 +655,12 @@ def test_thread_launcher_writes_died_when_its_thread_finishes_with_no_exit(tmp_p
     # with its own exit, the thread's end adds nothing
     h = launcher.launch("exited", thread(claims, exits=True))
     h.wait()
-    ch = launcher.attach_channel("exited")
+    ch = launcher.logs.attach("exited")
     assert deaths(ch) == [] and terminated(ch) == [(h.launch_id, "exited", 0, None)]
     # and a launch nothing claimed writes its terminated only, its run's verdict
     h = launcher.launch("unclaimed", thread(lambda ch: None))
     h.wait()
-    ch = launcher.attach_channel("unclaimed")
+    ch = launcher.logs.attach("unclaimed")
     assert deaths(ch) == [] and peek_terminal(ch).tier == Tier.TERMINATED
 
 
@@ -683,15 +685,15 @@ def test_thread_launchers_end_never_raises_on_an_unreadable_claim_or_two_exits(
             ch.send(r.body, topic=r.topic)
         raise RuntimeError("boom")
 
-    launcher = ThreadLauncher(root=tmp_path)
+    launcher = ThreadLauncher(logs=MemoryLogs())
     h = launcher.launch("unreadable", thread(unreadable))
     h.wait()
-    ch = launcher.attach_channel("unreadable")
+    ch = launcher.logs.attach("unreadable")
     assert terminated(ch) == [(h.launch_id, "exited", 0, None)]
     assert undated(deaths(ch)) == [died_body(2, L, "reap: returned")]
     h = launcher.launch("twice", thread(exits_twice))
     h.wait()
-    ch = launcher.attach_channel("twice")
+    ch = launcher.logs.attach("twice")
     assert terminated(ch) == [(h.launch_id, "exited", 1, None)]
     assert deaths(ch) == []
     assert raised == []
@@ -703,14 +705,14 @@ def test_a_signal_reports_killed_and_a_nonzero_exit_or_a_raise_errored_whether_o
 ):
     first = ["release"] if released else []
     prior = [died_body(2, K, "test: released")] if released else []
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         for run, acts, expected in (
             ("signal", ["signal", str(int(signal.SIGKILL))], (K, "reap: signal 9")),
             ("exit", ["exit", "2"], (E, "reap: exit 2")),
         ):
             h = launcher.launch(run, child(*first, *acts))
             h.wait(timeout=30)
-            ch = launcher.attach_channel(run)
+            ch = launcher.logs.attach(run)
             claim_seq = launched_claim(ch).seq
             assert undated(deaths(ch)) == [
                 *[died_body(claim_seq, K, "test: released")] * released,
@@ -726,11 +728,11 @@ def test_a_signal_reports_killed_and_a_nonzero_exit_or_a_raise_errored_whether_o
             ch.send(asdict(d), topic=Topic.SUPERVISOR_DIED)
         raise RuntimeError("boom")
 
-    threads = ThreadLauncher(root=tmp_path)
+    threads = ThreadLauncher(logs=MemoryLogs())
     h = threads.launch("raise", thread(raises))
     h.wait()
     assert isinstance(h.exception, RuntimeError)
-    ch = threads.attach_channel("raise")
+    ch = threads.logs.attach("raise")
     assert undated(deaths(ch)) == [
         *prior,
         died_body(2, E, "reap: RuntimeError: boom"),
@@ -743,10 +745,10 @@ def test_an_exit_0_or_a_return_reports_lost_while_held_and_nothing_after_a_relea
     tmp_path, released
 ):
     first = ["release"] if released else []
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         h = launcher.launch("exit", child(*first, "exit", "0"))
         assert h.wait(timeout=30) == 0
-        ch = launcher.attach_channel("exit")
+        ch = launcher.logs.attach("exit")
         claim_seq = launched_claim(ch).seq
         assert terminated(ch) == [(h.launch_id, "exited", 0, None)]
         assert undated(deaths(ch)) == (
@@ -762,9 +764,9 @@ def test_an_exit_0_or_a_return_reports_lost_while_held_and_nothing_after_a_relea
             d = Died(claim_seq=seq, outcome=K, evidence="test: released", t=2.0)
             ch.send(asdict(d), topic=Topic.SUPERVISOR_DIED)
 
-    threads = ThreadLauncher(root=tmp_path)
+    threads = ThreadLauncher(logs=MemoryLogs())
     threads.launch("return", thread(returns)).wait()
-    ch = threads.attach_channel("return")
+    ch = threads.logs.attach("return")
     assert undated(deaths(ch)) == (
         [died_body(2, K, "test: released")]
         if released
@@ -780,11 +782,11 @@ def test_local_launcher_reap_kills_its_own_child_whose_claim_a_report_ended(
     6): a child whose claim is held is left alone. The kill is ``SIGKILL``, and
     the orphan's reap writes ``terminated`` only: the signal is the launcher's,
     no evidence of how the claim ended (§3, "A session probe")."""
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         orphan = launcher.launch("orphan", child("block"))
         held = launcher.launch("held", child("block"))
-        ch = launcher.attach_channel("orphan")
-        held_ch = launcher.attach_channel("held")
+        ch = launcher.logs.attach("orphan")
+        held_ch = launcher.logs.attach("held")
         try:
             claim_seq = launched_claim(ch).seq
             launched_claim(held_ch)
@@ -811,9 +813,9 @@ def test_local_launcher_reap_kills_its_own_child_whose_claim_a_report_ended(
 def test_local_launcher_kills_an_orphan_that_ignores_sigterm(tmp_path):
     """A child that handles ``SIGTERM``, as a requeue handler does, would live
     beside its successor: the orphan is killed, not asked (§3)."""
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         h = launcher.launch("orphan", child("ignoreterm", "release", "block"))
-        ch = launcher.attach_channel("orphan")
+        ch = launcher.logs.attach("orphan")
         try:
             until(lambda: deaths(ch) != [])
             launcher.reap()
@@ -830,9 +832,9 @@ def test_local_launcher_does_not_kill_a_child_its_own_unreadable_exit_ended(
 ):
     """An orphan is a child whose claim a ``died`` names and no ``stopped`` does,
     readable or not: a claim its own exit ended is finishing (§3)."""
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         h = launcher.launch("finishing", child("badexit", "block"))
-        ch = launcher.attach_channel("finishing")
+        ch = launcher.logs.attach("finishing")
         try:
             until(lambda: ch.latest(Topic.LIFECYCLE_STOPPED))
             assert peek_terminal(ch).tier == Tier.DIED  # its unreadable exit ended it
@@ -865,7 +867,7 @@ def test_a_launcher_launches_its_own_target_record(tmp_path):
     assert target.args == (1,) and target.kwargs == {"b": 2}
     with pytest.raises(TypeError):
         target.kwargs["b"] = 4  # read-only
-    ThreadLauncher(root=tmp_path).launch("thread", target).wait()
+    ThreadLauncher(logs=MemoryLogs()).launch("thread", target).wait()
     assert seen == [((1,), {"b": 2})]
 
     check = (
@@ -877,7 +879,7 @@ def test_a_launcher_launches_its_own_target_record(tmp_path):
     cmd = Command([sys.executable, "-c", check], env=env)
     env["X"] = "2"  # the record copied it
     assert cmd.argv == (sys.executable, "-c", check) and cmd.env["X"] == "1"
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         assert launcher.launch("local", cmd).wait(timeout=30) == 0
     with pytest.raises(TypeError, match="not a string"):
         Command(sys.executable, env={})  # would split into its characters
@@ -900,7 +902,7 @@ def test_a_thread_target_is_driven_by_a_copy_whose_kwargs_carry_until(tmp_path):
     driven = target.driven(until)
     assert driven == ThreadTarget(fn, args=(1,), kwargs={"a": 2, "until": until})
     assert target.kwargs == {"a": 2}
-    ThreadLauncher(root=tmp_path).launch("driven", driven).wait()
+    ThreadLauncher(logs=MemoryLogs()).launch("driven", driven).wait()
     assert seen == [((1,), {"a": 2, "until": until})]
     with pytest.raises(ValueError, match="until is the drive's"):
         driven.driven(Target("loss", 4))
@@ -912,7 +914,7 @@ def test_a_thread_target_is_driven_by_a_copy_whose_kwargs_carry_until(tmp_path):
 def test_relaunch_if_needed_and_ensure_served_report_a_dead_held_claim_then_launch(
     tmp_path,
 ):
-    launcher = ThreadLauncher(root=tmp_path)
+    launcher = ThreadLauncher(logs=MemoryLogs())
     handle = dead_handle()
     ran = []
 
@@ -920,8 +922,8 @@ def test_relaunch_if_needed_and_ensure_served_report_a_dead_held_claim_then_laun
         ran.append(run)
 
     def run_with(run_id, rows):
-        append(launcher.create_channel(run_id), rows)
-        return launcher.attach_channel(run_id)
+        append(launcher.logs.create(run_id), rows)
+        return launcher.logs.attach(run_id)
 
     # relaunch_if_needed: a dead held claim is reported, then a worker launched
     ch = run_with("durable", [(1, claim(handle))])
@@ -963,15 +965,15 @@ def test_ensure_served_reads_demand_again_after_a_report_voids_the_only_lease(
     """The only lease is bound to the dead held claim: the report ends the claim,
     which voids the lease (§2, a lease is per claim), and the demand read again
     after the report finds nothing to serve, so nothing launches (§5)."""
-    launcher = ThreadLauncher(root=tmp_path)
+    launcher = ThreadLauncher(logs=MemoryLogs())
     handle = dead_handle()
     rows = [
         (1, subscribe(None, "lease", until={"time_seconds": 60})),
         (2, claim(handle)),
         (3, bound(2, "lease")),
     ]
-    append(launcher.create_channel("leased"), rows)
-    ch = launcher.attach_channel("leased")
+    append(launcher.logs.create("leased"), rows)
+    ch = launcher.logs.attach("leased")
     demand = LiveDemand()
     assert [e.request_id for e in demand.poll(ch)] == ["lease"]
     assert (
@@ -988,10 +990,10 @@ def test_the_launchers_records_are_valid_0_4_0(tmp_path):
     pytest.importorskip("jsonschema")
     from test_schema_v0_4_0 import record_errors
 
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         launcher.launch("local", child("exit", "1")).wait(timeout=30)
-        ch = launcher.attach_channel("local")
-    threads = ThreadLauncher(root=tmp_path)
+        ch = launcher.logs.attach("local")
+    threads = ThreadLauncher(logs=MemoryLogs())
 
     def raises(c):
         claim_launch(c)
@@ -1000,7 +1002,7 @@ def test_the_launchers_records_are_valid_0_4_0(tmp_path):
     threads.launch("thread", thread(raises)).wait()
     probed = channel([(1, claim(dead_handle()))])
     report_if_dead(probed)
-    for c in (ch, threads.attach_channel("thread"), probed):
+    for c in (ch, threads.logs.attach("thread"), probed):
         records = c.read(topics=["supervisor.>"])
         assert {e.topic for e in records} >= {Topic.SUPERVISOR_DIED}
         for e in records:
@@ -1020,9 +1022,9 @@ def exited_unreaped(h):
 def test_a_second_kill_of_a_dying_orphan_leaves_its_reap_the_launchers(tmp_path):
     """The kill is latched: a later cycle's kill of a child already dying from the
     first leaves its reap writing ``terminated`` only (§3, "A session probe")."""
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         h = launcher.launch("orphan", child("block"))
-        ch = launcher.attach_channel("orphan")
+        ch = launcher.logs.attach("orphan")
         try:
             claim_seq = launched_claim(ch).seq
             report_death(ch, claim_seq, outcome=L, evidence="session: s/1", force=True)
@@ -1040,9 +1042,9 @@ def test_a_natural_exit_racing_the_kill_is_the_childs_own_end(tmp_path, monkeypa
     """The child exits between ``Popen``'s own check and its signal: the kill was
     sent, but the exit status is the child's, not a ``SIGKILL``, so its reap is
     evidence and reports it."""
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         h = launcher.launch("run", child("exit", "3"))
-        ch = launcher.attach_channel("run")
+        ch = launcher.logs.attach("run")
         try:
             claim_seq = launched_claim(ch).seq
             exited_unreaped(h)
@@ -1059,7 +1061,7 @@ def test_a_natural_exit_racing_the_kill_is_the_childs_own_end(tmp_path, monkeypa
 def test_concurrent_reaps_write_one_terminated_and_one_died(tmp_path, monkeypatch):
     """``wait()`` on one thread and ``poll()`` on another reap one child: the reap
     is locked, so each record lands once."""
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         h = launcher.launch("run", child("exit", "3"))
         h._proc.wait(timeout=30)
         sent = h.channel.send
@@ -1074,7 +1076,7 @@ def test_concurrent_reaps_write_one_terminated_and_one_died(tmp_path, monkeypatc
             t.start()
         for t in reapers:
             t.join()
-        ch = launcher.attach_channel("run")
+        ch = launcher.logs.attach("run")
         try:
             assert terminated(ch) == [(h.launch_id, "exited", 3, None)]
             assert len(deaths(ch)) == 1
@@ -1086,7 +1088,7 @@ def test_a_reap_whose_write_raised_retries_on_a_fresh_channel(tmp_path, monkeypa
     """A channel never reconnects (specs/channel-postgres.md): once its connection
     has dropped, every send on it raises. The reap's retry opens a fresh channel
     for the run, and lands there."""
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         h = launcher.launch("run", child("exit", "3"))
         h._proc.wait(timeout=30)
         dropped = h.channel
@@ -1099,7 +1101,7 @@ def test_a_reap_whose_write_raised_retries_on_a_fresh_channel(tmp_path, monkeypa
             h.poll()
         assert h.poll() == 3
         assert h.channel is not dropped
-        ch = launcher.attach_channel("run")
+        ch = launcher.logs.attach("run")
         try:
             claim_seq = launched_claim(ch).seq
             assert terminated(ch) == [(h.launch_id, "exited", 3, None)]
@@ -1111,7 +1113,7 @@ def test_a_reap_whose_write_raised_retries_on_a_fresh_channel(tmp_path, monkeypa
 def test_reap_drops_the_handles_it_has_reaped_and_closes_their_channels(
     tmp_path, monkeypatch
 ):
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         done = launcher.launch("done", child("exit", "0"))
         running = launcher.launch("running", child("block"))
         try:
@@ -1133,13 +1135,13 @@ def test_is_alive_binds_the_reaps_time_when_it_sees_the_death(tmp_path):
     """``is_alive()`` writes nothing, but when the ``Popen`` reaps the exited child
     there, the reap's one ``t`` is bound: the records a later reap writes are dated
     by when the death was first seen (observer-clock §3)."""
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         h = launcher.launch("run", child("exit", "0"))
         until(lambda: not h.is_alive())
         seen = h._death.t
         time.sleep(0.05)
         assert h.poll() == 0
-        ch = launcher.attach_channel("run")
+        ch = launcher.logs.attach("run")
         try:
             assert ch.latest(Topic.SUPERVISOR_TERMINATED).body["t"] == seen
             assert ch.latest(Topic.SUPERVISOR_DIED).body["t"] == seen

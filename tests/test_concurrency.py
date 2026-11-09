@@ -22,10 +22,10 @@ import threading
 import pytest
 
 from runstate import Worker
-from runstate.channel import create_channel as locate
+from runstate.logs import MemoryLogs
 
 
-def _race_cas(i, root, run_id, backend, journal, fire, result_q):
+def _race_cas(i, logs, run_id, journal, fire, result_q):
     """One racer process: open the run's channel, line up at the barrier, then fire
     the birth-CAS on the empty log. Reports ``("ok", won)`` or ``("error", repr)`` so
     the parent never blocks on a crashed child. Top-level so fork/spawn can reach it;
@@ -35,7 +35,7 @@ def _race_cas(i, root, run_id, backend, journal, fire, result_q):
     try:
         if journal:
             os.environ["RUNSTATE_SQLITE_JOURNAL_MODE"] = journal
-        ch = locate(run_id, root=root, backend=backend)
+        ch = logs.create(run_id)
         try:
             fire.wait(timeout=15)  #              overlap the check+INSERT windows
             won = (
@@ -65,9 +65,7 @@ def test_cas_admits_one_winner_across_processes(conc_backend):
     ctx = mp.get_context("fork")
     for trial in range(3):  #                      races are flaky; several trials
         run_id = f"{conc_backend.namespace}-race-{trial}"
-        locate(
-            run_id, root=conc_backend.root, backend=conc_backend.backend
-        ).close()  # create the file/schema
+        conc_backend.logs.create(run_id).close()  # create the file/schema
         fire = ctx.Barrier(n)
         q = ctx.Queue()
         procs = [
@@ -75,9 +73,8 @@ def test_cas_admits_one_winner_across_processes(conc_backend):
                 target=_race_cas,
                 args=(
                     i,
-                    conc_backend.root,
+                    conc_backend.logs,
                     run_id,
-                    conc_backend.backend,
                     conc_backend.journal,
                     fire,
                     q,
@@ -102,7 +99,7 @@ def test_cas_admits_one_winner_across_processes(conc_backend):
         # Harvest the LOG, not just the return values: the original F1 signature is
         # a loser that INSERTS a row but returns None -- a second lifecycle.started
         # the return-count can't see. Exactly one winner must leave exactly one record.
-        seed = locate(run_id, root=conc_backend.root, backend=conc_backend.backend)
+        seed = conc_backend.logs.create(run_id)
         try:
             started = seed.read(topics=["lifecycle.started"])
         finally:
@@ -113,14 +110,14 @@ def test_cas_admits_one_winner_across_processes(conc_backend):
         )
 
 
-def _claim_then_emit(i, root, run_id, backend, claimed_barrier, results):
+def _claim_then_emit(i, logs, run_id, claimed_barrier, results):
     """Thread body: construct a Worker (the birth-CAS race), record the verdict, then
     HOLD at a barrier so the winner stays LIVE while the loser claims. Without the hold,
     a fast 1-step winner stops before the loser contends and the loser then legitimately
     starts episode 2 (the run-episodes model: a run hosts many sequential episodes) -- no
     muzzle to observe. With the hold, the loser always faces a live winner and is muzzled.
     """
-    ch = locate(run_id, root=root, backend=backend)
+    ch = logs.create(run_id)
     with Worker(ch, now=lambda: 0.0) as w:  #      the claim races here
         results[i] = w.claimed
         claimed_barrier.wait(
@@ -132,7 +129,7 @@ def _claim_then_emit(i, root, run_id, backend, claimed_barrier, results):
             )  #             only the winner runs; the loser's steps() is a no-op
 
 
-def _claim_then_commit_0_4_0(i, root, run_id, backend, claimed_barrier, results):
+def _claim_then_commit_0_4_0(i, logs, run_id, claimed_barrier, results):
     """Thread body, for the staged 0.4.0 Worker: construct it (the claim races
     here), record the verdict, then HOLD at a barrier so the winner's claim stays
     held while the loser claims, and only then emit and commit. The winner never
@@ -142,7 +139,7 @@ def _claim_then_commit_0_4_0(i, root, run_id, backend, claimed_barrier, results)
     from runstate.checkpoint import NoSave
     from runstate.worker import Worker as Worker0_4_0
 
-    ch = locate(run_id, root=root, backend=backend)
+    ch = logs.create(run_id)
     try:
         w = Worker0_4_0(ch, resume_from=None, sources=[], save=NoSave())
         results[i] = w.claimed
@@ -169,7 +166,7 @@ def test_two_workers_racing_the_claim_one_wins_and_the_loser_writes_nothing(
     try:
         for trial in range(5):
             run_id = f"{conc_backend.namespace}-claim04-{trial}"
-            locate(run_id, root=conc_backend.root, backend=conc_backend.backend).close()
+            conc_backend.logs.create(run_id).close()
             claimed_barrier = threading.Barrier(n)
             results: list[object] = [None] * n
             threads = [
@@ -177,9 +174,8 @@ def test_two_workers_racing_the_claim_one_wins_and_the_loser_writes_nothing(
                     target=_claim_then_commit_0_4_0,
                     args=(
                         i,
-                        conc_backend.root,
+                        conc_backend.logs,
                         run_id,
-                        conc_backend.backend,
                         claimed_barrier,
                         results,
                     ),
@@ -191,7 +187,7 @@ def test_two_workers_racing_the_claim_one_wins_and_the_loser_writes_nothing(
             for t in threads:
                 t.join(timeout=15)
 
-            check = locate(run_id, root=conc_backend.root, backend=conc_backend.backend)
+            check = conc_backend.logs.create(run_id)
             try:
                 topics = [e.topic for e in check.read()]
             finally:
@@ -223,8 +219,8 @@ def test_concurrent_cas_admits_exactly_one_winner(open_run):
     §12.1 single-spawn guard rest on: of N workers racing to claim a run, exactly
     one wins ``send(..., expected_seq=last)`` and the rest get ``None``. The
     sequential CAS test (test_channel.py) can't see the race; this opens N handles
-    on the SAME run (separate sqlite connections; the registry-shared memory
-    log+lock) and fires them through a barrier. Several trials, because a racy CAS
+    on the SAME run (separate sqlite connections; the memory log+lock shared by
+    one ``MemoryLogs`` instance) and fires them through a barrier. Several trials, because a racy CAS
     only *sometimes* admits >1 winner.
     """
     n = 8
@@ -328,10 +324,8 @@ def test_concurrent_writers_produce_unique_contiguous_seqs(tmp_path):
     old = sys.getswitchinterval()
     sys.setswitchinterval(1e-9)
     try:
-        chans = [
-            locate("race", root=tmp_path, backend="memory")  # all share one log
-            for _ in range(writers)
-        ]
+        logs = MemoryLogs()
+        chans = [logs.create("race") for _ in range(writers)]  # all share one log
 
         def hammer(c):
             for i in range(n):
@@ -364,13 +358,13 @@ _CONTRACT_WRITERS = 4
 _CONTRACT_SENDS = 150
 
 
-def _contract_writer(root, run_id, backend, journal, fire, sends):
+def _contract_writer(logs, run_id, journal, fire, sends):
     """One writer, a thread or a forked process: open its own handle, line up, append."""
     import os
 
     if journal:
         os.environ["RUNSTATE_SQLITE_JOURNAL_MODE"] = journal
-    ch = locate(run_id, root=root, backend=backend)
+    ch = logs.create(run_id)
     try:
         fire.wait(timeout=15)
         for i in range(sends):
@@ -402,16 +396,15 @@ def _read_as_a_cursor_while(writing, ch):
 @pytest.mark.tier("in_process")
 def test_interop_substrate_contract_across_threads(conc_backend):
     run_id = f"{conc_backend.namespace}-contract"
-    reader = locate(run_id, root=conc_backend.root, backend=conc_backend.backend)
+    reader = conc_backend.logs.create(run_id)
     try:
         fire = threading.Barrier(_CONTRACT_WRITERS + 1)
         writers = [
             threading.Thread(
                 target=_contract_writer,
                 args=(
-                    conc_backend.root,
+                    conc_backend.logs,
                     run_id,
-                    conc_backend.backend,
                     conc_backend.journal,
                     fire,
                     _CONTRACT_SENDS,
@@ -438,16 +431,15 @@ def test_interop_substrate_contract_across_processes(conc_backend):
         pytest.skip("the cross_process writers need the 'fork' start method")
     ctx = mp.get_context("fork")
     run_id = f"{conc_backend.namespace}-contract"
-    reader = locate(run_id, root=conc_backend.root, backend=conc_backend.backend)
+    reader = conc_backend.logs.create(run_id)
     try:
         fire = ctx.Barrier(_CONTRACT_WRITERS + 1)
         writers = [
             ctx.Process(
                 target=_contract_writer,
                 args=(
-                    conc_backend.root,
+                    conc_backend.logs,
                     run_id,
-                    conc_backend.backend,
                     conc_backend.journal,
                     fire,
                     _CONTRACT_SENDS,

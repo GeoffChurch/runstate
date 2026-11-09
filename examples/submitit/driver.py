@@ -69,18 +69,17 @@ def _entrypoint(
     fn: Callable[..., None],
     kwargs: Mapping[str, Any],
     run_id: str,
-    root: str,
-    backend: str,
+    place_env: Mapping[str, str],
     launch_id: str,
 ) -> None:
-    """What submitit runs in the job. It sets the ``RUNSTATE_*`` env (exactly as
-    ``LocalLauncher`` does for its subprocess child) so the worker's
-    ``current_channel()`` meets the same log, and ``RUNSTATE_LAUNCH_ID`` so the
+    """What submitit runs in the job. It sets the environment exactly as
+    ``LocalLauncher`` does for its subprocess child: the place's own
+    ``child_env()``, carried here as strings, and the run's id, so the worker's
+    ``current_channel()`` meets the same log; and ``RUNSTATE_LAUNCH_ID`` so the
     ``Worker``'s ``lifecycle.started`` names the launch it answers
     (specs/launcher-record-identity.md)."""
+    os.environ.update(place_env)
     os.environ["RUNSTATE_RUN_ID"] = run_id
-    os.environ["RUNSTATE_CHANNEL_ROOT"] = root
-    os.environ["RUNSTATE_CHANNEL_BACKEND"] = backend
     os.environ[runstate.LAUNCH_ID_ENV] = launch_id
     # os.environ["RUNSTATE_SQLITE_JOURNAL_MODE"] = "DELETE"  # <-- on a real cluster (NFS)
     fn(**kwargs)
@@ -179,23 +178,21 @@ class SubmititHandle:
 
 
 class SubmititLauncher:
-    """A ``Launcher[Job]`` over submitit. The channel locators are uniform (as in
-    the reference launchers); ``launch`` mints the launch id, submits the job,
-    and records ``supervisor.launched`` (the spawn + the handle)."""
+    """A ``Launcher[Job]`` over submitit. ``logs`` is a place another process can
+    open (``ProcessLogs``), as ``LocalLauncher``'s is; ``launch`` mints the launch
+    id, submits the job, and records ``supervisor.launched`` (the spawn + the
+    handle)."""
 
     def __init__(
-        self, *, root: str, folder: str, backend: str = "sqlite", cluster: str = "local"
+        self, *, logs: runstate.ProcessLogs, folder: str, cluster: str = "local"
     ):
-        self._root = root
-        self._backend = backend
+        self._logs = logs
         # cluster="slurm" on a real cluster; "local" runs a subprocess here.
         self._executor = submitit.AutoExecutor(folder=folder, cluster=cluster)
 
-    def create_channel(self, run_id: str) -> runstate.Channel:
-        return runstate.create_channel(run_id, root=self._root, backend=self._backend)
-
-    def attach_channel(self, run_id: str) -> runstate.Channel:
-        return runstate.attach_channel(run_id, root=self._root, backend=self._backend)
+    @property
+    def logs(self) -> runstate.ProcessLogs:
+        return self._logs
 
     def launch(self, run_id: str, target: Job) -> SubmititHandle:
         # One opaque id per launch (specs/launcher-record-identity.md): its records
@@ -206,14 +203,13 @@ class SubmititLauncher:
             target.fn,
             dict(target.kwargs),
             run_id,
-            str(self._root),
-            self._backend,
+            dict(self._logs.child_env()),
             launch_id,
         )
         handle_str = (
             f"slurm://{job.job_id}"  # resolve() abstains -> heartbeat/handle tiers
         )
-        channel = self.create_channel(run_id)
+        channel = self.logs.create(run_id)
         launched = runstate.Launched(handle=handle_str, status="running", t=time.time())
         channel.send(
             asdict(launched),
@@ -231,11 +227,13 @@ def main() -> None:
     folder = tempfile.mkdtemp(prefix="submitit-logs-")
     run_id = "submitit-demo"
     # Typed as the Protocol, so mypy checks that the recipe satisfies it.
-    launcher: runstate.Launcher[Job] = SubmititLauncher(root=root, folder=folder)
+    launcher: runstate.Launcher[Job] = SubmititLauncher(
+        logs=runstate.SqliteLogs(root), folder=folder
+    )
     print(f"[driver] run_id={run_id} root={root}")
 
     # Subscribe BEFORE launch so the worker picks it up on its first drain.
-    ch = launcher.create_channel(run_id)
+    ch = launcher.logs.create(run_id)
     ch.send(
         {"every": {"commits": 1}},
         topic=runstate.Topic.CONTROL_SUBSCRIBE,

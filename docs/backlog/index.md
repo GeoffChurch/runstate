@@ -351,11 +351,6 @@ graduates to a design entry here — with the basis-rubric trail — when taken 
   position was also the cause of single-home defects (#39, a stop discharged unseen at
   the dying breath). What it leaves for a replicated or multi-home log is the order
   among claims: a claim's name is the arbiter's `seq`.
-- [launcher-protocol-typing](launcher-protocol-typing.md) — the `Launcher` Protocol's
-  `launch` can't be structurally typed (the two reference launchers have disjoint
-  `launch` signatures: a callable `target` vs a `cmd`). Split the uniform
-  `create_channel`/`attach_channel` from the per-launcher `launch` (helpers take a launch thunk). Interim:
-  `launcher: Any` in the four helpers.
 - **protocol-async-api** (inline; no file) — wrap the JSON Schema in AsyncAPI for
   a richer spec format (multi-channel, lifecycle events). Defer until the v0.2
   protocol grows enough to justify the layer.
@@ -465,8 +460,7 @@ reasoning, listed here so they're discoverable as work (cross-ref, not moved):
   SLURM/AWS Batch/local. The bring-your-own-launcher **recipe ships now**
   (`examples/submitit/`, verified on `cluster="local"`); the design entry
   collects the decisions to promote it to a first-class adapter (in-repo
-  `[submitit]` extra vs separate package; callable-vs-cmd target vs the
-  [launcher-protocol-typing](launcher-protocol-typing.md) finding; Terminated
+  `[submitit]` extra vs separate package; its target record under `Launcher[T]`; Terminated
   mapping; the `slurm://jobid` handle + `squeue -j` resolve; the requeue ↔
   `steps(start=)` episode synergy).
 - **runstate-ray** — `RayLauncher` for Ray actors.

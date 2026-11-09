@@ -12,8 +12,6 @@ from runstate import (
     LogFormatMismatch,
     LogFormatMissing,
     RunNotFound,
-    attach_channel,
-    create_channel,
 )
 from runstate.channel.sqlite import SqliteChannel
 from runstate.formats import FORMATS
@@ -21,6 +19,7 @@ from runstate.migrations import STEPS, migrate
 from runstate.cli import BUDGET, CAP, RUN_ON
 from runstate.migrations.ambiguity import Limits, parse_choices
 from runstate.migrations.stores import SqliteStore
+from runstate.logs import SqliteLogs
 
 # The logs below hold values only: no fork, and no divergence fires.
 # The command line's limits: the 0.3.0 -> 0.4.0 step reads them, and under no stated
@@ -34,7 +33,7 @@ def _path(root, rid):
 
 
 def test_create_births_at_the_current_address(tmp_path):
-    ch = create_channel("r1", root=tmp_path)
+    ch = SqliteLogs(tmp_path).create("r1")
     ch.send({"x": 1}, topic="value", name="n")
     ch.close()
     assert _path(tmp_path, "r1").exists()
@@ -42,21 +41,21 @@ def test_create_births_at_the_current_address(tmp_path):
 
 
 def test_attach_opens_the_current_address(tmp_path):
-    create_channel("r1", root=tmp_path).send({}, topic="value", name="n")
-    assert attach_channel("r1", root=tmp_path).last_seq() == 1
+    SqliteLogs(tmp_path).create("r1").send({}, topic="value", name="n")
+    assert SqliteLogs(tmp_path).attach("r1").last_seq() == 1
 
 
 def test_nothing_anywhere_is_run_not_found(tmp_path):
     with pytest.raises(RunNotFound):
-        attach_channel("ghost", root=tmp_path)
+        SqliteLogs(tmp_path).attach("ghost")
 
 
 def test_a_newer_format_in_the_root_refuses_everything(tmp_path):
     (tmp_path / "v99.0.0").mkdir()
     with pytest.raises(LogFormatMismatch, match="upgrade runstate"):
-        create_channel("r1", root=tmp_path)
+        SqliteLogs(tmp_path).create("r1")
     with pytest.raises(LogFormatMismatch, match="upgrade runstate"):
-        attach_channel("r1", root=tmp_path)
+        SqliteLogs(tmp_path).attach("r1")
 
 
 def test_an_older_format_holding_the_run_says_migrate(tmp_path, monkeypatch):
@@ -67,9 +66,9 @@ def test_an_older_format_holding_the_run_says_migrate(tmp_path, monkeypatch):
     old = toy_layout("0.1.0").sqlite_path(tmp_path, "r1")
     old.parent.mkdir()
     sqlite3.connect(old).close()
-    for locate in (attach_channel, create_channel):
+    for locate in (SqliteLogs.attach, SqliteLogs.create):
         with pytest.raises(LogFormatMismatch, match="runstate migrate"):
-            locate("r1", root=tmp_path)
+            locate(SqliteLogs(tmp_path), "r1")
 
 
 def test_a_v0_2_0_log_says_migrate(tmp_path):
@@ -81,9 +80,9 @@ def test_a_v0_2_0_log_says_migrate(tmp_path):
     old.parent.mkdir()
     with SqliteChannel(old) as ch:
         ch.send({}, topic="value", name="n")
-    for locate in (attach_channel, create_channel):
+    for locate in (SqliteLogs.attach, SqliteLogs.create):
         with pytest.raises(LogFormatMismatch) as exc:
-            locate("r1", root=tmp_path)
+            locate(SqliteLogs(tmp_path), "r1")
         assert (exc.value.found, exc.value.expected) == ("0.2.0", "0.4.0")
         assert f"run `runstate migrate {tmp_path}`" in str(exc.value)  # in full
     assert not _path(tmp_path, "r1").exists()  # create did not birth beside it
@@ -91,15 +90,15 @@ def test_a_v0_2_0_log_says_migrate(tmp_path):
 
 def test_a_v0_3_0_log_says_migrate(tmp_path):
     """The format before the current one: a run still at 0.3.0 is refused by both
-    locators with the whole command that moves it to 0.4.0, and create births
-    nothing beside it."""
+    ``attach`` and ``create`` with the whole command that moves it to 0.4.0, and
+    create births nothing beside it."""
     old = FORMATS["0.3.0"].sqlite_path(tmp_path, "r1")
     old.parent.mkdir()
     with SqliteChannel(old) as ch:
         ch.send({"value": 0.5, "step": None, "t": None}, topic="value", name="n")
-    for locate in (attach_channel, create_channel):
+    for locate in (SqliteLogs.attach, SqliteLogs.create):
         with pytest.raises(LogFormatMismatch, match="runstate migrate") as exc:
-            locate("r1", root=tmp_path)
+            locate(SqliteLogs(tmp_path), "r1")
         assert (exc.value.found, exc.value.expected) == ("0.3.0", "0.4.0")
         assert f"run `runstate migrate {tmp_path}` to move it to format 0.4.0" in str(
             exc.value
@@ -111,27 +110,27 @@ def test_a_legacy_log_is_missing_never_not_found(tmp_path):
     legacy = tmp_path / "r1.db"
     sqlite3.connect(legacy).close()
     before = legacy.read_bytes()
-    for locate in (attach_channel, create_channel):
+    for locate in (SqliteLogs.attach, SqliteLogs.create):
         with pytest.raises(LogFormatMissing, match="runstate migrate"):
-            locate("r1", root=tmp_path)
+            locate(SqliteLogs(tmp_path), "r1")
     assert legacy.read_bytes() == before  # never opened, never mutated
     assert not _path(tmp_path, "r1").exists()  # create did not birth beside it
 
 
 def test_a_partly_onboarded_root(tmp_path):
     """Review focus 1: onboarded runs open; leftovers raise Missing."""
-    create_channel("moved", root=tmp_path).send({}, topic="value", name="n")
+    SqliteLogs(tmp_path).create("moved").send({}, topic="value", name="n")
     sqlite3.connect(tmp_path / "left.db").close()
-    assert attach_channel("moved", root=tmp_path).last_seq() == 1
+    assert SqliteLogs(tmp_path).attach("moved").last_seq() == 1
     with pytest.raises(LogFormatMissing):
-        attach_channel("left", root=tmp_path)
+        SqliteLogs(tmp_path).attach("left")
 
 
 @pytest.mark.parametrize("rid", ["a?b", "a#b", "a%20b", "a b"])
 def test_special_run_ids_round_trip(tmp_path, rid):
     """Review focus 2."""
-    create_channel(rid, root=tmp_path).send({}, topic="value", name="n")
-    assert attach_channel(rid, root=tmp_path).last_seq() == 1
+    SqliteLogs(tmp_path).create(rid).send({}, topic="value", name="n")
+    assert SqliteLogs(tmp_path).attach(rid).last_seq() == 1
     assert _path(tmp_path, rid).exists()
 
 
@@ -141,7 +140,7 @@ def test_concurrent_births_share_one_log(tmp_path):
 
     def birth():
         try:
-            c = create_channel("race", root=tmp_path)
+            c = SqliteLogs(tmp_path).create("race")
             c.send({}, topic="value", name="n")
             chans.append(c)
         except Exception as exc:  # noqa: BLE001 -- the assertion reports it
@@ -153,14 +152,14 @@ def test_concurrent_births_share_one_log(tmp_path):
     for t in threads:
         t.join()
     assert not errors
-    assert attach_channel("race", root=tmp_path).last_seq() == 8
+    assert SqliteLogs(tmp_path).attach("race").last_seq() == 8
     for c in chans:
         c.close()
 
 
 def test_create_does_not_create_a_missing_root(tmp_path):
     with pytest.raises(FileNotFoundError):
-        create_channel("r1", root=tmp_path / "absent")
+        SqliteLogs(tmp_path / "absent").create("r1")
     assert not (tmp_path / "absent").exists()
 
 
@@ -170,7 +169,7 @@ def test_create_does_not_create_a_missing_root(tmp_path):
 def _onboarding_loop(root, rid):
     """The shell loop the LogFormatMissing message gives, verbatim."""
     with pytest.raises(LogFormatMissing) as exc:
-        attach_channel(rid, root=root)
+        SqliteLogs(root).attach(rid)
     loop = str(exc.value).splitlines()[-1].strip()
     assert loop.startswith("rc=0; mkdir -p ")
     return loop
@@ -226,26 +225,26 @@ def test_a_tombstone_leaves_the_opening_checks_and_migrate_as_they_were(
     crashed_wal_writer(tmp_path / "r1.db", 3)
     _run(_onboarding_loop(tmp_path, "r1"))
 
-    for locate in (attach_channel, create_channel):  # 3: an older format holds it
+    for locate in (SqliteLogs.attach, SqliteLogs.create):  # 3: an older format holds it
         with pytest.raises(LogFormatMismatch, match="runstate migrate"):
-            locate("r1", root=tmp_path)
+            locate(SqliteLogs(tmp_path), "r1")
     assert SqliteStore(tmp_path).formats_of(None) == {"r1": "0.2.0"}
     assert migrate(
         SqliteStore(tmp_path), None, to=LOG_FORMAT, choices=NOTHING
     ).moved == ("r1",)
     assert (tmp_path / "runstate-migrations.jsonl").exists()  # no format, no log
 
-    assert attach_channel("r1", root=tmp_path).last_seq() == 3  # 2: current
+    assert SqliteLogs(tmp_path).attach("r1").last_seq() == 3  # 2: current
     with pytest.raises(RunNotFound):  # 5: nothing anywhere
-        attach_channel("r2", root=tmp_path)
-    create_channel("r2", root=tmp_path).send({}, topic="value", name="n")
+        SqliteLogs(tmp_path).attach("r2")
+    SqliteLogs(tmp_path).create("r2").send({}, topic="value", name="n")
     assert _path(tmp_path, "r2").exists()
     (tmp_path / "x.db").write_bytes((tmp_path / "v0.2.0" / "r1.db").read_bytes())
     with pytest.raises(LogFormatMissing):  # 4: only the legacy address holds it
-        attach_channel("x", root=tmp_path)
+        SqliteLogs(tmp_path).attach("x")
     (tmp_path / "v99.0.0").mkdir()
     with pytest.raises(LogFormatMismatch, match="upgrade runstate"):  # 1: newer
-        attach_channel("r1", root=tmp_path)
+        SqliteLogs(tmp_path).attach("r1")
 
 
 def test_the_onboarding_loop_can_be_run_again(tmp_path, crashed_wal_writer):
@@ -313,21 +312,21 @@ def test_a_crashed_delete_mode_writer_onboards_and_migrates(
     assert migrate(
         SqliteStore(tmp_path), None, to=LOG_FORMAT, choices=NOTHING
     ).moved == ("r1",)
-    with attach_channel("r1", root=tmp_path) as ch:
+    with SqliteLogs(tmp_path).attach("r1") as ch:
         assert [e.body for e in ch.read()] == [
             {"value": i, "t": None} for i in range(5)
         ]
 
 
-# §3, "The two names in an address": both locators refuse before any check,
+# §3, "The two names in an address": both opens refuse before any check,
 # creating nothing.
 
 
 @pytest.mark.parametrize("run_id", ["", ".", "..", "a/b", "../x"])
 def test_both_locators_refuse_a_run_id_that_is_not_one_filename(tmp_path, run_id):
-    for locate in (attach_channel, create_channel):
+    for locate in (SqliteLogs.attach, SqliteLogs.create):
         with pytest.raises(ValueError, match="one filename"):
-            locate(run_id, root=tmp_path)
+            locate(SqliteLogs(tmp_path), run_id)
     assert list(tmp_path.iterdir()) == []
 
 
@@ -336,14 +335,14 @@ def test_dotdot_can_no_longer_write_another_runs_legacy_address(tmp_path):
     root = tmp_path / "root"
     root.mkdir()
     with pytest.raises(ValueError):
-        create_channel("../x", root=root)
+        SqliteLogs(root).create("../x")
     assert not (root / "x.db").exists() and not (tmp_path / "x.db").exists()
 
 
 def test_both_locators_refuse_a_root_named_like_a_format_directory(tmp_path):
     root = tmp_path / "v0.4.0"
     root.mkdir()
-    for locate in (attach_channel, create_channel):
+    for locate in (SqliteLogs.attach, SqliteLogs.create):
         with pytest.raises(ValueError, match="named like a format directory"):
-            locate("r1", root=root)
+            locate(SqliteLogs(root), "r1")
     assert list(root.iterdir()) == []

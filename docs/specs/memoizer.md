@@ -72,8 +72,9 @@ serve the next consumer. Order is forced: memoization **outside** the launcher
 Free functions, not a class: the two operations have **different dependency
 sets**, and a class would force the passive reader (an observer with only a
 channel) to hold a producer it doesn't have. This matches the function-first L3
-surface (`peek_terminal` / `sweep` / `create_channel`); classes are reserved for
-state-holders (`Watcher`'s cursors, `Worker`'s subscriptions). Promote to a
+surface (`peek_terminal`, the lineage reads); classes are reserved for
+state-holders (`Watcher`'s cursors, `Worker`'s subscriptions) and Strategies (a
+place, a launcher). Promote to a
 class only if/when the memoizer grows per-run state (a tailing cursor, a held
 `Watcher`) — triangulated by that need, as the `Launcher` Protocol waited for
 its second implementer.
@@ -189,7 +190,7 @@ for the common callable-worker case: its `extend({"step":N})` extracts the scala
 (`time_seconds`, `any`/`all`) raises — bring your own producer for those. Its
 gate is `relaunch_if_needed(...) or foreign_episode(channel)` (Decision 6 +
 the store spec's Recipe 2); its `channel` is
-`launcher.create_channel(variant.run_id)` (the producer births/extends the run).
+`launcher.logs.create(variant.run_id)` (the producer births/extends the run).
 **How the target reaches the worker is
 launcher/workload-specific** — a kwarg for an in-process `ThreadLauncher`
 callable, an env var / CLI arg for a `LocalLauncher` subprocess — so it lives in

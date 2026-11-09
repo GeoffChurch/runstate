@@ -55,8 +55,8 @@ from enum import Enum
 from types import MappingProxyType, TracebackType
 from typing import TYPE_CHECKING, Optional, Protocol, Self, TypeVar
 
-from .channel import Channel, Envelope, RunNotFound, attach_channel, create_channel
-from .channel.base import SessionProbe
+from .channel import Channel, Envelope, RunNotFound
+from .channel.base import Logs, ProcessLogs, SessionProbe
 from .vocabulary.handle import local_handle, local_handle_of, resolve
 from .vocabulary.launch import LAUNCH_ID_ENV, launch_scope, new_launch_id
 from .claims import CAS_ATTEMPTS, endings, has_exit
@@ -354,9 +354,11 @@ T = TypeVar("T")
 class Launcher(Protocol[T_contra]):
     """Spawn a worker into a run and bracket it with ``supervisor.launched`` /
     ``supervisor.terminated``, and a ``supervisor.died`` where the launch's end is
-    evidence of its claimant's. ``create_channel`` births the run (the launch);
-    ``attach_channel`` reads an existing one (the deciders, which treat
-    ``RunNotFound`` as "not launched yet").
+    evidence of its claimant's. ``logs`` is the place its runs' logs are: the launch
+    births a run there (``logs.create``), and the deciders attach to an existing one
+    (``logs.attach``), treating ``RunNotFound`` as "not launched yet". It is the
+    launcher's, so a decider and the launch it decides cannot be pointed at two
+    places.
 
     A Strategy typed by its target record: ``ThreadLauncher`` is a
     ``Launcher[ThreadTarget]`` and ``LocalLauncher`` a ``Launcher[Command]``. The
@@ -366,8 +368,8 @@ class Launcher(Protocol[T_contra]):
     launcher does not run (``_proof`` below). Contravariant: a launcher of a wider
     target type launches any narrower one."""
 
-    def create_channel(self, run_id: str) -> Channel: ...
-    def attach_channel(self, run_id: str) -> Channel: ...
+    @property
+    def logs(self) -> Logs: ...
     def launch(self, run_id: str, target: T_contra) -> LaunchHandle: ...
 
 
@@ -421,21 +423,15 @@ class _ThreadHandle:
 class ThreadLauncher:
     """Run a worker target on a thread of this process (in-process reference).
 
-    ``backend`` defaults to the memory backend, and ``root`` to none, which is the
-    memory backend's: both say where a log lives, not what it holds, so their
-    defaults change no result (plan, "Exempt defaults")."""
+    ``logs`` is any place, ``MemoryLogs()`` included: the target is handed the
+    launch's own channel, so nothing crosses a process boundary."""
 
-    def __init__(
-        self, *, root: str | os.PathLike[str] | None = None, backend: str = "memory"
-    ) -> None:
-        self._root = root
-        self._backend = backend
+    def __init__(self, *, logs: Logs) -> None:
+        self._logs = logs
 
-    def create_channel(self, run_id: str) -> Channel:
-        return create_channel(run_id, root=self._root, backend=self._backend)
-
-    def attach_channel(self, run_id: str) -> Channel:
-        return attach_channel(run_id, root=self._root, backend=self._backend)
+    @property
+    def logs(self) -> Logs:
+        return self._logs
 
     def launch(self, run_id: str, target: ThreadTarget) -> _ThreadHandle:
         """Run ``target.fn(channel, *target.args, **target.kwargs)`` on a thread
@@ -456,7 +452,7 @@ class ThreadLauncher:
 
         A raise's ``terminated`` carries exit code 1, a synthetic convention: a
         thread has no exit code."""
-        channel = self.create_channel(run_id)
+        channel = self._logs.create(run_id)
         handle = local_handle()
         launch_id = new_launch_id()
         floor = channel.last_seq()
@@ -745,11 +741,13 @@ def _named(exc: Exception, h: _LocalHandle) -> Exception:
 class LocalLauncher:
     """Spawn workers as local subprocesses.
 
-    ``launch`` runs a command with ``RUNSTATE_*`` in its environment; the child
-    calls ``runstate.current_channel()`` to open the same run's channel, so the
-    backend must be shared across processes (sqlite by default: ``backend`` says
-    where a log lives, not what it holds, so its default changes no result). As a
-    context manager it reaps on exit (``reap``), and does not block on stragglers.
+    ``launch`` runs a command with ``RUNSTATE_RUN_ID``, the launch's id and
+    ``logs.child_env()`` in its environment, so ``logs`` is a place another
+    process can open (``ProcessLogs``): with ``SqliteLogs`` or ``PostgresLogs`` the
+    child calls ``runstate.current_channel()`` to open the same run's channel, and
+    with a consumer's own place it reads whatever that place's ``child_env``
+    wrote. As a context manager it reaps on exit (``reap``), and does not block on
+    stragglers.
 
     The limits of its orphan kill (§3, "A session probe"):
 
@@ -761,32 +759,26 @@ class LocalLauncher:
       nothing there: that is the wrapper's to do, or a process group's.
     """
 
-    def __init__(
-        self, *, root: str | os.PathLike[str], backend: str = "sqlite"
-    ) -> None:
-        self._root = root
-        self._backend = backend
+    def __init__(self, *, logs: ProcessLogs) -> None:
+        self._logs = logs
         self._handles: list[_LocalHandle] = []
 
-    def create_channel(self, run_id: str) -> Channel:
-        return create_channel(run_id, root=self._root, backend=self._backend)
-
-    def attach_channel(self, run_id: str) -> Channel:
-        return attach_channel(run_id, root=self._root, backend=self._backend)
+    @property
+    def logs(self) -> ProcessLogs:
+        return self._logs
 
     def launch(self, run_id: str, target: Command) -> _LocalHandle:
         """Spawn ``target.argv`` for ``run_id``, its environment ``os.environ``,
-        then ``target.env``, then the ``RUNSTATE_*`` variables that open the run's
-        channel and name the launch, each over the last."""
-        channel = self.create_channel(run_id)
+        then ``target.env``, then ``logs.child_env()``, then the run's id and the
+        launch's, each over the last."""
+        channel = self._logs.create(run_id)
         launch_id = new_launch_id()
         floor = channel.last_seq()
         child_env = {
             **os.environ,
             **target.env,
+            **self._logs.child_env(),
             "RUNSTATE_RUN_ID": run_id,
-            "RUNSTATE_CHANNEL_ROOT": str(self._root),
-            "RUNSTATE_CHANNEL_BACKEND": self._backend,
             # The child's claim re-emits it, so it names the launch that spawned it.
             LAUNCH_ID_ENV: launch_id,
         }
@@ -801,7 +793,7 @@ class LocalLauncher:
             launch_id=launch_id,
             _floor=floor,
             # the run exists: the launch birthed it
-            _reopen=functools.partial(self.attach_channel, run_id),
+            _reopen=functools.partial(self._logs.attach, run_id),
         )
         self._handles.append(h)
         return h
@@ -891,7 +883,7 @@ def relaunch_if_needed(
     the record ``launcher`` takes (``Launcher[T]``), so a mismatched pair is a
     type error, never a launch-time one."""
     try:
-        with launcher.attach_channel(run_id) as channel:  # a probe handle: close it
+        with launcher.logs.attach(run_id) as channel:  # a probe handle: close it
             if live_episode(channel) is not None and report_if_dead(channel) is None:
                 return None
     except RunNotFound:
@@ -918,7 +910,7 @@ def ensure_served(
     probes stays held: no wake. Never ``Watcher.add()`` the returned handle (it may
     lose the claim race); observe the run."""
     try:
-        with launcher.attach_channel(run_id) as channel:  # a probe handle: close it
+        with launcher.logs.attach(run_id) as channel:  # a probe handle: close it
             if not demand.poll(channel):
                 return None
             if live_episode(channel) is not None:

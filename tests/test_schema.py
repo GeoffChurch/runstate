@@ -50,6 +50,7 @@ from runstate.vocabulary.payloads import (  # noqa: E402
 )
 from runstate.worker import Worker  # noqa: E402
 from tests.test_schema_v0_4_0 import STACK_0_4_0, rec, record_errors  # noqa: E402
+from runstate.logs import MemoryLogs, SqliteLogs
 
 
 def _record(e):
@@ -118,8 +119,8 @@ def test_the_scenario_emits_every_reserved_topic_and_each_record_conforms():
     a fourth completes, and ``report_death`` ends a fifth's held claim
     (``died``). Every record validates against ``STACK_0_4_0``, and the topics seen
     are ``Topic``."""
-    launcher = ThreadLauncher()
-    main = launcher.create_channel("main")
+    launcher = ThreadLauncher(logs=MemoryLogs())
+    main = launcher.logs.create("main")
     _send(
         main,
         Topic.CONTROL_SUBSCRIBE,
@@ -149,7 +150,7 @@ def test_the_scenario_emits_every_reserved_topic_and_each_record_conforms():
     ):
         launcher.launch(run_id, _thread(fn)).wait()
 
-    reported = launcher.create_channel("reported")
+    reported = launcher.logs.create("reported")
     w = Worker(reported, resume_from=None, sources=[], save=NoSave())
     claim = reported.latest(Topic.LIFECYCLE_STARTED).seq
     assert report_death(
@@ -159,7 +160,7 @@ def test_the_scenario_emits_every_reserved_topic_and_each_record_conforms():
 
     records = []
     for run_id in ("main", "errors", "discards", "completes", "reported"):
-        records += launcher.attach_channel(run_id).read()
+        records += launcher.logs.attach(run_id).read()
     bad = {
         (e.topic, e.seq): errs for e in records if (errs := record_errors(_record(e)))
     }
@@ -169,7 +170,7 @@ def test_the_scenario_emits_every_reserved_topic_and_each_record_conforms():
     assert [(e.request_id, e.body["reason"]) for e in naks] == [("bad", "malformed")]
     stops = [
         e.body
-        for e in launcher.attach_channel("main").read(topics=[Topic.LIFECYCLE_STOPPED])
+        for e in launcher.logs.attach("main").read(topics=[Topic.LIFECYCLE_STOPPED])
     ]
     assert [s["honored"] for s in stops] == [["halt"]]
 
@@ -180,12 +181,12 @@ def test_the_scenario_emits_every_reserved_topic_and_each_record_conforms():
 def test_an_emitted_killed_terminated_conforms(tmp_path):
     """The real reap path: a child killed by ``SIGTERM`` writes ``terminated`` with
     its signal."""
-    with LocalLauncher(root=tmp_path) as launcher:
+    with LocalLauncher(logs=SqliteLogs(tmp_path)) as launcher:
         cmd = Command([sys.executable, "-c", "import time; time.sleep(60)"], env={})
         h = launcher.launch("victim", cmd)
         h.terminate()
         h.wait()
-    term = launcher.attach_channel("victim").latest(Topic.SUPERVISOR_TERMINATED)
+    term = launcher.logs.attach("victim").latest(Topic.SUPERVISOR_TERMINATED)
     assert term.body["reason"] == "killed"
     assert record_errors(_record(term)) == []
 
@@ -193,7 +194,7 @@ def test_an_emitted_killed_terminated_conforms(tmp_path):
 def test_every_nak_reason_the_worker_writes_conforms(tmp_path):
     """The Worker's three refusals: a malformed schedule, an unsatisfiable one (a
     target that is no source), and an unknown control verb."""
-    ch = ThreadLauncher(root=tmp_path).create_channel("naks")
+    ch = MemoryLogs().create("naks")
     _send(
         ch, Topic.CONTROL_SUBSCRIBE, {"frm": {"commits": 1}}, name="lr", request_id="a"
     )

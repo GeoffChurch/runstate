@@ -469,10 +469,12 @@ def _scan(sent, after, *, topics, name, request_ids, limit):
 
 
 def test_memory_reads_and_latest_agree_with_a_full_scan_at_every_cursor(tmp_path):
-    from runstate.channel import Envelope, create_channel
+    from runstate.channel import Envelope
+    from runstate.logs import MemoryLogs
 
-    a = create_channel("run", root=tmp_path, backend="memory")
-    b = create_channel("run", root=tmp_path, backend="memory")
+    logs = MemoryLogs()
+    a = logs.create("run")
+    b = logs.create("run")
     sent = []
     for i in range(23):  # periods 4, 3 and 4 interleave every topic with every name
         handle = (a, b)[i % 2]

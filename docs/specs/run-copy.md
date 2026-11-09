@@ -30,29 +30,29 @@ subsumes the other.
 ## 2. The operation
 
 ```python
-copy_run(run_id: str, *, source: Logs, destination: Logs) -> Copied
+copy_run(run_id: str, *, source: CopyLogs, destination: CopyLogs) -> Copied
 
 class Copied(NamedTuple):
     digest: str     # log_digest of the rows copied (§4)
     last_seq: int   # the newest seq copied
 ```
 
-`Logs` is a place where a backend keeps logs at the current format: `SqliteLogs(root)`, the directory the
-locators take as `root`, and `PostgresLogs(dsn)`. Both endpoints are at `LOG_FORMAT`; any other format is
-`runstate migrate`'s. A consumer builds one `Logs` per place, where it reads its configuration, and passes it
+A `CopyLogs` is a place where a backend keeps logs at the current format: `SqliteLogs(root)`, a SQLite root
+directory, and `PostgresLogs(dsn)`. Both endpoints are at `LOG_FORMAT`; any other format is
+`runstate migrate`'s. A consumer builds one object per place, where it reads its configuration, and passes it
 down (#73 adds the channel-opening side to the same classes, §7).
 
-A `Logs` also reads a run's rows, so a caller can compute `log_digest` (§4) on either side without copying:
+A `CopyLogs` also reads a run's rows, so a caller can compute `log_digest` (§4) on either side without copying:
 
 ```python
-Logs.rows(run_id: str) -> list[Row]   # in seq order, in one read; RunNotFound if the run has none
+CopyLogs.rows(run_id: str) -> list[Row]   # in seq order, in one read; RunNotFound if the run has none
 ```
 
-A run's last seq is its channel's `last_seq()`, through `attach_channel` today.
+A run's last seq is its channel's `last_seq()`, through the place's `attach`.
 
 The refusals are typed by what the caller does next:
 - `RunLive`: the run's latest claim has not ended. This is routine, not an error (§3).
-- `RunNotFound`, the locators' own: the source holds no log for the run.
+- `RunNotFound`, `attach`'s own: the source holds no log for the run.
 - `CopyRefused`: the destination holds rows the source does not extend (§2, step 3). An append-only log never
   diverges from its own copy, so this one is an error.
 
@@ -70,12 +70,12 @@ In order:
 
 **Which source is sealed (build).** A run has exactly one writable log, and every copy of it is sealed. So the
 source is sealed exactly when the destination is writable, which is Postgres: a copy into SQLite is a sealed
-snapshot and leaves its source as it was. Each `Logs` says which it is, and `copy_run` asks no other question. The
+snapshot and leaves its source as it was. Each place says which it is, and `copy_run` asks no other question. The
 two pairs this draft did not name follow from it: **SQLite → SQLite** writes a sealed snapshot and leaves the
 source writable, and **Postgres → Postgres** is refused with `ValueError` before anything is read, since a
 Postgres log cannot be sealed while it is worked on (#70) and the run would have two writable logs.
 
-**Both endpoints take the locators' opening checks (build)** (`log-formats.md` §4): a root or database holding a
+**Both endpoints take the channel opens' opening checks (build)** (`log-formats.md` §4): a root or database holding a
 newer format, or the run held in an older format or at the legacy address, raises `LogFormatMismatch` or
 `LogFormatMissing` on either side. A copy is never written beside a log of another format.
 
@@ -90,7 +90,7 @@ writer stamp.
 
 **Postgres → SQLite (a snapshot).**
 - The source is not sealed: Postgres stays the run's writable log.
-- The destination is the locators' address, `<root>/v0.4.0/<rid>.db`. It may be absent, equal to the source
+- The destination is the address a channel opens at, `<root>/v0.4.0/<rid>.db`. It may be absent, equal to the source
   (a no-op, so a retry succeeds), or a strict prefix of it (replaced). A destination that is not sealed is the
   run's writable SQLite log, and a copy never replaces it or adopts it as a snapshot: `CopyRefused` (build).
 - The file is written under a hidden temporary name beside the address, verified, sealed by `seal_sqlite`
@@ -157,7 +157,7 @@ Under copy-not-move, a consumer's GC deletes a run's home and its rows in Postgr
 runstate's table is the same second-encoder problem §1 rules out for writes, so the module also offers:
 
 ```python
-drop_run(run_id: str, *, logs: Logs) -> None
+drop_run(run_id: str, *, logs: CopyLogs) -> None
 ```
 
 - **It refuses a live run** (`RunLive`), as `store.md`'s GC recipe does.
@@ -175,18 +175,18 @@ drop_run(run_id: str, *, logs: Logs) -> None
 
 ## 6. Placement and surface
 
-- A module of its own, `runstate/copy.py`, beside `channel/` rather than under `migrations/`, since it is not a
+- A module of its own, `runstate/logs.py` (`copy.py` until #73), beside `channel/` rather than under `migrations/`, since it is not a
   migration. It reuses `migrations/seal.py`'s seals and the channel modules' DDL and birth lock.
-- `copy_run`, `drop_run`, `Copied`, `log_digest`, `Row`, `Logs`, `SqliteLogs`, `PostgresLogs`, `RunLive` and
+- `copy_run`, `drop_run`, `Copied`, `log_digest`, `Row`, `CopyLogs`, `SqliteLogs`, `PostgresLogs`, `RunLive` and
   `CopyRefused` join `runstate.__all__`.
-- **`Row` moves to `runstate.formats` (build),** not to `runstate/copy.py`: it is the record of every registered
+- **`Row` moves to `runstate.formats` (build),** not to the copy's module: it is the record of every registered
   format's log table, which the migrations read and write for every format and the copy for the current one, so
-  both import it from the leaf they already depend on. In `copy.py` it would point the migrations at the copy, and
+  both import it from the leaf they already depend on. There it would point the migrations at the copy, and
   close an import cycle, since the copy reuses `runstate.migrations.seal`. `runstate.migrations` imports it for its
-  own use, and its retained steps keep taking it from there (`from . import Row`), unchanged. `copy.py` imports the
+  own use, and its retained steps keep taking it from there (`from . import Row`), unchanged. The copy imports the
   seal at its call, so `import runstate` does not load every retained step.
 - The SQLite opening checks move out of the locator into `runstate.channel.sqlite_log_path(root, run_id)`, which
-  the locators and the copy share; Postgres's were already `channel.postgres.check_format`.
+  `SqliteLogs`'s opens and its copy share; Postgres's were already `channel.postgres.check_format`.
 - No command line: mycooc wraps its bulk import in a module of its own, which owns resumability, the per-run
   report and its fold-identical check.
 
@@ -197,9 +197,11 @@ drop_run(run_id: str, *, logs: Logs) -> None
 - **`log-tiering.md`** cites this spec as the primitive mycooc's tier uses.
 - **#70 stays closed:** no live Postgres seal, no unseal, and format 0.4.0's DDL is unchanged.
 - **`store.md`'s GC recipe** gains the Postgres case: collecting a run there is `drop_run`.
-- **#73** extends `Logs` with the channel-opening side, rather than adding a parallel type. Two types naming one
-  place would let a caller pair an opener on one DSN with a `Logs` on another, and nothing would catch it
-  (mycooc's review, 2026-11-03). #69 does not wait on #73.
+- **#73 (built 2026-11-09)** put the channel-opening side on the same classes, rather than adding a parallel
+  type: two types naming one place would let a caller pair an opener on one DSN with a copy endpoint on another,
+  and nothing would catch it (mycooc's review, 2026-11-03). The Protocols split by what a caller needs: `Logs` is
+  `create` and `attach` (`channel-locators.md`), and a copy's endpoints are `CopyLogs`, a `Logs` with `rows` and
+  the backend's half of a copy. `SqliteLogs` and `PostgresLogs` are both. The module is `runstate/logs.py`.
 
 ## 8. Open questions
 
@@ -222,7 +224,7 @@ drop_run(run_id: str, *, logs: Logs) -> None
 - After an import, the next append lands at `last_seq + 1`.
 - An export racing a new claim either raises `RunLive` or publishes a snapshot whose last seq is from before
   the claim; it never publishes a row from after it.
-- `Logs.rows` equals what `copy_run` copies, on each backend, and `log_digest` of each side's rows agree.
+- `CopyLogs.rows` equals what `copy_run` copies, on each backend, and `log_digest` of each side's rows agree.
 - `drop_run`: refuses a live run; an absent run is a no-op; on SQLite the sidecars go too; on Postgres an append
   racing the drop leaves no orphan row, and a CAS expecting the dropped run's last seq fails.
 - `log_digest` against fixed vectors (NULLs, non-ASCII text, an empty body, negative zero), so another language

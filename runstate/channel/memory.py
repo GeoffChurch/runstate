@@ -8,7 +8,7 @@ and for validating that the Channel surface is backend-agnostic.
 Several MemoryChannels on one ``MemoryLog`` act as multiple readers/writers of
 the *same* run (the in-memory analogue of several SqliteChannels on one file).
 The log carries its own lock, so the ``seq`` read-modify-write stays atomic
-across every handle on it; the registry in ``_locate`` keeps one log per run,
+across every handle on it; a ``MemoryLogs`` place keeps one log per run,
 and a standalone ``MemoryChannel()`` gets a fresh one.
 """
 

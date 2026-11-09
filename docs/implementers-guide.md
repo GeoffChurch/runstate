@@ -947,12 +947,13 @@ raise the same *types*, but it must handle the same *conditions*.
 
 | entry point | raises | when |
 |---|---|---|
-| `attach_channel` / `create_channel` | `ValueError` | `backend="sqlite"` or `"postgres"` with `root=None`; an unknown backend string |
-| `attach_channel` / `create_channel` | `ImportError` | `backend="postgres"` without `psycopg` (the message names `pip install runstate[postgres]`) |
-| `attach_channel` | `RunNotFound` | the run has no records — the non-mutating open's absence signal |
-| `attach_channel` / `create_channel` | `LogFormatMismatch` | the root holds a newer format than this release's, or the run's log sits at an older format's address (run `runstate migrate`) — `specs/log-formats.md` §4 |
-| `attach_channel` / `create_channel` | `LogFormatMissing` | the run's log sits at the legacy unversioned address |
-| `create_channel` / `attach_channel` (Postgres) | `RuntimeError` | the format's `log` table is absent (`ensure_schema(dsn)` first); the server runs `fsync = off`; the server is older than PostgreSQL 16; a transaction-mode pooler is in the path; no fresh session key after 16 draws |
+| `current_channel` / `logs.from_env` | `KeyError` | `RUNSTATE_CHANNEL_BACKEND` or `RUNSTATE_CHANNEL_ROOT` unset, and for `current_channel` `RUNSTATE_RUN_ID` |
+| `current_channel` / `logs.from_env` | `ValueError` | `RUNSTATE_CHANNEL_BACKEND` is neither `sqlite` nor `postgres`, the places another process can open |
+| `PostgresLogs` `attach` / `create` | `ImportError` | without `psycopg` (the message names `pip install runstate[postgres]`) |
+| `Logs.attach` | `RunNotFound` | the run has no records — the non-mutating open's absence signal |
+| `SqliteLogs` / `PostgresLogs` `attach` / `create` | `LogFormatMismatch` | the root holds a newer format than this release's, or the run's log sits at an older format's address (run `runstate migrate`) — `specs/log-formats.md` §4 |
+| `SqliteLogs` / `PostgresLogs` `attach` / `create` | `LogFormatMissing` | the run's log sits at the legacy unversioned address |
+| `PostgresLogs` `create` / `attach` | `RuntimeError` | the format's `log` table is absent (`ensure_schema(dsn)` first); the server runs `fsync = off`; the server is older than PostgreSQL 16; a transaction-mode pooler is in the path; no fresh session key after 16 draws |
 | every read over a lineage | `MalformedRecordError(seq, topic, detail)` | a structural or membership violation it walks or resolves (§4.3) |
 | `AtNode(x).resolve` | `ValueError` | `x` is not a node, or is above the read's W |
 | `Worker(...)` | `ValueError` | `resume_from` names no extendable node of this run at or below W; `LatestClaimHead()` resolves a closed head |
@@ -1227,8 +1228,8 @@ sets the **same** variables.
 | variable | meaning | default |
 |---|---|---|
 | `RUNSTATE_RUN_ID` | the run to attach to | **required** (else `KeyError`) |
-| `RUNSTATE_CHANNEL_ROOT` | the directory (sqlite) / DSN (postgres) / namespace (memory) | `None` |
-| `RUNSTATE_CHANNEL_BACKEND` | `memory` / `sqlite` / `postgres` | `sqlite` |
+| `RUNSTATE_CHANNEL_ROOT` | the directory (sqlite) / DSN (postgres) | **required** (else `KeyError`) |
+| `RUNSTATE_CHANNEL_BACKEND` | `sqlite` / `postgres` | **required** (else `KeyError`; any other value `ValueError`) |
 | `RUNSTATE_LAUNCH_ID` | the launch's correlation id, re-emitted on `started` (§3.12) | `None` |
 | `RUNSTATE_SQLITE_JOURNAL_MODE` | sqlite journal mode | `WAL` |
 
@@ -1309,9 +1310,9 @@ CREATE INDEX IF NOT EXISTS idx_log_run_topic_name_seq ON log (run_id, topic, nam
 
 ### 5.4 The memory backend
 
-In-process only (`in_process` tier). `create_channel(backend="memory")` shares a
-log across handles in one process via a registry keyed by `(root, run_id)`. It
-reads a tail as a slice and keeps a per-topic index for `latest`. Nothing to
+In-process only (`in_process` tier). A `MemoryLogs()` instance is a place of its
+own: handles opened from it share a run's log, and it cannot cross a process
+boundary, so no environment names it. It reads a tail as a slice and keeps a per-topic index for `latest`. Nothing to
 interop with across implementations.
 
 ---

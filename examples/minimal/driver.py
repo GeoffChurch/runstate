@@ -6,7 +6,7 @@ stop if loss diverged (it doesn't, in this example). Then it waits for the
 terminal RunResult.
 
 runstate ships NO Orchestrator class -- this is application code composing the
-substrate (create_channel / control.* sends) with the reference orchestration
+substrate (``logs.create`` / control.* sends) with the reference orchestration
 helpers (LocalLauncher, Watcher, the held folds). Adapt it freely.
 """
 
@@ -24,10 +24,10 @@ def main() -> None:
     worker = Path(__file__).parent / "worker.py"
     print(f"[driver] run_id={run_id} root={root}")
 
-    with runstate.LocalLauncher(root=root) as launcher:
+    with runstate.LocalLauncher(logs=runstate.SqliteLogs(root)) as launcher:
         # Subscribe BEFORE launch so the worker picks it up on its first drain:
         # sample `loss` at every commit, its answers named by request_id "driver".
-        ch = launcher.create_channel(run_id)
+        ch = launcher.logs.create(run_id)
         ch.send(
             {"every": {"commits": 1}},
             topic=runstate.Topic.CONTROL_SUBSCRIBE,

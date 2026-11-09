@@ -17,6 +17,27 @@ substitute for those; a reading order over them.
 The post-v0.2 arc, landed on `master`, not yet released; it becomes 0.4.0. Grouped by
 the thread that produced each change, newest first.
 
+### Places (2026-11-09)
+
+- **A place is one object, and it opens the run's channel** (`docs/specs/channel-locators.md`,
+  #73): `SqliteLogs(root)`, `PostgresLogs(dsn)` or `MemoryLogs()`, with `create(run_id)` and
+  `attach(run_id)` (the `Logs` Protocol). Built for GeoffChurch/mycooc's storage tier, whose
+  place is its own.
+- **Breaking: `create_channel` and `attach_channel` are removed**, with their `root=` and
+  `backend=`. `create_channel(rid, root=r)` is `SqliteLogs(r).create(rid)`; `backend="postgres"`
+  is `PostgresLogs(dsn)`; `backend="memory"` is one shared `MemoryLogs()`, which holds its
+  logs itself (the process-global registry is gone).
+- **Breaking: the launchers take `logs=`**, required, in place of `root=` / `backend=`, and the
+  `Launcher` Protocol has a `logs` property in place of `create_channel` / `attach_channel`:
+  `launcher.create_channel(rid)` is `launcher.logs.create(rid)`.
+- **`ProcessLogs`**: a place another process can open, which spells itself as environment
+  variables (`child_env()`). `LocalLauncher` requires one, so `LocalLauncher(logs=MemoryLogs())`
+  is a type error where `backend="memory"` was an empty log in the child.
+- **Breaking: `current_channel()` has no default backend.** `RUNSTATE_CHANNEL_BACKEND` and
+  `RUNSTATE_CHANNEL_ROOT` are required beside `RUNSTATE_RUN_ID`, and `memory` is refused.
+- **Breaking: the copy's Protocol is `CopyLogs`** (`Logs` is now the opening half), and
+  `runstate/copy.py` is `runstate/logs.py`.
+
 ### Run copy (2026-11-03)
 
 - **`copy_run`, `drop_run` and `log_digest`** (`docs/specs/run-copy.md`, #69): one

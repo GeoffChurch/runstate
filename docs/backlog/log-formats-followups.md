@@ -8,7 +8,7 @@ today. An item leaves this list by being done, or by being shown moot.
 
 ## Cost on every open
 
-- **The directory listing and the `pg_namespace` scan are uncached.** Every `attach_channel` and `create_channel`
+- **The directory listing and the `pg_namespace` scan are uncached.** Every `attach` and `create` of a place
   lists the root to look for newer formats (`log-formats.md` §4, check 1). On SQLite it also `is_dir`s every entry
   before the name filter. On Postgres it scans `pg_namespace`. The spec says the result is cacheable per process.
   Worth doing when a root holds thousands of runs and something opens many of them in a loop, as a cockpit would.

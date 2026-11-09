@@ -10,14 +10,13 @@ from runstate import (
     LogFormatMismatch,
     LogFormatMissing,
     RunNotFound,
-    attach_channel,
-    create_channel,
 )
 from runstate.formats import FORMATS
 from tests.format_helpers import toy_layout
 from runstate.migrations import STEPS, migrate
 from runstate.cli import BUDGET, CAP, RUN_ON
 from runstate.migrations.ambiguity import Limits, parse_choices
+from runstate.logs import PostgresLogs
 
 # The command line's limits: the 0.3.0 -> 0.4.0 step reads them, and under no stated
 # facts it follows more than one history even through a log of values alone.
@@ -37,7 +36,7 @@ def test_create_writes_into_the_format_schema(dsn):
     import psycopg
 
     rid = _rid()
-    with create_channel(rid, root=dsn, backend="postgres") as ch:
+    with PostgresLogs(dsn).create(rid) as ch:
         ch.send({}, topic="value", name="n")
     schema = FORMATS[LOG_FORMAT].pg_schema()
     with psycopg.connect(dsn) as c:
@@ -49,7 +48,7 @@ def test_create_writes_into_the_format_schema(dsn):
 
 def test_attach_missing_run_is_not_found(dsn):
     with pytest.raises(RunNotFound):
-        attach_channel(_rid(), root=dsn, backend="postgres")
+        PostgresLogs(dsn).attach(_rid())
 
 
 def test_older_schema_holding_the_run_says_migrate(dsn, monkeypatch):
@@ -70,12 +69,12 @@ def test_older_schema_holding_the_run_says_migrate(dsn, monkeypatch):
             [rid],
         )
     try:
-        for locate in (attach_channel, create_channel):
+        for locate in (PostgresLogs.attach, PostgresLogs.create):
             with pytest.raises(
                 LogFormatMismatch,
                 match=r"run `runstate migrate '<dsn>' --backend postgres`",
             ):
-                locate(rid, root=dsn, backend="postgres")
+                locate(PostgresLogs(dsn), rid)
     finally:
         with psycopg.connect(dsn, autocommit=True) as c:
             c.execute("DROP SCHEMA runstate_v0_1_0 CASCADE")
@@ -96,7 +95,7 @@ def test_legacy_public_log_holding_the_run_is_missing(dsn):
         )
     try:
         with pytest.raises(LogFormatMissing, match="ALTER TABLE"):
-            attach_channel(rid, root=dsn, backend="postgres")
+            PostgresLogs(dsn).attach(rid)
     finally:
         # leave the database as found: a leftover public.log is the table an
         # unqualified `log` resolves to, which would let other tests pass vacuously
@@ -114,7 +113,7 @@ def test_a_newer_schema_refuses(dsn):
         c.execute("CREATE SCHEMA IF NOT EXISTS runstate_v99_0_0")
     try:
         with pytest.raises(LogFormatMismatch, match="upgrade runstate"):
-            create_channel(_rid(), root=dsn, backend="postgres")
+            PostgresLogs(dsn).create(_rid())
     finally:
         with psycopg.connect(dsn, autocommit=True) as c:
             c.execute("DROP SCHEMA runstate_v99_0_0 CASCADE")
@@ -178,7 +177,7 @@ def _master_log(dsn, run_id, n):
 def _onboarding_sql(dsn, run_id):
     """The SQL the LogFormatMissing message gives, verbatim."""
     with pytest.raises(LogFormatMissing) as exc:
-        attach_channel(run_id, root=dsn, backend="postgres")
+        PostgresLogs(dsn).attach(run_id)
     lines = [ln for ln in str(exc.value).splitlines() if ln.startswith("  ")]
     assert lines
     return "\n".join(lines)
@@ -225,9 +224,12 @@ def test_onboarding_leaves_a_tombstone_an_old_writer_cannot_use(scratch_db, sche
         ).fetchone() == (0,)
         assert c.execute(f"SELECT count(*) FROM {schema}.log").fetchone() == (0,)
 
-    for locate in (attach_channel, create_channel):  # an older format holds it
+    for locate in (
+        PostgresLogs.attach,
+        PostgresLogs.create,
+    ):  # an older format holds it
         with pytest.raises(LogFormatMismatch, match="runstate migrate"):
-            locate("r1", root=dsn, backend="postgres")
+            locate(PostgresLogs(dsn), "r1")
     # the log holds values only: no fork, and no divergence fires
     nothing = parse_choices(STEPS, assume=[], resolve=[], accept=[], limits=LIMITS)
     assert migrate(PostgresStore(dsn), None, to=LOG_FORMAT, choices=nothing).moved == (
@@ -236,10 +238,10 @@ def test_onboarding_leaves_a_tombstone_an_old_writer_cannot_use(scratch_db, sche
     with psycopg.connect(dsn) as c:  # the manifest is no format and no legacy log
         reg = c.execute("SELECT to_regclass('runstate_migrations.manifest')")
         assert reg.fetchone() != (None,)
-    with attach_channel("r1", root=dsn, backend="postgres") as ch:
+    with PostgresLogs(dsn).attach("r1") as ch:
         assert ch.last_seq() == 3
     with pytest.raises(RunNotFound):
-        attach_channel("r2", root=dsn, backend="postgres")
+        PostgresLogs(dsn).attach("r2")
     assert onboard.startswith("BEGIN;") and onboard.endswith("COMMIT;")  # whole or not
 
 
@@ -256,9 +258,9 @@ def test_a_legacy_log_on_the_dsns_own_search_path_is_missing(scratch_db):
     dsn = _with_search_path(scratch_db, "myapp")
     _master_log(dsn, "r1", 3)
     ensure_schema(dsn)
-    for locate in (attach_channel, create_channel):
+    for locate in (PostgresLogs.attach, PostgresLogs.create):
         with pytest.raises(LogFormatMissing, match='schema "myapp"') as exc:
-            locate("r1", root=dsn, backend="postgres")
+            locate(PostgresLogs(dsn), "r1")
         assert exc.value.where == "myapp.log"
     with psycopg.connect(dsn) as c:
         assert c.execute(
@@ -279,8 +281,8 @@ def test_an_unrelated_log_table_is_not_a_legacy_log(scratch_db):
         c.execute("INSERT INTO public.log VALUES (1, 'not ours')")
     ensure_schema(scratch_db)
     with pytest.raises(RunNotFound):
-        attach_channel("r1", root=scratch_db, backend="postgres")
-    with create_channel("r1", root=scratch_db, backend="postgres") as ch:
+        PostgresLogs(scratch_db).attach("r1")
+    with PostgresLogs(scratch_db).create("r1") as ch:
         ch.send({}, topic="value", name="n")
-    with attach_channel("r1", root=scratch_db, backend="postgres") as ch:
+    with PostgresLogs(scratch_db).attach("r1") as ch:
         assert ch.last_seq() == 1

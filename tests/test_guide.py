@@ -18,8 +18,9 @@ No other info string opens a Python block, so a block can be neither silently.
 Each runnable block runs as a fresh process (its own namespace, a real timeout,
 and no thread or channel of one block reaching the next), from a working
 directory under ``tmp_path``. Its environment is a launcher's, for a
-launcher-less direct run: ``RUNSTATE_RUN_ID``, and ``RUNSTATE_CHANNEL_ROOT``
-under ``tmp_path``, so ``current_channel()`` births a SQLite log there. No other
+launcher-less direct run: ``RUNSTATE_RUN_ID``, ``RUNSTATE_CHANNEL_BACKEND=sqlite``
+and ``RUNSTATE_CHANNEL_ROOT`` under ``tmp_path``, so ``current_channel()`` births a
+SQLite log there. No other
 ``RUNSTATE_*`` variable of the suite's (the bootstrapped Postgres DSN among them)
 reaches it, and ``TMPDIR`` keeps every temporary directory it makes under
 ``tmp_path`` too; with no bytecode written either, a block leaves no file
@@ -103,7 +104,7 @@ def test_every_python_block_is_runnable_or_a_fragment(doc):
 def test_runnable_block_runs(where, code, tmp_path):
     work, runs = tmp_path / "work", tmp_path / "runs"
     work.mkdir()
-    runs.mkdir()  # a SQLite root must exist: create_channel births a run, not a root
+    runs.mkdir()  # a SQLite root must exist: a place's create births a run, not a root
     script = tmp_path / "block.py"
     script.write_text(code + "\n")
     env = {k: v for k, v in os.environ.items() if not k.startswith("RUNSTATE_")}

@@ -91,18 +91,6 @@ def pg_ready(pg_dsn):
     assert leaked <= 0, f"postgres connections leaked above baseline: +{leaked}"
 
 
-@pytest.fixture(autouse=True)
-def _reset_memory_registry():
-    """create_channel(..., backend="memory") shares logs through a process-global
-    registry keyed by (root, run_id); clear it between tests so a reused run_id
-    can't leak one test's log into the next."""
-    from runstate.channel import _MEMORY_LOGS
-
-    _MEMORY_LOGS.clear()
-    yield
-    _MEMORY_LOGS.clear()
-
-
 @pytest.fixture(params=["memory", "sqlite", "sqlite:delete", "postgres"])
 def ch(request, tmp_path, monkeypatch):
     """A fresh, empty Channel for each backend. sqlite runs under both journal
@@ -140,33 +128,34 @@ def ch(request, tmp_path, monkeypatch):
 def open_run(request, tmp_path, monkeypatch):
     """Factory: each call opens (birthing on first) a handle on the SAME run, so
     several handles (e.g. a worker and a separate observer, or N racing
-    claimants) share one log. Delegates to the real
-    ``runstate.channel.create_channel`` rather than hand-constructing backends,
-    so handles share exactly what the library shares (separate sqlite
-    connections on one file; the registry-co-located memory log + lock; one
-    shared postgres ``log`` table) and the fixture can't drift from the locator.
+    claimants) share one log. Opens through the real places (``runstate.logs``)
+    rather than hand-constructing backends, so handles share exactly what the
+    library shares (separate sqlite connections on one file; one ``MemoryLogs``'s
+    log + lock; one shared postgres ``log`` table) and the fixture can't drift
+    from them.
     sqlite runs under both journal modes (WAL and the NFS-safe DELETE); postgres
     mints one uuid run_id all handles share."""
-    from runstate.channel import create_channel as locate
 
+    from runstate.logs import MemoryLogs, PostgresLogs, SqliteLogs
+
+    run_id = "run"
     if request.param == "postgres":
-        root = request.getfixturevalue("pg_ready")  # the DSN; schema ensured
-        backend = "postgres"
+        # the DSN; schema ensured
+        logs = PostgresLogs(request.getfixturevalue("pg_ready"))
         run_id = f"open-{uuid.uuid4()}"
+    elif request.param.startswith("sqlite"):
+        monkeypatch.setenv(
+            "RUNSTATE_SQLITE_JOURNAL_MODE",
+            "DELETE" if request.param == "sqlite:delete" else "WAL",
+        )
+        logs = SqliteLogs(tmp_path)
     else:
-        backend = "sqlite" if request.param.startswith("sqlite") else request.param
-        if request.param.startswith("sqlite"):
-            monkeypatch.setenv(
-                "RUNSTATE_SQLITE_JOURNAL_MODE",
-                "DELETE" if request.param == "sqlite:delete" else "WAL",
-            )
-        root = str(tmp_path)
-        run_id = "run"
+        logs = MemoryLogs()
 
     made = []
 
     def _open():
-        c = locate(run_id, root=root, backend=backend)
+        c = logs.create(run_id)
         made.append(c)
         return c
 
@@ -181,7 +170,7 @@ def open_run(request, tmp_path, monkeypatch):
 # a backend below the required tier -- "not applicable by nature", not "known bug".
 _TIERS = ["in_process", "cross_process", "cross_host"]
 _MAX_TIER = {
-    "memory": "in_process",  #      shared via a process-global registry, NOT across OS processes
+    "memory": "in_process",  #      shared via one MemoryLogs instance, NOT across OS processes
     "sqlite": "cross_process",  #   one db file; multiple connections / OS processes on a local FS
     "sqlite:delete": "cross_process",
     "postgres": "cross_host",  #    the shared-log CAS is the cross-host claim arbiter (one server = one total order)
@@ -191,8 +180,8 @@ _MAX_TIER = {
 @pytest.fixture(params=["memory", "sqlite", "sqlite:delete", "postgres"])
 def conc_backend(request, tmp_path, monkeypatch):
     """A backend for the concurrency sub-suite. Reads the test's ``@pytest.mark.tier``
-    (default ``in_process``) and SKIPS backends that don't reach it. Yields the locator
-    config so a test can open the channel from any thread or process; the sqlite journal
+    (default ``in_process``) and SKIPS backends that don't reach it. Yields the place
+    (``logs``) so a test can open the channel from any thread or process; the sqlite journal
     mode is set in the env (inherited by forked children) AND carried explicitly (so a
     spawned child can set it itself). ``namespace`` is a per-test uuid the tests prefix
     onto their hand-built run_ids -- harmless for the tmp_path-isolated backends, and the
@@ -203,23 +192,21 @@ def conc_backend(request, tmp_path, monkeypatch):
     required = marker.args[0] if marker else "in_process"
     if _TIERS.index(_MAX_TIER[param]) < _TIERS.index(required):
         pytest.skip(f"{param}: max tier {_MAX_TIER[param]!r} < required {required!r}")
+    from runstate.logs import MemoryLogs, PostgresLogs, SqliteLogs
+
+    journal = None
     if param == "postgres":
-        root = request.getfixturevalue("pg_ready")  # the DSN; schema ensured once
-        backend, journal = "postgres", None
+        # the DSN; schema ensured once
+        logs = PostgresLogs(request.getfixturevalue("pg_ready"))
+    elif param.startswith("sqlite"):
+        journal = "DELETE" if param == "sqlite:delete" else "WAL"
+        monkeypatch.setenv("RUNSTATE_SQLITE_JOURNAL_MODE", journal)
+        logs = SqliteLogs(tmp_path)
     else:
-        backend = "sqlite" if param.startswith("sqlite") else param
-        journal = (
-            "DELETE"
-            if param == "sqlite:delete"
-            else ("WAL" if backend == "sqlite" else None)
-        )
-        if journal:
-            monkeypatch.setenv("RUNSTATE_SQLITE_JOURNAL_MODE", journal)
-        root = str(tmp_path)
+        logs = MemoryLogs()
     return SimpleNamespace(
         param=param,
-        backend=backend,
-        root=root,
+        logs=logs,
         journal=journal,
         namespace=uuid.uuid4().hex,
     )
