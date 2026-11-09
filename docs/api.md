@@ -217,6 +217,7 @@ released: bool         # read a death report naming its own claim
 stop_pending: bool     # the stop decision, as a side-effect-free poll
 pinned: bool           # some subscription is live for this claim
 resume_node: int | None  # the node the claim resumed from (a rewind moves it)
+node: int | None         # the node the worker is at: the newest it resumed from, rewound to or landed
 ```
 
 The reference worker of

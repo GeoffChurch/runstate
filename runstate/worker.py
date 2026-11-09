@@ -951,6 +951,7 @@ class Worker:
         self._phase: _Phase | _Starved = _Phase.LOST
         self._claim = _Claim(seq=0, previous_watermark=0)
         self._position = _Position.at(None, _Lineage([]))
+        self._exit_seq: int | None = None  # its exit's seq, once that has landed
         self._iteration = _Iteration(pending=[], discarded=set())
         self._drained = _Drain(drained_to=0, watermark=0, reports_read=0)
         self._requests = _Requests(self._sources, claim=0)
@@ -1139,6 +1140,24 @@ class Worker:
         ``None`` when it names no node: what the checkpoint recipe's load assertion
         compares (§6)."""
         return self._position.resume_node
+
+    @property
+    def node(self) -> int | None:
+        """The node the worker is at: the newest node it resumed from, rewound to
+        or landed, its exit included once that has landed, or ``None`` at the root
+        of a lineage with no node yet. It is what a node written next would name as
+        its parent, and what a save that is no checkpoint names as the log position
+        its state holds (#72; a checkpoint's node is the save policy's, §6).
+
+        A landed node stays landed, so this says where the worker's state is and
+        nothing of whether it may still write (``claimed``, ``released``): a
+        released worker, and one whose exit starved, read their last landed node,
+        an iteration that tore moves nothing, and a worker that lost the claim
+        race, which resumed from nothing, reads ``None``. After a torn exit it is
+        the exit, which commits no values and which a successor resumes below."""
+        if self._exit_seq is not None:
+            return self._exit_seq
+        return self._position.lineage.node
 
     def _acts(self) -> bool:
         """Whether ``emit``, ``set``, ``include`` and ``rewind`` act: only for a
@@ -1666,6 +1685,7 @@ class Worker:
             if seq is None:
                 continue  # a record landed unread: drain it, and try again
             self._phase = _Phase.STOPPED
+            self._exit_seq = seq
             return _Landed(seq=seq)
         self._phase = _Starved(node)
         starved = WorkerStarvedError("exit", self._claim.seq, CAS_ATTEMPTS)

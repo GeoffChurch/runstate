@@ -1287,3 +1287,99 @@ def test_a_released_worker_writes_nothing_more(open_run):
     assert list(w.steps(None)) == []
     assert records(obs) == before
     assert [e.request_id for e in undischarged_stops(obs)] == ["s"]
+
+
+# ----- Worker.node: where the worker's state is (#72) -----------------------------
+
+
+def test_node_is_the_newest_node_resumed_from_rewound_to_or_landed(open_run):
+    """``node`` is what the next node would name as its parent: ``None`` at the
+    root, each commit as it lands, a rewind's target, and after a resume the node
+    resumed from. ``resume_node`` stays where the position was last restated."""
+    ch = open_run()
+    w = worker(ch)
+    assert w.node is None and w.resume_node is None
+    w.commit()
+    first = ch.last_seq()
+    assert w.node == first and w.resume_node is None
+    w.commit()
+    second = ch.last_seq()
+    assert w.node == second
+    w.commit()
+    assert nodes(ch)[-1]["parent"] == second
+    w.rewind(AtNode(first))
+    assert w.node == first == w.resume_node
+    w.commit()
+    assert nodes(ch)[-1]["parent"] == first
+    w.rewind(None)
+    assert w.node is None
+    end(ch, w)
+    w2 = worker(ch, resume_from=AtNode(second))
+    assert w2.node == second == w2.resume_node
+
+
+def test_node_is_unmoved_by_an_iteration_that_tears(open_run):
+    ch = open_run()
+    w = worker(ch)
+    w.commit()
+    at = w.node
+    w.emit("loss", 1.0)
+    w.discard()
+    assert w.node == at
+
+
+@pytest.mark.parametrize(
+    "completed, error", [(True, None), (False, None), (False, "boom")]
+)
+def test_node_is_the_exit_once_it_has_landed(open_run, completed, error):
+    """A closed exit, an extendable one and a torn one: each is the claim's last
+    node, and the head a reader resolves, which is what a consumer saving at a
+    closed exit re-read from the log before (#72). A successor resumes from an
+    extendable exit, and below a torn one."""
+    ch = open_run()
+    w = worker(ch)
+    w.commit()
+    last = w.node
+    w.stopped(completed=completed, error=error)
+    exit_seq = ch.latest(Topic.LIFECYCLE_STOPPED).seq
+    assert w.node == exit_seq != last
+    assert LatestClaimHead().resolve(ch).node == exit_seq
+    if not completed:
+        successor = worker(open_run(), resume_from=LatestClaimHead())
+        assert successor.node == (last if error else exit_seq)
+
+
+def test_node_of_a_released_worker_is_its_last_landed_node(open_run):
+    ch, obs = open_run(), open_run()
+    w = worker(ch)
+    w.commit()
+    at = w.node
+    obs.send(
+        died_rec(obs.latest(Topic.LIFECYCLE_STARTED).seq), topic=Topic.SUPERVISOR_DIED
+    )
+    assert w.commit() is True and w.released
+    w.stopped(completed=True, error=None)  # writes nothing
+    assert w.node == at
+
+
+def test_node_of_a_starved_exit_is_its_last_landed_node_until_the_retry_lands(open_run):
+    obs = open_run()
+    ch = Interloping(open_run(), obs)
+    w = worker(ch)
+    w.commit()
+    at = w.node
+    ch.arm({"value": 1.0, "t": 1.0}, topic=Topic.VALUE, name="x", times=CAS_ATTEMPTS)
+    with pytest.raises(WorkerStarvedError):
+        w.stopped(completed=True, error=None)
+    assert w.node == at
+    w.stopped(completed=True, error=None)
+    assert w.node == obs.latest(Topic.LIFECYCLE_STOPPED).seq
+
+
+def test_node_of_a_worker_that_lost_the_claim_race_is_none(open_run):
+    ch = open_run()
+    holder = worker(ch)
+    holder.commit()
+    loser = worker(open_run(), resume_from=LatestClaimHead())
+    assert not loser.claimed
+    assert loser.node is None and loser.resume_node is None

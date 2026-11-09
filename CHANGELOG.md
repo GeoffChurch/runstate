@@ -43,6 +43,13 @@ the thread that produced each change, newest first.
 - **Breaking: the copy's Protocol is `CopyLogs`** (`Logs` is now the opening half), and
   `runstate/copy.py` is `runstate/logs.py`.
 
+### The Worker's node (2026-11-09)
+
+- **`Worker.node`** (#72): the node the worker is at, the newest it resumed from, rewound to or
+  landed, its exit included once that has landed. A run that saves a result at its closed
+  exit, which the save policy is not offered, names it without re-reading the head. A released
+  or starved worker reads its last landed node.
+
 ### Run copy (2026-11-03)
 
 - **`copy_run`, `drop_run` and `log_digest`** (`docs/specs/run-copy.md`, #69): one
