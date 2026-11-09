@@ -538,6 +538,14 @@ party, whatever else it does, an observer included, may write one for a death it
   The Worker validates the node with one point read before the claim CAS: an extendable node of this run, at
   or below W. That covers `steps()`, `serve()` and a worker that calls `commit()` itself. It exposes the node
   as `w.resume_node`, `None` when it names no node, which a rewind moves to its target (§6's load assertion).
+
+  Beside it, `w.node` is the node the worker is at: the newest node it resumed from, rewound to or landed, its exit
+  included once that has landed, and `None` at the root of a lineage with no node yet (#72, 2026-11-09). It is what
+  a node written next would name as its parent. A save that is a result and not a checkpoint, such as one a run
+  makes at its closed exit, which the save policy is never offered (§6), names it as the log position its state
+  holds. It says where the worker's state is, and nothing of whether the worker may still write: a landed node
+  stays landed, so a released worker and one whose exit starved read their last landed node, an iteration that
+  tore moves nothing, and a worker that lost the claim race reads `None`.
 - **`sources`** takes the names the worker exposes; an explicit `[]` is fine. It is written on `started`.
 - **`save`** takes the checkpoint save policy (§6), a `SavePolicy` such as `NoSave()` or `Every(k, write)`.
 

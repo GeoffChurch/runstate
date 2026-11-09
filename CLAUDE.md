@@ -131,7 +131,7 @@ The substrate + opt-in conventions + reference orchestration, in
   the set of stops it answers. Every drain reads the death reports first,
   and CAS-appends its `bound` and `nak`; a released worker, a claim-race
   loser and a worker after its exit are fenced. The levels: `claimed`,
-  `released`, `stop_pending`, `pinned`, `resume_node`.
+  `released`, `stop_pending`, `pinned`, `resume_node`, `node`.
 - **`checkpoint.py`** — the checkpoint recipe (`commits-and-lineage.md` §6):
   the `SavePolicy` Strategy (`Every(k, write)`, `NoSave()`), which the Worker
   prepares just before each commit and each extendable exit is written and
